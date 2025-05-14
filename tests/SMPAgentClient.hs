@@ -64,7 +64,8 @@ initAgentServers =
     { smp = userServers [testSMPServer],
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
-      netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000}
+      netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000},
+      presetDomains = []
     }
 
 initAgentServers2 :: InitialAgentServers

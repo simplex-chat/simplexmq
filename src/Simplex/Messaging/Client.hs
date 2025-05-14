@@ -84,6 +84,7 @@ module Simplex.Messaging.Client
     SocksMode (..),
     SMPProxyMode (..),
     SMPProxyFallback (..),
+    SMPWebPortServers (..),
     defaultClientConfig,
     defaultSMPClientConfig,
     defaultNetworkConfig,
@@ -129,7 +130,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64 as B64
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find)
+import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (catMaybes, fromMaybe)
@@ -138,7 +139,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
-import Network.Socket (ServiceName)
+import Network.Socket (HostName, ServiceName)
 import Network.Socks5 (SocksCredentials (..))
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
@@ -291,7 +292,7 @@ data NetworkConfig = NetworkConfig
     -- | Fallback to direct connection when destination SMP relay does not support SMP proxy protocol extensions
     smpProxyFallback :: SMPProxyFallback,
     -- | use web port 443 for SMP protocol
-    smpWebPort :: Bool,
+    smpWebPortServers :: SMPWebPortServers,
     -- | timeout for the initial client TCP/TLS connection (microseconds)
     tcpConnectTimeout :: Int,
     -- | timeout of protocol commands (microseconds)
@@ -327,6 +328,12 @@ data SMPProxyFallback
   | SPFProhibit -- prohibit direct connection to destination relay.
   deriving (Eq, Show)
 
+data SMPWebPortServers
+  = SWPAll
+  | SWPPreset
+  | SWPOff
+  deriving (Eq, Show)
+
 instance StrEncoding SMPProxyMode where
   strEncode = \case
     SPMAlways -> "always"
@@ -353,6 +360,18 @@ instance StrEncoding SMPProxyFallback where
       "no" -> pure SPFProhibit
       _ -> fail "Invalid SMP proxy fallback mode"
 
+instance StrEncoding SMPWebPortServers where
+  strEncode = \case
+    SWPAll -> "all"
+    SWPPreset -> "preset"
+    SWPOff -> "off"
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "all" -> pure SWPAll
+      "preset" -> pure SWPPreset
+      "off" -> pure SWPOff
+      _ -> fail "Invalid SMP wep port setting"
+
 defaultNetworkConfig :: NetworkConfig
 defaultNetworkConfig =
   NetworkConfig
@@ -363,7 +382,7 @@ defaultNetworkConfig =
       sessionMode = TSMSession,
       smpProxyMode = SPMNever,
       smpProxyFallback = SPFAllow,
-      smpWebPort = False,
+      smpWebPortServers = SWPPreset,
       tcpConnectTimeout = defaultTcpConnectTimeout,
       tcpTimeout = 15_000_000,
       tcpTimeoutPerKb = 5_000,
@@ -498,15 +517,15 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 --
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} msgQ proxySessTs disconnected = do
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {smpWebPort, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {smpWebPortServers, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
       connected <- newTVarIO False
@@ -554,6 +573,13 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         SPSMP | smpWebPort -> ("443", transport @TLS)
         _ -> defaultTransport cfg
       p -> (p, transport @TLS)
+      where
+        smpWebPort = case smpWebPortServers of
+          SWPAll -> True
+          SWPPreset -> case srv of
+            ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
+            _ -> False
+          SWPOff -> False
 
     client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
     client _ c cVar h = do
@@ -775,6 +801,7 @@ getSMPMessage c rpKey rId =
     OK -> pure Nothing
     cmd@(MSG msg) -> liftIO (writeSMPMessage c rId cmd) $> Just msg
     r -> throwE $ unexpectedResponse r
+{-# INLINE getSMPMessage #-}
 
 -- | Subscribe to the SMP queue notifications.
 --
@@ -1261,6 +1288,8 @@ $(J.deriveJSON (enumJSON $ dropPrefix "TSM") ''TransportSessionMode)
 $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''SMPProxyMode)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "SPF") ''SMPProxyFallback)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "SWP") ''SMPWebPortServers)
 
 $(J.deriveJSON defaultJSON ''NetworkConfig)
 
