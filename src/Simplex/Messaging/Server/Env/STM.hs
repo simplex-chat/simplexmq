@@ -25,7 +25,6 @@ import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
-import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -64,7 +63,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
+import Simplex.Messaging.Transport (ATransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
@@ -241,6 +240,8 @@ data Server = Server
     notifiers :: TMap NotifierId (TVar AClient),
     subClients :: TVar (IntMap AClient), -- clients with SMP subscriptions
     ntfSubClients :: TVar (IntMap AClient), -- clients with Ntf subscriptions
+    srvClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have SMP subscriptions
+    ntfSrvClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have Ntf subscriptions
     pendingSubEvents :: TVar (IntMap (NonEmpty (RecipientId, Subscribed))),
     pendingNtfSubEvents :: TVar (IntMap (NonEmpty (NotifierId, Subscribed))),
     savingLock :: Lock
@@ -268,8 +269,7 @@ data Client s = Client
     procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
-    thVersion :: VersionSMP,
-    sessionId :: ByteString,
+    clientTHParams :: THandleParams SMPVersion 'TServer,
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
@@ -293,13 +293,28 @@ newServer = do
   notifiers <- TM.emptyIO
   subClients <- newTVarIO IM.empty
   ntfSubClients <- newTVarIO IM.empty
+  srvClients <- TM.emptyIO
+  ntfSrvClients <- TM.emptyIO
   pendingSubEvents <- newTVarIO IM.empty
   pendingNtfSubEvents <- newTVarIO IM.empty
   savingLock <- createLockIO
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
+  pure
+    Server
+      { subscribedQ,
+        subscribers,
+        ntfSubscribedQ,
+        notifiers,
+        subClients,
+        ntfSubClients,
+        srvClients,
+        ntfSrvClients,
+        pendingSubEvents,
+        pendingNtfSubEvents,
+        savingLock
+      }
 
-newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore qs ms))
-newClient _ _ clientId qSize thVersion sessionId createdAt = do
+newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client (MsgStore qs ms))
+newClient _ _ clientId qSize clientTHParams createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   rcvQ <- newTBQueueIO qSize
@@ -311,7 +326,7 @@ newClient _ _ clientId qSize thVersion sessionId createdAt = do
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
   sndActiveAt <- newTVarIO createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, clientTHParams, connected, createdAt, rcvActiveAt, sndActiveAt}
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do

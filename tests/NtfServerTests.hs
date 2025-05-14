@@ -7,6 +7,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
@@ -63,8 +64,8 @@ ntfSyntaxTests (ATransport t) = do
   where
     (>#>) ::
       Encoding smp =>
-      (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-      (Maybe TransmissionAuth, ByteString, ByteString, NtfResponse) ->
+      (Maybe TAuthorizations, ByteString, ByteString, smp) ->
+      (Maybe TAuthorizations, ByteString, ByteString, NtfResponse) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
@@ -73,7 +74,7 @@ pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command
 
 deriving instance Eq NtfResponse
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TransmissionAuth, ByteString, NtfEntityId, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, NtfEntityId, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
 sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
@@ -85,7 +86,7 @@ signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) =
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
   where
-    authorize t = case a of
+    authorize t = (,Nothing) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
       _ -> Nothing

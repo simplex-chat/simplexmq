@@ -61,6 +61,7 @@ import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
 import System.FilePath (takeDirectory, takeFileName)
 
+-- TODO [certs] constructors to create service record and to create service/queue association
 data StoreLogRecord
   = CreateQueue RecipientId QueueRec
   | CreateLink RecipientId LinkId QueueLinkData
@@ -91,22 +92,26 @@ data SLRTag
   | UpdateTime_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
-    B.unwords
-      [ "rk=" <> strEncode recipientKeys,
-        "rdh=" <> strEncode rcvDhSecret,
-        "sid=" <> strEncode senderId,
-        "sk=" <> strEncode senderKey
+  strEncode QueueRec {recipientKeys, rcvDhSecret, rcvServiceId, senderId, senderKey, queueMode, queueData, notifier, ntfServiceId, status, updatedAt} =
+    B.concat
+      [ p "rk=" recipientKeys,
+        p " rdh=" rcvDhSecret,
+        p " sid=" senderId,
+        p " sk=" senderKey,
+        maybe "" ((" queue_mode=" <>) . smpEncode) queueMode,
+        opt " link_id=" (fst <$> queueData),
+        opt " queue_data=" (snd <$> queueData),
+        opt " notifier=" notifier,
+        opt " updated_at=" updatedAt,
+        statusStr,
+        opt " rsrv=" rcvServiceId,
+        opt " nsrv=" ntfServiceId
       ]
-      <> maybe "" ((" queue_mode=" <>) . smpEncode) queueMode
-      <> opt " link_id=" (fst <$> queueData)
-      <> opt " queue_data=" (snd <$> queueData)
-      <> opt " notifier=" notifier
-      <> opt " updated_at=" updatedAt
-      <> statusStr
     where
+      p :: StrEncoding a => ByteString -> a -> ByteString
+      p param = (param <>) . strEncode
       opt :: StrEncoding a => ByteString -> Maybe a -> ByteString
-      opt param = maybe "" ((param <>) . strEncode)
+      opt = maybe "" . p
       statusStr = case status of
         EntityActive -> ""
         _ -> " status=" <> strEncode status
@@ -124,7 +129,22 @@ instance StrEncoding QueueRec where
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
-    pure QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt}
+    rcvServiceId <- optional $ " rsrv=" *> strP
+    ntfServiceId <- optional $ " nsrv=" *> strP
+    pure
+      QueueRec
+        { recipientKeys,
+          rcvDhSecret,
+          senderId,
+          senderKey,
+          queueMode,
+          queueData,
+          notifier,
+          status,
+          updatedAt,
+          rcvServiceId,
+          ntfServiceId
+        }
     where
       toQueueMode sndSecure = Just $ if sndSecure then QMMessaging else QMContact
 

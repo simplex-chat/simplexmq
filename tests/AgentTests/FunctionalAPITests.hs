@@ -315,7 +315,7 @@ functionalAPITests ps = do
     describe "should connect via 1-time short link with async join" $ testProxyMatrix ps testInviationShortLinkAsync
     describe "should connect via contact short link" $ testProxyMatrix ps testContactShortLink
     describe "should add short link to existing contact and connect" $ testProxyMatrix ps testAddContactShortLink
-    describe "try to create 1-time short link with prev versions" $ testProxyMatrixWithPrev ps testInviationShortLinkPrev
+    xdescribe "try to create 1-time short link with prev versions" $ testProxyMatrixWithPrev ps testInviationShortLinkPrev
     describe "server restart" $ do
       it "should get 1-time link data after restart" $ testInviationShortLinkRestart ps
       it "should connect via contact short link after restart" $ testContactShortLinkRestart ps

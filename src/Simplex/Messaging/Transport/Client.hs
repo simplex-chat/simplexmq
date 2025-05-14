@@ -135,7 +135,16 @@ defaultTcpConnectTimeout :: Int
 defaultTcpConnectTimeout = 25_000_000
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing defaultTcpConnectTimeout (Just defaultKeepAliveOpts) True Nothing Nothing True
+defaultTransportClientConfig =
+  TransportClientConfig
+    { socksProxy = Nothing,
+      tcpConnectTimeout = defaultTcpConnectTimeout,
+      tcpKeepAlive = Just defaultKeepAliveOpts,
+      logTLSErrors = True,
+      clientCredentials = Nothing,
+      alpn = Nothing,
+      useSNI = True
+    }
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =

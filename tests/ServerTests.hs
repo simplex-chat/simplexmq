@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -10,6 +11,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
@@ -22,18 +24,19 @@ import Control.Monad
 import Control.Monad.IO.Class
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
-import Data.ByteString.Base64
+import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
+import Data.String (IsString (..))
 import Data.Type.Equality
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
@@ -98,7 +101,7 @@ pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId)
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
@@ -110,10 +113,10 @@ signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
   where
-    authorize t = case a of
+    authorize t = (,Nothing) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      C.SX25519 -> (\THAuthClient {serverPeerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
+      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif
@@ -431,13 +434,13 @@ testDuplex =
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", NoEntity, New brPub bDhPub)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
-      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode (unEntityId bSnd))
+      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> B64.encode (unEntityId bSnd))
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (Msg mId2 msg2) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId2)
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
-      (bId, encode (unEntityId bSnd)) #== "reply queue ID received from Bob"
+      (bId, B64.encode (unEntityId bSnd)) #== "reply queue ID received from Bob"
 
       (asPub, asKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> strEncode asPub)
@@ -1209,8 +1212,8 @@ samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ
 sampleDhPubKey :: C.PublicKey 'C.X25519
 sampleDhPubKey = "MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
 
-sampleSig :: Maybe TransmissionAuth
-sampleSig = Just $ TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
+sampleSig :: Maybe TAuthorizations
+sampleSig = Just (TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA==", Nothing)
 
 noAuth :: (Char, Maybe BasicAuth)
 noAuth = ('A', Nothing)
@@ -1221,6 +1224,9 @@ instance Eq C.ASignature where
   C.ASignature a s == C.ASignature a' s' = case testEquality a a' of
     Just Refl -> s == s'
     _ -> False
+
+instance IsString (Maybe TAuthorizations) where
+  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap ((,Nothing) . TASignature)
 
 serverSyntaxTests :: ATransport -> Spec
 serverSyntaxTests (ATransport t) = do
@@ -1261,7 +1267,7 @@ serverSyntaxTests (ATransport t) = do
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
       Encoding smp =>
-      (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-      (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
+      (Maybe TAuthorizations, ByteString, ByteString, smp) ->
+      (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response

@@ -1050,7 +1050,7 @@ proxySMPCommand ::
   ExceptT SMPClientError IO (Either ProxyClientError BrokerMsg)
 proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
   -- prepare params
-  let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
+  let serverThAuth = (\ta -> ta {peerServerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
   (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
@@ -1248,13 +1248,15 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       atomically $ TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+-- TODO [certs] client key/cert are in THandleAuth, so can be used to co-sign as needed.
+-- Not all commands need co-signing though (even if they need signing), so probably it requires a separate parameter.
+authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
 authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
   where
-    authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
-    authenticate (C.APrivateAuthKey a pk) = case a of
+    authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
+    authenticate (C.APrivateAuthKey a pk) = (,Nothing) <$> case a of
       C.SX25519 -> case thAuth of
-        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
+        Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
