@@ -224,7 +224,6 @@ import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Mem.Weak (deRefWeak)
-import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -440,7 +439,7 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Get messages for connections (GET commands)
-getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Maybe SMPMsgMeta))
+getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
 getConnectionMessages c = withAgentEnv' c . getConnectionMessages' c
 {-# INLINE getConnectionMessages #-}
 
@@ -1277,26 +1276,26 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
-getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Maybe SMPMsgMeta))
-getConnectionMessages' c =
-  mapConcurrently $ \cmr ->
-    getConnectionMessage cmr `catchAgentError'` \e -> do
-      logError $ "Error loading message: " <> tshow e
-      pure Nothing
+-- requesting messages sequentially, to reduce memory usage
+getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
+getConnectionMessages' c = mapM $ tryAgentError' . getConnectionMessage
   where
     getConnectionMessage :: ConnMsgReq -> AM (Maybe SMPMsgMeta)
     getConnectionMessage (ConnMsgReq connId dbQueueId msgTs_) = do
       whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
       SomeConn _ conn <- withStore c (`getConn` connId)
-      msg_ <- case conn of
-        DuplexConnection _ (rq :| _) _ -> getQueueMessage c rq
-        RcvConnection _ rq -> getQueueMessage c rq
-        ContactConnection _ rq -> getQueueMessage c rq
+      rq <- case conn of
+        DuplexConnection _ (rq :| _) _ -> pure rq
+        RcvConnection _ rq -> pure rq
+        ContactConnection _ rq -> pure rq
         SndConnection _ _ -> throwE $ CONN SIMPLEX
         NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
-      when (isNothing msg_) $
+      msg_ <- getQueueMessage c rq `catchAgentError` \e -> atomically (releaseGetLock c rq) >> throwError e
+      when (isNothing msg_) $ do
+        atomically $ releaseGetLock c rq
         forM_ msgTs_ $ \msgTs -> withStore' c $ \db -> setLastBrokerTs db connId (DBQueueId dbQueueId) msgTs
       pure msg_
+{-# INLINE getConnectionMessages' #-}
 
 getNotificationConns' :: AgentClient -> C.CbNonce -> ByteString -> AM (NonEmpty NotificationInfo)
 getNotificationConns' c nonce encNtfInfo =
@@ -1330,6 +1329,7 @@ getNotificationConns' c nonce encNtfInfo =
         Just SMP.NMsgMeta {msgTs}
           | maybe True (systemToUTCTime msgTs >) lastBrokerTs_ -> Just ntfInfo
         _ -> Nothing
+{-# INLINE getNotificationConns' #-}
 
 -- | Send message to the connection (SEND command) in Reader monad
 sendMessage' :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AM (AgentMsgId, PQEncryption)
