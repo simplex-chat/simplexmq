@@ -15,7 +15,6 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  setLogLevel LogInfo
   cfgPath <- getEnvPath "NTF_SERVER_CFG_PATH" defaultCfgPath
   logPath <- getEnvPath "NTF_SERVER_LOG_PATH" defaultLogPath
   withGlobalLogging logCfg $ ntfServerCLI cfgPath logPath

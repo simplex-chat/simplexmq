@@ -21,7 +21,6 @@ import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
-import NtfServerTests (ntfServerTests)
 import RemoteControl (remoteControlTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
@@ -43,13 +42,16 @@ import AgentTests.SchemaDump (schemaDumpTest)
 #endif
 
 #if defined(dbServerPostgres)
-import SMPClient (testServerDBConnectInfo)
-import ServerTests.SchemaDump
+import NtfServerTests (ntfServerTests)
+import NtfClient (ntfTestServerDBConnectInfo, ntfTestStoreDBOpts)
+import PostgresSchemaDump (postgresSchemaDumpTest)
+import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
+import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
+import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
-import Database.PostgreSQL.Simple (ConnectInfo (..))
-import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
+import SMPClient (postgressBracket)
 #endif
 
 logCfg :: LogConfig
@@ -57,7 +59,8 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  setLogLevel LogError -- LogInfo
+  -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
+  setLogLevel LogError -- LogInfo -- also change in SMPClient.hs in defaultStartOptions
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
@@ -92,10 +95,16 @@ main = do
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $
-          describe "Server schema dump" serverSchemaDumpTest
+          describe "SMP server schema dump" $
+            postgresSchemaDumpTest
+              serverMigrations
+              [ "20250320_short_links" -- snd_secure moves to the bottom on down migration
+              ] -- skipComparisonForDownMigrations
+              testStoreDBOpts
+              "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"
         aroundAll_ (postgressBracket testServerDBConnectInfo) $
           describe "SMP server via TLS, postgres+jornal message store" $
-              before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
+            before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
 #endif
         describe "SMP server via TLS, jornal message store" $ do
           describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
@@ -105,8 +114,16 @@ main = do
         -- xdescribe "SMP server via WebSockets" $ do
         --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
-        describe "Notifications server" $ ntfServerTests (transport @TLS)
 #if defined(dbServerPostgres)
+        around_ (postgressBracket ntfTestServerDBConnectInfo) $
+          describe "Ntf server schema dump" $
+            postgresSchemaDumpTest
+              ntfServerMigrations
+              [] -- skipComparisonForDownMigrations
+              ntfTestStoreDBOpts
+              "src/Simplex/Messaging/Notifications/Server/Store/ntf_server_schema.sql"
+        aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
+          describe "Notifications server" $ ntfServerTests (transport @TLS)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
           describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $
@@ -132,11 +149,3 @@ eventuallyRemove path retries = case retries of
       _ -> E.throwIO ioe
   where
     action = removeDirectoryRecursive path
-
-#if defined(dbPostgres) || defined(dbServerPostgres)
-postgressBracket :: ConnectInfo -> IO a -> IO a
-postgressBracket connInfo =
-  E.bracket_
-    (dropDatabaseAndUser connInfo >> createDBAndUserIfNotExists connInfo)
-    (dropDatabaseAndUser connInfo)
-#endif

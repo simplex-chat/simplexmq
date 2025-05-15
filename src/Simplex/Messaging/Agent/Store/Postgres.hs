@@ -33,7 +33,6 @@ import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Exit (exitFailure)
-import UnliftIO.MVar
 
 -- | Create a new Postgres DBStore with the given connection string, schema name and migrations.
 -- If passed schema does not exist in connectInfo database, it will be created.
@@ -54,23 +53,26 @@ createDBStore opts migrations confirmMigrations = do
 
 connectPostgresStore :: DBOpts -> IO DBStore
 connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
-  dbSem <- newMVar ()
-  dbPool <- newTBQueueIO poolSize
+  dbPriorityPool <- newDBStorePool poolSize
+  dbPool <- newDBStorePool poolSize
   dbClosed <- newTVarIO True
-  let st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPool, dbSem, dbNew = False, dbClosed}
-  dbNew <- connectPool st createSchema
+  let st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPriorityPool, dbPool, dbNew = False, dbClosed}
+  dbNew <- connectStore st createSchema
   pure st {dbNew}
 
 -- uninterruptibleMask_ here and below is used here so that it is not interrupted half-way,
 -- it relies on the assumption that when dbClosed = True, the queue is empty,
 -- and when it is False, the queue is full (or will have connections returned to it by the threads that use them).
-connectPool :: DBStore -> Bool -> IO Bool
-connectPool DBStore {dbConnstr, dbSchema, dbPoolSize, dbPool, dbClosed} createSchema = uninterruptibleMask_ $ do
+connectStore :: DBStore -> Bool -> IO Bool
+connectStore DBStore {dbConnstr, dbSchema, dbPoolSize, dbPriorityPool, dbPool, dbClosed} createSchema = uninterruptibleMask_ $ do
   (conn, dbNew) <- connectDB dbConnstr dbSchema createSchema -- TODO [postgres] analogue for dbBusyLoop?
-  conns <- replicateM (dbPoolSize - 1) $ fst <$> connectDB dbConnstr dbSchema False
-  mapM_ (atomically . writeTBQueue dbPool) (conn : conns)
+  writeConns dbPriorityPool . (conn :) =<< mkConns (dbPoolSize - 1)
+  writeConns dbPool =<< mkConns dbPoolSize
   atomically $ writeTVar dbClosed False
   pure dbNew
+  where
+    writeConns pool conns = mapM_ (atomically . writeTBQueue (dbPoolConns pool)) conns
+    mkConns n = replicateM n $ fst <$> connectDB dbConnstr dbSchema False
 
 connectDB :: ByteString -> ByteString -> Bool -> IO (DB.Connection, Bool)
 connectDB connstr schema createSchema = do
@@ -111,16 +113,19 @@ doesSchemaExist db schema = do
   pure schemaExists
 
 closeDBStore :: DBStore -> IO ()
-closeDBStore DBStore {dbPool, dbPoolSize, dbClosed} =
+closeDBStore DBStore {dbPoolSize, dbPriorityPool, dbPool, dbClosed} =
   ifM (readTVarIO dbClosed) (putStrLn "closeDBStore: already closed") $ uninterruptibleMask_ $ do
-    replicateM_ dbPoolSize $ atomically (readTBQueue dbPool) >>= DB.close
+    closePool dbPriorityPool
+    closePool dbPool
     atomically $ writeTVar dbClosed True
+  where
+    closePool pool = replicateM_ dbPoolSize $ atomically (readTBQueue $ dbPoolConns pool) >>= DB.close
 
 reopenDBStore :: DBStore -> IO ()
 reopenDBStore st =
   ifM
     (readTVarIO $ dbClosed st)
-    (void $ connectPool st False)
+    (void $ connectStore st False)
     (putStrLn "reopenDBStore: already opened")
 
 -- not used with postgres client (used for ExecAgentStoreSQL, ExecChatStoreSQL)

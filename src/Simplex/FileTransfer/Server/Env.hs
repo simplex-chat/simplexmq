@@ -103,8 +103,8 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   used <- countUsedStorage <$> readTVarIO (files store)
   atomically $ writeTVar (usedStorage store) used
   forM_ fileSizeQuota $ \quota -> do
-    logInfo $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
-    when (quota < used) $ logInfo "WARNING: storage quota is less than used storage, no files can be uploaded!"
+    logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
+    when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
   tlsServerCreds <- loadServerCredential xftpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime

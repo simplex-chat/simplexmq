@@ -28,12 +28,15 @@ import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import GHC.Generics (Generic)
 import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (prevRange, serverBracket)
+import SMPClient (defaultStartOptions, ntfTestPort, prevRange, serverBracket)
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -45,6 +48,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
@@ -60,12 +64,6 @@ import UnliftIO.STM
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
-ntfTestPort :: ServiceName
-ntfTestPort = "6001"
-
-ntfTestPort2 :: ServiceName
-ntfTestPort2 = "6002"
-
 apnsTestPort :: ServiceName
 apnsTestPort = "6010"
 
@@ -75,8 +73,48 @@ testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 ntfTestStoreLogFile :: FilePath
 ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
 
+ntfTestStoreLogFile2 :: FilePath
+ntfTestStoreLogFile2 = "tests/tmp/ntf-server-store.log.2"
+
 ntfTestStoreLastNtfsFile :: FilePath
 ntfTestStoreLastNtfsFile = "tests/tmp/ntf-server-last-notifications.log"
+
+ntfTestPrometheusMetricsFile :: FilePath
+ntfTestPrometheusMetricsFile = "tests/tmp/ntf-server-metrics.txt"
+
+ntfTestStoreDBOpts :: DBOpts
+ntfTestStoreDBOpts = 
+  DBOpts
+    { connstr = ntfTestServerDBConnstr,
+      schema = "ntf_server",
+      poolSize = 3,
+      createSchema = True
+    }
+
+ntfTestStoreDBOpts2 :: DBOpts
+ntfTestStoreDBOpts2 = ntfTestStoreDBOpts {schema = "smp_server2"}
+
+ntfTestServerDBConnstr :: ByteString
+ntfTestServerDBConnstr = "postgresql://ntf_test_server_user@/ntf_test_server_db"
+
+ntfTestServerDBConnectInfo :: ConnectInfo
+ntfTestServerDBConnectInfo =
+  defaultConnectInfo {
+    connectUser = "ntf_test_server_user",
+    connectDatabase = "ntf_test_server_db"
+  }
+
+ntfTestDBCfg :: PostgresStoreCfg
+ntfTestDBCfg =
+  PostgresStoreCfg
+    { dbOpts = ntfTestStoreDBOpts,
+      dbStoreLogPath = Just ntfTestStoreLogFile,
+      confirmMigrations = MCYesUp,
+      deletedTTL = 86400
+    }
+
+ntfTestDBCfg2 :: PostgresStoreCfg
+ntfTestDBCfg2 = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts2, dbStoreLogPath = Just ntfTestStoreLogFile2}
 
 testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
@@ -106,21 +144,24 @@ ntfServerCfg =
           },
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
-      storeLogFile = Nothing,
-      storeLastNtfsFile = Nothing,
+      dbStoreConfig = ntfTestDBCfg,
       ntfCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
+      periodicNtfsInterval = 1,
       -- stats config
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      prometheusInterval = Nothing,
+      prometheusMetricsFile = ntfTestPrometheusMetricsFile,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = defaultTransportServerConfig
+      transportConfig = defaultTransportServerConfig,
+      startOptions = defaultStartOptions
     }
 
 ntfServerCfgVPrev :: NtfServerConfig
@@ -134,11 +175,9 @@ ntfServerCfgVPrev =
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
-withNtfServerStoreLog :: ATransport -> (ThreadId -> IO a) -> IO a
-withNtfServerStoreLog t = withNtfServerCfg ntfServerCfg {storeLogFile = Just ntfTestStoreLogFile, storeLastNtfsFile = Just ntfTestStoreLastNtfsFile, transports = [(ntfTestPort, t, False)]}
-
-withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' = withNtfServerCfg ntfServerCfg {transports = [(port', t, False)]}
+withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
+withNtfServerThreadOn t port' dbStoreConfig =
+  withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
 
 withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg cfg@NtfServerConfig {transports} =
@@ -149,11 +188,11 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
         (\started -> runNtfServerBlocking started cfg)
         (pure ())
 
-withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> (HasCallStack => IO a) -> IO a
-withNtfServerOn t port' = withNtfServerThreadOn t port' . const
+withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
+withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
 withNtfServer :: HasCallStack => ATransport -> (HasCallStack => IO a) -> IO a
-withNtfServer t = withNtfServerOn t ntfTestPort
+withNtfServer t = withNtfServerOn t ntfTestPort ntfTestDBCfg
 
 runNtfTest :: forall c a. Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test

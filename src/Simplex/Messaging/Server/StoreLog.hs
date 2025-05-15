@@ -287,7 +287,7 @@ readWriteStoreLog readStore writeStore f st =
       logWarn $ "Server terminated abnormally on last start, restoring state from " <> T.pack tempBackup
       whenM (doesFileExist f) $ do
         renameFile f (f <> ".bak")
-        logInfo $ "preserved incomplete state " <> f' <> " as " <> (f' <> ".bak")
+        logNote $ "preserved incomplete state " <> f' <> " as " <> (f' <> ".bak")
       renameFile tempBackup f
     readWriteLog = do
       -- log backup is made in two steps to mitigate the crash during the compacting.
@@ -300,14 +300,14 @@ readWriteStoreLog readStore writeStore f st =
       pure s
     writeLog msg = do
       s <- openWriteStoreLog False f
-      logInfo msg
+      logNote msg
       writeStore s st
       pure s
     renameBackup = do
       ts <- getCurrentTime
       let timedBackup = f <> "." <> iso8601Show ts
       renameFile tempBackup timedBackup
-      logInfo $ "original state preserved as " <> T.pack timedBackup
+      logNote $ "original state preserved as " <> T.pack timedBackup
 
 removeStoreLogBackups :: FilePath -> IO ()
 removeStoreLogBackups f = do

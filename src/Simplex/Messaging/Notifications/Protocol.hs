@@ -517,7 +517,9 @@ instance Encoding NtfSubStatus where
 
 instance StrEncoding NtfSubStatus where
   strEncode = smpEncode
+  {-# INLINE strEncode #-}
   strP = smpP
+  {-# INLINE strP #-}
 
 data NtfTknStatus
   = -- | Token created in DB
@@ -533,6 +535,26 @@ data NtfTknStatus
   | -- | after it is no longer valid (push provider error)
     NTExpired
   deriving (Eq, Show)
+
+allowTokenVerification :: NtfTknStatus -> Bool
+allowTokenVerification = \case
+  NTNew -> False
+  NTRegistered -> True
+  NTInvalid _ -> False
+  NTConfirmed -> True
+  NTActive -> True
+  NTExpired -> False
+
+allowNtfSubCommands :: NtfTknStatus -> Bool
+allowNtfSubCommands = \case
+  NTNew -> False
+  NTRegistered -> False
+  -- TODO we could have separate statuses to show whether it became invalid
+  -- after verification (allow commands) or before (do not allow)
+  NTInvalid _ -> True
+  NTConfirmed -> False
+  NTActive -> True
+  NTExpired -> True
 
 instance Encoding NtfTknStatus where
   smpEncode = \case
