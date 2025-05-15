@@ -58,6 +58,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as TIO
 import Data.Time.Clock.System (systemToUTCTime)
+import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
 import SMPClient (cfgMS, cfgJ2QS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, xit'')
@@ -74,6 +75,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
 import Simplex.Messaging.Notifications.Types (NtfTknAction (..), NtfToken (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NMsgMeta (..), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
@@ -122,12 +124,10 @@ notificationTests ps@(t, _) = do
     it "should keep working with active token until replaced" $
       withAPNSMockServer $ \apns ->
         testNtfTokenChangeServers t apns
-    -- TODO [ntfdb] modify database in the test
-    xit "should re-register token in NTInvalid status after register attempt" $
+    it "should re-register token in NTInvalid status after register attempt" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalid t apns
-    -- TODO [ntfdb] modify database in the test
-    xit "should re-register token in NTInvalid status after checking token" $
+    it "should re-register token in NTInvalid status after checking token" $
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalidOnCheck t apns
   describe "notification server tests" $ do
@@ -489,7 +489,9 @@ testNtfTokenReRegisterInvalid t apns = do
   withNtfServer t $ pure ()
 
   threadDelay 250000
-  replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
+  st <- newNtfDbStore ntfTestDBCfg
+  Right 1 <- withDB' "test" st $ \db -> PSQL.execute db "UPDATE tokens SET status = ? WHERE status = ?" (NTInvalid Nothing, NTActive)
+  closeNtfDbStore st
 
   threadDelay 250000
   withNtfServer t $ do
@@ -518,7 +520,9 @@ testNtfTokenReRegisterInvalidOnCheck t apns = do
   withNtfServer t $ pure ()
 
   threadDelay 250000
-  replaceSubstringInFile ntfTestStoreLogFile "tokenStatus=ACTIVE" "tokenStatus=INVALID"
+  st <- newNtfDbStore ntfTestDBCfg
+  Right 1 <- withDB' "test" st $ \db -> PSQL.execute db "UPDATE tokens SET status = ? WHERE status = ?" (NTInvalid Nothing, NTActive)
+  closeNtfDbStore st
 
   threadDelay 250000
   withNtfServer t $ do
