@@ -280,7 +280,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       let chunkSpecs = prepareChunkSpecs encPath chunkSizes
           fdRcv = FileDescription {party = SFRecipient, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
           fdSnd = FileDescription {party = SFSender, size = FileSize encSize, digest = FileDigest digest, key, nonce, chunkSize = FileSize defChunkSize, chunks = [], redirect = Nothing}
-      logInfo $ "encrypted file to " <> tshow encPath
+      logDebug $ "encrypted file to " <> tshow encPath
       pure (encPath, fdRcv, fdSnd, chunkSpecs, encSize)
     uploadFile :: TVar ChaChaDRG -> [XFTPChunkSpec] -> TVar [Int64] -> Int64 -> ExceptT CLIError IO [SentFileChunk]
     uploadFile g chunks uploadedChunks encSize = do
@@ -293,14 +293,14 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       -- TODO shuffle/unshuffle chunks
       -- the reason we don't do pooled downloads here within one server is that http2 library doesn't handle cleint concurrency, even though
       -- upload doesn't allow other requests within the same client until complete (but download does allow).
-      logInfo $ "uploading " <> tshow (length chunks) <> " chunks..."
+      logDebug $ "uploading " <> tshow (length chunks) <> " chunks..."
       (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 chunks' . mapM $ runExceptT . uploadFileChunk a)
       mapM_ throwE errs
       pure $ map snd (sortOn fst rs)
       where
         uploadFileChunk :: XFTPClientAgent -> (Int, XFTPChunkSpec, XFTPServerWithAuth) -> ExceptT CLIError IO (Int, SentFileChunk)
         uploadFileChunk a (chunkNo, chunkSpec@XFTPChunkSpec {chunkSize}, ProtoServerWithAuth xftpServer auth) = do
-          logInfo $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
+          logDebug $ "uploading chunk " <> tshow chunkNo <> " to " <> showServer xftpServer <> "..."
           (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
           rKeys <- atomically $ L.fromList <$> replicateM numRecipients (C.generateAuthKeyPair C.SEd25519 g)
           digest <- liftIO $ getChunkDigest chunkSpec
@@ -308,7 +308,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
           (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
           withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
-          logInfo $ "uploaded chunk " <> tshow chunkNo
+          logDebug $ "uploaded chunk " <> tshow chunkNo
           uploaded <- atomically . stateTVar uploadedChunks $ \cs ->
             let cs' = fromIntegral chunkSize : cs in (sum cs', cs')
           liftIO $ do
@@ -418,11 +418,11 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
     downloadFileChunk :: TVar ChaChaDRG -> XFTPClientAgent -> FilePath -> FileSize Int64 -> TVar [Int64] -> FileChunk -> ExceptT CLIError IO (Int, FilePath)
     downloadFileChunk g a encPath (FileSize encSize) downloadedChunks FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
-      logInfo $ "downloading chunk " <> tshow chunkNo <> " from " <> showServer server <> "..."
+      logDebug $ "downloading chunk " <> tshow chunkNo <> " from " <> showServer server <> "..."
       chunkPath <- uniqueCombine encPath $ show chunkNo
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
       withReconnect a server retryCount $ \c -> downloadXFTPChunk g c replicaKey (unChunkReplicaId replicaId) chunkSpec
-      logInfo $ "downloaded chunk " <> tshow chunkNo <> " to " <> T.pack chunkPath
+      logDebug $ "downloaded chunk " <> tshow chunkNo <> " to " <> T.pack chunkPath
       downloaded <- atomically . stateTVar downloadedChunks $ \cs ->
         let cs' = fromIntegral (unFileSize chunkSize) : cs in (sum cs', cs')
       liftIO $ do
@@ -467,7 +467,7 @@ cliDeleteFile DeleteOptions {fileDescription, retryCount, yes} = do
     deleteFileChunk a FileChunk {chunkNo, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
       withReconnect a server retryCount $ \c -> deleteXFTPChunk c replicaKey (unChunkReplicaId replicaId)
-      logInfo $ "deleted chunk " <> tshow chunkNo <> " from " <> showServer server
+      logDebug $ "deleted chunk " <> tshow chunkNo <> " from " <> showServer server
     deleteFileChunk _ _ = throwE $ CLIError "chunk has no replicas"
 
 cliFileDescrInfo :: InfoOptions -> ExceptT CLIError IO ()

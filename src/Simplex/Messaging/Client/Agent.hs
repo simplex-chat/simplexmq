@@ -42,7 +42,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, ifM, toChunks, whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (catchAll_, ifM, safeDecodeUtf8, toChunks, tshow, whenM, ($>>=), (<$$>))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import qualified UnliftIO.Exception as E
@@ -321,7 +321,7 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
   where
     logSMPError :: SMPClientError -> ExceptT SMPClientError IO a
     logSMPError e = do
-      liftIO $ putStrLn $ "SMP error (" <> show srv <> "): " <> show e
+      logInfo $ "SMP error (" <> safeDecodeUtf8 (strEncode $ host srv) <> "): " <> tshow e
       throwE e
 
 subscribeQueuesSMP :: SMPClientAgent -> SMPServer -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO ()
@@ -412,14 +412,22 @@ removeSubscription :: SMPClientAgent -> SMPServer -> SMPSub -> STM ()
 removeSubscription = removeSub_ . srvSubs
 {-# INLINE removeSubscription #-}
 
+removePendingSub :: SMPClientAgent -> SMPServer -> SMPSub -> STM ()
+removePendingSub = removeSub_ . pendingSrvSubs
+{-# INLINE removePendingSub #-}
+
 removeSub_ :: TMap SMPServer (TMap SMPSub s) -> SMPServer -> SMPSub -> STM ()
 removeSub_ subs srv s = TM.lookup srv subs >>= mapM_ (TM.delete s)
+
+removeSubscriptions :: SMPClientAgent -> SMPServer -> SMPSubParty -> [QueueId] -> STM ()
+removeSubscriptions = removeSubs_ . srvSubs
+{-# INLINE removeSubscriptions #-}
 
 removePendingSubs :: SMPClientAgent -> SMPServer -> SMPSubParty -> [QueueId] -> STM ()
 removePendingSubs = removeSubs_ . pendingSrvSubs
 {-# INLINE removePendingSubs #-}
 
-removeSubs_ :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey) -> SMPServer -> SMPSubParty -> [QueueId] -> STM ()
+removeSubs_ :: TMap SMPServer (TMap SMPSub s) -> SMPServer -> SMPSubParty -> [QueueId] -> STM ()
 removeSubs_ subs srv party qs = TM.lookup srv subs >>= mapM_ (`modifyTVar'` (`M.withoutKeys` ss))
   where
     ss = S.fromList $ map (party,) qs

@@ -136,6 +136,7 @@ data ServerConfig = ServerConfig
 data StartOptions = StartOptions
   { maintenance :: Bool,
     compactLog :: Bool,
+    logLevel :: LogLevel,
     skipWarnings :: Bool,
     confirmMigrations :: MigrationConfirmation
   }
@@ -367,12 +368,13 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
     loadStoreLog mkQ f st = do
-      logInfo $ "restoring queues from file " <> T.pack f
+      logNote $ "restoring queues from file " <> T.pack f
       sl <- readWriteQueueStore False mkQ f st
       setStoreLog st sl
+#if defined(dbServerPostgres)
     compactDbStoreLog = \case
       Just f -> do
-        logInfo $ "compacting queues in file " <> T.pack f
+        logNote $ "compacting queues in file " <> T.pack f
         st <- newMsgStore STMStoreConfig {storePath = Nothing, quota = msgQueueQuota}
         -- we don't need to have locks in the map
         sl <- readWriteQueueStore False (mkQueue st False) f (queueStore st)
@@ -381,6 +383,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       Nothing -> do
         logError "Error: `--compact-log` used without `db_store_log` INI option"
         exitFailure
+#endif
     getCredentials protocol creds = do
       files <- missingCreds
       unless (null files) $ do

@@ -51,6 +51,7 @@ ntfServerTests t = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription t createNtfQueueNKEY
   -- describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription t createNtfQueueNEW
+  describe "Retried notification subscription" $ testRetriedNtfSubscription t
 
 ntfSyntaxTests :: ATransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -113,9 +114,20 @@ testNotificationSubscription (ATransport t) createQueue =
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
             getMockNotification apns tkn
           let dhSecret = C.dh' ntfDh dhPriv
-              Right verification = ntfData .-> "verification"
-              Right nonce = C.cbNonce <$> ntfData .-> "nonce"
-              Right code = NtfRegCode <$> C.cbDecrypt dhSecret nonce verification
+              decryptCode nd =
+                let Right verification = nd .-> "verification"
+                    Right nonce = C.cbNonce <$> nd .-> "nonce"
+                    Right pt = C.cbDecrypt dhSecret nonce verification
+                 in NtfRegCode pt
+          let code = decryptCode ntfData
+          -- test repeated request - should return the same token ID
+          RespNtf "1a" NoEntity (NRTknId tId1 ntfDh1) <- signSendRecvNtf nh tknKey ("1a", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+          tId1 `shouldBe` tId
+          ntfDh1 `shouldBe` ntfDh
+          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData1}} <-
+            getMockNotification apns tkn
+          let code1 = decryptCode ntfData1
+          code `shouldBe` code1
           RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY code)
           RespNtf "2a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("2a", tId, TCHK)
           -- ntf server subscribes to queue notifications
@@ -167,6 +179,38 @@ testNotificationSubscription (ATransport t) createQueue =
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
 
+testRetriedNtfSubscription :: ATransport -> Spec
+testRetriedNtfSubscription (ATransport t) =
+  it "should allow retrying to create notification subscription with the same token and key" $ do
+    g <- C.newRandom
+    (sPub, _sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      smpTest' t $ \h ->
+        ntfTest t $ \nh -> do
+          ((_sId, _rId, _rKey, _rcvDhSecret), nId, _rcvNtfDhSecret) <- createNtfQueueNKEY h sPub nPub
+          (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+          let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+              q = SMPQueueNtf srv nId
+          -- fails creating subscription until token is verified
+          RespNtf "2" NoEntity (NRErr AUTH) <- signSendRecvNtf nh tknKey ("2", NoEntity, SNEW $ NewNtfSub tId q nKey)
+          -- verify token
+          RespNtf "3" tId1 NROk <- signSendRecvNtf nh tknKey ("3", tId, TVFY regCode)
+          tId1 `shouldBe` tId
+          -- create subscription
+          RespNtf "4" NoEntity (NRSubId subId) <- signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId q nKey)
+          -- allow retry
+          RespNtf "4a" NoEntity (NRSubId subId') <- signSendRecvNtf nh tknKey ("4a", NoEntity, SNEW $ NewNtfSub tId q nKey)
+          subId' `shouldBe` subId
+          -- fail with another key
+          (_nPub, nKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          RespNtf "5" NoEntity (NRErr AUTH) <- signSendRecvNtf nh tknKey ("5", NoEntity, SNEW $ NewNtfSub tId q nKey')
+          -- fail with another token
+          (tknKey', _dhSecret, tId', regCode') <- registerToken nh apns "efgh"
+          RespNtf "6" _ NROk <- signSendRecvNtf nh tknKey' ("6", tId', TVFY regCode')
+          RespNtf "7" NoEntity (NRErr AUTH) <- signSendRecvNtf nh tknKey' ("7", NoEntity, SNEW $ NewNtfSub tId' q nKey)
+          pure ()
+
 type CreateQueueFunc =
   forall c.
   Transport c =>
@@ -184,6 +228,24 @@ createNtfQueueNKEY h sPub nPub = do
   Resp "3" _ (NID nId rcvNtfSrvPubDhKey) <- signSendRecv h rKey ("3", rId, NKEY nPub rcvNtfPubDhKey)
   let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
   pure ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret)
+
+registerToken :: Transport c => THandleNTF c 'TClient -> APNSMockServer -> ByteString -> IO (C.APrivateAuthKey, C.DhSecretX25519, NtfEntityId, NtfRegCode)
+registerToken nh apns token = do
+  g <- C.newRandom
+  (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  let tkn = DeviceToken PPApnsTest token
+  RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+  APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+    getMockNotification apns tkn
+  let dhSecret = C.dh' ntfDh dhPriv
+      decryptCode nd =
+        let Right verification = nd .-> "verification"
+            Right nonce = C.cbNonce <$> nd .-> "nonce"
+            Right pt = C.cbDecrypt dhSecret nonce verification
+          in NtfRegCode pt
+  let code = decryptCode ntfData
+  pure (tknKey, dhSecret, tId, code)
 
 -- TODO [notifications]
 -- createNtfQueueNEW :: CreateQueueFunc

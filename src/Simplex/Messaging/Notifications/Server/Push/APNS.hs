@@ -33,15 +33,19 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.CaseInsensitive as CI
 import Data.Int (Int64)
+import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict (Map)
 import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.System
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
+import Network.HPACK.Token as HT
 import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import Network.HTTP2.Client (Request)
@@ -50,7 +54,7 @@ import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
-import Simplex.Messaging.Notifications.Server.Store (NtfTknData (..))
+import Simplex.Messaging.Notifications.Server.Store.Types (NtfTknRec (..))
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -263,8 +267,8 @@ disconnectApnsHTTP2Client APNSPushClient {https2Client} =
 ntfCategoryCheckMessage :: Text
 ntfCategoryCheckMessage = "NTF_CAT_CHECK_MESSAGE"
 
-apnsNotification :: NtfTknData -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
-apnsNotification NtfTknData {tknDhSecret} nonce paddedLen = \case
+apnsNotification :: NtfTknRec -> C.CbNonce -> Int -> PushNotification -> Either C.CryptoError APNSNotification
+apnsNotification NtfTknRec {tknDhSecret} nonce paddedLen = \case
   PNVerification (NtfRegCode code) ->
     encrypt code $ \code' ->
       apn APNSBackground {contentAvailable = 1} . Just $ J.object ["nonce" .= nonce, "verification" .= code']
@@ -313,7 +317,7 @@ data PushProviderError
   | PPPermanentError
   deriving (Show, Exception)
 
-type PushProviderClient = NtfTknData -> PushNotification -> ExceptT PushProviderError IO ()
+type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
 
 -- this is not a newtype on purpose to have a correct JSON encoding as a record
 data APNSErrorResponse = APNSErrorResponse {reason :: Text}
@@ -321,7 +325,7 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {token = DeviceToken _ tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = DeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
@@ -330,9 +334,16 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknData {toke
   HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead
-  logDebug $ "APNS response: " <> T.pack (show status) <> " " <> reason'
+  if status == Just N.ok200
+    then logDebug $ "APNS response: ok" <> apnsIds response
+    else logWarn $ "APNS error: " <> T.pack (show status) <> " " <> reason' <> apnsIds response
   result status reason'
   where
+    apnsIds response = headerStr "apns-id" <> headerStr "apns-unique-id"
+      where
+        headerStr name =
+          maybe "" (\(_, v) -> ", " <> name <> ": " <> safeDecodeUtf8 v) $
+            find (\(t, _) -> HT.tokenKey t == CI.mk (encodeUtf8 name)) (fst (H.responseHeaders response))
     result :: Maybe Status -> Text -> ExceptT PushProviderError IO ()
     result status reason'
       | status == Just N.ok200 = pure ()

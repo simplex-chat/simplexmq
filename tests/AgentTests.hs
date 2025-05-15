@@ -12,17 +12,23 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.MigrationTests (migrationTests)
-import AgentTests.NotificationTests (notificationTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import AgentTests.ShortLinkTests (shortLinkTests)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Transport (ATransport (..))
 import Test.Hspec
+
 #if defined(dbPostgres)
 import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #else
 import AgentTests.SQLiteTests (storeTests)
+#endif
+
+#if defined(dbServerPostgres)
+import AgentTests.NotificationTests (notificationTests)
+import SMPClient (postgressBracket)
+import NtfClient (ntfTestServerDBConnectInfo)
 #endif
 
 agentCoreTests :: Spec
@@ -41,7 +47,10 @@ agentTests ps = do
 #endif
     describe "Functional API" $ functionalAPITests ps
     describe "Chosen servers" serverChoiceTests
-    describe "Notification tests" $ notificationTests ps
+#if defined(dbServerPostgres)    
+    around_ (postgressBracket ntfTestServerDBConnectInfo) $
+      describe "Notification tests" $ notificationTests ps
+#endif
 #if !defined(dbPostgres)
   describe "SQLite store" storeTests
 #endif

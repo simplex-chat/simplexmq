@@ -143,7 +143,7 @@ instance Encoding Large where
 instance Encoding SystemTime where
   smpEncode = smpEncode . systemSeconds
   {-# INLINE smpEncode #-}
-  smpP = MkSystemTime <$> smpP <*> pure 0
+  smpP = (`MkSystemTime` 0) <$> smpP
   {-# INLINE smpP #-}
 
 _smpP :: Encoding a => Parser a

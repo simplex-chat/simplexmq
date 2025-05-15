@@ -77,7 +77,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckToken,
     agentNtfReplaceToken,
     agentNtfDeleteToken,
-    agentNtfEnableCron,
+    agentNtfSetCronInterval,
     agentNtfCreateSubscription,
     agentNtfCreateSubscriptions,
     agentNtfCheckSubscription,
@@ -1817,9 +1817,10 @@ agentNtfDeleteToken :: AgentClient -> NtfServer -> C.APrivateAuthKey -> NtfToken
 agentNtfDeleteToken c ntfServer ntfPrivKey tknId =
   withNtfClient c ntfServer tknId "TDEL" $ \ntf -> ntfDeleteToken ntf ntfPrivKey tknId
 
-agentNtfEnableCron :: AgentClient -> NtfTokenId -> NtfToken -> Word16 -> AM ()
-agentNtfEnableCron c tknId NtfToken {ntfServer, ntfPrivKey} interval =
-  withNtfClient c ntfServer tknId "TCRN" $ \ntf -> ntfEnableCron ntf ntfPrivKey tknId interval
+-- set to 0 to disable
+agentNtfSetCronInterval :: AgentClient -> NtfTokenId -> NtfToken -> Word16 -> AM ()
+agentNtfSetCronInterval c tknId NtfToken {ntfServer, ntfPrivKey} interval =
+  withNtfClient c ntfServer tknId "TCRN" $ \ntf -> ntfSetCronInterval ntf ntfPrivKey tknId interval
 
 agentNtfCreateSubscription :: AgentClient -> NtfTokenId -> NtfToken -> SMPQueueNtf -> SMP.NtfPrivateAuthKey -> AM NtfSubscriptionId
 agentNtfCreateSubscription c tknId NtfToken {ntfServer, ntfPrivKey} smpQueue nKey =

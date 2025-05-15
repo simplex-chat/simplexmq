@@ -15,8 +15,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import NtfClient (ntfTestPort)
-import SMPClient (proxyVRangeV8, testPort)
+import SMPClient (proxyVRangeV8, ntfTestPort, testPort)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
