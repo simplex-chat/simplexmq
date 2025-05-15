@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -729,14 +730,17 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
             logDebug "TNEW - registered token"
             let dhSecret = C.dh' dhPubKey tknDhPrivKey
             -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
-            if tknDhSecret == dhSecret
-              then do
+            if
+              | tknDhSecret /= dhSecret -> pure $ NRErr AUTH
+              | allowTokenVerification tknStatus -> sendVerification
+              | otherwise -> withNtfStore (\st -> updateTknStatus st tkn NTRegistered) $ \_ -> sendVerification
+            where
+              sendVerification = do
                 atomically $ writeTBQueue pushQ (tkn, PNVerification tknRegCode)
                 incNtfStatT token ntfVrfQueued
                 pure $ NRTknId ntfTknId $ C.publicKey tknDhPrivKey
-              else pure $ NRErr AUTH
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
-            | (tknStatus == NTRegistered || tknStatus == NTConfirmed || tknStatus == NTActive) && tknRegCode == code -> do
+            | allowTokenVerification tknStatus && tknRegCode == code -> do
                 logDebug "TVFY - token verified"
                 withNtfStore (`setTokenActive` tkn) $ \_ -> NROk <$ incNtfStatT token tknVerified
             | otherwise -> do

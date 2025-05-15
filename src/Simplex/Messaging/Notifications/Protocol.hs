@@ -536,6 +536,15 @@ data NtfTknStatus
     NTExpired
   deriving (Eq, Show)
 
+allowTokenVerification :: NtfTknStatus -> Bool
+allowTokenVerification = \case
+  NTNew -> False
+  NTRegistered -> True
+  NTInvalid _ -> False
+  NTConfirmed -> True
+  NTActive -> True
+  NTExpired -> False
+
 allowNtfSubCommands :: NtfTknStatus -> Bool
 allowNtfSubCommands = \case
   NTNew -> False
