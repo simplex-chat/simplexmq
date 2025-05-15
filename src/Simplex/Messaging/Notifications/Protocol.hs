@@ -521,7 +521,6 @@ instance StrEncoding NtfSubStatus where
   strP = smpP
   {-# INLINE strP #-}
 
--- TODO [ntfdb] check what happens in agent when token in not yet registered
 data NtfTknStatus
   = -- | Token created in DB
     NTNew
@@ -541,7 +540,7 @@ allowNtfSubCommands :: NtfTknStatus -> Bool
 allowNtfSubCommands = \case
   NTNew -> False
   NTRegistered -> False
-  -- TODO [ntfdb] we could have separate statuses to show whether it became invalid
+  -- TODO we could have separate statuses to show whether it became invalid
   -- after verification (allow commands) or before (do not allow)
   NTInvalid _ -> True
   NTConfirmed -> False

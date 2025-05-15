@@ -2268,10 +2268,8 @@ verifyNtfToken' c deviceToken nonce code =
     _ -> throwE $ CMD PROHIBITED "verifyNtfToken: no token"
 
 setCronInterval :: AgentClient -> NtfTokenId -> NtfToken -> AM' ()
-setCronInterval c tknId tkn@NtfToken {ntfMode} = do
-  cron <- case ntfMode of
-    NMPeriodic -> asks $ ntfCron . config
-    _ -> pure 0
+setCronInterval c tknId tkn = do
+  cron <- asks $ ntfCron . config
   void $ forkIO $ void $ runExceptT $ agentNtfSetCronInterval c tknId tkn cron
 
 checkNtfToken' :: AgentClient -> DeviceToken -> AM NtfTknStatus

@@ -491,7 +491,6 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
               let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
               ntfs_ <- liftIO $ addTokenLastNtf st newNtf
               forM_ ntfs_ $ \(tkn, lastNtfs) -> atomically $ writeTBQueue pushQ (tkn, PNMessage lastNtfs)
-              -- TODO [ntfdb] count queued notifications separately?
               incNtfStat ntfReceived
             Right SMP.END -> do
               whenM (atomically $ activeClientSession' ca sessionId srv) $ do
@@ -604,8 +603,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
               _ -> err e
         err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
 
--- TODO [ntfdb] this could be further improved by sending periodic notifications directly from this thread,
--- without any queue
 periodicNtfsThread :: NtfPushServer -> M ()
 periodicNtfsThread NtfPushServer {pushQ} = do
   st <- asks store
