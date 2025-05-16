@@ -22,10 +22,10 @@ import qualified System.TimeManager as TI
 defaultHTTP2BufferSize :: BufferSize
 defaultHTTP2BufferSize = 32768
 
-withHTTP2 :: BufferSize -> (Config -> IO a) -> IO () -> TLS -> IO a
+withHTTP2 :: BufferSize -> (Config -> IO a) -> IO () -> TLS p -> IO a
 withHTTP2 sz run fin c = E.bracket (allocHTTP2Config c sz) (\cfg -> freeSimpleConfig cfg `E.finally` fin) run
 
-allocHTTP2Config :: TLS -> BufferSize -> IO Config
+allocHTTP2Config :: TLS p -> BufferSize -> IO Config
 allocHTTP2Config c sz = do
   buf <- mallocBytes sz
   tm <- TI.initialize $ 30 * 1000000

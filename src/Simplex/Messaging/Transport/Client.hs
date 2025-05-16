@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
@@ -124,7 +125,7 @@ data TransportClientConfig = TransportClientConfig
     tcpConnectTimeout :: Int,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
-    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
+    clientCredentials :: Maybe T.Credential,
     alpn :: Maybe [ALPN],
     useSNI :: Bool
   }
@@ -151,10 +152,10 @@ clientTransportConfig TransportClientConfig {logTLSErrors} =
   TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 
-runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
@@ -173,8 +174,8 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
         Nothing -> do
           logError "onServerCertificate didn't fire or failed to get cert chain"
           closeTLS tls >> error "onServerCertificate failed"
-        Just c -> pure c
-    getClientConnection tCfg chain tls
+        Just cc -> pure cc
+    getTransportConnection tCfg chain tls
   client c `E.finally` closeConnection c
   where
     hostAddr = \case
@@ -295,19 +296,21 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serv
       pure errs
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain [_, caCert]) =
-  if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
-    then x509validate
-    else pure [XV.UnknownCA]
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain chain) = case chain of
+  [] -> pure [XV.EmptyChain]
+  [_] -> pure [XV.EmptyChain]
+  [_, idCaCert] -> validate idCaCert idCaCert -- current long-term online/offline certificates chain
+  [_, idCert, caCert] -> validate idCert caCert -- with additional operator certificate (preset in the client)
+  _ -> pure [XV.AuthorityTooDeep]
   where
-    x509validate :: IO [XV.FailedReason]
-    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
+    validate idCert caCert
+      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate caCert
+      | otherwise = pure [XV.UnknownCA]
+    x509validate :: X.SignedCertificate -> IO [XV.FailedReason]
+    x509validate caCert = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
       where
         hooks = XV.defaultHooks
         checks = XV.defaultChecks {XV.checkFQHN = False}
         certStore = XS.makeCertificateStore [caCert]
         cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
         serviceID = (host, port)
-validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]

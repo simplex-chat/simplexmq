@@ -63,7 +63,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
@@ -72,7 +72,7 @@ import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data ServerConfig = ServerConfig
-  { transports :: [(ServiceName, ATransport, AddHTTP)],
+  { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
     msgQueueQuota :: Int,

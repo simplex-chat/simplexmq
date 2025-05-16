@@ -23,7 +23,7 @@ import Network.Info (IPv4 (..), NetworkInterface (..), getNetworkInterfaces)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
 import qualified Network.UDP as UDP
-import Simplex.Messaging.Transport (defaultSupportedParams)
+import Simplex.Messaging.Transport (TransportPeer (..), defaultSupportedParams)
 import qualified Simplex.Messaging.Transport as Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, runTransportServerSocket, startTCPServer)
@@ -68,7 +68,7 @@ preferAddress RCCtrlAddress {address, interface} addrs =
     matchAddr RCCtrlAddress {address = a} = a == address
     matchIface RCCtrlAddress {interface = i} = i == interface
 
-startTLSServer :: Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credential -> TLS.ServerHooks -> (Transport.TLS -> IO ()) -> IO (Async ())
+startTLSServer :: Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credential -> TLS.ServerHooks -> (Transport.TLS 'TServer -> IO ()) -> IO (Async ())
 startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do
   started <- newEmptyTMVarIO
   bracketOnError (startTCPServer started Nothing $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
@@ -81,7 +81,7 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
       port <- N.socketPort socket
       logInfo $ "System-assigned port: " <> tshow port
       setPort $ Just port
-      runTransportServerSocket started (pure socket) "RCP TLS" credentials serverParams defaultTransportServerConfig server
+      runTransportServerSocket started (pure socket) "RCP TLS" serverParams defaultTransportServerConfig server
     setPort = void . atomically . tryPutTMVar startedOnPort
     serverParams =
       def

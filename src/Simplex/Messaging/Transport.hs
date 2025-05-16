@@ -62,7 +62,10 @@ module Simplex.Messaging.Transport
     Transport (..),
     TProxy (..),
     ATransport (..),
+    ASrvTransport,
     TransportPeer (..),
+    STransportPeer (..),
+    TransportPeerI (..),
     getServerVerifyKey,
 
     -- * TLS Transport
@@ -111,6 +114,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Kind (Type)
 import Data.Tuple (swap)
 import Data.Typeable (Typeable)
 import Data.Version (showVersion)
@@ -248,68 +252,75 @@ data TransportConfig = TransportConfig
     transportTimeout :: Maybe Int
   }
 
-class Typeable c => Transport c where
-  transport :: ATransport
-  transport = ATransport (TProxy @c)
+class Typeable c => Transport (c :: TransportPeer -> Type) where
+  transport :: forall p. ATransport p
+  transport = ATransport (TProxy @c @p)
 
-  transportName :: TProxy c -> String
+  transportName :: TProxy c p -> String
 
-  transportPeer :: c -> TransportPeer
+  transportConfig :: c p -> TransportConfig
 
-  transportConfig :: c -> TransportConfig
+  -- | Upgrade TLS context to connection
+  getTransportConnection :: TransportPeerI p => TransportConfig -> X.CertificateChain -> T.Context -> IO (c p)
 
-  -- | Upgrade server TLS context to connection (used in the server)
-  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
-
-  -- | Upgrade client TLS context to connection (used in the client)
-  getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO c
-
-  getServerCerts :: c -> X.CertificateChain
+  -- | TLS certificate chain, server's in the client, client's in the server (empty chain for non-service clients)
+  getPeerCertChain :: c p -> X.CertificateChain
 
   -- | tls-unique channel binding per RFC5929
-  tlsUnique :: c -> SessionId
+  tlsUnique :: c p -> SessionId
 
   -- | ALPN value negotiated for the session
-  getSessionALPN :: c -> Maybe ALPN
+  getSessionALPN :: c p -> Maybe ALPN
 
   -- | Close connection
-  closeConnection :: c -> IO ()
+  closeConnection :: c p -> IO ()
 
   -- | Read fixed number of bytes from connection
-  cGet :: c -> Int -> IO ByteString
+  cGet :: c p -> Int -> IO ByteString
 
   -- | Write bytes to connection
-  cPut :: c -> ByteString -> IO ()
+  cPut :: c p -> ByteString -> IO ()
 
   -- | Receive ByteString from connection, allowing LF or CRLF termination.
-  getLn :: c -> IO ByteString
+  getLn :: c p -> IO ByteString
 
   -- | Send ByteString to connection terminating it with CRLF.
-  putLn :: c -> ByteString -> IO ()
+  putLn :: c p -> ByteString -> IO ()
   putLn c = cPut c . (<> "\r\n")
 
 data TransportPeer = TClient | TServer
   deriving (Eq, Show)
 
-data TProxy c = TProxy
+data STransportPeer (p :: TransportPeer) where
+  STClient :: STransportPeer 'TClient
+  STServer :: STransportPeer 'TServer
 
-data ATransport = forall c. Transport c => ATransport (TProxy c)
+class TransportPeerI p where sTransportPeer :: STransportPeer p
 
-getServerVerifyKey :: Transport c => c -> Either String C.APublicVerifyKey
+instance TransportPeerI 'TClient where sTransportPeer = STClient
+
+instance TransportPeerI 'TServer where sTransportPeer = STServer
+
+data TProxy (c :: TransportPeer -> Type) (p :: TransportPeer) = TProxy
+
+data ATransport p = forall c. Transport c => ATransport (TProxy c p)
+
+type ASrvTransport = ATransport 'TServer
+
+getServerVerifyKey :: Transport c => c 'TClient -> Either String C.APublicVerifyKey
 getServerVerifyKey c =
-  case getServerCerts c of
+  case getPeerCertChain c of
     X.CertificateChain (server : _ca) -> C.x509ToPublic (X.certPubKey . X.signedObject $ X.getSigned server, []) >>= C.pubKey
     _ -> Left "no certificate chain"
 
 -- * TLS Transport
 
-data TLS = TLS
+data TLS (p :: TransportPeer) = TLS
   { tlsContext :: T.Context,
-    tlsPeer :: TransportPeer,
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
     tlsALPN :: Maybe ALPN,
-    tlsServerCerts :: X.CertificateChain,
+    tlsPeerCert :: X.CertificateChain,
     tlsTransportConfig :: TransportConfig
   }
 
@@ -324,21 +335,22 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO TLS
-getTLS tlsPeer cfg tlsServerCerts cxt = withTlsUnique tlsPeer cxt newTLS
+getTLS :: forall p. TransportPeerI p => TransportConfig -> X.CertificateChain -> T.Context -> IO (TLS p)
+getTLS cfg tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- newTBuffer
       tlsALPN <- T.getNegotiatedProtocol cxt
-      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsServerCerts, tlsPeer, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsPeerCert, tlsUniq, tlsBuffer}
 
-withTlsUnique :: TransportPeer -> T.Context -> (ByteString -> IO c) -> IO c
-withTlsUnique peer cxt f =
-  cxtFinished peer cxt
+withTlsUnique :: forall c p. TransportPeerI p => T.Context -> (ByteString -> IO (c p)) -> IO (c p)
+withTlsUnique cxt f =
+  cxtFinished cxt
     >>= maybe (closeTLS cxt >> ioe_EOF) f
   where
-    cxtFinished TServer = T.getPeerFinished
-    cxtFinished TClient = T.getFinished
+    cxtFinished = case sTransportPeer @p of
+      STServer -> T.getPeerFinished
+      STClient -> T.getFinished
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
@@ -382,26 +394,31 @@ defaultSupportedParamsHTTPS =
 
 instance Transport TLS where
   transportName _ = "TLS"
-  transportPeer = tlsPeer
+  {-# INLINE transportName #-}
   transportConfig = tlsTransportConfig
-  getServerConnection = getTLS TServer
-  getClientConnection = getTLS TClient
-  getServerCerts = tlsServerCerts
+  {-# INLINE transportConfig #-}
+  getTransportConnection = getTLS
+  {-# INLINE getTransportConnection #-}
+  getPeerCertChain = tlsPeerCert
+  {-# INLINE getPeerCertChain #-}
   getSessionALPN = tlsALPN
+  {-# INLINE getSessionALPN #-}
   tlsUnique = tlsUniq
+  {-# INLINE tlsUnique #-}
   closeConnection tls = closeTLS $ tlsContext tls
+  {-# INLINE closeConnection #-}
 
   -- https://hackage.haskell.org/package/tls-1.6.0/docs/Network-TLS.html#v:recvData
   -- this function may return less than requested number of bytes
-  cGet :: TLS -> Int -> IO ByteString
+  cGet :: TLS p -> Int -> IO ByteString
   cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
     getBuffered tlsBuffer n t_ (T.recvData tlsContext)
 
-  cPut :: TLS -> ByteString -> IO ()
+  cPut :: TLS p -> ByteString -> IO ()
   cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} =
     withTimedErr t_ . T.sendData tlsContext . LB.fromStrict
 
-  getLn :: TLS -> IO ByteString
+  getLn :: TLS p -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
     getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
     where
@@ -414,7 +431,7 @@ instance Transport TLS where
 
 -- | The handle for SMP encrypted transport connection over Transport.
 data THandle v c p = THandle
-  { connection :: c,
+  { connection :: c p,
     params :: THandleParams v p
   }
 
@@ -639,13 +656,12 @@ tGetBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlo
 -- | Server SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TServer)
-smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
+smpServerHandshake :: forall c. Transport c => X.CertificateChain -> C.APrivateSignKey -> c 'TServer -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> ExceptT TransportError IO (THandleSMP c 'TServer)
+smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVRange = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
-      sk = C.signX509 serverSignKey $ C.publicToX509 k
-      certChain = getServerCerts c
+      sk = C.signX509 srvSignKey $ C.publicToX509 k
       smpVersionRange = maybe legacyServerSMPRelayVRange (const smpVRange) $ getSessionALPN c
-  sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = Just (certChain, sk)}
+  sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = Just (srvCert, sk)}
   getHandshake th >>= \case
     SMPClientHandshake {smpVersion = v, keyHash, authPubKey = k', proxyServer}
       | keyHash /= kh ->
@@ -660,7 +676,7 @@ smpServerHandshake serverSignKey c (k, pk) kh smpVRange = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 -- TODO [certs] pass the optional client cert. Or cert + key?
 -- TODO [certs] Probably session key can be generated here, as it needs to be put in THandleParams anyway.
-smpClientHandshake :: forall c. Transport c => c -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> ExceptT TransportError IO (THandleSMP c 'TClient)
+smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> ExceptT TransportError IO (THandleSMP c 'TClient)
 smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer = do
   let th@THandle {params = THandleParams {sessionId}} = smpTHandle c
   SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
@@ -752,7 +768,7 @@ sendHandshake th = ExceptT . tPutBlock th . smpEncode
 getHandshake :: (Transport c, Encoding smp) => THandle v c p -> ExceptT TransportError IO smp
 getHandshake th = ExceptT $ (first (\_ -> TEHandshake PARSE) . A.parseOnly smpP =<<) <$> tGetBlock th
 
-smpTHandle :: Transport c => c -> THandleSMP c p
+smpTHandle :: Transport c => c p -> THandleSMP c p
 smpTHandle c = THandle {connection = c, params}
   where
     v = VersionSMP 0

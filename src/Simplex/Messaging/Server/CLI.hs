@@ -34,7 +34,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StartOptions (..), StorePaths (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
-import Simplex.Messaging.Transport (ATransport (..), TLS, Transport (..))
+import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (eitherToMaybe, whenM)
@@ -363,7 +363,7 @@ checkSavedFingerprint cfgPath x509cfg = do
   where
     c = combine cfgPath . ($ x509cfg)
 
-iniTransports :: Ini -> [(ServiceName, ATransport, AddHTTP)]
+iniTransports :: Ini -> [(ServiceName, ASrvTransport, AddHTTP)]
 iniTransports ini =
   let smpPorts = ports $ strictIni "TRANSPORT" "port" ini
       ws = strictIni "TRANSPORT" "websockets" ini
@@ -373,7 +373,7 @@ iniTransports ini =
         | otherwise = ports ws \\ smpPorts
    in ts (transport @TLS) smpPorts <> ts (transport @WS) wsPorts
   where
-    ts :: ATransport -> [ServiceName] -> [(ServiceName, ATransport, AddHTTP)]
+    ts :: ASrvTransport -> [ServiceName] -> [(ServiceName, ASrvTransport, AddHTTP)]
     ts t = map (\port -> (port, t, webPort == Just port))
     webPort = T.unpack <$> eitherToMaybe (lookupValue "WEB" "https" ini)
     ports = map T.unpack . T.splitOn ","
@@ -387,14 +387,14 @@ iniDBOptions ini _default@DBOpts {connstr, schema, poolSize} =
       createSchema = False
     }
 
-printServerConfig :: String -> [(ServiceName, ATransport, AddHTTP)] -> Maybe FilePath -> IO ()
+printServerConfig :: String -> [(ServiceName, ASrvTransport, AddHTTP)] -> Maybe FilePath -> IO ()
 printServerConfig protocol transports logFile = do
   putStrLn $ case logFile of
     Just f -> "Store log: " <> f
     _ -> "Store log disabled."
   printServerTransports protocol transports
 
-printServerTransports :: String -> [(ServiceName, ATransport, AddHTTP)] -> IO ()
+printServerTransports :: String -> [(ServiceName, ASrvTransport, AddHTTP)] -> IO ()
 printServerTransports protocol ts = do
   forM_ ts $ \(p, ATransport t, addHTTP) -> do
     let descr = p <> " (" <> transportName t <> ")..."
@@ -405,7 +405,7 @@ printServerTransports protocol ts = do
       "\nWARNING: the clients will use port 443 by default soon.\n\
       \Set `port` in smp-server.ini section [TRANSPORT] to `5223,443`\n"
 
-printSMPServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> AServerStoreCfg -> IO ()
+printSMPServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> AServerStoreCfg -> IO ()
 printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
   SSCMemory sp_ -> printServerConfig "SMP" transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
   SSCMemoryJournal {storeLogFile} -> printServerConfig "SMP" transports $ Just storeLogFile

@@ -15,7 +15,7 @@ import AgentTests.MigrationTests (migrationTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import AgentTests.ShortLinkTests (shortLinkTests)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
-import Simplex.Messaging.Transport (ATransport (..))
+import Simplex.Messaging.Transport (ASrvTransport)
 import Test.Hspec
 
 #if defined(dbPostgres)
@@ -38,7 +38,7 @@ agentCoreTests = do
   describe "Double ratchet tests" doubleRatchetTests
   describe "Short link tests" shortLinkTests
 
-agentTests :: (ATransport, AStoreType) -> Spec
+agentTests :: (ASrvTransport, AStoreType) -> Spec
 agentTests ps = do
 #if defined(dbPostgres)
   after_ (dropAllSchemasExceptSystem testDBConnectInfo) $ do

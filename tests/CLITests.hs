@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -23,7 +24,7 @@ import qualified Network.HTTP2.Client as H2
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
-import Simplex.Messaging.Transport (TLS (..), defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, supportedClientSMPRelayVRange)
+import Simplex.Messaging.Transport (TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, simplexMQVersion, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
@@ -191,9 +192,9 @@ smpServerTestStatic = do
       runRight_ . void $ smpClientHandshake tls Nothing caSMP supportedClientSMPRelayVRange False
     logDebug "Combined SMP works"
   where
-    getCerts :: TLS -> [X.Certificate]
+    getCerts :: TLS 'TClient -> [X.Certificate]
     getCerts tls =
-      let X.CertificateChain cc = tlsServerCerts tls
+      let X.CertificateChain cc = tlsPeerCert tls
        in map (X.signedObject . X.getSigned) cc
 
 #if defined(dbServerPostgres)
