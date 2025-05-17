@@ -41,7 +41,18 @@ CREATE TABLE smp_server.msg_queues (
     queue_mode text,
     link_id bytea,
     fixed_data bytea,
-    user_data bytea
+    user_data bytea,
+    rcv_service_id bytea,
+    ntf_service_id bytea
+);
+
+
+
+CREATE TABLE smp_server.services (
+    service_id bytea NOT NULL,
+    service_role text NOT NULL,
+    service_cert bytea NOT NULL,
+    service_cert_hash bytea NOT NULL
 );
 
 
@@ -56,6 +67,11 @@ ALTER TABLE ONLY smp_server.msg_queues
 
 
 
+ALTER TABLE ONLY smp_server.services
+    ADD CONSTRAINT services_pkey PRIMARY KEY (service_id);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON smp_server.msg_queues USING btree (link_id);
 
 
@@ -64,11 +80,29 @@ CREATE UNIQUE INDEX idx_msg_queues_notifier_id ON smp_server.msg_queues USING bt
 
 
 
+CREATE INDEX idx_msg_queues_ntf_service_id ON smp_server.msg_queues USING btree (ntf_service_id);
+
+
+
+CREATE INDEX idx_msg_queues_rcv_service_id ON smp_server.msg_queues USING btree (rcv_service_id);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON smp_server.msg_queues USING btree (sender_id);
 
 
 
 CREATE INDEX idx_msg_queues_updated_at ON smp_server.msg_queues USING btree (deleted_at, updated_at);
+
+
+
+ALTER TABLE ONLY smp_server.msg_queues
+    ADD CONSTRAINT msg_queues_ntf_service_id_fkey FOREIGN KEY (ntf_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY smp_server.msg_queues
+    ADD CONSTRAINT msg_queues_rcv_service_id_fkey FOREIGN KEY (rcv_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
 
 
 

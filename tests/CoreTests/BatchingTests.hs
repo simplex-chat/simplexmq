@@ -306,13 +306,13 @@ testClientStub = do
   thAuth_ <- testTHandleAuth currentClientSMPRelayVersion g rKey
   smpClientStub g sessId currentClientSMPRelayVersion thAuth_
 
-randomSUBv6 :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSUBv6 :: ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUBv6 = randomSUB_ C.SEd25519 minServerSMPRelayVersion
 
-randomSUB :: ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSUB :: ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
 
-randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUB_ a v sessId = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
@@ -353,13 +353,13 @@ randomNMSGCmd ts = do
   Right encNMsgMeta <- pure $ C.cbEncrypt (C.dh' k pk) nonce (smpEncode msgMeta) 128
   pure (CorrId "", EntityId nId, NMSG nonce encNMsgMeta)
 
-randomSENDv6 :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSENDv6 :: ByteString -> Int -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSENDv6 = randomSEND_ C.SEd25519 minServerSMPRelayVersion
 
-randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSEND :: ByteString -> Int -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSEND = randomSEND_ C.SX25519 currentClientSMPRelayVersion
 
-randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> Int -> IO (Either TransportError (Maybe TransmissionAuth, ByteString))
+randomSEND_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> Int -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSEND_ a v sessId len = do
   g <- C.newRandom
   sId <- atomically $ C.randomBytes 24 g
@@ -385,15 +385,15 @@ testTHandleParams v sessionId =
     }
 
 testTHandleAuth :: VersionSMP -> TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))
-testTHandleAuth v g (C.APublicAuthKey a serverPeerPubKey) = case a of
+testTHandleAuth v g (C.APublicAuthKey a peerServerPubKey) = case a of
   C.SX25519 | v >= authCmdsSMPVersion -> do
     ca <- head <$> XS.readCertificates "tests/fixtures/ca.crt"
     serverCert <- head <$> XS.readCertificates "tests/fixtures/server.crt"
     serverKey <- head <$> XF.readKeyFile "tests/fixtures/server.key"
     signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey @C.APrivateSignKey
     (serverAuthPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
-    let serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
-    pure $ Just THAuthClient {serverPeerPubKey, serverCertKey, sessSecret = Nothing}
+    let peerServerCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
+    pure $ Just THAuthClient {peerServerPubKey, peerServerCertKey, clientCertPrivKey = Nothing, sessSecret = Nothing}
   _ -> pure Nothing
 
 randomSENDCmdV6 :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)

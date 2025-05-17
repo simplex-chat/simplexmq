@@ -21,6 +21,7 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
+import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -38,14 +39,14 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ATransport, THandleParams, TransportPeer (..))
+import Simplex.Messaging.Transport (ASrvTransport, THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
-  { transports :: [(ServiceName, ATransport, AddHTTP)],
+  { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
     controlPort :: Maybe ServiceName,
     controlPortUserAuth :: Maybe BasicAuth,
     controlPortAdminAuth :: Maybe BasicAuth,
@@ -97,10 +98,11 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
-  subscriber <- newNtfSubscriber subQSize smpAgentCfg random
-  pushServer <- newNtfPushServer pushQSize apnsConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
+  let smpAgentCfg' = smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {clientCredentials = Just tlsServerCreds}}
+  subscriber <- newNtfSubscriber subQSize smpAgentCfg' random
+  pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where

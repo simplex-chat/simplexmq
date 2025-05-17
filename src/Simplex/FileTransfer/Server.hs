@@ -53,7 +53,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
+import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TAuthorizations, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
@@ -158,7 +158,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
-              let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
+              let auth = THAuthServer {serverPrivKey = pk, peerClientCertKey = Nothing, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
 #ifdef slow_servers
@@ -361,7 +361,7 @@ randomDelay = do
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
-verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission auth_ tAuth authorized fId cmd =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file

@@ -141,6 +141,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
 import Network.Socks5 (SocksCredentials (..))
+import qualified Network.TLS as TLS
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -424,10 +425,11 @@ data ProtocolClientConfig v = ProtocolClientConfig
   { -- | size of TBQueue to use for server commands and responses
     qSize :: Natural,
     -- | default server port if port is not specified in ProtocolServer
-    defaultTransport :: (ServiceName, ATransport),
+    defaultTransport :: (ServiceName, ATransport 'TClient),
     -- | network configuration
     networkConfig :: NetworkConfig,
     clientALPN :: Maybe [ALPN],
+    clientCredentials :: Maybe TLS.Credential,
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
@@ -446,6 +448,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
       clientALPN,
+      clientCredentials = Nothing,
       serverVRange,
       agreeSecret = False,
       proxyServer = False,
@@ -518,7 +521,7 @@ type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, clientCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -553,10 +556,10 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             msgQ
           }
 
-    runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+    runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = (transportClientConfig networkConfig useHost useSNI) {alpn = clientALPN}
+      let tcConfig = (transportClientConfig networkConfig useHost useSNI) {alpn = clientALPN, clientCredentials}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
@@ -567,7 +570,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         Just (Left e) -> pure $ Left e
         Nothing -> killThread tId $> Left PCENetworkError
 
-    useTransport :: (ServiceName, ATransport)
+    useTransport :: (ServiceName, ATransport 'TClient)
     useTransport = case port srv of
       "" -> case protocolTypeI @(ProtoType msg) of
         SPSMP | smpWebPort -> ("443", transport @TLS)
@@ -581,7 +584,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             _ -> False
           SWPOff -> False
 
-    client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
+    client :: forall c. Transport c => TProxy c 'TClient -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c 'TClient -> IO ()
     client _ c cVar h = do
       ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
       runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer) >>= \case
@@ -1050,7 +1053,7 @@ proxySMPCommand ::
   ExceptT SMPClientError IO (Either ProxyClientError BrokerMsg)
 proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {clientCorrId = g, tcpTimeout}} (ProxiedRelay sessionId v _ serverKey) spKey sId command = do
   -- prepare params
-  let serverThAuth = (\ta -> ta {serverPeerPubKey = serverKey}) <$> thAuth proxyThParams
+  let serverThAuth = (\ta -> ta {peerServerPubKey = serverKey}) <$> thAuth proxyThParams
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
   (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
@@ -1248,13 +1251,15 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       atomically $ TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TransmissionAuth)
+-- TODO [certs] client key/cert are in THandleAuth, so can be used to co-sign as needed.
+-- Not all commands need co-signing though (even if they need signing), so probably it requires a separate parameter.
+authTransmission :: Maybe (THandleAuth 'TClient) -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
 authTransmission thAuth pKey_ nonce t = traverse authenticate pKey_
   where
-    authenticate :: C.APrivateAuthKey -> Either TransportError TransmissionAuth
-    authenticate (C.APrivateAuthKey a pk) = case a of
+    authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
+    authenticate (C.APrivateAuthKey a pk) = (,Nothing) <$> case a of
       C.SX25519 -> case thAuth of
-        Just THAuthClient {serverPeerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
+        Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk

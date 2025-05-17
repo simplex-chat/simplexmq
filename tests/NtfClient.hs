@@ -175,7 +175,7 @@ ntfServerCfgVPrev =
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
-withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
+withNtfServerThreadOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' dbStoreConfig =
   withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
 
@@ -188,10 +188,10 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
         (\started -> runNtfServerBlocking started cfg)
         (pure ())
 
-withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
+withNtfServerOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
 withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
-withNtfServer :: HasCallStack => ATransport -> (HasCallStack => IO a) -> IO a
+withNtfServer :: HasCallStack => ASrvTransport-> (HasCallStack => IO a) -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort ntfTestDBCfg
 
 runNtfTest :: forall c a. Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
@@ -200,12 +200,12 @@ runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 ntfServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
-  TProxy c ->
-  (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-  IO (Maybe TransmissionAuth, ByteString, ByteString, NtfResponse)
+  TProxy c 'TServer ->
+  (Maybe TAuthorizations, ByteString, ByteString, smp) ->
+  IO (Maybe TAuthorizations, ByteString, ByteString, NtfResponse)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandleNTF c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
@@ -214,7 +214,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, EntityId qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-ntfTest :: Transport c => TProxy c -> (THandleNTF c 'TClient -> IO ()) -> Expectation
+ntfTest :: Transport c => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()
 
 data APNSMockRequest = APNSMockRequest

@@ -79,6 +79,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
+import qualified Data.X509 as X
 import GHC.Conc.Signal
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
@@ -177,28 +178,28 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     )
     `finally` stopServer s
   where
-    runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
+    runServer :: (ServiceName, ASrvTransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, addHTTP) = do
-      smpCreds <- asks tlsServerCreds
+      smpCreds@(srvCert, srvKey) <- asks tlsServerCreds
       httpCreds_ <- asks httpServerCreds
       ss <- liftIO newSocketState
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
-      serverSignKey <- either fail pure $ fromTLSCredentials smpCreds
+      srvSignKey <- either fail pure $ fromTLSPrivKey srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS chooseCreds (Just combinedALPNs) tCfg $ \s h ->
             case cast h of
-              Just TLS {tlsContext} | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
-              _ -> runClient serverSignKey t h `runReaderT` env
+              Just (TLS {tlsContext} :: TLS 'TServer) | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
+              _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             chooseCreds = maybe smpCreds (\_host -> httpCreds)
             combinedALPNs = supportedSMPHandshakes <> httpALPN
             httpALPN :: [ALPN]
             httpALPN = ["h2", "http/1.1"]
         _ ->
-          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
-    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
+          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+    fromTLSPrivKey pk = C.x509ToPrivate (pk, []) >>= C.privKey
 
     sigIntHandlerThread :: M ()
     sigIntHandlerThread = do
@@ -596,13 +597,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       loadedCounts <- loadedQueueCounts ms
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubsCount, smpSubClientsCount, ntfSubsCount, ntfSubClientsCount, loadedCounts}
 
-    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
-    runClient signKey tp h = do
+    runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
+    runClient srvCert srvSignKey tp h = do
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake signKey h ks kh smpServerVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 
@@ -655,7 +656,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               CPClients -> withAdminRole $ do
                 active <- unliftIO u (asks clients) >>= readTVarIO
                 hPutStrLn h "clientId,sessionId,connected,createdAt,rcvActiveAt,sndActiveAt,age,subscriptions"
-                forM_ (IM.toList active) $ \(cid, cl) -> forM_ cl $ \(AClient _ _ Client {sessionId, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
+                forM_ (IM.toList active) $ \(cid, cl) -> forM_ cl $ \(AClient _ _ Client {clientTHParams = THandleParams {sessionId}, connected, createdAt, rcvActiveAt, sndActiveAt, subscriptions}) -> do
                   connected' <- bshow <$> readTVarIO connected
                   rcvActiveAt' <- strEncode <$> readTVarIO rcvActiveAt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
@@ -893,7 +894,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     hPutStrLn h "AUTH"
 
 runClientTransport :: Transport c => THandleSMP c 'TServer -> M ()
-runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessionId}} = do
+runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   active <- asks clients
@@ -901,7 +902,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
   clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
   atomically $ modifyTVar' active $ IM.insert clientId Nothing
   AMS qt mt ms <- asks msgStore
-  c <- liftIO $ newClient qt mt clientId q thVersion sessionId ts
+  c <- liftIO $ newClient qt mt clientId q thParams ts
   runClientThreads qt mt ms active c clientId `finally` clientDisconnected c
   where
     runClientThreads :: MsgStoreClass (MsgStore qs ms) => SQSType qs -> SMSType ms -> MsgStore qs ms -> TVar (IM.IntMap (Maybe AClient)) -> Client (MsgStore qs ms) -> IS.Key -> M ()
@@ -911,7 +912,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
       expCfg <- asks $ inactiveClientExpiration . config
       th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
       labelMyThread . B.unpack $ "client $" <> encode sessionId
-      raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client thParams s ms c, receive h ms c] <> disconnectThread_ c s expCfg
+      raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client s ms c, receive h ms c] <> disconnectThread_ c s expCfg
     disconnectThread_ :: Client s -> Server -> Maybe ExpirationConfig -> [M ()]
     disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
     disconnectThread_ _ _ _ = []
@@ -922,7 +923,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {thVersion, sessio
         else not . IM.member clientId <$> readTVarIO (ntfSubClients s)
 
 clientDisconnected :: Client s -> M ()
-clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connected, sessionId, endThreads} = do
+clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connected, clientTHParams = THandleParams {sessionId}, endThreads} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disc"
   -- these can be in separate transactions,
   -- because the client already disconnected and they won't change
@@ -961,7 +962,7 @@ cancelSub s = case subThread s of
   ProhibitSub -> pure ()
 
 receive :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M ()
-receive h@THandle {params = THandleParams {thAuth}} ms Client {rcvQ, sndQ, rcvActiveAt, sessionId} = do
+receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, sndQ, rcvActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   sa <- asks serverActive
   forever $ do
@@ -1004,7 +1005,7 @@ receive h@THandle {params = THandleParams {thAuth}} ms Client {rcvQ, sndQ, rcvAc
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
-send th c@Client {sndQ, msgQ, sessionId} = do
+send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
   forever $ atomically (readTBQueue sndQ) >>= sendTransmissions
   where
@@ -1029,7 +1030,7 @@ send th c@Client {sndQ, msgQ, sessionId} = do
           _ -> (msgs, t)
 
 sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
-sendMsg th c@Client {msgQ, sessionId} = do
+sendMsg th c@Client {msgQ, clientTHParams = THandleParams {sessionId}} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendMsg"
   forever $ atomically (readTBQueue msgQ) >>= mapM_ (\t -> tSend th c [t])
 
@@ -1060,7 +1061,7 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- - the queue or party key do not exist.
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
-verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
+verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> QueueId -> Cmd -> M (VerificationResult s)
 verifyTransmission ms auth_ tAuth authorized queueId cmd =
   case cmd of
     Cmd SRecipient (NEW NewQueueReq {rcvAuthKey = k}) -> pure $ Nothing `verifiedWith` k
@@ -1095,15 +1096,16 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     get :: DirectParty p => SParty p -> M (Either ErrorType (StoreQueue s, QueueRec))
     get party = liftIO $ getQueueRec ms party queueId
 
-verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
+verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
   where
-    verify :: C.APublicAuthKey -> TransmissionAuth -> Bool
+    -- TODO [certs] verify service cert key signature
+    verify :: C.APublicAuthKey -> TAuthorizations -> Bool
     verify (C.APublicAuthKey a k) = \case
-      TASignature (C.ASignature a' s) -> case testEquality a a' of
+      (TASignature (C.ASignature a' s), _) -> case testEquality a a' of
         Just Refl -> C.verify' k s authorized
         _ -> C.verify' (dummySignKey a') s authorized `seq` False
-      TAAuthenticator s -> case a of
+      (TAAuthenticator s, _) -> case a of
         C.SX25519 -> verifyCmdAuth auth_ k s authorized
         _ -> verifyCmdAuth auth_ dummyKeyX25519 s authorized `seq` False
 
@@ -1112,10 +1114,11 @@ verifyCmdAuth auth_ k authenticator authorized = case auth_ of
   Just (THAuthServer {serverPrivKey = pk}, nonce) -> C.cbVerify k pk nonce authenticator authorized
   Nothing -> False
 
-dummyVerifyCmd :: Maybe (THandleAuth 'TServer, C.CbNonce) -> ByteString -> TransmissionAuth -> Bool
+-- TODO [certs]
+dummyVerifyCmd :: Maybe (THandleAuth 'TServer, C.CbNonce) -> ByteString -> TAuthorizations -> Bool
 dummyVerifyCmd auth_ authorized = \case
-  TASignature (C.ASignature a s) -> C.verify' (dummySignKey a) s authorized
-  TAAuthenticator s -> verifyCmdAuth auth_ dummyKeyX25519 s authorized
+  (TASignature (C.ASignature a s), _) -> C.verify' (dummySignKey a) s authorized
+  (TAAuthenticator s, _) -> verifyCmdAuth auth_ dummyKeyX25519 s authorized
 
 -- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
 -- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes
@@ -1124,9 +1127,10 @@ dummySignKey = \case
   C.SEd25519 -> dummyKeyEd25519
   C.SEd448 -> dummyKeyEd448
 
-dummyAuthKey :: Maybe TransmissionAuth -> C.APublicAuthKey
+-- TODO [certs] probably, it should return two keys, in case client passed two signatures?
+dummyAuthKey :: Maybe TAuthorizations -> C.APublicAuthKey
 dummyAuthKey = \case
-  Just (TASignature (C.ASignature a _)) -> case a of
+  Just (TASignature (C.ASignature a _), _) -> case a of
     C.SEd25519 -> C.APublicAuthKey C.SEd25519 dummyKeyEd25519
     C.SEd448 -> C.APublicAuthKey C.SEd448 dummyKeyEd448
   _ -> C.APublicAuthKey C.SX25519 dummyKeyX25519
@@ -1148,12 +1152,11 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
-client :: forall s. MsgStoreClass s => THandleParams SMPVersion 'TServer -> Server -> s -> Client s -> M ()
+client :: forall s. MsgStoreClass s => Server -> s -> Client s -> M ()
 client
-  thParams'
   Server {subscribedQ, ntfSubscribedQ, subscribers}
   ms
-  clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, sessionId, procThreads} = do
+  clnt@Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     let THandleParams {thVersion} = thParams'
     forever $
@@ -1201,7 +1204,7 @@ client
                       -- Cap the destination relay version range to prevent client version fingerprinting.
                       -- See comment for proxiedSMPRelayVersion.
                       Just (Compatible vr) | thVersion >= sendingProxySMPVersion -> case thAuth of
-                        Just THAuthClient {serverCertKey} -> PKEY srvSessId vr serverCertKey
+                        Just THAuthClient {peerServerCertKey} -> PKEY srvSessId vr peerServerCertKey
                         Nothing -> ERR $ transportErr TENoServerAuth
                       _ -> ERR $ transportErr TEVersion
       PFWD fwdV pubKey encBlock -> do
@@ -1264,6 +1267,7 @@ client
                 ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
                 pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
           SUB -> withQueue subscribeQueue
+          CSUB -> error "TODO [certs]"
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1324,7 +1328,10 @@ client
                               -- TODO [notifications]
                               notifier = Nothing, -- fst <$> ntf,
                               status = EntityActive,
-                              updatedAt
+                              updatedAt,
+                              -- TODO [certs]
+                              rcvServiceId = Nothing,
+                              ntfServiceId = Nothing
                             }
                     liftIO (addQueue ms rcvId qr) >>= \case
                       Left DUPLICATE_ -- TODO [short links] possibly, we somehow need to understand which IDs caused collision to retry if it's not client-supplied?
@@ -1676,7 +1683,7 @@ client
           t' <- case tParse clntTHParams b of
             t :| [] -> pure $ tDecodeParseValidate clntTHParams t
             _ -> throwE BLOCK
-          let clntThAuth = Just $ THAuthServer {serverPrivKey, sessSecret' = Just clientSecret}
+          let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientCertKey = Nothing, sessSecret' = Just clientSecret}
           -- process forwarded command
           r <-
             lift (rejectOrVerify clntThAuth t') >>= \case

@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -15,8 +16,11 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Transport (SMPServiceRole)
 #if defined(dbServerPostgres)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
@@ -24,6 +28,13 @@ import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Util (eitherToMaybe)
 #endif
+
+data ServiceRec = ServiceRec
+  { serviceId :: ServiceId,
+    serviceRole :: SMPServiceRole,
+    serviceCert :: X.CertificateChain,
+    serviceCertHash :: XV.Fingerprint -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
+  }
 
 data QueueRec = QueueRec
   { recipientKeys :: NonEmpty RcvPublicAuthKey,
@@ -34,9 +45,13 @@ data QueueRec = QueueRec
     queueData :: Maybe (LinkId, QueueLinkData),
     notifier :: Maybe NtfCreds,
     status :: ServerEntityStatus,
-    updatedAt :: Maybe RoundedSystemTime
+    updatedAt :: Maybe RoundedSystemTime,
+    rcvServiceId :: Maybe ServiceId,
+    ntfServiceId :: Maybe ServiceId
   }
   deriving (Show)
+
+type ServiceId = EntityId
 
 data NtfCreds = NtfCreds
   { notifierId :: !NotifierId,
