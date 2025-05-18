@@ -440,7 +440,7 @@ data Command (p :: Party) where
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  SNSUB :: Command Notifier
+  NSSUB :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -797,7 +797,7 @@ data CommandTag (p :: Party) where
   PFWD_ :: CommandTag ProxiedClient
   RFWD_ :: CommandTag Sender
   NSUB_ :: CommandTag Notifier
-  SNSUB_ :: CommandTag Notifier
+  NSSUB_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -857,7 +857,7 @@ instance PartyI p => Encoding (CommandTag p) where
     PFWD_ -> "PFWD"
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
-    SNSUB_ -> "SNSUB"
+    NSSUB_ -> "NSSUB"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
@@ -885,7 +885,7 @@ instance ProtocolMsgTag CmdTag where
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SSender RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
-    "SNSUB" -> Just $ CT SNotifier SNSUB_
+    "NSSUB" -> Just $ CT SNotifier NSSUB_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1539,7 +1539,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
-    SNSUB -> e SNSUB_
+    NSSUB -> e NSSUB_
     LKEY k -> e (LKEY_, ' ', k)
     LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
@@ -1638,7 +1638,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifier tag -> 
       pure $ Cmd SNotifier $ case tag of
         NSUB_ -> NSUB
-        SNSUB_ -> SNSUB
+        NSSUB_ -> NSSUB
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}

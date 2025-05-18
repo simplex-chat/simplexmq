@@ -985,7 +985,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
       SUB -> True
       SSUB -> True
       NSUB -> True
-      SNSUB -> True
+      NSSUB -> True
       _ -> False
     isServiceCmd _ = False
     updateBatchStats :: ServerStats -> [(Maybe (StoreQueue s, QueueRec), Transmission Cmd)] -> IO ()
@@ -1088,7 +1088,7 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     Cmd SSenderLink LGET -> verifyQueue (\q -> if isContact (snd q) then VRVerified (Just q) else VRFailed) <$> get SSenderLink
     -- NSUB will not be accepted without authorization
     Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)) <$> get SNotifier
-    Cmd SNotifier SNSUB -> error "TODO [certs]"
+    Cmd SNotifier NSSUB -> error "TODO [certs]"
     Cmd SProxiedClient _ -> pure $ VRVerified Nothing
   where
     verify = verifyCmdAuthorization auth_ tAuth authorized
@@ -1274,7 +1274,7 @@ client
         LGET -> withQueue $ \q qr -> checkMode QMContact qr $ getQueueLink_ q qr
       Cmd SNotifier command -> Just <$> case command of
         NSUB -> subscribeNotifications
-        SNSUB -> error "TODO [certs]"
+        NSSUB -> error "TODO [certs]"
       Cmd SRecipient command ->
         Just <$> case command of
           NEW nqr@NewQueueReq {auth_} ->
