@@ -13,8 +13,8 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.String (IsString (..))
-import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
-import Simplex.Messaging.Agent.Store (DBQueueId (..), RcvQueue, StoredRcvQueue (..))
+import Simplex.Messaging.Agent.Protocol (ConnId, DBEntityId (..), QueueStatus (..), UserId)
+import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer, QueueMode (..), pattern NoEntity, pattern VersionSMPC)
@@ -199,8 +199,9 @@ dummyRQ userId server connId rcvId =
       sndId = NoEntity,
       queueMode = Just QMMessaging,
       shortLink = Nothing,
+      clientService = Nothing,
       status = New,
-      dbQueueId = DBQueueId 0,
+      dbQueueId = DBEntityId 0,
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,

@@ -1334,6 +1334,7 @@ client
                     --   notifierId <- randId
                     --   pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
                     let queueMode = queueReqMode <$> queueReqData
+                        rcvServiceId = (\PeerClientService {serviceId} -> serviceId) <$> service
                         qr =
                           QueueRec
                             { senderId = sndId,
@@ -1346,7 +1347,7 @@ client
                               notifier = Nothing, -- fst <$> ntf,
                               status = EntityActive,
                               updatedAt,
-                              rcvServiceId = (\PeerClientService {serviceId} -> serviceId) <$> service,
+                              rcvServiceId,
                               ntfServiceId = Nothing
                             }
                     liftIO (addQueue ms rcvId qr) >>= \case
@@ -1363,7 +1364,7 @@ client
                         case subMode of
                           SMOnlyCreate -> pure ()
                           SMSubscribe -> void $ subscribeQueue q qr
-                        pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData} -- , serverNtfCreds = snd <$> ntf
+                        pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serviceId = rcvServiceId} -- , serverNtfCreds = snd <$> ntf
           (corrId,entId,) <$> tryCreate (3 :: Int)
 
         checkMode :: QueueMode -> QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)

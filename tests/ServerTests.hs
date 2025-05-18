@@ -96,7 +96,7 @@ pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
 pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
-pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing)
 
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
@@ -1107,7 +1107,7 @@ testInvQueueLinkData =
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
         signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId))) <-
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId) Nothing)) <-
         signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
       (sId', sId) #== "should return the same sender ID"
       corrId' `shouldBe` CorrId corrId
@@ -1161,7 +1161,7 @@ testContactQueueLinkData =
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
         signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId'))) <-
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId') Nothing)) <-
         signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
       (lnkId', lnkId) #== "should return the same link ID"
       (sId', sId) #== "should return the same sender ID"

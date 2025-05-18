@@ -1377,9 +1377,10 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
   logServer "-->" c srv NoEntity "NEW"
   tSess <- mkTransportSession c userId srv connId
   -- TODO [notifications]
-  r@(thParams', QIK {rcvId, sndId, rcvPublicDhKey, queueMode}) <-
+  r@(thParams', QIK {rcvId, sndId, rcvPublicDhKey, queueMode, serviceId}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (thParams smp,) <$> createSMPQueue smp nonce_ rKeys dhKey auth subMode (queueReqData cqrd)
+  -- TODO [certs] validate that serviceId is the same as in the client session
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds r
   let rq =
@@ -1395,8 +1396,9 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
             sndId,
             queueMode,
             shortLink,
+            clientService = ClientService DBNewEntity <$> serviceId,
             status = New,
-            dbQueueId = DBNewQueue,
+            dbQueueId = DBNewEntity,
             primary = True,
             dbReplaceQueueId = Nothing,
             rcvSwchStatus = Nothing,

@@ -380,6 +380,7 @@ createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode 
 createNewConn db gVar cData cMode = do
   fst <$$> createConn_ gVar cData (\connId -> createConnRecord db connId cData cMode)
 
+-- TODO [certs] store clientServiceId from NewRcvQueue
 updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 updateNewConnRcv db connId rq =
   getConn db connId $>>= \case
@@ -472,6 +473,7 @@ upgradeRcvConnToDuplex db connId sq =
     (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
     (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
 
+-- TODO [certs] store clientServiceId from NewRcvQueue
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 upgradeSndConnToDuplex db connId rq =
   getConn db connId >>= \case
@@ -479,6 +481,7 @@ upgradeSndConnToDuplex db connId rq =
     Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
     _ -> pure $ Left SEConnNotFound
 
+-- TODO [certs] store clientServiceId from NewRcvQueue
 addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 addConnRcvQueue db connId rq =
   getConn db connId >>= \case
@@ -858,7 +861,7 @@ createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = 
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
   setLastBrokerTs db connId dbQueueId brokerTs
 
-setLastBrokerTs :: DB.Connection -> ConnId -> DBQueueId 'QSStored -> UTCTime -> IO ()
+setLastBrokerTs :: DB.Connection -> ConnId -> DBEntityId 'DBStored -> UTCTime -> IO ()
 setLastBrokerTs db connId dbQueueId brokerTs =
   DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ? AND (last_broker_ts IS NULL OR last_broker_ts < ?)" (brokerTs, connId, dbQueueId, brokerTs)
 
@@ -1811,13 +1814,13 @@ instance ToField QueueStatus where toField = toField . serializeQueueStatus
 
 instance FromField QueueStatus where fromField = fromTextField_ queueStatusT
 
-instance ToField (DBQueueId 'QSStored) where toField (DBQueueId qId) = toField qId
+instance ToField (DBEntityId 'DBStored) where toField (DBEntityId qId) = toField qId
 
-instance FromField (DBQueueId 'QSStored) where 
+instance FromField (DBEntityId 'DBStored) where 
 #if defined(dbPostgres)
-  fromField x dat = DBQueueId <$> fromField x dat
+  fromField x dat = DBEntityId <$> fromField x dat
 #else
-  fromField x = DBQueueId <$> fromField x
+  fromField x = DBEntityId <$> fromField x
 #endif
 
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
@@ -1984,7 +1987,8 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
         :. (sndId, queueMode, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
         :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
     )
-  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
+  -- TODO [certs] save client service
+  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, clientService = Nothing}
 
 -- * createSndConn helpers
 
@@ -2022,9 +2026,9 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
     :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
-newQueueId_ :: [Only Int64] -> DBQueueId 'QSStored
-newQueueId_ [] = DBQueueId 1
-newQueueId_ (Only maxId : _) = DBQueueId (maxId + 1)
+newQueueId_ :: [Only Int64] -> DBEntityId 'DBStored
+newQueueId_ [] = DBEntityId 1
+newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 -- * getConn helpers
 
@@ -2160,7 +2164,7 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
-    :. (QueueStatus, DBQueueId 'QSStored, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+    :. (QueueStatus, DBEntityId 'DBStored, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
     :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
@@ -2178,7 +2182,8 @@ toRcvQueue
       shortLink = case (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_) of
         (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
         _ -> Nothing
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+      -- TODO [certs] read client service
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
@@ -2210,7 +2215,7 @@ sndQueueQuery =
 toSndQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, Maybe QueueMode)
     :. (Maybe SndPublicAuthKey, SndPrivateAuthKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
-    :. (DBQueueId 'QSStored, BoolInt, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
+    :. (DBEntityId 'DBStored, BoolInt, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
   SndQueue
 toSndQueue
   ( (userId, keyHash, connId, host, port, sndId, queueMode)

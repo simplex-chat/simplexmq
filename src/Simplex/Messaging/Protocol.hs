@@ -1267,7 +1267,8 @@ data QueueIdsKeys = QIK
     sndId :: SenderId,
     rcvPublicDhKey :: RcvPublicDhKey,
     queueMode :: Maybe QueueMode, -- TODO remove Maybe when min version is 9 (sndAuthKeySMPVersion)
-    linkId :: Maybe LinkId
+    linkId :: Maybe LinkId,
+    serviceId :: Maybe ServiceId
     -- TODO [notifications]
     -- serverNtfCreds :: Maybe ServerNtfCreds
   }
@@ -1647,7 +1648,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
-    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId}
+    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId, serviceId}
+      | v >= serviceCertsSMPVersion -> ids <> e queueMode <> e linkId <> e serviceId
       | v >= shortLinksSMPVersion -> ids <> e queueMode <> e linkId
       | v >= sndAuthKeySMPVersion -> ids <> e (senderCanSecure queueMode)
       | otherwise -> ids
@@ -1686,21 +1688,23 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_
-      | v >= shortLinksSMPVersion -> ids smpP smpP
-      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing
-      | otherwise -> ids nothing nothing
+      | v >= serviceCertsSMPVersion -> ids smpP smpP smpP
+      | v >= shortLinksSMPVersion -> ids smpP smpP nothing
+      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing nothing
+      | otherwise -> ids nothing nothing nothing
       where
         qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
         nothing = pure Nothing
-        ids p1 p2 = do
+        ids p1 p2 p3 = do
           rcvId <- _smpP
           sndId <- smpP
           rcvPublicDhKey <- smpP
           queueMode <- p1
           linkId <- p2
+          serviceId <- p3
           -- TODO [notifications]
           -- serverNtfCreds <- p3
-          pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId}
+          pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId}
     LNK_ -> LNK <$> _smpP <*> smpP
     SOK_ -> SOK <$> _smpP
     CSOK_ -> CSOK <$> _smpP
