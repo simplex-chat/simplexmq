@@ -430,12 +430,12 @@ rejectContact c = withAgentEnv c .: rejectContact' c
 {-# INLINE rejectContact #-}
 
 -- | Subscribe to receive connection messages (SUB command)
-subscribeConnection :: AgentClient -> ConnId -> AE (Maybe SMP.ServiceId)
+subscribeConnection :: AgentClient -> ConnId -> AE (Maybe ClientServiceId)
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
 {-# INLINE subscribeConnection #-}
 
 -- | Subscribe to receive connection messages from multiple connections, batching commands when possible
-subscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
+subscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
@@ -449,14 +449,15 @@ getNotificationConns :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty N
 getNotificationConns c = withAgentEnv c .: getNotificationConns' c
 {-# INLINE getNotificationConns #-}
 
-resubscribeConnection :: AgentClient -> ConnId -> AE (Maybe SMP.ServiceId)
+resubscribeConnection :: AgentClient -> ConnId -> AE (Maybe ClientServiceId)
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
 {-# INLINE resubscribeConnection #-}
 
-resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
+resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
+-- TODO [certs] how to communicate that service ID changed - as error or as result?
 subscribeClientService :: AgentClient -> ClientServiceId -> AE Int
 subscribeClientService c = withAgentEnv c . subscribeClientService' c
 {-# INLINE subscribeClientService #-}
@@ -1178,9 +1179,9 @@ acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withCon
   Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   withStore c (`getConn` contactConnId) >>= \case
     SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      sqSecured <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
+      r <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      pure sqSecured
+      pure r
     _ -> throwE $ CMD PROHIBITED "acceptContact"
 
 -- | Reject contact (RJCT command) in Reader monad
@@ -1190,7 +1191,7 @@ rejectContact' c contactConnId invId =
 {-# INLINE rejectContact' #-}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
-subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe SMP.ServiceId)
+subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe ClientServiceId)
 subscribeConnection' c connId = toConnResult connId =<< subscribeConnections' c [connId]
 {-# INLINE subscribeConnection' #-}
 
@@ -1206,7 +1207,7 @@ type QDelResult = QCmdResult ()
 
 type QSubResult = QCmdResult (Maybe SMP.ServiceId)
 
-subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
+subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConns` connIds)
@@ -1216,21 +1217,22 @@ subscribeConnections' c connIds = do
   resumeDelivery cs
   lift $ resumeConnCmds c $ M.keys cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
+  rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
-  lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns rcvRs cs
-  let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))])
+  lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
+  let rs = M.unions ([errs', subRs, rcvRs'] :: [Map ConnId (Either AgentErrorType (Maybe ClientServiceId))])
   notifyResultError rs
   pure rs
   where
-    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType (Maybe SMP.ServiceId)) [RcvQueue]
+    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType (Maybe ClientServiceId)) [RcvQueue]
     rcvQueueOrResult (SomeConn _ conn) = case conn of
       DuplexConnection _ rqs _ -> Right $ L.toList rqs
       SndConnection _ sq -> Left $ sndSubResult sq
       RcvConnection _ rq -> Right [rq]
       ContactConnection _ rq -> Right [rq]
       NewConnection _ -> Left (Right Nothing)
-    sndSubResult :: SndQueue -> Either AgentErrorType (Maybe SMP.ServiceId)
+    sndSubResult :: SndQueue -> Either AgentErrorType (Maybe ClientServiceId)
     sndSubResult SndQueue {status} = case status of
       Confirmed -> Right Nothing
       Active -> Left $ CONN SIMPLEX
@@ -1250,7 +1252,9 @@ subscribeConnections' c connIds = do
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId SomeConn -> AM' ()
+    -- TODO [certs] store associations of queues with client service ID
+    storeClientServiceAssocs = undefined
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> Map ConnId SomeConn -> AM' ()
     sendNtfCreate ns rcvRs cs = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
           cs' = M.restrictKeys cs oks
@@ -1268,18 +1272,18 @@ subscribeConnections' c connIds = do
       DuplexConnection cData _ sqs -> Just (cData, sqs)
       SndConnection cData sq -> Just (cData, [sq])
       _ -> Nothing
-    notifyResultError :: Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> AM ()
+    notifyResultError :: Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> AM ()
     notifyResultError rs = do
       let actual = M.size rs
           expected = length connIds
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
-resubscribeConnection' :: AgentClient -> ConnId -> AM (Maybe SMP.ServiceId)
+resubscribeConnection' :: AgentClient -> ConnId -> AM (Maybe ClientServiceId)
 resubscribeConnection' c connId = toConnResult connId =<< resubscribeConnections' c [connId]
 {-# INLINE resubscribeConnection' #-}
 
-resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
+resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 resubscribeConnections' _ [] = pure M.empty
 resubscribeConnections' c connIds = do
   let r = M.fromList . zip connIds . repeat $ Right Nothing
