@@ -8,15 +8,31 @@ on:
 jobs:
   build-and-push:
     name: Build and push Docker image
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - app: smp-server
             app_port: "443 5223"
+            arch: amd64
+            runner: ubuntu-latest
+            prefix: ""
+          - app: smp-server
+            app_port: "443 5223"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            prefix: "arm64-"
           - app: xftp-server
             app_port: 443
+            arch: amd64
+            runner: ubuntu-latest
+            prefix: ""
+          - app: xftp-server
+            app_port: 443
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            prefix: "arm64-"
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Clone project
         uses: actions/checkout@v4
@@ -34,6 +50,7 @@ jobs:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.app }}
           flavor: |
             latest=auto
+            prefix=${{ matrix.prefix }}
           tags: |
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
@@ -43,6 +60,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
+          platforms: linux/${{ matrix.arch }}
           build-args: |
             APP=${{ matrix.app }}
             APP_PORT=${{ matrix.app_port }}
