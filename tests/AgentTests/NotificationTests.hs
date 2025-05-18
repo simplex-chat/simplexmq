@@ -741,7 +741,7 @@ testChangeToken apns = withAgent 1 agentCfg initAgentServers testDB2 $ \bob -> d
     pure (aliceId, bobId)
 
   withAgent 3 agentCfg initAgentServers testDB $ \alice1 -> runRight_ $ do
-    subscribeConnection alice1 bobId
+    void $ subscribeConnection alice1 bobId
     -- change notification token
     void $ registerTestToken alice1 "bcde" NMInstant apns
     -- send message, receive notification

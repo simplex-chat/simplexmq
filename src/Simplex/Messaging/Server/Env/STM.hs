@@ -63,7 +63,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, PeerClientService, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
@@ -241,8 +241,8 @@ data Server = Server
     notifiers :: TMap NotifierId (TVar AClient),
     subClients :: TVar (IntMap AClient), -- clients with SMP subscriptions
     ntfSubClients :: TVar (IntMap AClient), -- clients with Ntf subscriptions
-    srvClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have SMP subscriptions
-    ntfSrvClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have Ntf subscriptions
+    serviceClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have SMP subscriptions
+    ntfServiceClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have Ntf subscriptions
     pendingSubEvents :: TVar (IntMap (NonEmpty (RecipientId, Subscribed))),
     pendingNtfSubEvents :: TVar (IntMap (NonEmpty (NotifierId, Subscribed))),
     savingLock :: Lock
@@ -264,7 +264,7 @@ data Client s = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
+    rcvQ :: TBQueue (Maybe PeerClientService, NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
@@ -294,8 +294,8 @@ newServer = do
   notifiers <- TM.emptyIO
   subClients <- newTVarIO IM.empty
   ntfSubClients <- newTVarIO IM.empty
-  srvClients <- TM.emptyIO
-  ntfSrvClients <- TM.emptyIO
+  serviceClients <- TM.emptyIO
+  ntfServiceClients <- TM.emptyIO
   pendingSubEvents <- newTVarIO IM.empty
   pendingNtfSubEvents <- newTVarIO IM.empty
   savingLock <- createLockIO
@@ -307,8 +307,8 @@ newServer = do
         notifiers,
         subClients,
         ntfSubClients,
-        srvClients,
-        ntfSrvClients,
+        serviceClients,
+        ntfServiceClients,
         pendingSubEvents,
         pendingNtfSubEvents,
         savingLock

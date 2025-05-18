@@ -132,7 +132,7 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
   (vr, sk) <- processServerHandshake shs
   let v = maxVersion vr
   sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash}
-  let thAuth = Just THAuthClient {peerServerPubKey = sk, peerServerCertKey = ck, clientCertPrivKey = Nothing, sessSecret = Nothing}
+  let thAuth = Just THAuthClient {peerServerPubKey = sk, peerServerCertKey = ck, clientService = Nothing, sessSecret = Nothing}
   pure thParams0 {thAuth, thVersion = v, thServerVRange = vr}
   where
     getServerHandshake :: ExceptT XFTPClientError IO XFTPServerHandshake

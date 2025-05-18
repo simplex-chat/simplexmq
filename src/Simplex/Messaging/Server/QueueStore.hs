@@ -51,8 +51,6 @@ data QueueRec = QueueRec
   }
   deriving (Show)
 
-type ServiceId = EntityId
-
 data NtfCreds = NtfCreds
   { notifierId :: !NotifierId,
     notifierKey :: !NtfPublicAuthKey,

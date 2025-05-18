@@ -145,13 +145,13 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer = do
 
 ntfThHandleServer :: forall c. THandleNTF c 'TServer -> VersionNTF -> VersionRangeNTF -> C.PrivateKeyX25519 -> THandleNTF c 'TServer
 ntfThHandleServer th v vr pk =
-  let thAuth = THAuthServer {serverPrivKey = pk, peerClientCertKey = Nothing, sessSecret' = Nothing}
+  let thAuth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
    in ntfThHandle_ th v vr (Just thAuth)
 
 ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleNTF c 'TClient
 ntfThHandleClient th v vr ck_ =
   let thAuth = clientTHParams <$> ck_
-      clientTHParams (k, ck) = THAuthClient {peerServerPubKey = k, peerServerCertKey = ck, clientCertPrivKey = Nothing, sessSecret = Nothing}
+      clientTHParams (k, ck) = THAuthClient {peerServerPubKey = k, peerServerCertKey = ck, clientService = Nothing, sessSecret = Nothing}
    in ntfThHandle_ th v vr thAuth
 
 ntfThHandle_ :: forall c p. THandleNTF c p -> VersionNTF -> VersionRangeNTF -> Maybe (THandleAuth p) -> THandleNTF c p

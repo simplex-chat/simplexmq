@@ -347,6 +347,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE updateQueueTime #-}
   deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
+  getCreateService = withQS (getCreateService @(JournalQueue s))
+  {-# INLINE getCreateService #-}
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do

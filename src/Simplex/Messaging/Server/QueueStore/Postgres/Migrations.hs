@@ -130,6 +130,7 @@ CREATE TABLE services(
   service_role TEXT NOT NULL,
   service_cert BYTEA NOT NULL,
   service_cert_hash BYTEA NOT NULL,
+  created_at BIGINT NOT NULL,
   PRIMARY KEY (service_id)
 );
 

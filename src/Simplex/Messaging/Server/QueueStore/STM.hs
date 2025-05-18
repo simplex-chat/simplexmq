@@ -31,12 +31,15 @@ import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole)
 import Simplex.Messaging.Util (anyM, ifM, ($>>), ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
@@ -228,6 +231,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         TM.delete (senderId q) $ senders st
         forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId $ notifiers st
         pure q
+
+  -- TODO [certs] implement
+  getCreateService :: STMQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  getCreateService = undefined
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

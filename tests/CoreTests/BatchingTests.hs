@@ -312,6 +312,7 @@ randomSUBv6 = randomSUB_ C.SEd25519 minServerSMPRelayVersion
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
 
+-- TODO [certs] test with the additional certificate signature
 randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUB_ a v sessId = do
   g <- C.newRandom
@@ -321,7 +322,7 @@ randomSUB_ a v sessId = do
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId rId, Cmd SRecipient SUB)
-  pure $ (,tToSend) <$> authTransmission thAuth_ (Just rpKey) nonce tForAuth
+  pure $ (,tToSend) <$> authTransmission thAuth_ True (Just rpKey) nonce tForAuth
 
 randomSUBCmdV6 :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmdV6 = randomSUBCmd_ C.SEd25519
@@ -334,7 +335,7 @@ randomSUBCmd_ a c = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
-  mkTransmission c (Just rpKey, EntityId rId, Cmd SRecipient SUB)
+  mkTransmission c True (Just rpKey, EntityId rId, Cmd SRecipient SUB)
 
 randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do
@@ -369,7 +370,7 @@ randomSEND_ a v sessId len = do
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
-  pure $ (,tToSend) <$> authTransmission thAuth_ (Just spKey) nonce tForAuth
+  pure $ (,tToSend) <$> authTransmission thAuth_ False (Just spKey) nonce tForAuth
 
 testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion 'TClient
 testTHandleParams v sessionId =
@@ -393,7 +394,7 @@ testTHandleAuth v g (C.APublicAuthKey a peerServerPubKey) = case a of
     signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey @C.APrivateSignKey
     (serverAuthPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
     let peerServerCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
-    pure $ Just THAuthClient {peerServerPubKey, peerServerCertKey, clientCertPrivKey = Nothing, sessSecret = Nothing}
+    pure $ Just THAuthClient {peerServerPubKey, peerServerCertKey, clientService = Nothing, sessSecret = Nothing}
   _ -> pure Nothing
 
 randomSENDCmdV6 :: ProtocolClient SMPVersion ErrorType BrokerMsg -> Int -> IO (PCTransmission ErrorType BrokerMsg)
@@ -408,7 +409,7 @@ randomSENDCmd_ a c len = do
   sId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
   msg <- atomically $ C.randomBytes len g
-  mkTransmission c (Just rpKey, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
+  mkTransmission c False (Just rpKey, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: ByteString -> Bool
 lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2

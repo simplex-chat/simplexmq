@@ -53,7 +53,7 @@ type SMPClientVar = SessionVar (Either (SMPClientError, Maybe UTCTime) (OwnServe
 data SMPClientAgentEvent
   = CAConnected SMPServer
   | CADisconnected SMPServer (Set SMPSub)
-  | CASubscribed SMPServer SMPSubParty (NonEmpty QueueId)
+  | CASubscribed SMPServer SMPSubParty (NonEmpty (QueueId, Maybe ServiceId))
   | CASubError SMPServer SMPSubParty (NonEmpty (QueueId, SMPClientError))
 
 data SMPSubParty = SPRecipient | SPNotifier
@@ -104,6 +104,8 @@ data SMPClientAgent = SMPClientAgent
     srvSubs :: TMap SMPServer (TMap SMPSub (SessionId, C.APrivateAuthKey)),
     pendingSrvSubs :: TMap SMPServer (TMap SMPSub C.APrivateAuthKey),
     smpSubWorkers :: TMap SMPServer (SessionVar (Async ())),
+    serviceSubs :: TMap SMPServer (TVar (Set ServiceId)),
+    pendingServiceSubs :: TMap SMPServer (TVar (Set ServiceId)),
     workerSeq :: TVar Int
   }
 
@@ -120,6 +122,8 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
   srvSubs <- TM.emptyIO
   pendingSrvSubs <- TM.emptyIO
   smpSubWorkers <- TM.emptyIO
+  serviceSubs <- TM.emptyIO
+  pendingServiceSubs <- TM.emptyIO
   workerSeq <- newTVarIO 0
   pure
     SMPClientAgent
@@ -134,6 +138,8 @@ newSMPClientAgent agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg
         srvSubs,
         pendingSrvSubs,
         smpSubWorkers,
+        serviceSubs,
+        pendingServiceSubs,
         workerSeq
       }
 
@@ -353,18 +359,23 @@ smpSubscribeQueues party ca smp srv subs = do
       when tempErrs $ reconnectClient ca srv
     Nothing -> reconnectClient ca srv
   where
-    processSubscriptions :: NonEmpty (Either SMPClientError ()) -> STM (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId])
+    processSubscriptions :: NonEmpty (Either SMPClientError (Maybe ServiceId)) -> STM (Bool, [(QueueId, SMPClientError)], [((QueueId, Maybe ServiceId), (SessionId, C.APrivateAuthKey))], [QueueId])
     processSubscriptions rs = do
       pending <- maybe (pure M.empty) readTVar =<< TM.lookup srv (pendingSrvSubs ca)
       let acc@(_, _, oks, notPending) = foldr (groupSub pending) (False, [], [], []) (L.zip subs rs)
-      unless (null oks) $ addSubscriptions ca srv party oks
+      -- TODO [certs] add subscriptions for service IDs too.
+      unless (null oks) $ addSubscriptions ca srv party $ map (first fst) oks
       unless (null notPending) $ removePendingSubs ca srv party notPending
       pure acc
     sessId = sessionId $ thParams smp
-    groupSub :: Map SMPSub C.APrivateAuthKey -> ((QueueId, C.APrivateAuthKey), Either SMPClientError ()) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId]) -> (Bool, [(QueueId, SMPClientError)], [(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId])
+    groupSub ::
+      Map SMPSub C.APrivateAuthKey ->
+      ((QueueId, C.APrivateAuthKey), Either SMPClientError (Maybe ServiceId)) ->
+      (Bool, [(QueueId, SMPClientError)], [((QueueId, Maybe ServiceId), (SessionId, C.APrivateAuthKey))], [QueueId]) ->
+      (Bool, [(QueueId, SMPClientError)], [((QueueId, Maybe ServiceId), (SessionId, C.APrivateAuthKey))], [QueueId])
     groupSub pending ((qId, pk), r) acc@(!tempErrs, finalErrs, oks, notPending) = case r of
-      Right ()
-        | M.member (party, qId) pending -> (tempErrs, finalErrs, (qId, (sessId, pk)) : oks, qId : notPending)
+      Right serviceId -- TODO [certs] subscriptions for service IDs
+        | M.member (party, qId) pending -> (tempErrs, finalErrs, ((qId, serviceId), (sessId, pk)) : oks, qId : notPending)
         | otherwise -> acc
       Left e
         | temporaryClientError e -> (True, finalErrs, oks, notPending)

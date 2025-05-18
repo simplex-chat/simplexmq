@@ -48,6 +48,8 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
@@ -73,6 +75,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole)
 import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -369,6 +372,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       rId = recipientId sq
       qr = queueRec sq
+
+  -- TODO [certs] implement
+  getCreateService :: PostgresQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  getCreateService = undefined
 
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
 batchInsertQueues tty queues toStore = do

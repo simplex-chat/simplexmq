@@ -246,6 +246,7 @@ import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
     EntityId (..),
+    ServiceId,
     ErrorType,
     MsgFlags (..),
     MsgId,
@@ -1433,13 +1434,13 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
         newErr :: String -> AM (Maybe ShortLinkCreds)
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
-processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError () -> STM ()
+processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError (Maybe ServiceId) -> STM ()
 processSubResult c sessId rq@RcvQueue {userId, server, connId} = \case
   Left e ->
     unless (temporaryClientError e) $ do
       incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
-  Right () ->
+  Right _serviceId -> -- TODO [certs] store association with the service
     ifM
       (hasPendingSubscription c connId)
       (incSMPServerStat c userId server connSubscribed >> addSubscription c sessId rq)
@@ -1478,7 +1479,7 @@ serverHostError = \case
       _ -> False
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([(RcvQueue, Either AgentErrorType ())], Maybe SessionId)
+subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([(RcvQueue, Either AgentErrorType (Maybe ServiceId))], Maybe SessionId)
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
@@ -1493,7 +1494,7 @@ subscribeQueues c qs = do
     checkQueue rq = do
       prohibited <- liftIO $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
-    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError ())
+    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError (Maybe ServiceId))
     subscribeQueues_ env session smp qs' = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
@@ -1513,7 +1514,7 @@ subscribeQueues c qs = do
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)
-        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> STM ()
+        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError (Maybe ServiceId)) -> STM ()
         processSubResults = mapM_ $ uncurry $ processSubResult c sessId
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
@@ -1550,7 +1551,7 @@ sendTSessionBatches statCmd toRQ action c qs =
           where
             agentError = second . first $ protocolClientError SMP $ clientServer smp
 
-sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateAuthKey, SMP.RecipientId) -> IO (NonEmpty (Either SMPClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError ())
+sendBatch :: (SMPClient -> NonEmpty (SMP.RcvPrivateAuthKey, SMP.RecipientId) -> IO (NonEmpty (Either SMPClientError a))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError a)
 sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvPrivateKey, rcvId)

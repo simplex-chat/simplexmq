@@ -429,12 +429,12 @@ rejectContact c = withAgentEnv c .: rejectContact' c
 {-# INLINE rejectContact #-}
 
 -- | Subscribe to receive connection messages (SUB command)
-subscribeConnection :: AgentClient -> ConnId -> AE ()
+subscribeConnection :: AgentClient -> ConnId -> AE (Maybe SMP.ServiceId)
 subscribeConnection c = withAgentEnv c . subscribeConnection' c
 {-# INLINE subscribeConnection #-}
 
 -- | Subscribe to receive connection messages from multiple connections, batching commands when possible
-subscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType ()))
+subscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
 subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
@@ -448,11 +448,11 @@ getNotificationConns :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty N
 getNotificationConns c = withAgentEnv c .: getNotificationConns' c
 {-# INLINE getNotificationConns #-}
 
-resubscribeConnection :: AgentClient -> ConnId -> AE ()
+resubscribeConnection :: AgentClient -> ConnId -> AE (Maybe SMP.ServiceId)
 resubscribeConnection c = withAgentEnv c . resubscribeConnection' c
 {-# INLINE resubscribeConnection #-}
 
-resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
@@ -1183,19 +1183,23 @@ rejectContact' c contactConnId invId =
 {-# INLINE rejectContact' #-}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
-subscribeConnection' :: AgentClient -> ConnId -> AM ()
+subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe SMP.ServiceId)
 subscribeConnection' c connId = toConnResult connId =<< subscribeConnections' c [connId]
 {-# INLINE subscribeConnection' #-}
 
-toConnResult :: ConnId -> Map ConnId (Either AgentErrorType ()) -> AM ()
+toConnResult :: ConnId -> Map ConnId (Either AgentErrorType a) -> AM a
 toConnResult connId rs = case M.lookup connId rs of
-  Just (Right ()) -> when (M.size rs > 1) $ logError $ T.pack $ "too many results " <> show (M.size rs)
+  Just (Right r) -> r <$ when (M.size rs > 1) (logError $ T.pack $ "too many results " <> show (M.size rs))
   Just (Left e) -> throwE e
   _ -> throwE $ INTERNAL $ "no result for connection " <> B.unpack connId
 
-type QCmdResult = (QueueStatus, Either AgentErrorType ())
+type QCmdResult a = (QueueStatus, Either AgentErrorType a)
 
-subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
+type QDelResult = QCmdResult ()
+
+type QSubResult = QCmdResult (Maybe SMP.ServiceId)
+
+subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConns` connIds)
@@ -1208,38 +1212,38 @@ subscribeConnections' c connIds = do
   ns <- asks ntfSupervisor
   tkn <- readTVarIO (ntfTkn ns)
   lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns rcvRs cs
-  let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType ())])
+  let rs = M.unions ([errs', subRs, rcvRs] :: [Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))])
   notifyResultError rs
   pure rs
   where
-    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
+    rcvQueueOrResult :: SomeConn -> Either (Either AgentErrorType (Maybe SMP.ServiceId)) [RcvQueue]
     rcvQueueOrResult (SomeConn _ conn) = case conn of
       DuplexConnection _ rqs _ -> Right $ L.toList rqs
       SndConnection _ sq -> Left $ sndSubResult sq
       RcvConnection _ rq -> Right [rq]
       ContactConnection _ rq -> Right [rq]
-      NewConnection _ -> Left (Right ())
-    sndSubResult :: SndQueue -> Either AgentErrorType ()
+      NewConnection _ -> Left (Right Nothing)
+    sndSubResult :: SndQueue -> Either AgentErrorType (Maybe SMP.ServiceId)
     sndSubResult SndQueue {status} = case status of
-      Confirmed -> Right ()
+      Confirmed -> Right Nothing
       Active -> Left $ CONN SIMPLEX
       _ -> Left $ INTERNAL "unexpected queue status"
-    connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
+    connResults :: [(RcvQueue, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
+        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId QSubResult
         addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
-        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
+        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QCmdResult -> Int
+        order :: QSubResult -> Int
         order (Active, Right _) = 1
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> Map ConnId SomeConn -> AM' ()
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId SomeConn -> AM' ()
     sendNtfCreate ns rcvRs cs = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
           cs' = M.restrictKeys cs oks
@@ -1257,21 +1261,21 @@ subscribeConnections' c connIds = do
       DuplexConnection cData _ sqs -> Just (cData, sqs)
       SndConnection cData sq -> Just (cData, [sq])
       _ -> Nothing
-    notifyResultError :: Map ConnId (Either AgentErrorType ()) -> AM ()
+    notifyResultError :: Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> AM ()
     notifyResultError rs = do
       let actual = M.size rs
           expected = length connIds
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
-resubscribeConnection' :: AgentClient -> ConnId -> AM ()
+resubscribeConnection' :: AgentClient -> ConnId -> AM (Maybe SMP.ServiceId)
 resubscribeConnection' c connId = toConnResult connId =<< resubscribeConnections' c [connId]
 {-# INLINE resubscribeConnection' #-}
 
-resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
+resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)))
 resubscribeConnections' _ [] = pure M.empty
 resubscribeConnections' c connIds = do
-  let r = M.fromList . zip connIds . repeat $ Right ()
+  let r = M.fromList . zip connIds . repeat $ Right Nothing
   connIds' <- filterM (fmap not . atomically . hasActiveSubscription c) connIds
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
@@ -2099,13 +2103,13 @@ deleteConnQueues c waitDelivery ntf rqs = do
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
+        addResult :: Map ConnId QDelResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QDelResult
         addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by prioritizing errors in Active queues
-        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
+        combineRes :: QDelResult -> Maybe QDelResult -> Maybe QDelResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QCmdResult -> Int
+        order :: QDelResult -> Int
         order (Active, Left _) = 1
         order (_, Left _) = 2
         order _ = 3
@@ -2538,6 +2542,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       withRcvConn entId $ \rq conn -> case cmd of
         SMP.SUB -> case respOrErr of
           Right SMP.OK -> processSubOk rq upConnIds
+          -- TODO [certs] associate queue with the service
+          Right (SMP.SOK serviceId_) -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
             processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
             runProcessSMP rq conn (toConnData conn) msg

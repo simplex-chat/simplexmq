@@ -158,7 +158,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
-              let auth = THAuthServer {serverPrivKey = pk, peerClientCertKey = Nothing, sessSecret' = Nothing}
+              let auth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
 #ifdef slow_servers

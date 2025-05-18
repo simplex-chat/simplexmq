@@ -117,6 +117,7 @@ module Simplex.Messaging.Protocol
     SenderId,
     LinkId,
     NotifierId,
+    ServiceId,
     RcvPrivateAuthKey,
     RcvPublicAuthKey,
     RcvPublicDhKey,
@@ -405,14 +406,6 @@ type LinkId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
--- this type is used for server entities only
-newtype EntityId = EntityId {unEntityId :: ByteString}
-  deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, StrEncoding)
-
-pattern NoEntity :: EntityId
-pattern NoEntity = EntityId ""
-
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
@@ -422,8 +415,8 @@ data Command (p :: Party) where
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
   NEW :: NewQueueReq -> Command Recipient
   SUB :: Command Recipient
-  -- | subscribe all associated queues. Certificate fingerprint must be used as entity ID? Or empty string?
-  CSUB :: Command Recipient
+  -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
+  SSUB :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
@@ -446,6 +439,8 @@ data Command (p :: Party) where
   LGET :: Command LinkClient
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
+  -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
+  SNSUB :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -572,8 +567,11 @@ data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
   LNK :: SenderId -> QueueLinkData -> BrokerMsg
-  -- | The number of queues subscribed with CSUB command
-  CSQS :: Word32 -> BrokerMsg
+  -- | Service subscription success - confirms when queue was associated with the service
+  SOK :: Maybe ServiceId -> BrokerMsg
+  -- | The number of queues subscribed with SSUB command
+  -- TODO [certs] maybe it should include the queue IDs that were marked as deleted and blocked
+  CSOK :: Word32 -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
@@ -778,7 +776,7 @@ noMsgFlags = MsgFlags {notification = False}
 data CommandTag (p :: Party) where
   NEW_ :: CommandTag Recipient
   SUB_ :: CommandTag Recipient
-  CSUB_ :: CommandTag Recipient
+  SSUB_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   RKEY_ :: CommandTag Recipient
   LSET_ :: CommandTag Recipient
@@ -799,6 +797,7 @@ data CommandTag (p :: Party) where
   PFWD_ :: CommandTag ProxiedClient
   RFWD_ :: CommandTag Sender
   NSUB_ :: CommandTag Notifier
+  SNSUB_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -809,7 +808,8 @@ deriving instance Show CmdTag
 data BrokerMsgTag
   = IDS_
   | LNK_
-  | CSQS_
+  | SOK_
+  | CSOK_
   | MSG_
   | NID_
   | NMSG_
@@ -836,7 +836,7 @@ instance PartyI p => Encoding (CommandTag p) where
   smpEncode = \case
     NEW_ -> "NEW"
     SUB_ -> "SUB"
-    CSUB_ -> "CSUB"
+    SSUB_ -> "SSUB"
     KEY_ -> "KEY"
     RKEY_ -> "RKEY"
     LSET_ -> "LSET"
@@ -857,13 +857,14 @@ instance PartyI p => Encoding (CommandTag p) where
     PFWD_ -> "PFWD"
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
+    SNSUB_ -> "SNSUB"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
   decodeTag = \case
     "NEW" -> Just $ CT SRecipient NEW_
     "SUB" -> Just $ CT SRecipient SUB_
-    "CSUB" -> Just $ CT SRecipient CSUB_
+    "SSUB" -> Just $ CT SRecipient SSUB_
     "KEY" -> Just $ CT SRecipient KEY_
     "RKEY" -> Just $ CT SRecipient RKEY_
     "LSET" -> Just $ CT SRecipient LSET_
@@ -884,6 +885,7 @@ instance ProtocolMsgTag CmdTag where
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SSender RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
+    "SNSUB" -> Just $ CT SNotifier SNSUB_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -897,7 +899,8 @@ instance Encoding BrokerMsgTag where
   smpEncode = \case
     IDS_ -> "IDS"
     LNK_ -> "LNK"
-    CSQS_ -> "CSQS"
+    SOK_ -> "SOK"
+    CSOK_ -> "CSOK"
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
@@ -916,7 +919,8 @@ instance ProtocolMsgTag BrokerMsgTag where
   decodeTag = \case
     "IDS" -> Just IDS_
     "LNK" -> Just LNK_
-    "CSQS" -> Just CSQS_
+    "SOK" -> Just SOK_
+    "CSOK" -> Just CSOK_
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
@@ -1518,7 +1522,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
-    CSUB -> e CSUB_
+    SSUB -> e SSUB_
     KEY k -> e (KEY_, ' ', k)
     RKEY ks -> e (RKEY_, ' ', ks)
     LSET lnkId d -> e (LSET_, ' ', lnkId, d)
@@ -1534,6 +1538,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
+    SNSUB -> e SNSUB_
     LKEY k -> e (LKEY_, ' ', k)
     LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
@@ -1603,7 +1608,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
             auth = optional (A.char 'A' *> smpP)
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
         SUB_ -> pure SUB
-        CSUB_ -> pure CSUB
+        SSUB_ -> pure SSUB
         KEY_ -> KEY <$> _smpP
         RKEY_ -> RKEY <$> _smpP
         LSET_ -> LSET <$> _smpP <*> smpP
@@ -1629,7 +1634,10 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SProxiedClient <$> case tag of
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
-    CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
+    CT SNotifier tag -> 
+      pure $ Cmd SNotifier $ case tag of
+        NSUB_ -> NSUB
+        SNSUB_ -> SNSUB
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1646,7 +1654,10 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     LNK sId d -> e (LNK_, ' ', sId, d)
-    CSQS n -> e (CSQS_, ' ', n)
+    SOK serviceId_
+      | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
+      | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
+    CSOK n -> e (CSOK_, ' ', n)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1691,7 +1702,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           -- serverNtfCreds <- p3
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId}
     LNK_ -> LNK <$> _smpP <*> smpP
-    CSQS_ -> CSQS <$> _smpP
+    SOK_ -> SOK <$> _smpP
+    CSOK_ -> CSOK <$> _smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))

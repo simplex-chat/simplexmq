@@ -79,7 +79,7 @@ import Data.Word (Word16)
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
 import SMPClient (cfgJ2QS, cfgMS, prevRange, prevVersion, proxyCfgJ2QS, proxyCfgMS, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServers2, withSmpServerConfigOn, withSmpServerProxy, withSmpServersProxy2, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
-import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
+import Simplex.Messaging.Agent hiding (createConnection, joinConnection, subscribeConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
@@ -260,6 +260,9 @@ joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> Con
 joinConnection c userId enableNtfs cReq connInfo subMode = do
   connId <- A.prepareConnectionToJoin c userId enableNtfs cReq PQSupportOn
   (connId,) <$> A.joinConnection c userId connId enableNtfs cReq connInfo PQSupportOn subMode
+
+subscribeConnection :: AgentClient -> ConnId -> AE ()
+subscribeConnection c = void . A.subscribeConnection c
 
 sendMessage :: AgentClient -> ConnId -> SMP.MsgFlags -> MsgBody -> AE AgentMsgId
 sendMessage c connId msgFlags msgBody = do
