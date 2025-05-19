@@ -80,6 +80,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
+import System.Timeout (timeout)
 import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, race_, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
@@ -470,11 +471,20 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
     -- createSMPSubscriber should never throw, removing it from map in case it did
     removeSubscriber :: SomeException -> IO ()
     removeSubscriber e = do
-      logError $ "getSMPSubscriber exception: " <> tshow e
+      logError $ "SMP subscriber exception: " <> tshow e
       atomically $ TM.delete smpServer smpSubscribers
 
     waitForSMPSubscriber :: SMPSubscriberVar -> IO SMPSubscriber
-    waitForSMPSubscriber = atomically . readTMVar . sessionVar
+    waitForSMPSubscriber v =
+      -- reading without timeout first to avoid creating extra thread for timeout
+      atomically (tryReadTMVar $ sessionVar v) >>= \case
+        Just sub -> pure sub
+        Nothing ->
+          timeout 10000000 (atomically $ readTMVar $ sessionVar v) >>= \case
+            Just sub -> pure sub
+            Nothing -> do
+              logError "SMP subscriber timeout"
+              E.throwIO $ userError "SMP subscriber timeout"
 
     runSMPSubscriber :: TQueue (NonEmpty ServerNtfSub) -> IO ()
     runSMPSubscriber q = forever $ do
