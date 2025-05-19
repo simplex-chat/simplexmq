@@ -71,7 +71,6 @@ import Simplex.Messaging.Server.QueueStore (getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, periodStatDataCounts, updatePeriodStats)
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
@@ -447,44 +446,42 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
                   afterSubId_' = Just $ fst $ last subs
               if len < dbBatchSize then pure n' else loop n' afterSubId_'
 
+-- this function is concurrency-safe - only onle subscriber per server can be created at a time,
+-- other threads would wait for the first thread to create it.
 subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> NonEmpty ServerNtfSub -> IO ()
 subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer ntfSubs =
-  E.handle removeSubscriber $ do
-    SMPSubscriber {subscriberSubQ = q} <- getSMPSubscriber
-    atomically $ writeTQueue q ntfSubs
+  getSubscriberVar
+    >>= either createSMPSubscriber waitForSMPSubscriber
+    >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSubs)
   where
-    -- this function is concurrency-safe - only onle subscriber per server can be created at a time,
-    -- other threads would wait the first one creating it.
-    getSMPSubscriber = getSubscriberVar >>= either createSMPSubscriber waitForSMPSubscriber
-
     getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
     getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
 
-    createSMPSubscriber :: SMPSubscriberVar -> IO SMPSubscriber
-    createSMPSubscriber v = do
+    createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
+    createSMPSubscriber v = E.handle remove $ do
       q <- newTQueueIO
       tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber q)
       let sub = SMPSubscriber {smpServer, subscriberSubQ = q, subThreadId = tId}
       atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
-      pure sub
+      pure $ Just sub
+      where
+        remove (e :: SomeException) = do
+          -- createSMPSubscriber should never throw, removing it from map in case it did
+          logError $ "SMP subscriber exception: " <> tshow e
+          atomically $ removeSessVar v smpServer smpSubscribers
+          pure Nothing
 
-    -- createSMPSubscriber should never throw, removing it from map in case it did
-    removeSubscriber :: SomeException -> IO ()
-    removeSubscriber e = do
-      logError $ "SMP subscriber exception: " <> tshow e
-      atomically $ TM.delete smpServer smpSubscribers
-
-    waitForSMPSubscriber :: SMPSubscriberVar -> IO SMPSubscriber
+    waitForSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     waitForSMPSubscriber v =
       -- reading without timeout first to avoid creating extra thread for timeout
-      atomically (tryReadTMVar $ sessionVar v) >>= \case
-        Just sub -> pure sub
-        Nothing ->
-          timeout 10000000 (atomically $ readTMVar $ sessionVar v) >>= \case
-            Just sub -> pure sub
-            Nothing -> do
-              logError "SMP subscriber timeout"
-              E.throwIO $ userError "SMP subscriber timeout"
+      atomically (tryReadTMVar $ sessionVar v)
+        >>= maybe (timeout 10000000 $ atomically $ readTMVar $ sessionVar v) (pure . Just)
+        >>= maybe onTimeout (pure . Just)
+      where
+        onTimeout = do
+          logError "SMP subscriber timeout"
+          atomically $ removeSessVar v smpServer smpSubscribers
+          pure Nothing
 
     runSMPSubscriber :: TQueue (NonEmpty ServerNtfSub) -> IO ()
     runSMPSubscriber q = forever $ do
