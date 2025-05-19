@@ -52,7 +52,8 @@ CREATE TABLE smp_server.services (
     service_id bytea NOT NULL,
     service_role text NOT NULL,
     service_cert bytea NOT NULL,
-    service_cert_hash bytea NOT NULL
+    service_cert_hash bytea NOT NULL,
+    created_at bigint NOT NULL
 );
 
 

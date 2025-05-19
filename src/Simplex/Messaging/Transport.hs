@@ -471,7 +471,7 @@ data THandleAuth (p :: TransportPeer) where
   THAuthClient ::
     { peerServerPubKey :: C.PublicKeyX25519, -- used by the client to combine with client's private per-queue key
       peerServerCertKey :: (X.CertificateChain, X.SignedExact X.PubKey), -- the key here is serverPeerPubKey signed with server certificate
-      clientService :: Maybe (ServiceId, C.PrivateKeyX25519),
+      clientService :: Maybe (ServiceId, C.PrivateKeyEd25519),
       sessSecret :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TClient
@@ -485,7 +485,7 @@ data THandleAuth (p :: TransportPeer) where
 data PeerClientService = PeerClientService
   { serviceId :: ServiceId,
     serviceRole :: SMPServiceRole,
-    servicePubKey :: C.PublicKeyX25519
+    servicePubKey :: C.PublicKeyEd25519
   }
 
 data TSbChainKeys = TSbChainKeys
@@ -541,7 +541,7 @@ data SMPClientHandshake = SMPClientHandshake
     proxyServer :: Bool
   }
 
-data SMPServiceRole = SRMessaging | SRNotifier | SRProxy
+data SMPServiceRole = SRMessaging | SRNotifier | SRProxy deriving (Eq, Show)
 
 -- TODO [certs] clientRole, serviceCertKey
 instance Encoding SMPClientHandshake where

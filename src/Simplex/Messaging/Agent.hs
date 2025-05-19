@@ -1253,7 +1253,8 @@ subscribeConnections' c connIds = do
         order (_, Right _) = 3
         order _ = 4
     -- TODO [certs] store associations of queues with client service ID
-    storeClientServiceAssocs = undefined
+    storeClientServiceAssocs :: Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
+    storeClientServiceAssocs = pure . M.map (Nothing <$)
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> Map ConnId SomeConn -> AM' ()
     sendNtfCreate ns rcvRs cs = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs

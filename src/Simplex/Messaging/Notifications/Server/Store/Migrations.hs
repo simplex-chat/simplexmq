@@ -85,5 +85,5 @@ m20250517_service_cert :: Text
 m20250517_service_cert =
   T.pack
     [r|
-ALTER TABLE subscriptions ADD COLUMN ntf_service_id BLOB;
+ALTER TABLE subscriptions ADD COLUMN ntf_service_id BYTEA;
     |]

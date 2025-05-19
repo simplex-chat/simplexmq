@@ -22,7 +22,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Maybe (isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, blockedFilesXFTPVersion, xftpClientHandshakeStub)
@@ -196,7 +196,7 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     -- FNEW must not have signature and chunk ID
     FNEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
-      | not (B.null fileId) -> Left $ CMD HAS_AUTH
+      | hasServiceAuth || not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
       | isNothing auth && B.null fileId -> Right cmd
@@ -204,7 +204,10 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     -- other client commands must have both signature and queue ID
     _
       | isNothing auth || B.null fileId -> Left $ CMD NO_AUTH
+      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
+    where
+      hasServiceAuth = maybe False (isJust . snd) auth
 
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
   type Tag FileCmd = FileCmdTag

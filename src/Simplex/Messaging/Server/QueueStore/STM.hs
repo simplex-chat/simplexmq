@@ -104,11 +104,13 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
-      SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
+      SSender -> getSndQueue
+      SProxyService -> getSndQueue
       SNotifier -> TM.lookupIO qId notifiers $>>= (`TM.lookupIO` queues)
       SSenderLink -> TM.lookupIO qId links $>>= (`TM.lookupIO` queues)
     where
       STMQueueStore {queues, senders, notifiers, links} = st
+      getSndQueue = TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
 
   getQueueLinkData :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   getQueueLinkData _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData

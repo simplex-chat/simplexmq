@@ -1116,7 +1116,7 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
-  sendProtocolCommand_ c False (Just nonce) Nothing Nothing NoEntity (Cmd SSender (RFWD eft)) >>= \case
+  sendProtocolCommand_ c False (Just nonce) Nothing Nothing NoEntity (Cmd SProxyService (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
@@ -1275,18 +1275,19 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       atomically $ TM.insert corrId r sentCommands
       pure r
 
--- TODO [certs] client key/cert are in THandleAuth, so can be used to co-sign as needed.
--- Not all commands need co-signing though (even if they need signing), so probably it requires a separate parameter.
 authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
-authTransmission thAuth _certAuth pKey_ nonce t = traverse authenticate pKey_
+authTransmission thAuth certAuth pKey_ nonce t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
-    authenticate (C.APrivateAuthKey a pk) = (,Nothing) <$> case a of
+    authenticate (C.APrivateAuthKey a pk) = (,serviceSig) <$> case a of
       C.SX25519 -> case thAuth of
         Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
+    serviceSig = case thAuth of
+      Just THAuthClient {clientService = Just (_, pk)} | certAuth -> Just $ C.sign' pk t
+      _ -> Nothing
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
 

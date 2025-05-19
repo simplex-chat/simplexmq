@@ -298,7 +298,7 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
-data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient
+data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient | ProxyService
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
@@ -308,6 +308,7 @@ data SParty :: Party -> Type where
   SNotifier :: SParty Notifier
   SSenderLink :: SParty LinkClient 
   SProxiedClient :: SParty ProxiedClient
+  SProxyService :: SParty ProxyService
 
 instance TestEquality SParty where
   testEquality SRecipient SRecipient = Just Refl
@@ -315,6 +316,7 @@ instance TestEquality SParty where
   testEquality SNotifier SNotifier = Just Refl
   testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
+  testEquality SProxyService SProxyService = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
@@ -331,11 +333,14 @@ instance PartyI LinkClient where sParty = SSenderLink
 
 instance PartyI ProxiedClient where sParty = SProxiedClient
 
+instance PartyI ProxyService where sParty = SProxyService
+
 type family DirectParty (p :: Party) :: Constraint where
   DirectParty Recipient = ()
   DirectParty Sender = ()
   DirectParty Notifier = ()
   DirectParty LinkClient = ()
+  DirectParty ProxyService = ()
   DirectParty p =
     (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not direct"))
 
@@ -364,7 +369,7 @@ data RawTransmission = RawTransmission
   }
   deriving (Show)
 
-type TAuthorizations = (TransmissionAuth, Maybe C.ASignature)
+type TAuthorizations = (TransmissionAuth, Maybe (C.Signature 'C.Ed25519))
 
 data TransmissionAuth
   = TASignature C.ASignature
@@ -451,7 +456,7 @@ data Command (p :: Party) where
   -- Transmission forwarded to relay:
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
-  RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
+  RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
 
@@ -568,6 +573,7 @@ data BrokerMsg where
   IDS :: QueueIdsKeys -> BrokerMsg
   LNK :: SenderId -> QueueLinkData -> BrokerMsg
   -- | Service subscription success - confirms when queue was associated with the service
+  -- TODO [certs] as service ID is known from handshake, possibly this can be boolean to reduce size of responses
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues subscribed with SSUB command
   -- TODO [certs] maybe it should include the queue IDs that were marked as deleted and blocked
@@ -795,7 +801,7 @@ data CommandTag (p :: Party) where
   LGET_ :: CommandTag LinkClient
   PRXY_ :: CommandTag ProxiedClient
   PFWD_ :: CommandTag ProxiedClient
-  RFWD_ :: CommandTag Sender
+  RFWD_ :: CommandTag ProxyService
   NSUB_ :: CommandTag Notifier
   NSSUB_ :: CommandTag Notifier
 
@@ -883,7 +889,7 @@ instance ProtocolMsgTag CmdTag where
     "LGET" -> Just $ CT SSenderLink LGET_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
     "PFWD" -> Just $ CT SProxiedClient PFWD_
-    "RFWD" -> Just $ CT SSender RFWD_
+    "RFWD" -> Just $ CT SProxyService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
     "NSSUB" -> Just $ CT SNotifier NSSUB_
     _ -> Nothing
@@ -1396,7 +1402,7 @@ data CommandError
     UNKNOWN
   | -- | error parsing command
     SYNTAX
-  | -- | command is not allowed (SUB/GET cannot be used with the same queue in the same TCP connection)
+  | -- | command is not allowed (bad service role, or SUB/GET used with the same queue in the same TCP session)
     PROHIBITED
   | -- | transmission has no required credentials (signature or queue ID)
     NO_AUTH
@@ -1563,15 +1569,19 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     -- SEND must have queue ID, signature is not always required
     SEND {}
       | B.null entId -> Left $ CMD NO_ENTITY
+      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     LGET -> entityCmd
     PING -> noAuthCmd
     PRXY {} -> noAuthCmd
     PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
+    SUB -> serviceCmd
+    NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
     _
       | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
+      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     where
       -- command must not have entity ID (queue or session ID) or signature
@@ -1584,6 +1594,11 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         | B.null entId = Left $ CMD NO_ENTITY
         | isNothing auth = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
+      serviceCmd :: Either ErrorType (Command p)
+      serviceCmd
+        | isNothing auth || B.null entId = Left $ CMD NO_AUTH
+        | otherwise = Right cmd
+      hasServiceAuth = maybe False (isJust . snd) auth
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
@@ -1626,7 +1641,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
-        RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
+    CT SProxyService RFWD_ ->
+      Cmd SProxyService . RFWD . EncFwdTransmission . unTail <$> _smpP
     CT SSenderLink tag ->
       Cmd SSenderLink <$> case tag of
         LKEY_ -> LKEY <$> _smpP
