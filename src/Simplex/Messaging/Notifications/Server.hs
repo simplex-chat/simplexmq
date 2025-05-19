@@ -13,6 +13,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server where
@@ -458,30 +459,26 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
     getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
 
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
-    createSMPSubscriber v = E.handle remove $ do
-      q <- newTQueueIO
-      tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber q)
-      let sub = SMPSubscriber {smpServer, subscriberSubQ = q, subThreadId = tId}
-      atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
-      pure $ Just sub
-      where
-        remove (e :: SomeException) = do
-          -- createSMPSubscriber should never throw, removing it from map in case it did
-          logError $ "SMP subscriber exception: " <> tshow e
-          atomically $ removeSessVar v smpServer smpSubscribers
-          pure Nothing
+    createSMPSubscriber v =
+      E.handle (\e -> removeSubscriber v $  "SMP subscriber exception: " <> tshow @SomeException e) $ do
+        q <- newTQueueIO
+        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber q)
+        let sub = SMPSubscriber {smpServer, subscriberSubQ = q, subThreadId = tId}
+        atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
+        pure $ Just sub
 
     waitForSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     waitForSMPSubscriber v =
       -- reading without timeout first to avoid creating extra thread for timeout
       atomically (tryReadTMVar $ sessionVar v)
         >>= maybe (timeout 10000000 $ atomically $ readTMVar $ sessionVar v) (pure . Just)
-        >>= maybe onTimeout (pure . Just)
-      where
-        onTimeout = do
-          logError "SMP subscriber timeout"
-          atomically $ removeSessVar v smpServer smpSubscribers
-          pure Nothing
+        >>= maybe (removeSubscriber v "SMP subscriber timeout") (pure . Just)
+
+    -- create/waitForSMPSubscriber should never throw, removing it from map in case it did
+    removeSubscriber v err = do
+      logError err 
+      atomically $ removeSessVar v smpServer smpSubscribers
+      pure Nothing
 
     runSMPSubscriber :: TQueue (NonEmpty ServerNtfSub) -> IO ()
     runSMPSubscriber q = forever $ do
