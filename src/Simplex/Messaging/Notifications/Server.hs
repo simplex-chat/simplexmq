@@ -13,7 +13,6 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server where
@@ -460,7 +459,7 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
 
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     createSMPSubscriber v =
-      E.handle (\e -> removeSubscriber v $  "SMP subscriber exception: " <> tshow @SomeException e) $ do
+      E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
         q <- newTQueueIO
         tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber q)
         let sub = SMPSubscriber {smpServer, subscriberSubQ = q, subThreadId = tId}
@@ -472,11 +471,10 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       -- reading without timeout first to avoid creating extra thread for timeout
       atomically (tryReadTMVar $ sessionVar v)
         >>= maybe (timeout 10000000 $ atomically $ readTMVar $ sessionVar v) (pure . Just)
-        >>= maybe (removeSubscriber v "SMP subscriber timeout") (pure . Just)
+        >>= maybe (logError "SMP subscriber timeout" >> removeSubscriber v) (pure . Just)
 
     -- create/waitForSMPSubscriber should never throw, removing it from map in case it did
-    removeSubscriber v err = do
-      logError err 
+    removeSubscriber v = do
       atomically $ removeSessVar v smpServer smpSubscribers
       pure Nothing
 
