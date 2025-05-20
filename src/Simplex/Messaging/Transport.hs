@@ -87,7 +87,9 @@ module Simplex.Messaging.Transport
     THandle (..),
     THandleParams (..),
     THandleAuth (..),
-    PeerClientService (..),
+    THClientService' (..),
+    THClientService,
+    THPeerClientService,
     SMPServiceRole (..),
     TSbChainKeys (..),
     TransportError (..),
@@ -471,21 +473,25 @@ data THandleAuth (p :: TransportPeer) where
   THAuthClient ::
     { peerServerPubKey :: C.PublicKeyX25519, -- used by the client to combine with client's private per-queue key
       peerServerCertKey :: (X.CertificateChain, X.SignedExact X.PubKey), -- the key here is serverPeerPubKey signed with server certificate
-      clientService :: Maybe (ServiceId, C.PrivateKeyEd25519),
+      clientService :: Maybe THClientService,
       sessSecret :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TClient
   THAuthServer ::
     { serverPrivKey :: C.PrivateKeyX25519, -- used by the server to combine with client's public per-queue key
-      peerClientService :: Maybe PeerClientService,
+      peerClientService :: Maybe THPeerClientService,
       sessSecret' :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TServer
 
-data PeerClientService = PeerClientService
+type THClientService = THClientService' C.PrivateKeyEd25519
+
+type THPeerClientService = THClientService' C.PublicKeyEd25519
+
+data THClientService' k = THClientService
   { serviceId :: ServiceId,
     serviceRole :: SMPServiceRole,
-    servicePubKey :: C.PublicKeyEd25519
+    serviceKey :: k
   }
 
 data TSbChainKeys = TSbChainKeys

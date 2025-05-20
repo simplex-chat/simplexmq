@@ -78,6 +78,8 @@ data ServerStats = ServerStats
     pMsgFwds :: ProxyStats,
     pMsgFwdsOwn :: ProxyStats,
     pMsgFwdsRecv :: IORef Int,
+    msgServices :: ServiceStats,
+    ntfServices :: ServiceStats,
     qCount :: IORef Int,
     msgCount :: IORef Int,
     ntfCount :: IORef Int
@@ -190,6 +192,8 @@ newServerStats ts = do
   pMsgFwds <- newProxyStats
   pMsgFwdsOwn <- newProxyStats
   pMsgFwdsRecv <- newIORef 0
+  msgServices <- newServiceStats
+  ntfServices <- newServiceStats
   qCount <- newIORef 0
   msgCount <- newIORef 0
   ntfCount <- newIORef 0
@@ -244,6 +248,8 @@ newServerStats ts = do
         pMsgFwds,
         pMsgFwdsOwn,
         pMsgFwdsRecv,
+        msgServices,
+        ntfServices,
         qCount,
         msgCount,
         ntfCount
@@ -411,6 +417,9 @@ setServerStats s d = do
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
   setProxyStats (pMsgFwdsOwn s) $! _pMsgFwdsOwn d
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
+  -- TODO [certs] get from stats data
+  -- msgServices <- newServiceStats
+  -- ntfServices <- newServiceStats
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
@@ -764,3 +773,36 @@ instance StrEncoding ProxyStatsData where
     _pErrorsCompat <- "errorsCompat=" *> strP <* A.endOfLine
     _pErrorsOther <- "errorsOther=" *> strP
     pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
+
+data ServiceStats = ServiceStats
+  { srvAssocNew :: IORef Int,
+    srvAssocDuplicate :: IORef Int,
+    srvAssocUpdated :: IORef Int,
+    srvAssocRemoved :: IORef Int,
+    srvSubCount :: IORef Int,
+    srvSubDuplicate :: IORef Int,
+    srvSubQueues :: IORef Int,
+    srvSubEnd :: IORef Int
+  }
+
+newServiceStats :: IO ServiceStats
+newServiceStats = do
+  srvAssocNew <- newIORef 0
+  srvAssocDuplicate <- newIORef 0
+  srvAssocUpdated <- newIORef 0
+  srvAssocRemoved <- newIORef 0
+  srvSubCount <- newIORef 0
+  srvSubDuplicate <- newIORef 0
+  srvSubQueues <- newIORef 0
+  srvSubEnd <- newIORef 0
+  pure
+    ServiceStats
+      { srvAssocNew,
+        srvAssocDuplicate,
+        srvAssocUpdated,
+        srvAssocRemoved,
+        srvSubCount,
+        srvSubDuplicate,
+        srvSubQueues,
+        srvSubEnd
+      }

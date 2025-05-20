@@ -33,11 +33,15 @@ data RealTimeMetrics = RealTimeMetrics
   { socketStats :: [(ServiceName, SocketStats)],
     threadsCount :: Int,
     clientsCount :: Int,
-    smpSubsCount :: Int,
-    smpSubClientsCount :: Int,
-    ntfSubsCount :: Int,
-    ntfSubClientsCount :: Int,
+    smpSubs :: RTSubscriberMetrics,
+    ntfSubs :: RTSubscriberMetrics,
     loadedCounts :: LoadedQueueCounts
+  }
+
+data RTSubscriberMetrics = RTSubscriberMetrics
+  { subsCount :: Int,
+    subClientsCount :: Int,
+    subServicesCount :: Int
   }
 
 {-# FOURMOLU_DISABLE\n#-}
@@ -50,10 +54,8 @@ prometheusMetrics sm rtm ts =
       { socketStats,
         threadsCount,
         clientsCount,
-        smpSubsCount,
-        smpSubClientsCount,
-        ntfSubsCount,
-        ntfSubClientsCount,
+        smpSubs,
+        ntfSubs,
         loadedCounts
       } = rtm
     ServerStatsData
@@ -369,19 +371,27 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_subscribtion_total Total subscriptions\n\
       \# TYPE simplex_smp_subscribtion_total gauge\n\
-      \simplex_smp_subscribtion_total " <> mshow smpSubsCount <> "\n# smpSubs\n\
+      \simplex_smp_subscribtion_total " <> mshow (subsCount smpSubs) <> "\n# subsCount smpSubs\n\
       \\n\
       \# HELP simplex_smp_subscribtion_clients_total Subscribed clients, first counting method\n\
       \# TYPE simplex_smp_subscribtion_clients_total gauge\n\
-      \simplex_smp_subscribtion_clients_total " <> mshow smpSubClientsCount <> "\n# smpSubClients\n\
+      \simplex_smp_subscribtion_clients_total " <> mshow (subClientsCount smpSubs) <> "\n# subClientsCount smpSubs\n\
+      \\n\
+      \# HELP simplex_smp_subscribtion_services_total Subscribed services, first counting method\n\
+      \# TYPE simplex_smp_subscribtion_services_total gauge\n\
+      \simplex_smp_subscribtion_services_total " <> mshow (subServicesCount smpSubs) <> "\n# subServicesCount smpSubs\n\
       \\n\
       \# HELP simplex_smp_subscription_ntf_total Total notification subscripbtions (from ntf server)\n\
       \# TYPE simplex_smp_subscription_ntf_total gauge\n\
-      \simplex_smp_subscription_ntf_total " <> mshow ntfSubsCount <> "\n# ntfSubs\n\
+      \simplex_smp_subscription_ntf_total " <> mshow (subsCount ntfSubs) <> "\n# subsCount ntfSubs\n\
       \\n\
       \# HELP simplex_smp_subscription_ntf_clients_total Total subscribed NTF servers, first counting method\n\
       \# TYPE simplex_smp_subscription_ntf_clients_total gauge\n\
-      \simplex_smp_subscription_ntf_clients_total " <> mshow ntfSubClientsCount <> "\n# ntfSubClients\n\
+      \simplex_smp_subscription_ntf_clients_total " <> mshow (subClientsCount ntfSubs) <> "\n# subClientsCount ntfSubs\n\
+      \\n\
+      \# HELP simplex_smp_subscribtion_nts_services_total Subscribed NTF services, first counting method\n\
+      \# TYPE simplex_smp_subscribtion_nts_services_total gauge\n\
+      \simplex_smp_subscribtion_nts_services_total " <> mshow (subServicesCount ntfSubs) <> "\n# subServicesCount ntfSubs\n\
       \\n\
       \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory/journal storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_count gauge\n\

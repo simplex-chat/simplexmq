@@ -379,6 +379,18 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getCreateService :: PostgresQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
   getCreateService = undefined
 
+  -- TODO [certs]
+  setQueueRcvService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueRcvService = undefined
+
+  -- TODO [certs]
+  setQueueNtfService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueNtfService = undefined
+
+  -- TODO [certs]
+  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
+  getNtfServiceQueueCount = undefined
+
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
 batchInsertQueues tty queues toStore = do
   qs <- catMaybes <$> mapM (\(rId, q) -> (rId,) <$$> readTVarIO (queueRec q)) (M.assocs queues)

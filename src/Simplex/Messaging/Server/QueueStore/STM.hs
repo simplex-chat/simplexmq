@@ -28,6 +28,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
@@ -237,6 +238,18 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   -- TODO [certs] implement
   getCreateService :: STMQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
   getCreateService = undefined
+
+  -- TODO [certs]
+  setQueueRcvService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueRcvService = undefined
+
+  -- TODO [certs]
+  setQueueNtfService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueNtfService = undefined
+
+  -- TODO [certs]
+  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
+  getNtfServiceQueueCount = undefined
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

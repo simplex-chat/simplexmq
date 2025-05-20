@@ -1285,8 +1285,8 @@ authTransmission thAuth certAuth pKey_ nonce t = traverse authenticate pKey_
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
-    serviceSig = case thAuth of
-      Just THAuthClient {clientService = Just (_, pk)} | certAuth -> Just $ C.sign' pk t
+    serviceSig = case thAuth >>= clientService of
+      Just THClientService {serviceKey} | certAuth -> Just $ C.sign' serviceKey t
       _ -> Nothing
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)

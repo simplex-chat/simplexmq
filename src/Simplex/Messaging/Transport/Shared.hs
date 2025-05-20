@@ -11,7 +11,6 @@ import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName)
-import Simplex.Messaging.Transport (closeTLS)
 
 x509validate :: X.SignedCertificate -> (HostName, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
 x509validate caCert serviceID = XV.validate X.HashSHA256 XV.defaultHooks checks certStore noCache serviceID

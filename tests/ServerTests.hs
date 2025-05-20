@@ -630,7 +630,7 @@ testWithStoreLog =
         writeTVar dhShared1 $ Just dhShared
         writeTVar senderId1 sId1
         writeTVar notifierId nId
-      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
+      Resp "dabc" _ (SOK Nothing) <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       (mId1, msg1) <-
         signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
           Resp "" _ (Msg mId1 msg1) -> pure (mId1, msg1)
@@ -667,7 +667,7 @@ testWithStoreLog =
       Just dh1 <- readTVarIO dhShared1
       sId1 <- readTVarIO senderId1
       nId <- readTVarIO notifierId
-      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
+      Resp "dabc" _ (SOK Nothing) <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
       Resp "cdab" _ (Msg mId3 msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
       (decryptMsgV3 dh1 mId3 msg3, Right "hello") #== "delivered from restored queue"
@@ -981,13 +981,13 @@ testMessageNotifications =
       Resp "1" _ (NID nId' _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       Resp "1a" _ (NID nId _) <- signSendRecv rh rKey ("1a", rId, NKEY nPub rcvNtfPubDhKey)
       nId' `shouldNotBe` nId
-      Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
+      Resp "2" _ (SOK Nothing) <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
       Resp "" _ (Msg mId1 msg1) <- tGet1 rh
       (dec mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK mId1)
       Resp "" _ (NMSG _ _) <- tGet1 nh1
-      Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
+      Resp "4" _ (SOK Nothing) <- signSendRecv nh2 nKey ("4", nId, NSUB)
       Resp "" nId2 END <- tGet1 nh1
       nId2 `shouldBe` nId
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")

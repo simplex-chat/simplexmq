@@ -577,7 +577,7 @@ data BrokerMsg where
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues subscribed with SSUB command
   -- TODO [certs] maybe it should include the queue IDs that were marked as deleted and blocked
-  CSOK :: Word32 -> BrokerMsg
+  SSOK :: Word32 -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
@@ -588,6 +588,7 @@ data BrokerMsg where
   PKEY :: SessionId -> VersionRangeSMP -> (X.CertificateChain, X.SignedExact X.PubKey) -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
+  -- TODO [certs] ENDS when another client session subscribes the same service
   END :: BrokerMsg
   DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
@@ -815,7 +816,7 @@ data BrokerMsgTag
   = IDS_
   | LNK_
   | SOK_
-  | CSOK_
+  | SSOK_
   | MSG_
   | NID_
   | NMSG_
@@ -906,7 +907,7 @@ instance Encoding BrokerMsgTag where
     IDS_ -> "IDS"
     LNK_ -> "LNK"
     SOK_ -> "SOK"
-    CSOK_ -> "CSOK"
+    SSOK_ -> "SSOK"
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
@@ -926,7 +927,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "IDS" -> Just IDS_
     "LNK" -> Just LNK_
     "SOK" -> Just SOK_
-    "CSOK" -> Just CSOK_
+    "SSOK" -> Just SSOK_
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
@@ -1675,7 +1676,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SOK serviceId_
       | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
       | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
-    CSOK n -> e (CSOK_, ' ', n)
+    SSOK n -> e (SSOK_, ' ', n)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1723,7 +1724,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId}
     LNK_ -> LNK <$> _smpP <*> smpP
     SOK_ -> SOK <$> _smpP
-    CSOK_ -> CSOK <$> _smpP
+    SSOK_ -> SSOK <$> _smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))

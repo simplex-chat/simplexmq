@@ -47,6 +47,9 @@ class StoreQueueClass q => QueueStoreClass q s where
   updateQueueTime :: s -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   deleteStoreQueue :: s -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
   getCreateService :: s -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  setQueueRcvService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueNtfService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int64)
 
 data QueueCounts = QueueCounts
   { queueCount :: Int,

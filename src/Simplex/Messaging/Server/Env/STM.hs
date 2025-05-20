@@ -63,7 +63,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, PeerClientService, THandleParams, TransportPeer (..), VersionRangeSMP)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THPeerClientService, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
@@ -235,18 +235,24 @@ data AMsgStore =
 type Subscribed = Bool
 
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, ClientId, Subscribed),
-    subscribers :: TMap RecipientId (TVar AClient),
-    ntfSubscribedQ :: TQueue (NotifierId, ClientId, Subscribed),
-    notifiers :: TMap NotifierId (TVar AClient),
-    subClients :: TVar (IntMap AClient), -- clients with SMP subscriptions
-    ntfSubClients :: TVar (IntMap AClient), -- clients with Ntf subscriptions
-    serviceClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have SMP subscriptions
-    ntfServiceClients :: TMap ServiceId AClient, -- service clients with long-term certificates that have Ntf subscriptions
-    pendingSubEvents :: TVar (IntMap (NonEmpty (RecipientId, Subscribed))),
-    pendingNtfSubEvents :: TVar (IntMap (NonEmpty (NotifierId, Subscribed))),
+  { subscribers :: ServerSubscribers,
+    notifiers :: ServerSubscribers,
     savingLock :: Lock
   }
+
+data ServerSubscribers = ServerSubscribers
+  { subQ :: TQueue (ClientSub, ClientId),
+    queueSubscribers :: TMap QueueId (TVar AClient),
+    serviceSubscribers :: TMap ServiceId (TVar AClient), -- service clients with long-term certificates that have SMP subscriptions
+    totalServiceSubs :: TVar Int64,
+    subClients :: TVar (IntMap AClient), -- clients with individual or service subscriptions
+    pendingEvents :: TVar (IntMap (NonEmpty (RecipientId, Subscribed)))
+  }
+
+data ClientSub
+  = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
+  | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
+  | CSService ServiceId -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent
@@ -264,7 +270,9 @@ data Client s = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    rcvQ :: TBQueue (Maybe PeerClientService, NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
+    serviceSubs :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    ntfServiceSubs :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    rcvQ :: TBQueue (Maybe THPeerClientService, NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
@@ -288,36 +296,27 @@ data Sub = Sub
 
 newServer :: IO Server
 newServer = do
-  subscribedQ <- newTQueueIO
-  subscribers <- TM.emptyIO
-  ntfSubscribedQ <- newTQueueIO
-  notifiers <- TM.emptyIO
-  subClients <- newTVarIO IM.empty
-  ntfSubClients <- newTVarIO IM.empty
-  serviceClients <- TM.emptyIO
-  ntfServiceClients <- TM.emptyIO
-  pendingSubEvents <- newTVarIO IM.empty
-  pendingNtfSubEvents <- newTVarIO IM.empty
+  subscribers <- newServerSubscribers
+  notifiers <- newServerSubscribers
   savingLock <- createLockIO
-  pure
-    Server
-      { subscribedQ,
-        subscribers,
-        ntfSubscribedQ,
-        notifiers,
-        subClients,
-        ntfSubClients,
-        serviceClients,
-        ntfServiceClients,
-        pendingSubEvents,
-        pendingNtfSubEvents,
-        savingLock
-      }
+  pure Server {subscribers, notifiers, savingLock}
+
+newServerSubscribers :: IO ServerSubscribers
+newServerSubscribers = do
+  subQ <- newTQueueIO
+  queueSubscribers <- TM.emptyIO
+  serviceSubscribers <- TM.emptyIO
+  totalServiceSubs <- newTVarIO 0
+  subClients <- newTVarIO IM.empty
+  pendingEvents <- newTVarIO IM.empty
+  pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
 newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client (MsgStore qs ms))
 newClient _ _ clientId qSize clientTHParams createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
+  serviceSubs <- newTVarIO 0
+  ntfServiceSubs <- newTVarIO 0
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
@@ -327,7 +326,25 @@ newClient _ _ clientId qSize clientTHParams createdAt = do
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
   sndActiveAt <- newTVarIO createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, clientTHParams, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return
+    Client
+      { clientId,
+        subscriptions,
+        ntfSubscriptions,
+        serviceSubs,
+        ntfServiceSubs,
+        rcvQ,
+        sndQ,
+        msgQ,
+        procThreads,
+        endThreads,
+        endThreadSeq,
+        clientTHParams,
+        connected,
+        createdAt,
+        rcvActiveAt,
+        sndActiveAt
+      }
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do
