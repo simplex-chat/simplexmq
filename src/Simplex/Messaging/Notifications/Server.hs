@@ -19,6 +19,7 @@ module Simplex.Messaging.Notifications.Server where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (mapConcurrently)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -68,6 +69,7 @@ import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.QueueStore (getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, periodStatDataCounts, updatePeriodStats)
+import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
@@ -78,7 +80,8 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
-import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, unliftIO, withFile)
+import System.Timeout (timeout)
+import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, race_, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -140,9 +143,13 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       logNote "Saving server state..."
       saveServer
       NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
-      liftIO $ readTVarIO smpSubscribers >>= mapM_ (\SMPSubscriber {subThreadId} -> readTVarIO subThreadId >>= mapM_ (deRefWeak >=> mapM_ killThread))
+      liftIO $ readTVarIO smpSubscribers >>= mapM_ stopSubscriber
       liftIO $ closeSMPClientAgent smpAgent
       logNote "Server stopped"
+      where
+        stopSubscriber v =
+          atomically (tryReadTMVar $ sessionVar v)
+            >>= mapM (deRefWeak . subThreadId >=> mapM_ killThread)
 
     saveServer :: M ()
     saveServer = asks store >>= liftIO . closeNtfDbStore >> saveServerStats
@@ -440,97 +447,100 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
                   afterSubId_' = Just $ fst $ last subs
               if len < dbBatchSize then pure n' else loop n' afterSubId_'
 
-ntfSubscriber :: NtfSubscriber -> M ()
-ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAgent {msgQ, agentQ}} = do
-  raceAny_ [subscribe, receiveSMP, receiveAgent]
+-- this function is concurrency-safe - only onle subscriber per server can be created at a time,
+-- other threads would wait for the first thread to create it.
+subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> NonEmpty ServerNtfSub -> IO ()
+subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer ntfSubs =
+  getSubscriberVar
+    >>= either createSMPSubscriber waitForSMPSubscriber
+    >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSubs)
   where
-    subscribe :: M ()
-    subscribe = forever $ do
-      (srv, subs) <- atomically $ readTBQueue newSubQ
-      SMPSubscriber {subscriberSubQ} <- getSMPSubscriber srv
-      atomically $ writeTQueue subscriberSubQ subs
+    getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
+    getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
 
-    -- TODO [ntfdb] this does not guarantee that only one subscriber per server is created (there should be TMVar in the map)
-    -- This does not need changing if single newSubQ remains, but if it is removed, it need to change
-    getSMPSubscriber :: SMPServer -> M SMPSubscriber
-    getSMPSubscriber smpServer =
-      liftIO (TM.lookupIO smpServer smpSubscribers) >>= maybe createSMPSubscriber pure
-      where
-        createSMPSubscriber = do
-          sub@SMPSubscriber {subThreadId} <- liftIO $ newSMPSubscriber smpServer
-          atomically $ TM.insert smpServer sub smpSubscribers
-          tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber sub)
-          atomically . writeTVar subThreadId $ Just tId
-          pure sub
+    createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
+    createSMPSubscriber v =
+      E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
+        q <- newTQueueIO
+        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber q)
+        let sub = SMPSubscriber {smpServer, subscriberSubQ = q, subThreadId = tId}
+        atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
+        pure $ Just sub
 
-    runSMPSubscriber :: SMPSubscriber -> M ()
-    runSMPSubscriber SMPSubscriber {smpServer, subscriberSubQ} = do
+    waitForSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
+    waitForSMPSubscriber v =
+      -- reading without timeout first to avoid creating extra thread for timeout
+      atomically (tryReadTMVar $ sessionVar v)
+        >>= maybe (timeout 10000000 $ atomically $ readTMVar $ sessionVar v) (pure . Just)
+        >>= maybe (logError "SMP subscriber timeout" >> removeSubscriber v) (pure . Just)
+
+    -- create/waitForSMPSubscriber should never throw, removing it from map in case it did
+    removeSubscriber v = do
+      atomically $ removeSessVar v smpServer smpSubscribers
+      pure Nothing
+
+    runSMPSubscriber :: TQueue (NonEmpty ServerNtfSub) -> IO ()
+    runSMPSubscriber q = forever $ do
+      -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
+      -- this should be analysed once we have prometheus stats
+      subs <- atomically $ readTQueue q
+      updated <- batchUpdateSubStatus st subs NSPending
+      logSubStatus smpServer "subscribing" (L.length subs) updated
+      subscribeQueuesNtfs ca smpServer $ L.map snd subs
+
+ntfSubscriber :: NtfSubscriber -> M ()
+ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
+  race_ receiveSMP receiveAgent
+  where
+    receiveSMP = do
       st <- asks store
-      forever $ do
-        -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
-        -- this should be analysed once we have prometheus stats
-        subs <- atomically $ readTQueue subscriberSubQ
-        updated <- liftIO $ batchUpdateSubStatus st subs NSPending
-        logSubStatus smpServer "subscribing" (L.length subs) updated
-        liftIO $ subscribeQueuesNtfs ca smpServer $ L.map snd subs
-
-    receiveSMP :: M ()
-    receiveSMP = forever $ do
-      ((_, srv, _), _thVersion, sessionId, ts) <- atomically $ readTBQueue msgQ
-      forM ts $ \(ntfId, t) -> case t of
-        STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
-        STResponse {} -> pure () -- it was already reported as timeout error
-        STEvent msgOrErr -> do
-          let smpQueue = SMPQueueNtf srv ntfId
-          case msgOrErr of
-            Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
-              ntfTs <- liftIO getSystemTime
-              st <- asks store
-              NtfPushServer {pushQ} <- asks pushServer
-              stats <- asks serverStats
-              liftIO $ updatePeriodStats (activeSubs stats) ntfId
-              let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-              ntfs_ <- liftIO $ addTokenLastNtf st newNtf
-              forM_ ntfs_ $ \(tkn, lastNtfs) -> atomically $ writeTBQueue pushQ (tkn, PNMessage lastNtfs)
-              incNtfStat ntfReceived
-            Right SMP.END -> do
-              whenM (atomically $ activeClientSession' ca sessionId srv) $ do
-                st <- asks store
-                void $ liftIO $ updateSrvSubStatus st smpQueue NSEnd
-            Right SMP.DELD -> do 
-              st <- asks store
-              void $ liftIO $ updateSrvSubStatus st smpQueue NSDeleted
-            Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
-            Right _ -> logError "SMP server unexpected response"
-            Left e -> logError $ "SMP client error: " <> tshow e
+      NtfPushServer {pushQ} <- asks pushServer
+      stats <- asks serverStats
+      liftIO $ forever $ do
+        ((_, srv, _), _thVersion, sessionId, ts) <- atomically $ readTBQueue msgQ
+        forM ts $ \(ntfId, t) -> case t of
+          STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+          STResponse {} -> pure () -- it was already reported as timeout error
+          STEvent msgOrErr -> do
+            let smpQueue = SMPQueueNtf srv ntfId
+            case msgOrErr of
+              Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
+                ntfTs <- getSystemTime                
+                updatePeriodStats (activeSubs stats) ntfId
+                let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
+                ntfs_ <- addTokenLastNtf st newNtf
+                forM_ ntfs_ $ \(tkn, lastNtfs) -> atomically $ writeTBQueue pushQ (tkn, PNMessage lastNtfs)
+                incNtfStat_ stats ntfReceived
+              Right SMP.END ->
+                whenM (atomically $ activeClientSession' ca sessionId srv) $
+                  void $ updateSrvSubStatus st smpQueue NSEnd
+              Right SMP.DELD ->
+                void $ updateSrvSubStatus st smpQueue NSDeleted
+              Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
+              Right _ -> logError "SMP server unexpected response"
+              Left e -> logError $ "SMP client error: " <> tshow e
 
     receiveAgent = do
       st <- asks store
-      forever $
+      liftIO $ forever $
         atomically (readTBQueue agentQ) >>= \case
           CAConnected srv ->
             logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv subs -> do
             forM_ (L.nonEmpty $ map snd $ S.toList subs) $ \nIds -> do
-              updated <- liftIO $ batchUpdateSrvSubStatus st srv nIds NSInactive
+              updated <- batchUpdateSrvSubStatus st srv nIds NSInactive
               logSubStatus srv "disconnected" (L.length nIds) updated
           CASubscribed srv _ subs -> do
-            updated <- liftIO $ batchUpdateSrvSubAssocs st srv subs NSActive
+            updated <- batchUpdateSrvSubAssocs st srv subs NSActive
             logSubStatus srv "subscribed" (L.length subs) updated
           CASubError srv _ errs -> do
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
-              updated <- liftIO $ batchUpdateSrvSubStatuses st srv subStatuses
+              updated <- batchUpdateSrvSubStatuses st srv subStatuses
               logSubErrors srv subStatuses updated
 
-    logSubStatus :: SMPServer -> T.Text -> Int -> Int64 -> M ()
-    logSubStatus srv event n updated =
-      logInfo $ "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subs, " <> tshow updated <> " subs updated)"
-
-    logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> M ()
+    logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> IO ()
     logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
       logError $ "SMP server subscription errors " <> showServer' srv <> ": " <> tshow (L.head ss) <> " (" <> tshow (length ss) <> " errors, " <> tshow updated <> " subs updated)"
-
-    showServer' = decodeLatin1 . strEncode . host
 
     subErrorStatus :: SMPClientError -> Maybe NtfSubStatus
     subErrorStatus = \case
@@ -548,6 +558,13 @@ ntfSubscriber NtfSubscriber {smpSubscribers, newSubQ, smpAgent = ca@SMPClientAge
         -- Note on moving to PostgreSQL: the idea of logging errors without e is removed here
         updateErr :: Show e => ByteString -> e -> Maybe NtfSubStatus
         updateErr errType e = Just $ NSErr $ errType <> bshow e
+
+logSubStatus :: SMPServer -> T.Text -> Int -> Int64 -> IO ()
+logSubStatus srv event n updated =
+  logInfo $ "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subs, " <> tshow updated <> " subs updated)"
+
+showServer' :: SMPServer -> Text
+showServer' = decodeLatin1 . strEncode . host
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
@@ -703,7 +720,7 @@ verifyNtfTransmission st auth_ (tAuth, authorized, (corrId, entId, _)) = \case
       e -> VRFailed e
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
-client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPushServer {pushQ} =
+client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServer {pushQ} =
   forever $
     atomically (readTBQueue rcvQ)
       >>= mapM processCommand
@@ -781,7 +798,8 @@ client NtfServerClient {rcvQ, sndQ} NtfSubscriber {newSubQ, smpAgent = ca} NtfPu
         resp <-
           withNtfStore (`addNtfSubscription` sub) $ \case
             True -> do
-              atomically $ writeTBQueue newSubQ (srv, [(subId, (nId, nKey))])
+              st <- asks store
+              liftIO $ subscribeNtfs ns st srv [(subId, (nId, nKey))]
               incNtfStat subCreated
               pure $ NRSubId subId
             False -> pure $ NRErr AUTH
@@ -823,11 +841,15 @@ withNtfStore stAction continue = do
 incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
 incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
 incNtfStatT _ statSel = incNtfStat statSel
+{-# INLINE incNtfStatT #-}
 
 incNtfStat :: (NtfServerStats -> IORef Int) -> M ()
-incNtfStat statSel = do
-  stats <- asks serverStats
-  liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
+incNtfStat statSel = asks serverStats >>= liftIO . (`incNtfStat_` statSel)
+{-# INLINE incNtfStat #-}
+
+incNtfStat_ :: NtfServerStats -> (NtfServerStats -> IORef Int) -> IO ()
+incNtfStat_ stats statSel = atomicModifyIORef'_ (statSel stats) (+ 1)
+{-# INLINE incNtfStat_ #-}
 
 restoreServerLastNtfs :: NtfSTMStore -> FilePath -> IO ()
 restoreServerLastNtfs st f =

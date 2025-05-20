@@ -37,6 +37,7 @@ import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
+import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, THandleParams, TransportPeer (..))
@@ -115,29 +116,25 @@ newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsCo
         exitFailure
 
 data NtfSubscriber = NtfSubscriber
-  { smpSubscribers :: TMap SMPServer SMPSubscriber,
-    newSubQ :: TBQueue (SMPServer, NonEmpty ServerNtfSub),
+  { smpSubscribers :: TMap SMPServer SMPSubscriberVar,
+    subscriberSeq :: TVar Int,
     smpAgent :: SMPClientAgent
   }
+
+type SMPSubscriberVar = SessionVar SMPSubscriber
 
 newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
 newNtfSubscriber qSize smpAgentCfg random = do
   smpSubscribers <- TM.emptyIO
-  newSubQ <- newTBQueueIO qSize
+  subscriberSeq <- newTVarIO 0
   smpAgent <- newSMPClientAgent smpAgentCfg random
-  pure NtfSubscriber {smpSubscribers, newSubQ, smpAgent}
+  pure NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent}
 
 data SMPSubscriber = SMPSubscriber
   { smpServer :: SMPServer,
     subscriberSubQ :: TQueue (NonEmpty ServerNtfSub),
-    subThreadId :: TVar (Maybe (Weak ThreadId))
+    subThreadId :: Weak ThreadId
   }
-
-newSMPSubscriber :: SMPServer -> IO SMPSubscriber
-newSMPSubscriber smpServer = do
-  subscriberSubQ <- newTQueueIO
-  subThreadId <- newTVarIO Nothing
-  pure SMPSubscriber {smpServer, subscriberSubQ, subThreadId}
 
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknRec, PushNotification),
