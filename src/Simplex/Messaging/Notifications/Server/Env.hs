@@ -54,7 +54,6 @@ data NtfServerConfig = NtfServerConfig
     subIdBytes :: Int,
     regCodeBytes :: Int,
     clientQSize :: Natural,
-    subQSize :: Natural,
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
@@ -95,14 +94,14 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, startOptions} = do
+newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, startOptions} = do
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
   let smpAgentCfg' = smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {clientCredentials = Just tlsServerCreds}}
-  subscriber <- newNtfSubscriber subQSize smpAgentCfg' random
+  subscriber <- newNtfSubscriber smpAgentCfg' random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
@@ -123,8 +122,8 @@ data NtfSubscriber = NtfSubscriber
 
 type SMPSubscriberVar = SessionVar SMPSubscriber
 
-newNtfSubscriber :: Natural -> SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
-newNtfSubscriber qSize smpAgentCfg random = do
+newNtfSubscriber :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
+newNtfSubscriber smpAgentCfg random = do
   smpSubscribers <- TM.emptyIO
   subscriberSeq <- newTVarIO 0
   smpAgent <- newSMPClientAgent smpAgentCfg random

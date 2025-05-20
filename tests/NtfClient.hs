@@ -134,7 +134,6 @@ ntfServerCfg =
       subIdBytes = 24,
       regCodeBytes = 32,
       clientQSize = 2,
-      subQSize = 2,
       pushQSize = 2,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
       apnsConfig =
