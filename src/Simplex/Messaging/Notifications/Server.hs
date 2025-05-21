@@ -298,7 +298,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
               | otherwise = (own, other + 1)
               where
                 host = safeDecodeUtf8 $ strEncode h
-            
+
 
     controlPortThread_ :: NtfServerConfig -> [M ()]
     controlPortThread_ NtfServerConfig {controlPort = Just port} = [runCPServer port]
@@ -504,7 +504,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             let smpQueue = SMPQueueNtf srv ntfId
             case msgOrErr of
               Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
-                ntfTs <- getSystemTime                
+                ntfTs <- getSystemTime
                 updatePeriodStats (activeSubs stats) ntfId
                 let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
                 ntfs_ <- addTokenLastNtf st newNtf
