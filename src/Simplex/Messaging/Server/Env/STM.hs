@@ -246,7 +246,7 @@ data ServerSubscribers = ServerSubscribers
     serviceSubscribers :: TMap ServiceId (TVar AClient), -- service clients with long-term certificates that have SMP subscriptions
     totalServiceSubs :: TVar Int64,
     subClients :: TVar (IntMap AClient), -- clients with individual or service subscriptions
-    pendingEvents :: TVar (IntMap (NonEmpty (RecipientId, Subscribed)))
+    pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
 
 data ClientSub
@@ -270,8 +270,8 @@ data Client s = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    serviceSubs :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
-    ntfServiceSubs :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (Maybe THPeerClientService, NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
@@ -315,8 +315,8 @@ newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> THandleParams SM
 newClient _ _ clientId qSize clientTHParams createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
-  serviceSubs <- newTVarIO 0
-  ntfServiceSubs <- newTVarIO 0
+  serviceSubsCount <- newTVarIO 0
+  ntfServiceSubsCount <- newTVarIO 0
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
@@ -331,8 +331,8 @@ newClient _ _ clientId qSize clientTHParams createdAt = do
       { clientId,
         subscriptions,
         ntfSubscriptions,
-        serviceSubs,
-        ntfServiceSubs,
+        serviceSubsCount,
+        ntfServiceSubsCount,
         rcvQ,
         sndQ,
         msgQ,

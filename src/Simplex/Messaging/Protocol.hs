@@ -306,7 +306,7 @@ data SParty :: Party -> Type where
   SRecipient :: SParty Recipient
   SSender :: SParty Sender
   SNotifier :: SParty Notifier
-  SSenderLink :: SParty LinkClient 
+  SSenderLink :: SParty LinkClient
   SProxiedClient :: SParty ProxiedClient
   SProxyService :: SParty ProxyService
 
@@ -588,8 +588,8 @@ data BrokerMsg where
   PKEY :: SessionId -> VersionRangeSMP -> (X.CertificateChain, X.SignedExact X.PubKey) -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
-  -- TODO [certs] ENDS when another client session subscribes the same service
   END :: BrokerMsg
+  ENDS :: Word32 -> BrokerMsg
   DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
@@ -824,6 +824,7 @@ data BrokerMsgTag
   | RRES_
   | PRES_
   | END_
+  | ENDS_
   | DELD_
   | INFO_
   | OK_
@@ -915,6 +916,7 @@ instance Encoding BrokerMsgTag where
     RRES_ -> "RRES"
     PRES_ -> "PRES"
     END_ -> "END"
+    ENDS_ -> "ENDS"
     DELD_ -> "DELD"
     INFO_ -> "INFO"
     OK_ -> "OK"
@@ -935,6 +937,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "RRES" -> Just RRES_
     "PRES" -> Just PRES_
     "END" -> Just END_
+    "ENDS" -> Just ENDS_
     "DELD" -> Just DELD_
     "INFO" -> Just INFO_
     "OK" -> Just OK_
@@ -1652,7 +1655,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SProxiedClient <$> case tag of
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
-    CT SNotifier tag -> 
+    CT SNotifier tag ->
       pure $ Cmd SNotifier $ case tag of
         NSUB_ -> NSUB
         NSSUB_ -> NSSUB
@@ -1685,6 +1688,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
+    ENDS n -> e (ENDS_, ' ', n)
     DELD
       | v >= deletedEventSMPVersion -> e DELD_
       | otherwise -> e END_
@@ -1731,6 +1735,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
+    ENDS_ -> ENDS <$> _smpP
     DELD_ -> pure DELD
     INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
