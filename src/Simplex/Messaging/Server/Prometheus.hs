@@ -35,11 +35,6 @@ data RealTimeMetrics = RealTimeMetrics
     clientsCount :: Int,
     smpSubs :: RTSubscriberMetrics,
     ntfSubs :: RTSubscriberMetrics,
-
-    -- smpSubsCount :: Int,
-    -- smpSubClientsCount :: Int,
-    -- ntfSubsCount :: Int,
-    -- ntfSubClientsCount :: Int,
     loadedCounts :: LoadedQueueCounts
   }
 
@@ -61,10 +56,6 @@ prometheusMetrics sm rtm ts =
         clientsCount,
         smpSubs,
         ntfSubs,
-        -- smpSubsCount,
-        -- smpSubClientsCount,
-        -- ntfSubsCount,
-        -- ntfSubClientsCount,
         loadedCounts
       } = rtm
     ServerStatsData
