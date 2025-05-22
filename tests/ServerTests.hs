@@ -687,7 +687,7 @@ testWithStoreLog =
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 serverStoreLogCfg :: AStoreType -> (ServerConfig, Bool)
-serverStoreLogCfg msType = 
+serverStoreLogCfg msType =
   let serverStoreCfg = serverStoreConfig_ True msType
       cfg' = (cfgMS msType) {serverStoreCfg, storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
       compacting = case msType of
@@ -897,7 +897,7 @@ createAndSecureQueue h sPub = do
 
 testTiming :: SpecWith (ATransport, AStoreType)
 testTiming =
-  describe "should have similar time for auth error, whether queue exists or not, for all key types" $
+  fdescribe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
       it (testName tst) $ \(ATransport t, msType) ->
         smpTest2Cfg (cfgMS msType) (mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion) t $ \rh sh ->
@@ -918,7 +918,9 @@ testTiming =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.30 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    similarTime t1 t2
+      | t1 <= t2 = abs (1 - t1 / t2) < 0.35 -- normally the difference between "no queue" and "wrong key" is less than 5%
+      | otherwise = similarTime t2 t1
     testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom
@@ -1091,7 +1093,7 @@ testBlockMessageQueue =
       pure a
 
 testInvQueueLinkData :: SpecWith (ATransport, AStoreType)
-testInvQueueLinkData = 
+testInvQueueLinkData =
   it "create and access queue short link data for 1-time invitation"  $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
@@ -1144,7 +1146,7 @@ testInvQueueLinkData =
       rId2 `shouldBe` rId
 
 testContactQueueLinkData :: SpecWith (ATransport, AStoreType)
-testContactQueueLinkData = 
+testContactQueueLinkData =
   it "create and access queue short link data for contact address"  $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom

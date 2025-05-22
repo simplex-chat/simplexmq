@@ -136,9 +136,9 @@ notificationTests ps@(t, _) = do
     it "should fail with incorrect fingerprint" $ do
       testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
   describe "Managing notification subscriptions" $ do
-    describe "should create notification subscription for existing connection" $
+    fdescribe "should create notification subscription for existing connection" $
       testNtfMatrix ps testNotificationSubscriptionExistingConnection
-    describe "should create notification subscription for new connection" $
+    fdescribe "should create notification subscription for new connection" $
       testNtfMatrix ps testNotificationSubscriptionNewConnection
     it "should change notifications mode" $
       withSmpServer ps $
@@ -552,28 +552,36 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     -- register notification token
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
+    liftIO $ putStrLn "after registerNtfToken"
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
+    liftIO $ putStrLn "after getMockNotification"
     verification <- ntfData .-> "verification"
     vNonce <- C.cbNonce <$> ntfData .-> "nonce"
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
+    liftIO $ putStrLn "after checkNtfToken"
     -- send message
     liftIO $ threadDelay 250000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
     (nonce, message) <- messageNotification apns tkn
+    liftIO $ putStrLn "after messageNotification"
     pure (bobId, aliceId, nonce, message)
 
   Right [NotificationInfo {ntfConnId = cId, ntfMsgMeta = Just NMsgMeta {msgTs}}] <- runExceptT $ getNotificationConns alice nonce message
   cId `shouldBe` bobId
+  putStrLn "after getNotificationConns"
   -- alice client already has subscription for the connection,
   [Left (CMD PROHIBITED _)] <- getConnectionMessages alice [ConnMsgReq cId 1 $ Just $ systemToUTCTime msgTs]
+  putStrLn "after getConnectionMessages"
 
-  threadDelay 500000
+  threadDelay 1000000
   suspendAgent alice 0
+  putStrLn "after suspendAgent"
   closeDBStore store
+  putStrLn "after closeDBStore"
   threadDelay 1000000 >> callCommand "sync" >> threadDelay 1000000
   putStrLn "before opening the database from another agent"
 
