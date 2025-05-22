@@ -897,7 +897,7 @@ createAndSecureQueue h sPub = do
 
 testTiming :: SpecWith (ATransport, AStoreType)
 testTiming =
-  fdescribe "should have similar time for auth error, whether queue exists or not, for all key types" $
+  describe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
       it (testName tst) $ \(ATransport t, msType) ->
         smpTest2Cfg (cfgMS msType) (mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion) t $ \rh sh ->
