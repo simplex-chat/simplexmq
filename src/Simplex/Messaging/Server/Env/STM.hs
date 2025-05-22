@@ -306,9 +306,13 @@ data ServerSubscribers = ServerSubscribers
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
 
--- not exported, to prevent concurrent Map lookups inside STM transactions.
+-- not exported, to prevent accidental concurrent Map lookups inside STM transactions.
 -- Map stores TVars with pointers to the clients rather than client ID to allow reading the same TVar
 -- inside transactions to ensure that transaction is re-evaluated in case subscriber changes.
+-- Storing Maybe allows to have continuity of subscription when the same user client disconnects and re-connects -
+-- any STM transaction that reads subscribed client will re-evaluate in this case.
+-- The subscriptions that were made at any point are not removed -
+-- this is a better trade-off with intermittently connected mobile clients.
 newtype SubscribedClients = SubscribedClients (TMap EntityId (TVar (Maybe AClient)))
 
 getSubscribedClients :: SubscribedClients -> IO (Map EntityId (TVar (Maybe AClient)))
