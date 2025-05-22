@@ -53,7 +53,6 @@ data NtfServerConfig = NtfServerConfig
     subIdBytes :: Int,
     regCodeBytes :: Int,
     clientQSize :: Natural,
-    subQSize :: Natural,
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,

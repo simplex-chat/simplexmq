@@ -83,7 +83,7 @@ ntfTestPrometheusMetricsFile :: FilePath
 ntfTestPrometheusMetricsFile = "tests/tmp/ntf-server-metrics.txt"
 
 ntfTestStoreDBOpts :: DBOpts
-ntfTestStoreDBOpts = 
+ntfTestStoreDBOpts =
   DBOpts
     { connstr = ntfTestServerDBConnstr,
       schema = "ntf_server",
@@ -134,7 +134,6 @@ ntfServerCfg =
       subIdBytes = 24,
       regCodeBytes = 32,
       clientQSize = 2,
-      subQSize = 2,
       pushQSize = 2,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
       apnsConfig =

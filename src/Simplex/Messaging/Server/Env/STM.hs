@@ -41,6 +41,10 @@ module Simplex.Messaging.Server.Env.STM
     newEnv,
     mkJournalStoreConfig,
     newClient,
+    getServerClients,
+    getServerClient,
+    insertServerClient,
+    deleteServerClient,
     clientId',
     newSubscription,
     newProhibitedSub,
@@ -108,6 +112,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Util (ifM)
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..))
@@ -245,7 +250,6 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
-    clients :: TVar (IntMap AClient),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
@@ -278,10 +282,14 @@ data AMsgStore =
 type Subscribed = Bool
 
 data Server = Server
-  { subscribers :: ServerSubscribers,
+  { clients :: ServerClients,
+    subscribers :: ServerSubscribers,
     ntfSubscribers :: ServerSubscribers,
     savingLock :: Lock
   }
+
+-- not exported, to prevent accidental concurrent IntMap lookups inside STM transactions.
+newtype ServerClients = ServerClients {serverClients :: TVar (IntMap AClient)}
 
 data ServerSubscribers = ServerSubscribers
   { subQ :: TQueue (QueueId, ClientId, Subscribed),
@@ -331,10 +339,32 @@ data Sub = Sub
 
 newServer :: IO Server
 newServer = do
+  clients <-  newTVarIO mempty
   subscribers <- newServerSubscribers
   ntfSubscribers <- newServerSubscribers
   savingLock <- createLockIO
-  return Server {subscribers, ntfSubscribers, savingLock}
+  return Server {clients = ServerClients clients, subscribers, ntfSubscribers, savingLock}
+
+getServerClients :: Server -> IO (IntMap AClient)
+getServerClients = readTVarIO . serverClients . clients
+{-# INLINE getServerClients #-}
+
+getServerClient :: ClientId -> Server -> IO (Maybe AClient)
+getServerClient cId s = IM.lookup cId <$> getServerClients s
+{-# INLINE getServerClient #-}
+
+insertServerClient :: AClient -> Server -> IO Bool
+insertServerClient ac@(AClient _ _ Client {clientId, connected}) Server {clients} =
+  atomically $
+    ifM
+      (readTVar connected)
+      (True <$ modifyTVar' (serverClients clients) (IM.insert clientId ac))
+      (pure False)
+{-# INLINE insertServerClient #-}
+
+deleteServerClient :: ClientId -> Server -> IO ()
+deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClients clients) $ IM.delete cId
+{-# INLINE deleteServerClient #-}
 
 newServerSubscribers :: IO ServerSubscribers
 newServerSubscribers = do
@@ -357,7 +387,24 @@ newClient _ _ clientId qSize thVersion sessionId createdAt = do
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
   sndActiveAt <- newTVarIO createdAt
-  return Client {clientId, subscriptions, ntfSubscriptions, rcvQ, sndQ, msgQ, procThreads, endThreads, endThreadSeq, thVersion, sessionId, connected, createdAt, rcvActiveAt, sndActiveAt}
+  return
+    Client
+      { clientId,
+        subscriptions,
+        ntfSubscriptions,
+        rcvQ,
+        sndQ,
+        msgQ,
+        procThreads,
+        endThreads,
+        endThreadSeq,
+        thVersion,
+        sessionId,
+        connected,
+        createdAt,
+        rcvActiveAt,
+        sndActiveAt
+      }
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do
@@ -407,9 +454,24 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   serverStats <- newServerStats =<< getCurrentTime
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
-  clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure
+    Env
+      { serverActive,
+        config,
+        serverInfo,
+        server,
+        serverIdentity,
+        msgStore,
+        ntfStore,
+        random,
+        tlsServerCreds,
+        httpServerCreds,
+        serverStats,
+        sockets,
+        clientSeq,
+        proxyAgent
+      }
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
     loadStoreLog mkQ f st = do
