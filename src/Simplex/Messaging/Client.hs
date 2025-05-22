@@ -424,7 +424,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
   { -- | size of TBQueue to use for server commands and responses
     qSize :: Natural,
     -- | default server port if port is not specified in ProtocolServer
-    defaultTransport :: (ServiceName, ATransport),
+    defaultTransport :: (ServiceName, ATransport 'TClient),
     -- | network configuration
     networkConfig :: NetworkConfig,
     clientALPN :: Maybe [ALPN],
@@ -553,7 +553,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             msgQ
           }
 
-    runClient :: (ServiceName, ATransport) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+    runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig useHost useSNI) {alpn = clientALPN}
@@ -567,7 +567,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
         Just (Left e) -> pure $ Left e
         Nothing -> killThread tId $> Left PCENetworkError
 
-    useTransport :: (ServiceName, ATransport)
+    useTransport :: (ServiceName, ATransport 'TClient)
     useTransport = case port srv of
       "" -> case protocolTypeI @(ProtoType msg) of
         SPSMP | smpWebPort -> ("443", transport @TLS)
@@ -581,7 +581,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
             _ -> False
           SWPOff -> False
 
-    client :: forall c. Transport c => TProxy c -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c -> IO ()
+    client :: forall c. Transport c => TProxy c 'TClient -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c 'TClient -> IO ()
     client _ c cVar h = do
       ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
       runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer) >>= \case

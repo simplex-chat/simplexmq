@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.HTTP2.Server where
@@ -13,7 +14,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
+import Simplex.Messaging.Transport (ALPN, SessionId, TLS, TransportPeer (..), closeConnection, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig (..), loadServerCredential, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
@@ -67,10 +68,10 @@ runHTTP2Server started port bufferSize srvSupported srvCreds alpn_ transportConf
   where
     setup = runTransportServer started port srvSupported srvCreds alpn_ transportConfig
 
-runHTTP2ServerWith :: BufferSize -> ((TLS -> IO ()) -> a) -> HTTP2ServerFunc -> a
+runHTTP2ServerWith :: BufferSize -> ((TLS 'TServer -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith = runHTTP2ServerWith_ Nothing (\_sessId -> pure ())
 
-runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> ((TLS -> IO ()) -> a) -> HTTP2ServerFunc -> a
+runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> ((TLS 'TServer -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup $ \tls -> do
   activeAt <- newTVarIO =<< getSystemTime
   tid_ <- mapM (forkIO . expireInactiveClient tls activeAt) expCfg_

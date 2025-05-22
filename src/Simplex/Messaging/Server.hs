@@ -79,6 +79,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
+import qualified Data.X509 as X
 import GHC.Conc.Signal
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
@@ -177,28 +178,28 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     )
     `finally` stopServer s
   where
-    runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
+    runServer :: (ServiceName, ASrvTransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, addHTTP) = do
-      smpCreds <- asks tlsServerCreds
+      smpCreds@(srvCert, srvKey) <- asks tlsServerCreds
       httpCreds_ <- asks httpServerCreds
       ss <- liftIO newSocketState
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
-      serverSignKey <- either fail pure $ fromTLSCredentials smpCreds
+      srvSignKey <- either fail pure $ fromTLSPrivKey srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS chooseCreds (Just combinedALPNs) tCfg $ \s h ->
             case cast h of
-              Just TLS {tlsContext} | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
-              _ -> runClient serverSignKey t h `runReaderT` env
+              Just (TLS {tlsContext} :: TLS 'TServer) | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
+              _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             chooseCreds = maybe smpCreds (\_host -> httpCreds)
             combinedALPNs = supportedSMPHandshakes <> httpALPN
             httpALPN :: [ALPN]
             httpALPN = ["h2", "http/1.1"]
         _ ->
-          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
-    fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
+          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+    fromTLSPrivKey pk = C.x509ToPrivate (pk, []) >>= C.privKey
 
     sigIntHandlerThread :: M ()
     sigIntHandlerThread = do
@@ -589,13 +590,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           subClientsCount <- IS.size <$> readTVarIO subClients
           pure RTSubscriberMetrics {subsCount, subClientsCount}
 
-    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
-    runClient signKey tp h = do
+    runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
+    runClient srvCert srvSignKey tp h = do
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake signKey h ks kh smpServerVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 

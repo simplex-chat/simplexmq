@@ -46,7 +46,7 @@ import Simplex.Messaging.Server.Main (strParse)
 import Simplex.Messaging.Server.Main.Init (iniDbOpts)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
-import Simplex.Messaging.Transport (ATransport, simplexMQVersion)
+import Simplex.Messaging.Transport (ASrvTransport, simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, tshow)
@@ -286,7 +286,7 @@ ntfServerCLI cfgPath logPath =
       putStrLn "Configure notification server storage."
       exitFailure
 
-printNtfServerConfig :: [(ServiceName, ATransport, AddHTTP)] -> PostgresStoreCfg -> IO ()
+printNtfServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> PostgresStoreCfg -> IO ()
 printNtfServerConfig transports PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}, dbStoreLogPath} = do
   B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
   printServerConfig "NTF" transports dbStoreLogPath

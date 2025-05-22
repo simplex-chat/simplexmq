@@ -62,7 +62,7 @@ import Simplex.Messaging.Crypto.SNTRUP761
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Transport (TSbChainKeys (..), TLS (..), cGet, cPut)
+import Simplex.Messaging.Transport (TSbChainKeys (..), TLS (..), TransportPeer (..), cGet, cPut)
 import Simplex.Messaging.Transport.Buffer (peekBuffered)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
@@ -101,7 +101,7 @@ data RCHClient_ = RCHClient_
     endSession :: TMVar ()
   }
 
-type RCHostConnection = (NonEmpty RCCtrlAddress, RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
+type RCHostConnection = (NonEmpty RCCtrlAddress, RCSignedInvitation, RCHostClient, RCStepTMVar (SessionCode, TLS 'TServer, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)))
 
 connectRCHost :: TVar ChaChaDRG -> RCHostPairing -> J.Value -> Bool -> Maybe RCCtrlAddress -> Maybe Word16 -> ExceptT RCErrorType IO RCHostConnection
 connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ctrlAppInfo multicast rcAddrPrefs_ port_ = do
@@ -131,7 +131,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
       endSession <- newEmptyTMVarIO
       hostCAHash <- newEmptyTMVarIO
       pure RCHClient_ {startedPort, announcer, hostCAHash, endSession}
-    runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> IO (Async ())
+    runClient :: RCHClient_ -> RCStepTMVar (SessionCode, TLS 'TServer, RCStepTMVar (RCHostSession, RCHostHello, RCHostPairing)) -> RCHostKeys -> IO (Async ())
     runClient RCHClient_ {startedPort, announcer, hostCAHash, endSession} r hostKeys = do
       tlsCreds <- genTLSCredentials drg caKey caCert
       startTLSServer port_ startedPort tlsCreds (tlsHooks r knownHost hostCAHash) $ \tls ->
@@ -249,7 +249,7 @@ data RCCClient_ = RCCClient_
     endSession :: TMVar ()
   }
 
-type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
+type RCCtrlConnection = (RCCtrlClient, RCStepTMVar (SessionCode, TLS 'TClient, RCStepTMVar (RCCtrlSession, RCCtrlPairing)))
 
 -- app should determine whether it is a new or known pairing based on CA fingerprint in the invitation
 connectRCCtrl :: TVar ChaChaDRG -> RCVerifiedInvitation -> Maybe RCCtrlPairing -> J.Value -> ExceptT RCErrorType IO RCCtrlConnection
@@ -280,7 +280,7 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
       confirmSession <- newEmptyTMVarIO
       endSession <- newEmptyTMVarIO
       pure RCCClient_ {confirmSession, endSession}
-    runClient :: RCCClient_ -> RCStepTMVar (SessionCode, TLS, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
+    runClient :: RCCClient_ -> RCStepTMVar (SessionCode, TLS 'TClient, RCStepTMVar (RCCtrlSession, RCCtrlPairing)) -> ExceptT RCErrorType IO ()
     runClient RCCClient_ {confirmSession, endSession} r = do
       clientCredentials <- liftIO $ Just <$> genTLSCredentials drg caKey caCert
       let clientConfig = defaultTransportClientConfig {clientCredentials}
@@ -315,12 +315,12 @@ catchRCError = catchAllErrors $ \e -> case fromException e of
 putRCError :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
 a `putRCError` r = a `catchRCError` \e -> atomically (tryPutTMVar r $ Left e) >> throwE e
 
-sendRCPacket :: Encoding a => TLS -> a -> ExceptT RCErrorType IO ()
+sendRCPacket :: Encoding a => TLS p -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
   b <- liftEitherWith (const RCEBlockSize) $ C.pad (smpEncode pkt) xrcpBlockSize
   liftIO $ cPut tls b
 
-receiveRCPacket :: Encoding a => TLS -> ExceptT RCErrorType IO a
+receiveRCPacket :: Encoding a => TLS p -> ExceptT RCErrorType IO a
 receiveRCPacket tls = do
   b <- liftIO $ cGet tls xrcpBlockSize
   when (B.length b /= xrcpBlockSize) $ throwE RCEBlockSize

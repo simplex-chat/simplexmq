@@ -71,7 +71,7 @@ import Simplex.Messaging.Server.QueueStore (getSystemDate)
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, periodStatDataCounts, updatePeriodStats)
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
-import Simplex.Messaging.Transport (ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
 import Simplex.Messaging.Util
@@ -120,7 +120,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
     )
     `finally` stopServer
   where
-    runServer :: (ServiceName, ATransport, AddHTTP) -> M ()
+    runServer :: (ServiceName, ASrvTransport, AddHTTP) -> M ()
     runServer (tcpPort, ATransport t, _addHTTP) = do
       srvCreds <- asks tlsServerCreds
       serverSignKey <- either fail pure $ fromTLSCredentials srvCreds
@@ -128,7 +128,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       liftIO $ runTransportServer started tcpPort defaultSupportedParams srvCreds (Just supportedNTFHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
     fromTLSCredentials (_, pk) = C.x509ToPrivate (pk, []) >>= C.privKey
 
-    runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
+    runClient :: Transport c => C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
     runClient signKey _ h = do
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random

@@ -1,6 +1,10 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Transport.WebSockets (WS (..)) where
 
@@ -15,11 +19,12 @@ import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
 import Simplex.Messaging.Transport
   ( ALPN,
-    TProxy,
     Transport (..),
     TransportConfig (..),
     TransportError (..),
     TransportPeer (..),
+    STransportPeer (..),
+    TransportPeerI (..),
     closeTLS,
     smpBlockSize,
     withTlsUnique,
@@ -27,14 +32,13 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import System.IO.Error (isEOFError)
 
-data WS = WS
-  { wsPeer :: TransportPeer,
-    tlsUniq :: ByteString,
+data WS (p :: TransportPeer) = WS
+  { tlsUniq :: ByteString,
     wsALPN :: Maybe ALPN,
     wsStream :: Stream,
     wsConnection :: Connection,
     wsTransportConfig :: TransportConfig,
-    wsServerCerts :: X.CertificateChain
+    wsPeerCert :: X.CertificateChain
   }
 
 websocketsOpts :: ConnectionOptions
@@ -46,61 +50,50 @@ websocketsOpts =
     }
 
 instance Transport WS where
-  transportName :: TProxy WS -> String
   transportName _ = "WebSockets"
-
-  transportPeer :: WS -> TransportPeer
-  transportPeer = wsPeer
-
-  transportConfig :: WS -> TransportConfig
+  {-# INLINE transportName #-}
   transportConfig = wsTransportConfig
-
-  getServerConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO WS
-  getServerConnection = getWS TServer
-
-  getClientConnection :: TransportConfig -> X.CertificateChain -> T.Context -> IO WS
-  getClientConnection = getWS TClient
-
-  getServerCerts :: WS -> X.CertificateChain
-  getServerCerts = wsServerCerts
-
-  getSessionALPN :: WS -> Maybe ALPN
+  {-# INLINE transportConfig #-}
+  getTransportConnection = getWS
+  {-# INLINE getTransportConnection #-}
+  getPeerCertChain = wsPeerCert
+  {-# INLINE getPeerCertChain #-}
   getSessionALPN = wsALPN
-
-  tlsUnique :: WS -> ByteString
+  {-# INLINE getSessionALPN #-}
   tlsUnique = tlsUniq
-
-  closeConnection :: WS -> IO ()
+  {-# INLINE tlsUnique #-}
   closeConnection = S.close . wsStream
+  {-# INLINE closeConnection #-}
 
-  cGet :: WS -> Int -> IO ByteString
+  cGet :: WS p -> Int -> IO ByteString
   cGet c n = do
     s <- receiveData (wsConnection c)
     if B.length s == n
       then pure s
       else E.throwIO TEBadBlock
 
-  cPut :: WS -> ByteString -> IO ()
+  cPut :: WS p -> ByteString -> IO ()
   cPut = sendBinaryData . wsConnection
 
-  getLn :: WS -> IO ByteString
+  getLn :: WS p -> IO ByteString
   getLn c = do
     s <- trimCR <$> receiveData (wsConnection c)
     if B.null s || B.last s /= '\n'
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-getWS :: TransportPeer -> TransportConfig -> X.CertificateChain -> T.Context -> IO WS
-getWS wsPeer cfg wsServerCerts cxt = withTlsUnique wsPeer cxt connectWS
+getWS :: forall p. TransportPeerI p => TransportConfig -> X.CertificateChain -> T.Context -> IO (WS p)
+getWS cfg wsPeerCert cxt = withTlsUnique @WS @p cxt connectWS
   where
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
-      wsConnection <- connectPeer wsPeer s
+      wsConnection <- connectPeer s
       wsALPN <- T.getNegotiatedProtocol cxt
-      pure $ WS {wsPeer, tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsServerCerts}
-    connectPeer :: TransportPeer -> Stream -> IO Connection
-    connectPeer TServer = acceptClientRequest
-    connectPeer TClient = sendClientRequest
+      pure $ WS {tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsPeerCert}
+    connectPeer :: Stream -> IO Connection
+    connectPeer = case sTransportPeer @p of
+      STServer -> acceptClientRequest
+      STClient -> sendClientRequest
     acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
     sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
 
