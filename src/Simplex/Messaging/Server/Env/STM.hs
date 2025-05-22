@@ -18,7 +18,47 @@
 #endif
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module Simplex.Messaging.Server.Env.STM where
+module Simplex.Messaging.Server.Env.STM
+  ( ServerConfig (..),
+    ServerStoreCfg (..),
+    AServerStoreCfg (..),
+    StorePaths (..),
+    StartOptions (..),
+    Env (..),
+    Server (..),
+    ServerSubscribers (..),
+    ProxyAgent (..),
+    Client (..),
+    AClient (..),
+    ClientId,
+    Subscribed,
+    Sub (..),
+    ServerSub (..),
+    SubscriptionThread (..),
+    MsgStore,
+    AMsgStore (..),
+    AStoreType (..),
+    newEnv,
+    mkJournalStoreConfig,
+    newClient,
+    clientId',
+    newSubscription,
+    newProhibitedSub,
+    defaultMsgQueueQuota,
+    defMsgExpirationDays,
+    defNtfExpirationHours,
+    defaultMessageExpiration,
+    defaultNtfExpiration,
+    defaultInactiveClientExpiration,
+    defaultProxyClientConcurrency,
+    defaultMaxJournalMsgCount,
+    defaultMaxJournalStateLines,
+    defaultIdleQueueInterval,
+    journalMsgStoreDepth,
+    readWriteQueueStore,
+    noPostgresExit,
+  )
+where
 
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
@@ -29,6 +69,8 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import Data.Kind (Constraint)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
@@ -203,7 +245,7 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
-    clients :: TVar (IntMap (Maybe AClient)),
+    clients :: TVar (IntMap AClient),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
@@ -236,15 +278,16 @@ data AMsgStore =
 type Subscribed = Bool
 
 data Server = Server
-  { subscribedQ :: TQueue (RecipientId, ClientId, Subscribed),
-    subscribers :: TMap RecipientId (TVar AClient),
-    ntfSubscribedQ :: TQueue (NotifierId, ClientId, Subscribed),
-    notifiers :: TMap NotifierId (TVar AClient),
-    subClients :: TVar (IntMap AClient), -- clients with SMP subscriptions
-    ntfSubClients :: TVar (IntMap AClient), -- clients with Ntf subscriptions
-    pendingSubEvents :: TVar (IntMap (NonEmpty (RecipientId, Subscribed))),
-    pendingNtfSubEvents :: TVar (IntMap (NonEmpty (NotifierId, Subscribed))),
+  { subscribers :: ServerSubscribers,
+    ntfSubscribers :: ServerSubscribers,
     savingLock :: Lock
+  }
+
+data ServerSubscribers = ServerSubscribers
+  { subQ :: TQueue (QueueId, ClientId, Subscribed),
+    queueSubscribers :: TMap QueueId (TVar AClient),
+    subClients :: TVar IntSet,
+    pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
 
 newtype ProxyAgent = ProxyAgent
@@ -288,16 +331,18 @@ data Sub = Sub
 
 newServer :: IO Server
 newServer = do
-  subscribedQ <- newTQueueIO
-  subscribers <- TM.emptyIO
-  ntfSubscribedQ <- newTQueueIO
-  notifiers <- TM.emptyIO
-  subClients <- newTVarIO IM.empty
-  ntfSubClients <- newTVarIO IM.empty
-  pendingSubEvents <- newTVarIO IM.empty
-  pendingNtfSubEvents <- newTVarIO IM.empty
+  subscribers <- newServerSubscribers
+  ntfSubscribers <- newServerSubscribers
   savingLock <- createLockIO
-  return Server {subscribedQ, subscribers, ntfSubscribedQ, notifiers, subClients, ntfSubClients, pendingSubEvents, pendingNtfSubEvents, savingLock}
+  return Server {subscribers, ntfSubscribers, savingLock}
+
+newServerSubscribers :: IO ServerSubscribers
+newServerSubscribers = do
+  subQ <- newTQueueIO
+  queueSubscribers <- TM.emptyIO
+  subClients <- newTVarIO IS.empty
+  pendingEvents <- newTVarIO IM.empty
+  pure ServerSubscribers {subQ, queueSubscribers, subClients, pendingEvents}
 
 newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore qs ms))
 newClient _ _ clientId qSize thVersion sessionId createdAt = do
