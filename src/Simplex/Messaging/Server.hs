@@ -87,7 +87,7 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPTransmission, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, forwardSMPTransmission, nonBlockingWriteTBQueue, smpProxyError, temporaryClientError)
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -247,7 +247,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           $>>= endPreviousSubscriptions
           >>= mapM_ unsub
       where
-        ServerSubscribers {subQ, queueSubscribers = ss, subClients, pendingEvents} = srvSubscribers srv
+        ServerSubscribers {subQ, queueSubscribers, subClients, pendingEvents} = srvSubscribers srv
         updateSubscribers :: Maybe AClient -> (QueueId, ClientId, Subscribed) -> STM (Maybe ((QueueId, BrokerMsg), AClient))
         updateSubscribers c_ (qId, clntId, subscribed) = updateSub $>>= clientToBeNotified
           where
@@ -257,14 +257,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             updateSubConnected c
               | subscribed = do
                   modifyTVar' subClients $ IS.insert clntId -- add client to server's subscribed cients
-                  TM.lookup qId ss >>= -- insert subscribed and current client
-                    maybe
-                      (newTVar c >>= \cv -> TM.insert qId cv ss $> Nothing)
-                      (\cv -> Just <$> swapTVar cv c)
+                  upsertSubscribedClient qId c queueSubscribers
               | otherwise = do
                   removeWhenNoSubs c
-                  TM.lookupDelete qId ss >>= mapM readTVar
-            updateSubDisconnected = TM.lookup qId ss >>= mapM readTVar -- do not insert client if it is already disconnected, but send END to any other client
+                  lookupDeleteSubscribedClient qId queueSubscribers
+            -- do not insert client if it is already disconnected, but send END to any other client
+            updateSubDisconnected = lookupDeleteSubscribedClient qId queueSubscribers
             clientToBeNotified ac@(AClient _ _ Client {clientId, connected})
               | clntId == clientId = pure Nothing
               | otherwise = (\yes -> if yes then Just ((qId, subEvt), ac) else Nothing) <$> readTVar connected
@@ -325,32 +323,28 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     sendPendingEvtsThread :: Server -> M ()
     sendPendingEvtsThread srv@Server {subscribers, ntfSubscribers} = do
       endInt <- asks $ pendingENDInterval . config
-      forever $ do
+      stats <- asks serverStats
+      liftIO $ forever $ do
         threadDelay endInt
-        sendPending subscribers
-        sendPending ntfSubscribers
+        sendPending subscribers stats
+        sendPending ntfSubscribers stats
       where
-        sendPending ServerSubscribers {pendingEvents} = do
+        sendPending ServerSubscribers {pendingEvents} stats = do
           pending <- atomically $ swapTVar pendingEvents IM.empty
           unless (null pending) $ forM_ (IM.assocs pending) $ \(cId, evts) ->
-            liftIO (getServerClient cId srv) >>= mapM_ (enqueueEvts evts)
-        enqueueEvts evts (AClient _ _ c@Client {connected, sndQ = q}) =
-          whenM (readTVarIO connected) $ do
-            sent <- atomically $ tryWriteTBQueue q ts
-            if sent
-              then updateEndStats
-              else -- if queue is full it can block
-                forkClient c ("sendPendingEvtsThread.enqueueEvts") $
-                  atomically (writeTBQueue q ts) >> updateEndStats
+            getServerClient cId srv >>= mapM_ (enqueueEvts evts)
           where
-            ts = L.map (\(qId, evt) -> (CorrId "", qId, evt)) evts
-            -- this accounts for both END and DELD events
-            updateEndStats = do
-              stats <- asks serverStats
-              let len = L.length evts
-              when (len > 0) $ liftIO $ do
-                atomicModifyIORef'_ (qSubEnd stats) (+ len)
-                atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs or DELDs in the batch
+            enqueueEvts evts (AClient _ _ Client {connected, sndQ}) =
+              whenM (readTVarIO connected) $
+                nonBlockingWriteTBQueue sndQ ts >> updateEndStats
+              where
+                ts = L.map (\(qId, evt) -> (CorrId "", qId, evt)) evts
+                -- this accounts for both END and DELD events
+                updateEndStats = do
+                  let len = L.length evts
+                  when (len > 0) $ do
+                    atomicModifyIORef'_ (qSubEnd stats) (+ len)
+                    atomicModifyIORef'_ (qSubEndB stats) (+ (len `div` 255 + 1)) -- up to 255 ENDs or DELDs in the batch
 
     receiveFromProxyAgent :: ProxyAgent -> M ()
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
@@ -585,9 +579,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let threadsCount = 0
 #endif
       clientsCount <- IM.size <$> getServerClients srv
-      smpSubsCount <- M.size <$> readTVarIO (queueSubscribers subscribers)
+      smpSubsCount <- M.size <$> getSubscribedClients (queueSubscribers subscribers)
       smpSubClientsCount <- IS.size <$> readTVarIO (subClients subscribers)
-      ntfSubsCount <- M.size <$> readTVarIO (queueSubscribers ntfSubscribers)
+      ntfSubsCount <- M.size <$> getSubscribedClients (queueSubscribers ntfSubscribers)
       ntfSubClientsCount <- IS.size <$> readTVarIO (subClients ntfSubscribers)
       loadedCounts <- loadedQueueCounts ms
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubsCount, smpSubClientsCount, ntfSubsCount, ntfSubClientsCount, loadedCounts}
@@ -783,15 +777,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   putSubscribedClients "SMP" (subClients subscribers) False
                   putSubscribedClients "Ntf" (subClients ntfSubscribers) True
                   where
-                    putActiveClientsInfo :: String -> TMap QueueId (TVar AClient) -> Bool -> IO ()
+                    putActiveClientsInfo :: String -> SubscribedClients -> Bool -> IO ()
                     putActiveClientsInfo protoName clients showIds = do
-                      activeSubs <- readTVarIO clients
+                      activeSubs <- getSubscribedClients clients
                       hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
                       clnts <- countSubClients activeSubs
                       hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size clnts) <> (if showIds then " " <> show (IS.toList clnts) else "")
                       where
-                        countSubClients :: M.Map QueueId (TVar AClient) -> IO IS.IntSet
-                        countSubClients = foldM (\ !s c -> (`IS.insert` s) . clientId' <$> readTVarIO c) IS.empty
+                        countSubClients :: M.Map QueueId (TVar (Maybe AClient)) -> IO IS.IntSet
+                        countSubClients = foldM (\ !s c -> maybe s ((`IS.insert` s) . clientId') <$> readTVarIO c) IS.empty
                     putSubscribedClients :: String -> TVar IS.IntSet -> Bool -> IO ()
                     putSubscribedClients protoName subClnts showIds = do
                       clnts <- readTVarIO subClnts
@@ -925,25 +919,16 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connecte
   liftIO $ mapM_ cancelSub subs
   whenM (asks serverActive >>= readTVarIO) $ do
     srv@Server {subscribers, ntfSubscribers} <- asks server
-    liftIO $ updateSubscribers subs $ queueSubscribers subscribers
-    liftIO $ updateSubscribers ntfSubs $ queueSubscribers ntfSubscribers
+    liftIO $ updateSubscribers subs subscribers
+    liftIO $ updateSubscribers ntfSubs ntfSubscribers
     liftIO $ deleteServerClient clientId srv
-    atomically $ modifyTVar' (subClients subscribers) $ IS.delete clientId
-    atomically $ modifyTVar' (subClients ntfSubscribers) $ IS.delete clientId
   tIds <- atomically $ swapTVar endThreads IM.empty
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
-    updateSubscribers :: M.Map QueueId a -> TMap QueueId (TVar AClient) -> IO ()
-    updateSubscribers subs srvSubs =
-      forM_ (M.keys subs) $ \qId ->
-        -- lookup of the subscribed client TVar can be in separate transaction,
-        -- as long as the client is read in the same transaction -
-        -- it prevents removing the next subscribed client.
-        TM.lookupIO qId srvSubs >>=
-          mapM_ (\c' -> atomically $ whenM (sameClientId c <$> readTVar c') $ TM.delete qId srvSubs)
-
-sameClientId :: Client s -> AClient -> Bool
-sameClientId Client {clientId} ac = clientId == clientId' ac
+    updateSubscribers :: M.Map QueueId a -> ServerSubscribers -> IO ()
+    updateSubscribers subs ServerSubscribers {queueSubscribers, subClients} = do
+      mapM_ (\qId -> deleteSubcribedClient qId c queueSubscribers) (M.keys subs)
+      atomically $ modifyTVar' subClients $ IS.delete clientId
 
 cancelSub :: Sub -> IO ()
 cancelSub s = case subThread s of
@@ -1588,18 +1573,19 @@ client
             -- - nothing was delivered to this subscription (to avoid race conditions with the recipient).
             tryDeliverMessage :: Message -> IO ()
             tryDeliverMessage msg =
-              -- the subscription is checked outside of STM to avoid transaction cost
+              -- the subscribed client var is read outside of STM to avoid transaction cost
               -- in case no client is subscribed.
-              whenM (TM.memberIO rId $ queueSubscribers subscribers) $
-                atomically deliverToSub >>= mapM_ forkDeliver
+              getSubscribedClient rId (queueSubscribers subscribers)
+                $>>= atomically . deliverToSub
+                >>= mapM_ forkDeliver
               where
                 rId = recipientId q
-                deliverToSub =
-                  -- lookup has ot be in the same transaction,
+                deliverToSub rcv =
+                  -- reading client TVar in the same transaction,
                   -- so that if subscription ends, it re-evalutates
                   -- and delivery is cancelled -
                   -- the new client will receive message in response to SUB.
-                  (TM.lookup rId (queueSubscribers subscribers) >>= mapM readTVar)
+                  readTVar rcv
                     $>>= \rc@(AClient _ _ Client {subscriptions = subs, sndQ = sndQ'}) -> TM.lookup rId subs
                     $>>= \s@Sub {subThread, delivered} -> case subThread of
                       ProhibitSub -> pure Nothing
@@ -1628,9 +1614,9 @@ client
                       labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " deliver/SEND"
                       -- lookup can be outside of STM transaction,
                       -- as long as the check that it is the same client is inside.
-                      TM.lookupIO rId (queueSubscribers subscribers) >>= mapM_ deliverIfSame
+                      getSubscribedClient rId (queueSubscribers subscribers) >>= mapM_ deliverIfSame
                     deliverIfSame rc' = time "deliver" . atomically $
-                      whenM (sameClientId rc <$> readTVar rc') $
+                      whenM (maybe False (sameClientId rc) <$> readTVar rc') $
                         tryTakeTMVar delivered >>= \case
                           Just _ -> pure () -- if a message was already delivered, should not deliver more
                           Nothing -> do

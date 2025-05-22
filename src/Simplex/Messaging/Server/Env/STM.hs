@@ -27,6 +27,7 @@ module Simplex.Messaging.Server.Env.STM
     Env (..),
     Server (..),
     ServerSubscribers (..),
+    SubscribedClients,
     ProxyAgent (..),
     Client (..),
     AClient (..),
@@ -45,6 +46,12 @@ module Simplex.Messaging.Server.Env.STM
     getServerClient,
     insertServerClient,
     deleteServerClient,
+    getSubscribedClients,
+    getSubscribedClient,
+    upsertSubscribedClient,
+    lookupDeleteSubscribedClient,
+    deleteSubcribedClient,
+    sameClientId,
     clientId',
     newSubscription,
     newProhibitedSub,
@@ -78,6 +85,7 @@ import qualified Data.IntSet as IS
 import Data.Kind (Constraint)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime, nominalDay)
@@ -112,7 +120,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ATransport, VersionRangeSMP, VersionSMP)
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, whenM, ($>>=))
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..))
@@ -288,15 +296,55 @@ data Server = Server
     savingLock :: Lock
   }
 
--- not exported, to prevent accidental concurrent IntMap lookups inside STM transactions.
+-- not exported, to prevent concurrent IntMap lookups inside STM transactions.
 newtype ServerClients = ServerClients {serverClients :: TVar (IntMap AClient)}
 
 data ServerSubscribers = ServerSubscribers
   { subQ :: TQueue (QueueId, ClientId, Subscribed),
-    queueSubscribers :: TMap QueueId (TVar AClient),
+    queueSubscribers :: SubscribedClients,
     subClients :: TVar IntSet,
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
+
+-- not exported, to prevent concurrent Map lookups inside STM transactions.
+-- Map stores TVars with pointers to the clients rather than client ID to allow reading the same TVar
+-- inside transactions to ensure that transaction is re-evaluated in case subscriber changes.
+newtype SubscribedClients = SubscribedClients (TMap EntityId (TVar (Maybe AClient)))
+
+getSubscribedClients :: SubscribedClients -> IO (Map EntityId (TVar (Maybe AClient)))
+getSubscribedClients (SubscribedClients cs) = readTVarIO cs
+{-# INLINE getSubscribedClients #-}
+
+getSubscribedClient :: EntityId -> SubscribedClients -> IO (Maybe (TVar (Maybe AClient)))
+getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO entId cs
+{-# INLINE getSubscribedClient #-}
+
+-- insert subscribed and current client, return previously subscribed client if it is different
+upsertSubscribedClient :: EntityId -> AClient -> SubscribedClients -> STM (Maybe AClient)
+upsertSubscribedClient entId ac@(AClient _ _ c) (SubscribedClients cs) =
+  TM.lookup entId cs >>= \case
+    Nothing -> Nothing <$ TM.insertM entId (newTVar $ Just ac) cs
+    Just cv ->
+      readTVar cv >>= \case
+        Just c' | sameClientId c c' -> pure Nothing
+        c_ -> c_ <$ writeTVar cv (Just ac)
+
+-- insert delete subscribed client
+lookupDeleteSubscribedClient :: EntityId -> SubscribedClients -> STM (Maybe AClient)
+lookupDeleteSubscribedClient entId (SubscribedClients cs) = TM.lookupDelete entId cs $>>= readTVar
+{-# INLINE lookupDeleteSubscribedClient #-}
+
+deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients -> IO ()
+deleteSubcribedClient entId c (SubscribedClients cs) =
+  -- lookup of the subscribed client TVar can be in separate transaction,
+  -- as long as the client is read in the same transaction -
+  -- it prevents removing the next subscribed client and also avoids STM contention for the Map.
+  TM.lookupIO entId cs >>=
+    mapM_ (\c' -> atomically $ whenM (maybe False (sameClientId c) <$> readTVar c') $ writeTVar c' Nothing)
+
+sameClientId :: Client s -> AClient -> Bool
+sameClientId Client {clientId} ac = clientId == clientId' ac
+{-# INLINE sameClientId #-}
 
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent
@@ -339,11 +387,11 @@ data Sub = Sub
 
 newServer :: IO Server
 newServer = do
-  clients <-  newTVarIO mempty
+  clients <- ServerClients <$> newTVarIO mempty
   subscribers <- newServerSubscribers
   ntfSubscribers <- newServerSubscribers
   savingLock <- createLockIO
-  return Server {clients = ServerClients clients, subscribers, ntfSubscribers, savingLock}
+  return Server {clients, subscribers, ntfSubscribers, savingLock}
 
 getServerClients :: Server -> IO (IntMap AClient)
 getServerClients = readTVarIO . serverClients . clients
@@ -369,7 +417,7 @@ deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClient
 newServerSubscribers :: IO ServerSubscribers
 newServerSubscribers = do
   subQ <- newTQueueIO
-  queueSubscribers <- TM.emptyIO
+  queueSubscribers <- SubscribedClients <$> TM.emptyIO
   subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, subClients, pendingEvents}
