@@ -49,9 +49,10 @@ module Simplex.Messaging.Server.Env.STM
     getSubscribedClients,
     getSubscribedClient,
     upsertSubscribedClient,
-    lookupDeleteSubscribedClient,
-    deleteSubcribedClient,
+    lookupRemoveSubscribedClient,
+    removeSubcribedClient,
     sameClientId,
+    sameClient,
     clientId',
     newSubscription,
     newProhibitedSub,
@@ -313,42 +314,56 @@ data ServerSubscribers = ServerSubscribers
 -- any STM transaction that reads subscribed client will re-evaluate in this case.
 -- The subscriptions that were made at any point are not removed -
 -- this is a better trade-off with intermittently connected mobile clients.
-newtype SubscribedClients = SubscribedClients (TMap EntityId (TVar (Maybe AClient)))
+data SubscribedClients = SubscribedClients {subscribedClients :: TMap EntityId (TVar (Maybe AClient)), subcribedCount :: TVar Int}
 
-getSubscribedClients :: SubscribedClients -> IO (Map EntityId (TVar (Maybe AClient)))
-getSubscribedClients (SubscribedClients cs) = readTVarIO cs
-{-# INLINE getSubscribedClients #-}
+getSubscribedClients :: SubscribedClients -> IO (Map EntityId (TVar (Maybe AClient)), Int)
+getSubscribedClients (SubscribedClients cs cnt) = (,) <$> readTVarIO cs <*> readTVarIO cnt
 
 getSubscribedClient :: EntityId -> SubscribedClients -> IO (Maybe (TVar (Maybe AClient)))
-getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO entId cs
+getSubscribedClient entId (SubscribedClients cs _) = TM.lookupIO entId cs
 {-# INLINE getSubscribedClient #-}
 
 -- insert subscribed and current client, return previously subscribed client if it is different
 upsertSubscribedClient :: EntityId -> AClient -> SubscribedClients -> STM (Maybe AClient)
-upsertSubscribedClient entId ac@(AClient _ _ c) (SubscribedClients cs) =
+upsertSubscribedClient entId ac@(AClient _ _ c) (SubscribedClients cs cnt) =
   TM.lookup entId cs >>= \case
-    Nothing -> Nothing <$ TM.insertM entId (newTVar $ Just ac) cs
+    Nothing -> do
+      TM.insertM entId (newTVar $ Just ac) cs
+      modifyTVar' cnt (+ 1)
+      pure Nothing
     Just cv ->
       readTVar cv >>= \case
-        Just c' | sameClientId c c' -> pure Nothing
-        c_ -> c_ <$ writeTVar cv (Just ac)
+        Just c'
+          | sameClientId c c' -> pure Nothing
+          | otherwise -> Just c' <$ writeTVar cv (Just ac)
+        Nothing -> do
+          writeTVar cv (Just ac)
+          modifyTVar' cnt (+ 1)
+          pure Nothing
 
--- insert delete subscribed client
-lookupDeleteSubscribedClient :: EntityId -> SubscribedClients -> STM (Maybe AClient)
-lookupDeleteSubscribedClient entId (SubscribedClients cs) = TM.lookupDelete entId cs $>>= readTVar
-{-# INLINE lookupDeleteSubscribedClient #-}
+-- lookup and delete currently subscribed client
+lookupRemoveSubscribedClient :: EntityId -> SubscribedClients -> STM (Maybe AClient)
+lookupRemoveSubscribedClient entId (SubscribedClients cs cnt) =
+  TM.lookup entId cs $>>= (`swapTVar` Nothing) >>= mapM (<$ modifyTVar' cnt (subtract 1))
 
-deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients -> IO ()
-deleteSubcribedClient entId c (SubscribedClients cs) =
+removeSubcribedClient :: EntityId -> Client s -> SubscribedClients -> IO ()
+removeSubcribedClient entId c (SubscribedClients cs cnt) =
   -- lookup of the subscribed client TVar can be in separate transaction,
   -- as long as the client is read in the same transaction -
   -- it prevents removing the next subscribed client and also avoids STM contention for the Map.
-  TM.lookupIO entId cs >>=
-    mapM_ (\c' -> atomically $ whenM (maybe False (sameClientId c) <$> readTVar c') $ writeTVar c' Nothing)
+  TM.lookupIO entId cs >>= mapM_ (\cv -> atomically $ whenM (sameClient c cv) $ remove cv)
+  where
+    remove cv = do
+      writeTVar cv Nothing
+      modifyTVar' cnt (subtract 1)
 
 sameClientId :: Client s -> AClient -> Bool
 sameClientId Client {clientId} ac = clientId == clientId' ac
 {-# INLINE sameClientId #-}
+
+sameClient :: Client s -> TVar (Maybe AClient) -> STM Bool
+sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
+{-# INLINE sameClient #-}
 
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent
@@ -421,7 +436,7 @@ deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClient
 newServerSubscribers :: IO ServerSubscribers
 newServerSubscribers = do
   subQ <- newTQueueIO
-  queueSubscribers <- SubscribedClients <$> TM.emptyIO
+  queueSubscribers <- SubscribedClients <$> TM.emptyIO <*> newTVarIO 0
   subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, subClients, pendingEvents}

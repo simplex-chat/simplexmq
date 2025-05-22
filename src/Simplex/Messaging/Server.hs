@@ -260,9 +260,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   upsertSubscribedClient qId c queueSubscribers
               | otherwise = do
                   removeWhenNoSubs c
-                  lookupDeleteSubscribedClient qId queueSubscribers
+                  lookupRemoveSubscribedClient qId queueSubscribers
             -- do not insert client if it is already disconnected, but send END to any other client
-            updateSubDisconnected = lookupDeleteSubscribedClient qId queueSubscribers
+            updateSubDisconnected = lookupRemoveSubscribedClient qId queueSubscribers
             clientToBeNotified ac@(AClient _ _ Client {clientId, connected})
               | clntId == clientId = pure Nothing
               | otherwise = (\yes -> if yes then Just ((qId, subEvt), ac) else Nothing) <$> readTVar connected
@@ -579,12 +579,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let threadsCount = 0
 #endif
       clientsCount <- IM.size <$> getServerClients srv
-      smpSubsCount <- M.size <$> getSubscribedClients (queueSubscribers subscribers)
-      smpSubClientsCount <- IS.size <$> readTVarIO (subClients subscribers)
-      ntfSubsCount <- M.size <$> getSubscribedClients (queueSubscribers ntfSubscribers)
-      ntfSubClientsCount <- IS.size <$> readTVarIO (subClients ntfSubscribers)
+      smpSubs <- getSubscribersMetrics subscribers
+      ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts ms
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubsCount, smpSubClientsCount, ntfSubsCount, ntfSubClientsCount, loadedCounts}
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubs, ntfSubs, loadedCounts}
+      where
+        getSubscribersMetrics ServerSubscribers {queueSubscribers, subClients} = do
+          (storedSubs, subsCount) <- getSubscribedClients queueSubscribers
+          subClientsCount <- IS.size <$> readTVarIO subClients
+          pure RTSubscriberMetrics {subsCount, subVarsCount = M.size storedSubs, subClientsCount}
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do
@@ -779,9 +782,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   where
                     putActiveClientsInfo :: String -> SubscribedClients -> Bool -> IO ()
                     putActiveClientsInfo protoName clients showIds = do
-                      activeSubs <- getSubscribedClients clients
-                      hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
-                      clnts <- countSubClients activeSubs
+                      (storedSubs, subsCount) <- getSubscribedClients clients
+                      hPutStrLn h $ protoName <> " subscription vars: " <> show (M.size storedSubs)
+                      hPutStrLn h $ protoName <> " subscriptions: " <> show subsCount
+                      clnts <- countSubClients storedSubs
                       hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size clnts) <> (if showIds then " " <> show (IS.toList clnts) else "")
                       where
                         countSubClients :: M.Map QueueId (TVar (Maybe AClient)) -> IO IS.IntSet
@@ -927,7 +931,7 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connecte
   where
     updateSubscribers :: M.Map QueueId a -> ServerSubscribers -> IO ()
     updateSubscribers subs ServerSubscribers {queueSubscribers, subClients} = do
-      mapM_ (\qId -> deleteSubcribedClient qId c queueSubscribers) (M.keys subs)
+      mapM_ (\qId -> removeSubcribedClient qId c queueSubscribers) (M.keys subs)
       atomically $ modifyTVar' subClients $ IS.delete clientId
 
 cancelSub :: Sub -> IO ()
@@ -1615,8 +1619,8 @@ client
                       -- lookup can be outside of STM transaction,
                       -- as long as the check that it is the same client is inside.
                       getSubscribedClient rId (queueSubscribers subscribers) >>= mapM_ deliverIfSame
-                    deliverIfSame rc' = time "deliver" . atomically $
-                      whenM (maybe False (sameClientId rc) <$> readTVar rc') $
+                    deliverIfSame rcv = time "deliver" . atomically $
+                      whenM (sameClient rc rcv) $
                         tryTakeTMVar delivered >>= \case
                           Just _ -> pure () -- if a message was already delivered, should not deliver more
                           Nothing -> do
