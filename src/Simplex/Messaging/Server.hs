@@ -260,9 +260,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   upsertSubscribedClient qId c queueSubscribers
               | otherwise = do
                   removeWhenNoSubs c
-                  lookupRemoveSubscribedClient qId queueSubscribers
+                  lookupDeleteSubscribedClient qId queueSubscribers
             -- do not insert client if it is already disconnected, but send END to any other client
-            updateSubDisconnected = lookupRemoveSubscribedClient qId queueSubscribers
+            updateSubDisconnected = lookupDeleteSubscribedClient qId queueSubscribers
             clientToBeNotified ac@(AClient _ _ Client {clientId, connected})
               | clntId == clientId = pure Nothing
               | otherwise = (\yes -> if yes then Just ((qId, subEvt), ac) else Nothing) <$> readTVar connected
@@ -585,9 +585,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubs, ntfSubs, loadedCounts}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, subClients} = do
-          (storedSubs, subsCount) <- getSubscribedClients queueSubscribers
+          subsCount <- M.size <$> getSubscribedClients queueSubscribers
           subClientsCount <- IS.size <$> readTVarIO subClients
-          pure RTSubscriberMetrics {subsCount, subVarsCount = M.size storedSubs, subClientsCount}
+          pure RTSubscriberMetrics {subsCount, subClientsCount}
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c -> c -> M ()
     runClient signKey tp h = do
@@ -782,10 +782,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   where
                     putActiveClientsInfo :: String -> SubscribedClients -> Bool -> IO ()
                     putActiveClientsInfo protoName clients showIds = do
-                      (storedSubs, subsCount) <- getSubscribedClients clients
-                      hPutStrLn h $ protoName <> " subscription vars: " <> show (M.size storedSubs)
-                      hPutStrLn h $ protoName <> " subscriptions: " <> show subsCount
-                      clnts <- countSubClients storedSubs
+                      activeSubs <- getSubscribedClients clients
+                      hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
+                      clnts <- countSubClients activeSubs
                       hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size clnts) <> (if showIds then " " <> show (IS.toList clnts) else "")
                       where
                         countSubClients :: M.Map QueueId (TVar (Maybe AClient)) -> IO IS.IntSet
@@ -931,7 +930,7 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, connecte
   where
     updateSubscribers :: M.Map QueueId a -> ServerSubscribers -> IO ()
     updateSubscribers subs ServerSubscribers {queueSubscribers, subClients} = do
-      mapM_ (\qId -> removeSubcribedClient qId c queueSubscribers) (M.keys subs)
+      mapM_ (\qId -> deleteSubcribedClient qId c queueSubscribers) (M.keys subs)
       atomically $ modifyTVar' subClients $ IS.delete clientId
 
 cancelSub :: Sub -> IO ()

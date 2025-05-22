@@ -40,7 +40,6 @@ data RealTimeMetrics = RealTimeMetrics
 
 data RTSubscriberMetrics = RTSubscriberMetrics
   { subsCount :: Int,
-    subVarsCount :: Int,
     subClientsCount :: Int
   }
 
@@ -373,10 +372,6 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_subscribtion_total gauge\n\
       \simplex_smp_subscribtion_total " <> mshow (subsCount smpSubs) <> "\n# smp.subsCount\n\
       \\n\
-      \# HELP simplex_smp_subscribtion_vars_total Total SMP subscription vars\n\
-      \# TYPE simplex_smp_subscribtion_vars_total gauge\n\
-      \simplex_smp_subscribtion_vars_total " <> mshow (subVarsCount smpSubs) <> "\n# smp.subVarsCount\n\
-      \\n\
       \# HELP simplex_smp_subscribtion_clients_total Subscribed clients\n\
       \# TYPE simplex_smp_subscribtion_clients_total gauge\n\
       \simplex_smp_subscribtion_clients_total " <> mshow (subClientsCount smpSubs) <> "\n# smp.subClientsCount\n\
@@ -384,10 +379,6 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_subscription_ntf_total Total notification subscripbtions (from ntf server)\n\
       \# TYPE simplex_smp_subscription_ntf_total gauge\n\
       \simplex_smp_subscription_ntf_total " <> mshow (subsCount ntfSubs) <> "\n# ntf.subsCount\n\
-      \\n\
-      \# HELP simplex_smp_subscription_ntf_vars_total Total notification subscripbtion vars (from ntf server)\n\
-      \# TYPE simplex_smp_subscription_ntf_vars_total gauge\n\
-      \simplex_smp_subscription_ntf_vars_total " <> mshow (subVarsCount ntfSubs) <> "\n# ntf.subVarsCount\n\
       \\n\
       \# HELP simplex_smp_subscription_ntf_clients_total Total subscribed NTF servers\n\
       \# TYPE simplex_smp_subscription_ntf_clients_total gauge\n\
