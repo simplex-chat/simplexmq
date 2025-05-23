@@ -372,8 +372,8 @@ createConnection c userId enableNtfs = withAgentEnv c .::. newConn c userId enab
 {-# INLINE createConnection #-}
 
 -- | Create or update user's contact connection short link
-setContactShortLink :: AgentClient -> ConnId -> ConnInfo -> AE (ConnShortLink 'CMContact)
-setContactShortLink c = withAgentEnv c .: setContactShortLink' c
+setContactShortLink :: AgentClient -> ConnId -> ConnInfo -> Maybe CRClientData -> AE (ConnShortLink 'CMContact)
+setContactShortLink c = withAgentEnv c .:. setContactShortLink' c
 {-# INLINE setContactShortLink #-}
 
 deleteContactShortLink :: AgentClient -> ConnId -> AE ()
@@ -838,8 +838,8 @@ newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
   (connId,) <$> newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
-setContactShortLink' :: AgentClient -> ConnId -> ConnInfo -> AM (ConnShortLink 'CMContact)
-setContactShortLink' c connId userData = 
+setContactShortLink' :: AgentClient -> ConnId -> ConnInfo -> Maybe CRClientData -> AM (ConnShortLink 'CMContact)
+setContactShortLink' c connId userData clientData = 
   withConnLock c connId "setContactShortLink" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (ContactConnection _ rq) -> do
@@ -861,7 +861,7 @@ setContactShortLink' c connId userData =
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
           let qUri = SMPQueueUri vr $ SMPQueueAddress server sndId (C.publicKey e2ePrivKey) (Just QMContact)
-              connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] Nothing
+              connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
               (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userData
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
