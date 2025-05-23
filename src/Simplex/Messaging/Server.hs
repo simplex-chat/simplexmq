@@ -170,7 +170,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     liftIO $ exitSuccess
   raceAny_
     ( serverThread "server subscribers" (subscribers s) subscriptions serviceSubsCount (Just cancelSub)
-        : serverThread "server notifiers" (notifiers s) ntfSubscriptions ntfServiceSubsCount Nothing
+        : serverThread "server ntfSubscribers" (ntfSubscribers s) ntfSubscriptions ntfServiceSubsCount Nothing
         : deliverNtfsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
@@ -349,13 +349,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           when (noClientSubs && noServiceSubs) $ modifyTVar' subClients $ IM.delete (clientId c)
 
     deliverNtfsThread :: Server -> M ()
-    deliverNtfsThread Server {notifiers} = do
+    deliverNtfsThread Server {ntfSubscribers} = do
       ntfInt <- asks $ ntfDeliveryInterval . config
       NtfStore ns <- asks ntfStore
       stats <- asks serverStats
       liftIO $ forever $ do
         threadDelay ntfInt
-        readTVarIO (subClients notifiers) >>= mapM_ (deliverNtfs ns stats)
+        readTVarIO (subClients ntfSubscribers) >>= mapM_ (deliverNtfs ns stats)
       where
         deliverNtfs ns stats (AClient _ _ Client {clientId, ntfSubscriptions, sndQ, connected}) =
           whenM (currentClient readTVarIO) $ do
@@ -375,7 +375,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 writeTBQueue sndQ ts
               pure $ length ts_
             currentClient :: Monad m => (forall a. TVar a -> m a) -> m Bool
-            currentClient rd = (&&) <$> rd connected <*> (IM.member clientId <$> rd (subClients notifiers))
+            currentClient rd = (&&) <$> rd connected <*> (IM.member clientId <$> rd (subClients ntfSubscribers))
             addNtfs :: [Transmission BrokerMsg] -> (NotifierId, TVar [MsgNtf]) -> STM [Transmission BrokerMsg]
             addNtfs acc (nId, v) =
               readTVar v >>= \case
@@ -391,13 +391,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               atomicModifyIORef'_ (msgNtfsB stats) (+ (len `div` 80 + 1)) -- up to 80 NMSG in the batch
 
     sendPendingEvtsThread :: Server -> M ()
-    sendPendingEvtsThread Server {subscribers, notifiers} = do
+    sendPendingEvtsThread Server {subscribers, ntfSubscribers} = do
       endInt <- asks $ pendingENDInterval . config
       cls <- asks clients
       forever $ do
         threadDelay endInt
         sendPending cls subscribers
-        sendPending cls notifiers
+        sendPending cls ntfSubscribers
       where
         sendPending cls ServerSubscribers {pendingEvents} = do
           pending <- atomically $ swapTVar pendingEvents IM.empty
@@ -646,7 +646,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, rtsOptions}
 
     getRealTimeMetrics :: Env -> IO RealTimeMetrics
-    getRealTimeMetrics Env {clients, sockets, msgStore = AMS _ _ ms, server = Server {subscribers, notifiers}} = do
+    getRealTimeMetrics Env {clients, sockets, msgStore = AMS _ _ ms, server = Server {subscribers, ntfSubscribers}} = do
       socketStats <- mapM (traverse getSocketStats) =<< readTVarIO sockets
 #if MIN_VERSION_base(4,18,0)
       threadsCount <- length <$> listThreads
@@ -655,7 +655,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 #endif
       clientsCount <- IM.size <$> readTVarIO clients
       smpSubs <- getSubscribersMetrics subscribers
-      ntfSubs <- getSubscribersMetrics notifiers
+      ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts ms
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubs, ntfSubs, loadedCounts}
       where
@@ -836,7 +836,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 #else
                   hPutStrLn h "Threads: not available on GHC 8.10"
 #endif
-                  Env {clients, server = Server {subscribers, notifiers}} <- unliftIO u ask
+                  Env {clients, server = Server {subscribers, ntfSubscribers}} <- unliftIO u ask
                   activeClients <- readTVarIO clients
                   hPutStrLn h $ "Clients: " <> show (IM.size activeClients)
                   when (r == CPRAdmin) $ do
@@ -852,7 +852,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     hPutStrLn h $ "Ntf subscribed clients (via clients): " <> show ntfClCnt
                     hPutStrLn h $ "Ntf subscribed clients queues (via clients, rcvQ, sndQ, msgQ): " <> show ntfClQs
                   putSubscribersInfo "SMP" subscribers False
-                  putSubscribersInfo "Ntf" notifiers True
+                  putSubscribersInfo "Ntf" ntfSubscribers True
                   where
                     putSubscribersInfo :: String -> ServerSubscribers -> Bool -> IO ()
                     putSubscribersInfo protoName ServerSubscribers {queueSubscribers, subClients} showIds = do
@@ -981,7 +981,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
     disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
     disconnectThread_ _ _ _ = []
     noSubscriptions Client {clientId} s =
-      not <$> anyM [hasSubs (subscribers s), hasSubs (notifiers s)]
+      not <$> anyM [hasSubs (subscribers s), hasSubs (ntfSubscribers s)]
       where
         hasSubs ServerSubscribers {subClients} = IM.member clientId <$> readTVarIO subClients
 
@@ -995,15 +995,15 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceS
   ntfSubs <- atomically $ swapTVar ntfSubscriptions M.empty
   liftIO $ mapM_ cancelSub subs
   whenM (asks serverActive >>= readTVarIO) $ do
-    Server {subscribers, notifiers} <- asks server
+    Server {subscribers, ntfSubscribers} <- asks server
     asks clients >>= atomically . (`modifyTVar'` IM.delete clientId)
     liftIO $ do
       updateSubscribers subs subscribers
-      updateSubscribers ntfSubs notifiers
+      updateSubscribers ntfSubs ntfSubscribers
       case thAuth >>= peerClientService of
         Just THClientService {serviceId, serviceRole}
           | serviceRole == SRMessaging -> updateServiceSubs serviceId serviceSubsCount subscribers
-          | serviceRole == SRNotifier -> updateServiceSubs serviceId ntfServiceSubsCount notifiers
+          | serviceRole == SRNotifier -> updateServiceSubs serviceId ntfServiceSubsCount ntfSubscribers
         _ -> pure ()
   tIds <- atomically $ swapTVar endThreads IM.empty
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
@@ -1257,7 +1257,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
 client :: forall s. MsgStoreClass s => Server -> s -> Client s -> M ()
 client
   -- TODO [certs] rcv subscriptions
-  Server {subscribers, notifiers}
+  Server {subscribers, ntfSubscribers}
   ms
   clnt@Client {clientId, subscriptions, ntfSubscriptions, serviceSubsCount = _todo', ntfServiceSubsCount, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
@@ -1491,7 +1491,7 @@ client
                 Left e -> pure $ ERR e
                 Right nId_ -> do
                   incStat . ntfCreated =<< asks serverStats
-                  forM_ nId_ $ \nId -> atomically $ writeTQueue (subQ notifiers) (CSDeleted nId ntfServiceId, clientId)
+                  forM_ nId_ $ \nId -> atomically $ writeTQueue (subQ ntfSubscribers) (CSDeleted nId ntfServiceId, clientId)
                   pure $ NID notifierId rcvPublicDhKey
 
         deleteQueueNotifier_ :: StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)
@@ -1502,7 +1502,7 @@ client
               stats <- asks serverStats
               deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
               when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
-              atomically $ writeTQueue (subQ notifiers) (CSDeleted nId ntfServiceId, clientId)
+              atomically $ writeTQueue (subQ ntfSubscribers) (CSDeleted nId ntfServiceId, clientId)
               incStat $ ntfDeleted stats
               pure ok
             Right Nothing -> pure ok
@@ -1621,9 +1621,9 @@ client
               where
                 hasServiceSub = (0 /=) <$> readTVar ntfServiceSubsCount
                 newServiceSubscription = do
-                  writeTQueue (subQ notifiers) (CSClient entId ntfServiceId (Just serviceId), clientId)
+                  writeTQueue (subQ ntfSubscribers) (CSClient entId ntfServiceId (Just serviceId), clientId)
                   modifyTVar' ntfServiceSubsCount (+ 1) -- service count
-                  modifyTVar' (totalServiceSubs notifiers) (+ 1) -- server count for all services
+                  modifyTVar' (totalServiceSubs ntfSubscribers) (+ 1) -- server count for all services
             Nothing -> case ntfServiceId of
               Just _ ->
                 liftIO (setQueueNtfService (queueStore ms) q Nothing) >>= \case
@@ -1640,7 +1640,7 @@ client
               where
                 hasSubscription = TM.member entId ntfSubscriptions
                 newSub = do
-                  writeTQueue (subQ notifiers) (CSClient entId ntfServiceId Nothing, clientId)
+                  writeTQueue (subQ ntfSubscribers) (CSClient entId ntfServiceId Nothing, clientId)
                   TM.insert entId () ntfSubscriptions
 
         subscribeServiceNotifications :: THPeerClientService -> M BrokerMsg
@@ -1651,9 +1651,9 @@ client
               liftIO (getNtfServiceQueueCount @(StoreQueue s) (queueStore ms) serviceId) >>= \case
                 Left e -> pure $ ERR e
                 Right count -> atomically $ do
-                  writeTQueue (subQ notifiers) (CSService serviceId, clientId)
+                  writeTQueue (subQ ntfSubscribers) (CSService serviceId, clientId)
                   modifyTVar' ntfServiceSubsCount (+ count) -- service count
-                  modifyTVar' (totalServiceSubs notifiers) (+ count) -- server count for all services
+                  modifyTVar' (totalServiceSubs ntfSubscribers) (+ count) -- server count for all services
                   pure $ SSOK $ fromIntegral srvSubs
             else pure $ SSOK $ fromIntegral srvSubs
 
@@ -1929,7 +1929,7 @@ client
                 stats <- asks serverStats
                 deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
                 when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
-                atomically $ writeTQueue (subQ notifiers) (CSDeleted nId ntfServiceId, clientId)
+                atomically $ writeTQueue (subQ ntfSubscribers) (CSDeleted nId ntfServiceId, clientId)
               updateDeletedStats qr
               pure ok
             Left e -> pure $ err e

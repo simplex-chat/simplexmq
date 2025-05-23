@@ -236,7 +236,7 @@ type Subscribed = Bool
 
 data Server = Server
   { subscribers :: ServerSubscribers,
-    notifiers :: ServerSubscribers,
+    ntfSubscribers :: ServerSubscribers,
     savingLock :: Lock
   }
 
@@ -297,9 +297,9 @@ data Sub = Sub
 newServer :: IO Server
 newServer = do
   subscribers <- newServerSubscribers
-  notifiers <- newServerSubscribers
+  ntfSubscribers <- newServerSubscribers
   savingLock <- createLockIO
-  pure Server {subscribers, notifiers, savingLock}
+  pure Server {subscribers, ntfSubscribers, savingLock}
 
 newServerSubscribers :: IO ServerSubscribers
 newServerSubscribers = do
