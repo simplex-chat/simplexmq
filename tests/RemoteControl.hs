@@ -19,9 +19,10 @@ import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
 import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
 import Simplex.RemoteControl.Types
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO
 import UnliftIO.Concurrent
+import Util
 
 remoteControlTests :: Spec
 remoteControlTests = do

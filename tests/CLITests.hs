@@ -35,12 +35,13 @@ import System.Environment (withArgs)
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import System.Timeout (timeout)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import Test.Main (withStdin)
 import UnliftIO (catchAny)
 import UnliftIO.Async (async, cancel)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
+import Util
 
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL

@@ -11,7 +11,8 @@ import Control.Monad.Except
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SMPAgentError (..), linkUserData, supportedSMPAgentVRange)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 shortLinkTests :: Spec
 shortLinkTests = do
@@ -20,7 +21,7 @@ shortLinkTests = do
     it "should fail to decrypt invitation data with bad hash" testInvShortLinkBadDataHash
   describe "contact short link" $ do
     it "should encrypt and decrypt data" testContactShortLink
-    it "should encrypt updated user data" testUpdateContactShortLink    
+    it "should encrypt updated user data" testUpdateContactShortLink
     it "should fail to decrypt contact data with bad hash" testContactShortLinkBadDataHash
     it "should fail to decrypt contact data with bad signature" testContactShortLinkBadSignature
 

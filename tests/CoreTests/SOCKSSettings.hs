@@ -12,7 +12,8 @@ import Simplex.Messaging.Client
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType)
 import Simplex.Messaging.Transport.Client
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 socksSettingsTests :: Spec
 socksSettingsTests = do

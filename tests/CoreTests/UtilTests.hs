@@ -8,8 +8,9 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import Data.IORef
 import Simplex.Messaging.Util
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import qualified UnliftIO.Exception as UE
+import Util
 
 utilTests :: Spec
 utilTests = do

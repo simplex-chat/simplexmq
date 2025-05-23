@@ -19,7 +19,7 @@ import Simplex.FileTransfer.Transport (supportedFileServerVRange, supportedXFTPh
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 
 xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
 xftpTest test = runXFTPTest test `shouldReturn` ()

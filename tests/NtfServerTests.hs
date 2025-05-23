@@ -43,8 +43,9 @@ import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Transport
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
+import Util
 
 ntfServerTests :: ATransport -> Spec
 ntfServerTests t = do
@@ -243,7 +244,7 @@ registerToken nh apns token = do
         let Right verification = nd .-> "verification"
             Right nonce = C.cbNonce <$> nd .-> "nonce"
             Right pt = C.cbDecrypt dhSecret nonce verification
-          in NtfRegCode pt
+         in NtfRegCode pt
   let code = decryptCode ntfData
   pure (tknKey, dhSecret, tId, code)
 

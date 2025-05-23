@@ -11,7 +11,8 @@ import Simplex.Messaging.Agent.Store.Interface
 import Simplex.Messaging.Agent.Store.Migrations (migrationsToRun)
 import Simplex.Messaging.Agent.Store.Shared
 import System.Random (randomIO)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 #if defined(dbPostgres)
 import qualified Data.ByteString.Char8 as B
 import Database.PostgreSQL.Simple (fromOnly)
