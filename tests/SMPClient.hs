@@ -38,7 +38,7 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Environment (lookupEnv)
 import System.Info (os)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
@@ -82,7 +82,7 @@ testStoreLogFile2 :: FilePath
 testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
 
 testStoreDBOpts :: DBOpts
-testStoreDBOpts = 
+testStoreDBOpts =
   DBOpts
     { connstr = testServerDBConnstr,
       schema = "smp_server",
@@ -176,7 +176,7 @@ journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
 journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMemory SMSJournal SSCMemoryJournal {storeLogFile, storeMsgsPath}}
 
 journalCfgDB :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
-journalCfgDB cfg' dbOpts storeMsgsPath' = 
+journalCfgDB cfg' dbOpts storeMsgsPath' =
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCYesUp, deletedTTL = 86400}
    in cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
 
@@ -228,7 +228,7 @@ cfgMS msType =
     }
 
 defaultStartOptions :: StartOptions
-defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = LogError, skipWarnings = False, confirmMigrations = MCYesUp} 
+defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = LogError, skipWarnings = False, confirmMigrations = MCYesUp}
 
 serverStoreConfig :: AStoreType -> AServerStoreCfg
 serverStoreConfig = serverStoreConfig_ False

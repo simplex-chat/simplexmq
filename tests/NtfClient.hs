@@ -55,7 +55,7 @@ import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2TLSParams)
 import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -99,10 +99,10 @@ ntfTestServerDBConnstr = "postgresql://ntf_test_server_user@/ntf_test_server_db"
 
 ntfTestServerDBConnectInfo :: ConnectInfo
 ntfTestServerDBConnectInfo =
-  defaultConnectInfo {
-    connectUser = "ntf_test_server_user",
-    connectDatabase = "ntf_test_server_db"
-  }
+  defaultConnectInfo
+    { connectUser = "ntf_test_server_user",
+      connectDatabase = "ntf_test_server_db"
+    }
 
 ntfTestDBCfg :: PostgresStoreCfg
 ntfTestDBCfg =

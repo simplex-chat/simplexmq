@@ -16,7 +16,7 @@ import AgentTests.ServerChoice (serverChoiceTests)
 import AgentTests.ShortLinkTests (shortLinkTests)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Transport (ATransport (..))
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 
 #if defined(dbPostgres)
 import Fixtures
@@ -47,7 +47,7 @@ agentTests ps = do
 #endif
     describe "Functional API" $ functionalAPITests ps
     describe "Chosen servers" serverChoiceTests
-#if defined(dbServerPostgres)    
+#if defined(dbServerPostgres)
     around_ (postgressBracket ntfTestServerDBConnectInfo) $
       describe "Notification tests" $ notificationTests ps
 #endif

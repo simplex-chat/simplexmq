@@ -83,8 +83,9 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Transport (ATransport)
 import System.Process (callCommand)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO
+import Util
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else

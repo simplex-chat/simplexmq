@@ -24,7 +24,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 batchingTests :: Spec
 batchingTests = do

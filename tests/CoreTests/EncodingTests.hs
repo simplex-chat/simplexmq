@@ -16,9 +16,10 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
+import Util
 
 int64 :: Int64
 int64 = 1234567890123456789

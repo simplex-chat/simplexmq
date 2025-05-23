@@ -17,7 +17,7 @@ module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try, throwIO)
+import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
@@ -39,7 +39,7 @@ import Simplex.Messaging.Server (exportMessages)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..))
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
@@ -50,8 +50,8 @@ import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
-import Test.Hspec
-import Util (removeFileIfExists)
+import Test.Hspec hiding (fit, it)
+import Util
 
 serverTests :: SpecWith (ATransport, AStoreType)
 serverTests = do
@@ -1094,7 +1094,7 @@ testBlockMessageQueue =
 
 testInvQueueLinkData :: SpecWith (ATransport, AStoreType)
 testInvQueueLinkData =
-  it "create and access queue short link data for 1-time invitation"  $ \(ATransport t, msType) ->
+  it "create and access queue short link data for 1-time invitation" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1147,7 +1147,7 @@ testInvQueueLinkData =
 
 testContactQueueLinkData :: SpecWith (ATransport, AStoreType)
 testContactQueueLinkData =
-  it "create and access queue short link data for contact address"  $ \(ATransport t, msType) ->
+  it "create and access queue short link data for contact address" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g

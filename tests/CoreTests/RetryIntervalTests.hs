@@ -8,14 +8,15 @@ import Control.Concurrent.STM
 import Control.Monad (when)
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime, nominalDiffTimeToSeconds)
 import Simplex.Messaging.Agent.RetryInterval
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 retryIntervalTests :: Spec
 retryIntervalTests = do
   describe "Retry interval with 2 modes and lock" $ do
     testRetryIntervalSameMode
     testRetryIntervalSwitchMode
-  describe "Foreground retry interval" $ do 
+  describe "Foreground retry interval" $ do
     testRetryForeground
     testRetryToBackground
     testRetrySkipWhenForeground
@@ -103,7 +104,7 @@ testRetryForeground =
       when (length ints < 8) $ loop
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+      `shouldReturn` [10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
 
 testRetryToBackground :: Spec
 testRetryToBackground =
@@ -124,7 +125,7 @@ testRetryToBackground =
       )
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+      `shouldReturn` [10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
 
 testRetrySkipWhenForeground :: Spec
 testRetrySkipWhenForeground =
@@ -149,7 +150,7 @@ testRetrySkipWhenForeground =
       )
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 0, 1, 1, 1, 2, 3, 1]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ 10000, 10000, 15000, 22500, 33750, 10000, 10000, 15000, 22500, 33750, 40000, 10000]
+      `shouldReturn` [10000, 10000, 15000, 22500, 33750, 10000, 10000, 15000, 22500, 33750, 40000, 10000]
 
 addInterval :: TVar [Int] -> TVar UTCTime -> IO [Int]
 addInterval intervals ts = do

@@ -32,8 +32,9 @@ import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
+import Util
 import XFTPClient
 
 xftpServerTests :: Spec

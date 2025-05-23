@@ -14,8 +14,9 @@ import Simplex.Messaging.Agent.Client hiding (userServers)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Client (defaultNetworkConfig)
 import Simplex.Messaging.Protocol
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import Test.QuickCheck
+import Util
 import XFTPClient (testXFTPServer)
 
 serverChoiceTests :: Spec

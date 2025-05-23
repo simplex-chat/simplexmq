@@ -13,7 +13,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
 import qualified Simplex.Messaging.Crypto.File as CF
 import System.Directory (getFileSize)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 cryptoFileTests :: Spec
 cryptoFileTests = do
