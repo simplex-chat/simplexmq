@@ -74,7 +74,7 @@ delete k m = modifyTVar' m $ M.delete k
 {-# INLINE delete #-}
 
 lookupInsert :: Ord k => k -> a -> TMap k a -> STM (Maybe a)
-lookupInsert k v m = stateTVar m $ \mv -> (M.lookup k mv, M.insert k v mv)
+lookupInsert k v m = stateTVar m $ M.alterF (,Just v) k
 {-# INLINE lookupInsert #-}
 
 lookupDelete :: Ord k => k -> TMap k a -> STM (Maybe a)
