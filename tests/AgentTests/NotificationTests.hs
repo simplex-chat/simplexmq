@@ -61,7 +61,7 @@ import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfgMS, cfgJ2QS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfgJ2QS, cfgMS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -552,38 +552,28 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     -- register notification token
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
-    liftIO $ putStrLn "after registerNtfToken"
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
-    liftIO $ putStrLn "after getMockNotification"
     verification <- ntfData .-> "verification"
     vNonce <- C.cbNonce <$> ntfData .-> "nonce"
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
-    liftIO $ putStrLn "after checkNtfToken"
     -- send message
-    liftIO $ threadDelay 250000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
     (nonce, message) <- messageNotification apns tkn
-    liftIO $ putStrLn "after messageNotification"
     pure (bobId, aliceId, nonce, message)
 
   Right [NotificationInfo {ntfConnId = cId, ntfMsgMeta = Just NMsgMeta {msgTs}}] <- runExceptT $ getNotificationConns alice nonce message
   cId `shouldBe` bobId
-  putStrLn "after getNotificationConns"
   -- alice client already has subscription for the connection,
   [Left (CMD PROHIBITED _)] <- getConnectionMessages alice [ConnMsgReq cId 1 $ Just $ systemToUTCTime msgTs]
-  putStrLn "after getConnectionMessages"
 
   threadDelay 1000000
   suspendAgent alice 0
-  putStrLn "after suspendAgent"
   closeDBStore store
-  putStrLn "after closeDBStore"
   threadDelay 1000000 >> callCommand "sync" >> threadDelay 1000000
-  putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> do
@@ -591,7 +581,6 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     pure ()
 
   threadDelay 1000000 >> callCommand "sync" >> threadDelay 1000000
-  putStrLn "after closing the database in another agent"
   reopenDBStore store
   foregroundAgent alice
   threadDelay 500000
