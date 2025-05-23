@@ -37,7 +37,6 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Environment (lookupEnv)
 import System.Info (os)
-import System.Process (callCommand)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -303,7 +302,7 @@ serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   E.bracket
     (forkIOWithUnmask (\unmask -> unmask (process started) `E.catchAny` handleStartError started))
-    (\t -> killThread t >> afterProcess >> waitFor started "stop" >> callCommand "sync")
+    (\t -> killThread t >> afterProcess >> waitFor started "stop")
     (\t -> waitFor started "start" >> f t >>= \r -> r <$ threadDelay 100000)
   where
     -- it putTMVar is called twise to unlock both parts of the bracket in case of start failure

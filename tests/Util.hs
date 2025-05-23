@@ -10,9 +10,9 @@ import Control.Logger.Simple
 import Control.Monad (replicateM, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
-import Data.Typeable (cast)
 import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
 import System.Directory (doesFileExist, removeFile)
+import System.Process (callCommand)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import qualified Test.Hspec as Hspec
@@ -56,7 +56,7 @@ instance Example a => Example (TestWrapper a) where
     where
       tt = 120
       runTest =
-        timeout (tt * 1000000) (evaluateExample action params hooks state) >>= \case
+        timeout (tt * 1000000) (evaluateExample action params hooks state) `finally` callCommand "sync" >>= \case
           Just r -> pure r
           Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
       onTestFailure :: ResultStatus -> IO Result

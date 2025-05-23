@@ -14,7 +14,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ALPN, SessionId, TLS, TransportPeer (..), closeConnection, tlsALPN, tlsUniq)
+import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (ServerCredentials, TransportServerConfig (..), loadServerCredential, runTransportServer)
 import Simplex.Messaging.Util (threadDelay')
