@@ -30,7 +30,8 @@ import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
@@ -59,8 +60,7 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
-  -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
-  setLogLevel LogError -- LogInfo -- also change in SMPClient.hs in defaultStartOptions
+  setLogLevel testLogLevel
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"

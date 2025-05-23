@@ -17,7 +17,8 @@ import Simplex.Messaging.Util (ifM, whenM)
 import System.Directory (doesFileExist, removeFile)
 import System.Environment (lookupEnv)
 import System.Process (readCreateProcess, shell)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 testSchemaPath :: FilePath
 testSchemaPath = "tests/tmp/test_schema.sql"

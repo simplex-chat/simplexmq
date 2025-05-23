@@ -11,9 +11,10 @@ import GHC.Generics (Generic)
 import Generic.Random (genericArbitraryU)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck
+import Util
 
 data V = V1 | V2 | V3 | V4 | V5 deriving (Eq, Enum, Ord, Generic, Show)
 

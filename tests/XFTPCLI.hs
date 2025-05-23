@@ -9,7 +9,8 @@ import System.Directory (createDirectoryIfMissing, getFileSize, listDirectory, r
 import System.Environment (withArgs)
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 import XFTPClient (testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLITests :: Spec

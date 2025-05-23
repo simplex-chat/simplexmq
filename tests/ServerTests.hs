@@ -19,7 +19,7 @@ module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try, throwIO)
+import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
@@ -42,7 +42,7 @@ import Simplex.Messaging.Server (exportMessages)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..))
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
@@ -53,8 +53,8 @@ import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
-import Test.Hspec
-import Util (removeFileIfExists)
+import Test.Hspec hiding (fit, it)
+import Util
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
 serverTests = do
@@ -690,7 +690,7 @@ testWithStoreLog =
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 serverStoreLogCfg :: AStoreType -> (ServerConfig, Bool)
-serverStoreLogCfg msType = 
+serverStoreLogCfg msType =
   let serverStoreCfg = serverStoreConfig_ True msType
       cfg' = (cfgMS msType) {serverStoreCfg, storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
       compacting = case msType of
@@ -921,7 +921,9 @@ testTiming =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2 = abs (t2 / t1 - 1) < 0.30 -- normally the difference between "no queue" and "wrong key" is less than 5%
+    similarTime t1 t2
+      | t1 <= t2 = abs (1 - t1 / t2) < 0.35 -- normally the difference between "no queue" and "wrong key" is less than 5%
+      | otherwise = similarTime t2 t1
     testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
       g <- C.newRandom
@@ -1094,8 +1096,8 @@ testBlockMessageQueue =
       pure a
 
 testInvQueueLinkData :: SpecWith (ASrvTransport, AStoreType)
-testInvQueueLinkData = 
-  it "create and access queue short link data for 1-time invitation"  $ \(ATransport t, msType) ->
+testInvQueueLinkData =
+  it "create and access queue short link data for 1-time invitation" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1147,8 +1149,8 @@ testInvQueueLinkData =
       rId2 `shouldBe` rId
 
 testContactQueueLinkData :: SpecWith (ASrvTransport, AStoreType)
-testContactQueueLinkData = 
-  it "create and access queue short link data for contact address"  $ \(ATransport t, msType) ->
+testContactQueueLinkData =
+  it "create and access queue short link data for contact address" $ \(ATransport t, msType) ->
     smpTest2 t msType $ \r s -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g

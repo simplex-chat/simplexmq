@@ -45,7 +45,7 @@ import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import System.Random (randomRIO)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
 #if defined(dbPostgres)

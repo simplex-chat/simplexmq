@@ -10,8 +10,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module CoreTests.MsgStoreTests where
 
@@ -23,13 +23,14 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Base64.URL as B64
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
 import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
@@ -43,11 +44,11 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
-import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
 import System.IO (IOMode (..), withFile)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 msgStoreTests :: Spec
 msgStoreTests = do
@@ -258,7 +259,6 @@ testQueueState ms = do
   length . lines <$> readFile statePath `shouldReturn` 1
   readQueueState ms statePath `shouldReturn` (Just state, False)
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
-
   let state1 =
         state
           { size = 1,
@@ -269,7 +269,6 @@ testQueueState ms = do
   length . lines <$> readFile statePath `shouldReturn` 2
   readQueueState ms statePath `shouldReturn` (Just state1, False)
   length <$> listDirectory dir `shouldReturn` 1 -- no backup
-
   let state2 =
         state
           { size = 2,
@@ -345,7 +344,7 @@ testRemoveJournals ms = do
   runRight $ do
     q <- ExceptT $ addQueue ms rId qr
     Just (Message {msgId = mId1}, True) <- write q "message 1"
-    Just (Message {msgId = mId2}, False) <- write q "message 2"    
+    Just (Message {msgId = mId2}, False) <- write q "message 2"
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
     (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
     liftIO $ closeMsgQueue ms q

@@ -17,9 +17,10 @@ import Simplex.Messaging.Agent.Protocol (ConnId, DBEntityId (..), QueueStatus (.
 import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer, QueueMode (..), pattern NoEntity, pattern VersionSMPC)
-import Test.Hspec
+import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), RecipientId, SMPServer, pattern NoEntity, pattern VersionSMPC)
+import Test.Hspec hiding (fit, it)
 import UnliftIO
+import Util
 
 tRcvQueuesTests :: Spec
 tRcvQueuesTests = do
@@ -120,7 +121,7 @@ getSessQueuesTest = do
   atomically (RQ.hasSessQueues tSess3 trq) `shouldReturn` False
   let tSess4 = (0, "smp://1234-w==@alpha", Nothing)
   RQ.getSessQueues tSess4 trq `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2", dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"]
-  atomically (RQ.hasSessQueues tSess4 trq) `shouldReturn`True
+  atomically (RQ.hasSessQueues tSess4 trq) `shouldReturn` True
 
 getDelSessQueuesTest :: IO ()
 getDelSessQueuesTest = do

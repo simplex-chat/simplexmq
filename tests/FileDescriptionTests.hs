@@ -16,7 +16,8 @@ import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import System.Directory (removeFile)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 fileDescriptionTests :: Spec
 fileDescriptionTests = do

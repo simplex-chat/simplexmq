@@ -18,7 +18,60 @@
 #endif
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module Simplex.Messaging.Server.Env.STM where
+module Simplex.Messaging.Server.Env.STM
+  ( ServerConfig (..),
+    ServerStoreCfg (..),
+    AServerStoreCfg (..),
+    StorePaths (..),
+    StartOptions (..),
+    Env (..),
+    Server (..),
+    ServerSubscribers (..),
+    SubscribedClients,
+    ProxyAgent (..),
+    Client (..),
+    AClient (..),
+    ClientId,
+    ClientSub (..),
+    Sub (..),
+    ServerSub (..),
+    SubscriptionThread (..),
+    MsgStore,
+    AMsgStore (..),
+    AStoreType (..),
+    newEnv,
+    mkJournalStoreConfig,
+    newClient,
+    getServerClients,
+    getServerClient,
+    insertServerClient,
+    deleteServerClient,
+    getSubscribedClients,
+    getSubscribedClient,
+    upsertSubscribedClient,
+    lookupSubscribedClient,
+    lookupDeleteSubscribedClient,
+    deleteSubcribedClient,
+    sameClientId,
+    sameClient,
+    clientId',
+    newSubscription,
+    newProhibitedSub,
+    defaultMsgQueueQuota,
+    defMsgExpirationDays,
+    defNtfExpirationHours,
+    defaultMessageExpiration,
+    defaultNtfExpiration,
+    defaultInactiveClientExpiration,
+    defaultProxyClientConcurrency,
+    defaultMaxJournalMsgCount,
+    defaultMaxJournalStateLines,
+    defaultIdleQueueInterval,
+    journalMsgStoreDepth,
+    readWriteQueueStore,
+    noPostgresExit,
+  )
+where
 
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
@@ -28,9 +81,12 @@ import Crypto.Random
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import Data.Kind (Constraint)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime, nominalDay)
@@ -65,6 +121,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THPeerClientService, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Util (ifM, whenM, ($>>=))
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..))
@@ -202,7 +259,6 @@ data Env = Env
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
-    clients :: TVar (IntMap (Maybe AClient)),
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
@@ -232,22 +288,79 @@ data AMsgStore =
   forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStore qs ms)) =>
   AMS (SQSType qs) (SMSType ms) (MsgStore qs ms)
 
-type Subscribed = Bool
-
 data Server = Server
-  { subscribers :: ServerSubscribers,
+  { clients :: ServerClients,
+    subscribers :: ServerSubscribers,
     ntfSubscribers :: ServerSubscribers,
     savingLock :: Lock
   }
 
+-- not exported, to prevent concurrent IntMap lookups inside STM transactions.
+newtype ServerClients = ServerClients {serverClients :: TVar (IntMap AClient)}
+
 data ServerSubscribers = ServerSubscribers
   { subQ :: TQueue (ClientSub, ClientId),
-    queueSubscribers :: TMap QueueId (TVar AClient),
-    serviceSubscribers :: TMap ServiceId (TVar AClient), -- service clients with long-term certificates that have SMP subscriptions
+    queueSubscribers :: SubscribedClients,
+    serviceSubscribers :: SubscribedClients, -- service clients with long-term certificates that have subscriptions
     totalServiceSubs :: TVar Int64,
-    subClients :: TVar (IntMap AClient), -- clients with individual or service subscriptions
+    subClients :: TVar IntSet, -- clients with individual or service subscriptions
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
+
+-- not exported, to prevent accidental concurrent Map lookups inside STM transactions.
+-- Map stores TVars with pointers to the clients rather than client ID to allow reading the same TVar
+-- inside transactions to ensure that transaction is re-evaluated in case subscriber changes.
+-- Storing Maybe allows to have continuity of subscription when the same user client disconnects and re-connects -
+-- any STM transaction that reads subscribed client will re-evaluate in this case.
+-- The subscriptions that were made at any point are not removed -
+-- this is a better trade-off with intermittently connected mobile clients.
+data SubscribedClients = SubscribedClients (TMap EntityId (TVar (Maybe AClient)))
+
+getSubscribedClients :: SubscribedClients -> IO (Map EntityId (TVar (Maybe AClient)))
+getSubscribedClients (SubscribedClients cs) = readTVarIO cs
+
+getSubscribedClient :: EntityId -> SubscribedClients -> IO (Maybe (TVar (Maybe AClient)))
+getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO entId cs
+{-# INLINE getSubscribedClient #-}
+
+-- insert subscribed and current client, return previously subscribed client if it is different
+upsertSubscribedClient :: EntityId -> AClient -> SubscribedClients -> STM (Maybe AClient)
+upsertSubscribedClient entId ac@(AClient _ _ c) (SubscribedClients cs) =
+  TM.lookup entId cs >>= \case
+    Nothing -> Nothing <$ TM.insertM entId (newTVar (Just ac)) cs
+    Just cv ->
+      readTVar cv >>= \case
+        Just c' | sameClientId c c' -> pure Nothing
+        c_ -> c_ <$ writeTVar cv (Just ac)
+
+lookupSubscribedClient :: EntityId -> SubscribedClients -> STM (Maybe AClient)
+lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup entId cs $>>= readTVar
+{-# INLINE lookupSubscribedClient #-}
+
+-- lookup and delete currently subscribed client
+lookupDeleteSubscribedClient :: EntityId -> SubscribedClients -> STM (Maybe AClient)
+lookupDeleteSubscribedClient entId (SubscribedClients cs) =
+  TM.lookupDelete entId cs $>>= (`swapTVar` Nothing)
+{-# INLINE lookupDeleteSubscribedClient #-}
+
+deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients -> IO ()
+deleteSubcribedClient entId c (SubscribedClients cs) =
+  -- lookup of the subscribed client TVar can be in separate transaction,
+  -- as long as the client is read in the same transaction -
+  -- it prevents removing the next subscribed client and also avoids STM contention for the Map.
+  TM.lookupIO entId cs >>= mapM_ (\cv -> atomically $ whenM (sameClient c cv) $ delete cv)
+  where
+    delete cv = do
+      writeTVar cv Nothing
+      TM.delete entId cs
+
+sameClientId :: Client s -> AClient -> Bool
+sameClientId Client {clientId} ac = clientId == clientId' ac
+{-# INLINE sameClientId #-}
+
+sameClient :: Client s -> TVar (Maybe AClient) -> STM Bool
+sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
+{-# INLINE sameClient #-}
 
 data ClientSub
   = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
@@ -296,18 +409,40 @@ data Sub = Sub
 
 newServer :: IO Server
 newServer = do
+  clients <- ServerClients <$> newTVarIO mempty
   subscribers <- newServerSubscribers
   ntfSubscribers <- newServerSubscribers
   savingLock <- createLockIO
-  pure Server {subscribers, ntfSubscribers, savingLock}
+  return Server {clients, subscribers, ntfSubscribers, savingLock}
+
+getServerClients :: Server -> IO (IntMap AClient)
+getServerClients = readTVarIO . serverClients . clients
+{-# INLINE getServerClients #-}
+
+getServerClient :: ClientId -> Server -> IO (Maybe AClient)
+getServerClient cId s = IM.lookup cId <$> getServerClients s
+{-# INLINE getServerClient #-}
+
+insertServerClient :: AClient -> Server -> IO Bool
+insertServerClient ac@(AClient _ _ Client {clientId, connected}) Server {clients} =
+  atomically $
+    ifM
+      (readTVar connected)
+      (True <$ modifyTVar' (serverClients clients) (IM.insert clientId ac))
+      (pure False)
+{-# INLINE insertServerClient #-}
+
+deleteServerClient :: ClientId -> Server -> IO ()
+deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClients clients) $ IM.delete cId
+{-# INLINE deleteServerClient #-}
 
 newServerSubscribers :: IO ServerSubscribers
 newServerSubscribers = do
   subQ <- newTQueueIO
-  queueSubscribers <- TM.emptyIO
-  serviceSubscribers <- TM.emptyIO
+  queueSubscribers <- SubscribedClients <$> TM.emptyIO
+  serviceSubscribers <- SubscribedClients <$> TM.emptyIO
   totalServiceSubs <- newTVarIO 0
-  subClients <- newTVarIO IM.empty
+  subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
@@ -394,9 +529,24 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   serverStats <- newServerStats =<< getCurrentTime
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
-  clients <- newTVarIO mempty
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  pure Env {serverActive, config, serverInfo, server, serverIdentity, msgStore, ntfStore, random, tlsServerCreds, httpServerCreds, serverStats, sockets, clientSeq, clients, proxyAgent}
+  pure
+    Env
+      { serverActive,
+        config,
+        serverInfo,
+        server,
+        serverIdentity,
+        msgStore,
+        ntfStore,
+        random,
+        tlsServerCreds,
+        httpServerCreds,
+        serverStats,
+        sockets,
+        clientSeq,
+        proxyAgent
+      }
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
     loadStoreLog mkQ f st = do

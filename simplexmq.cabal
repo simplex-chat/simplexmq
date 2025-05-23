@@ -520,6 +520,7 @@ test-suite simplexmq-test
     , generic-random ==1.5.*
     , hashable
     , hspec ==2.11.*
+    , hspec-core ==2.11.*
     , http-client
     , http-types
     , http2

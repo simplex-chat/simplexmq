@@ -29,7 +29,8 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 testPublicAuthKey :: C.APublicAuthKey
 testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
@@ -81,19 +82,19 @@ storeLogTests =
             saved = [CreateQueue rId' qr'],
             compacted = [CreateQueue rId' qr'],
             state = M.fromList [(rId', qr')]
-          },          
+          },
         SLTC
           { name = "create new queue, add link data",
             saved = [CreateQueue rId' qr' {queueData = Nothing}, CreateLink rId' lnkId qd],
             compacted = [CreateQueue rId' qr'],
             state = M.fromList [(rId', qr')]
-          },          
+          },
         SLTC
           { name = "create new queue with link data, delete data",
             saved = [CreateQueue rId' qr', DeleteLink rId'],
             compacted = [CreateQueue rId' qr' {queueData = Nothing}],
             state = M.fromList [(rId', qr' {queueData = Nothing})]
-          },          
+          },
         SLTC
           { name = "secure queue",
             saved = [CreateQueue rId qr, SecureQueue rId testPublicAuthKey],

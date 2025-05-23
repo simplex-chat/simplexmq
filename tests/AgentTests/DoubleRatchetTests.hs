@@ -26,13 +26,14 @@ import qualified Data.Map.Strict as M
 import Data.Type.Equality
 import Simplex.Messaging.Crypto (Algorithm (..), AlgorithmI, CryptoError, DhAlgorithm)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Crypto.Ratchet
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$$>))
 import Simplex.Messaging.Version
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 doubleRatchetTests :: Spec
 doubleRatchetTests = do
@@ -81,7 +82,6 @@ runMessageTests initRatchets_ agreeRatchetKEMs = do
     run test = do
       withRatchets_ @X25519 initRatchets_ test
       withRatchets_ @X448 initRatchets_ test
-
 
 testAlgs :: (forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()) -> IO ()
 testAlgs test = test C.SX25519 >> test C.SX448

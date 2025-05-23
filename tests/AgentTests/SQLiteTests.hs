@@ -52,11 +52,12 @@ import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (EntityId (..), SubscriptionMode (..), QueueMode (..), pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
 import System.Random
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO.Directory (removeFile)
+import Util
 
 testDB :: String
 testDB = "tests/tmp/smp-agent.test.db"

@@ -108,7 +108,7 @@ import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
 import System.Directory (copyFile, renameFile)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
 import XFTPClient (testXFTPServer)
@@ -3587,7 +3587,7 @@ exchangeGreetingsMsgId_ :: HasCallStack => PQEncryption -> Int64 -> AgentClient 
 exchangeGreetingsMsgId_ = exchangeGreetingsViaProxyMsgId_ False
 
 exchangeGreetingsViaProxy :: HasCallStack => Bool -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsViaProxy viaProxy = exchangeGreetingsViaProxyMsgId_ viaProxy PQEncOn 2 
+exchangeGreetingsViaProxy viaProxy = exchangeGreetingsViaProxyMsgId_ viaProxy PQEncOn 2
 
 exchangeGreetingsViaProxyMsgId_ :: HasCallStack => Bool -> PQEncryption -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 exchangeGreetingsViaProxyMsgId_ viaProxy pqEnc msgId alice bobId bob aliceId = do

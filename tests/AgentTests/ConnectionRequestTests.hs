@@ -28,7 +28,8 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 srv :: SMPServer
 srv = SMPServer "smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion" "5223" (C.KeyHash "\215m\248\251")
@@ -288,7 +289,7 @@ connectionRequestTests =
       smpEncodingTest queueV1NoPort
       smpEncodingTest connectionRequest
       -- smpEncodingTest connectionRequestNoQM -- this fails, because of queue mode patch
-      smpEncodingTest connectionRequestContact  -- this passes because of queue mode patch in ConnReqUriData encoding
+      smpEncodingTest connectionRequestContact -- this passes because of queue mode patch in ConnReqUriData encoding
       smpEncodingTest connectionRequest1
       smpEncodingTest connectionRequest2queues
       smpEncodingTest connectionRequestNew
@@ -334,12 +335,12 @@ connectionRequestTests =
       restoreShortLink [srv] (contact srv2 (LinkKey "0123456789abcdef0123456789abcdef"))
         `shouldBe` contact srv2 (LinkKey "0123456789abcdef0123456789abcdef")
       Right (lnk :: ConnShortLink 'CMContact) <- pure $ strDecode "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM?p=7001&c=LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI"
-      Right (lnk' :: ConnShortLink 'CMContact) <- pure $ strDecode  "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM"
+      Right (lnk' :: ConnShortLink 'CMContact) <- pure $ strDecode "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM"
       let presetSrv :: SMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:7001"
       shortenShortLink [presetSrv] lnk `shouldBe` lnk'
       restoreShortLink [presetSrv] lnk' `shouldBe` lnk
       Right (inv :: ConnShortLink 'CMInvitation) <- pure $ strDecode "https://localhost/i#tnUaHYp8saREmyEHR93SBpl8ySHBchOt/LJ1ZQUzxH9Udb0jw5wmJACv5o6oe8e7BsX_hUCUMTSY?p=7001&c=LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI"
-      Right (inv' :: ConnShortLink 'CMInvitation) <- pure $ strDecode  "https://localhost/i#tnUaHYp8saREmyEHR93SBpl8ySHBchOt/LJ1ZQUzxH9Udb0jw5wmJACv5o6oe8e7BsX_hUCUMTSY"
+      Right (inv' :: ConnShortLink 'CMInvitation) <- pure $ strDecode "https://localhost/i#tnUaHYp8saREmyEHR93SBpl8ySHBchOt/LJ1ZQUzxH9Udb0jw5wmJACv5o6oe8e7BsX_hUCUMTSY"
       shortenShortLink [presetSrv] inv `shouldBe` inv'
       restoreShortLink [presetSrv] inv' `shouldBe` inv
   where

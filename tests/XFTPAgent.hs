@@ -42,9 +42,10 @@ import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO
 import UnliftIO.Concurrent
+import Util
 import XFTPCLI
 import XFTPClient
 #if defined(dbPostgres)

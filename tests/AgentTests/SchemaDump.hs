@@ -18,7 +18,8 @@ import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmati
 import Simplex.Messaging.Util (ifM)
 import System.Directory (doesFileExist, removeFile)
 import System.Process (readCreateProcess, shell)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
+import Util
 
 testDB :: FilePath
 testDB = "tests/tmp/test_agent_schema.db"

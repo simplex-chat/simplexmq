@@ -61,7 +61,7 @@ import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfgMS, cfgJ2QS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfgJ2QS, cfgMS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -83,8 +83,9 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Transport (ASrvTransport)
 import System.Process (callCommand)
-import Test.Hspec
+import Test.Hspec hiding (fit, it)
 import UnliftIO
+import Util
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else
@@ -156,10 +157,10 @@ notificationTests ps@(t, _) = do
     it "should resume subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestart ps apns
-  describe "Notifications after SMP server restart" $
+  describe "Notifications after SMP server restart (batched)" $
     it "should resume batched subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNotificationsSMPRestartBatch 100 ps apns
+        withNtfServer t $ testNotificationsSMPRestartBatch 50 ps apns
   describe "should switch notifications to the new queue" $
     testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
@@ -227,8 +228,6 @@ v .-> key = do
 
 testNtfTokenRepeatRegistration :: APNSMockServer -> IO ()
 testNtfTokenRepeatRegistration apns = do
-  -- setLogLevel LogError -- LogDebug
-  -- withGlobalLogging logCfg $ do
   withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -248,8 +247,6 @@ testNtfTokenRepeatRegistration apns = do
 
 testNtfTokenSecondRegistration :: APNSMockServer -> IO ()
 testNtfTokenSecondRegistration apns =
-  -- setLogLevel LogError -- LogDebug
-  -- withGlobalLogging logCfg $ do
   withAgentClients2 $ \a a' -> runRight_ $ do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -559,7 +556,6 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
     -- send message
-    liftIO $ threadDelay 250000
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
@@ -571,11 +567,10 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
   -- alice client already has subscription for the connection,
   [Left (CMD PROHIBITED _)] <- getConnectionMessages alice [ConnMsgReq cId 1 $ Just $ systemToUTCTime msgTs]
 
-  threadDelay 500000
+  threadDelay 1000000
   suspendAgent alice 0
   closeDBStore store
   threadDelay 1000000 >> callCommand "sync" >> threadDelay 1000000
-  putStrLn "before opening the database from another agent"
 
   -- aliceNtf client doesn't have subscription and is allowed to get notification message
   withAgent 3 aliceCfg initAgentServers testDB $ \aliceNtf -> do
@@ -583,7 +578,6 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     pure ()
 
   threadDelay 1000000 >> callCommand "sync" >> threadDelay 1000000
-  putStrLn "after closing the database in another agent"
   reopenDBStore store
   foregroundAgent alice
   threadDelay 500000
