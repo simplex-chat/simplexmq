@@ -50,16 +50,7 @@ testLogLevel = LogError
 
 instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
-  evaluateExample (TestWrapper action) params hooks state = do
-    let tt = 120
-        runTest =
-          timeout (tt * 1000000) (evaluateExample action params hooks state) >>= \case
-            Just r -> pure r
-            Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
-        retryTest = do
-          putStrLn "Retrying with more logs..."
-          setLogLevel LogNote
-          runTest `finally` setLogLevel testLogLevel -- change this to match log level in Test.hs
+  evaluateExample (TestWrapper action) params hooks state =
     E.try runTest >>= \case
       Right r -> case resultStatus r of
         Failure loc_ reason -> do
@@ -69,6 +60,16 @@ instance Example a => Example (TestWrapper a) where
       Left (e :: E.SomeException) -> do
         putStrLn $ "Test exception: " ++ show e
         retryTest
+    where
+      tt = 120
+      runTest =
+        timeout (tt * 1000000) (evaluateExample action params hooks state) >>= \case
+          Just r -> pure r
+          Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
+      retryTest = do
+        putStrLn "Retrying with more logs..."
+        setLogLevel LogDebug
+        runTest `finally` setLogLevel testLogLevel -- change this to match log level in Test.hs
 
 it :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 it label action = Hspec.it label (TestWrapper action)
