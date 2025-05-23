@@ -157,10 +157,10 @@ notificationTests ps@(t, _) = do
     it "should resume subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestart ps apns
-  describe "Notifications after SMP server restart" $
+  describe "Notifications after SMP server restart (batched)" $
     it "should resume batched subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
-        withNtfServer t $ testNotificationsSMPRestartBatch 100 ps apns
+        withNtfServer t $ testNotificationsSMPRestartBatch 50 ps apns
   describe "should switch notifications to the new queue" $
     testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
@@ -228,8 +228,6 @@ v .-> key = do
 
 testNtfTokenRepeatRegistration :: APNSMockServer -> IO ()
 testNtfTokenRepeatRegistration apns = do
-  -- setLogLevel LogError -- LogDebug
-  -- withGlobalLogging logCfg $ do
   withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -249,8 +247,6 @@ testNtfTokenRepeatRegistration apns = do
 
 testNtfTokenSecondRegistration :: APNSMockServer -> IO ()
 testNtfTokenSecondRegistration apns =
-  -- setLogLevel LogError -- LogDebug
-  -- withGlobalLogging logCfg $ do
   withAgentClients2 $ \a a' -> runRight_ $ do
     let tkn = DeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic

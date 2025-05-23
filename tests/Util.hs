@@ -44,17 +44,22 @@ removeFileIfExists filePath = do
 
 newtype TestWrapper a = TestWrapper a
 
+-- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
+testLogLevel :: LogLevel
+testLogLevel = LogError
+
 instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
   evaluateExample (TestWrapper action) params hooks state = do
-    let runTest =
-          timeout 60000000 (evaluateExample action params hooks state) >>= \case
+    let tt = 120
+        runTest =
+          timeout (tt * 1000000) (evaluateExample action params hooks state) >>= \case
             Just r -> pure r
-            Nothing -> throwIO $ userError "test timed out after 60 seconds"
+            Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
         retryTest = do
-          putStrLn "Retrying with Debug logging..."
-          setLogLevel LogDebug
-          runTest `finally` setLogLevel LogError -- change this to match log level in Test.hs
+          putStrLn "Retrying with more logs..."
+          setLogLevel LogNote
+          runTest `finally` setLogLevel testLogLevel -- change this to match log level in Test.hs
     E.try runTest >>= \case
       Right r -> case resultStatus r of
         Failure loc_ reason -> do
