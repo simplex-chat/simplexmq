@@ -68,10 +68,11 @@ runHTTP2Server started port bufferSize srvSupported srvCreds alpn_ transportConf
   where
     setup = runTransportServer started port srvSupported srvCreds alpn_ transportConfig
 
-runHTTP2ServerWith :: BufferSize -> ((TLS 'TServer -> IO ()) -> a) -> HTTP2ServerFunc -> a
+-- HTTP2 server can be run on both client and server TLS connections.
+runHTTP2ServerWith :: BufferSize -> ((TLS p -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith = runHTTP2ServerWith_ Nothing (\_sessId -> pure ())
 
-runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> ((TLS 'TServer -> IO ()) -> a) -> HTTP2ServerFunc -> a
+runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> ((TLS p -> IO ()) -> a) -> HTTP2ServerFunc -> a
 runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup $ \tls -> do
   activeAt <- newTVarIO =<< getSystemTime
   tid_ <- mapM (forkIO . expireInactiveClient tls activeAt) expCfg_

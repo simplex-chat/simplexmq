@@ -10,6 +10,7 @@ import Control.Logger.Simple
 import Control.Monad (replicateM, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
+import Data.Typeable (cast)
 import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
 import System.Directory (doesFileExist, removeFile)
 import System.Timeout (timeout)
@@ -51,21 +52,23 @@ testLogLevel = LogError
 instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
   evaluateExample (TestWrapper action) params hooks state =
-    E.try runTest >>= \case
-      Right r -> case resultStatus r of
-        Failure loc_ reason -> do
-          putStrLn $ "Test failed: location " ++ show loc_ ++ ", reason: " ++ show reason
-          retryTest
-        _ -> pure r
-      Left (e :: E.SomeException) -> do
-        putStrLn $ "Test exception: " ++ show e
-        retryTest
+    runTest `E.catches` [E.Handler onTestFailure, E.Handler onTestException]
     where
       tt = 120
       runTest =
         timeout (tt * 1000000) (evaluateExample action params hooks state) >>= \case
           Just r -> pure r
           Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
+      onTestFailure :: ResultStatus -> IO Result
+      onTestFailure = \case
+        Failure loc_ reason -> do
+          putStrLn $ "Test failed: location " ++ show loc_ ++ ", reason: " ++ show reason
+          retryTest
+        r -> E.throwIO r
+      onTestException :: SomeException -> IO Result
+      onTestException e = do
+        putStrLn $ "Test exception: " ++ show e
+        retryTest
       retryTest = do
         putStrLn "Retrying with more logs..."
         setLogLevel LogDebug
