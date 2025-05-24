@@ -1073,6 +1073,7 @@ testAsyncServerOffline ps = withAgentClients2 $ \alice bob -> do
     liftIO $ do
       srv1 `shouldBe` testSMPServer
       conns1 `shouldBe` [bobId]
+    liftIO $ threadDelay 250000
     (aliceId, sqSecured) <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
     liftIO $ sqSecured `shouldBe` True
     ("", _, CONF confId _ "bob's connInfo") <- get alice

@@ -1,10 +1,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Transport.HTTP2.Client where
 
@@ -25,7 +27,7 @@ import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Transport (ALPN, SessionId, TLS (tlsALPN, tlsPeerCert, tlsUniq), TransportPeer (..), getServerVerifyKey)
+import Simplex.Messaging.Transport (ALPN, STransportPeer (..), SessionId, TLS (tlsALPN, tlsPeerCert, tlsUniq), TransportPeer (..), TransportPeerI (..), getServerVerifyKey)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Util (eitherToMaybe)
@@ -98,13 +100,14 @@ getVerifiedHTTP2Client socksCreds host port keyHash caStore config disconnected 
   where
     setup = runHTTP2Client (suportedTLSParams config) caStore (transportConfig config) (bufferSize config) socksCreds host port keyHash
 
-attachHTTP2Client :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> Int -> TLS 'TClient -> IO (Either HTTP2ClientError HTTP2Client)
+-- HTTP2 client can be run on both client and server TLS connections.
+attachHTTP2Client :: forall p. TransportPeerI p => HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> Int -> TLS p -> IO (Either HTTP2ClientError HTTP2Client)
 attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP2ClientWith config host port disconnected setup
   where
-    setup :: (TLS 'TClient -> H.Client HTTP2Response) -> IO HTTP2Response
+    setup :: (TLS p -> H.Client HTTP2Response) -> IO HTTP2Response
     setup = runHTTP2ClientWith bufferSize host ($ tls)
 
-getVerifiedHTTP2ClientWith :: HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((TLS 'TClient -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
+getVerifiedHTTP2ClientWith :: forall p. TransportPeerI p => HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((TLS p -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
 getVerifiedHTTP2ClientWith config host port disconnected setup =
   (mkHTTPS2Client >>= runClient)
     `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
@@ -125,14 +128,16 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
         Just (Left e) -> pure $ Left e
         Nothing -> cancel action $> Left HCNetworkError
 
-    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS 'TClient -> H.Client HTTP2Response
+    client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS p -> H.Client HTTP2Response
     client c cVar tls sendReq = do
       sessionTs <- getCurrentTime
       let c' =
             HTTP2Client
               { action = Nothing,
                 client_ = c,
-                serverKey = eitherToMaybe $ getServerVerifyKey tls,
+                serverKey = case sTransportPeer @p of
+                  STClient -> eitherToMaybe $ getServerVerifyKey tls
+                  STServer -> Nothing,
                 serverCerts = tlsPeerCert tls,
                 sendReq,
                 sessionTs,
@@ -186,8 +191,9 @@ runHTTP2Client tlsParams caStore tcConfig bufferSize socksCreds host port keyHas
     setup :: (TLS 'TClient -> IO a) -> IO a
     setup = runTLSTransportClient tlsParams caStore tcConfig socksCreds host port keyHash
 
-runHTTP2ClientWith :: forall a. BufferSize -> TransportHost -> ((TLS 'TClient -> IO a) -> IO a) -> (TLS 'TClient -> H.Client a) -> IO a
+-- HTTP2 client can be run on both client and server TLS connections.
+runHTTP2ClientWith :: forall a p. BufferSize -> TransportHost -> ((TLS p -> IO a) -> IO a) -> (TLS p -> H.Client a) -> IO a
 runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 bufferSize (run tls) (pure ()) tls
   where
-    run :: TLS 'TClient -> H.Config -> IO a
+    run :: TLS p -> H.Config -> IO a
     run tls cfg = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client tls

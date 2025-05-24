@@ -15,7 +15,7 @@ import AgentTests.MigrationTests (migrationTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import AgentTests.ShortLinkTests (shortLinkTests)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
-import Simplex.Messaging.Transport (ASrvTransport (..))
+import Simplex.Messaging.Transport (ASrvTransport)
 import Test.Hspec hiding (fit, it)
 
 #if defined(dbPostgres)

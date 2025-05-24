@@ -88,12 +88,12 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: forall c. Transport c => TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServer :: Transport c => TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServer started port srvSupported srvCreds alpn_ cfg server = do
   ss <- newSocketState
   runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server
 
-runTransportServerState :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServerState :: Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server = runTransportServerState_ ss started port srvSupported (const srvCreds) alpn_ cfg (const server)
 
 runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()

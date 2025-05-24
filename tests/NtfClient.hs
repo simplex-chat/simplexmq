@@ -190,7 +190,7 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
 withNtfServerOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
 withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
-withNtfServer :: HasCallStack => ASrvTransport-> (HasCallStack => IO a) -> IO a
+withNtfServer :: HasCallStack => ASrvTransport -> (HasCallStack => IO a) -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort ntfTestDBCfg
 
 runNtfTest :: forall c a. Transport c => (THandleNTF c 'TClient -> IO a) -> IO a

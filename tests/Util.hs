@@ -12,6 +12,7 @@ import Data.Either (partitionEithers)
 import Data.List (tails)
 import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
 import System.Directory (doesFileExist, removeFile)
+import System.Process (callCommand)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import qualified Test.Hspec as Hspec
@@ -50,25 +51,28 @@ testLogLevel = LogError
 
 instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
-  evaluateExample (TestWrapper action) params hooks state = do
-    let tt = 120
-        runTest =
-          timeout (tt * 1000000) (evaluateExample action params hooks state) >>= \case
-            Just r -> pure r
-            Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
-        retryTest = do
-          putStrLn "Retrying with more logs..."
-          setLogLevel LogNote
-          runTest `finally` setLogLevel testLogLevel -- change this to match log level in Test.hs
-    E.try runTest >>= \case
-      Right r -> case resultStatus r of
+  evaluateExample (TestWrapper action) params hooks state =
+    runTest `E.catches` [E.Handler onTestFailure, E.Handler onTestException]
+    where
+      tt = 120
+      runTest =
+        timeout (tt * 1000000) (evaluateExample action params hooks state) `finally` callCommand "sync" >>= \case
+          Just r -> pure r
+          Nothing -> throwIO $ userError $ "test timed out after " <> show tt <> " seconds"
+      onTestFailure :: ResultStatus -> IO Result
+      onTestFailure = \case
         Failure loc_ reason -> do
           putStrLn $ "Test failed: location " ++ show loc_ ++ ", reason: " ++ show reason
           retryTest
-        _ -> pure r
-      Left (e :: E.SomeException) -> do
+        r -> E.throwIO r
+      onTestException :: SomeException -> IO Result
+      onTestException e = do
         putStrLn $ "Test exception: " ++ show e
         retryTest
+      retryTest = do
+        putStrLn "Retrying with more logs..."
+        setLogLevel LogDebug
+        runTest `finally` setLogLevel testLogLevel -- change this to match log level in Test.hs
 
 it :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 it label action = Hspec.it label (TestWrapper action)

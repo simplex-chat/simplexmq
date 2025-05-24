@@ -1367,9 +1367,15 @@ client
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
           RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q rKeys)
           LSET lnkId d ->
-            withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
-              Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH
-              _ -> OK <$$ addQueueLinkData (queueStore ms) q lnkId d
+            withQueue $ \q QueueRec {queueMode, senderKey, queueData} ->
+              liftIO $ either err (corrId,entId,)
+                -- this check allows adding link data to contact addresses created prior to SKEY,
+                -- using `queueMode == Just QMContact` would prevent it, they have queueMode `Nothing`.
+                <$> if queueMode /= Just QMMessaging && isNothing senderKey
+                  then case queueData of
+                    Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH
+                    _ -> OK <$$ addQueueLinkData (queueStore ms) q lnkId d
+                  else pure $ Left AUTH
           LDEL ->
             withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
               Just _ -> OK <$$ deleteQueueLinkData (queueStore ms) q
