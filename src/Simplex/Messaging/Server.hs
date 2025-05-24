@@ -1231,7 +1231,7 @@ client
         RFWD encBlock -> (corrId, NoEntity,) <$> processForwardedCommand encBlock
       Cmd SSenderLink command -> Just <$> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
-        LGET -> withQueue $ \q qr -> checkMode QMContact qr $ getQueueLink_ q qr
+        LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
       Cmd SNotifier NSUB -> Just <$> subscribeNotifications
       Cmd SRecipient command ->
         Just <$> case command of
@@ -1247,17 +1247,11 @@ client
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
           RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q rKeys)
           LSET lnkId d ->
-            withQueue $ \q QueueRec {queueMode, senderKey, queueData} ->
-              liftIO $ either err (corrId,entId,)
-                -- this check allows adding link data to contact addresses created prior to SKEY,
-                -- using `queueMode == Just QMContact` would prevent it, they have queueMode `Nothing`.
-                <$> if queueMode /= Just QMMessaging && isNothing senderKey
-                  then case queueData of
-                    Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH
-                    _ -> OK <$$ addQueueLinkData (queueStore ms) q lnkId d
-                  else pure $ Left AUTH
+            withQueue $ \q qr -> checkContact qr $ liftIO $ case queueData qr of
+              Just (lnkId', _) | lnkId' /= lnkId -> pure $ Left AUTH
+              _ -> OK <$$ addQueueLinkData (queueStore ms) q lnkId d
           LDEL ->
-            withQueue $ \q qr -> checkMode QMContact qr $ liftIO $ case queueData qr of
+            withQueue $ \q qr -> checkContact qr $ liftIO $ case queueData qr of
               Just _ -> OK <$$ deleteQueueLinkData (queueStore ms) q
               Nothing -> pure $ Right OK
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
@@ -1326,6 +1320,13 @@ client
                           SMSubscribe -> void $ subscribeQueue q qr
                         pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData} -- , serverNtfCreds = snd <$> ntf
           (corrId,entId,) <$> tryCreate (3 :: Int)
+
+        -- this check allows to support contact queues created prior to SKEY,
+        -- using `queueMode == Just QMContact` would prevent it, as they have queueMode `Nothing`.
+        checkContact :: QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)
+        checkContact QueueRec {queueMode, senderKey} a =
+          either err (corrId,entId,)
+            <$> if maybe True (== QMContact) queueMode && isNothing senderKey then a else pure $ Left AUTH
 
         checkMode :: QueueMode -> QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)
         checkMode qm QueueRec {queueMode} a =
