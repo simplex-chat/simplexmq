@@ -52,30 +52,19 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Agent.Store.Entity
 
 createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore dbOpts = createDBStore dbOpts appMigrations
 
 -- * Queue types
 
-data QueueStored = QSStored | QSNew
+type RcvQueue = StoredRcvQueue 'DBStored
 
-data SQueueStored (q :: QueueStored) where
-  SQSStored :: SQueueStored 'QSStored
-  SQSNew :: SQueueStored 'QSNew
-
-data DBQueueId (q :: QueueStored) where
-  DBQueueId :: Int64 -> DBQueueId 'QSStored
-  DBNewQueue :: DBQueueId 'QSNew
-
-deriving instance Show (DBQueueId q)
-
-type RcvQueue = StoredRcvQueue 'QSStored
-
-type NewRcvQueue = StoredRcvQueue 'QSNew
+type NewRcvQueue = StoredRcvQueue 'DBNew
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
-data StoredRcvQueue (q :: QueueStored) = RcvQueue
+data StoredRcvQueue (q :: DBStored) = RcvQueue
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -98,7 +87,7 @@ data StoredRcvQueue (q :: QueueStored) = RcvQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
-    dbQueueId :: DBQueueId q,
+    dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
@@ -160,12 +149,12 @@ data InvShortLink = InvShortLink
   }
   deriving (Show)
 
-type SndQueue = StoredSndQueue 'QSStored
+type SndQueue = StoredSndQueue 'DBStored
 
-type NewSndQueue = StoredSndQueue 'QSNew
+type NewSndQueue = StoredSndQueue 'DBNew
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
-data StoredSndQueue (q :: QueueStored) = SndQueue
+data StoredSndQueue (q :: DBStored) = SndQueue
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -184,7 +173,7 @@ data StoredSndQueue (q :: QueueStored) = SndQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
-    dbQueueId :: DBQueueId q,
+    dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | ID of the queue this one is replacing
@@ -257,7 +246,7 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE qUserId #-}
   qConnId RcvQueue {connId} = connId
   {-# INLINE qConnId #-}
-  dbQId RcvQueue {dbQueueId = DBQueueId qId} = qId
+  dbQId RcvQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
@@ -267,7 +256,7 @@ instance SMPQueueRec SndQueue where
   {-# INLINE qUserId #-}
   qConnId SndQueue {connId} = connId
   {-# INLINE qConnId #-}
-  dbQId SndQueue {dbQueueId = DBQueueId qId} = qId
+  dbQId SndQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
   dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}

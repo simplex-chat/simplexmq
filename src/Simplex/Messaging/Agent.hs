@@ -216,6 +216,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util
@@ -833,7 +834,7 @@ newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 setContactShortLink' :: AgentClient -> ConnId -> ConnInfo -> Maybe CRClientData -> AM (ConnShortLink 'CMContact)
-setContactShortLink' c connId userData clientData = 
+setContactShortLink' c connId userData clientData =
   withConnLock c connId "setContactShortLink" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (ContactConnection _ rq) -> do
@@ -934,7 +935,7 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
       -- TODO [notifications] send correct NTF credentials here
-      -- let ntfCreds_ = Nothing 
+      -- let ntfCreds_ = Nothing
       (rq, qUri, tSess, sessId) <- newRcvQueue_ c userId connId srvWithAuth vr qd subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
@@ -1122,7 +1123,7 @@ joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMo
     Nothing -> throwE $ AGENT A_VERSION
 
 delInvSL :: AgentClient -> ConnId -> SMPServerWithAuth -> SMP.LinkId -> AM ()
-delInvSL c connId srv lnkId = 
+delInvSL c connId srv lnkId =
   withStore' c (\db -> deleteInvShortLink db (protoServer srv) lnkId) `catchE` \e ->
     liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "error deleting short link " <> show e))
 
@@ -1293,7 +1294,7 @@ getConnectionMessages' c = mapM $ tryAgentError' . getConnectionMessage
       msg_ <- getQueueMessage c rq `catchAgentError` \e -> atomically (releaseGetLock c rq) >> throwError e
       when (isNothing msg_) $ do
         atomically $ releaseGetLock c rq
-        forM_ msgTs_ $ \msgTs -> withStore' c $ \db -> setLastBrokerTs db connId (DBQueueId dbQueueId) msgTs
+        forM_ msgTs_ $ \msgTs -> withStore' c $ \db -> setLastBrokerTs db connId (DBEntityId dbQueueId) msgTs
       pure msg_
 {-# INLINE getConnectionMessages' #-}
 
@@ -1910,7 +1911,7 @@ switchConnection' c connId =
       _ -> throwE $ CMD PROHIBITED "switchConnection: not duplex"
 
 switchDuplexConnection :: AgentClient -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
-switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBQueueId dbQueueId, sndId} = do
+switchDuplexConnection c (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
@@ -2940,7 +2941,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               Just qInfo@(Compatible sqInfo@SMPQueueInfo {queueAddress}) ->
                 case (findQ (qAddress sqInfo) sqs, findQ addr sqs) of
                   (Just _, _) -> qError "QADD: queue address is already used in connection"
-                  (_, Just sq@SndQueue {dbQueueId = DBQueueId dbQueueId}) -> do
+                  (_, Just sq@SndQueue {dbQueueId = DBEntityId dbQueueId}) -> do
                     let (delSqs, keepSqs) = L.partition ((Just dbQueueId ==) . dbReplaceQId) sqs
                     case L.nonEmpty keepSqs of
                       Just sqs' -> do
@@ -3278,7 +3279,7 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
             e2ePubKey = Just e2ePubKey,
             -- setting status to Secured prevents SKEY when queue was already secured with LKEY
             status = if isJust sndKeys_ then Secured else New,
-            dbQueueId = DBNewQueue,
+            dbQueueId = DBNewEntity,
             primary = True,
             dbReplaceQueueId = Nothing,
             sndSwchStatus = Nothing,

@@ -54,6 +54,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Agent.Store.Entity
 import System.Random
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Directory (removeFile)
@@ -230,7 +231,7 @@ rcvQueue1 =
       queueMode = Just QMMessaging,
       shortLink = Nothing,
       status = New,
-      dbQueueId = DBNewQueue,
+      dbQueueId = DBNewEntity,
       primary = True,
       dbReplaceQueueId = Nothing,
       rcvSwchStatus = Nothing,
@@ -252,7 +253,7 @@ sndQueue1 =
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
       status = New,
-      dbQueueId = DBNewQueue,
+      dbQueueId = DBNewEntity,
       primary = True,
       dbReplaceQueueId = Nothing,
       sndSwchStatus = Nothing,
@@ -271,11 +272,11 @@ testCreateRcvConn =
     g <- C.newRandom
     Right (connId, rq@RcvQueue {dbQueueId}) <- createRcvConn db g cData1 rcvQueue1 SCMInvitation
     connId `shouldBe` "conn1"
-    dbQueueId `shouldBe` DBQueueId 1
+    dbQueueId `shouldBe` DBEntityId 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq))
     Right sq@SndQueue {dbQueueId = dbQueueId'} <- upgradeRcvConnToDuplex db "conn1" sndQueue1
-    dbQueueId' `shouldBe` DBQueueId 1
+    dbQueueId' `shouldBe` DBEntityId 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
 
@@ -287,7 +288,7 @@ testCreateRcvConnRandomId =
     getConn db connId
       `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 {connId} rq))
     Right sq@SndQueue {dbQueueId = dbQueueId'} <- upgradeRcvConnToDuplex db connId sndQueue1
-    dbQueueId' `shouldBe` DBQueueId 1
+    dbQueueId' `shouldBe` DBEntityId 1
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
 
@@ -305,11 +306,11 @@ testCreateSndConn =
     g <- C.newRandom
     Right (connId, sq@SndQueue {dbQueueId}) <- createSndConn db g cData1 sndQueue1
     connId `shouldBe` "conn1"
-    dbQueueId `shouldBe` DBQueueId 1
+    dbQueueId `shouldBe` DBEntityId 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
     Right rq@RcvQueue {dbQueueId = dbQueueId'} <- upgradeSndConnToDuplex db "conn1" rcvQueue1
-    dbQueueId' `shouldBe` DBQueueId 1
+    dbQueueId' `shouldBe` DBEntityId 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
 
@@ -321,7 +322,7 @@ testCreateSndConnRandomID =
     getConn db connId
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq))
     Right (rq@RcvQueue {dbQueueId = dbQueueId'}) <- upgradeSndConnToDuplex db connId rcvQueue1
-    dbQueueId' `shouldBe` DBQueueId 1
+    dbQueueId' `shouldBe` DBEntityId 1
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
 
@@ -412,7 +413,7 @@ testUpgradeRcvConnToDuplex =
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
               status = New,
-              dbQueueId = DBNewQueue,
+              dbQueueId = DBNewEntity,
               sndSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,
@@ -443,7 +444,7 @@ testUpgradeSndConnToDuplex =
               queueMode = Just QMMessaging,
               shortLink = Nothing,
               status = New,
-              dbQueueId = DBNewQueue,
+              dbQueueId = DBNewEntity,
               rcvSwchStatus = Nothing,
               primary = True,
               dbReplaceQueueId = Nothing,

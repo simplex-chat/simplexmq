@@ -49,7 +49,7 @@ import qualified Data.Text as T
 import Data.Time.Clock.System (getSystemTime)
 import Data.Tuple (swap)
 import Data.Word (Word16)
-import qualified Data.X509 as X509
+import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.Socket (PortNumber, SockAddr (..), hostAddressToTuple)
 import qualified Network.TLS as TLS
@@ -157,7 +157,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     tlsHooks r knownHost_ hostCAHash =
       def
         { TLS.onNewHandshake = \_ -> atomically $ isNothing <$> tryReadTMVar r,
-          TLS.onClientCertificate = \(X509.CertificateChain chain) ->
+          TLS.onClientCertificate = \(X.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
                 let kh = certFingerprint ca
@@ -190,16 +190,16 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
               }
       pure $ signInvitation (snd sessKeys) idPrivKey inv
 
-genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> C.SignedCertificate -> IO TLS.Credential
+genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> X.SignedCertificate -> IO TLS.Credential
 genTLSCredentials drg caKey caCert = do
   let caCreds = (C.signatureKeyPair caKey, caCert)
   leaf <- genCredentials drg (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
   pure . snd $ tlsCredentials (leaf :| [caCreds])
 
-certFingerprint :: X509.SignedCertificate -> C.KeyHash
+certFingerprint :: X.SignedCertificate -> C.KeyHash
 certFingerprint caCert = C.KeyHash fp
   where
-    Fingerprint fp = getFingerprint caCert X509.HashSHA256
+    Fingerprint fp = getFingerprint caCert X.HashSHA256
 
 cancelHostClient :: RCHostClient -> IO ()
 cancelHostClient RCHostClient {action, client_ = RCHClient_ {announcer, endSession}} = do
