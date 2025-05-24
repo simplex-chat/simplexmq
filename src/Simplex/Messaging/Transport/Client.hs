@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
@@ -142,10 +143,10 @@ clientTransportConfig TransportClientConfig {logTLSErrors} =
   TransportConfig {logTLSErrors, transportTimeout = Nothing}
 
 -- | Connect to passed TCP host:port and pass handle to the client.
-runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 
-runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c -> IO a) -> IO a
+runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
@@ -165,7 +166,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
           logError "onServerCertificate didn't fire or failed to get cert chain"
           closeTLS tls >> error "onServerCertificate failed"
         Just c -> pure c
-    getClientConnection tCfg chain tls
+    getTransportConnection tCfg chain tls
   client c `E.finally` closeConnection c
   where
     hostAddr = \case

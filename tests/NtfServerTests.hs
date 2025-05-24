@@ -47,14 +47,14 @@ import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
 
-ntfServerTests :: ATransport -> Spec
+ntfServerTests :: ASrvTransport -> Spec
 ntfServerTests t = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription t createNtfQueueNKEY
   -- describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription t createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription t
 
-ntfSyntaxTests :: ATransport -> Spec
+ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
   it "unknown command" $ ("", "abcd", "1234", ('H', 'E', 'L', 'L', 'O')) >#> ("", "abcd", "1234", NRErr $ CMD UNKNOWN)
   describe "NEW" $ do
@@ -97,7 +97,7 @@ v .-> key =
   let J.Object o = v
    in U.decodeLenient . encodeUtf8 <$> JT.parseEither (J..: key) o
 
-testNotificationSubscription :: ATransport -> CreateQueueFunc -> Spec
+testNotificationSubscription :: ASrvTransport -> CreateQueueFunc -> Spec
 testNotificationSubscription (ATransport t) createQueue =
   it "should create notification subscription and notify when message is received" $ do
     g <- C.newRandom
@@ -180,7 +180,7 @@ testNotificationSubscription (ATransport t) createQueue =
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
 
-testRetriedNtfSubscription :: ATransport -> Spec
+testRetriedNtfSubscription :: ASrvTransport -> Spec
 testRetriedNtfSubscription (ATransport t) =
   it "should allow retrying to create notification subscription with the same token and key" $ do
     g <- C.newRandom

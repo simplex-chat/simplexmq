@@ -18,12 +18,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word16)
+import qualified Data.X509 as X
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
-import Simplex.Messaging.Transport (TLS, TSbChainKeys)
+import Simplex.Messaging.Transport (TLS, TSbChainKeys, TransportPeer (..))
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (safeDecodeUtf8)
 import Simplex.Messaging.Version (VersionRange, VersionScope, mkVersionRange)
@@ -140,7 +141,7 @@ $(JQ.deriveJSON defaultJSON {J.nullaryToObject = True} ''RCCtrlHello)
 -- | Long-term part of controller (desktop) connection to host (mobile)
 data RCHostPairing = RCHostPairing
   { caKey :: C.APrivateSignKey,
-    caCert :: C.SignedCertificate,
+    caCert :: X.SignedCertificate,
     idPrivKey :: C.PrivateKeyEd25519,
     knownHost :: Maybe KnownHostPairing
   }
@@ -159,7 +160,7 @@ data RCCtrlAddress = RCCtrlAddress
 -- | Long-term part of host (mobile) connection to controller (desktop)
 data RCCtrlPairing = RCCtrlPairing
   { caKey :: C.APrivateSignKey,
-    caCert :: C.SignedCertificate,
+    caCert :: X.SignedCertificate,
     ctrlFingerprint :: C.KeyHash, -- long-term identity of connected remote controller
     idPubKey :: C.PublicKeyEd25519,
     dhPrivKey :: C.PrivateKeyX25519,
@@ -173,7 +174,7 @@ data RCHostKeys = RCHostKeys
 
 -- Connected session with Host
 data RCHostSession = RCHostSession
-  { tls :: TLS,
+  { tls :: TLS 'TServer,
     sessionKeys :: HostSessKeys
   }
 
@@ -186,7 +187,7 @@ data HostSessKeys = HostSessKeys
 -- Host: RCCtrlPairing + RCInvitation => (RCCtrlSession, RCCtrlPairing)
 
 data RCCtrlSession = RCCtrlSession
-  { tls :: TLS,
+  { tls :: TLS 'TClient,
     sessionKeys :: CtrlSessKeys
   }
 

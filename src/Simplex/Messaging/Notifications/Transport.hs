@@ -110,7 +110,7 @@ instance Encoding NtfClientHandshake where
     pure NtfClientHandshake {ntfVersion, keyHash}
 
 -- | Notifcations server transport handshake.
-ntfServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeNTF -> ExceptT TransportError IO (THandleNTF c 'TServer)
+ntfServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c 'TServer -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeNTF -> ExceptT TransportError IO (THandleNTF c 'TServer)
 ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   let sk = C.signX509 serverSignKey $ C.publicToX509 k
@@ -126,7 +126,7 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
             Nothing -> throwE TEVersion
 
 -- | Notifcations server client transport handshake.
-ntfClientHandshake :: forall c. Transport c => c -> C.KeyHash -> VersionRangeNTF -> Bool -> ExceptT TransportError IO (THandleNTF c 'TClient)
+ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> ExceptT TransportError IO (THandleNTF c 'TClient)
 ntfClientHandshake c keyHash ntfVRange _proxyServer = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = sk'} <- getHandshake th
@@ -137,7 +137,7 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer = do
         ck_ <- forM sk' $ \signedKey -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
           serverKey <- getServerVerifyKey c
           pubKey <- C.verifyX509 serverKey signedKey
-          (,(getServerCerts c, signedKey)) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
+          (,(getPeerCertChain c, signedKey)) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
         let v = maxVersion vr
         sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash}
         pure $ ntfThHandleClient th v vr ck_
@@ -160,7 +160,7 @@ ntfThHandle_ th@THandle {params} v vr thAuth =
       params' = params {thVersion = v, thServerVRange = vr, thAuth, implySessId = v3, batch = v3}
    in (th :: THandleNTF c p) {params = params'}
 
-ntfTHandle :: Transport c => c -> THandleNTF c p
+ntfTHandle :: Transport c => c p -> THandleNTF c p
 ntfTHandle c = THandle {connection = c, params}
   where
     v = VersionNTF 0

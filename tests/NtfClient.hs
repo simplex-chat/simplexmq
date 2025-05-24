@@ -174,7 +174,7 @@ ntfServerCfgVPrev =
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
-withNtfServerThreadOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
+withNtfServerThreadOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' dbStoreConfig =
   withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
 
@@ -187,10 +187,10 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
         (\started -> runNtfServerBlocking started cfg)
         (pure ())
 
-withNtfServerOn :: HasCallStack => ATransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
+withNtfServerOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
 withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
-withNtfServer :: HasCallStack => ATransport -> (HasCallStack => IO a) -> IO a
+withNtfServer :: HasCallStack => ASrvTransport -> (HasCallStack => IO a) -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort ntfTestDBCfg
 
 runNtfTest :: forall c a. Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
@@ -199,7 +199,7 @@ runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 ntfServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
-  TProxy c ->
+  TProxy c 'TServer ->
   (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
   IO (Maybe TransmissionAuth, ByteString, ByteString, NtfResponse)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
@@ -213,7 +213,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       [(Nothing, _, (CorrId corrId, EntityId qId, Right cmd))] <- tGet h
       pure (Nothing, corrId, qId, cmd)
 
-ntfTest :: Transport c => TProxy c -> (THandleNTF c 'TClient -> IO ()) -> Expectation
+ntfTest :: Transport c => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()
 
 data APNSMockRequest = APNSMockRequest
