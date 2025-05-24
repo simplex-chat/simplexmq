@@ -28,15 +28,19 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole)
 import Simplex.Messaging.Util (anyM, ifM, ($>>), ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
@@ -101,11 +105,13 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
-      SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
+      SSender -> getSndQueue
+      SProxyService -> getSndQueue
       SNotifier -> TM.lookupIO qId notifiers $>>= (`TM.lookupIO` queues)
       SSenderLink -> TM.lookupIO qId links $>>= (`TM.lookupIO` queues)
     where
       STMQueueStore {queues, senders, notifiers, links} = st
+      getSndQueue = TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
 
   getQueueLinkData :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   getQueueLinkData _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData
@@ -228,6 +234,22 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         TM.delete (senderId q) $ senders st
         forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId $ notifiers st
         pure q
+
+  -- TODO [certs] implement
+  getCreateService :: STMQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  getCreateService = undefined
+
+  -- TODO [certs]
+  setQueueRcvService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueRcvService = undefined
+
+  -- TODO [certs]
+  setQueueNtfService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueNtfService = undefined
+
+  -- TODO [certs]
+  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
+  getNtfServiceQueueCount = undefined
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

@@ -21,6 +21,7 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
+import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -97,10 +98,11 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
-  subscriber <- newNtfSubscriber smpAgentCfg random
-  pushServer <- newNtfPushServer pushQSize apnsConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
+  let smpAgentCfg' = smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {clientCredentials = Just tlsServerCreds}}
+  subscriber <- newNtfSubscriber smpAgentCfg' random
+  pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where

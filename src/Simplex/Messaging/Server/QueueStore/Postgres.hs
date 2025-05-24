@@ -48,6 +48,8 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
@@ -73,6 +75,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole)
 import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -168,13 +171,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getQueue_ :: DirectParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
     SRecipient -> getRcvQueue qId
-    SSender -> TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
+    SSender -> getSndQueue
+    SProxyService -> getSndQueue
     SSenderLink -> TM.lookupIO qId links >>= maybe (mask loadLinkQueue) getRcvQueue
     -- loaded queue is deleted from notifiers map to reduce cache size after queue was subscribed to by ntf server
     SNotifier -> TM.lookupIO qId notifiers >>= maybe (mask loadNtfQueue) (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
     where
       PostgresQueueStore {queues, senders, links, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe (mask loadRcvQueue) (pure . Right)
+      getSndQueue = TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
       loadRcvQueue = do
         (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
         liftIO $ cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
@@ -370,6 +375,22 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
       qr = queueRec sq
 
+  -- TODO [certs] implement
+  getCreateService :: PostgresQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  getCreateService = undefined
+
+  -- TODO [certs]
+  setQueueRcvService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueRcvService = undefined
+
+  -- TODO [certs]
+  setQueueNtfService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueNtfService = undefined
+
+  -- TODO [certs]
+  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
+  getNtfServiceQueueCount = undefined
+
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
 batchInsertQueues tty queues toStore = do
   qs <- catMaybes <$> mapM (\(rId, q) -> (rId,) <$$> readTVarIO (queueRec q)) (M.assocs queues)
@@ -496,14 +517,16 @@ rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
 rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
       queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
-   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
+      -- TODO [certs]
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing, ntfServiceId = Nothing})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
 rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
   let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
       encData =  fromMaybe (EncDataBytes "")
       queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
-   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt})
+      -- TODO [certs]
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing, ntfServiceId = Nothing})
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =

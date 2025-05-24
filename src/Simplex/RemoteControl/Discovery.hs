@@ -81,7 +81,7 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
       port <- N.socketPort socket
       logInfo $ "System-assigned port: " <> tshow port
       setPort $ Just port
-      runTransportServerSocket started (pure socket) "RCP TLS" credentials serverParams defaultTransportServerConfig server
+      runTransportServerSocket started (pure socket) "RCP TLS" serverParams defaultTransportServerConfig server
     setPort = void . atomically . tryPutTMVar startedOnPort
     serverParams =
       def

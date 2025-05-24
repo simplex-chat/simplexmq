@@ -63,7 +63,7 @@ import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, pattern SMPServer)
+import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId, pattern SMPServer)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate, withLog_)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -464,6 +464,13 @@ updateSrvSubStatus st q status =
           (Only status :. smpQueueToRow q :. Only status)
     forM_ subId_ $ \subId -> 
       withLog "updateSrvSubStatus" st $ \sl -> logSubscriptionStatus sl subId status
+
+batchUpdateSrvSubAssocs :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, Maybe ServiceId) -> NtfSubStatus -> IO Int64
+batchUpdateSrvSubAssocs st srv nIds status =
+  batchUpdateStatus_ st srv $ \srvId ->
+    -- without executeMany
+    -- L.toList $ L.map (status,srvId,,status) nIds
+    L.toList $ L.map ((status,srvId,) . fst) nIds -- TODO [certs] associate service
 
 batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> NonEmpty NotifierId -> NtfSubStatus -> IO Int64
 batchUpdateSrvSubStatus st srv nIds status =

@@ -11,9 +11,12 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
+import Simplex.Messaging.Transport (SMPServiceRole)
 
 class StoreQueueClass q where
   type MsgQueue q = mq | mq -> q
@@ -43,6 +46,10 @@ class StoreQueueClass q => QueueStoreClass q s where
   unblockQueue :: s -> q -> IO (Either ErrorType ())
   updateQueueTime :: s -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   deleteStoreQueue :: s -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
+  getCreateService :: s -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  setQueueRcvService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueNtfService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int64)
 
 data QueueCounts = QueueCounts
   { queueCount :: Int,

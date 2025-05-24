@@ -529,9 +529,9 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             forM_ (L.nonEmpty $ map snd $ S.toList subs) $ \nIds -> do
               updated <- batchUpdateSrvSubStatus st srv nIds NSInactive
               logSubStatus srv "disconnected" (L.length nIds) updated
-          CASubscribed srv _ nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv nIds NSActive
-            logSubStatus srv "subscribed" (L.length nIds) updated
+          CASubscribed srv _ subs -> do
+            updated <- batchUpdateSrvSubAssocs st srv subs NSActive
+            logSubStatus srv "subscribed" (L.length subs) updated
           CASubError srv _ errs -> do
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubStatuses st srv subStatuses

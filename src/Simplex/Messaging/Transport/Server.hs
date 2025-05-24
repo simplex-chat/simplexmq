@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -19,11 +20,8 @@ module Simplex.Messaging.Transport.Server
     runTransportServer,
     runTransportServerSocket,
     runLocalTCPServer,
-    runTCPServerSocket,
     startTCPServer,
     loadServerCredential,
-    supportedTLSServerParams,
-    supportedTLSServerParams_,
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
@@ -34,6 +32,7 @@ import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.Store.X509 as SX
+import qualified Data.ByteString as B
 import Data.Default (def)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -47,6 +46,7 @@ import GHC.IO.Exception (ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Shared
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
@@ -88,41 +88,52 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: forall c. Transport c => TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServer :: Transport c => TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServer started port srvSupported srvCreds alpn_ cfg server = do
   ss <- newSocketState
   runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server
 
-runTransportServerState :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServerState :: Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server = runTransportServerState_ ss started port srvSupported (const srvCreds) alpn_ cfg (const server)
 
-runTransportServerState_ :: forall c . Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
 runTransportServerState_ ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c 'TServer))
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocket :: Transport c => TMVar Bool -> IO Socket -> String -> T.Credential -> T.ServerParams -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
-runTransportServerSocket started getSocket threadLabel srvCreds srvParams cfg server = do
+-- TODO [cert] remove this function - client certificate is now received by default.
+-- Alternatively, an additional hook can be passed that would validate this certificate of this function can be moved to RemoteControl
+runTransportServerSocket :: Transport c => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
   ss <- newSocketState
-  runTransportServerSocketState_ ss started getSocket threadLabel (const srvCreds) srvParams cfg (const server)
-
-runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
-runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds alpn_ =
-  runTransportServerSocketState_ ss started getSocket threadLabel srvCreds srvParams
-  where
-    srvParams = supportedTLSServerParams_ srvSupported srvCreds alpn_
-
--- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> (Maybe HostName -> (X.CertificateChain, X.PrivKey)) -> T.ServerParams -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
-runTransportServerSocketState_ ss started getSocket threadLabel srvCreds srvParams cfg server = do
-  labelMyThread $ "transport server for " <> threadLabel
-  runTCPServerSocket ss started getSocket $ \conn ->
-    E.bracket (setup conn >>= maybe (fail "tls setup timeout") pure) closeConnection (server conn)
+  runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS (const server)
   where
     tCfg = serverTransportConfig cfg
-    setup conn = timeout (tlsSetupTimeout cfg) $ do
-      labelMyThread $ threadLabel <> "/setup"
+    setupTLS conn = do
       tls <- connectTLS Nothing tCfg srvParams conn
-      getTransportConnection tCfg (fst $ srvCreds Nothing) tls
+      getTransportConnection tCfg (X.CertificateChain []) tls
+
+runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds alpn_ cfg server =
+  runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS server
+  where
+    tCfg = serverTransportConfig cfg
+    setupTLS conn = do
+      clientCert <- newEmptyTMVarIO
+      let srvParams = supportedTLSServerParams srvSupported srvCreds alpn_ clientCert
+      tls <- connectTLS Nothing tCfg srvParams conn
+      chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
+      getTransportConnection tCfg chain tls
+
+-- | Run a transport server with provided connection setup and handler.
+runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> TransportServerConfig -> (Socket -> IO (c 'TServer)) -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS server = do
+  labelMyThread $ "transport server for " <> threadLabel
+  runTCPServerSocket ss started getSocket $ \conn -> do
+    labelMyThread $ threadLabel <> "/setup"
+    E.bracket
+      (timeout (tlsSetupTimeout cfg) (setupTLS conn) >>= maybe (fail "tls setup timeout") pure)
+      closeConnection
+      (server conn)
 
 -- | Run TCP server without TLS
 runLocalTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
@@ -215,20 +226,34 @@ loadServerCredential ServerCredentials {caCertificateFile, certificateFile, priv
     Right credential -> pure credential
     Left _ -> putStrLn "invalid credential" >> exitFailure
 
-supportedTLSServerParams :: T.Credential -> Maybe [ALPN] -> T.ServerParams
-supportedTLSServerParams = supportedTLSServerParams_ defaultSupportedParams . const
-
-supportedTLSServerParams_ :: T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> T.ServerParams
-supportedTLSServerParams_ serverSupported creds alpn_ =
+supportedTLSServerParams :: T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TMVar (Maybe X.CertificateChain) -> T.ServerParams
+supportedTLSServerParams serverSupported creds alpn_ clientCert =
   def
-    { T.serverWantClientCert = False,
+    { T.serverWantClientCert = True,
       T.serverHooks =
         def
           { T.onServerNameIndication = \host_ -> pure $ T.Credentials [creds host_],
-            T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
+            T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_,
+            T.onClientCertificate = \cc -> validateClientCertificate cc >>= \case
+              Just reason -> T.CertificateUsageReject reason <$ atomically (writeTMVar clientCert Nothing)
+              Nothing -> T.CertificateUsageAccept <$ atomically (writeTMVar clientCert $ Just cc)
           },
       T.serverSupported = serverSupported
     }
+
+validateClientCertificate :: X.CertificateChain -> IO (Maybe T.CertificateRejectReason)
+validateClientCertificate cc@(X.CertificateChain chain)
+  | null chain = pure Nothing -- client certificates are only used for services
+  | length chain <= 4 = usage <$> x509validate (last chain) ("", B.empty) cc
+  | otherwise = pure $ Just $ T.CertificateRejectOther "chain too long"
+  where
+    usage [] = Nothing
+    usage r =
+      Just $
+        if
+          | XV.Expired `elem` r || XV.InFuture `elem` r -> T.CertificateRejectExpired
+          | XV.UnknownCA `elem` r -> T.CertificateRejectUnknownCA
+          | otherwise -> T.CertificateRejectOther (show r)
 
 loadFingerprint :: ServerCredentials -> IO Fingerprint
 loadFingerprint ServerCredentials {caCertificateFile} = case caCertificateFile of

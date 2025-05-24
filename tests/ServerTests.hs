@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -10,6 +11,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
@@ -22,18 +24,19 @@ import Control.Monad
 import Control.Monad.IO.Class
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
-import Data.ByteString.Base64
+import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
+import Data.String (IsString (..))
 import Data.Type.Equality
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
 import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
@@ -93,12 +96,12 @@ pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
 pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
-pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing)
 
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
 sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
@@ -110,10 +113,10 @@ signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
   where
-    authorize t = case a of
+    authorize t = (,Nothing) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      C.SX25519 -> (\THAuthClient {serverPeerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
+      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif
@@ -431,13 +434,13 @@ testDuplex =
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", NoEntity, New brPub bDhPub)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
-      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> encode (unEntityId bSnd))
+      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> B64.encode (unEntityId bSnd))
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (Msg mId2 msg2) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId2)
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
-      (bId, encode (unEntityId bSnd)) #== "reply queue ID received from Bob"
+      (bId, B64.encode (unEntityId bSnd)) #== "reply queue ID received from Bob"
 
       (asPub, asKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> strEncode asPub)
@@ -627,7 +630,7 @@ testWithStoreLog =
         writeTVar dhShared1 $ Just dhShared
         writeTVar senderId1 sId1
         writeTVar notifierId nId
-      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
+      Resp "dabc" _ (SOK Nothing) <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       (mId1, msg1) <-
         signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello") >>= \case
           Resp "" _ (Msg mId1 msg1) -> pure (mId1, msg1)
@@ -664,7 +667,7 @@ testWithStoreLog =
       Just dh1 <- readTVarIO dhShared1
       sId1 <- readTVarIO senderId1
       nId <- readTVarIO notifierId
-      Resp "dabc" _ OK <- signSendRecv h1 nKey ("dabc", nId, NSUB)
+      Resp "dabc" _ (SOK Nothing) <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
       Resp "cdab" _ (Msg mId3 msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
       (decryptMsgV3 dh1 mId3 msg3, Right "hello") #== "delivered from restored queue"
@@ -980,13 +983,13 @@ testMessageNotifications =
       Resp "1" _ (NID nId' _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       Resp "1a" _ (NID nId _) <- signSendRecv rh rKey ("1a", rId, NKEY nPub rcvNtfPubDhKey)
       nId' `shouldNotBe` nId
-      Resp "2" _ OK <- signSendRecv nh1 nKey ("2", nId, NSUB)
+      Resp "2" _ (SOK Nothing) <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
       Resp "" _ (Msg mId1 msg1) <- tGet1 rh
       (dec mId1 msg1, Right "hello") #== "delivered from queue"
       Resp "3a" _ OK <- signSendRecv rh rKey ("3a", rId, ACK mId1)
       Resp "" _ (NMSG _ _) <- tGet1 nh1
-      Resp "4" _ OK <- signSendRecv nh2 nKey ("4", nId, NSUB)
+      Resp "4" _ (SOK Nothing) <- signSendRecv nh2 nKey ("4", nId, NSUB)
       Resp "" nId2 END <- tGet1 nh1
       nId2 `shouldBe` nId
       Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello again")
@@ -1106,7 +1109,7 @@ testInvQueueLinkData =
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
         signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId))) <-
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId) Nothing)) <-
         signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
       (sId', sId) #== "should return the same sender ID"
       corrId' `shouldBe` CorrId corrId
@@ -1160,7 +1163,7 @@ testContactQueueLinkData =
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
         signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId'))) <-
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId') Nothing)) <-
         signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
       (lnkId', lnkId) #== "should return the same link ID"
       (sId', sId) #== "should return the same sender ID"
@@ -1211,8 +1214,8 @@ samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ
 sampleDhPubKey :: C.PublicKey 'C.X25519
 sampleDhPubKey = "MCowBQYDK2VuAyEAriy+HcARIhqsgSjVnjKqoft+y6pxrxdY68zn4+LjYhQ="
 
-sampleSig :: Maybe TransmissionAuth
-sampleSig = Just $ TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA=="
+sampleSig :: Maybe TAuthorizations
+sampleSig = Just (TASignature "e8JK+8V3fq6kOLqco/SaKlpNaQ7i1gfOrXoqekEl42u4mF8Bgu14T5j0189CGcUhJHw2RwCMvON+qbvQ9ecJAA==", Nothing)
 
 noAuth :: (Char, Maybe BasicAuth)
 noAuth = ('A', Nothing)
@@ -1223,6 +1226,9 @@ instance Eq C.ASignature where
   C.ASignature a s == C.ASignature a' s' = case testEquality a a' of
     Just Refl -> s == s'
     _ -> False
+
+instance IsString (Maybe TAuthorizations) where
+  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap ((,Nothing) . TASignature)
 
 serverSyntaxTests :: ASrvTransport -> Spec
 serverSyntaxTests (ATransport t) = do
@@ -1263,7 +1269,7 @@ serverSyntaxTests (ATransport t) = do
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
       Encoding smp =>
-      (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-      (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg) ->
+      (Maybe TAuthorizations, ByteString, ByteString, smp) ->
+      (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response

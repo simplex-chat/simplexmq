@@ -146,6 +146,7 @@ library
       Simplex.Messaging.Transport.HTTP2.Server
       Simplex.Messaging.Transport.KeepAlive
       Simplex.Messaging.Transport.Server
+      Simplex.Messaging.Transport.Shared
       Simplex.Messaging.Util
       Simplex.Messaging.Version
       Simplex.Messaging.Version.Internal

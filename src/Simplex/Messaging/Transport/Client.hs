@@ -30,7 +30,6 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Logger.Simple (logError)
-import Control.Monad (when)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -57,6 +56,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
+import Simplex.Messaging.Transport.Shared
 import Simplex.Messaging.Util (bshow, catchAll, tshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
@@ -125,7 +125,7 @@ data TransportClientConfig = TransportClientConfig
     tcpConnectTimeout :: Int,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
-    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
+    clientCredentials :: Maybe T.Credential,
     alpn :: Maybe [ALPN],
     useSNI :: Bool
   }
@@ -136,7 +136,16 @@ defaultTcpConnectTimeout :: Int
 defaultTcpConnectTimeout = 25_000_000
 
 defaultTransportClientConfig :: TransportClientConfig
-defaultTransportClientConfig = TransportClientConfig Nothing defaultTcpConnectTimeout (Just defaultKeepAliveOpts) True Nothing Nothing True
+defaultTransportClientConfig =
+  TransportClientConfig
+    { socksProxy = Nothing,
+      tcpConnectTimeout = defaultTcpConnectTimeout,
+      tcpKeepAlive = Just defaultKeepAliveOpts,
+      logTLSErrors = True,
+      clientCredentials = Nothing,
+      alpn = Nothing,
+      useSNI = True
+    }
 
 clientTransportConfig :: TransportClientConfig -> TransportConfig
 clientTransportConfig TransportClientConfig {logTLSErrors} =
@@ -160,12 +169,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     let tCfg = clientTransportConfig cfg
     -- No TLS timeout to avoid failing connections via SOCKS
     tls <- connectTLS (Just hostName) tCfg clientParams sock
-    chain <-
-      atomically (tryTakeTMVar serverCert) >>= \case
-        Nothing -> do
-          logError "onServerCertificate didn't fire or failed to get cert chain"
-          closeTLS tls >> error "onServerCertificate failed"
-        Just c -> pure c
+    chain <- takePeerCertChain serverCert `E.onException` closeTLS tls
     getTransportConnection tCfg chain tls
   client c `E.finally` closeConnection c
   where
@@ -265,7 +269,7 @@ instance StrEncoding SocksAuth where
         password <- A.takeTill (== '@') <* A.char '@'
         pure SocksAuthUsername {username, password}
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> Bool -> TMVar X.CertificateChain -> T.ClientParams
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> Bool -> TMVar (Maybe X.CertificateChain) -> T.ClientParams
 mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serverCerts =
   (T.defaultParamsClient host p)
     { T.clientUseServerNameIndication = sni,
@@ -280,26 +284,20 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serv
     }
   where
     p = B.pack port
-    onServerCert _ _ _ c = do
-      errs <- maybe def (\ca -> validateCertificateChain ca host p c) cafp_
-      when (null errs) $
-        atomically (putTMVar serverCerts c)
+    onServerCert _ _ _ cc = do
+      errs <- maybe def (\ca -> validateCertificateChain ca host p cc) cafp_
+      atomically $ putTMVar serverCerts $ if null errs then Just cc else Nothing
       pure errs
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain _ _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
-validateCertificateChain _ _ _ (X.CertificateChain [_]) = pure [XV.EmptyChain]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain [_, caCert]) =
-  if Fingerprint kh == XV.getFingerprint caCert X.HashSHA256
-    then x509validate
-    else pure [XV.UnknownCA]
+validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain chain) = case chain of
+  [] -> pure [XV.EmptyChain]
+  [_] -> pure [XV.EmptyChain]
+  [_, idCaCert] -> validate idCaCert idCaCert -- current long-term online/offline certificates chain
+  [_, idCert, caCert] -> validate idCert caCert -- with additional operator certificate (preset in the client)
+  [_, idCert, _, caCert] -> validate idCert caCert -- with network certificate
+  _ -> pure [XV.AuthorityTooDeep]
   where
-    x509validate :: IO [XV.FailedReason]
-    x509validate = XV.validate X.HashSHA256 hooks checks certStore cache serviceID cc
-      where
-        hooks = XV.defaultHooks
-        checks = XV.defaultChecks {XV.checkFQHN = False}
-        certStore = XS.makeCertificateStore [caCert]
-        cache = XV.exceptionValidationCache [] -- we manually check fingerprint only of the identity certificate (ca.crt)
-        serviceID = (host, port)
-validateCertificateChain _ _ _ _ = pure [XV.AuthorityTooDeep]
+    validate idCert caCert
+      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate caCert (host, port) cc
+      | otherwise = pure [XV.UnknownCA]
