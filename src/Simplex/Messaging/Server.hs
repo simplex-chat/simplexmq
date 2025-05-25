@@ -150,10 +150,11 @@ type M a = ReaderT Env IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
 data ClientSubAction
-  = CSANotify (EntityId, BrokerMsg)
-  | CSAEndSub QueueId
+  = CSAEndSub QueueId
   | CSAEndServiceSub
   | CSADecreaseSubs Int64
+
+type PrevClientSub = (AClient, ClientSubAction, (EntityId, BrokerMsg))
 
 smpServer :: TMVar Bool -> ServerConfig -> Maybe AttachHTTP -> M ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
@@ -254,7 +255,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           >>= endPreviousSubscriptions
       where
         ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents} = srvSubscribers srv
-        updateSubscribers :: Maybe AClient -> (ClientSub, ClientId) -> STM [(ClientSubAction, AClient)]
+        updateSubscribers :: Maybe AClient -> (ClientSub, ClientId) -> STM [PrevClientSub]
         updateSubscribers c_ (clntSub, clntId) = case c_ of
           Just c@(AClient _ _ Client {connected}) -> ifM (readTVar connected) (updateSubConnected c) updateSubDisconnected
           Nothing -> updateSubDisconnected
@@ -264,76 +265,69 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
                 case serviceId_ of
                   Just serviceId -> do
-                    as <- endQueueSubActions qId DELD
-                    as' <-
-                      upsertSubscribedClient serviceId c serviceSubscribers
-                        >>= maybe (pure []) (cancelServiceSubs serviceId)
-                    as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSubActions prevServiceId qId END
+                    as <- endQueueSub qId END
+                    as' <- cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
+                    as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
                     pure $ as ++ as' ++ as''
                   Nothing -> do
-                    as <-
-                      upsertSubscribedClient qId c queueSubscribers
-                        >>= maybe (pure []) (endSubActions qId END $ CSAEndSub qId)
-                    as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSubActions prevServiceId qId END
+                    as <- prevSub qId END (CSAEndSub qId) =<< upsertSubscribedClient qId c queueSubscribers
+                    as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
                     pure $ as ++ as''
               CSDeleted qId serviceId -> do
                 removeWhenNoSubs c
-                as <- endQueueSubActions qId DELD
-                as' <- endServiceSubActions serviceId qId DELD
+                as <- endQueueSub qId DELD
+                as' <- endServiceSub serviceId qId DELD
                 pure $ as ++ as'
               CSService serviceId -> do
                 modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
-                upsertSubscribedClient serviceId c serviceSubscribers
-                  >>= maybe (pure []) (cancelServiceSubs serviceId)
+                cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
             updateSubDisconnected = case clntSub of
                 -- do not insert client if it is already disconnected, but send END/DELD to any other client subscribed to this queue or service
                 CSClient qId prevServiceId serviceId -> do
-                  as <- endQueueSubActions qId END
-                  as' <- endServiceSubActions serviceId qId END
-                  as'' <- if prevServiceId == serviceId then pure [] else endServiceSubActions prevServiceId qId END
+                  as <- endQueueSub qId END
+                  as' <- endServiceSub serviceId qId END
+                  as'' <- if prevServiceId == serviceId then pure [] else endServiceSub prevServiceId qId END
                   pure $ as ++ as' ++ as''
                 CSDeleted qId serviceId -> do
-                  as <- endQueueSubActions qId DELD
-                  as' <- endServiceSubActions serviceId qId DELD
+                  as <- endQueueSub qId DELD
+                  as' <- endServiceSub serviceId qId DELD
                   pure $ as ++ as'
-                CSService serviceId ->
-                  maybe (pure []) (cancelServiceSubs serviceId) =<< lookupSubscribedClient serviceId serviceSubscribers
-            endQueueSubActions :: QueueId -> BrokerMsg -> STM [(ClientSubAction, AClient)]
-            endQueueSubActions qId msg = maybe (pure []) (endSubActions qId msg (CSAEndSub qId)) =<< lookupDeleteSubscribedClient qId queueSubscribers
-            endServiceSubActions :: Maybe ServiceId -> QueueId -> BrokerMsg -> STM [(ClientSubAction, AClient)]
-            endServiceSubActions Nothing _ _ = pure []
-            endServiceSubActions (Just serviceId) qId msg = maybe (pure []) (endSubActions qId msg CSAEndServiceSub) =<< lookupSubscribedClient serviceId serviceSubscribers
-            endSubActions :: QueueId -> BrokerMsg -> ClientSubAction -> AClient -> STM [(ClientSubAction, AClient)]
-            endSubActions qId msg action c = do
-              another <- anotherClient c
-              pure $ if another then [(CSANotify (qId, msg), c), (action, c)] else []
-            cancelServiceSubs :: ServiceId -> AClient -> STM [(ClientSubAction, AClient)]
-            cancelServiceSubs serviceId c@(AClient _ _ c') = do
-              another <- anotherClient c
-              if another
-                then do
-                  n <- swapTVar (clientServiceSubs c') 0
-                  pure [(CSANotify (serviceId, ENDS (fromIntegral n)), c), (CSADecreaseSubs n, c)]
-                else pure []
-            anotherClient :: AClient -> STM Bool
-            anotherClient (AClient _ _ Client {clientId, connected})
-              | clntId == clientId = pure False
-              | otherwise = readTVar connected
+                CSService serviceId -> cancelServiceSubs serviceId =<< lookupSubscribedClient serviceId serviceSubscribers
+            endQueueSub :: QueueId -> BrokerMsg -> STM [PrevClientSub]
+            endQueueSub qId msg = prevSub qId msg (CSAEndSub qId) =<< lookupDeleteSubscribedClient qId queueSubscribers
+            endServiceSub :: Maybe ServiceId -> QueueId -> BrokerMsg -> STM [PrevClientSub]
+            endServiceSub Nothing _ _ = pure []
+            endServiceSub (Just serviceId) qId msg = prevSub qId msg CSAEndServiceSub =<< lookupSubscribedClient serviceId serviceSubscribers
+            prevSub :: QueueId -> BrokerMsg -> ClientSubAction -> Maybe AClient -> STM [PrevClientSub]
+            prevSub qId msg action =
+              anotherClient $ \c -> pure [(c, action, (qId, msg))]
+            cancelServiceSubs :: ServiceId -> Maybe AClient -> STM [PrevClientSub]
+            cancelServiceSubs serviceId =
+              anotherClient $ \c@(AClient _ _ c') -> do
+                n <- swapTVar (clientServiceSubs c') 0
+                pure [(c, CSADecreaseSubs n, (serviceId, ENDS (fromIntegral n)))]
+            anotherClient :: (AClient -> STM [PrevClientSub]) -> Maybe AClient -> STM [PrevClientSub]
+            anotherClient mkSub = \case
+              Nothing -> pure []
+              Just c@(AClient _ _ Client {clientId, connected})
+                | clntId == clientId -> pure []
+                | otherwise -> ifM (readTVar connected) (mkSub c) (pure [])
 
-        endPreviousSubscriptions :: [(ClientSubAction, AClient)] -> IO ()
-        endPreviousSubscriptions = mapM_ $ \(subAction, ac@(AClient _ _ c)) -> case subAction of
-          CSANotify evt -> atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt] (evt <|)) (clientId c)
-          CSAEndSub qId -> atomically (endSub ac qId) >>= a unsub_
-            where
-              a (Just f) (Just x) = f x
-              a _ _ = pure ()
-          CSAEndServiceSub -> atomically $ do
-            modifyTVar' (clientServiceSubs c) decrease
-            modifyTVar' totalServiceSubs decrease
-            where
-              decrease n = max 0 (n - 1)
-          -- TODO [certs] for SMP subscriptions CSADecreaseSubs should also remove all delivery threads of the passed client
-          CSADecreaseSubs n' -> atomically $ modifyTVar' totalServiceSubs $ \n -> max 0 (n - n')
+        endPreviousSubscriptions :: [PrevClientSub] -> IO ()
+        endPreviousSubscriptions = mapM_ $ \(ac@(AClient _ _ c), subAction, evt) -> do
+          atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt] (evt <|)) (clientId c)
+          case subAction of
+            CSAEndSub qId -> atomically (endSub ac qId) >>= a unsub_
+              where
+                a (Just f) (Just x) = f x
+                a _ _ = pure ()
+            CSAEndServiceSub -> atomically $ do
+              modifyTVar' (clientServiceSubs c) decrease
+              modifyTVar' totalServiceSubs decrease
+              where
+                decrease n = max 0 (n - 1)
+            -- TODO [certs] for SMP subscriptions CSADecreaseSubs should also remove all delivery threads of the passed client
+            CSADecreaseSubs n' -> atomically $ modifyTVar' totalServiceSubs $ \n -> max 0 (n - n')
           where
             endSub :: AClient -> QueueId -> STM (Maybe s)
             endSub ac@(AClient _ _ c) qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs ac $>)
