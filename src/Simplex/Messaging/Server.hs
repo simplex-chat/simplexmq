@@ -1049,7 +1049,7 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     Cmd SSender PING -> pure $ VRVerified Nothing
     Cmd SSender RFWD {} -> pure $ VRVerified Nothing
     Cmd SSenderLink (LKEY k) -> verifySecure SSenderLink k
-    Cmd SSenderLink LGET -> verifyQueue (\q -> if isContact (snd q) then VRVerified (Just q) else VRFailed) <$> get SSenderLink
+    Cmd SSenderLink LGET -> verifyQueue (\q -> if isContactQueue (snd q) then VRVerified (Just q) else VRFailed) <$> get SSenderLink
     -- NSUB will not be accepted without authorization
     Cmd SNotifier NSUB -> verifyQueue (\q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)) <$> get SNotifier
     Cmd SProxiedClient _ -> pure $ VRVerified Nothing
@@ -1067,11 +1067,14 @@ verifyTransmission ms auth_ tAuth authorized queueId cmd =
     allowedKey k = \case
       QueueRec {queueMode = Just QMMessaging, senderKey} -> maybe True (k ==) senderKey
       _ -> False
-    isContact = \case
-      QueueRec {queueMode = Just QMContact} -> True
-      _ -> False
     get :: DirectParty p => SParty p -> M (Either ErrorType (StoreQueue s, QueueRec))
     get party = liftIO $ getQueueRec ms party queueId
+
+isContactQueue :: QueueRec -> Bool
+isContactQueue QueueRec {queueMode, senderKey} = case queueMode of
+  Just QMMessaging -> False
+  Just QMContact -> True
+  Nothing -> isNothing senderKey -- for backward compatibility with pre-SKEY contact addresses
 
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
@@ -1324,9 +1327,9 @@ client
         -- this check allows to support contact queues created prior to SKEY,
         -- using `queueMode == Just QMContact` would prevent it, as they have queueMode `Nothing`.
         checkContact :: QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)
-        checkContact QueueRec {queueMode, senderKey} a =
+        checkContact qr a =
           either err (corrId,entId,)
-            <$> if maybe True (== QMContact) queueMode && isNothing senderKey then a else pure $ Left AUTH
+            <$> if isContactQueue qr then a else pure $ Left AUTH
 
         checkMode :: QueueMode -> QueueRec -> M (Either ErrorType BrokerMsg) -> M (Transmission BrokerMsg)
         checkMode qm QueueRec {queueMode} a =
