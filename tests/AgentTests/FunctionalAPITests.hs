@@ -71,18 +71,20 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
+import qualified Data.Text.IO as T
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality (testEquality, (:~:) (Refl))
 import Data.Word (Word16)
 import GHC.Stack (withFrozenCallStack)
 import SMPAgentClient
-import SMPClient (cfgJ2QS, cfgMS, prevRange, prevVersion, proxyCfgJ2QS, proxyCfgMS, testPort, testPort2, testStoreLogFile, withSmpServer, withSmpServers2, withSmpServerConfigOn, withSmpServerProxy, withSmpServersProxy2, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, subscribeConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..), createAgentStore)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT, INV, JOINED)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
@@ -114,6 +116,15 @@ import Util
 import XFTPClient (testXFTPServer)
 #if defined(dbPostgres)
 import Fixtures
+#endif
+#if defined(dbServerPostgres)
+import qualified Database.PostgreSQL.Simple as PSQL
+import Simplex.Messaging.Agent.Store (Connection (..), StoredRcvQueue (..), SomeConn (..))
+import Simplex.Messaging.Agent.Store.AgentStore (getConn)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
+import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
+import Simplex.Messaging.Server.QueueStore.Postgres
+import Simplex.Messaging.Server.QueueStore.Types (QueueStoreClass (..))
 #endif
 
 type AEntityTransmission e = (ACorrId, ConnId, AEvent e)
@@ -330,6 +341,7 @@ functionalAPITests ps = do
       it "should get 1-time link data after restart" $ testInviationShortLinkRestart ps
       it "should connect via contact short link after restart" $ testContactShortLinkRestart ps
       it "should connect via added contact short link after restart" $ testAddContactShortLinkRestart ps
+    it "should create and get short links with the old contact queues" $ testOldContactQueueShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1316,6 +1328,49 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     (connReq4, updatedConnData') <- runRight $ getConnShortLink b 1 shortLink
     connReq4 `shouldBe` connReq
     linkUserData updatedConnData' `shouldBe` updatedData
+
+testOldContactQueueShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
+  (contactId, (CCLink connReq Nothing, Nothing)) <- withSmpServer ps $ runRight $
+    A.createConnection a 1 True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
+  -- make it an "old" queue
+  let updateStoreLog f = replaceSubstringInFile f " queue_mode=C" ""
+  () <- case testServerStoreConfig msType of
+    ASSCfg _ _ (SSCMemory (Just StorePaths {storeLogFile})) -> updateStoreLog storeLogFile
+    ASSCfg _ _ (SSCMemoryJournal {storeLogFile}) -> updateStoreLog storeLogFile
+    ASSCfg _ _ (SSCDatabaseJournal {storeCfg}) -> do
+#if defined(dbServerPostgres)
+      let AgentClient {agentEnv = Env {store}} = a
+      Right (SomeConn _ (ContactConnection _ RcvQueue {rcvId})) <- withTransaction store (`getConn` contactId)
+      st :: PostgresQueueStore (JournalQueue 'QSPostgres) <- newQueueStore @(JournalQueue 'QSPostgres) storeCfg
+      Right 1 <- runExceptT $ withDB' "test" st $ \db -> PSQL.execute db "UPDATE msg_queues SET queue_mode = ? WHERE recipient_id = ?" (Nothing :: Maybe QueueMode, rcvId)
+      closeQueueStore @(JournalQueue 'QSPostgres) st
+#else
+      error "no dbServerPostgres flag"
+#endif
+    _ -> pure ()
+
+  withSmpServer ps $ do
+    let userData = "some user data"
+    shortLink <- runRight $ setContactShortLink a contactId userData Nothing
+    (connReq', connData') <- runRight $ getConnShortLink b 1 shortLink
+    strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    connReq' `shouldBe` connReq
+    linkUserData connData' `shouldBe` userData
+    -- update user data
+    let updatedData = "updated user data"
+    shortLink' <- runRight $ setContactShortLink a contactId updatedData Nothing
+    shortLink' `shouldBe` shortLink
+    -- check updated
+    (connReq'', updatedConnData') <- runRight $ getConnShortLink b 1 shortLink
+    connReq'' `shouldBe` connReq
+    linkUserData updatedConnData' `shouldBe` updatedData
+
+replaceSubstringInFile :: FilePath -> T.Text -> T.Text -> IO ()
+replaceSubstringInFile filePath oldText newText = do
+  content <- T.readFile filePath
+  let newContent = T.replace oldText newText content
+  T.writeFile filePath newContent
 
 testIncreaseConnAgentVersion :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do

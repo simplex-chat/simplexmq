@@ -190,7 +190,7 @@ cfgMS msType =
       maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      serverStoreCfg = serverStoreConfig msType,
+      serverStoreCfg = testServerStoreConfig msType,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -229,8 +229,8 @@ cfgMS msType =
 defaultStartOptions :: StartOptions
 defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = testLogLevel, skipWarnings = False, confirmMigrations = MCYesUp}
 
-serverStoreConfig :: AStoreType -> AServerStoreCfg
-serverStoreConfig = serverStoreConfig_ False
+testServerStoreConfig :: AStoreType -> AServerStoreCfg
+testServerStoreConfig = serverStoreConfig_ False
 
 serverStoreConfig_ :: Bool -> AStoreType -> AServerStoreCfg
 serverStoreConfig_ useDbStoreLog = \case
