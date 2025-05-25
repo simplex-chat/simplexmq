@@ -13,8 +13,9 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.String (IsString (..))
-import Simplex.Messaging.Agent.Protocol (ConnId, DBEntityId (..), QueueStatus (..), UserId)
+import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
+import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), RecipientId, SMPServer, pattern NoEntity, pattern VersionSMPC)

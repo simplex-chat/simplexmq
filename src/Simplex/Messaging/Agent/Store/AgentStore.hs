@@ -283,6 +283,7 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, firstRow, firstRow', ifM, maybeFirstRow, tshow, ($>>=), (<$$>))
 import Simplex.Messaging.Version.Internal
@@ -861,7 +862,7 @@ createRcvMsg db connId rq@RcvQueue {dbQueueId} rcvMsgData@RcvMsgData {msgMeta = 
   updateRcvMsgHash db connId sndMsgId internalRcvId internalHash
   setLastBrokerTs db connId dbQueueId brokerTs
 
-setLastBrokerTs :: DB.Connection -> ConnId -> DBEntityId 'DBStored -> UTCTime -> IO ()
+setLastBrokerTs :: DB.Connection -> ConnId -> DBEntityId -> UTCTime -> IO ()
 setLastBrokerTs db connId dbQueueId brokerTs =
   DB.execute db "UPDATE rcv_queues SET last_broker_ts = ? WHERE conn_id = ? AND rcv_queue_id = ? AND (last_broker_ts IS NULL OR last_broker_ts < ?)" (brokerTs, connId, dbQueueId, brokerTs)
 
@@ -1215,7 +1216,7 @@ getSndRatchet db connId v =
     DB.query db "SELECT ratchet_state, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem FROM ratchets WHERE conn_id = ?" (Only connId)
   where
     result = \case
-      (Just ratchetState, Just k1, Just k2, pKem_) -> 
+      (Just ratchetState, Just k1, Just k2, pKem_) ->
         let params = case pKem_ of
               Nothing -> CR.AE2ERatchetParams CR.SRKSProposed (CR.E2ERatchetParams v k1 k2 Nothing)
               Just (CR.ARKP s pKem) -> CR.AE2ERatchetParams s (CR.E2ERatchetParams v k1 k2 (Just pKem))
@@ -1814,15 +1815,6 @@ instance ToField QueueStatus where toField = toField . serializeQueueStatus
 
 instance FromField QueueStatus where fromField = fromTextField_ queueStatusT
 
-instance ToField (DBEntityId 'DBStored) where toField (DBEntityId qId) = toField qId
-
-instance FromField (DBEntityId 'DBStored) where 
-#if defined(dbPostgres)
-  fromField x dat = DBEntityId <$> fromField x dat
-#else
-  fromField x = DBEntityId <$> fromField x
-#endif
-
 instance ToField InternalRcvId where toField (InternalRcvId x) = toField x
 
 deriving newtype instance FromField InternalRcvId
@@ -2022,11 +2014,11 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
         smp_client_version=EXCLUDED.smp_client_version,
         server_key_hash=EXCLUDED.server_key_hash
     |]
-    ((host server, port server, sndId, queueMode, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret) 
+    ((host server, port server, sndId, queueMode, connId', sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret)
     :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
   pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
-newQueueId_ :: [Only Int64] -> DBEntityId 'DBStored
+newQueueId_ :: [Only Int64] -> DBEntityId
 newQueueId_ [] = DBEntityId 1
 newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
@@ -2164,7 +2156,7 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
-    :. (QueueStatus, DBEntityId 'DBStored, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+    :. (QueueStatus, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
     :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
@@ -2215,7 +2207,7 @@ sndQueueQuery =
 toSndQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SenderId, Maybe QueueMode)
     :. (Maybe SndPublicAuthKey, SndPrivateAuthKey, Maybe C.PublicKeyX25519, C.DhSecretX25519, QueueStatus)
-    :. (DBEntityId 'DBStored, BoolInt, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
+    :. (DBEntityId, BoolInt, Maybe Int64, Maybe SndSwitchStatus, VersionSMPC) ->
   SndQueue
 toSndQueue
   ( (userId, keyHash, connId, host, port, sndId, queueMode)

@@ -52,6 +52,7 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Agent.Store.Entity
 
 createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore dbOpts = createDBStore dbOpts appMigrations
@@ -63,7 +64,7 @@ type RcvQueue = StoredRcvQueue 'DBStored
 type NewRcvQueue = StoredRcvQueue 'DBNew
 
 -- | A receive queue. SMP queue through which the agent receives messages from a sender.
-data StoredRcvQueue (s :: DBStored) = RcvQueue
+data StoredRcvQueue (q :: DBStored) = RcvQueue
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -84,11 +85,11 @@ data StoredRcvQueue (s :: DBStored) = RcvQueue
     -- | short link ID and credentials
     shortLink :: Maybe ShortLinkCreds,
     -- | associated client service
-    clientService :: Maybe (StoredClientService s),
+    clientService :: Maybe (StoredClientService q),
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
-    dbQueueId :: DBEntityId s,
+    dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | database queue ID to replace, Nothing if this queue is not replacing another, `Just Nothing` is used for replacing old queues
@@ -159,7 +160,7 @@ type SndQueue = StoredSndQueue 'DBStored
 type NewSndQueue = StoredSndQueue 'DBNew
 
 -- | A send queue. SMP queue through which the agent sends messages to a recipient.
-data StoredSndQueue (s :: DBStored) = SndQueue
+data StoredSndQueue (q :: DBStored) = SndQueue
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -178,7 +179,7 @@ data StoredSndQueue (s :: DBStored) = SndQueue
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
-    dbQueueId :: DBEntityId s,
+    dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
     primary :: Bool,
     -- | ID of the queue this one is replacing

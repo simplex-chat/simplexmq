@@ -20,7 +20,7 @@ deriving instance Eq (SConnType d)
 
 deriving instance Eq (StoredRcvQueue s)
 
-deriving instance Eq (StoredSndQueue s)
+deriving instance Eq (StoredSndQueue q)
 
 deriving instance Eq ClientNtfCreds
 

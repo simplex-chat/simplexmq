@@ -54,6 +54,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Agent.Store.Entity
 import System.Random
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Directory (removeFile)

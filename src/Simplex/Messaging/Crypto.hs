@@ -238,7 +238,6 @@ import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
 import Data.Word (Word32)
-import Data.X509 (HashALG (..), PrivKey (..), PubKey (..), PubKeyALG (..), SignatureALG (..))
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
@@ -1176,8 +1175,8 @@ signX509 key = fst . X.objectToSignedExact f
 verifyX509 :: (ASN1Object o, Eq o, Show o) => APublicVerifyKey -> X.SignedExact o -> Either String o
 verifyX509 key exact = do
   signature <- case signedAlg of
-    SignatureALG_IntrinsicHash PubKeyALG_Ed25519 -> ASignature SEd25519 <$> decodeSignature signedSignature
-    SignatureALG_IntrinsicHash PubKeyALG_Ed448 -> ASignature SEd448 <$> decodeSignature signedSignature
+    X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed25519 -> ASignature SEd25519 <$> decodeSignature signedSignature
+    X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448 -> ASignature SEd448 <$> decodeSignature signedSignature
     _ -> Left "unknown x509 signature algorithm"
   if verify key signature $ X.getSignedData exact then Right signedObject else Left "bad signature"
   where
@@ -1191,15 +1190,15 @@ certificateFingerprint = signedFingerprint
 signedFingerprint :: (ASN1Object o, Eq o, Show o) => X.SignedExact o -> KeyHash
 signedFingerprint o = KeyHash fp
   where
-    Fingerprint fp = getFingerprint o HashSHA256
+    Fingerprint fp = getFingerprint o X.HashSHA256
 
 class SignatureAlgorithmX509 a where
   signatureAlgorithmX509 :: a -> X.SignatureALG
 
 instance SignatureAlgorithm a => SignatureAlgorithmX509 (SAlgorithm a) where
   signatureAlgorithmX509 = \case
-    SEd25519 -> SignatureALG_IntrinsicHash PubKeyALG_Ed25519
-    SEd448 -> SignatureALG_IntrinsicHash PubKeyALG_Ed448
+    SEd25519 -> X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed25519
+    SEd448 -> X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448
   {-# INLINE signatureAlgorithmX509 #-}
 
 instance SignatureAlgorithmX509 APrivateSignKey where
@@ -1452,19 +1451,19 @@ xSalsa20 secret nonce msg = (rs, msg')
     (rs, state2) = XSalsa.generate state1 32
     (msg', _) = XSalsa.combine state2 msg
 
-publicToX509 :: PublicKey a -> PubKey
+publicToX509 :: PublicKey a -> X.PubKey
 publicToX509 = \case
-  PublicKeyEd25519 k -> PubKeyEd25519 k
-  PublicKeyEd448 k -> PubKeyEd448 k
-  PublicKeyX25519 k -> PubKeyX25519 k
-  PublicKeyX448 k -> PubKeyX448 k
+  PublicKeyEd25519 k -> X.PubKeyEd25519 k
+  PublicKeyEd448 k -> X.PubKeyEd448 k
+  PublicKeyX25519 k -> X.PubKeyX25519 k
+  PublicKeyX448 k -> X.PubKeyX448 k
 
-privateToX509 :: PrivateKey a -> PrivKey
+privateToX509 :: PrivateKey a -> X.PrivKey
 privateToX509 = \case
-  PrivateKeyEd25519 k _ -> PrivKeyEd25519 k
-  PrivateKeyEd448 k _ -> PrivKeyEd448 k
-  PrivateKeyX25519 k _ -> PrivKeyX25519 k
-  PrivateKeyX448 k _ -> PrivKeyX448 k
+  PrivateKeyEd25519 k _ -> X.PrivKeyEd25519 k
+  PrivateKeyEd448 k _ -> X.PrivKeyEd448 k
+  PrivateKeyX25519 k _ -> X.PrivKeyX25519 k
+  PrivateKeyX448 k _ -> X.PrivKeyX448 k
 
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
@@ -1477,20 +1476,20 @@ decodePubKey = decodeKey >=> x509ToPublic >=> pubKey
 decodePrivKey :: CryptoPrivateKey k => ByteString -> Either String k
 decodePrivKey = decodeKey >=> x509ToPrivate >=> privKey
 
-x509ToPublic :: (PubKey, [ASN1]) -> Either String APublicKey
+x509ToPublic :: (X.PubKey, [ASN1]) -> Either String APublicKey
 x509ToPublic = \case
-  (PubKeyEd25519 k, []) -> Right . APublicKey SEd25519 $ PublicKeyEd25519 k
-  (PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
-  (PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
-  (PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
+  (X.PubKeyEd25519 k, []) -> Right . APublicKey SEd25519 $ PublicKeyEd25519 k
+  (X.PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
+  (X.PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
+  (X.PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
   r -> keyError r
 
-x509ToPrivate :: (PrivKey, [ASN1]) -> Either String APrivateKey
+x509ToPrivate :: (X.PrivKey, [ASN1]) -> Either String APrivateKey
 x509ToPrivate = \case
-  (PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
-  (PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
-  (PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 . PrivateKeyX25519 k $ X25519.toPublic k
-  (PrivKeyX448 k, []) -> Right . APrivateKey SX448 . PrivateKeyX448 k $ X448.toPublic k
+  (X.PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
+  (X.PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
+  (X.PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 . PrivateKeyX25519 k $ X25519.toPublic k
+  (X.PrivKeyX448 k, []) -> Right . APrivateKey SX448 . PrivateKeyX448 k $ X448.toPublic k
   r -> keyError r
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])

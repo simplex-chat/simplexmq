@@ -125,8 +125,6 @@ module Simplex.Messaging.Agent.Protocol
     StoredClientService (..),
     ClientService,
     ClientServiceId,
-    DBEntityId (..),
-    DBStored (..),
     sameConnReqContact,
     sameShortLinkContact,
     simplexChat,
@@ -204,6 +202,7 @@ import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -1508,7 +1507,7 @@ instance StrEncoding AConnShortLink where
           <|> "https://" *> ((SLSServer,) . Just <$> strP)
           <|> fail "bad short link scheme"
       contactTypeP = do
-        Just <$> (A.anyChar >>= ctTypeP . toUpper)        
+        Just <$> (A.anyChar >>= ctTypeP . toUpper)
           <|> A.char 'i' $> Nothing
           <|> fail "unknown short link type"
       serverQueryP h_ =
@@ -1545,7 +1544,7 @@ ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case
   'A' -> pure CCTContact
   'C' -> pure CCTChannel
-  'G' -> pure CCTGroup 
+  'G' -> pure CCTGroup
   _ -> fail "unknown contact address type"
 {-# INLINE ctTypeP #-}
 
@@ -1699,36 +1698,14 @@ instance Encoding AConnLinkData where
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
 
 data StoredClientService (s :: DBStored) = ClientService
-  { dbServiceId :: DBEntityId s,
+  { dbServiceId :: DBEntityId' s,
     serviceId :: SMP.ServiceId
   }
   deriving (Eq, Show)
 
 type ClientService = StoredClientService 'DBStored
 
-type ClientServiceId = DBEntityId 'DBStored
-
-data DBStored = DBStored | DBNew
-
-data SDBStored (s :: DBStored) where
-  SDBStored :: SDBStored 'DBStored
-  SDBNew :: SDBStored 'DBNew
-
-deriving instance Show (SDBStored s)
-
-class DBStoredI s where sdbStored :: SDBStored s
-
-instance DBStoredI 'DBStored where sdbStored = SDBStored
-
-instance DBStoredI 'DBNew where sdbStored = SDBNew
-
-data DBEntityId (s :: DBStored) where
-  DBEntityId :: Int64 -> DBEntityId 'DBStored
-  DBNewEntity :: DBEntityId 'DBNew
-
-deriving instance Show (DBEntityId s)
-
-deriving instance Eq (DBEntityId s)
+type ClientServiceId = DBEntityId
 
 -- | SMP queue status.
 data QueueStatus

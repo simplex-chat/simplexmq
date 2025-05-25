@@ -217,6 +217,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util
@@ -839,7 +840,7 @@ newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 setContactShortLink' :: AgentClient -> ConnId -> ConnInfo -> Maybe CRClientData -> AM (ConnShortLink 'CMContact)
-setContactShortLink' c connId userData clientData = 
+setContactShortLink' c connId userData clientData =
   withConnLock c connId "setContactShortLink" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (ContactConnection _ rq) -> do
@@ -942,7 +943,7 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
       -- TODO [notifications] send correct NTF credentials here
-      -- let ntfCreds_ = Nothing 
+      -- let ntfCreds_ = Nothing
       (rq, qUri, tSess, sessId) <- newRcvQueue_ c userId connId srvWithAuth vr qd subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
@@ -1130,7 +1131,7 @@ joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMo
     Nothing -> throwE $ AGENT A_VERSION
 
 delInvSL :: AgentClient -> ConnId -> SMPServerWithAuth -> SMP.LinkId -> AM ()
-delInvSL c connId srv lnkId = 
+delInvSL c connId srv lnkId =
   withStore' c (\db -> deleteInvShortLink db (protoServer srv) lnkId) `catchE` \e ->
     liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "error deleting short link " <> show e))
 

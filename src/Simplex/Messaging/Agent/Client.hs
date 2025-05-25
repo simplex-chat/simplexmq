@@ -279,6 +279,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Session
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion)
@@ -1084,7 +1085,7 @@ sendOrProxySMPCommand ::
   UserId ->
   SMPServer ->
   ConnId -> -- session entity ID, for short links LinkId is used
-  ByteString -> 
+  ByteString ->
   SMP.EntityId -> -- sender or link ID
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError a)) ->
   (SMPClient -> ExceptT SMPClientError IO a) ->
@@ -1411,7 +1412,7 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
   where
     mkShortLinkCreds :: (THandleParams SMPVersion 'TClient, QueueIdsKeys) -> AM (Maybe ShortLinkCreds)
     mkShortLinkCreds (thParams', QIK {sndId, queueMode, linkId}) = case (cqrd, queueMode) of
-      (CQRMessaging ld, Just QMMessaging) -> 
+      (CQRMessaging ld, Just QMMessaging) ->
         withLinkData ld $ \lnkId CQRData {linkKey, privSigKey, srvReq = (sndId', d)} ->
           if sndId == sndId'
             then pure $ Just $ ShortLinkCreds lnkId linkKey privSigKey (fst d)
