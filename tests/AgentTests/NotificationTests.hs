@@ -53,15 +53,12 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import qualified Data.Text.IO as TIO
 import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfgJ2QS, cfgMS, cfgVPrev, ntfTestPort, ntfTestPort2, serverStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (cfgJ2QS, cfgMS, cfgVPrev, ntfTestPort, ntfTestPort2, testServerStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -195,7 +192,7 @@ testNtfMatrix ps@(_, msType) runTest = do
 
 runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
 runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
-  let smpCfg' = smpCfg {serverStoreCfg = serverStoreConfig msType}
+  let smpCfg' = smpCfg {serverStoreCfg = testServerStoreConfig msType}
   withSmpServerConfigOn t smpCfg' testPort $ \_ ->
     withAPNSMockServer $ \apns ->
       withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t, False)]} $ \_ ->
@@ -497,12 +494,6 @@ testNtfTokenReRegisterInvalid t apns = do
       tkn1 <- registerTestToken a "abcd" NMInstant apns
       NTActive <- checkNtfToken a tkn1
       pure ()
-
-replaceSubstringInFile :: FilePath -> Text -> Text -> IO ()
-replaceSubstringInFile filePath oldText newText = do
-  content <- TIO.readFile filePath
-  let newContent = T.replace oldText newText content
-  TIO.writeFile filePath newContent
 
 testNtfTokenReRegisterInvalidOnCheck :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenReRegisterInvalidOnCheck t apns = do

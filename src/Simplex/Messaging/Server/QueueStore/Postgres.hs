@@ -25,6 +25,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     foldQueueRecs,
     handleDuplicate,
     withLog_,
+    withDB',
   )
 where
 
@@ -138,7 +139,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           db
           [sql|
             SELECT
-              (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL) AS queue_count, 
+              (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL) AS queue_count,
               (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL AND notifier_id IS NOT NULL) AS notifier_count
           |]
       pure QueueCounts {queueCount, notifierCount}
@@ -221,7 +222,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       _ -> throwE AUTH
 
   addQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
-  addQueueLinkData st sq lnkId d = 
+  addQueueLinkData st sq lnkId d =
     withQueueRec sq "addQueueLinkData" $ \q -> case queueData q of
       Nothing ->
         addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
@@ -335,7 +336,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   unblockQueue st sq =
     setStatusDB "unblockQueue" st sq EntityActive $
       withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
-  
+
   updateQueueTime :: PostgresQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t =
     withQueueRec sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
