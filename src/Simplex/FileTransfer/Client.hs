@@ -56,7 +56,7 @@ import Simplex.Messaging.Protocol
     SenderId,
     pattern NoEntity,
   )
-import Simplex.Messaging.Transport (ALPN, HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -147,12 +147,12 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
         Nothing -> throwE $ PCETransportError TEVersion
         Just (Compatible vr) ->
           fmap (vr,) . liftTransportErr (TEHandshake BAD_AUTH) $ do
-            let (X.CertificateChain cert, exact) = serverAuth
+            let CertChainPubKey (X.CertificateChain cert) exact = serverAuth
             case cert of
               [_leaf, ca] | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 -> pure ()
               _ -> throwError "bad certificate"
             pubKey <- maybe (throwError "bad server key type") (`C.verifyX509` exact) serverKey
-            C.x509ToPublic (pubKey, []) >>= C.pubKey
+            C.x509ToPublic' pubKey
     sendClientHandshake :: XFTPClientHandshake -> ExceptT XFTPClientError IO ()
     sendClientHandshake chs = do
       chs' <- liftTransportErr TELargeMsg $ C.pad (smpEncode chs) xftpBlockSize

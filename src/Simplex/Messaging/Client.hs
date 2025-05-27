@@ -956,7 +956,7 @@ connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT S
 connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
   | thVersion (thParams c) >= sendingProxySMPVersion =
       sendProtocolCommand_ c Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
-        PKEY sId vr (chain, key) ->
+        PKEY sId vr (CertChainPubKey chain key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
             Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v proxyAuth <$> validateRelay chain key
@@ -970,10 +970,9 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
       serverKey <- case cert of
         [leaf, ca]
           | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 ->
-              C.x509ToPublic (X.certPubKey . X.signedObject $ X.getSigned leaf, []) >>= C.pubKey
+              C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leaf
         _ -> throwError "bad certificate"
-      pubKey <- C.verifyX509 serverKey exact
-      C.x509ToPublic (pubKey, []) >>= C.pubKey
+      C.x509ToPublic' =<< C.verifyX509 serverKey exact
 
 data ProxiedRelay = ProxiedRelay
   { prSessionId :: SessionId,

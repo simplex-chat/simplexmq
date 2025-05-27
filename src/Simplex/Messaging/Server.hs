@@ -184,7 +184,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       httpCreds_ <- asks httpServerCreds
       ss <- liftIO newSocketState
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
-      srvSignKey <- either fail pure $ fromTLSPrivKey srvKey
+      srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
@@ -199,7 +199,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             httpALPN = ["h2", "http/1.1"]
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
-    fromTLSPrivKey pk = C.x509ToPrivate (pk, []) >>= C.privKey
 
     sigIntHandlerThread :: M ()
     sigIntHandlerThread = do

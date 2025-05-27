@@ -52,7 +52,7 @@ data NtfToken = NtfToken
     -- | key used by the ntf client to sign transmissions
     ntfPrivKey :: C.APrivateAuthKey,
     -- | client's DH keys (to repeat registration if necessary)
-    ntfDhKeys :: C.KeyPair 'C.X25519,
+    ntfDhKeys :: C.KeyPairX25519,
     -- | shared DH secret used to encrypt/decrypt notifications e2e
     ntfDhSecret :: Maybe C.DhSecretX25519,
     -- | token status
@@ -63,7 +63,7 @@ data NtfToken = NtfToken
   }
   deriving (Show)
 
-newNtfToken :: DeviceToken -> NtfServer -> C.AAuthKeyPair -> C.KeyPair 'C.X25519 -> NotificationsMode -> NtfToken
+newNtfToken :: DeviceToken -> NtfServer -> C.AAuthKeyPair -> C.KeyPairX25519 -> NotificationsMode -> NtfToken
 newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
   NtfToken
     { deviceToken,

@@ -61,7 +61,7 @@ import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatu
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ALPN, SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
@@ -110,7 +110,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     runServer :: M ()
     runServer = do
       srvCreds@(chain, pk) <- asks tlsServerCreds
-      signKey <- liftIO $ case C.x509ToPrivate (pk, []) >>= C.privKey of
+      signKey <- liftIO $ case C.x509ToPrivate' pk of
         Right pk' -> pure pk'
         Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
       env <- ask
@@ -142,7 +142,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           unless (B.null bodyHead) $ throwE HANDSHAKE
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
-          let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
+          let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
           shs <- encodeXftp hs
 #ifdef slow_servers

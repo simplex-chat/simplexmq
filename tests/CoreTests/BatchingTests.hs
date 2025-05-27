@@ -393,7 +393,7 @@ testTHandleAuth v g (C.APublicAuthKey a serverPeerPubKey) = case a of
     serverKey <- head <$> XF.readKeyFile "tests/fixtures/server.key"
     signKey <- either error pure $ C.x509ToPrivate (serverKey, []) >>= C.privKey @C.APrivateSignKey
     (serverAuthPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
-    let serverCertKey = (X.CertificateChain [serverCert, ca], C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
+    let serverCertKey = CertChainPubKey (X.CertificateChain [serverCert, ca]) (C.signX509 signKey $ C.toPubKey C.publicToX509 serverAuthPub)
     pure $ Just THAuthClient {serverPeerPubKey, serverCertKey, sessSecret = Nothing}
   _ -> pure Nothing
 
