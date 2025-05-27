@@ -125,7 +125,7 @@ data TransportClientConfig = TransportClientConfig
     tcpConnectTimeout :: Int,
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
-    clientCredentials :: Maybe (X.CertificateChain, T.PrivKey),
+    clientCredentials :: Maybe T.Credential,
     alpn :: Maybe [ALPN],
     useSNI :: Bool
   }
@@ -265,7 +265,7 @@ instance StrEncoding SocksAuth where
         password <- A.takeTill (== '@') <* A.char '@'
         pure SocksAuthUsername {username, password}
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> Bool -> TMVar X.CertificateChain -> T.ClientParams
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe T.Credential -> Maybe [ALPN] -> Bool -> TMVar X.CertificateChain -> T.ClientParams
 mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serverCerts =
   (T.defaultParamsClient host p)
     { T.clientUseServerNameIndication = sni,

@@ -112,7 +112,7 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
     srvParams = supportedTLSServerParams_ srvSupported srvCreds alpn_
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> (Maybe HostName -> (X.CertificateChain, X.PrivKey)) -> T.ServerParams -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> (Maybe HostName -> T.Credential) -> T.ServerParams -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
 runTransportServerSocketState_ ss started getSocket threadLabel srvCreds srvParams cfg server = do
   labelMyThread $ "transport server for " <> threadLabel
   runTCPServerSocket ss started getSocket $ \conn ->

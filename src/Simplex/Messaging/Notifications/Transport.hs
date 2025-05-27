@@ -137,7 +137,7 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer = do
         ck_ <- forM sk' $ \signedKey -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
           serverKey <- getServerVerifyKey c
           pubKey <- C.verifyX509 serverKey signedKey
-          (,(getPeerCertChain c, signedKey)) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
+          (,CertChainPubKey (getPeerCertChain c) signedKey) <$> C.x509ToPublic' pubKey
         let v = maxVersion vr
         sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash}
         pure $ ntfThHandleClient th v vr ck_
@@ -148,7 +148,7 @@ ntfThHandleServer th v vr pk =
   let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
    in ntfThHandle_ th v vr (Just thAuth)
 
-ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleNTF c 'TClient
+ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> Maybe (C.PublicKeyX25519, CertChainPubKey) -> THandleNTF c 'TClient
 ntfThHandleClient th v vr ck_ =
   let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, sessSecret = Nothing}) <$> ck_
    in ntfThHandle_ th v vr thAuth

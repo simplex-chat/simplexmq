@@ -55,14 +55,14 @@ data NtfTknData = NtfTknData
     token :: DeviceToken,
     tknStatus :: TVar NtfTknStatus,
     tknVerifyKey :: NtfPublicAuthKey,
-    tknDhKeys :: C.KeyPair 'C.X25519,
+    tknDhKeys :: C.KeyPairX25519,
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
     tknCronInterval :: TVar Word16,
     tknUpdatedAt :: TVar (Maybe RoundedSystemTime)
   }
 
-mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPair 'C.X25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> IO NtfTknData
+mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPairX25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> IO NtfTknData
 mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode ts = do
   tknStatus <- newTVarIO NTRegistered
   tknCronInterval <- newTVarIO 0
