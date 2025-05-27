@@ -988,8 +988,7 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
           | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 ->
               C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leaf
         _ -> throwError "bad certificate"
-      pubKey <- C.verifyX509 serverKey exact
-      C.x509ToPublic' pubKey
+      C.x509ToPublic' =<< C.verifyX509 serverKey exact
 
 data ProxiedRelay = ProxiedRelay
   { prSessionId :: SessionId,

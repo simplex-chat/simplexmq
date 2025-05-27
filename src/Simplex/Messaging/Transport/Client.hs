@@ -269,7 +269,7 @@ instance StrEncoding SocksAuth where
         password <- A.takeTill (== '@') <* A.char '@'
         pure SocksAuthUsername {username, password}
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe (X.CertificateChain, T.PrivKey) -> Maybe [ALPN] -> Bool -> TMVar (Maybe X.CertificateChain) -> T.ClientParams
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe T.Credential -> Maybe [ALPN] -> Bool -> TMVar (Maybe X.CertificateChain) -> T.ClientParams
 mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serverCerts =
   (T.defaultParamsClient host p)
     { T.clientUseServerNameIndication = sni,

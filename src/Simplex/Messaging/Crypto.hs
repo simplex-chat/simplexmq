@@ -1491,6 +1491,7 @@ x509ToPublic = \case
 
 x509ToPublic' :: CryptoPublicKey k => X.PubKey -> Either String k
 x509ToPublic' k = x509ToPublic (k, []) >>= pubKey
+{-# INLINE x509ToPublic' #-}
 
 x509ToPrivate :: (X.PrivKey, [ASN1]) -> Either String APrivateKey
 x509ToPrivate = \case
@@ -1502,6 +1503,7 @@ x509ToPrivate = \case
 
 x509ToPrivate' :: CryptoPrivateKey k => X.PrivKey -> Either String k
 x509ToPrivate' pk = x509ToPrivate (pk, []) >>= privKey
+{-# INLINE x509ToPrivate' #-}
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
 decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
