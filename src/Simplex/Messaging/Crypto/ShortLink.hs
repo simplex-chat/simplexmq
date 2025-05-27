@@ -48,7 +48,7 @@ contactShortLinkKdf (LinkKey k) =
 invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
-encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPair 'C.Ed25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> ConnInfo -> (LinkKey, (ByteString, ByteString))
+encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> ConnInfo -> (LinkKey, (ByteString, ByteString))
 encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
   let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq}
       md = smpEncode $ connLinkData @c agentVRange userData

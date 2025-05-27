@@ -61,7 +61,7 @@ import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatu
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ALPN, SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
@@ -110,9 +110,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     runServer :: M ()
     runServer = do
       srvCreds@(chain, pk) <- asks tlsServerCreds
-      signKey <- liftIO $ case C.x509ToPrivate (pk, []) >>= C.privKey of
+      signKey <- liftIO $ case C.x509ToPrivate' pk of
         Right pk' -> pure pk'
-        Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
+        Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
       env <- ask
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
@@ -120,7 +120,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         reqBody <- getHTTP2Body r xftpBlockSize
         let v = VersionXFTP 1
             thServerVRange = versionToRange v
-            thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True}
+            thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
             req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
         flip runReaderT env $ case sessionALPN of
           Nothing -> processRequest req0
@@ -142,7 +142,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           unless (B.null bodyHead) $ throwE HANDSHAKE
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
-          let authPubKey = (chain, C.signX509 serverSignKey $ C.publicToX509 k)
+          let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
           shs <- encodeXftp hs
 #ifdef slow_servers

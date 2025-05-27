@@ -168,8 +168,8 @@ data RCCtrlPairing = RCCtrlPairing
   }
 
 data RCHostKeys = RCHostKeys
-  { sessKeys :: C.KeyPair 'C.Ed25519,
-    dhKeys :: C.KeyPair 'C.X25519
+  { sessKeys :: C.KeyPairEd25519,
+    dhKeys :: C.KeyPairX25519
   }
 
 -- Connected session with Host

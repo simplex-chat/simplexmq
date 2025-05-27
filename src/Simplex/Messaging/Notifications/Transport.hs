@@ -126,8 +126,8 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
             Nothing -> throwE TEVersion
 
 -- | Notifcations server client transport handshake.
-ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> ExceptT TransportError IO (THandleNTF c 'TClient)
-ntfClientHandshake c keyHash ntfVRange _proxyServer = do
+ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleNTF c 'TClient)
+ntfClientHandshake c keyHash ntfVRange _proxyServer _serviceKeys = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = sk'} <- getHandshake th
   if sessionId /= sessId
@@ -137,7 +137,7 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer = do
         ck_ <- forM sk' $ \signedKey -> liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
           serverKey <- getServerVerifyKey c
           pubKey <- C.verifyX509 serverKey signedKey
-          (,(getPeerCertChain c, signedKey)) <$> (C.x509ToPublic (pubKey, []) >>= C.pubKey)
+          (,CertChainPubKey (getPeerCertChain c) signedKey) <$> C.x509ToPublic' pubKey
         let v = maxVersion vr
         sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash}
         pure $ ntfThHandleClient th v vr ck_
@@ -148,7 +148,7 @@ ntfThHandleServer th v vr pk =
   let thAuth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
    in ntfThHandle_ th v vr (Just thAuth)
 
-ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> Maybe (C.PublicKeyX25519, (X.CertificateChain, X.SignedExact X.PubKey)) -> THandleNTF c 'TClient
+ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> Maybe (C.PublicKeyX25519, CertChainPubKey) -> THandleNTF c 'TClient
 ntfThHandleClient th v vr ck_ =
   let thAuth = clientTHParams <$> ck_
       clientTHParams (k, ck) = THAuthClient {peerServerPubKey = k, peerServerCertKey = ck, clientService = Nothing, sessSecret = Nothing}
@@ -174,5 +174,6 @@ ntfTHandle c = THandle {connection = c, params}
           thAuth = Nothing,
           implySessId = False,
           encryptBlock = Nothing,
-          batch = False
+          batch = False,
+          serviceAuth = False
         }

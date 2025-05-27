@@ -40,7 +40,7 @@ import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, THandleParams, TransportPeer (..))
+import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceCredentials (..), THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
@@ -61,6 +61,8 @@ data NtfServerConfig = NtfServerConfig
     inactiveClientExpiration :: Maybe ExpirationConfig,
     dbStoreConfig :: PostgresStoreCfg,
     ntfCredentials :: ServerCredentials,
+    -- send service credentials and use service subscriptions when SMP server supports them
+    useServiceCreds :: Bool,
     periodicNtfsInterval :: Int, -- seconds
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
@@ -94,13 +96,21 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, startOptions} = do
+newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds, startOptions} = do
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
-  let smpAgentCfg' = smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {clientCredentials = Just tlsServerCreds}}
+  smpAgentCfg' <-
+    if useServiceCreds
+      then do
+        serviceSignKey <- case C.x509ToPrivate' $ snd tlsServerCreds of
+          Right pk -> pure pk
+          Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
+        let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsServerCreds, serviceSignKey}
+        pure smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {serviceCredentials = Just service}}
+      else pure smpAgentCfg
   subscriber <- newNtfSubscriber smpAgentCfg' random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime

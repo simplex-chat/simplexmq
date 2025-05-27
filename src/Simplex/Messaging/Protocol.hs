@@ -221,7 +221,6 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
 import Data.Word (Word16, Word32)
-import qualified Data.X509 as X
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
@@ -360,7 +359,7 @@ type Signed = ByteString
 -- | unparsed SMP transmission with signature.
 data RawTransmission = RawTransmission
   { authenticator :: ByteString, -- signature or encrypted transmission hash
-    clientSig :: Maybe ByteString, -- optional second signature with the key of the client
+    serviceSig :: Maybe (C.Signature 'C.Ed25519), -- optional second signature with the key of the client service
     authorized :: ByteString, -- authorized transmission
     sessId :: SessionId,
     corrId :: CorrId,
@@ -377,19 +376,22 @@ data TransmissionAuth
   deriving (Show)
 
 -- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TransmissionAuth
--- TODO [certs] encode client cert signature
-tAuthBytes :: Maybe TAuthorizations -> ByteString
-tAuthBytes = \case
-  Nothing -> ""
-  Just (TASignature s, _) -> C.signatureBytes s
-  Just (TAAuthenticator (C.CbAuthenticator s), _) -> s
+tEncodeAuth :: Bool -> Maybe TAuthorizations -> ByteString
+tEncodeAuth serviceAuth = \case
+  Nothing -> smpEncode B.empty
+  Just (auth, sig)
+    | serviceAuth -> smpEncode (authBytes auth, sig)
+    | otherwise -> smpEncode (authBytes auth)
+  where
+    authBytes = \case
+      TASignature s -> C.signatureBytes s
+      TAAuthenticator (C.CbAuthenticator s) -> s
 
--- TODO [certs] decode client cert signature
-decodeTAuthBytes :: ByteString -> Maybe ByteString -> Either String (Maybe TAuthorizations)
-decodeTAuthBytes s _sig_
+decodeTAuthBytes :: ByteString -> Maybe (C.Signature 'C.Ed25519) -> Either String (Maybe TAuthorizations)
+decodeTAuthBytes s serviceSig
   | B.null s = Right Nothing
-  | B.length s == C.cbAuthenticatorSize = Right $ Just (TAAuthenticator (C.CbAuthenticator s), Nothing)
-  | otherwise = (\sig -> Just (TASignature sig, Nothing)) <$> C.decodeSignature s
+  | B.length s == C.cbAuthenticatorSize = Right $ Just (TAAuthenticator (C.CbAuthenticator s), serviceSig)
+  | otherwise = (\sig -> Just (TASignature sig, serviceSig)) <$> C.decodeSignature s
 
 -- | unparsed sent SMP transmission with signature, without session ID.
 type SignedRawTransmission = (Maybe TAuthorizations, CorrId, EntityId, ByteString)
@@ -585,7 +587,7 @@ data BrokerMsg where
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
-  PKEY :: SessionId -> VersionRangeSMP -> (X.CertificateChain, X.SignedExact X.PubKey) -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
+  PKEY :: SessionId -> VersionRangeSMP -> CertChainPubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
@@ -1476,31 +1478,25 @@ instance FromJSON BlockingReason where
   parseJSON = strParseJSON "BlockingReason"
 
 -- | SMP transmission parser.
--- TODO [certs] we can either rely on version and expect an empty client signature in all transmissions,
--- or we can only allow and require client signature in transmissions where client certificate was presented during handshake.
--- On another hand, we don't yet know whether transmission even requires any signature at all (PING), or if it would support client signature (SEND).
--- So maybe it is wrong to decide it based on the session.
--- If we rely on the version, we probably need to also use a property in THandleParams instead of hardcoded version to allow client certificates in other protocols.
 transmissionP :: THandleParams v p -> Parser RawTransmission
-transmissionP THandleParams {sessionId, implySessId} = do
+transmissionP THandleParams {sessionId, implySessId, serviceAuth} = do
   authenticator <- smpP
-  -- TODO [certs] decode client signature
-  -- clientSig <- smpP
+  serviceSig <- if serviceAuth && not (B.null authenticator) then smpP else pure Nothing
   authorized <- A.takeByteString
-  either fail pure $ parseAll (trn authenticator authorized) authorized
+  either fail pure $ parseAll (trn authenticator serviceSig authorized) authorized
   where
-    trn authenticator authorized = do
+    trn authenticator serviceSig authorized = do
       sessId <- if implySessId then pure "" else smpP
       let authorized' = if implySessId then smpEncode sessionId <> authorized else authorized
       corrId <- smpP
       entityId <- smpP
       command <- A.takeByteString
-      pure RawTransmission {authenticator, clientSig = Nothing, authorized = authorized', sessId, corrId, entityId, command}
+      pure RawTransmission {authenticator, serviceSig, authorized = authorized', sessId, corrId, entityId, command}
 
 class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle v c 'TClient)
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
@@ -1684,7 +1680,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
-    PKEY sid vr (cert, key) -> e (PKEY_, ' ', sid, vr, C.encodeCertChain cert, C.SignedObject key)
+    PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
@@ -1731,7 +1727,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SSOK_ -> SSOK <$> _smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
-    PKEY_ -> PKEY <$> _smpP <*> smpP <*> ((,) <$> C.certChainP <*> (C.getSignedExact <$> smpP))
+    PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
@@ -1906,7 +1902,7 @@ instance StrEncoding BrokerErrorType where
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
-tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (batch params) (blockSize params)
+tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions params
   where
     tPutBatch :: TransportBatch () -> IO [Either TransportError ()]
     tPutBatch = \case
@@ -1925,13 +1921,13 @@ tPutLog th s = do
 -- ByteString in TBTransmissions includes byte with transmissions count
 data TransportBatch r = TBTransmissions ByteString Int [r] | TBTransmission ByteString r | TBError TransportError r
 
-batchTransmissions :: Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission) -> [TransportBatch ()]
-batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
+batchTransmissions :: THandleParams v p -> NonEmpty (Either TransportError SentRawTransmission) -> [TransportBatch ()]
+batchTransmissions params = batchTransmissions' params . L.map (,())
 
 -- | encodes and batches transmissions into blocks
-batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
-batchTransmissions' batch bSize ts
-  | batch = batchTransmissions_ bSize $ L.map (first $ fmap tEncodeForBatch) ts
+batchTransmissions' :: forall v p r. THandleParams v p -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
+batchTransmissions' THandleParams {batch, blockSize = bSize, serviceAuth} ts
+  | batch = batchTransmissions_ bSize $ L.map (first $ fmap $ tEncodeForBatch serviceAuth) ts
   | otherwise = map mkBatch1 $ L.toList ts
   where
     mkBatch1 :: (Either TransportError SentRawTransmission, r) -> TransportBatch r
@@ -1942,7 +1938,7 @@ batchTransmissions' batch bSize ts
         | B.length s <= bSize - 2 -> TBTransmission s r
         | otherwise -> TBError TELargeMsg r
         where
-          s = tEncode t
+          s = tEncode serviceAuth t
 
 -- | Pack encoded transmissions into batches
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
@@ -1965,16 +1961,16 @@ batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
       where
         b = B.concat $ B.singleton (lenEncode n) : ss
 
-tEncode :: SentRawTransmission -> ByteString
-tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
+tEncode :: Bool -> SentRawTransmission -> ByteString
+tEncode serviceAuth (auth, t) = tEncodeAuth serviceAuth auth <> t
 {-# INLINE tEncode #-}
 
-tEncodeForBatch :: SentRawTransmission -> ByteString
-tEncodeForBatch = smpEncode . Large . tEncode
+tEncodeForBatch :: Bool -> SentRawTransmission -> ByteString
+tEncodeForBatch serviceAuth = smpEncode . Large . tEncode serviceAuth
 {-# INLINE tEncodeForBatch #-}
 
-tEncodeBatch1 :: SentRawTransmission -> ByteString
-tEncodeBatch1 t = lenEncode 1 `B.cons` tEncodeForBatch t
+tEncodeBatch1 :: Bool -> SentRawTransmission -> ByteString
+tEncodeBatch1 serviceAuth t = lenEncode 1 `B.cons` tEncodeForBatch serviceAuth t
 {-# INLINE tEncodeBatch1 #-}
 
 -- tForAuth is lazy to avoid computing it when there is no key to sign
@@ -2022,9 +2018,9 @@ tGet th@THandle {params} = L.map (tDecodeParseValidate params) <$> tGetParse th
 
 tDecodeParseValidate :: forall v p err cmd. ProtocolEncoding v err cmd => THandleParams v p -> Either TransportError RawTransmission -> SignedTransmission err cmd
 tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \case
-  Right RawTransmission {authenticator, clientSig, authorized, sessId, corrId, entityId, command}
+  Right RawTransmission {authenticator, serviceSig, authorized, sessId, corrId, entityId, command}
     | implySessId || sessId == sessionId ->
-        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator clientSig
+        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator serviceSig
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
     | otherwise -> (Nothing, "", (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd PESession))
   Left _ -> tError ""

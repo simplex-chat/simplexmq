@@ -42,7 +42,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -50,7 +50,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
 import Data.Word (Word16, Word32)
-import qualified Data.X509 as X
 import Network.HTTP2.Client (HTTP2Error)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -58,7 +57,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
-import Simplex.Messaging.Transport (ALPN, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
+import Simplex.Messaging.Transport (ALPN, CertChainPubKey, ServiceCredentials, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version
@@ -102,8 +101,8 @@ supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
 -- XFTP protocol does not use this handshake method
-xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
-xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer = throwE TEVersion
+xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
+xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys = throwE TEVersion
 
 supportedXFTPhandshakes :: [ALPN]
 supportedXFTPhandshakes = ["xftp/1"]
@@ -112,7 +111,7 @@ data XFTPServerHandshake = XFTPServerHandshake
   { xftpVersionRange :: VersionRangeXFTP,
     sessionId :: SessionId,
     -- | pub key to agree shared secrets for command authorization and entity ID encryption.
-    authPubKey :: (X.CertificateChain, X.SignedExact X.PubKey)
+    authPubKey :: CertChainPubKey
   }
 
 data XFTPClientHandshake = XFTPClientHandshake
@@ -132,15 +131,12 @@ instance Encoding XFTPClientHandshake where
 
 instance Encoding XFTPServerHandshake where
   smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey} =
-    smpEncode (xftpVersionRange, sessionId, auth)
-    where
-      auth = bimap C.encodeCertChain C.SignedObject authPubKey
+    smpEncode (xftpVersionRange, sessionId, authPubKey)
   smpP = do
     (xftpVersionRange, sessionId) <- smpP
-    cert <- C.certChainP
-    C.SignedObject key <- smpP
+    authPubKey <- smpP
     Tail _compat <- smpP
-    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey = (cert, key)}
+    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey}
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go

@@ -148,9 +148,9 @@ smpProxyTests = do
   where
     oneServer test msType = withSmpServerConfigOn (transport @TLS) (proxyCfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} testPort $ const test
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
-    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (cfgV8 msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
-    twoServersMoreConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 128} (cfgV8 msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
-    twoServersNoConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 1} (cfgV8 msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
+    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (cfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
+    twoServersMoreConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 128} (cfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
+    twoServersNoConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 1} (cfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
     twoServers_ :: ServerConfig -> ServerConfig -> IO () -> AStoreType -> IO ()
     twoServers_ cfg1 cfg2 runTest (ASType qsType _) =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
@@ -172,7 +172,7 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
   msgQ <- newTBQueueIO 1024
-  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion} [] (Just msgQ) ts (\_ -> pure ())
+  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] (Just msgQ) ts (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g

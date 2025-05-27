@@ -64,6 +64,7 @@ module Simplex.Messaging.Crypto
     AAuthKeyPair,
     KeyPair,
     KeyPairX25519,
+    KeyPairEd25519,
     ASignatureKeyPair,
     DhSecret (..),
     DhSecretX25519,
@@ -78,7 +79,9 @@ module Simplex.Messaging.Crypto
     generateDhKeyPair,
     privateToX509,
     x509ToPublic,
+    x509ToPublic',
     x509ToPrivate,
+    x509ToPrivate',
     publicKey,
     signatureKeyPair,
     publicToX509,
@@ -677,6 +680,8 @@ type KeyPairType pk = (PublicKeyType pk, pk)
 type KeyPair a = KeyPairType (PrivateKey a)
 
 type KeyPairX25519 = KeyPair X25519
+
+type KeyPairEd25519 = KeyPair Ed25519
 
 -- TODO narrow key pair types to have the same algorithm in both keys
 type AKeyPair = KeyPairType APrivateKey
@@ -1484,6 +1489,9 @@ x509ToPublic = \case
   (X.PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
   r -> keyError r
 
+x509ToPublic' :: CryptoPublicKey k => X.PubKey -> Either String k
+x509ToPublic' k = x509ToPublic (k, []) >>= pubKey
+
 x509ToPrivate :: (X.PrivKey, [ASN1]) -> Either String APrivateKey
 x509ToPrivate = \case
   (X.PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
@@ -1491,6 +1499,9 @@ x509ToPrivate = \case
   (X.PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 . PrivateKeyX25519 k $ X25519.toPublic k
   (X.PrivKeyX448 k, []) -> Right . APrivateKey SX448 . PrivateKeyX448 k $ X448.toPublic k
   r -> keyError r
+
+x509ToPrivate' :: CryptoPrivateKey k => X.PrivKey -> Either String k
+x509ToPrivate' pk = x509ToPrivate (pk, []) >>= privKey
 
 decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
 decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict

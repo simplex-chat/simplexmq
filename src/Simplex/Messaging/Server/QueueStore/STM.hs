@@ -245,7 +245,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   -- TODO [certs]
   setQueueNtfService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueNtfService = undefined
+  setQueueNtfService _ _ _ = pure $ Right ()
 
   -- TODO [certs]
   getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int64)

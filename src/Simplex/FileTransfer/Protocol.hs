@@ -344,7 +344,7 @@ xftpEncodeTransmission thParams (corrId, fId, msg) = do
 
 -- this function uses batch syntax but puts only one transmission in the batch
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
-xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 t) xftpBlockSize
+xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 False t) xftpBlockSize
 
 xftpDecodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion p -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission thParams t = do

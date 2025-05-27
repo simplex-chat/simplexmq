@@ -290,13 +290,11 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serv
       pure errs
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
-validateCertificateChain (C.KeyHash kh) host port cc@(X.CertificateChain chain) = case chain of
-  [] -> pure [XV.EmptyChain]
-  [_] -> pure [XV.EmptyChain]
-  [_, idCaCert] -> validate idCaCert idCaCert -- current long-term online/offline certificates chain
-  [_, idCert, caCert] -> validate idCert caCert -- with additional operator certificate (preset in the client)
-  [_, idCert, _, caCert] -> validate idCert caCert -- with network certificate
-  _ -> pure [XV.AuthorityTooDeep]
+validateCertificateChain (C.KeyHash kh) host port cc = case chainIdCaCerts cc of
+  CCEmpty -> pure [XV.EmptyChain]
+  CCSelf _ -> pure [XV.EmptyChain]
+  CCValid {idCert, caCert} -> validate idCert caCert
+  CCLong -> pure [XV.AuthorityTooDeep]
   where
     validate idCert caCert
       | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate caCert (host, port) cc

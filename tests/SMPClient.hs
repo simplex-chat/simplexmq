@@ -152,7 +152,7 @@ testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP
 testSMPClient_ host port vr client = do
   let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash vr False) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr False Nothing) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
@@ -245,9 +245,6 @@ serverStoreConfig_ useDbStoreLog = \case
 
 cfgV7 :: ServerConfig
 cfgV7 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
-
-cfgV8 :: AStoreType -> ServerConfig
-cfgV8 msType = (cfgMS msType) {smpServerVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}
 
 cfgVPrev :: AStoreType -> ServerConfig
 cfgVPrev msType = (cfgMS msType) {smpServerVRange = prevRange $ smpServerVRange cfg}

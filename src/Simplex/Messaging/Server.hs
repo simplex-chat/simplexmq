@@ -80,6 +80,7 @@ import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
 import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import GHC.Conc.Signal
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
@@ -191,7 +192,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       httpCreds_ <- asks httpServerCreds
       ss <- liftIO newSocketState
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
-      srvSignKey <- either fail pure $ fromTLSPrivKey srvKey
+      srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
@@ -206,7 +207,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             httpALPN = ["h2", "http/1.1"]
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds (Just supportedSMPHandshakes) tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
-    fromTLSPrivKey pk = C.x509ToPrivate (pk, []) >>= C.privKey
 
     sigIntHandlerThread :: M ()
     sigIntHandlerThread = do
@@ -661,9 +661,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ks <- atomically . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange getClientService) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
+
+    -- TODO [certs]
+    getClientService :: SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
+    getClientService _ _ _ = pure NoEntity -- stub
 
     controlPortThread_ :: ServerConfig -> [M ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
@@ -1844,7 +1848,7 @@ client
               -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
               Right t''@(_, (corrId', entId', _)) -> fromMaybe (corrId', entId', ERR INTERNAL) <$> lift (processCommand Nothing fwdVersion t'')
           -- encode response
-          r' <- case batchTransmissions (batch clntTHParams) (blockSize clntTHParams) [Right (Nothing, encodeTransmission clntTHParams r)] of
+          r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
             TBError _ _ : _ -> throwE BLOCK
             TBTransmission b' _ : _ -> pure b'

@@ -242,11 +242,13 @@ supportedTLSServerParams serverSupported creds alpn_ clientCert =
     }
 
 validateClientCertificate :: X.CertificateChain -> IO (Maybe T.CertificateRejectReason)
-validateClientCertificate cc@(X.CertificateChain chain)
-  | null chain = pure Nothing -- client certificates are only used for services
-  | length chain <= 4 = usage <$> x509validate (last chain) ("", B.empty) cc
-  | otherwise = pure $ Just $ T.CertificateRejectOther "chain too long"
+validateClientCertificate cc = case chainIdCaCerts cc of
+  CCEmpty -> pure Nothing -- client certificates are only used for services
+  CCSelf cert -> validate cert
+  CCValid {caCert} -> validate caCert
+  CCLong -> pure $ Just $ T.CertificateRejectOther "chain too long"
   where
+    validate caCert = usage <$> x509validate caCert ("", B.empty) cc
     usage [] = Nothing
     usage r =
       Just $

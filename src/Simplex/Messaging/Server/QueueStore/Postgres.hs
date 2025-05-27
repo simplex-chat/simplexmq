@@ -386,7 +386,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   -- TODO [certs]
   setQueueNtfService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueNtfService = undefined
+  setQueueNtfService _ _ _ = pure $ Right ()
 
   -- TODO [certs]
   getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)

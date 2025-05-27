@@ -120,7 +120,7 @@ testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
-    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False) >>= \case
+    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False Nothing) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -150,6 +150,8 @@ ntfServerCfg =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
+      -- TODO [certs]
+      useServiceCreds = False, -- True,
       periodicNtfsInterval = 1,
       -- stats config
       logStatsInterval = Nothing,
