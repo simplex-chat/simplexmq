@@ -56,9 +56,8 @@ module Simplex.Messaging.Agent
     deleteConnectionAsync,
     deleteConnectionsAsync,
     createConnection,
-    setInvitationShortLink,
-    setContactShortLink,
-    deleteContactShortLink,
+    setConnShortLink,
+    deleteConnShortLink,
     getConnShortLink,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -372,19 +371,14 @@ createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConne
 createConnection c userId enableNtfs = withAgentEnv c .::. newConn c userId enableNtfs
 {-# INLINE createConnection #-}
 
--- | Create or update user's invitation connection short link
-setInvitationShortLink :: AgentClient -> ConnId -> ConnInfo -> AE (ConnShortLink 'CMInvitation)
-setInvitationShortLink c = withAgentEnv c .: setInvitationShortLink' c
-{-# INLINE setInvitationShortLink #-}
-
 -- | Create or update user's contact connection short link
-setContactShortLink :: AgentClient -> ConnId -> ConnInfo -> Maybe CRClientData -> AE (ConnShortLink 'CMContact)
-setContactShortLink c = withAgentEnv c .:. setContactShortLink' c
-{-# INLINE setContactShortLink #-}
+setConnShortLink :: AgentClient -> ConnId -> SConnectionMode c -> ConnInfo -> Maybe CRClientData -> AE (ConnShortLink c)
+setConnShortLink c = withAgentEnv c .:: setConnShortLink' c
+{-# INLINE setConnShortLink #-}
 
-deleteContactShortLink :: AgentClient -> ConnId -> AE ()
-deleteContactShortLink c = withAgentEnv c . deleteContactShortLink' c
-{-# INLINE deleteContactShortLink #-}
+deleteConnShortLink :: AgentClient -> ConnId -> SConnectionMode c -> AE ()
+deleteConnShortLink c = withAgentEnv c .: deleteConnShortLink' c
+{-# INLINE deleteConnShortLink #-}
 
 -- | Get and verify data from short link. For 1-time invitations it preserves the key to allow retries
 getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnLinkData c)
@@ -839,59 +833,28 @@ newConn c userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
   (connId,) <$> newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
-setInvitationShortLink' :: AgentClient -> ConnId -> ConnInfo -> AM (ConnShortLink 'CMInvitation)
-setInvitationShortLink' c connId userData =
-  withConnLock c connId "setInvitationShortLink" $
-    withStore c (`getConn` connId) >>= \case
-      SomeConn _ (RcvConnection _ rq) -> do
-        (lnkId, linkKey, d) <- prepareLinkData rq
-        addQueueLink c rq lnkId d
-        pure $ CSLInvitation SLSServer (qServer rq) lnkId linkKey
-      _ -> throwE $ CMD PROHIBITED "setInvitationShortLink: not RcvConnection"
+setConnShortLink' :: AgentClient -> ConnId -> SConnectionMode c -> ConnInfo -> Maybe CRClientData -> AM (ConnShortLink c)
+setConnShortLink' c connId cMode userData clientData =
+  withConnLock c connId "setConnShortLink" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    (rq, lnkId, sl, d) <- case (conn, cMode) of
+      (ContactConnection _ rq, SCMContact) -> prepareContactLinkData rq
+      (RcvConnection _ rq, SCMInvitation) -> prepareInvLinkData rq
+      _ -> throwE $ CMD PROHIBITED "setConnShortLink: invalid connection or mode"
+    addQueueLink c rq lnkId d
+    pure sl
   where
-    prepareLinkData :: RcvQueue -> AM (SMP.LinkId, LinkKey, QueueLinkData)
-    prepareLinkData RcvQueue {shortLink} = do
-      g <- asks random
-      AgentConfig {smpAgentVRange} <- asks config
-      case shortLink of
-        Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
-          let k = SL.invShortLinkKdf shortLinkKey
-          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
-          pure (shortLinkId, shortLinkKey, (linkEncFixedData, d))
-        Nothing -> throwE $ CMD PROHIBITED "setInvitationShortLink: no ShortLinkCreds"
-        -- Nothing -> do
-        --   sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
-        --   let qUri = SMPQueueUri vr $ SMPQueueAddress server sndId (C.publicKey e2ePrivKey) (Just QMMessaging)
-        --       -- e2eRcvParamsUri = ... -- not persisted?
-        --       -- `toVersionRangeT e2eRcvParams e2eEncryptVRange` in newRcvConnSrv
-        --       connReq = CRInvitationUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) e2eRcvParamsUri
-        --       (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userData
-        --       k = SL.invShortLinkKdf linkKey
-        --   srvData <- liftError id $ SL.encryptLinkData g k linkData
-        --   let slCreds = ShortLinkCreds linkId linkKey privSigKey (fst srvData)
-        --   withStore' c $ \db -> updateShortLinkCreds db rq slCreds
-        --   pure (linkId, linkKey, srvData)
-
-setContactShortLink' :: AgentClient -> ConnId -> ConnInfo -> Maybe CRClientData -> AM (ConnShortLink 'CMContact)
-setContactShortLink' c connId userData clientData =
-  withConnLock c connId "setContactShortLink" $
-    withStore c (`getConn` connId) >>= \case
-      SomeConn _ (ContactConnection _ rq) -> do
-        (lnkId, linkKey, d) <- prepareLinkData rq
-        addQueueLink c rq lnkId d
-        pure $ CSLContact SLSServer CCTContact (qServer rq) linkKey
-      _ -> throwE $ CMD PROHIBITED "setContactShortLink: not contact address"
-  where
-    prepareLinkData :: RcvQueue -> AM (SMP.LinkId, LinkKey, QueueLinkData)
-    prepareLinkData rq@RcvQueue {server, sndId, e2ePrivKey, shortLink} = do
+    prepareContactLinkData :: RcvQueue -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
+    prepareContactLinkData rq@RcvQueue {server, sndId, e2ePrivKey, shortLink} = do
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
+      let cslContact = CSLContact SLSServer CCTContact (qServer rq)
       case shortLink of
         Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
           let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
-          unless (shortLinkId == linkId) $ throwE $ INTERNAL "setContactShortLink: link ID is not derived from link"
+          unless (shortLinkId == linkId) $ throwE $ INTERNAL "setConnShortLink: link ID is not derived from link"
           d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
-          pure (linkId, shortLinkKey, (linkEncFixedData, d))
+          pure (rq, linkId, cslContact shortLinkKey, (linkEncFixedData, d))
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
           let qUri = SMPQueueUri vr $ SMPQueueAddress server sndId (C.publicKey e2ePrivKey) (Just QMContact)
@@ -901,14 +864,26 @@ setContactShortLink' c connId userData clientData =
           srvData <- liftError id $ SL.encryptLinkData g k linkData
           let slCreds = ShortLinkCreds linkId linkKey privSigKey (fst srvData)
           withStore' c $ \db -> updateShortLinkCreds db rq slCreds
-          pure (linkId, linkKey, srvData)
+          pure (rq, linkId, cslContact linkKey, srvData)
+    prepareInvLinkData :: RcvQueue -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMInvitation, QueueLinkData)
+    prepareInvLinkData rq@RcvQueue {shortLink} = case shortLink of
+      Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
+        g <- asks random
+        AgentConfig {smpAgentVRange} <- asks config
+        let k = SL.invShortLinkKdf shortLinkKey
+        d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
+        let sl = CSLInvitation SLSServer (qServer rq) shortLinkId shortLinkKey
+        pure (rq, shortLinkId, sl, (linkEncFixedData, d))
+      Nothing -> throwE $ CMD PROHIBITED "setConnShortLink: no ShortLinkCreds in invitation"
 
-deleteContactShortLink' :: AgentClient -> ConnId -> AM ()
-deleteContactShortLink' c connId =
-  withConnLock c connId "deleteContactShortLink" $
-    withStore c (`getConn` connId) >>= \case
-      SomeConn _ (ContactConnection _ rq) -> deleteQueueLink c rq
-      _ -> throwE $ CMD PROHIBITED "deleteContactShortLink: not contact address"
+deleteConnShortLink' :: AgentClient -> ConnId -> SConnectionMode c -> AM ()
+deleteConnShortLink' c connId cMode =
+  withConnLock c connId "deleteConnShortLink" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    case (conn, cMode) of
+      (ContactConnection _ rq, SCMContact) -> deleteQueueLink c rq
+      (RcvConnection _ rq, SCMInvitation) -> deleteQueueLink c rq
+      _ -> throwE $ CMD PROHIBITED "deleteConnShortLink: not contact address"
 
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
 getConnShortLink' :: forall c. AgentClient -> UserId -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnLinkData c)
