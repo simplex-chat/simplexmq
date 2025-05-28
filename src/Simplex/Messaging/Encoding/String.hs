@@ -39,6 +39,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime (..))
 import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
+import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
@@ -146,6 +147,12 @@ instance StrEncoding SystemTime where
 instance StrEncoding UTCTime where
   strEncode = B.pack . iso8601Show
   strP = maybe (Left "bad UTCTime") Right . iso8601ParseM . B.unpack <$?> A.takeTill (\c -> c == ' ' || c == '\n' || c == ',' || c == ';')
+
+instance StrEncoding X.CertificateChain where
+  strEncode _ = ""
+  {-# INLINE strEncode #-}
+  strP = fail "TODO [certs]"
+  {-# INLINE strP #-}
 
 instance StrEncoding XV.Fingerprint where
   strEncode (XV.Fingerprint s) = strEncode s

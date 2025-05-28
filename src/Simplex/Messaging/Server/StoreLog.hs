@@ -29,6 +29,9 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
+    logNewService,
+    logQueueRcvService,
+    logQueueNtfService,
     readWriteStoreLog,
     readLogLines,
     foldLogLines,
@@ -75,6 +78,9 @@ data StoreLogRecord
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
   | UpdateTime QueueId RoundedSystemTime
+  | NewService ServiceRec
+  | QueueRcvService RecipientId (Maybe ServiceId)
+  | QueueNtfService RecipientId (Maybe ServiceId)
   deriving (Show)
 
 data SLRTag
@@ -90,9 +96,12 @@ data SLRTag
   | DeleteQueue_
   | DeleteNotifier_
   | UpdateTime_
+  | NewService_
+  | QueueRcvService_
+  | QueueNtfService_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientKeys, rcvDhSecret, rcvServiceId, senderId, senderKey, queueMode, queueData, notifier, ntfServiceId, status, updatedAt} =
+  strEncode QueueRec {recipientKeys, rcvDhSecret, rcvServiceId, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
     B.concat
       [ p "rk=" recipientKeys,
         p " rdh=" rcvDhSecret,
@@ -104,8 +113,7 @@ instance StrEncoding QueueRec where
         opt " notifier=" notifier,
         opt " updated_at=" updatedAt,
         statusStr,
-        opt " rsrv=" rcvServiceId,
-        opt " nsrv=" ntfServiceId
+        opt " rsrv=" rcvServiceId
       ]
     where
       p :: StrEncoding a => ByteString -> a -> ByteString
@@ -130,7 +138,6 @@ instance StrEncoding QueueRec where
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
     rcvServiceId <- optional $ " rsrv=" *> strP
-    ntfServiceId <- optional $ " nsrv=" *> strP
     pure
       QueueRec
         { recipientKeys,
@@ -142,8 +149,7 @@ instance StrEncoding QueueRec where
           notifier,
           status,
           updatedAt,
-          rcvServiceId,
-          ntfServiceId
+          rcvServiceId
         }
     where
       toQueueMode sndSecure = Just $ if sndSecure then QMMessaging else QMContact
@@ -162,6 +168,9 @@ instance StrEncoding SLRTag where
     DeleteQueue_ -> "DELETE"
     DeleteNotifier_ -> "NDELETE"
     UpdateTime_ -> "TIME"
+    NewService_ -> "SERVICE_NEW"
+    QueueRcvService_ -> "SERVICE_RCV"
+    QueueNtfService_ -> "SERVICE_NTF"
 
   strP =
     A.choice
@@ -176,7 +185,10 @@ instance StrEncoding SLRTag where
         "UNBLOCK" $> UnblockQueue_,
         "DELETE" $> DeleteQueue_,
         "NDELETE" $> DeleteNotifier_,
-        "TIME" $> UpdateTime_
+        "TIME" $> UpdateTime_,
+        "SERVICE_NEW" $> NewService_,
+        "SERVICE_RCV" $> QueueRcvService_,
+        "SERVICE_NTF" $> QueueNtfService_
       ]
 
 instance StrEncoding StoreLogRecord where
@@ -193,6 +205,9 @@ instance StrEncoding StoreLogRecord where
     DeleteQueue rId -> strEncode (DeleteQueue_, rId)
     DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
     UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
+    NewService sr -> strEncode (NewService_, sr)
+    QueueRcvService rId serviceId -> strEncode (QueueRcvService_, rId, serviceId)
+    QueueNtfService rId serviceId -> strEncode (QueueNtfService_, rId, serviceId)
 
   strP =
     strP_ >>= \case
@@ -208,6 +223,9 @@ instance StrEncoding StoreLogRecord where
       DeleteQueue_ -> DeleteQueue <$> strP
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
+      NewService_ -> NewService <$> strP_
+      QueueRcvService_ -> QueueRcvService <$> strP_ <*> strP
+      QueueNtfService_ -> QueueNtfService <$> strP_ <*> strP
 
 openWriteStoreLog :: Bool -> FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog append f = do
@@ -272,6 +290,15 @@ logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
 logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
 logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
+
+logNewService :: StoreLog 'WriteMode -> ServiceRec -> IO ()
+logNewService s  = writeStoreLogRecord s . NewService
+
+logQueueRcvService :: StoreLog 'WriteMode -> RecipientId -> Maybe ServiceId -> IO ()
+logQueueRcvService s rId = writeStoreLogRecord s . QueueRcvService rId
+
+logQueueNtfService :: StoreLog 'WriteMode -> RecipientId -> Maybe ServiceId -> IO ()
+logQueueNtfService s rId = writeStoreLogRecord s . QueueNtfService rId
 
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteStoreLog readStore writeStore f st =

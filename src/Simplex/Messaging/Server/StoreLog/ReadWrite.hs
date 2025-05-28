@@ -2,8 +2,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Server.StoreLog.ReadWrite where
 
@@ -17,7 +19,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType, RecipientId, SParty (..))
-import Simplex.Messaging.Server.QueueStore (QueueRec)
+import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)
@@ -53,6 +55,15 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
           DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteStoreQueue st
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
+          NewService sr@ServiceRec {serviceId} -> getCreateService @q st sr >>= \case
+            Right serviceId'
+              | serviceId == serviceId' -> pure ()
+              | otherwise -> logError $ errPfx <> "created with the wrong ID " <> decodeLatin1 (strEncode serviceId')
+            Left e -> logError $ errPfx <> tshow e
+            where
+              errPfx = "STORE: getCreateService, stored service " <> decodeLatin1 (strEncode serviceId) <> ", "
+          QueueRcvService rId serviceId -> withQueue rId "QueueRcvService" $ \q -> setQueueRcvService st q serviceId
+          QueueNtfService rId serviceId -> withQueue rId "QueueNtfService" $ \q -> setQueueNtfService st q serviceId
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
         withQueue :: forall a. RecipientId -> T.Text -> (q -> IO (Either ErrorType a)) -> IO ()

@@ -11,13 +11,15 @@
 
 module Simplex.Messaging.Server.QueueStore where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Transport (SMPServiceRole)
@@ -35,6 +37,22 @@ data ServiceRec = ServiceRec
     serviceCert :: X.CertificateChain,
     serviceCertHash :: XV.Fingerprint -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
   }
+  deriving (Show)
+
+instance StrEncoding ServiceRec where
+  strEncode ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash} =
+    B.unwords
+      [ "service_id=" <> strEncode serviceId,
+        "role=" <> smpEncode serviceRole,
+        "cert=" <> strEncode serviceCert,
+        "cert_hash=" <> strEncode serviceCertHash
+      ]
+  strP = do
+    serviceId <- "service_id=" *> strP
+    serviceRole <- " role=" *> smpP
+    serviceCert <- " cert=" *> strP
+    serviceCertHash <- " cert_hash=" *> strP
+    pure ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash}
 
 data QueueRec = QueueRec
   { recipientKeys :: NonEmpty RcvPublicAuthKey,
@@ -46,23 +64,26 @@ data QueueRec = QueueRec
     notifier :: Maybe NtfCreds,
     status :: ServerEntityStatus,
     updatedAt :: Maybe RoundedSystemTime,
-    rcvServiceId :: Maybe ServiceId,
-    ntfServiceId :: Maybe ServiceId
+    rcvServiceId :: Maybe ServiceId
   }
   deriving (Show)
 
 data NtfCreds = NtfCreds
-  { notifierId :: !NotifierId,
-    notifierKey :: !NtfPublicAuthKey,
-    rcvNtfDhSecret :: !RcvNtfDhSecret
+  { notifierId :: NotifierId,
+    notifierKey :: NtfPublicAuthKey,
+    rcvNtfDhSecret :: RcvNtfDhSecret,
+    ntfServiceId :: Maybe ServiceId
   }
   deriving (Show)
 
 instance StrEncoding NtfCreds where
-  strEncode NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} = strEncode (notifierId, notifierKey, rcvNtfDhSecret)
+  strEncode NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId} =
+    strEncode (notifierId, notifierKey, rcvNtfDhSecret)
+      <> maybe "" ((" nsrv=" <>) . strEncode) ntfServiceId
   strP = do
     (notifierId, notifierKey, rcvNtfDhSecret) <- strP
-    pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
+    ntfServiceId <- optional $ " nsrv=" *> strP
+    pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId}
 
 data ServerEntityStatus
   = EntityActive

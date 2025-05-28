@@ -43,17 +43,18 @@ import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
+import Simplex.Messaging.Server.Env.STM (AStoreType)
 import Simplex.Messaging.Transport
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
 
-ntfServerTests :: ASrvTransport -> Spec
-ntfServerTests t = do
+ntfServerTests :: (ASrvTransport, AStoreType) -> Spec
+ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
-  describe "Notification subscriptions (NKEY)" $ testNotificationSubscription t createNtfQueueNKEY
-  -- describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription t createNtfQueueNEW
-  describe "Retried notification subscription" $ testRetriedNtfSubscription t
+  describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
+  -- describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
+  describe "Retried notification subscription" $ testRetriedNtfSubscription ps
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -98,8 +99,8 @@ v .-> key =
   let J.Object o = v
    in U.decodeLenient . encodeUtf8 <$> JT.parseEither (J..: key) o
 
-testNotificationSubscription :: ASrvTransport -> CreateQueueFunc -> Spec
-testNotificationSubscription (ATransport t) createQueue =
+testNotificationSubscription :: (ASrvTransport, AStoreType) -> CreateQueueFunc -> Spec
+testNotificationSubscription (ATransport t, msType) createQueue =
   it "should create notification subscription and notify when message is received" $ do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -108,7 +109,7 @@ testNotificationSubscription (ATransport t) createQueue =
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = DeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \apns ->
-      smpTest2' t $ \rh sh ->
+      smpTest2 t msType $ \rh sh ->
         ntfTest t $ \nh -> do
           ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret) <- createQueue rh sPub nPub
           -- register and verify token
@@ -181,14 +182,14 @@ testNotificationSubscription (ATransport t) createQueue =
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
 
-testRetriedNtfSubscription :: ASrvTransport -> Spec
-testRetriedNtfSubscription (ATransport t) =
+testRetriedNtfSubscription :: (ASrvTransport, AStoreType) -> Spec
+testRetriedNtfSubscription (ATransport t, msType) =
   it "should allow retrying to create notification subscription with the same token and key" $ do
     g <- C.newRandom
     (sPub, _sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     withAPNSMockServer $ \apns ->
-      smpTest' t $ \h ->
+      smpTest t msType $ \h ->
         ntfTest t $ \nh -> do
           ((_sId, _rId, _rKey, _rcvDhSecret), nId, _rcvNtfDhSecret) <- createNtfQueueNKEY h sPub nPub
           (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"

@@ -353,6 +353,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE setQueueRcvService #-}
   setQueueNtfService = withQS setQueueNtfService
   {-# INLINE setQueueNtfService #-}
+  getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
+  {-# INLINE getQueueNtfServices #-}
   getNtfServiceQueueCount = withQS (getNtfServiceQueueCount @(JournalQueue s))
   {-# INLINE getNtfServiceQueueCount #-}
 
@@ -385,7 +387,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     queueLocks <- TM.emptyIO
     sharedLock <- newEmptyTMVarIO
     queueStore_ <- newQueueStore @(JournalQueue s) queueStoreCfg
-    openedQueueCount <- newTVarIO 0 
+    openedQueueCount <- newTVarIO 0
     expireBackupsBefore <- addUTCTime (- expireBackupsAfter config) <$> getCurrentTime
     pure JournalMsgStore {config, random, queueLocks, sharedLock, queueStore_, openedQueueCount, expireBackupsBefore}
 
@@ -404,7 +406,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   -- It does not cache queues and is NOT concurrency safe.
   unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   unsafeWithAllMsgQueues tty withData ms action = case queueStore_ ms of
-    MQStore st -> withLoadedQueues st run 
+    MQStore st -> withLoadedQueues st run
 #if defined(dbServerPostgres)
     PQStore st -> foldQueueRecs tty withData st Nothing $ uncurry (mkQueue ms False) >=> run
 #endif

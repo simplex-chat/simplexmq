@@ -123,7 +123,11 @@ main = do
               ntfTestStoreDBOpts
               "src/Simplex/Messaging/Notifications/Server/Store/ntf_server_schema.sql"
         aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
-          describe "Notifications server" $ ntfServerTests (transport @TLS)
+          describe "Notifications server (SMP server: jornal store)" $
+            ntfServerTests (transport @TLS, ASType SQSMemory SMSJournal)
+          aroundAll_ (postgressBracket testServerDBConnectInfo) $
+            describe "Notifications server (SMP server: postgres+jornal store)" $
+              ntfServerTests (transport @TLS, ASType SQSPostgres SMSJournal)
         aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
           describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $

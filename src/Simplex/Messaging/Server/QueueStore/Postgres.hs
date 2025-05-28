@@ -278,20 +278,20 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       rId = recipientId sq
 
-  addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NotifierId))
+  addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NtfCreds))
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
     withQueueRec sq "addQueueNotifier" $ \q ->
       ExceptT $ withLockMap (notifierLocks st) nId "addQueueNotifier" $
         ifM (TM.memberIO nId notifiers) (pure $ Left DUPLICATE_) $ runExceptT $ do
           assertUpdated $ withDB "addQueueNotifier" st $ \db ->
             E.try (update db) >>= bimapM handleDuplicate pure
-          nId_ <- forM (notifier q) $ \NtfCreds {notifierId} -> atomically (TM.delete notifierId notifiers) $> notifierId
+          nc_ <- forM (notifier q) $ \nc@NtfCreds {notifierId} -> atomically (TM.delete notifierId notifiers) $> nc
           let !q' = q {notifier = Just ntfCreds}
           atomically $ writeTVar (queueRec sq) $ Just q'
           -- cache queue notifier ID – after notifier is added ntf server will likely subscribe
           atomically $ TM.insert nId rId notifiers
           withLog "addQueueNotifier" st $ \s -> logAddNotifier s rId ntfCreds
-          pure nId_
+          pure nc_
     where
       PostgresQueueStore {notifiers} = st
       rId = recipientId sq
@@ -305,16 +305,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           |]
           (nId, notifierKey, rcvNtfDhSecret, rId)
 
-  deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NotifierId))
+  deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NtfCreds))
   deleteQueueNotifier st sq =
     withQueueRec sq "deleteQueueNotifier" $ \q ->
-      ExceptT $ fmap sequence $ forM (notifier q) $ \NtfCreds {notifierId = nId} ->
+      ExceptT $ fmap sequence $ forM (notifier q) $ \nc@NtfCreds {notifierId = nId} ->
         withLockMap (notifierLocks st) nId "deleteQueueNotifier" $ runExceptT $ do
           assertUpdated $ withDB' "deleteQueueNotifier" st update
           atomically $ TM.delete nId $ notifiers st
           atomically $ writeTVar (queueRec sq) $ Just q {notifier = Nothing}
           withLog "deleteQueueNotifier" st (`logDeleteNotifier` rId)
-          pure nId
+          pure nc
     where
       rId = recipientId sq
       update db =
@@ -377,7 +377,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       qr = queueRec sq
 
   -- TODO [certs] implement
-  getCreateService :: PostgresQueueStore q -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> IO (Either ErrorType ServiceId)
+  getCreateService :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
   getCreateService = undefined
 
   -- TODO [certs]
@@ -387,6 +387,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   -- TODO [certs]
   setQueueNtfService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
   setQueueNtfService _ _ _ = pure $ Right ()
+
+  -- TODO [certs]
+  getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
+  getQueueNtfServices st ntfs = pure $ Right ([], ntfs)
 
   -- TODO [certs]
   getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
@@ -516,18 +520,24 @@ queueDataColumns = \case
 
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
 rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
-  let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+  let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_)
       queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
       -- TODO [certs]
-   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing, ntfServiceId = Nothing})
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
 rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
-  let notifier = NtfCreds <$> notifierId_ <*> notifierKey_ <*> rcvNtfDhSecret_
+  let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_)
       encData =  fromMaybe (EncDataBytes "")
       queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
       -- TODO [certs]
-   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing, ntfServiceId = Nothing})
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing})
+
+-- TODO [certs]
+mkNotifier :: (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret) -> Maybe NtfCreds
+mkNotifier = \case
+  (Just notifierId, Just notifierKey, Just rcvNtfDhSecret) -> Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
+  _ -> Nothing
 
 setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =

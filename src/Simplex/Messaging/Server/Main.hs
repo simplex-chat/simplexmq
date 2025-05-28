@@ -144,7 +144,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> putStrLn "store_messages set to `memory`, start the server."
                 Right (ASType SQSMemory SMSJournal) -> putStrLn "store_messages set to `journal`, update it to `memory` in INI file"
-                Right (ASType SQSPostgres SMSJournal) -> 
+                Right (ASType SQSPostgres SMSJournal) ->
 #if defined(dbServerPostgres)
                   putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
 #else
@@ -161,7 +161,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages NOT deleted"
               deleteDirIfExists storeMsgsJournalDir
               putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
-#if defined(dbServerPostgres)              
+#if defined(dbServerPostgres)
     Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
       schemaExists <- checkSchemaExists connstr schema
       storeLogExists <- doesFileExist storeLogFilePath
@@ -437,7 +437,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
-              ntfDeliveryInterval = 3000000, -- 3 seconds
+              ntfDeliveryInterval = 1500000, -- 1.5 second
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig
@@ -651,7 +651,7 @@ data CliCommand
   | Start StartOptions
   | Delete
   | Journal StoreCmd
-  | Database StoreCmd DBOpts 
+  | Database StoreCmd DBOpts
 
 data StoreCmd = SCImport | SCExport | SCDelete
 
