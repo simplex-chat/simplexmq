@@ -1249,13 +1249,14 @@ client
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
           RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q rKeys)
           LSET lnkId d ->
-            withQueue $ \q qr -> liftIO $ case queueData qr of
-              Just (lnkId', _) | lnkId' /= lnkId -> pure $ err AUTH
-              _ -> either err (const ok) <$> addQueueLinkData (queueStore ms) q lnkId d
+            withQueue $ \q -> \case
+              QueueRec {queueMode = Just QMMessaging, senderKey = Just _} -> pure $ err AUTH -- secured messaging queue (used 1-time invitation)
+              QueueRec {queueData = Just (lnkId', _)} | lnkId' /= lnkId -> pure $ err AUTH -- can't change link ID
+              _ -> liftIO $ either err (const ok) <$> addQueueLinkData (queueStore ms) q lnkId d
           LDEL ->
-            withQueue $ \q qr -> checkContact qr $ liftIO $ case queueData qr of
-              Just _ -> OK <$$ deleteQueueLinkData (queueStore ms) q
-              Nothing -> pure $ Right OK
+            withQueue $ \q qr -> liftIO $ case queueData qr of
+              Just _ -> either err (const ok) <$> deleteQueueLinkData (queueStore ms) q
+              Nothing -> pure ok
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_

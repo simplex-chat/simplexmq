@@ -1113,6 +1113,10 @@ testInvQueueLinkData =
       -- can't read link data with LGET
       Resp "2" lnkId' (ERR AUTH) <- sendRecv s ("", "2", lnkId, LGET)
       lnkId' `shouldBe` lnkId
+      -- can update link data before it is secured
+      let newLD = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+      Resp "2a" rId' OK <- signSendRecv r rKey ("2a", rId, LSET lnkId newLD)
+      rId' `shouldBe` rId
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
 
@@ -1128,7 +1132,7 @@ testInvQueueLinkData =
       Resp "5" lnkId2 (LNK sId2 ld') <- signSendRecv s sKey ("5", lnkId, LKEY sPub)
       (lnkId2, lnkId) #== "secures queue and returns link data, same link ID in response"
       (sId2, sId) #== "same sender ID in response"
-      (ld', ld) #== "returns stored data"
+      (ld', newLD) #== "returns updated stored data"
 
       (sPub', sKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       Resp "6" _ err4 <- signSendRecv s sKey' ("6", lnkId, LKEY sPub')
@@ -1136,14 +1140,13 @@ testInvQueueLinkData =
 
       Resp "7" _ (LNK sId3 ld2) <- signSendRecv s sKey ("7", lnkId, LKEY sPub)
       sId3 `shouldBe` sId
-      ld2 `shouldBe` ld
+      ld2 `shouldBe` newLD
 
-      let newLD = (EncDataBytes "fixed data", EncDataBytes "updated user data")
-      Resp "8" rId' (ERR AUTH) <- signSendRecv r rKey ("8", rId, LSET lnkId newLD)
-      rId' `shouldBe` rId
-
-      Resp "9" rId2 (ERR AUTH) <- signSendRecv r rKey ("9", rId, LDEL)
+      Resp "8" rId2 (ERR AUTH) <- signSendRecv r rKey ("8", rId, LSET lnkId newLD)
       rId2 `shouldBe` rId
+
+      Resp "9" rId3 OK <- signSendRecv r rKey ("9", rId, LDEL)
+      rId3 `shouldBe` rId
 
 testContactQueueLinkData :: SpecWith (ASrvTransport, AStoreType)
 testContactQueueLinkData =
