@@ -1417,6 +1417,10 @@ data ContactConnType = CCTContact | CCTChannel | CCTGroup deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
+instance ToField AConnShortLink where toField = toField . Binary . strEncode
+
+instance FromField AConnShortLink where fromField = blobFieldDecoder strDecode
+
 data ConnectionLink m = CLFull (ConnectionRequestUri m) | CLShort (ConnShortLink m)
   deriving (Eq, Show)
 
@@ -1424,6 +1428,11 @@ data CreatedConnLink m = CCLink {connFullLink :: ConnectionRequestUri m, connSho
   deriving (Eq, Show)
 
 data ACreatedConnLink = forall m. ConnectionModeI m => ACCL (SConnectionMode m) (CreatedConnLink m)
+
+instance Eq ACreatedConnLink where
+  ACCL m l == ACCL m' l' = case testEquality m m' of
+    Just Refl -> l == l'
+    _ -> False
 
 deriving instance Show ACreatedConnLink
 
