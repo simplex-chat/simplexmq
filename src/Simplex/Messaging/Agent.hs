@@ -98,6 +98,7 @@ module Simplex.Messaging.Agent
     verifyNtfToken,
     checkNtfToken,
     deleteNtfToken,
+    getNtfServers,
     getNtfToken,
     getNtfTokenData,
     toggleConnectionNtfs,
@@ -2380,6 +2381,10 @@ sendNtfConnCommands c cmd = do
 setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
 {-# INLINE setNtfServers #-}
+
+getNtfServers :: AgentClient -> IO [NtfServer]
+getNtfServers c =  readTVarIO $ ntfServers c
+{-# INLINE getNtfServers #-}
 
 resetAgentServersStats' :: AgentClient -> AM ()
 resetAgentServersStats' c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt} = do
