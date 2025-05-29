@@ -1421,6 +1421,11 @@ data CreatedConnLink m = CCLink {connFullLink :: ConnectionRequestUri m, connSho
 
 data ACreatedConnLink = forall m. ConnectionModeI m => ACCL (SConnectionMode m) (CreatedConnLink m)
 
+instance Eq ACreatedConnLink where
+  ACCL m l == ACCL m' l' = case testEquality m m' of
+    Just Refl -> l == l'
+    _ -> False
+
 deriving instance Show ACreatedConnLink
 
 data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
