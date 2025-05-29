@@ -1075,6 +1075,11 @@ isContactQueue QueueRec {queueMode, senderKey} = case queueMode of
   Just QMContact -> True
   Nothing -> isNothing senderKey -- for backward compatibility with pre-SKEY contact addresses
 
+isSecuredMsgQueue :: QueueRec -> Bool
+isSecuredMsgQueue QueueRec {queueMode, senderKey} = case queueMode of
+  Just QMContact -> False
+  _ -> isJust senderKey
+
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
   where
@@ -1249,13 +1254,13 @@ client
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
           RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q rKeys)
           LSET lnkId d ->
-            withQueue $ \q -> \case
-              QueueRec {queueMode = Just QMMessaging, senderKey = Just _} -> pure $ err AUTH -- secured messaging queue (used 1-time invitation)
-              QueueRec {queueData = Just (lnkId', _)} | lnkId' /= lnkId -> pure $ err AUTH -- can't change link ID
+            withQueue $ \q qr -> case queueData qr of
+              _ | isSecuredMsgQueue qr -> pure $ err AUTH
+              Just (lnkId', _) | lnkId' /= lnkId -> pure $ err AUTH -- can't change link ID
               _ -> liftIO $ either err (const ok) <$> addQueueLinkData (queueStore ms) q lnkId d
           LDEL ->
-            withQueue $ \q qr -> liftIO $ case queueData qr of
-              Just _ -> either err (const ok) <$> deleteQueueLinkData (queueStore ms) q
+            withQueue $ \q qr -> case queueData qr of
+              Just _ -> liftIO $ either err (const ok) <$> deleteQueueLinkData (queueStore ms) q
               Nothing -> pure ok
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
@@ -1541,6 +1546,8 @@ client
                   case C.maxLenBS msgBody of
                     Left _ -> pure $ err LARGE_MSG
                     Right body -> do
+                      when (isJust (queueData qr) && isSecuredMsgQueue qr) $ void $ liftIO $
+                        deleteQueueLinkData (queueStore ms) q
                       ServerConfig {messageExpiration, msgIdBytes} <- asks config
                       msgId <- randomId' msgIdBytes
                       msg_ <- liftIO $ time "SEND" $ runExceptT $ do

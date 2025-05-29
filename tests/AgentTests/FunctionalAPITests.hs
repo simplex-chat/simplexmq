@@ -1142,6 +1142,10 @@ testInviationShortLink viaProxy a b =
       Left (SMP _ AUTH) -> pure ()
       r -> liftIO $ expectationFailure ("unexpected result " <> show r)
     runRight $ testJoinConn_ viaProxy True a bId b connReq
+    -- invitation link data is removed after the connection is established
+    runExceptT (getConnShortLink b 1 shortLink) >>= \case
+      Left (SMP _ AUTH) -> pure ()
+      r -> liftIO $ expectationFailure ("unexpected result " <> show r)
 
 testJoinConn_ :: Bool -> Bool -> AgentClient -> ConnId -> AgentClient -> ConnectionRequestUri c -> ExceptT AgentErrorType IO ()
 testJoinConn_ viaProxy sndSecure a bId b connReq = do
