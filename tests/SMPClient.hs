@@ -27,7 +27,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
-import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
@@ -52,6 +52,14 @@ import Database.PostgreSQL.Simple (defaultConnectInfo)
 import Database.PostgreSQL.Simple (ConnectInfo (..))
 import Simplex.Messaging.Agent.Store.Postgres.Util (createDBAndUserIfNotExists, dropDatabaseAndUser)
 #endif
+
+data AServerConfig =
+  forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStoreType qs ms)) =>
+  ASrvCfg (SQSType qs) (SMSType ms) (ServerConfig (MsgStoreType qs ms))
+
+data AServerStoreCfg =
+  forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStoreType qs ms)) =>
+  ASSCfg (SQSType qs) (SMSType ms) (ServerStoreCfg (MsgStoreType qs ms))
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -160,27 +168,28 @@ testSMPClient_ host port vr client = do
       | authCmdsSMPVersion `isCompatible` vr = Just supportedSMPHandshakes
       | otherwise = Nothing
 
-cfg :: ServerConfig
+cfg :: AServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
 
-cfgJ2 :: ServerConfig
+cfgJ2 :: AServerConfig
 cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
 
-cfgJ2QS :: SQSType s -> ServerConfig
+cfgJ2QS :: SQSType s -> AServerConfig
 cfgJ2QS = \case
   SQSMemory -> journalCfg (cfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
   SQSPostgres -> journalCfgDB (cfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
 
-journalCfg :: ServerConfig -> FilePath -> FilePath -> ServerConfig
-journalCfg cfg' storeLogFile storeMsgsPath = cfg' {serverStoreCfg = ASSCfg SQSMemory SMSJournal SSCMemoryJournal {storeLogFile, storeMsgsPath}}
+journalCfg :: AServerConfig -> FilePath -> FilePath -> AServerConfig
+journalCfg (ASrvCfg _ _ cfg') storeLogFile storeMsgsPath =
+  ASrvCfg SQSMemory SMSJournal cfg' {serverStoreCfg = SSCMemoryJournal {storeLogFile, storeMsgsPath}}
 
-journalCfgDB :: ServerConfig -> DBOpts -> FilePath -> ServerConfig
-journalCfgDB cfg' dbOpts storeMsgsPath' =
+journalCfgDB :: AServerConfig -> DBOpts -> FilePath -> AServerConfig
+journalCfgDB (ASrvCfg _ _ cfg') dbOpts storeMsgsPath' =
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCYesUp, deletedTTL = 86400}
-   in cfg' {serverStoreCfg = ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
+   in ASrvCfg SQSPostgres SMSJournal cfg' {serverStoreCfg = SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
 
-cfgMS :: AStoreType -> ServerConfig
-cfgMS msType =
+cfgMS :: AStoreType -> AServerConfig
+cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
   ServerConfig
     { transports = [],
       smpHandshakeTimeout = 60000000,
@@ -190,7 +199,7 @@ cfgMS msType =
       maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
-      serverStoreCfg = testServerStoreConfig msType,
+      serverStoreCfg,
       storeNtfsFile = Nothing,
       allowNewQueues = True,
       newQueueBasicAuth = Nothing,
@@ -226,6 +235,9 @@ cfgMS msType =
       startOptions = defaultStartOptions
     }
 
+withStoreCfg :: AServerStoreCfg -> (forall s. ServerStoreCfg s -> ServerConfig s) -> AServerConfig
+withStoreCfg (ASSCfg qt mt storeCfg) f = ASrvCfg qt mt (f storeCfg)
+
 defaultStartOptions :: StartOptions
 defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = testLogLevel, skipWarnings = False, confirmMigrations = MCYesUp}
 
@@ -243,11 +255,11 @@ serverStoreConfig_ useDbStoreLog = \case
         storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
      in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
 
-cfgV7 :: ServerConfig
-cfgV7 = cfg {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
+cfgV7 :: AServerConfig
+cfgV7 = updateCfg cfg $ \cfg' -> cfg' {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
 
-cfgVPrev :: AStoreType -> ServerConfig
-cfgVPrev msType = (cfgMS msType) {smpServerVRange = prevRange $ smpServerVRange cfg}
+cfgVPrev :: AStoreType -> AServerConfig
+cfgVPrev msType = updateCfg (cfgMS msType) $ \cfg' -> cfg' {smpServerVRange = prevRange $ smpServerVRange cfg'}
 
 prevRange :: VersionRange v -> VersionRange v
 prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr)}
@@ -255,22 +267,22 @@ prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr
 prevVersion :: Version v -> Version v
 prevVersion (Version v) = Version (v - 1)
 
-proxyCfg :: ServerConfig
+proxyCfg :: AServerConfig
 proxyCfg = proxyCfgMS (ASType SQSMemory SMSJournal)
 
-proxyCfgMS :: AStoreType -> ServerConfig
+proxyCfgMS :: AStoreType -> AServerConfig
 proxyCfgMS msType =
-  (cfgMS msType)
-    { allowSMPProxy = True,
-      smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
-    }
-  where
-    smpAgentCfg' = smpAgentCfg cfg
+  updateCfg (cfgMS msType) $ \cfg' ->
+    let smpAgentCfg' = smpAgentCfg cfg'
+     in cfg'
+          { allowSMPProxy = True,
+            smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
+          }
 
-proxyCfgJ2 :: ServerConfig
+proxyCfgJ2 :: AServerConfig
 proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
 
-proxyCfgJ2QS :: SQSType s -> ServerConfig
+proxyCfgJ2QS :: SQSType qs -> AServerConfig
 proxyCfgJ2QS = \case
   SQSMemory -> journalCfg (proxyCfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
   SQSPostgres -> journalCfgDB (proxyCfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
@@ -280,13 +292,20 @@ proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =
-  withSmpServerConfigOn t (cfgMS msType) {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
+  withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
 withSmpServerStoreLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerStoreLogOn (t, msType) = withSmpServerConfigOn t (cfgMS msType) {serverStatsBackupFile = Just testServerStatsBackupFile}
+withSmpServerStoreLogOn (t, msType) =
+  withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerConfigOn :: HasCallStack => ASrvTransport -> ServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerConfigOn t cfg' port' =
+updateCfg :: AServerConfig -> (forall s. ServerConfig s -> ServerConfig s) -> AServerConfig
+updateCfg (ASrvCfg qt mt cfg') f = ASrvCfg qt mt (f cfg')
+
+withServerCfg :: AServerConfig -> (forall s. ServerConfig s -> a) -> a
+withServerCfg (ASrvCfg _ _ cfg') f = f cfg'
+
+withSmpServerConfigOn :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
@@ -333,7 +352,7 @@ runSmpTest msType test = withSmpServerConfigOn (transport @c) (cfgMS msType) tes
 runSmpTestN :: forall c a. (HasCallStack, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
 runSmpTestN msType = runSmpTestNCfg (cfgMS msType) supportedClientSMPRelayVRange
 
-runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => ServerConfig -> VersionRangeSMP -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
+runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => AServerConfig -> VersionRangeSMP -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
 runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c) srvCfg testPort $ \_ -> run nClients []
   where
     run :: Int -> [THandleSMP c 'TClient] -> IO a
@@ -366,7 +385,7 @@ smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
 smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2 t msType = smpTest2Cfg (cfgMS msType) supportedClientSMPRelayVRange t
 
-smpTest2Cfg :: forall c. (HasCallStack, Transport c) => ServerConfig -> VersionRangeSMP -> TProxy c 'TServer -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest2Cfg :: forall c. (HasCallStack, Transport c) => AServerConfig -> VersionRangeSMP -> TProxy c 'TServer -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `shouldReturn` ()
   where
     _test :: HasCallStack => [THandleSMP c 'TClient] -> IO ()

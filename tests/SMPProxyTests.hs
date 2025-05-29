@@ -146,12 +146,12 @@ smpProxyTests = do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
   where
-    oneServer test msType = withSmpServerConfigOn (transport @TLS) (proxyCfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} testPort $ const test
+    oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) testPort $ const test
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
-    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (cfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
-    twoServersMoreConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 128} (cfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
-    twoServersNoConc test msType = twoServers_ (proxyCfgMS msType) {serverClientConcurrency = 1} (cfgMS msType) {msgQueueQuota = 128, maxJournalMsgCount = 256} test msType
-    twoServers_ :: ServerConfig -> ServerConfig -> IO () -> AStoreType -> IO ()
+    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
+    twoServersMoreConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 128}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
+    twoServersNoConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 1}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
+    twoServers_ :: AServerConfig -> AServerConfig -> IO () -> AStoreType -> IO ()
     twoServers_ cfg1 cfg2 runTest (ASType qsType _) =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         let cfg2' = case qsType of
@@ -402,7 +402,8 @@ agentViaProxyRetryOffline = do
     -- TODO [postgres]
     -- withServer2 = withServer_ testStoreDBOpts2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
     withServer_ storeLog storeMsgs storeNtfs =
-      withSmpServerConfigOn (transport @TLS) (journalCfg proxyCfg storeLog storeMsgs) {storeNtfsFile = Just storeNtfs}
+      let cfg' = updateCfg (journalCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
+       in withSmpServerConfigOn (transport @TLS) cfg'
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
@@ -444,7 +445,7 @@ testProxyAuth msType = do
       (_, _s, (_corrId, _entityId, reply)) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer2 $ Just "wrong")
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
-    proxyCfgAuth = (proxyCfgMS msType) {newQueueBasicAuth = Just "correct"}
+    proxyCfgAuth = updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth = Just "correct"}
 
 todo :: AStoreType -> IO ()
 todo _ = fail "TODO"
