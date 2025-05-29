@@ -1819,7 +1819,7 @@ randomId :: Int -> M s EntityId
 randomId = fmap EntityId . randomId'
 {-# INLINE randomId #-}
 
-saveServerMessages :: Bool -> MsgStore' s -> IO ()
+saveServerMessages :: Bool -> MsgStore s -> IO ()
 saveServerMessages drainMsgs = \case
   StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
     Just f -> exportMessages False ms f drainMsgs
@@ -1850,7 +1850,7 @@ processServerMessages StartOptions {skipWarnings} = do
   expire <- asks $ expireMessagesOnStart . config
   asks msgStore_ >>= liftIO . processMessages old_ expire
     where
-      processMessages :: Maybe Int64 -> Bool -> MsgStore' s' -> IO (Maybe MessageStats)
+      processMessages :: Maybe Int64 -> Bool -> MsgStore s' -> IO (Maybe MessageStats)
       processMessages old_ expire = \case
         StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
           Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)

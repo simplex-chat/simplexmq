@@ -11,7 +11,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 #if __GLASGOW_HASKELL__ == 810
@@ -38,7 +37,7 @@ module Simplex.Messaging.Server.Env.STM
     ServerSub (..),
     SubscriptionThread (..),
     MsgStoreType,
-    MsgStore' (..),
+    MsgStore (..),
     AStoreType (..),
     newEnv,
     mkJournalStoreConfig,
@@ -253,7 +252,7 @@ data Env s = Env
     serverInfo :: ServerInformation,
     server :: Server s,
     serverIdentity :: KeyHash,
-    msgStore_ :: MsgStore' s,
+    msgStore_ :: MsgStore s,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
@@ -268,7 +267,7 @@ msgStore :: Env s -> s
 msgStore = fromMsgStore . msgStore_
 {-# INLINE msgStore #-}
 
-fromMsgStore :: MsgStore' s -> s
+fromMsgStore :: MsgStore s -> s
 fromMsgStore = \case
   StoreMemory s -> s
   StoreJournal s -> s
@@ -292,13 +291,13 @@ data ServerStoreCfg s where
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
-type family MsgStoreType (qs :: QSType) (ms :: MSType) = s | s -> qs ms where
+type family MsgStoreType (qs :: QSType) (ms :: MSType) where
   MsgStoreType 'QSMemory 'MSMemory = STMMsgStore
   MsgStoreType qs 'MSJournal = JournalMsgStore qs
 
-data MsgStore' s where
-  StoreMemory :: STMMsgStore -> MsgStore' STMMsgStore
-  StoreJournal :: JournalMsgStore qs -> MsgStore' (JournalMsgStore qs)
+data MsgStore s where
+  StoreMemory :: STMMsgStore -> MsgStore STMMsgStore
+  StoreJournal :: JournalMsgStore qs -> MsgStore (JournalMsgStore qs)
 
 type Subscribed = Bool
 

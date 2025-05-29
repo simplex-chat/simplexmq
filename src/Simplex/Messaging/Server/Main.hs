@@ -324,56 +324,58 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       setLogLevel $ logLevel startOptions
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
-      ASType qs ms <- pure iniStoreType -- this creates a functional scope with MsgStoreClass constraint
-      let serverStoreCfg = iniStoreCfg qs ms
-      fp <- checkSavedFingerprint cfgPath defaultX509Config
-      let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
-          port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig serverStoreCfg
-          sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
-          srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
-      printServiceInfo serverVersion srv
-      printSourceCode sourceCode'
-      printSMPServerConfig transports serverStoreCfg
-      checkMsgStoreMode ini iniStoreType
-      putStrLn $ case messageExpiration of
-        Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
-        _ -> "not expiring messages"
-      putStrLn $ case inactiveClientExpiration of
-        Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
-        _ -> "not expiring inactive clients"
-      putStrLn $
-        "creating new queues "
-          <> if allowNewQueues cfg
-            then maybe "allowed" (const "requires password") newQueueBasicAuth
-            else "NOT allowed"
-      -- print information
-      let persistence = case serverStoreCfg of
-            SSCMemory Nothing -> SPMMemoryOnly
-            SSCMemory (Just StorePaths {storeMsgsFile}) | isNothing storeMsgsFile -> SPMQueues
-            _ -> SPMMessages
-      let config =
-            ServerPublicConfig
-              { persistence,
-                messageExpiration = ttl <$> messageExpiration,
-                statsEnabled = isJust logStats,
-                newQueuesAllowed = allowNewQueues cfg,
-                basicAuthEnabled = isJust newQueueBasicAuth
-              }
-      case webStaticPath' of
-        Just path | sharedHTTP -> do
-          runWebServer path Nothing ServerInformation {config, information}
-          attachStaticFiles path $ \attachHTTP -> do
-            logDebug "Allocated web server resources"
-            runSMPServer cfg (Just attachHTTP) `finally` logDebug "Releasing web server resources..."
-        Just path -> do
-          runWebServer path webHttpsParams' ServerInformation {config, information}
-          runSMPServer cfg Nothing
-        Nothing -> do
-          logWarn "No server static path set"
-          runSMPServer cfg Nothing
-      logDebug "Bye"
+      run iniStoreType
       where
+        run :: AStoreType -> IO ()
+        run (ASType qs ms) = do
+          fp <- checkSavedFingerprint cfgPath defaultX509Config
+          let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
+              port = T.unpack $ strictIni "TRANSPORT" "port" ini
+              serverStoreCfg = iniStoreCfg qs ms
+              cfg@ServerConfig {information, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig serverStoreCfg
+              sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
+              srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
+          printServiceInfo serverVersion srv
+          printSourceCode sourceCode'
+          printSMPServerConfig transports serverStoreCfg
+          checkMsgStoreMode ini iniStoreType
+          putStrLn $ case messageExpiration of
+            Just ExpirationConfig {ttl} -> "expiring messages after " <> showTTL ttl
+            _ -> "not expiring messages"
+          putStrLn $ case inactiveClientExpiration of
+            Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
+            _ -> "not expiring inactive clients"
+          putStrLn $
+            "creating new queues "
+              <> if allowNewQueues cfg
+                then maybe "allowed" (const "requires password") newQueueBasicAuth
+                else "NOT allowed"
+          -- print information
+          let persistence = case serverStoreCfg of
+                SSCMemory Nothing -> SPMMemoryOnly
+                SSCMemory (Just StorePaths {storeMsgsFile}) | isNothing storeMsgsFile -> SPMQueues
+                _ -> SPMMessages
+          let config =
+                ServerPublicConfig
+                  { persistence,
+                    messageExpiration = ttl <$> messageExpiration,
+                    statsEnabled = isJust logStats,
+                    newQueuesAllowed = allowNewQueues cfg,
+                    basicAuthEnabled = isJust newQueueBasicAuth
+                  }
+          case webStaticPath' of
+            Just path | sharedHTTP -> do
+              runWebServer path Nothing ServerInformation {config, information}
+              attachStaticFiles path $ \attachHTTP -> do
+                logDebug "Allocated web server resources"
+                runSMPServer cfg (Just attachHTTP) `finally` logDebug "Releasing web server resources..."
+            Just path -> do
+              runWebServer path webHttpsParams' ServerInformation {config, information}
+              runSMPServer cfg Nothing
+            Nothing -> do
+              logWarn "No server static path set"
+              runSMPServer cfg Nothing
+          logDebug "Bye"
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
         restoreMessagesFile path = case iniOnOff "STORE_LOG" "restore_messages" ini of
