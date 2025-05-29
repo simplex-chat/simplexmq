@@ -1428,6 +1428,35 @@ instance Eq ACreatedConnLink where
 
 deriving instance Show ACreatedConnLink
 
+instance ConnectionModeI m => StrEncoding (CreatedConnLink m) where
+  strEncode CCLink {connFullLink, connShortLink} = case connFullLink of
+    CRInvitationUri {} -> strEncode (CMInvitation, connFullLink, connShortLink)
+    CRContactUri _ -> strEncode (CMContact, connFullLink, connShortLink)
+  strP = (\(ACCL _ l) -> checkConnMode l) <$?> strP
+  {-# INLINE strP #-}
+
+instance ConnectionModeI m => ToField (CreatedConnLink m) where toField = toField . Binary . strEncode
+
+instance (Typeable m, ConnectionModeI m) => FromField (CreatedConnLink m) where fromField = blobFieldDecoder strDecode
+
+instance StrEncoding ACreatedConnLink where
+  strEncode (ACCL _ ccl) = strEncode ccl
+  {-# INLINE strEncode #-}
+  strP =
+    strP >>= \case
+      CMInvitation -> do
+        connFullLink <- strP_
+        connShortLink <- strP
+        pure $ ACCL SCMInvitation $ CCLink connFullLink connShortLink
+      CMContact -> do
+        connFullLink <- strP_
+        connShortLink <- strP
+        pure $ ACCL SCMContact $ CCLink connFullLink connShortLink
+
+instance ToField ACreatedConnLink where toField = toField . Binary . strEncode
+
+instance FromField ACreatedConnLink where fromField = blobFieldDecoder strDecode
+
 data AConnectionLink = forall m. ConnectionModeI m => ACL (SConnectionMode m) (ConnectionLink m)
 
 instance Eq AConnectionLink where
