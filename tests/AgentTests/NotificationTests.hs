@@ -58,7 +58,7 @@ import Data.Time.Clock.System (systemToUTCTime)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
-import SMPClient (cfgJ2QS, cfgMS, cfgVPrev, ntfTestPort, ntfTestPort2, testServerStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn)
+import SMPClient (AServerConfig (..), AServerStoreCfg (..), cfgJ2QS, cfgMS, cfgVPrev, ntfTestPort, ntfTestPort2, testServerStoreConfig, testPort, testPort2, withSmpServer, withSmpServerConfigOn, withSmpServerStoreLogOn, withSmpServerStoreMsgLogOn, withServerCfg)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -190,9 +190,10 @@ testNtfMatrix ps@(_, msType) runTest = do
     cfg' = cfgMS msType
     cfgVPrev' = cfgVPrev msType
 
-runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> ServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
+runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> AServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
 runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
-  let smpCfg' = smpCfg {serverStoreCfg = testServerStoreConfig msType}
+  ASSCfg qt mt serverStoreCfg <- pure $ testServerStoreConfig msType
+  let smpCfg' = withServerCfg smpCfg $ \cfg_ -> ASrvCfg qt mt cfg_ {serverStoreCfg}
   withSmpServerConfigOn t smpCfg' testPort $ \_ ->
     withAPNSMockServer $ \apns ->
       withNtfServerCfg ntfCfg {transports = [(ntfTestPort, t, False)]} $ \_ ->

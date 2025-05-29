@@ -36,7 +36,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..))
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..), newMsgStore)
@@ -397,8 +397,9 @@ stressTest =
 
 testAllowNewQueues :: SpecWith (ASrvTransport, AStoreType)
 testAllowNewQueues =
-  it "should prohibit creating new queues with allowNewQueues = False" $ \(ATransport (t :: TProxy c 'TServer), msType) ->
-    withSmpServerConfigOn (ATransport t) (cfgMS msType) {allowNewQueues = False} testPort $ \_ ->
+  it "should prohibit creating new queues with allowNewQueues = False" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {allowNewQueues = False}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \h -> do
         g <- C.newRandom
         (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
@@ -578,7 +579,8 @@ testGetSubCommands =
 testExceedQueueQuota :: SpecWith (ASrvTransport, AStoreType)
 testExceedQueueQuota =
   it "should reply with ERR QUOTA to sender and send QUOTA message to the recipient" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
-    withSmpServerConfigOn (ATransport t) (cfgMS msType) {msgQueueQuota = 2} testPort $ \_ ->
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 2}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> testSMPClient @c $ \rh -> do
         g <- C.newRandom
         (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -650,7 +652,7 @@ testWithStoreLog =
 
     logSize testStoreLogFile `shouldReturn` 6
 
-    let cfg'' = cfg {serverStoreCfg = ASSCfg SQSMemory SMSMemory $ SSCMemory Nothing}
+    let cfg'' = withServerCfg cfg $ \cfg_ -> ASrvCfg SQSMemory SMSMemory cfg_ {serverStoreCfg = SSCMemory Nothing}
     withSmpServerConfigOn at cfg'' testPort . runTest t $ \h -> do
       sId1 <- readTVarIO senderId1
       -- fails if store log is disabled
@@ -686,10 +688,12 @@ testWithStoreLog =
     runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-serverStoreLogCfg :: AStoreType -> (ServerConfig, Bool)
+serverStoreLogCfg :: AStoreType -> (AServerConfig, Bool)
 serverStoreLogCfg msType =
-  let serverStoreCfg = serverStoreConfig_ True msType
-      cfg' = (cfgMS msType) {serverStoreCfg, storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
+  let cfg' =
+        withServerCfg (cfgMS msType) $ \cfg_ ->
+          withStoreCfg (serverStoreConfig_ True msType) $ \serverStoreCfg ->
+            cfg_ {serverStoreCfg, storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
       compacting = case msType of
         ASType SQSPostgres _ -> False
         _ -> True
@@ -838,7 +842,7 @@ testRestoreExpireMessages =
     length (B.lines msgs) `shouldBe` 4
 
     let expCfg1 = Just ExpirationConfig {ttl = 86400, checkInterval = 43200}
-        cfg1 = cfg' {messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
+        cfg1 = updateCfg cfg' $ \cfg_ -> cfg_ {messageExpiration = expCfg1, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg1 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -846,7 +850,7 @@ testRestoreExpireMessages =
     msgs' <- B.readFile testStoreMsgsFile
     msgs' `shouldBe` msgs
     let expCfg2 = Just ExpirationConfig {ttl = 2, checkInterval = 43200}
-        cfg2 = cfg' {messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
+        cfg2 = updateCfg cfg' $ \cfg_ -> cfg_ {messageExpiration = expCfg2, serverStatsBackupFile = Just testServerStatsBackupFile}
     withSmpServerConfigOn at cfg2 testPort . runTest t $ \_ -> pure ()
 
     logSize testStoreLogFile `shouldReturn` 1
@@ -880,7 +884,7 @@ testRestoreExpireMessages =
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
 testPrometheusMetrics =
   it "should save Prometheus metrics" $ \(at, msType) -> do
-    let cfg' = (cfgMS msType) {prometheusInterval = Just 1}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
     withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1000000
     doesFileExist testPrometheusMetricsFile `shouldReturn` True
 
@@ -1012,7 +1016,7 @@ testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = (cfgMS msType) {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
@@ -1033,7 +1037,7 @@ testMsgExpireOnInterval =
   xit' "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = (cfgMS msType) {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}, idleQueueInterval = 1}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}, idleQueueInterval = 1}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
@@ -1052,7 +1056,7 @@ testMsgNOTExpireOnInterval =
   it "should block and unblock message queues" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = (cfgMS msType) {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub

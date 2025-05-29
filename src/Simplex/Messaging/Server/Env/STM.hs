@@ -21,7 +21,8 @@
 module Simplex.Messaging.Server.Env.STM
   ( ServerConfig (..),
     ServerStoreCfg (..),
-    AServerStoreCfg (..),
+    -- AServerStoreCfg (..),
+    SupportedStore,
     StorePaths (..),
     StartOptions (..),
     Env (..),
@@ -30,17 +31,18 @@ module Simplex.Messaging.Server.Env.STM
     SubscribedClients,
     ProxyAgent (..),
     Client (..),
-    AClient (..),
     ClientId,
     Subscribed,
     Sub (..),
     ServerSub (..),
     SubscriptionThread (..),
-    MsgStore,
-    AMsgStore (..),
+    MsgStoreType,
+    MsgStore (..),
     AStoreType (..),
     newEnv,
     mkJournalStoreConfig,
+    msgStore,
+    fromMsgStore,
     newClient,
     getServerClients,
     getServerClient,
@@ -53,7 +55,6 @@ module Simplex.Messaging.Server.Env.STM
     deleteSubcribedClient,
     sameClientId,
     sameClient,
-    clientId',
     newSubscription,
     newProhibitedSub,
     defaultMsgQueueQuota,
@@ -128,7 +129,7 @@ import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
-data ServerConfig = ServerConfig
+data ServerConfig s = ServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
@@ -137,7 +138,7 @@ data ServerConfig = ServerConfig
     maxJournalStateLines :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
-    serverStoreCfg :: AServerStoreCfg,
+    serverStoreCfg :: ServerStoreCfg s,
     storeNtfsFile :: Maybe FilePath,
     -- | set to False to prohibit creating new queues
     allowNewQueues :: Bool,
@@ -245,13 +246,13 @@ defaultMsgQueueQuota = 128
 defaultStateTailSize :: Int
 defaultStateTailSize = 512
 
-data Env = Env
-  { config :: ServerConfig,
+data Env s = Env
+  { config :: ServerConfig s,
     serverActive :: TVar Bool,
     serverInfo :: ServerInformation,
-    server :: Server,
+    server :: Server s,
     serverIdentity :: KeyHash,
-    msgStore :: AMsgStore,
+    msgStore_ :: MsgStore s,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
@@ -262,6 +263,16 @@ data Env = Env
     proxyAgent :: ProxyAgent -- senders served on this proxy
   }
 
+msgStore :: Env s -> s
+msgStore = fromMsgStore . msgStore_
+{-# INLINE msgStore #-}
+
+fromMsgStore :: MsgStore s -> s
+fromMsgStore = \case
+  StoreMemory s -> s
+  StoreJournal s -> s
+{-# INLINE fromMsgStore #-}
+
 type family SupportedStore (qs :: QSType) (ms :: MSType) :: Constraint where
   SupportedStore 'QSMemory 'MSMemory = ()
   SupportedStore 'QSMemory 'MSJournal = ()
@@ -269,40 +280,40 @@ type family SupportedStore (qs :: QSType) (ms :: MSType) :: Constraint where
   SupportedStore 'QSPostgres 'MSMemory =
     (Int ~ Bool, TypeError ('TE.Text "Storing messages in memory with Postgres DB is not supported"))
 
-data AStoreType = forall qs ms. SupportedStore qs ms => ASType (SQSType qs) (SMSType ms)
+data AStoreType =
+  forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStoreType qs ms)) =>
+  ASType (SQSType qs) (SMSType ms)
 
-data ServerStoreCfg qs ms where
-  SSCMemory :: Maybe StorePaths -> ServerStoreCfg 'QSMemory 'MSMemory
-  SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg 'QSMemory 'MSJournal
-  SSCDatabaseJournal :: {storeCfg :: PostgresStoreCfg, storeMsgsPath' :: FilePath} -> ServerStoreCfg 'QSPostgres 'MSJournal
+data ServerStoreCfg s where
+  SSCMemory :: Maybe StorePaths -> ServerStoreCfg STMMsgStore
+  SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg (JournalMsgStore 'QSMemory)
+  SSCDatabaseJournal :: {storeCfg :: PostgresStoreCfg, storeMsgsPath' :: FilePath} -> ServerStoreCfg (JournalMsgStore 'QSPostgres)
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
-data AServerStoreCfg = forall qs ms. SupportedStore qs ms => ASSCfg (SQSType qs) (SMSType ms) (ServerStoreCfg qs ms)
+type family MsgStoreType (qs :: QSType) (ms :: MSType) where
+  MsgStoreType 'QSMemory 'MSMemory = STMMsgStore
+  MsgStoreType qs 'MSJournal = JournalMsgStore qs
 
-type family MsgStore (qs :: QSType) (ms :: MSType) where
-  MsgStore 'QSMemory 'MSMemory = STMMsgStore
-  MsgStore qs 'MSJournal = JournalMsgStore qs
-
-data AMsgStore =
-  forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStore qs ms)) =>
-  AMS (SQSType qs) (SMSType ms) (MsgStore qs ms)
+data MsgStore s where
+  StoreMemory :: STMMsgStore -> MsgStore STMMsgStore
+  StoreJournal :: JournalMsgStore qs -> MsgStore (JournalMsgStore qs)
 
 type Subscribed = Bool
 
-data Server = Server
-  { clients :: ServerClients,
-    subscribers :: ServerSubscribers,
-    ntfSubscribers :: ServerSubscribers,
+data Server s = Server
+  { clients :: ServerClients s,
+    subscribers :: ServerSubscribers s,
+    ntfSubscribers :: ServerSubscribers s,
     savingLock :: Lock
   }
 
 -- not exported, to prevent concurrent IntMap lookups inside STM transactions.
-newtype ServerClients = ServerClients {serverClients :: TVar (IntMap AClient)}
+newtype ServerClients s = ServerClients {serverClients :: TVar (IntMap (Client s))}
 
-data ServerSubscribers = ServerSubscribers
+data ServerSubscribers s = ServerSubscribers
   { subQ :: TQueue (QueueId, ClientId, Subscribed),
-    queueSubscribers :: SubscribedClients,
+    queueSubscribers :: SubscribedClients s,
     subClients :: TVar IntSet,
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
@@ -314,31 +325,31 @@ data ServerSubscribers = ServerSubscribers
 -- any STM transaction that reads subscribed client will re-evaluate in this case.
 -- The subscriptions that were made at any point are not removed -
 -- this is a better trade-off with intermittently connected mobile clients.
-data SubscribedClients = SubscribedClients (TMap EntityId (TVar (Maybe AClient)))
+data SubscribedClients s = SubscribedClients (TMap EntityId (TVar (Maybe (Client s))))
 
-getSubscribedClients :: SubscribedClients -> IO (Map EntityId (TVar (Maybe AClient)))
+getSubscribedClients :: SubscribedClients s -> IO (Map EntityId (TVar (Maybe (Client s))))
 getSubscribedClients (SubscribedClients cs) = readTVarIO cs
 
-getSubscribedClient :: EntityId -> SubscribedClients -> IO (Maybe (TVar (Maybe AClient)))
+getSubscribedClient :: EntityId -> SubscribedClients s -> IO (Maybe (TVar (Maybe (Client s))))
 getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO entId cs
 {-# INLINE getSubscribedClient #-}
 
 -- insert subscribed and current client, return previously subscribed client if it is different
-upsertSubscribedClient :: EntityId -> AClient -> SubscribedClients -> STM (Maybe AClient)
-upsertSubscribedClient entId ac@(AClient _ _ c) (SubscribedClients cs) =
+upsertSubscribedClient :: EntityId -> Client s -> SubscribedClients s -> STM (Maybe (Client s))
+upsertSubscribedClient entId c (SubscribedClients cs) =
   TM.lookup entId cs >>= \case
-    Nothing -> Nothing <$ TM.insertM entId (newTVar (Just ac)) cs
+    Nothing -> Nothing <$ TM.insertM entId (newTVar (Just c)) cs
     Just cv ->
       readTVar cv >>= \case
         Just c' | sameClientId c c' -> pure Nothing
-        c_ -> c_ <$ writeTVar cv (Just ac)
+        c_ -> c_ <$ writeTVar cv (Just c)
 
 -- lookup and delete currently subscribed client
-lookupDeleteSubscribedClient :: EntityId -> SubscribedClients -> STM (Maybe AClient)
+lookupDeleteSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
 lookupDeleteSubscribedClient entId (SubscribedClients cs) =
   TM.lookupDelete entId cs $>>= (`swapTVar` Nothing)
 
-deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients -> IO ()
+deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients s -> IO ()
 deleteSubcribedClient entId c (SubscribedClients cs) =
   -- lookup of the subscribed client TVar can be in separate transaction,
   -- as long as the client is read in the same transaction -
@@ -349,11 +360,11 @@ deleteSubcribedClient entId c (SubscribedClients cs) =
       writeTVar cv Nothing
       TM.delete entId cs
 
-sameClientId :: Client s -> AClient -> Bool
-sameClientId Client {clientId} ac = clientId == clientId' ac
+sameClientId :: Client s -> (Client s) -> Bool
+sameClientId c c' = clientId c == clientId c'
 {-# INLINE sameClientId #-}
 
-sameClient :: Client s -> TVar (Maybe AClient) -> STM Bool
+sameClient :: Client s -> TVar (Maybe (Client s)) -> STM Bool
 sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 {-# INLINE sameClient #-}
 
@@ -362,12 +373,6 @@ newtype ProxyAgent = ProxyAgent
   }
 
 type ClientId = Int
-
-data AClient = forall qs ms. MsgStoreClass (MsgStore qs ms) => AClient (SQSType qs) (SMSType ms) (Client (MsgStore qs ms))
-
-clientId' :: AClient -> ClientId
-clientId' (AClient _ _ Client {clientId}) = clientId
-{-# INLINE clientId' #-}
 
 data Client s = Client
   { clientId :: ClientId,
@@ -396,7 +401,7 @@ data Sub = Sub
     delivered :: TMVar MsgId
   }
 
-newServer :: IO Server
+newServer :: IO (Server s)
 newServer = do
   clients <- ServerClients <$> newTVarIO mempty
   subscribers <- newServerSubscribers
@@ -404,28 +409,28 @@ newServer = do
   savingLock <- createLockIO
   return Server {clients, subscribers, ntfSubscribers, savingLock}
 
-getServerClients :: Server -> IO (IntMap AClient)
+getServerClients :: Server s -> IO (IntMap (Client s))
 getServerClients = readTVarIO . serverClients . clients
 {-# INLINE getServerClients #-}
 
-getServerClient :: ClientId -> Server -> IO (Maybe AClient)
+getServerClient :: ClientId -> Server s -> IO (Maybe (Client s))
 getServerClient cId s = IM.lookup cId <$> getServerClients s
 {-# INLINE getServerClient #-}
 
-insertServerClient :: AClient -> Server -> IO Bool
-insertServerClient ac@(AClient _ _ Client {clientId, connected}) Server {clients} =
+insertServerClient :: Client s -> Server s -> IO Bool
+insertServerClient c@Client {clientId, connected} Server {clients} =
   atomically $
     ifM
       (readTVar connected)
-      (True <$ modifyTVar' (serverClients clients) (IM.insert clientId ac))
+      (True <$ modifyTVar' (serverClients clients) (IM.insert clientId c))
       (pure False)
 {-# INLINE insertServerClient #-}
 
-deleteServerClient :: ClientId -> Server -> IO ()
+deleteServerClient :: ClientId -> Server s -> IO ()
 deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClients clients) $ IM.delete cId
 {-# INLINE deleteServerClient #-}
 
-newServerSubscribers :: IO ServerSubscribers
+newServerSubscribers :: IO (ServerSubscribers s)
 newServerSubscribers = do
   subQ <- newTQueueIO
   queueSubscribers <- SubscribedClients <$> TM.emptyIO
@@ -433,8 +438,8 @@ newServerSubscribers = do
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, subClients, pendingEvents}
 
-newClient :: SQSType qs -> SMSType ms -> ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client (MsgStore qs ms))
-newClient _ _ clientId qSize thVersion sessionId createdAt = do
+newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client s)
+newClient clientId qSize thVersion sessionId createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   rcvQ <- newTBQueueIO qSize
@@ -476,32 +481,32 @@ newProhibitedSub = do
   delivered <- newEmptyTMVar
   return Sub {subThread = ProhibitSub, delivered}
 
-newEnv :: ServerConfig -> IO Env
+newEnv :: ServerConfig s -> IO (Env s)
 newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
   serverActive <- newTVarIO True
   server <- newServer
-  msgStore <- case serverStoreCfg of
-    ASSCfg qt mt (SSCMemory storePaths_) -> do
+  msgStore_ <- case serverStoreCfg of
+    SSCMemory storePaths_ -> do
       let storePath = storeMsgsFile =<< storePaths_
       ms <- newMsgStore STMStoreConfig {storePath, quota = msgQueueQuota}
       forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms True) f $ queueStore ms
-      pure $ AMS qt mt ms
-    ASSCfg qt mt SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
+      pure $ StoreMemory ms
+    SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
       let qsCfg = MQStoreCfg
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg
       loadStoreLog (mkQueue ms True) storeLogFile $ stmQueueStore ms
-      pure $ AMS qt mt ms
+      pure $ StoreJournal ms
 #if defined(dbServerPostgres)
-    ASSCfg qt mt SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
+    SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
       let StartOptions {compactLog, confirmMigrations} = startOptions config
           qsCfg = PQStoreCfg (storeCfg {confirmMigrations} :: PostgresStoreCfg)
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
       ms <- newMsgStore cfg
-      pure $ AMS qt mt ms
+      pure $ StoreJournal ms
 #else
-    ASSCfg _ _ SSCDatabaseJournal {} -> noPostgresExit
+    SSCDatabaseJournal {} -> noPostgresExit
 #endif
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
@@ -521,7 +526,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         serverInfo,
         server,
         serverIdentity,
-        msgStore,
+        msgStore_,
         ntfStore,
         random,
         tlsServerCreds,
@@ -586,7 +591,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         }
       where
         persistence = case serverStoreCfg of
-          ASSCfg _ _ (SSCMemory sp_) -> case sp_ of
+          SSCMemory sp_ -> case sp_ of
             Nothing -> SPMMemoryOnly
             Just StorePaths {storeMsgsFile = Just _} -> SPMMessages
             _ -> SPMQueues
