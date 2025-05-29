@@ -1413,6 +1413,10 @@ data ContactConnType = CCTContact | CCTChannel | CCTGroup deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
+instance ToField AConnShortLink where toField = toField . Binary . strEncode
+
+instance FromField AConnShortLink where fromField = blobFieldDecoder strDecode
+
 data ConnectionLink m = CLFull (ConnectionRequestUri m) | CLShort (ConnShortLink m)
   deriving (Eq, Show)
 
