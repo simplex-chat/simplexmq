@@ -100,7 +100,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -500,7 +500,7 @@ functionalAPITests ps = do
 
 testBasicAuth :: (ASrvTransport, AStoreType) -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
 testBasicAuth (t, msType) allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 sqSecured baseId = do
-  let testCfg = (cfgMS msType) {allowNewQueues, newQueueBasicAuth = srvAuth, smpServerVRange = V.mkVersionRange minServerSMPRelayVersion srvVersion}
+  let testCfg = updateCfg (cfgMS msType) $ \cfg' -> cfg' {allowNewQueues, newQueueBasicAuth = srvAuth, smpServerVRange = V.mkVersionRange minServerSMPRelayVersion srvVersion}
       canCreate1 = canCreateQueue allowNewQueues srv clnt1
       canCreate2 = canCreateQueue allowNewQueues srv clnt2
       expected
@@ -570,7 +570,7 @@ testProxyMatrixWithPrev ps@(t, msType@(ASType qs _ms)) runTest = do
   it "2 servers, directly, prev clients, curr servers" $ withSmpServers2 ps $ withAgentClientsServers2 (agentCfgVPrevPQ, initAgentServers) (agentCfgVPrevPQ, initAgentServers2) $ runTest False False
   it "2 servers, via proxy, prev clients, curr servers" $ withSmpServersProxy2 ps $ withAgentClientsServers2 (agentCfgVPrevPQ, initAgentServersProxy) (agentCfgVPrevPQ, initAgentServersProxy2) $ runTest True False
   where
-    prev cfg' = cfg' {smpServerVRange = prevRange supportedServerSMPRelayVRange}
+    prev cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {smpServerVRange = prevRange supportedServerSMPRelayVRange}
     withSmpServers2Prev a = withServers2 (prev $ cfgMS msType) (prev $ cfgJ2QS qs) a
     withSmpServersProxy2Prev a = withServers2 (prev $ proxyCfgMS msType) (prev $ proxyCfgJ2QS qs) a
     withServers2 cfg1 cfg2 a =
@@ -1619,7 +1619,7 @@ testSkippedMessages (t, msType) = do
   disposeAgentClient alice2
   disposeAgentClient bob2
   where
-    cfg' = (cfgMS msType) {serverStoreCfg = ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just $ StorePaths testStoreLogFile Nothing}
+    cfg' = withServerCfg (cfgMS msType) $ \cfg_ -> ASrvCfg SQSMemory SMSMemory cfg_ {serverStoreCfg = SSCMemory $ Just $ StorePaths testStoreLogFile Nothing}
 
 testDeliveryAfterSubscriptionError :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryAfterSubscriptionError ps = do
@@ -1723,7 +1723,7 @@ withUP a bId p =
       ]
 
 testExpireMessageQuota :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
-testExpireMessageQuota (t, msType) = withSmpServerConfigOn t (cfgMS msType) {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
+testExpireMessageQuota (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1747,9 +1747,11 @@ testExpireMessageQuota (t, msType) = withSmpServerConfigOn t (cfgMS msType) {msg
     get b' =##> \case ("", c, MsgErr 4 (MsgSkipped 3 3) "3") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
   disposeAgentClient a
+  where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
 
 testExpireManyMessagesQuota :: (ASrvTransport, AStoreType) -> IO ()
-testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t (cfgMS msType) {msgQueueQuota = 1, maxJournalMsgCount = 2} testPort $ \_ -> do
+testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
   a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
   b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   (aId, bId) <- runRight $ do
@@ -1784,6 +1786,8 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t (cfgMS msType)
     get b' =##> \case ("", c, MsgErr 4 (MsgSkipped 3 5) "5") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
   disposeAgentClient a
+  where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
 
 testRatchetSync :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testRatchetSync ps = withAgentClients2 $ \alice bob ->
@@ -2068,7 +2072,7 @@ makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
 
 testInactiveNoSubs :: (ASrvTransport, AStoreType) -> IO ()
 testInactiveNoSubs (t, msType) = do
-  let cfg' = (cfgMS msType) {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+  let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
   withSmpServerConfigOn t cfg' testPort $ \_ ->
     withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
       runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate -- do not subscribe to pass noSubscriptions check
@@ -2078,7 +2082,7 @@ testInactiveNoSubs (t, msType) = do
 
 testInactiveWithSubs :: (ASrvTransport, AStoreType) -> IO ()
 testInactiveWithSubs (t, msType) = do
-  let cfg' = (cfgMS msType) {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+  let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
   withSmpServerConfigOn t cfg' testPort $ \_ ->
     withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
       runRight_ . void $ createConnection alice 1 True SCMInvitation Nothing SMSubscribe
@@ -2089,7 +2093,7 @@ testInactiveWithSubs (t, msType) = do
 
 testActiveClientNotDisconnected :: (ASrvTransport, AStoreType) -> IO ()
 testActiveClientNotDisconnected (t, msType) = do
-  let cfg' = (cfgMS msType) {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+  let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
   withSmpServerConfigOn t cfg' testPort $ \_ ->
     withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
       ts <- getSystemTime
@@ -3199,10 +3203,12 @@ testCreateQueueAuth srvVersion clnt1 clnt2 sqSecured baseId = do
 
 testSMPServerConnectionTest :: (ASrvTransport, AStoreType) -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testSMPServerConnectionTest (t, msType) newQueueBasicAuth srv =
-  withSmpServerConfigOn t (cfgMS msType) {newQueueBasicAuth} testPort2 $ \_ -> do
+  withSmpServerConfigOn t cfg' testPort2 $ \_ -> do
     -- initially passed server is not running
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
       testProtocolServer a 1 srv
+  where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth}
 
 testRatchetAdHash :: HasCallStack => IO ()
 testRatchetAdHash =
@@ -3287,7 +3293,7 @@ testDeliveryReceiptsVersion ps = do
 
 testDeliveryReceiptsConcurrent :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =
-  withSmpServerConfigOn t (cfgMS msType) {msgQueueQuota = 256, maxJournalMsgCount = 512} testPort $ \_ -> do
+  withSmpServerConfigOn t cfg' testPort $ \_ -> do
     withAgentClients2 $ \a b -> do
       (aId, bId) <- runRight $ makeConnection a b
       t1 <- liftIO getCurrentTime
@@ -3297,6 +3303,7 @@ testDeliveryReceiptsConcurrent (t, msType) =
       liftIO $ noMessages a "nothing else should be delivered to alice"
       liftIO $ noMessages b "nothing else should be delivered to bob"
   where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 256, maxJournalMsgCount = 512}
     runClient :: String -> AgentClient -> ConnId -> IO ()
     runClient _cName client connId = do
       concurrently_ send receive

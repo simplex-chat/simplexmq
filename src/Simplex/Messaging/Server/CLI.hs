@@ -32,7 +32,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
-import Simplex.Messaging.Server.Env.STM (AServerStoreCfg (..), ServerStoreCfg (..), StartOptions (..), StorePaths (..))
+import Simplex.Messaging.Server.Env.STM (ServerStoreCfg (..), StartOptions (..), StorePaths (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
@@ -405,8 +405,8 @@ printServerTransports protocol ts = do
       "\nWARNING: the clients will use port 443 by default soon.\n\
       \Set `port` in smp-server.ini section [TRANSPORT] to `5223,443`\n"
 
-printSMPServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> AServerStoreCfg -> IO ()
-printSMPServerConfig transports (ASSCfg _ _ cfg) = case cfg of
+printSMPServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> ServerStoreCfg s -> IO ()
+printSMPServerConfig transports = \case
   SSCMemory sp_ -> printServerConfig "SMP" transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
   SSCMemoryJournal {storeLogFile} -> printServerConfig "SMP" transports $ Just storeLogFile
   SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do

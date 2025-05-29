@@ -2,6 +2,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
@@ -144,7 +145,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> putStrLn "store_messages set to `memory`, start the server."
                 Right (ASType SQSMemory SMSJournal) -> putStrLn "store_messages set to `journal`, update it to `memory` in INI file"
-                Right (ASType SQSPostgres SMSJournal) -> 
+                Right (ASType SQSPostgres SMSJournal) ->
 #if defined(dbServerPostgres)
                   putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
 #else
@@ -161,7 +162,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 "Messages NOT deleted"
               deleteDirIfExists storeMsgsJournalDir
               putStrLn $ "Deleted all messages in journal " <> storeMsgsJournalDir
-#if defined(dbServerPostgres)              
+#if defined(dbServerPostgres)
     Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
       schemaExists <- checkSchemaExists connstr schema
       storeLogExists <- doesFileExist storeLogFilePath
@@ -323,10 +324,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       setLogLevel $ logLevel startOptions
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
+      ASType qs ms <- pure iniStoreType -- this creates a functional scope with MsgStoreClass constraint
+      let serverStoreCfg = iniStoreCfg qs ms
       fp <- checkSavedFingerprint cfgPath defaultX509Config
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@ServerConfig {information, serverStoreCfg, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig
+          cfg@ServerConfig {information, newQueueBasicAuth, messageExpiration, inactiveClientExpiration} = serverConfig serverStoreCfg
           sourceCode' = (\ServerPublicInfo {sourceCode} -> sourceCode) <$> information
           srv = ProtoServerWithAuth (SMPServer [THDomainName host] (if port == "5223" then "" else port) (C.KeyHash fp)) newQueueBasicAuth
       printServiceInfo serverVersion srv
@@ -346,8 +349,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             else "NOT allowed"
       -- print information
       let persistence = case serverStoreCfg of
-            ASSCfg _ _ (SSCMemory Nothing) -> SPMMemoryOnly
-            ASSCfg _ _ (SSCMemory (Just StorePaths {storeMsgsFile})) | isNothing storeMsgsFile -> SPMQueues
+            SSCMemory Nothing -> SPMMemoryOnly
+            SSCMemory (Just StorePaths {storeMsgsFile}) | isNothing storeMsgsFile -> SPMQueues
             _ -> SPMMessages
       let config =
             ServerPublicConfig
@@ -381,7 +384,15 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         iniStoreType = either error id $! readStoreType ini
-        serverConfig =
+        iniStoreCfg :: SupportedStore qs ms => SQSType qs -> SMSType ms -> ServerStoreCfg (MsgStoreType qs ms)
+        iniStoreCfg SQSMemory SMSMemory = SSCMemory $ enableStoreLog' ini $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
+        iniStoreCfg SQSMemory SMSJournal = SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
+        iniStoreCfg SQSPostgres SMSJournal =
+          let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
+              storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+           in SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir}
+        serverConfig :: ServerStoreCfg s -> ServerConfig s
+        serverConfig serverStoreCfg =
           ServerConfig
             { transports,
               smpHandshakeTimeout = 120000000,
@@ -398,15 +409,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     certificateFile = c serverCrtFile
                   },
               httpCredentials = (\WebHttpsParams {key, cert} -> ServerCredentials {caCertificateFile = Nothing, privateKeyFile = key, certificateFile = cert}) <$> webHttpsParams',
-              serverStoreCfg = case iniStoreType of
-                ASType SQSMemory SMSMemory ->
-                  ASSCfg SQSMemory SMSMemory $ SSCMemory $ enableStoreLog' ini $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
-                ASType SQSMemory SMSJournal ->
-                  ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = storeLogFilePath, storeMsgsPath = storeMsgsJournalDir}
-                ASType SQSPostgres SMSJournal ->
-                  let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
-                      storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
-                   in ASSCfg SQSPostgres SMSJournal $ SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir},
+              serverStoreCfg,
               storeNtfsFile = restoreMessagesFile storeNtfsFilePath,
               -- allow creating new queues by default
               allowNewQueues = fromMaybe True $ iniOnOff "AUTH" "new_queues" ini,
@@ -651,7 +654,7 @@ data CliCommand
   | Start StartOptions
   | Delete
   | Journal StoreCmd
-  | Database StoreCmd DBOpts 
+  | Database StoreCmd DBOpts
 
 data StoreCmd = SCImport | SCExport | SCDelete
 
