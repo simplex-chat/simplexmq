@@ -43,15 +43,17 @@ import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (intersperse)
+import Data.List (foldl', intersperse, partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
+import qualified Data.Set as S
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
-import Database.PostgreSQL.Simple (Binary (..), Only (..), Query, SqlError, (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), Query, SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.FromField (FromField (..))
@@ -67,6 +69,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -77,7 +80,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole)
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, tshow, (<$$>))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -99,6 +102,7 @@ data PostgresQueueStore q = PostgresQueueStore
     -- this map only cashes the queues that were attempted to be subscribed to,
     notifiers :: TMap NotifierId RecipientId,
     notifierLocks :: TMap NotifierId Lock,
+    serviceLocks :: TMap CertFingerprint Lock,
     deletedTTL :: Int64
   }
 
@@ -114,7 +118,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     links <- TM.emptyIO
     notifiers <- TM.emptyIO
     notifierLocks <- TM.emptyIO
-    pure PostgresQueueStore {dbStore, dbStoreLog, queues, senders, links, notifiers, notifierLocks, deletedTTL}
+    serviceLocks <- TM.emptyIO
+    pure PostgresQueueStore {dbStore, dbStoreLog, queues, senders, links, notifiers, notifierLocks, serviceLocks, deletedTTL}
     where
       err e = do
         logError $ "STORE: newQueueStore, error opening PostgreSQL database, " <> tshow e
@@ -376,25 +381,75 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
       qr = queueRec sq
 
-  -- TODO [certs] implement
   getCreateService :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
-  getCreateService = undefined
+  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
+    withLockMap (serviceLocks st) fp "getCreateService" $ E.uninterruptibleMask_ $ runExceptT $ do
+      (serviceId, new) <-
+        withDB "getCreateService" st $ \db ->
+          maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp))) >>= \case
+            Just (serviceId, role)
+              | role == serviceRole -> pure $ Right (serviceId, False)
+              | otherwise -> pure $ Left AUTH -- TODO [certs] remove associations?
+            Nothing ->
+              E.try (DB.execute db insertServiceQuery (serviceRecToRow sr))
+                >>= bimapM handleDuplicate (\_ -> pure (newSrvId, True))
+      when new $ withLog "getCreateService" st (`logNewService` sr)
+      pure serviceId
 
-  -- TODO [certs]
   setQueueRcvService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueRcvService = undefined
+  setQueueRcvService st sq serviceId =
+    withQueueRec sq "setQueueRcvService" $ \q@QueueRec {rcvServiceId = prevSrvId} ->
+      if prevSrvId == serviceId
+        then pure ()
+        else do
+          assertUpdated $ withDB' "setQueueRcvService" st $ \db ->
+            DB.execute db "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id = ? AND deleted_at IS NULL" (serviceId, rId)
+          let !q' = Just q {rcvServiceId = serviceId}
+          atomically $ writeTVar (queueRec sq) q'
+          withLog "setQueueRcvService" st $ \sl -> logQueueRcvService sl rId serviceId
+    where
+      rId = recipientId sq
 
-  -- TODO [certs]
   setQueueNtfService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueNtfService _ _ _ = pure $ Right ()
+  setQueueNtfService st sq serviceId =
+    withQueueRec sq "setQueueRcvService" $ \q@QueueRec {notifier} -> case notifier of
+      Nothing -> throwE AUTH -- TODO [certs] different error? INTERNAL?
+      Just nc@NtfCreds {ntfServiceId = prevSrvId}
+        | prevSrvId == serviceId -> pure ()
+        | otherwise -> do
+            assertUpdated $ withDB' "setQueueNtfService" st $ \db ->
+              DB.execute db "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id = ? AND notifier_id IS NOT NULL AND deleted_at IS NULL" (serviceId, rId)
+            let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
+            atomically $ writeTVar (queueRec sq) q'
+            withLog "setQueueNtfService" st $ \sl -> logQueueNtfService sl rId serviceId
+    where
+      rId = recipientId sq
 
-  -- TODO [certs]
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
-  getQueueNtfServices st ntfs = pure $ Right ([], ntfs)
+  getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
+    snIds <-
+      withDB' "getQueueNtfServices" st $ \db ->
+        DB.query db "SELECT ntf_service_id, notifier_id FROM msg_queues WHERE notifier_id IN ?" (Only (In (map fst ntfs)))
+    pure $
+      if null snIds
+        then ([], ntfs)
+        else
+          let snIds' = foldl' (\m (sId, nId) -> M.alter (Just . maybe (S.singleton nId) (S.insert nId)) sId m) M.empty snIds
+           in foldr addService ([], ntfs) (M.assocs snIds')
+    where
+      addService ::
+        (Maybe ServiceId, S.Set NotifierId) ->
+        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]) ->
+        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)])
+      addService (serviceId, snIds) (ssNtfs, ntfs') =
+        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
+         in ((serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  -- TODO [certs]
-  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
-  getNtfServiceQueueCount = undefined
+  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int)
+  getNtfServiceQueueCount st serviceId =
+    E.uninterruptibleMask_ $ runExceptT $ withDB' "getNtfServiceQueueCount" st $ \db ->
+      fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
+        DB.query db "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ?" (Only serviceId)
 
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
 batchInsertQueues tty queues toStore = do
@@ -406,7 +461,7 @@ batchInsertQueues tty queues toStore = do
       DB.copy_
         db
         [sql|
-          COPY msg_queues (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, fixed_data, user_data)
+          COPY msg_queues (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, ntf_service_id, status, updated_at, link_id, rcv_service_id, fixed_data, user_data)
           FROM STDIN WITH (FORMAT CSV)
         |]
       mapM_ (putQueue db) (zip [1..] qs)
@@ -424,8 +479,16 @@ insertQueueQuery :: Query
 insertQueueQuery =
   [sql|
     INSERT INTO msg_queues
-      (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, status, updated_at, link_id, fixed_data, user_data)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      (recipient_id, recipient_keys, rcv_dh_secret, sender_id, sender_key, queue_mode, notifier_id, notifier_key, rcv_ntf_dh_secret, ntf_service_id, status, updated_at, link_id, rcv_service_id, fixed_data, user_data)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  |]
+
+insertServiceQuery :: Query
+insertServiceQuery =
+  [sql|
+    INSERT INTO services
+      (service_id, service_role, service_cert, service_cert_hash, created_at)
+    VALUES (?,?,?,?,?)
   |]
 
 foldQueueRecs :: forall a q. Monoid a => Bool -> Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
@@ -442,12 +505,11 @@ foldQueueRecs tty withData st skipOld_ f = do
   where
     foldRecs db acc f' = case skipOld_ of
       Nothing
-        | withData -> DB.fold_ db (query <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold_ db (query <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRec
+        | withData -> DB.fold_ db (queueRecQueryWithData <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRecWithData
+        | otherwise -> DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRec
       Just old
-        | withData -> DB.fold db (query <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold db (query <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
-    query = if withData then queueRecQueryWithData else queueRecQuery
+        | withData -> DB.fold db (queueRecQueryWithData <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
+        | otherwise -> DB.fold db (queueRecQuery <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
@@ -455,9 +517,8 @@ queueRecQuery =
   [sql|
     SELECT recipient_id, recipient_keys, rcv_dh_secret,
       sender_id, sender_key, queue_mode,
-      notifier_id, notifier_key, rcv_ntf_dh_secret,
-      status, updated_at,
-      link_id
+      notifier_id, notifier_key, rcv_ntf_dh_secret, ntf_service_id,
+      status, updated_at, link_id, rcv_service_id
     FROM msg_queues
   |]
 
@@ -466,23 +527,28 @@ queueRecQueryWithData =
   [sql|
     SELECT recipient_id, recipient_keys, rcv_dh_secret,
       sender_id, sender_key, queue_mode,
-      notifier_id, notifier_key, rcv_ntf_dh_secret,
-      status, updated_at,
-      link_id, fixed_data, user_data
+      notifier_id, notifier_key, rcv_ntf_dh_secret, ntf_service_id,
+      status, updated_at, link_id, rcv_service_id,
+      fixed_data, user_data
     FROM msg_queues
   |]
 
-type QueueRecRow = (RecipientId, NonEmpty RcvPublicAuthKey, RcvDhSecret, SenderId, Maybe SndPublicAuthKey, Maybe QueueMode, Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId)
+type QueueRecRow =
+  ( RecipientId, NonEmpty RcvPublicAuthKey, RcvDhSecret,
+    SenderId, Maybe SndPublicAuthKey, Maybe QueueMode,
+    Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, Maybe ServiceId,
+    ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId, Maybe ServiceId
+  )
 
 queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes)
-queueRecToRow (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
-  (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, status, updatedAt, linkId_)
+queueRecToRow (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt, rcvServiceId}) =
+  (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId <$> n, notifierKey <$> n, rcvNtfDhSecret <$> n, ntfServiceId =<< n, status, updatedAt, linkId_, rcvServiceId)
     :. (fst <$> queueData_, snd <$> queueData_)
   where
     (linkId_, queueData_) = queueDataColumns queueData
 
 queueRecToText :: (RecipientId, QueueRec) -> ByteString
-queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt}) =
+queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier = n, status, updatedAt, rcvServiceId}) =
   LB.toStrict $ BB.toLazyByteString $ mconcat tabFields <> BB.char7 '\n'
   where
     tabFields = BB.char7 ',' `intersperse` fields
@@ -496,9 +562,11 @@ queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, 
         nullable (notifierId <$> n),
         nullable (notifierKey <$> n),
         nullable (rcvNtfDhSecret <$> n),
+        nullable (ntfServiceId =<< n),
         BB.char7 '"' <> renderField (toField status) <> BB.char7 '"',
         nullable updatedAt,
         nullable linkId_,
+        nullable rcvServiceId,
         nullable (fst <$> queueData_),
         nullable (snd <$> queueData_)
       ]
@@ -519,27 +587,28 @@ queueDataColumns = \case
   Nothing -> (Nothing, Nothing)
 
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
-rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) =
-  let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_)
+rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, ntfServiceId, status, updatedAt, linkId_, rcvServiceId) =
+  let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_) ntfServiceId
       queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
-      -- TODO [certs]
-   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing})
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
-rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, status, updatedAt, linkId_) :. (immutableData_, userData_)) =
-  let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_)
+rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, ntfServiceId, status, updatedAt, linkId_, rcvServiceId) :. (immutableData_, userData_)) =
+  let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_) ntfServiceId
       encData =  fromMaybe (EncDataBytes "")
       queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
-      -- TODO [certs]
-   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId = Nothing})
+   in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId})
 
--- TODO [certs]
-mkNotifier :: (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret) -> Maybe NtfCreds
-mkNotifier = \case
-  (Just notifierId, Just notifierKey, Just rcvNtfDhSecret) -> Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
-  _ -> Nothing
+mkNotifier :: (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret) -> Maybe ServiceId -> Maybe NtfCreds
+mkNotifier (Just notifierId, Just notifierKey, Just rcvNtfDhSecret) ntfServiceId =
+  Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId}
+mkNotifier _ _ = Nothing
 
-setStatusDB :: StoreQueueClass q => String -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
+serviceRecToRow :: ServiceRec -> (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, RoundedSystemTime)
+serviceRecToRow ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash = XV.Fingerprint fp, serviceCreatedAt} =
+  (serviceId, serviceRole, serviceCert, Binary fp, serviceCreatedAt)
+
+setStatusDB :: StoreQueueClass q => Text -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =
   withQueueRec sq op $ \q -> do
     assertUpdated $ withDB' op st $ \db ->
@@ -547,33 +616,33 @@ setStatusDB op st sq status writeLog =
     atomically $ writeTVar (queueRec sq) $ Just q {status}
     writeLog
 
-withQueueRec :: StoreQueueClass q => q -> String -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
+withQueueRec :: StoreQueueClass q => q -> Text -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
 withQueueRec sq op action =
   withQueueLock sq op $ E.uninterruptibleMask_ $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
 
 assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
 assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
 
-withDB' :: String -> PostgresQueueStore q -> (DB.Connection -> IO a) -> ExceptT ErrorType IO a
+withDB' :: Text -> PostgresQueueStore q -> (DB.Connection -> IO a) -> ExceptT ErrorType IO a
 withDB' op st action = withDB op st $ fmap Right . action
 
-withDB :: forall a q. String -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
+withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
 withDB op st action =
   ExceptT $ E.try (withConnection (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
-    logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
+    logErr e = logError ("STORE: " <> err) $> Left (STORE err)
       where
-        err = op <> ", withDB, " <> show e
+        err = op <> ", withDB, " <> tshow e
 
-withLog :: MonadIO m => String -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
+withLog :: MonadIO m => Text -> PostgresQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> m ()
 withLog op PostgresQueueStore {dbStoreLog} = withLog_ op dbStoreLog
 {-# INLINE withLog #-}
 
-withLog_ :: MonadIO m => String -> Maybe (StoreLog 'WriteMode) -> (StoreLog 'WriteMode -> IO ()) -> m ()
+withLog_ :: MonadIO m => Text -> Maybe (StoreLog 'WriteMode) -> (StoreLog 'WriteMode -> IO ()) -> m ()
 withLog_ op sl_ action =
   forM_ sl_ $ \sl -> liftIO $ action sl `catchAny` \e ->
-    logWarn $ "STORE: " <> T.pack (op <> ", withLog, " <> show e)
+    logWarn $ "STORE: " <> op <> ", withLog, " <> tshow e
 
 handleDuplicate :: SqlError -> IO ErrorType
 handleDuplicate e = case constraintViolation e of
@@ -585,6 +654,14 @@ handleDuplicate e = case constraintViolation e of
 instance ToField (NonEmpty C.APublicAuthKey) where toField = toField . Binary . smpEncode
 
 instance FromField (NonEmpty C.APublicAuthKey) where fromField = blobFieldDecoder smpDecode
+
+instance ToField SMPServiceRole where toField = toField . decodeLatin1 . smpEncode
+
+instance FromField SMPServiceRole where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
+
+instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
+
+instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
 
 #if !defined(dbPostgres)
 instance ToField EntityId where toField (EntityId s) = toField $ Binary s

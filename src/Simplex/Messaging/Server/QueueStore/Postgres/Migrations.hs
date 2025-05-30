@@ -14,7 +14,7 @@ serverSchemaMigrations =
   [ ("20250207_initial", m20250207_initial, Nothing),
     ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index),
     ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links),
-    ("20250514_service_certs", m20250514_service_certs, Nothing)
+    ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -49,7 +49,7 @@ CREATE INDEX idx_msg_queues_deleted_at ON msg_queues (deleted_at);
     |]
 
 m20250319_updated_index :: Text
-m20250319_updated_index = 
+m20250319_updated_index =
   T.pack
     [r|
 DROP INDEX idx_msg_queues_deleted_at;
@@ -129,7 +129,7 @@ CREATE TABLE services(
   service_id BYTEA NOT NULL,
   service_role TEXT NOT NULL,
   service_cert BYTEA NOT NULL,
-  service_cert_hash BYTEA NOT NULL,
+  service_cert_hash BYTEA NOT NULL UNIQUE,
   created_at BIGINT NOT NULL,
   PRIMARY KEY (service_id)
 );
@@ -140,4 +140,18 @@ ALTER TABLE msg_queues
 
 CREATE INDEX idx_msg_queues_rcv_service_id ON msg_queues(rcv_service_id);
 CREATE INDEX idx_msg_queues_ntf_service_id ON msg_queues(ntf_service_id);
+    |]
+
+down_m20250514_service_certs :: Text
+down_m20250514_service_certs =
+  T.pack
+    [r|
+DROP INDEX idx_msg_queues_rcv_service_id;
+DROP INDEX idx_msg_queues_ntf_service_id;
+
+ALTER TABLE msg_queues
+  DROP COLUMN rcv_service_id,
+  DROP COLUMN ntf_service_id;
+
+DROP TABLE services;
     |]

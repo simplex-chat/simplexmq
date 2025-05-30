@@ -149,9 +149,9 @@ instance StrEncoding UTCTime where
   strP = maybe (Left "bad UTCTime") Right . iso8601ParseM . B.unpack <$?> A.takeTill (\c -> c == ' ' || c == '\n' || c == ',' || c == ';')
 
 instance StrEncoding X.CertificateChain where
-  strEncode _ = ""
+  strEncode = (\(X.CertificateChainRaw blobs) -> strEncodeList blobs) . X.encodeCertificateChain
   {-# INLINE strEncode #-}
-  strP = fail "TODO [certs]"
+  strP = either (fail . show) pure . X.decodeCertificateChain . X.CertificateChainRaw =<< strListP
   {-# INLINE strP #-}
 
 instance StrEncoding XV.Fingerprint where

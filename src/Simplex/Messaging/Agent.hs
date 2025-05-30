@@ -2468,7 +2468,7 @@ debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do
   delLock <- atomically $ tryReadTMVar d
   pure AgentLocks {connLocks, invLocks, delLock}
   where
-    getLocks ls = atomically $ M.mapKeys (B.unpack . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
+    getLocks ls = atomically $ M.mapKeys (safeDecodeUtf8 . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
 
 getSMPServer :: AgentClient -> UserId -> AM SMPServerWithAuth
 getSMPServer c userId = getNextSMPServer c userId []

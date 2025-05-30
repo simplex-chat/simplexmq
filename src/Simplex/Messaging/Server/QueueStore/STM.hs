@@ -27,16 +27,14 @@ import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Data.Bitraversable (bimapM)
-import Data.ByteString (ByteString)
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
-import qualified Data.Text as T
+import Data.Text (Text)
 import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -44,7 +42,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (anyM, ifM, ($>>), ($>>=), (<$$))
+import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
 
@@ -57,8 +55,6 @@ data STMQueueStore q = STMQueueStore
     links :: TMap LinkId RecipientId,
     storeLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
-
-type CertFingerprint = ByteString
 
 data STMService = STMService
   { serviceRec :: ServiceRec,
@@ -251,10 +247,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure q
 
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
-  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fps} =
-    TM.lookupIO fps serviceCerts
+  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
+    TM.lookupIO fp serviceCerts
       >>= maybe
-        (atomically $ TM.lookup fps serviceCerts >>= maybe newService checkService)
+        (atomically $ TM.lookup fp serviceCerts >>= maybe newService checkService)
         (atomically . checkService)
       $>>= \(serviceId, new) ->
         if new
@@ -271,7 +267,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       newService = ifM (TM.member newSrvId services) (pure $ Left DUPLICATE_) newService_
       newService_ = do
         TM.insertM newSrvId newSTMService services
-        TM.insert fps newSrvId serviceCerts
+        TM.insert fp newSrvId serviceCerts
         pure $ Right (newSrvId, True)
       newSTMService = do
         serviceRcvQueues <- newTVar S.empty
@@ -320,12 +316,12 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       addService (ssNtfs, ntfs') (serviceId, s) = do
         snIds <- readTVarIO $ serviceNtfQueues s
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-            ssNtfs' = (Just serviceId, sNtfs) : ssNtfs
-        pure (ssNtfs', restNtfs)
+        pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  -- TODO [certs]
-  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
-  getNtfServiceQueueCount = undefined
+  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int)
+  getNtfServiceQueueCount st serviceId =
+    TM.lookupIO serviceId (services st) >>=
+      maybe (pure $ Left AUTH) (fmap (Right . S.size) . readTVarIO . serviceNtfQueues)
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a
@@ -355,16 +351,16 @@ readQueueRecIO :: TVar (Maybe QueueRec) -> IO (Either ErrorType QueueRec)
 readQueueRecIO qr = maybe (Left AUTH) Right <$> readTVarIO qr
 {-# INLINE readQueueRecIO #-}
 
-withLog' :: String -> TVar (Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
+withLog' :: Text -> TVar (Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
 withLog' name sl action =
   readTVarIO sl
     >>= maybe (pure $ Right ()) (E.try . E.uninterruptibleMask_ . action >=> bimapM logErr pure)
   where
     logErr :: E.SomeException -> IO ErrorType
-    logErr e = logError ("STORE: " <> T.pack err) $> STORE err
+    logErr e = logError ("STORE: " <> err) $> STORE err
       where
-        err = name <> ", withLog, " <> show e
+        err = name <> ", withLog, " <> tshow e
 
-withLog :: String -> STMQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
+withLog :: Text -> STMQueueStore q -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
 withLog name = withLog' name . storeLog
 {-# INLINE withLog #-}

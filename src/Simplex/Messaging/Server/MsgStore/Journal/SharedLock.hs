@@ -8,6 +8,7 @@ where
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Monad
+import Data.Text (Text)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Agent.Client (getMapLock)
 import Simplex.Messaging.Protocol (RecipientId)
@@ -16,14 +17,14 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (($>>), ($>>=))
 
 -- wait until shared lock with passed ID is released and take lock
-withLockWaitShared :: RecipientId -> Lock -> TMVar RecipientId -> String -> IO a -> IO a
+withLockWaitShared :: RecipientId -> Lock -> TMVar RecipientId -> Text -> IO a -> IO a
 withLockWaitShared rId lock shared name =
   E.bracket_
     (atomically $ waitShared rId shared >> putTMVar lock name)
     (void $ atomically $ takeTMVar lock)
 
 -- wait until shared lock with passed ID is released and take lock from Map for this ID
-withLockMapWaitShared :: RecipientId -> TMap RecipientId Lock -> TMVar RecipientId -> String -> IO a -> IO a
+withLockMapWaitShared :: RecipientId -> TMap RecipientId Lock -> TMVar RecipientId -> Text -> IO a -> IO a
 withLockMapWaitShared rId locks shared name a =
   E.bracket
     (atomically $ waitShared rId shared >> getPutLock (getMapLock locks) rId name)

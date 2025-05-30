@@ -761,7 +761,6 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVRange getService = do
       let fp = XV.getFingerprint idCert X.HashSHA256
       serviceId <- getService serviceRole cc fp
       sendHandshake th $ SMPServerHandshakeResponse {serviceId}
-      liftIO $ putStrLn "server created client service"
       pure THClientService {serviceId, serviceRole, serviceKey}
     sendErr err = do
       sendHandshake th $ SMPServerHandshakeError {handshakeError = err}
@@ -819,7 +818,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
     getClientService :: (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO THClientService
     getClientService (ServiceCredentials {serviceRole}, (_, pk)) =
       getHandshake th >>= \case
-        SMPServerHandshakeResponse {serviceId} -> liftIO (putStrLn "client received service ID") >> pure THClientService {serviceId, serviceRole, serviceKey = pk}
+        SMPServerHandshakeResponse {serviceId} -> pure THClientService {serviceId, serviceRole, serviceKey = pk}
         SMPServerHandshakeError {handshakeError} -> throwE handshakeError
 
 smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> Bool -> Maybe THPeerClientService -> IO (THandleSMP c 'TServer)

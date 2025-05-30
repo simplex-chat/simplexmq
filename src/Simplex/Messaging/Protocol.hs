@@ -216,6 +216,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
@@ -578,7 +579,6 @@ data BrokerMsg where
   -- TODO [certs] as service ID is known from handshake, possibly this can be boolean to reduce size of responses
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues subscribed with SSUB command
-  -- TODO [certs] maybe it should include the queue IDs that were marked as deleted and blocked
   SSOK :: Word32 -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
@@ -1355,7 +1355,7 @@ data ErrorType
   | -- | SMP queue capacity is exceeded on the server
     QUOTA
   | -- | SMP server storage error
-    STORE {storeErr :: String}
+    STORE {storeErr :: Text}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
@@ -1378,7 +1378,7 @@ instance StrEncoding ErrorType where
     BLOCKED info -> "BLOCKED " <> strEncode info
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
-    STORE e -> "STORE " <> encodeUtf8 (T.pack e)
+    STORE e -> "STORE " <> encodeUtf8 e
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
     EXPIRED -> "EXPIRED"
@@ -1394,7 +1394,7 @@ instance StrEncoding ErrorType where
         "BLOCKED " *> strP,
         "CRYPTO" $> CRYPTO,
         "QUOTA" $> QUOTA,
-        "STORE " *> (STORE . T.unpack . safeDecodeUtf8 <$> A.takeByteString),
+        "STORE " *> (STORE . safeDecodeUtf8 <$> A.takeByteString),
         "NO_MSG" $> NO_MSG,
         "LARGE_MSG" $> LARGE_MSG,
         "EXPIRED" $> EXPIRED,
@@ -1790,7 +1790,7 @@ instance Encoding ErrorType where
     BLOCKED info -> "BLOCKED " <> smpEncode info
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
-    STORE err -> "STORE " <> smpEncode err
+    STORE err -> "STORE " <> encodeUtf8 err
     EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
@@ -1807,7 +1807,7 @@ instance Encoding ErrorType where
       "BLOCKED" -> BLOCKED <$> _smpP
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
-      "STORE" -> STORE <$> _smpP
+      "STORE" -> STORE . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
       "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG

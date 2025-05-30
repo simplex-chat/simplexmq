@@ -11,19 +11,17 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.X509 as X
-import qualified Data.X509.Validation as XV
+import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
-import Simplex.Messaging.Transport (SMPServiceRole)
 
 class StoreQueueClass q where
   type MsgQueue q = mq | mq -> q
   recipientId :: q -> RecipientId
   queueRec :: q -> TVar (Maybe QueueRec)
   msgQueue :: q -> TVar (Maybe (MsgQueue q))
-  withQueueLock :: q -> String -> IO a -> IO a
+  withQueueLock :: q -> Text -> IO a -> IO a
 
 class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s
@@ -50,7 +48,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   setQueueRcvService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
   setQueueNtfService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
-  getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int64)
+  getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int)
 
 data QueueCounts = QueueCounts
   { queueCount :: Int,

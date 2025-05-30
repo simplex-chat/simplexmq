@@ -238,7 +238,7 @@ updateTknCronInterval st tknId cronInt =
 -- Reads servers that have subscriptions that need subscribing.
 -- It is executed on server start, and it is supposed to crash on database error
 getUsedSMPServers :: NtfPostgresStore -> IO [SMPServer]
-getUsedSMPServers st = 
+getUsedSMPServers st =
   withTransaction (dbStore st) $ \db ->
     map rowToSrv <$>
       DB.query
@@ -326,7 +326,7 @@ getNtfSubscription st subId =
             JOIN tokens t ON t.token_id = s.token_id
             JOIN smp_servers p ON p.smp_server_id = s.smp_server_id
             WHERE s.subscription_id = ?
-          |]          
+          |]
           (Only subId)
     liftIO $ updateTokenDate st db tkn
     unless (allowNtfSubCommands tknStatus) $ throwE AUTH
@@ -408,14 +408,14 @@ addNtfSubscription st sub =
         getServer =
           maybeFirstRow fromOnly $
             DB.query
-              db 
+              db
               [sql|
                 SELECT smp_server_id
                 FROM smp_servers
                 WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
               |]
               (srvToRow srv)
-        insertServer = 
+        insertServer =
           firstRow fromOnly (STORE "error inserting SMP server when adding subscription") $
             DB.query
               db
@@ -462,7 +462,7 @@ updateSrvSubStatus st q status =
             RETURNING s.subscription_id
           |]
           (Only status :. smpQueueToRow q :. Only status)
-    forM_ subId_ $ \subId -> 
+    forM_ subId_ $ \subId ->
       withLog "updateSrvSubStatus" st $ \sl -> logSubscriptionStatus sl subId status
 
 batchUpdateSrvSubAssocs :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, Maybe ServiceId) -> NtfSubStatus -> IO Int64
@@ -633,7 +633,7 @@ getEntityCounts st =
     pure (tCnt, sCnt, nCnt)
   where
     count (Only n : _) = n
-    count [] = 0    
+    count [] = 0
 
 importNtfSTMStore :: NtfPostgresStore -> NtfSTMStore -> S.Set NtfTokenId -> IO (Int64, Int64, Int64)
 importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore skipTokens = do
@@ -704,7 +704,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore skipTokens = do
         filterSubs allSubs = do
           let subs = filter (\NtfSubData {tokenId} -> S.member tokenId tIds) allSubs
               skipped = length allSubs - length subs
-          when (skipped /= 0) $ putStrLn $ "Skipped " <> show skipped <> " subscriptions of missing tokens" 
+          when (skipped /= 0) $ putStrLn $ "Skipped " <> show skipped <> " subscriptions of missing tokens"
           let (removedSubTokens, removeSubs, dupQueues) = foldl' addSubToken (S.empty, S.empty, S.empty) subs
           unless (null removeSubs) $ putStrLn $ "Skipped " <> show (S.size removeSubs) <> " duplicate subscriptions of " <> show (S.size removedSubTokens) <> " tokens for " <> show (S.size dupQueues) <> " queues"
           pure $ filter (\NtfSubData {ntfSubId} -> S.notMember ntfSubId removeSubs) subs
@@ -768,7 +768,7 @@ importNtfSTMStore NtfPostgresStore {dbStore = s} stmStore skipTokens = do
               else (S.insert tId stIds, cnt', acc)
           where
             ntfRow (!qs, !rows) PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta} = case M.lookup smpQueue subLookup of
-              Just ntfSubId -> 
+              Just ntfSubId ->
                 let row = (tId, ntfSubId, systemToUTCTime ntfTs, nmsgNonce, Binary encNMsgMeta)
                  in (qs, row : rows)
               Nothing -> (S.insert smpQueue qs, rows)
@@ -832,32 +832,32 @@ exportNtfDbStore NtfPostgresStore {dbStore = s, dbStoreLog = Just sl} lastNtfsFi
           |]
         encodeLastNtf tknId ntf = strEncode (TNMRv1 tknId ntf) `B.snoc` '\n'
 
-withFastDB' :: String -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
+withFastDB' :: Text -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
 withFastDB' op st action = withFastDB op st $ fmap Right . action
 {-# INLINE withFastDB' #-}
 
-withDB' :: String -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
+withDB' :: Text -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either ErrorType a)
 withDB' op st action = withDB op st $ fmap Right . action
 {-# INLINE withDB' #-}
 
-withFastDB :: forall a. String -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
+withFastDB :: forall a. Text -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withFastDB op st = withDB_ op st True
 {-# INLINE withFastDB #-}
 
-withDB :: forall a. String -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
+withDB :: forall a. Text -> NtfPostgresStore -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB op st = withDB_ op st False
 {-# INLINE withDB #-}
 
-withDB_ :: forall a. String -> NtfPostgresStore -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
+withDB_ :: forall a. Text -> NtfPostgresStore -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB_ op st priority action =
   E.uninterruptibleMask_ $ E.try (withTransactionPriority (dbStore st) priority action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
-    logErr e = logError ("STORE: " <> T.pack err) $> Left (STORE err)
+    logErr e = logError ("STORE: " <> err) $> Left (STORE err)
       where
-        err = op <> ", withDB, " <> show e
+        err = op <> ", withDB, " <> tshow e
 
-withLog :: MonadIO m => String -> NtfPostgresStore -> (StoreLog 'WriteMode -> IO ()) -> m ()
+withLog :: MonadIO m => Text -> NtfPostgresStore -> (StoreLog 'WriteMode -> IO ()) -> m ()
 withLog op NtfPostgresStore {dbStoreLog} = withLog_ op dbStoreLog
 {-# INLINE withLog #-}
 

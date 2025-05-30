@@ -156,7 +156,7 @@ type AttachHTTP = Socket -> TLS.Context -> IO ()
 data ClientSubAction
   = CSAEndSub QueueId
   | CSAEndServiceSub
-  | CSADecreaseSubs Int64
+  | CSADecreaseSubs Int
 
 type PrevClientSub s = (Client s, ClientSubAction, (EntityId, BrokerMsg))
 
@@ -243,7 +243,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       Server s ->
       (Server s -> ServerSubscribers s) ->
       (Client s -> TMap QueueId sub) ->
-      (Client s -> TVar Int64) ->
+      (Client s -> TVar Int) ->
       Maybe (sub -> IO ()) ->
       M s ()
     serverThread label srv srvSubscribers clientSubs clientServiceSubs unsub_ = do
@@ -691,12 +691,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 
-    -- TODO [certs]
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
       newServiceId <- EntityId <$> atomically (C.randomBytes idSize g)
+      ts <- liftIO getSystemDate
+      let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
       -- TODO [certs] another error?
-      let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp}
       withExceptT (const TEBadSession) $ ExceptT $
         getCreateService @(StoreQueue s) (queueStore ms) sr
 
@@ -1035,7 +1035,7 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceS
     updateSubscribers subs ServerSubscribers {queueSubscribers, subClients} = do
       mapM_ (\qId -> deleteSubcribedClient qId c queueSubscribers) (M.keys subs)
       atomically $ modifyTVar' subClients $ IS.delete clientId
-    updateServiceSubs :: ServiceId -> TVar Int64 -> ServerSubscribers s -> IO ()
+    updateServiceSubs :: ServiceId -> TVar Int -> ServerSubscribers s -> IO ()
     updateServiceSubs serviceId subsCount ServerSubscribers {totalServiceSubs, serviceSubscribers} = do
       deleteSubcribedClient serviceId c serviceSubscribers
       atomically . modifyTVar' totalServiceSubs . subtract =<< readTVarIO subsCount

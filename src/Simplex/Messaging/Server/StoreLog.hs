@@ -64,7 +64,6 @@ import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
 import System.FilePath (takeDirectory, takeFileName)
 
--- TODO [certs] constructors to create service record and to create service/queue association
 data StoreLogRecord
   = CreateQueue RecipientId QueueRec
   | CreateLink RecipientId LinkId QueueLinkData
@@ -223,7 +222,7 @@ instance StrEncoding StoreLogRecord where
       DeleteQueue_ -> DeleteQueue <$> strP
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
-      NewService_ -> NewService <$> strP_
+      NewService_ -> NewService <$> strP
       QueueRcvService_ -> QueueRcvService <$> strP_ <*> strP
       QueueNtfService_ -> QueueNtfService <$> strP_ <*> strP
 

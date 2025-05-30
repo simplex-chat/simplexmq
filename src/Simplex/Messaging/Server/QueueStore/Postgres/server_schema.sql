@@ -73,6 +73,11 @@ ALTER TABLE ONLY smp_server.services
 
 
 
+ALTER TABLE ONLY smp_server.services
+    ADD CONSTRAINT services_service_cert_hash_key UNIQUE (service_cert_hash);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON smp_server.msg_queues USING btree (link_id);
 
 

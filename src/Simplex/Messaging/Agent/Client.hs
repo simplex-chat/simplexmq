@@ -458,9 +458,9 @@ data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks
-  { connLocks :: Map String String,
-    invLocks :: Map String String,
-    delLock :: Maybe String
+  { connLocks :: Map Text Text,
+    invLocks :: Map Text Text,
+    delLock :: Maybe Text
   }
   deriving (Show)
 
@@ -986,32 +986,32 @@ closeXFTPServerClient :: AgentClient -> UserId -> XFTPServer -> FileDigest -> IO
 closeXFTPServerClient c userId server (FileDigest chunkDigest) =
   mkTransportSession c userId server chunkDigest >>= closeClient c xftpClients
 
-withConnLock :: AgentClient -> ConnId -> String -> AM a -> AM a
+withConnLock :: AgentClient -> ConnId -> Text -> AM a -> AM a
 withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 {-# INLINE withConnLock #-}
 
-withConnLock' :: AgentClient -> ConnId -> String -> AM' a -> AM' a
+withConnLock' :: AgentClient -> ConnId -> Text -> AM' a -> AM' a
 withConnLock' _ "" _ = id
 withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId name
 {-# INLINE withConnLock' #-}
 
-withInvLock :: AgentClient -> ByteString -> String -> AM a -> AM a
+withInvLock :: AgentClient -> ByteString -> Text -> AM a -> AM a
 withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
 {-# INLINE withInvLock #-}
 
-withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
+withInvLock' :: AgentClient -> ByteString -> Text -> AM' a -> AM' a
 withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
-withConnLocks :: AgentClient -> Set ConnId -> String -> AM' a -> AM' a
+withConnLocks :: AgentClient -> Set ConnId -> Text -> AM' a -> AM' a
 withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks
 {-# INLINE withConnLocks #-}
 
-withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
+withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
 withLockMap = withGetLock . getMapLock
 {-# INLINE withLockMap #-}
 
-withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> String -> m a -> m a
+withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> Text -> m a -> m a
 withLocksMap_ = withGetLocks . getMapLock
 {-# INLINE withLocksMap_ #-}
 

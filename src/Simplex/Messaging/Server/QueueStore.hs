@@ -31,29 +31,6 @@ import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Util (eitherToMaybe)
 #endif
 
-data ServiceRec = ServiceRec
-  { serviceId :: ServiceId,
-    serviceRole :: SMPServiceRole,
-    serviceCert :: X.CertificateChain,
-    serviceCertHash :: XV.Fingerprint -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
-  }
-  deriving (Show)
-
-instance StrEncoding ServiceRec where
-  strEncode ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash} =
-    B.unwords
-      [ "service_id=" <> strEncode serviceId,
-        "role=" <> smpEncode serviceRole,
-        "cert=" <> strEncode serviceCert,
-        "cert_hash=" <> strEncode serviceCertHash
-      ]
-  strP = do
-    serviceId <- "service_id=" *> strP
-    serviceRole <- " role=" *> smpP
-    serviceCert <- " cert=" *> strP
-    serviceCertHash <- " cert_hash=" *> strP
-    pure ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash}
-
 data QueueRec = QueueRec
   { recipientKeys :: NonEmpty RcvPublicAuthKey,
     rcvDhSecret :: RcvDhSecret,
@@ -84,6 +61,34 @@ instance StrEncoding NtfCreds where
     (notifierId, notifierKey, rcvNtfDhSecret) <- strP
     ntfServiceId <- optional $ " nsrv=" *> strP
     pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId}
+
+data ServiceRec = ServiceRec
+  { serviceId :: ServiceId,
+    serviceRole :: SMPServiceRole,
+    serviceCert :: X.CertificateChain,
+    serviceCertHash :: XV.Fingerprint, -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
+    serviceCreatedAt :: RoundedSystemTime
+  }
+  deriving (Show)
+
+type CertFingerprint = B.ByteString
+
+instance StrEncoding ServiceRec where
+  strEncode ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash, serviceCreatedAt} =
+    B.unwords
+      [ "service_id=" <> strEncode serviceId,
+        "role=" <> smpEncode serviceRole,
+        "cert=" <> strEncode serviceCert,
+        "cert_hash=" <> strEncode serviceCertHash,
+        "created_at=" <> strEncode serviceCreatedAt
+      ]
+  strP = do
+    serviceId <- "service_id=" *> strP
+    serviceRole <- " role=" *> smpP
+    serviceCert <- " cert=" *> strP
+    serviceCertHash <- " cert_hash=" *> strP
+    serviceCreatedAt <- " created_at=" *> strP
+    pure ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash, serviceCreatedAt}
 
 data ServerEntityStatus
   = EntityActive
