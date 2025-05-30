@@ -1173,7 +1173,7 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
     SUB
       | verifyServiceSig -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
       | otherwise -> pure $ VRFailed AUTH
-    SSUB -> pure verifyServiceCmd
+    SUBS -> pure verifyServiceCmd
     _ -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
   SSender | hasRole SRMessaging -> case cmd of
     SKEY k -> verifySecure SSender k
@@ -1187,7 +1187,7 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
     NSUB
       | verifyServiceSig -> verifyQueue SNotifier $ \q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)
       | otherwise -> pure $ VRFailed AUTH
-    NSSUB -> pure verifyServiceCmd
+    NSUBS -> pure verifyServiceCmd
   SProxiedClient | hasRole SRMessaging -> pure $ VRVerified Nothing
   SProxyService | hasRole SRProxy -> pure $ VRVerified Nothing
   _ -> pure $ VRFailed $ CMD PROHIBITED
@@ -1402,7 +1402,7 @@ client
         NSUB -> case q_ of
           Just (q, QueueRec {notifier = Just ntfCreds}) -> subscribeNotifications q ntfCreds
           _ -> pure $ ERR INTERNAL
-        NSSUB -> case service of
+        NSUBS -> case service of
           Just s -> subscribeServiceNotifications s
           Nothing -> pure $ ERR INTERNAL
       Cmd SRecipient command ->
@@ -1414,7 +1414,7 @@ client
                 ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
                 pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
           SUB -> withQueue subscribeQueue
-          SSUB -> error "TODO [certs]"
+          SUBS -> error "TODO [certs]"
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1701,8 +1701,8 @@ client
                   writeTQueue (subQ ntfSubscribers) (CSService serviceId, clientId)
                   modifyTVar' ntfServiceSubsCount (+ count) -- service count
                   modifyTVar' (totalServiceSubs ntfSubscribers) (+ count) -- server count for all services
-                  pure $ SSOK $ fromIntegral srvSubs
-            else pure $ SSOK $ fromIntegral srvSubs
+                  pure $ SOKS $ fromIntegral srvSubs
+            else pure $ SOKS $ fromIntegral srvSubs
 
         acknowledgeMsg :: MsgId -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         acknowledgeMsg msgId q qr = time "ACK" $ do

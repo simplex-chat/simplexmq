@@ -424,7 +424,7 @@ data Command (p :: Party) where
   NEW :: NewQueueReq -> Command Recipient
   SUB :: Command Recipient
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  SSUB :: Command Recipient
+  SUBS :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
@@ -448,7 +448,7 @@ data Command (p :: Party) where
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  NSSUB :: Command Notifier
+  NSUBS :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -578,8 +578,8 @@ data BrokerMsg where
   -- | Service subscription success - confirms when queue was associated with the service
   -- TODO [certs] as service ID is known from handshake, possibly this can be boolean to reduce size of responses
   SOK :: Maybe ServiceId -> BrokerMsg
-  -- | The number of queues subscribed with SSUB command
-  SSOK :: Word32 -> BrokerMsg
+  -- | The number of queues subscribed with SUBS command
+  SOKS :: Word32 -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
@@ -785,7 +785,7 @@ noMsgFlags = MsgFlags {notification = False}
 data CommandTag (p :: Party) where
   NEW_ :: CommandTag Recipient
   SUB_ :: CommandTag Recipient
-  SSUB_ :: CommandTag Recipient
+  SUBS_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   RKEY_ :: CommandTag Recipient
   LSET_ :: CommandTag Recipient
@@ -806,7 +806,7 @@ data CommandTag (p :: Party) where
   PFWD_ :: CommandTag ProxiedClient
   RFWD_ :: CommandTag ProxyService
   NSUB_ :: CommandTag Notifier
-  NSSUB_ :: CommandTag Notifier
+  NSUBS_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -818,7 +818,7 @@ data BrokerMsgTag
   = IDS_
   | LNK_
   | SOK_
-  | SSOK_
+  | SOKS_
   | MSG_
   | NID_
   | NMSG_
@@ -846,7 +846,7 @@ instance PartyI p => Encoding (CommandTag p) where
   smpEncode = \case
     NEW_ -> "NEW"
     SUB_ -> "SUB"
-    SSUB_ -> "SSUB"
+    SUBS_ -> "SUBS"
     KEY_ -> "KEY"
     RKEY_ -> "RKEY"
     LSET_ -> "LSET"
@@ -867,14 +867,14 @@ instance PartyI p => Encoding (CommandTag p) where
     PFWD_ -> "PFWD"
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
-    NSSUB_ -> "NSSUB"
+    NSUBS_ -> "NSUBS"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
   decodeTag = \case
     "NEW" -> Just $ CT SRecipient NEW_
     "SUB" -> Just $ CT SRecipient SUB_
-    "SSUB" -> Just $ CT SRecipient SSUB_
+    "SUBS" -> Just $ CT SRecipient SUBS_
     "KEY" -> Just $ CT SRecipient KEY_
     "RKEY" -> Just $ CT SRecipient RKEY_
     "LSET" -> Just $ CT SRecipient LSET_
@@ -895,7 +895,7 @@ instance ProtocolMsgTag CmdTag where
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SProxyService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
-    "NSSUB" -> Just $ CT SNotifier NSSUB_
+    "NSUBS" -> Just $ CT SNotifier NSUBS_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -910,7 +910,7 @@ instance Encoding BrokerMsgTag where
     IDS_ -> "IDS"
     LNK_ -> "LNK"
     SOK_ -> "SOK"
-    SSOK_ -> "SSOK"
+    SOKS_ -> "SOKS"
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
@@ -931,7 +931,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "IDS" -> Just IDS_
     "LNK" -> Just LNK_
     "SOK" -> Just SOK_
-    "SSOK" -> Just SSOK_
+    "SOKS" -> Just SOKS_
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
@@ -1529,7 +1529,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
-    SSUB -> e SSUB_
+    SUBS -> e SUBS_
     KEY k -> e (KEY_, ' ', k)
     RKEY ks -> e (RKEY_, ' ', ks)
     LSET lnkId d -> e (LSET_, ' ', lnkId, d)
@@ -1545,7 +1545,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
-    NSSUB -> e NSSUB_
+    NSUBS -> e NSUBS_
     LKEY k -> e (LKEY_, ' ', k)
     LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
@@ -1624,7 +1624,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
             auth = optional (A.char 'A' *> smpP)
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
         SUB_ -> pure SUB
-        SSUB_ -> pure SSUB
+        SUBS_ -> pure SUBS
         KEY_ -> KEY <$> _smpP
         RKEY_ -> RKEY <$> _smpP
         LSET_ -> LSET <$> _smpP <*> smpP
@@ -1654,7 +1654,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifier tag ->
       pure $ Cmd SNotifier $ case tag of
         NSUB_ -> NSUB
-        NSSUB_ -> NSSUB
+        NSUBS_ -> NSUBS
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1675,7 +1675,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SOK serviceId_
       | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
       | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
-    SSOK n -> e (SSOK_, ' ', n)
+    SOKS n -> e (SOKS_, ' ', n)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1724,7 +1724,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId}
     LNK_ -> LNK <$> _smpP <*> smpP
     SOK_ -> SOK <$> _smpP
-    SSOK_ -> SSOK <$> _smpP
+    SOKS_ -> SOKS <$> _smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
