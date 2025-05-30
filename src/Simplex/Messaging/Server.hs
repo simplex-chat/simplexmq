@@ -497,7 +497,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv}
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, msgServices, ntfServices}
         <- asks serverStats
       st <- asks msgStore
       QueueCounts {queueCount, notifierCount} <- liftIO $ queueCounts @(StoreQueue s) $ queueStore st
@@ -553,6 +553,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
           pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
+          msgServices' <- getServiceStatsData msgServices
+          ntfServices' <- getServiceStatsData ntfServices
           qCount' <- readIORef qCount
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
@@ -623,11 +625,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                        show msgNtfExpired',
                        show ntfCount'
                      ]
+                       <> showServiceStats msgServices'
+                       <> showServiceStats ntfServices'
               )
         liftIO $ threadDelay' interval
       where
         showProxyStats ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =
-          [show _pRequests, show _pSuccesses, show _pErrorsConnect, show _pErrorsCompat, show _pErrorsOther]
+          map show [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
+        showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
+          map show [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =

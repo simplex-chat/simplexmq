@@ -135,6 +135,8 @@ data ServerStatsData = ServerStatsData
     _pMsgFwds :: ProxyStatsData,
     _pMsgFwdsOwn :: ProxyStatsData,
     _pMsgFwdsRecv :: Int,
+    _ntfServices :: ServiceStatsData,
+    _msgServices :: ServiceStatsData,
     _qCount :: Int,
     _msgCount :: Int,
     _ntfCount :: Int
@@ -306,6 +308,8 @@ getServerStatsData s = do
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
   _pMsgFwdsOwn <- getProxyStatsData $ pMsgFwdsOwn s
   _pMsgFwdsRecv <- readIORef $ pMsgFwdsRecv s
+  _msgServices <- getServiceStatsData $ msgServices s
+  _ntfServices <- getServiceStatsData $ ntfServices s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
   _ntfCount <- readIORef $ ntfCount s
@@ -360,6 +364,8 @@ getServerStatsData s = do
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
+        _msgServices,
+        _ntfServices,
         _qCount,
         _msgCount,
         _ntfCount
@@ -417,9 +423,8 @@ setServerStats s d = do
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
   setProxyStats (pMsgFwdsOwn s) $! _pMsgFwdsOwn d
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
-  -- TODO [certs] get from stats data
-  -- msgServices <- newServiceStats
-  -- ntfServices <- newServiceStats
+  setServiceStats (msgServices s) $! _msgServices d
+  setServiceStats (ntfServices s) $! _ntfServices d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
@@ -482,7 +487,11 @@ instance StrEncoding ServerStatsData where
         strEncode (_pMsgFwds d),
         "pMsgFwdsOwn:",
         strEncode (_pMsgFwdsOwn d),
-        "pMsgFwdsRecv=" <> strEncode (_pMsgFwdsRecv d)
+        "pMsgFwdsRecv=" <> strEncode (_pMsgFwdsRecv d),
+        "msgServices:",
+        strEncode (_msgServices d),
+        "ntfServices:",
+        strEncode (_ntfServices d)
       ]
   strP = do
     _fromTime <- "fromTime=" *> strP <* A.endOfLine
@@ -550,6 +559,8 @@ instance StrEncoding ServerStatsData where
     _pMsgFwds <- proxyStatsP "pMsgFwds:"
     _pMsgFwdsOwn <- proxyStatsP "pMsgFwdsOwn:"
     _pMsgFwdsRecv <- opt "pMsgFwdsRecv="
+    _msgServices <- serviceStatsP "msgServices:"
+    _ntfServices <- serviceStatsP "ntfServices:"
     pure
       ServerStatsData
         { _fromTime,
@@ -601,6 +612,8 @@ instance StrEncoding ServerStatsData where
           _pMsgFwds,
           _pMsgFwdsOwn,
           _pMsgFwdsRecv,
+          _msgServices,
+          _ntfServices,
           _qCount,
           _msgCount = 0,
           _ntfCount = 0
@@ -612,6 +625,10 @@ instance StrEncoding ServerStatsData where
         optional (A.string key >> A.endOfLine) >>= \case
           Just _ -> strP <* optional A.endOfLine
           _ -> pure newProxyStatsData
+      serviceStatsP key =
+        optional (A.string key >> A.endOfLine) >>= \case
+          Just _ -> strP <* optional A.endOfLine
+          _ -> pure newServiceStatsData
 
 data PeriodStats = PeriodStats
   { day :: IORef IntSet,
@@ -785,6 +802,31 @@ data ServiceStats = ServiceStats
     srvSubEnd :: IORef Int
   }
 
+data ServiceStatsData = ServiceStatsData
+  { _srvAssocNew :: Int,
+    _srvAssocDuplicate :: Int,
+    _srvAssocUpdated :: Int,
+    _srvAssocRemoved :: Int,
+    _srvSubCount :: Int,
+    _srvSubDuplicate :: Int,
+    _srvSubQueues :: Int,
+    _srvSubEnd :: Int
+  }
+  deriving (Show)
+
+newServiceStatsData :: ServiceStatsData
+newServiceStatsData =
+  ServiceStatsData
+    { _srvAssocNew = 0,
+      _srvAssocDuplicate = 0,
+      _srvAssocUpdated = 0,
+      _srvAssocRemoved = 0,
+      _srvSubCount = 0,
+      _srvSubDuplicate = 0,
+      _srvSubQueues = 0,
+      _srvSubEnd = 0
+    }
+
 newServiceStats :: IO ServiceStats
 newServiceStats = do
   srvAssocNew <- newIORef 0
@@ -806,3 +848,68 @@ newServiceStats = do
         srvSubQueues,
         srvSubEnd
       }
+
+getServiceStatsData :: ServiceStats -> IO ServiceStatsData
+getServiceStatsData s = do
+  _srvAssocNew <- readIORef $ srvAssocNew s
+  _srvAssocDuplicate <- readIORef $ srvAssocDuplicate s
+  _srvAssocUpdated <- readIORef $ srvAssocUpdated s
+  _srvAssocRemoved <- readIORef $ srvAssocRemoved s
+  _srvSubCount <- readIORef $ srvSubCount s
+  _srvSubDuplicate <- readIORef $ srvSubDuplicate s
+  _srvSubQueues <- readIORef $ srvSubQueues s
+  _srvSubEnd <- readIORef $ srvSubEnd s
+  pure ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd}
+
+getResetServiceStatsData :: ServiceStats -> IO ServiceStatsData
+getResetServiceStatsData s = do
+  _srvAssocNew <- atomicSwapIORef (srvAssocNew s) 0
+  _srvAssocDuplicate <- atomicSwapIORef (srvAssocDuplicate s) 0
+  _srvAssocUpdated <- atomicSwapIORef (srvAssocUpdated s) 0
+  _srvAssocRemoved <- atomicSwapIORef (srvAssocRemoved s) 0
+  _srvSubCount <- atomicSwapIORef (srvSubCount s) 0
+  _srvSubDuplicate <- atomicSwapIORef (srvSubDuplicate s) 0
+  _srvSubQueues <- atomicSwapIORef (srvSubQueues s) 0
+  _srvSubEnd <- atomicSwapIORef (srvSubEnd s) 0
+  pure ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd}
+
+-- this function is not thread safe, it is used on server start only
+setServiceStats :: ServiceStats -> ServiceStatsData -> IO ()
+setServiceStats s d = do
+  writeIORef (srvAssocNew s) $! _srvAssocNew d
+  writeIORef (srvAssocDuplicate s) $! _srvAssocDuplicate d
+  writeIORef (srvAssocUpdated s) $! _srvAssocUpdated d
+  writeIORef (srvAssocRemoved s) $! _srvAssocRemoved d
+  writeIORef (srvSubCount s) $! _srvSubCount d
+  writeIORef (srvSubDuplicate s) $! _srvSubDuplicate d
+  writeIORef (srvSubQueues s) $! _srvSubQueues d
+  writeIORef (srvSubEnd s) $! _srvSubEnd d
+
+instance StrEncoding ServiceStatsData where
+  strEncode ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
+    "assocNew="
+      <> strEncode _srvAssocNew
+      <> "\nassocDuplicate="
+      <> strEncode _srvAssocDuplicate
+      <> "\nassocUpdatedt="
+      <> strEncode _srvAssocUpdated
+      <> "\nassocRemoved="
+      <> strEncode _srvAssocRemoved
+      <> "\nsubCount="
+      <> strEncode _srvSubCount
+      <> "\nsubDuplicate="
+      <> strEncode _srvSubDuplicate
+      <> "\nsubQueues="
+      <> strEncode _srvSubQueues
+      <> "\nsubEnd="
+      <> strEncode _srvSubEnd
+  strP = do
+    _srvAssocNew <- "assocNew=" *> strP <* A.endOfLine
+    _srvAssocDuplicate <- "assocDuplicate=" *> strP <* A.endOfLine
+    _srvAssocUpdated <- "assocUpdatedt=" *> strP <* A.endOfLine
+    _srvAssocRemoved <- "assocRemoved=" *> strP <* A.endOfLine
+    _srvSubCount <- "subCount=" *> strP <* A.endOfLine
+    _srvSubDuplicate <- "subDuplicate=" *> strP <* A.endOfLine
+    _srvSubQueues <- "subQueues=" *> strP <* A.endOfLine
+    _srvSubEnd <- "subEnd=" *> strP
+    pure ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd}
