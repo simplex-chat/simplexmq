@@ -79,7 +79,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPServiceRole)
+import Simplex.Messaging.Transport (SMPServiceRole (..))
 import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -139,18 +139,23 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     fmap (fromRight 0) $ runExceptT $ withDB' "removeDeletedQueues" st $ \db ->
       DB.execute db "DELETE FROM msg_queues WHERE deleted_at < ?" (Only old)
 
-  queueCounts :: PostgresQueueStore q -> IO QueueCounts
-  queueCounts st =
+  getEntityCounts :: PostgresQueueStore q -> IO EntityCounts
+  getEntityCounts st =
     withConnection (dbStore st) $ \db -> do
-      (queueCount, notifierCount) : _ <-
-        DB.query_
+      (queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount) : _ <-
+        DB.query
           db
           [sql|
             SELECT
               (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL) AS queue_count,
-              (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL AND notifier_id IS NOT NULL) AS notifier_count
+              (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL AND notifier_id IS NOT NULL) AS notifier_count,
+              (SELECT COUNT(1) FROM services WHERE service_role = ?) AS rcv_service_count,
+              (SELECT COUNT(1) FROM services WHERE service_role = ?) AS ntf_service_count,
+              (SELECT COUNT(1) FROM msg_queues WHERE rcv_service_id IS NOT NULL AND deleted_at IS NULL) AS rcv_service_queues_count,
+              (SELECT COUNT(1) FROM msg_queues WHERE ntf_service_id IS NOT NULL AND deleted_at IS NULL) AS ntf_service_queues_count
           |]
-      pure QueueCounts {queueCount, notifierCount}
+          (SRMessaging, SRNotifier)
+      pure EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount}
 
   -- this implementation assumes that the lock is already taken by addQueue
   -- and relies on unique constraints in the database to prevent duplicate IDs.
@@ -429,7 +434,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
     snIds <-
       withDB' "getQueueNtfServices" st $ \db ->
-        DB.query db "SELECT ntf_service_id, notifier_id FROM msg_queues WHERE notifier_id IN ?" (Only (In (map fst ntfs)))
+        DB.query db "SELECT ntf_service_id, notifier_id FROM msg_queues WHERE notifier_id IN ? AND deleted_at IS NULL" (Only (In (map fst ntfs)))
     pure $
       if null snIds
         then ([], ntfs)
@@ -449,7 +454,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getNtfServiceQueueCount st serviceId =
     E.uninterruptibleMask_ $ runExceptT $ withDB' "getNtfServiceQueueCount" st $ \db ->
       fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
-        DB.query db "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ?" (Only serviceId)
+        DB.query db "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL" (Only serviceId)
 
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
 batchInsertQueues tty queues toStore = do

@@ -18,13 +18,14 @@ import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Text (Text)
 import Data.Time.Calendar.Month (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
 import GHC.IORef (atomicSwapIORef)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..))
-import Simplex.Messaging.Util (atomicModifyIORef'_, unlessM)
+import Simplex.Messaging.Util (atomicModifyIORef'_, tshow, unlessM)
 
 data ServerStats = ServerStats
   { fromTime :: IORef UTCTime,
@@ -78,7 +79,7 @@ data ServerStats = ServerStats
     pMsgFwds :: ProxyStats,
     pMsgFwdsOwn :: ProxyStats,
     pMsgFwdsRecv :: IORef Int,
-    msgServices :: ServiceStats,
+    rcvServices :: ServiceStats,
     ntfServices :: ServiceStats,
     qCount :: IORef Int,
     msgCount :: IORef Int,
@@ -136,7 +137,7 @@ data ServerStatsData = ServerStatsData
     _pMsgFwdsOwn :: ProxyStatsData,
     _pMsgFwdsRecv :: Int,
     _ntfServices :: ServiceStatsData,
-    _msgServices :: ServiceStatsData,
+    _rcvServices :: ServiceStatsData,
     _qCount :: Int,
     _msgCount :: Int,
     _ntfCount :: Int
@@ -194,7 +195,7 @@ newServerStats ts = do
   pMsgFwds <- newProxyStats
   pMsgFwdsOwn <- newProxyStats
   pMsgFwdsRecv <- newIORef 0
-  msgServices <- newServiceStats
+  rcvServices <- newServiceStats
   ntfServices <- newServiceStats
   qCount <- newIORef 0
   msgCount <- newIORef 0
@@ -250,7 +251,7 @@ newServerStats ts = do
         pMsgFwds,
         pMsgFwdsOwn,
         pMsgFwdsRecv,
-        msgServices,
+        rcvServices,
         ntfServices,
         qCount,
         msgCount,
@@ -308,7 +309,7 @@ getServerStatsData s = do
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
   _pMsgFwdsOwn <- getProxyStatsData $ pMsgFwdsOwn s
   _pMsgFwdsRecv <- readIORef $ pMsgFwdsRecv s
-  _msgServices <- getServiceStatsData $ msgServices s
+  _rcvServices <- getServiceStatsData $ rcvServices s
   _ntfServices <- getServiceStatsData $ ntfServices s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
@@ -364,7 +365,7 @@ getServerStatsData s = do
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
-        _msgServices,
+        _rcvServices,
         _ntfServices,
         _qCount,
         _msgCount,
@@ -423,7 +424,7 @@ setServerStats s d = do
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
   setProxyStats (pMsgFwdsOwn s) $! _pMsgFwdsOwn d
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
-  setServiceStats (msgServices s) $! _msgServices d
+  setServiceStats (rcvServices s) $! _rcvServices d
   setServiceStats (ntfServices s) $! _ntfServices d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
@@ -488,8 +489,8 @@ instance StrEncoding ServerStatsData where
         "pMsgFwdsOwn:",
         strEncode (_pMsgFwdsOwn d),
         "pMsgFwdsRecv=" <> strEncode (_pMsgFwdsRecv d),
-        "msgServices:",
-        strEncode (_msgServices d),
+        "rcvServices:",
+        strEncode (_rcvServices d),
         "ntfServices:",
         strEncode (_ntfServices d)
       ]
@@ -559,7 +560,7 @@ instance StrEncoding ServerStatsData where
     _pMsgFwds <- proxyStatsP "pMsgFwds:"
     _pMsgFwdsOwn <- proxyStatsP "pMsgFwdsOwn:"
     _pMsgFwdsRecv <- opt "pMsgFwdsRecv="
-    _msgServices <- serviceStatsP "msgServices:"
+    _rcvServices <- serviceStatsP "rcvServices:"
     _ntfServices <- serviceStatsP "ntfServices:"
     pure
       ServerStatsData
@@ -612,7 +613,7 @@ instance StrEncoding ServerStatsData where
           _pMsgFwds,
           _pMsgFwdsOwn,
           _pMsgFwdsRecv,
-          _msgServices,
+          _rcvServices,
           _ntfServices,
           _qCount,
           _msgCount = 0,
@@ -679,17 +680,17 @@ instance StrEncoding PeriodStatsData where
       bsSetP = S.foldl' (\s -> (`IS.insert` s) . hash) IS.empty <$> strP @(Set ByteString)
 
 data PeriodStatCounts = PeriodStatCounts
-  { dayCount :: String,
-    weekCount :: String,
-    monthCount :: String
+  { dayCount :: Text,
+    weekCount :: Text,
+    monthCount :: Text
   }
 
 periodStatDataCounts :: PeriodStatsData -> PeriodStatCounts
 periodStatDataCounts PeriodStatsData {_day, _week, _month} =
   PeriodStatCounts
-    { dayCount = show $ IS.size _day,
-      weekCount = show $ IS.size _week,
-      monthCount = show $ IS.size _month
+    { dayCount = tshow $ IS.size _day,
+      weekCount = tshow $ IS.size _week,
+      monthCount = tshow $ IS.size _month
     }
 
 periodStatCounts :: PeriodStats -> UTCTime -> IO PeriodStatCounts
@@ -702,8 +703,8 @@ periodStatCounts ps ts = do
   monthCount <- periodCount mDay $ month ps
   pure PeriodStatCounts {dayCount, weekCount, monthCount}
   where
-    periodCount :: Int -> IORef IntSet -> IO String
-    periodCount 1 ref = show . IS.size <$> atomicSwapIORef ref IS.empty
+    periodCount :: Int -> IORef IntSet -> IO Text
+    periodCount 1 ref = tshow . IS.size <$> atomicSwapIORef ref IS.empty
     periodCount _ _ = pure ""
 
 updatePeriodStats :: PeriodStats -> EntityId -> IO ()
@@ -859,7 +860,17 @@ getServiceStatsData s = do
   _srvSubDuplicate <- readIORef $ srvSubDuplicate s
   _srvSubQueues <- readIORef $ srvSubQueues s
   _srvSubEnd <- readIORef $ srvSubEnd s
-  pure ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd}
+  pure
+    ServiceStatsData
+      { _srvAssocNew,
+        _srvAssocDuplicate,
+        _srvAssocUpdated,
+        _srvAssocRemoved,
+        _srvSubCount,
+        _srvSubDuplicate,
+        _srvSubQueues,
+        _srvSubEnd
+      }
 
 getResetServiceStatsData :: ServiceStats -> IO ServiceStatsData
 getResetServiceStatsData s = do
@@ -871,7 +882,17 @@ getResetServiceStatsData s = do
   _srvSubDuplicate <- atomicSwapIORef (srvSubDuplicate s) 0
   _srvSubQueues <- atomicSwapIORef (srvSubQueues s) 0
   _srvSubEnd <- atomicSwapIORef (srvSubEnd s) 0
-  pure ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd}
+  pure
+    ServiceStatsData
+      { _srvAssocNew,
+        _srvAssocDuplicate,
+        _srvAssocUpdated,
+        _srvAssocRemoved,
+        _srvSubCount,
+        _srvSubDuplicate,
+        _srvSubQueues,
+        _srvSubEnd
+      }
 
 -- this function is not thread safe, it is used on server start only
 setServiceStats :: ServiceStats -> ServiceStatsData -> IO ()
@@ -912,4 +933,14 @@ instance StrEncoding ServiceStatsData where
     _srvSubDuplicate <- "subDuplicate=" *> strP <* A.endOfLine
     _srvSubQueues <- "subQueues=" *> strP <* A.endOfLine
     _srvSubEnd <- "subEnd=" *> strP
-    pure ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd}
+    pure
+      ServiceStatsData
+        { _srvAssocNew,
+          _srvAssocDuplicate,
+          _srvAssocUpdated,
+          _srvAssocRemoved,
+          _srvSubCount,
+          _srvSubDuplicate,
+          _srvSubQueues,
+          _srvSubEnd
+        }

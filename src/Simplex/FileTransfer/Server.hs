@@ -26,12 +26,12 @@ import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
-import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
@@ -221,22 +221,22 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           fileDownloadAcks' <- atomicSwapIORef fileDownloadAcks 0
           filesCount' <- readIORef filesCount
           filesSize' <- readIORef filesSize
-          hPutStrLn h $
-            intercalate
+          T.hPutStrLn h $
+            T.intercalate
               ","
-              [ iso8601Show $ utctDay fromTime',
-                show filesCreated',
-                show fileRecipients',
-                show filesUploaded',
-                show filesDeleted',
+              [ T.pack $ iso8601Show $ utctDay fromTime',
+                tshow filesCreated',
+                tshow fileRecipients',
+                tshow filesUploaded',
+                tshow filesDeleted',
                 dayCount files,
                 weekCount files,
                 monthCount files,
-                show fileDownloads',
-                show fileDownloadAcks',
-                show filesCount',
-                show filesSize',
-                show filesExpired'
+                tshow fileDownloads',
+                tshow fileDownloadAcks',
+                tshow filesCount',
+                tshow filesSize',
+                tshow filesExpired'
               ]
         liftIO $ threadDelay' interval
 

@@ -27,7 +27,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s
   newQueueStore :: QueueStoreCfg s -> IO s
   closeQueueStore :: s -> IO ()
-  queueCounts :: s -> IO QueueCounts
+  getEntityCounts :: s -> IO EntityCounts
   loadedQueues :: s -> TMap RecipientId q
   compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
@@ -50,9 +50,13 @@ class StoreQueueClass q => QueueStoreClass q s where
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int)
 
-data QueueCounts = QueueCounts
+data EntityCounts = EntityCounts
   { queueCount :: Int,
-    notifierCount :: Int
+    notifierCount :: Int,
+    rcvServiceCount :: Int,
+    ntfServiceCount :: Int,
+    rcvServiceQueuesCount :: Int,
+    ntfServiceQueuesCount :: Int
   }
 
 withLoadedQueues :: (Monoid a, QueueStoreClass q s) => s -> (q -> IO a) -> IO a

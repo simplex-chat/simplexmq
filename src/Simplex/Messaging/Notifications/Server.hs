@@ -32,7 +32,7 @@ import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntSet as IS
-import Data.List (foldl', intercalate)
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -187,31 +187,31 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
           ntfVrfInvalidTkn' <- atomicSwapIORef ntfVrfInvalidTkn 0
           tkn <- liftIO $ periodStatCounts activeTokens ts
           sub <- liftIO $ periodStatCounts activeSubs ts
-          hPutStrLn h $
-            intercalate
+          T.hPutStrLn h $
+            T.intercalate
               ","
-              [ iso8601Show $ utctDay fromTime',
-                show tknCreated',
-                show tknVerified',
-                show tknDeleted',
-                show subCreated',
-                show subDeleted',
-                show ntfReceived',
-                show ntfDelivered',
+              [ T.pack $ iso8601Show $ utctDay fromTime',
+                tshow tknCreated',
+                tshow tknVerified',
+                tshow tknDeleted',
+                tshow subCreated',
+                tshow subDeleted',
+                tshow ntfReceived',
+                tshow ntfDelivered',
                 dayCount tkn,
                 weekCount tkn,
                 monthCount tkn,
                 dayCount sub,
                 weekCount sub,
                 monthCount sub,
-                show tknReplaced',
-                show ntfFailed',
-                show ntfCronDelivered',
-                show ntfCronFailed',
-                show ntfVrfQueued',
-                show ntfVrfDelivered',
-                show ntfVrfFailed',
-                show ntfVrfInvalidTkn'
+                tshow tknReplaced',
+                tshow ntfFailed',
+                tshow ntfCronDelivered',
+                tshow ntfCronFailed',
+                tshow ntfVrfQueued',
+                tshow ntfVrfDelivered',
+                tshow ntfVrfFailed',
+                tshow ntfVrfInvalidTkn'
               ]
         liftIO $ threadDelay' interval
 

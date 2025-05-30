@@ -318,8 +318,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE loadedQueues #-}
   compactQueues = withQS (compactQueues @(JournalQueue s))
   {-# INLINE compactQueues #-}
-  queueCounts = withQS (queueCounts @(JournalQueue s))
-  {-# INLINE queueCounts #-}
+  getEntityCounts = withQS (getEntityCounts @(JournalQueue s))
+  {-# INLINE getEntityCounts #-}
   addQueue_ = withQS addQueue_
   {-# INLINE addQueue_ #-}
   getQueue_ = withQS getQueue_

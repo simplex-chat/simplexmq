@@ -134,12 +134,14 @@ CREATE TABLE services(
   PRIMARY KEY (service_id)
 );
 
+CREATE INDEX idx_services_service_role ON services(service_role);
+
 ALTER TABLE msg_queues
   ADD COLUMN rcv_service_id BYTEA REFERENCES services(service_id) ON DELETE SET NULL ON UPDATE RESTRICT,
   ADD COLUMN ntf_service_id BYTEA REFERENCES services(service_id) ON DELETE SET NULL ON UPDATE RESTRICT;
 
-CREATE INDEX idx_msg_queues_rcv_service_id ON msg_queues(rcv_service_id);
-CREATE INDEX idx_msg_queues_ntf_service_id ON msg_queues(ntf_service_id);
+CREATE INDEX idx_msg_queues_rcv_service_id ON msg_queues(rcv_service_id, deleted_at);
+CREATE INDEX idx_msg_queues_ntf_service_id ON msg_queues(ntf_service_id, deleted_at);
     |]
 
 down_m20250514_service_certs :: Text
@@ -152,6 +154,8 @@ DROP INDEX idx_msg_queues_ntf_service_id;
 ALTER TABLE msg_queues
   DROP COLUMN rcv_service_id,
   DROP COLUMN ntf_service_id;
+
+DROP INDEX idx_services_service_role;
 
 DROP TABLE services;
     |]

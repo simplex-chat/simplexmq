@@ -42,6 +42,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole (..))
 import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$))
 import System.IO
 import UnliftIO.STM
@@ -91,11 +92,25 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   compactQueues _ = pure 0
   {-# INLINE compactQueues #-}
 
-  queueCounts :: STMQueueStore q -> IO QueueCounts
-  queueCounts st = do
+  getEntityCounts :: STMQueueStore q -> IO EntityCounts
+  getEntityCounts st = do
     queueCount <- M.size <$> readTVarIO (queues st)
     notifierCount <- M.size <$> readTVarIO (notifiers st)
-    pure QueueCounts {queueCount, notifierCount}
+    ss <- readTVarIO (services st)
+    rcvServiceQueuesCount <- serviceQueuesCount serviceRcvQueues ss
+    ntfServiceQueuesCount <- serviceQueuesCount serviceNtfQueues ss
+    pure
+      EntityCounts
+        { queueCount,
+          notifierCount,
+          rcvServiceCount = serviceCount SRMessaging ss,
+          ntfServiceCount = serviceCount SRNotifier ss,
+          rcvServiceQueuesCount,
+          ntfServiceQueuesCount
+        }
+    where
+      serviceCount role = M.foldl' (\ !n s -> if serviceRole (serviceRec s) == role then n + 1 else n) 0
+      serviceQueuesCount serviceSel = foldM (\n s -> (n +) . S.size <$> readTVarIO (serviceSel s)) 0
 
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData} = do

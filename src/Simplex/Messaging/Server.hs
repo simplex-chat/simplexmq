@@ -497,10 +497,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, msgServices, ntfServices}
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices}
         <- asks serverStats
       st <- asks msgStore
-      QueueCounts {queueCount, notifierCount} <- liftIO $ queueCounts @(StoreQueue s) $ queueStore st
+      EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
+        liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
       let interval = 1000000 * logInterval
       forever $ do
         withFile statsFilePath AppendMode $ \h -> liftIO $ do
@@ -553,87 +554,91 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
           pMsgFwdsOwn' <- getResetProxyStatsData pMsgFwdsOwn
           pMsgFwdsRecv' <- atomicSwapIORef pMsgFwdsRecv 0
-          msgServices' <- getServiceStatsData msgServices
+          rcvServices' <- getServiceStatsData rcvServices
           ntfServices' <- getServiceStatsData ntfServices
           qCount' <- readIORef qCount
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
-          hPutStrLn h $
-            intercalate
+          T.hPutStrLn h $
+            T.intercalate
               ","
-              ( [ iso8601Show $ utctDay fromTime',
-                  show qCreated',
-                  show qSecured',
-                  show qDeletedAll',
-                  show msgSent',
-                  show msgRecv',
+              ( [ T.pack $ iso8601Show $ utctDay fromTime',
+                  tshow qCreated',
+                  tshow qSecured',
+                  tshow qDeletedAll',
+                  tshow msgSent',
+                  tshow msgRecv',
                   dayCount ps,
                   weekCount ps,
                   monthCount ps,
-                  show msgSentNtf',
-                  show msgRecvNtf',
+                  tshow msgSentNtf',
+                  tshow msgRecvNtf',
                   dayCount psNtf,
                   weekCount psNtf,
                   monthCount psNtf,
-                  show qCount',
-                  show msgCount',
-                  show msgExpired',
-                  show qDeletedNew',
-                  show qDeletedSecured'
+                  tshow qCount',
+                  tshow msgCount',
+                  tshow msgExpired',
+                  tshow qDeletedNew',
+                  tshow qDeletedSecured'
                 ]
                   <> showProxyStats pRelays'
                   <> showProxyStats pRelaysOwn'
                   <> showProxyStats pMsgFwds'
                   <> showProxyStats pMsgFwdsOwn'
-                  <> [ show pMsgFwdsRecv',
-                       show qSub',
-                       show qSubAuth',
-                       show qSubDuplicate',
-                       show qSubProhibited',
-                       show msgSentAuth',
-                       show msgSentQuota',
-                       show msgSentLarge',
-                       show msgNtfs',
-                       show msgNtfNoSub',
-                       show msgNtfLost',
+                  <> [ tshow pMsgFwdsRecv',
+                       tshow qSub',
+                       tshow qSubAuth',
+                       tshow qSubDuplicate',
+                       tshow qSubProhibited',
+                       tshow msgSentAuth',
+                       tshow msgSentQuota',
+                       tshow msgSentLarge',
+                       tshow msgNtfs',
+                       tshow msgNtfNoSub',
+                       tshow msgNtfLost',
                        "0", -- qSubNoMsg' is removed for performance.
                        -- Use qSubAllB for the approximate number of all subscriptions.
                        -- Average observed batch size is 25-30 subscriptions.
-                       show msgRecvGet',
-                       show msgGet',
-                       show msgGetNoMsg',
-                       show msgGetAuth',
-                       show msgGetDuplicate',
-                       show msgGetProhibited',
+                       tshow msgRecvGet',
+                       tshow msgGet',
+                       tshow msgGetNoMsg',
+                       tshow msgGetAuth',
+                       tshow msgGetDuplicate',
+                       tshow msgGetProhibited',
                        "0", -- dayCount psSub; psSub is removed to reduce memory usage
                        "0", -- weekCount psSub
                        "0", -- monthCount psSub
-                       show queueCount,
-                       show ntfCreated',
-                       show ntfDeleted',
-                       show ntfSub',
-                       show ntfSubAuth',
-                       show ntfSubDuplicate',
-                       show notifierCount,
-                       show qDeletedAllB',
-                       show qSubAllB',
-                       show qSubEnd',
-                       show qSubEndB',
-                       show ntfDeletedB',
-                       show ntfSubB',
-                       show msgNtfsB',
-                       show msgNtfExpired',
-                       show ntfCount'
+                       tshow queueCount,
+                       tshow ntfCreated',
+                       tshow ntfDeleted',
+                       tshow ntfSub',
+                       tshow ntfSubAuth',
+                       tshow ntfSubDuplicate',
+                       tshow notifierCount,
+                       tshow qDeletedAllB',
+                       tshow qSubAllB',
+                       tshow qSubEnd',
+                       tshow qSubEndB',
+                       tshow ntfDeletedB',
+                       tshow ntfSubB',
+                       tshow msgNtfsB',
+                       tshow msgNtfExpired',
+                       tshow ntfCount',
+                       tshow rcvServiceCount,
+                       tshow ntfServiceCount,
+                       tshow rcvServiceQueuesCount,
+                       tshow ntfServiceQueuesCount
                      ]
-                       <> showServiceStats msgServices'
+                       <> showServiceStats rcvServices'
                        <> showServiceStats ntfServices'
               )
         liftIO $ threadDelay' interval
       where
         showProxyStats ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =
-          map show [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
+          map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
-          map show [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
+          map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -661,8 +666,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       d <- getServerStatsData ss
       let ps = periodStatDataCounts $ _activeQueues d
           psNtf = periodStatDataCounts $ _activeQueuesNtf d
-      QueueCounts {queueCount, notifierCount} <- queueCounts @(StoreQueue s) $ queueStore st
-      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, rtsOptions}
+      entityCounts <- getEntityCounts @(StoreQueue s) $ queueStore st
+      pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions}
 
     getRealTimeMetrics :: Env s -> IO RealTimeMetrics
     getRealTimeMetrics Env {sockets, msgStore_ = ms, server = srv@Server {subscribers, ntfSubscribers}} = do
@@ -766,7 +771,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
                 st <- unliftIO u $ asks msgStore
-                QueueCounts {queueCount, notifierCount} <- queueCounts @(StoreQueue s) $ queueStore st
+                EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
+                  getEntityCounts @(StoreQueue s) $ queueStore st
                 let getStat :: (ServerStats -> IORef a) -> IO a
                     getStat var = readIORef (var ss)
                     putStat :: Show a => String -> (ServerStats -> IORef a) -> IO ()
@@ -819,6 +825,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 putProxyStat "pMsgFwds" pMsgFwds
                 putProxyStat "pMsgFwdsOwn" pMsgFwdsOwn
                 putStat "pMsgFwdsRecv" pMsgFwdsRecv
+                hPutStrLn h $ "rcvServiceCount: " <> show rcvServiceCount
+                hPutStrLn h $ "ntfServiceCount: " <> show ntfServiceCount
+                hPutStrLn h $ "rcvServiceQueuesCount: " <> show rcvServiceQueuesCount
+                hPutStrLn h $ "ntfServiceQueuesCount: " <> show ntfServiceQueuesCount
               CPStatsRTS -> getRTSStats >>= hPrint h
               CPThreads -> withAdminRole $ do
 #if MIN_VERSION_base(4,18,0)
@@ -2099,7 +2109,7 @@ importMessages tty ms f old_ skipWarnings  = do
   renameFile f $ f <> ".bak"
   mapM_ setOverQuota_ overQuota
   logQueueStates ms
-  QueueCounts {queueCount} <- liftIO $ queueCounts @(StoreQueue s) $ queueStore ms
+  EntityCounts {queueCount} <- liftIO $ getEntityCounts @(StoreQueue s) $ queueStore ms
   pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = queueCount}
   where
     restoreMsg :: (Maybe (RecipientId, StoreQueue s), (Int, Int, Map RecipientId (StoreQueue s))) -> Bool -> ByteString -> IO (Maybe (RecipientId, StoreQueue s), (Int, Int, Map RecipientId (StoreQueue s)))
@@ -2227,7 +2237,7 @@ restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>
         Right d@ServerStatsData {_qCount = statsQCount, _msgCount = statsMsgCount, _ntfCount = statsNtfCount} -> do
           s <- asks serverStats
           st <- asks msgStore
-          QueueCounts {queueCount = _qCount} <- liftIO $ queueCounts @(StoreQueue s) $ queueStore st
+          EntityCounts {queueCount = _qCount} <- liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
           let _msgCount = maybe statsMsgCount storedMsgsCount msgStats_
               _ntfCount = storedMsgsCount ntfStats
               _msgExpired' = _msgExpired d + maybe 0 expiredMsgsCount msgStats_
