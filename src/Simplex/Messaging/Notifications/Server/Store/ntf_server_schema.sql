@@ -74,7 +74,8 @@ CREATE TABLE ntf_server.subscriptions (
     smp_server_id bigint,
     smp_notifier_id bytea NOT NULL,
     smp_notifier_key bytea NOT NULL,
-    status text NOT NULL
+    status text NOT NULL,
+    ntf_service_id bytea
 );
 
 

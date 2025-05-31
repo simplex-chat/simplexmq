@@ -43,7 +43,8 @@ testNtfCreds g = do
     NtfCreds
       { notifierId = EntityId "ijkl",
         notifierKey,
-        rcvNtfDhSecret = C.dh' k pk
+        rcvNtfDhSecret = C.dh' k pk,
+        ntfServiceId = Nothing
       }
 
 data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, compacted :: [r]}
@@ -51,6 +52,8 @@ data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, comp
 type SMPStoreLogTestCase = StoreLogTestCase StoreLogRecord (M.Map RecipientId QueueRec)
 
 deriving instance Eq QueueRec
+
+deriving instance Eq ServiceRec
 
 deriving instance Eq StoreLogRecord
 

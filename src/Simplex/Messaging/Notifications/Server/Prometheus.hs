@@ -17,6 +17,7 @@ import Numeric.Natural (Natural)
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Server.Stats (PeriodStatCounts (..))
 import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Util (tshow)
 
 data NtfServerMetrics = NtfServerMetrics
   { statsData :: NtfServerStatsData,
@@ -244,9 +245,9 @@ ntfPrometheusMetrics sm rtm ts =
       \" <> name <> param <> " " <> mshow value <> "\n# " <> codeRef <> "\n\
       \\n"
     metricHost host = "{server=\"" <> host <> "\"}"
-    mstr a = T.pack a <> " " <> tsEpoch
+    mstr a = a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
-    mshow = mstr . show
-    tsEpoch = T.pack $ show @Int64 $ floor @Double $ realToFrac (ts `diffUTCTime` epoch) * 1000
+    mshow = mstr . tshow
+    tsEpoch = tshow @Int64 $ floor @Double $ realToFrac (ts `diffUTCTime` epoch) * 1000
     epoch = UTCTime systemEpochDay 0
 {-# FOURMOLU_ENABLE\n#-}

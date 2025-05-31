@@ -13,16 +13,17 @@ import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Server.MsgStore.Types (LoadedQueueCounts (..))
+import Simplex.Messaging.Server.QueueStore.Types (EntityCounts (..))
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Server (SocketStats (..))
+import Simplex.Messaging.Util (tshow)
 
 data ServerMetrics = ServerMetrics
   { statsData :: ServerStatsData,
     activeQueueCounts :: PeriodStatCounts,
     activeNtfCounts :: PeriodStatCounts,
-    queueCount :: Int,
-    notifierCount :: Int,
+    entityCounts :: EntityCounts,
     rtsOptions :: Text
   }
 
@@ -40,15 +41,16 @@ data RealTimeMetrics = RealTimeMetrics
 
 data RTSubscriberMetrics = RTSubscriberMetrics
   { subsCount :: Int,
-    subClientsCount :: Int
+    subClientsCount :: Int,
+    subServicesCount :: Int
   }
 
 {-# FOURMOLU_DISABLE\n#-}
 prometheusMetrics :: ServerMetrics -> RealTimeMetrics -> UTCTime -> Text
 prometheusMetrics sm rtm ts =
-  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> info
+  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> info
   where
-    ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, queueCount, notifierCount, rtsOptions} = sm
+    ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions} = sm
     RealTimeMetrics
       { socketStats,
         threadsCount,
@@ -105,6 +107,8 @@ prometheusMetrics sm rtm ts =
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
+        _rcvServices,
+        _ntfServices,
         _qCount,
         _msgCount,
         _ntfCount
@@ -145,7 +149,7 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_queues_total2 Total number of stored queues (second type of count).\n\
       \# TYPE simplex_smp_queues_total2 gauge\n\
-      \simplex_smp_queues_total2 " <> mshow queueCount <> "\n# qCount2\n\
+      \simplex_smp_queues_total2 " <> mshow (queueCount entityCounts) <> "\n# qCount2\n\
       \\n\
       \# HELP simplex_smp_queues_daily Daily active queues.\n\
       \# TYPE simplex_smp_queues_daily gauge\n\
@@ -269,7 +273,7 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_queues_notify_total2 Total number of stored queues with notification flag (second type of count).\n\
       \# TYPE simplex_smp_queues_notify_total2 gauge\n\
-      \simplex_smp_queues_notify_total2 " <> mshow notifierCount <> "\n# ntfCount2\n\
+      \simplex_smp_queues_notify_total2 " <> mshow (notifierCount entityCounts) <> "\n# ntfCount2\n\
       \\n"
     ntfs =
       "# Notifications (server)\n\
@@ -348,6 +352,60 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_relay_messages_received counter\n\
       \simplex_smp_relay_messages_received " <> mshow _pMsgFwdsRecv <> "\n# pMsgFwdsRecv\n\
       \\n"
+    services =
+      "# Services\n\
+      \# --------\n\
+      \# HELP simplex_smp_rcv_services_count The count of receiving services.\n\
+      \# TYPE simplex_smp_rcv_services_count gauge\n\
+      \simplex_smp_rcv_services_count " <> mshow (rcvServiceCount entityCounts) <> "\n# rcvServiceCount\n\
+      \\n\
+      \# HELP simplex_smp_rcv_services_queues_count The count of queues associated with receiving services.\n\
+      \# TYPE simplex_smp_rcv_services_queues_count gauge\n\
+      \simplex_smp_rcv_services_queues_count " <> mshow (rcvServiceQueuesCount entityCounts) <> "\n# rcv.rcvServiceQueuesCount\n\
+      \\n\
+      \# HELP simplex_smp_ntf_services_count The count of notification services.\n\
+      \# TYPE simplex_smp_ntf_services_count gauge\n\
+      \simplex_smp_ntf_services_count " <> mshow (ntfServiceCount entityCounts) <> "\n# ntfServiceCount\n\
+      \\n\
+      \# HELP simplex_smp_ntf_services_queues_count The count of queues associated with notification services.\n\
+      \# TYPE simplex_smp_ntf_services_queues_count gauge\n\
+      \simplex_smp_ntf_services_queues_count " <> mshow (ntfServiceQueuesCount entityCounts) <> "\n# ntfServiceQueuesCount\n\
+      \\n"
+        <> showServices _rcvServices "rcv" "receiving"
+        <> showServices _ntfServices "ntf" "notification"
+    showServices ss pfx name =
+      "# HELP simplex_smp_" <> pfx <> "_services_assoc_new New queue associations with " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_assoc_new counter\n\
+      \simplex_smp_" <> pfx <> "_services_assoc_new " <> mshow (_srvAssocNew ss) <> "\n# " <> pfx <> ".srvAssocNew\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_assoc_duplicate Duplicate queue associations with " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_assoc_duplicate counter\n\
+      \simplex_smp_" <> pfx <> "_services_assoc_duplicate " <> mshow (_srvAssocDuplicate ss) <> "\n# " <> pfx <> ".srvAssocDuplicate\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_assoc_updated Updated queue associations with " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_assoc_updated counter\n\
+      \simplex_smp_" <> pfx <> "_services_assoc_updated " <> mshow (_srvAssocUpdated ss) <> "\n# " <> pfx <> ".srvAssocUpdated\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_assoc_removed Removed queue associations with " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_assoc_removed counter\n\
+      \simplex_smp_" <> pfx <> "_services_assoc_removed " <> mshow (_srvAssocRemoved ss) <> "\n# " <> pfx <> ".srvAssocRemoved\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_count Service subscriptions by " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_count counter\n\
+      \simplex_smp_" <> pfx <> "_services_sub_count " <> mshow (_srvSubCount ss) <> "\n# " <> pfx <> ".srvSubCount\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_duplicate Duplicate service subscriptions by " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_duplicate counter\n\
+      \simplex_smp_" <> pfx <> "_services_sub_duplicate " <> mshow (_srvSubDuplicate ss) <> "\n# " <> pfx <> ".srvSubDuplicate\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_queues Queues subscribed by " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_queues gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_queues " <> mshow (_srvSubQueues ss) <> "\n# " <> pfx <> ".srvSubQueues\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_end Ended subscriptions with " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_end gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_end " <> mshow (_srvSubEnd ss) <> "\n# " <> pfx <> ".srvSubEnd\n\
+      \\n"
     info =
       "# Info\n\
       \# ----\n\
@@ -376,6 +434,10 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_subscribtion_clients_total gauge\n\
       \simplex_smp_subscribtion_clients_total " <> mshow (subClientsCount smpSubs) <> "\n# smp.subClientsCount\n\
       \\n\
+      \# HELP simplex_smp_subscribtion_services_total Subscribed services, first counting method\n\
+      \# TYPE simplex_smp_subscribtion_services_total gauge\n\
+      \simplex_smp_subscribtion_services_total " <> mshow (subServicesCount smpSubs) <> "\n# smp.subServicesCount\n\
+      \\n\
       \# HELP simplex_smp_subscription_ntf_total Total notification subscripbtions (from ntf server)\n\
       \# TYPE simplex_smp_subscription_ntf_total gauge\n\
       \simplex_smp_subscription_ntf_total " <> mshow (subsCount ntfSubs) <> "\n# ntf.subsCount\n\
@@ -383,6 +445,10 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_subscription_ntf_clients_total Total subscribed NTF servers\n\
       \# TYPE simplex_smp_subscription_ntf_clients_total gauge\n\
       \simplex_smp_subscription_ntf_clients_total " <> mshow (subClientsCount ntfSubs) <> "\n# ntf.subClientsCount\n\
+      \\n\
+      \# HELP simplex_smp_subscribtion_nts_services_total Subscribed NTF services, first counting method\n\
+      \# TYPE simplex_smp_subscribtion_nts_services_total gauge\n\
+      \simplex_smp_subscribtion_nts_services_total " <> mshow (subServicesCount ntfSubs) <> "\n# ntf.subServicesCount\n\
       \\n\
       \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory/journal storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_count gauge\n\
@@ -410,9 +476,9 @@ prometheusMetrics sm rtm ts =
         <> "# TYPE " <> metric <> " gauge\n"
         <> T.concat (map (\(port, ss) -> metric <> "{port=\"" <> T.pack port <> "\"} " <> mshow (sel ss) <> "\n") socketStats)
         <> "\n"
-    mstr a = T.pack a <> " " <> tsEpoch
+    mstr a = a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
-    mshow = mstr . show
-    tsEpoch = T.pack $ show @Int64 $ floor @Double $ realToFrac (ts `diffUTCTime` epoch) * 1000
+    mshow = mstr . tshow
+    tsEpoch = tshow @Int64 $ floor @Double $ realToFrac (ts `diffUTCTime` epoch) * 1000
     epoch = UTCTime systemEpochDay 0
 {-# FOURMOLU_ENABLE\n#-}

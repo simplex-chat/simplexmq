@@ -26,12 +26,12 @@ import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
-import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
@@ -53,7 +53,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TransmissionAuth, pattern NoEntity)
+import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TAuthorizations, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
@@ -112,7 +112,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       srvCreds@(chain, pk) <- asks tlsServerCreds
       signKey <- liftIO $ case C.x509ToPrivate' pk of
         Right pk' -> pure pk'
-        Left e -> putStrLn ("servers has no valid key: " <> show e) >> exitFailure
+        Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
       env <- ask
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
@@ -120,7 +120,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         reqBody <- getHTTP2Body r xftpBlockSize
         let v = VersionXFTP 1
             thServerVRange = versionToRange v
-            thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True}
+            thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
             req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
         flip runReaderT env $ case sessionALPN of
           Nothing -> processRequest req0
@@ -158,7 +158,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
-              let auth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
+              let auth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
 #ifdef slow_servers
@@ -221,22 +221,22 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           fileDownloadAcks' <- atomicSwapIORef fileDownloadAcks 0
           filesCount' <- readIORef filesCount
           filesSize' <- readIORef filesSize
-          hPutStrLn h $
-            intercalate
+          T.hPutStrLn h $
+            T.intercalate
               ","
-              [ iso8601Show $ utctDay fromTime',
-                show filesCreated',
-                show fileRecipients',
-                show filesUploaded',
-                show filesDeleted',
+              [ T.pack $ iso8601Show $ utctDay fromTime',
+                tshow filesCreated',
+                tshow fileRecipients',
+                tshow filesUploaded',
+                tshow filesDeleted',
                 dayCount files,
                 weekCount files,
                 monthCount files,
-                show fileDownloads',
-                show fileDownloadAcks',
-                show filesCount',
-                show filesSize',
-                show filesExpired'
+                tshow fileDownloads',
+                tshow fileDownloadAcks',
+                tshow filesCount',
+                tshow filesSize',
+                tshow filesExpired'
               ]
         liftIO $ threadDelay' interval
 
@@ -361,7 +361,7 @@ randomDelay = do
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
-verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TransmissionAuth -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
 verifyXFTPTransmission auth_ tAuth authorized fId cmd =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file

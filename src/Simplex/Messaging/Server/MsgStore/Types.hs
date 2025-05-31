@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
@@ -22,6 +23,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -61,8 +63,8 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   getQueueSize_ :: MsgQueue (StoreQueue s) -> StoreMonad s Int
   tryPeekMsg_ :: StoreQueue s -> MsgQueue (StoreQueue s) -> StoreMonad s (Maybe Message)
   tryDeleteMsg_ :: StoreQueue s -> MsgQueue (StoreQueue s) -> Bool -> StoreMonad s ()
-  isolateQueue :: StoreQueue s -> String -> StoreMonad s a -> ExceptT ErrorType IO a
-  unsafeRunStore :: StoreQueue s -> String -> StoreMonad s a -> IO a
+  isolateQueue :: StoreQueue s -> Text -> StoreMonad s a -> ExceptT ErrorType IO a
+  unsafeRunStore :: StoreQueue s -> Text -> StoreMonad s a -> IO a
 
 data MSType = MSMemory | MSJournal
 
@@ -141,7 +143,7 @@ tryDelPeekMsg st q msgId' =
         | otherwise -> pure (Nothing, Just msg)
 
 -- The action is called with Nothing when it is known that the queue is empty
-withPeekMsgQueue :: MsgStoreClass s => s -> StoreQueue s -> String -> (Maybe (MsgQueue (StoreQueue s), Message) -> StoreMonad s a) -> ExceptT ErrorType IO a
+withPeekMsgQueue :: MsgStoreClass s => s -> StoreQueue s -> Text -> (Maybe (MsgQueue (StoreQueue s), Message) -> StoreMonad s a) -> ExceptT ErrorType IO a
 withPeekMsgQueue st q op a = isolateQueue q op $ getPeekMsgQueue st q >>= a
 {-# INLINE withPeekMsgQueue #-}
 

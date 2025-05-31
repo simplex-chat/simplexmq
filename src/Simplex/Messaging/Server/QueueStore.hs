@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -10,13 +11,18 @@
 
 module Simplex.Messaging.Server.QueueStore where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Transport (SMPServiceRole)
 #if defined(dbServerPostgres)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Database.PostgreSQL.Simple.FromField (FromField (..))
@@ -34,22 +40,55 @@ data QueueRec = QueueRec
     queueData :: Maybe (LinkId, QueueLinkData),
     notifier :: Maybe NtfCreds,
     status :: ServerEntityStatus,
-    updatedAt :: Maybe RoundedSystemTime
+    updatedAt :: Maybe RoundedSystemTime,
+    rcvServiceId :: Maybe ServiceId
   }
   deriving (Show)
 
 data NtfCreds = NtfCreds
-  { notifierId :: !NotifierId,
-    notifierKey :: !NtfPublicAuthKey,
-    rcvNtfDhSecret :: !RcvNtfDhSecret
+  { notifierId :: NotifierId,
+    notifierKey :: NtfPublicAuthKey,
+    rcvNtfDhSecret :: RcvNtfDhSecret,
+    ntfServiceId :: Maybe ServiceId
   }
   deriving (Show)
 
 instance StrEncoding NtfCreds where
-  strEncode NtfCreds {notifierId, notifierKey, rcvNtfDhSecret} = strEncode (notifierId, notifierKey, rcvNtfDhSecret)
+  strEncode NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId} =
+    strEncode (notifierId, notifierKey, rcvNtfDhSecret)
+      <> maybe "" ((" nsrv=" <>) . strEncode) ntfServiceId
   strP = do
     (notifierId, notifierKey, rcvNtfDhSecret) <- strP
-    pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}
+    ntfServiceId <- optional $ " nsrv=" *> strP
+    pure NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId}
+
+data ServiceRec = ServiceRec
+  { serviceId :: ServiceId,
+    serviceRole :: SMPServiceRole,
+    serviceCert :: X.CertificateChain,
+    serviceCertHash :: XV.Fingerprint, -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
+    serviceCreatedAt :: RoundedSystemTime
+  }
+  deriving (Show)
+
+type CertFingerprint = B.ByteString
+
+instance StrEncoding ServiceRec where
+  strEncode ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash, serviceCreatedAt} =
+    B.unwords
+      [ "service_id=" <> strEncode serviceId,
+        "role=" <> smpEncode serviceRole,
+        "cert=" <> strEncode serviceCert,
+        "cert_hash=" <> strEncode serviceCertHash,
+        "created_at=" <> strEncode serviceCreatedAt
+      ]
+  strP = do
+    serviceId <- "service_id=" *> strP
+    serviceRole <- " role=" *> smpP
+    serviceCert <- " cert=" *> strP
+    serviceCertHash <- " cert_hash=" *> strP
+    serviceCreatedAt <- " created_at=" *> strP
+    pure ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash, serviceCreatedAt}
 
 data ServerEntityStatus
   = EntityActive

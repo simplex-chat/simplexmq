@@ -201,6 +201,7 @@ dummyRQ userId server connId rcvId =
       sndId = NoEntity,
       queueMode = Just QMMessaging,
       shortLink = Nothing,
+      clientService = Nothing,
       status = New,
       dbQueueId = DBEntityId 0,
       primary = True,

@@ -442,7 +442,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
-              ntfDeliveryInterval = 3000000, -- 3 seconds
+              ntfDeliveryInterval = 1500000, -- 1.5 second
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
                 defaultTransportServerConfig

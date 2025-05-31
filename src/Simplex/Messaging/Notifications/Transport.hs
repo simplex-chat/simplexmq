@@ -126,8 +126,8 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVRange = do
             Nothing -> throwE TEVersion
 
 -- | Notifcations server client transport handshake.
-ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> ExceptT TransportError IO (THandleNTF c 'TClient)
-ntfClientHandshake c keyHash ntfVRange _proxyServer = do
+ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleNTF c 'TClient)
+ntfClientHandshake c keyHash ntfVRange _proxyServer _serviceKeys = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey = sk'} <- getHandshake th
   if sessionId /= sessId
@@ -145,12 +145,13 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer = do
 
 ntfThHandleServer :: forall c. THandleNTF c 'TServer -> VersionNTF -> VersionRangeNTF -> C.PrivateKeyX25519 -> THandleNTF c 'TServer
 ntfThHandleServer th v vr pk =
-  let thAuth = THAuthServer {serverPrivKey = pk, sessSecret' = Nothing}
+  let thAuth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
    in ntfThHandle_ th v vr (Just thAuth)
 
 ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> Maybe (C.PublicKeyX25519, CertChainPubKey) -> THandleNTF c 'TClient
 ntfThHandleClient th v vr ck_ =
-  let thAuth = (\(k, ck) -> THAuthClient {serverPeerPubKey = k, serverCertKey = ck, sessSecret = Nothing}) <$> ck_
+  let thAuth = clientTHParams <$> ck_
+      clientTHParams (k, ck) = THAuthClient {peerServerPubKey = k, peerServerCertKey = ck, clientService = Nothing, sessSecret = Nothing}
    in ntfThHandle_ th v vr thAuth
 
 ntfThHandle_ :: forall c p. THandleNTF c p -> VersionNTF -> VersionRangeNTF -> Maybe (THandleAuth p) -> THandleNTF c p
@@ -173,5 +174,6 @@ ntfTHandle c = THandle {connection = c, params}
           thAuth = Nothing,
           implySessId = False,
           encryptBlock = Nothing,
-          batch = False
+          batch = False,
+          serviceAuth = False
         }

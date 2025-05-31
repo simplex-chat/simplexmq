@@ -122,6 +122,9 @@ module Simplex.Messaging.Agent.Protocol
     ContactConnType (..),
     ShortLinkScheme (..),
     LinkKey (..),
+    StoredClientService (..),
+    ClientService,
+    ClientServiceId,
     sameConnReqContact,
     sameShortLinkContact,
     simplexChat,
@@ -193,12 +196,13 @@ import Data.Time.Clock.System (SystemTime)
 import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
-import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -367,7 +371,7 @@ type SndQueueSecured = Bool
 
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
-  INV :: AConnectionRequestUri -> AEvent AEConn
+  INV :: AConnectionRequestUri -> Maybe ClientServiceId -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -393,7 +397,7 @@ data AEvent (e :: AEntity) where
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
-  JOINED :: SndQueueSecured -> AEvent AEConn
+  JOINED :: SndQueueSecured -> Maybe ClientServiceId -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
   ERRS :: [(ConnId, AgentErrorType)] -> AEvent AENone
   SUSPENDED :: AEvent AENone
@@ -493,7 +497,7 @@ aCommandTag = \case
 
 aEventTag :: AEvent e -> AEventTag e
 aEventTag = \case
-  INV _ -> INV_
+  INV {} -> INV_
   CONF {} -> CONF_
   REQ {} -> REQ_
   INFO {} -> INFO_
@@ -519,7 +523,7 @@ aEventTag = \case
   DEL_USER _ -> DEL_USER_
   STAT _ -> STAT_
   OK -> OK_
-  JOINED _ -> JOINED_
+  JOINED {} -> JOINED_
   ERR _ -> ERR_
   ERRS _ -> ERRS_
   SUSPENDED -> SUSPENDED_
@@ -1512,7 +1516,7 @@ instance StrEncoding AConnShortLink where
           <|> "https://" *> ((SLSServer,) . Just <$> strP)
           <|> fail "bad short link scheme"
       contactTypeP = do
-        Just <$> (A.anyChar >>= ctTypeP . toUpper)        
+        Just <$> (A.anyChar >>= ctTypeP . toUpper)
           <|> A.char 'i' $> Nothing
           <|> fail "unknown short link type"
       serverQueryP h_ =
@@ -1549,7 +1553,7 @@ ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case
   'A' -> pure CCTContact
   'C' -> pure CCTChannel
-  'G' -> pure CCTGroup 
+  'G' -> pure CCTGroup
   _ -> fail "unknown contact address type"
 {-# INLINE ctTypeP #-}
 
@@ -1701,6 +1705,16 @@ instance Encoding AConnLinkData where
         relays <- smpListP
         userData <- smpP
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
+
+data StoredClientService (s :: DBStored) = ClientService
+  { dbServiceId :: DBEntityId' s,
+    serviceId :: SMP.ServiceId
+  }
+  deriving (Eq, Show)
+
+type ClientService = StoredClientService 'DBStored
+
+type ClientServiceId = DBEntityId
 
 -- | SMP queue status.
 data QueueStatus

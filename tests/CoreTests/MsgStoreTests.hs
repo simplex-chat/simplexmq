@@ -131,7 +131,8 @@ testNewQueueRecData g qm queueData = do
             queueData,
             notifier = Nothing,
             status = EntityActive,
-            updatedAt = Nothing
+            updatedAt = Nothing,
+            rcvServiceId = Nothing
           }
   pure (rId, qr)
   where
