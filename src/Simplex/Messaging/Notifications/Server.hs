@@ -253,12 +253,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
 #endif
       let NtfSubscriber {smpSubscribers, smpAgent = a} = subscriber
           NtfPushServer {pushQ} = pushServer
-          SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
+          SMPClientAgent {smpClients, smpSessions, activeQueueSubs, pendingQueueSubs, smpSubWorkers} = a
       srvSubscribers <- getSMPWorkerMetrics a smpSubscribers
       srvClients <- getSMPWorkerMetrics a smpClients
       srvSubWorkers <- getSMPWorkerMetrics a smpSubWorkers
-      ntfActiveSubs <- getSMPSubMetrics a srvSubs
-      ntfPendingSubs <- getSMPSubMetrics a pendingSrvSubs
+      ntfActiveSubs <- getSMPSubMetrics a activeQueueSubs
+      ntfPendingSubs <- getSMPSubMetrics a pendingQueueSubs
       smpSessionCount <- M.size <$> readTVarIO smpSessions
       apnsPushQLength <- atomically $ lengthTBQueue pushQ
       pure NtfRealTimeMetrics {threadsCount, srvSubscribers, srvClients, srvSubWorkers, ntfActiveSubs, ntfPendingSubs, smpSessionCount, apnsPushQLength}
@@ -522,7 +522,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       st <- asks store
       liftIO $ forever $
         atomically (readTBQueue agentQ) >>= \case
-          CAConnected srv ->
+          CAConnected srv _service_ -> -- TODO [certs]
             logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv subs -> do
             forM_ (L.nonEmpty $ map snd $ S.toList subs) $ \nIds -> do
@@ -535,6 +535,10 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubStatuses st srv subStatuses
               logSubErrors srv subStatuses updated
+          CAServiceDisconnected {} -> error "TODO [certs] just log"
+          CAServiceSubscibed {} -> error "TODO [certs] just log"
+          CAServiceSubError {} -> error "TODO [certs] process error, can require re-associating the service?"
+          CAServiceUnavailable {} -> error "TODO [certs] resubscribe all queues associated with this service ID"
 
     logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> IO ()
     logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
@@ -549,6 +553,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       PCETransportError e -> updateErr "TransportError " e
       PCECryptoError e -> updateErr "CryptoError " e
       PCEIncompatibleHost -> Just $ NSErr "IncompatibleHost"
+      PCEServiceUnavailable -> error "TODO [certs] resubscribe queues of that service. Either type needs to be extended or actions moved to this function"
       PCEResponseTimeout -> Nothing
       PCENetworkError -> Nothing
       PCEIOError _ -> Nothing

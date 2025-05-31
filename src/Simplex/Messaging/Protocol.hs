@@ -1350,6 +1350,8 @@ data ErrorType
     AUTH
   | -- | command with the entity that was blocked
     BLOCKED {blockInfo :: BlockingInfo}
+  | -- | service unavailable
+    SERVICE
   | -- | encryption/decryption error in proxy protocol
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
@@ -1376,6 +1378,7 @@ instance StrEncoding ErrorType where
     PROXY e -> "PROXY " <> strEncode e
     AUTH -> "AUTH"
     BLOCKED info -> "BLOCKED " <> strEncode info
+    SERVICE -> "SERVICE"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     STORE e -> "STORE " <> encodeUtf8 e
@@ -1392,6 +1395,7 @@ instance StrEncoding ErrorType where
         "PROXY " *> (PROXY <$> strP),
         "AUTH" $> AUTH,
         "BLOCKED " *> strP,
+        "SERVICE" $> SERVICE,
         "CRYPTO" $> CRYPTO,
         "QUOTA" $> QUOTA,
         "STORE " *> (STORE . safeDecodeUtf8 <$> A.takeByteString),
@@ -1788,6 +1792,7 @@ instance Encoding ErrorType where
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
     BLOCKED info -> "BLOCKED " <> smpEncode info
+    SERVICE -> "SERVICE"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
     STORE err -> "STORE " <> encodeUtf8 err
@@ -1805,6 +1810,7 @@ instance Encoding ErrorType where
       "PROXY" -> PROXY <$> _smpP
       "AUTH" -> pure AUTH
       "BLOCKED" -> BLOCKED <$> _smpP
+      "SERVICE" -> pure SERVICE
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
       "STORE" -> STORE . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
