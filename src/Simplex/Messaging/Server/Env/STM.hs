@@ -369,7 +369,7 @@ sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 {-# INLINE sameClient #-}
 
 newtype ProxyAgent = ProxyAgent
-  { smpAgent :: SMPClientAgent
+  { smpAgent :: SMPClientAgent 'Sender
   }
 
 type ClientId = Int
@@ -620,7 +620,7 @@ mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount ma
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
-  smpAgent <- newSMPClientAgent smpAgentCfg random
+  smpAgent <- newSMPClientAgent SSender smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
 readWriteQueueStore :: forall q s. QueueStoreClass q s => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO (StoreLog 'WriteMode)

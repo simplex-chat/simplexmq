@@ -31,7 +31,7 @@ import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (BasicAuth, CorrId, SMPServer, Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), Transmission)
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -115,7 +115,7 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriberVar,
     subscriberSeq :: TVar Int,
-    smpAgent :: SMPClientAgent
+    smpAgent :: SMPClientAgent 'Notifier
   }
 
 type SMPSubscriberVar = SessionVar SMPSubscriber
@@ -124,7 +124,7 @@ newNtfSubscriber :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
 newNtfSubscriber smpAgentCfg random = do
   smpSubscribers <- TM.emptyIO
   subscriberSeq <- newTVarIO 0
-  smpAgent <- newSMPClientAgent smpAgentCfg random
+  smpAgent <- newSMPClientAgent SNotifier smpAgentCfg random
   pure NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent}
 
 data SMPSubscriber = SMPSubscriber
