@@ -22,18 +22,15 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
-import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
-import Data.Tuple (swap)
 import Numeric.Natural
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client
@@ -333,7 +330,9 @@ subscribeQueues_ ca srv subs = do
 
 smpSubscribeQueues :: SubscriberParty p => SMPClientAgent p -> SMPClient -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
 smpSubscribeQueues ca smp srv subs = do
-  rs <- subscribe smp $ L.map swap subs
+  rs <- case agentParty ca of
+    SRecipient -> subscribeSMPQueues smp subs
+    SNotifier -> subscribeSMPQueuesNtfs smp subs
   rs' <-
     atomically $
       ifM
@@ -367,10 +366,6 @@ smpSubscribeQueues ca smp srv subs = do
       Left e
         | temporaryClientError e -> (True, finalErrs, oks, notPending)
         | otherwise -> (tempErrs, (qId, e) : finalErrs, oks, qId : notPending)
-    subscribe :: SMPClient -> NonEmpty (C.APrivateAuthKey, QueueId) -> IO (NonEmpty (Either SMPClientError ()))
-    subscribe = case agentParty ca of
-      SRecipient -> subscribeSMPQueues
-      SNotifier -> subscribeSMPQueuesNtfs
     notify_ :: (SMPServer -> NonEmpty a -> SMPClientAgentEvent) -> [a] -> IO ()
     notify_ evt qs = mapM_ (notify ca . evt srv) $ L.nonEmpty qs
 
