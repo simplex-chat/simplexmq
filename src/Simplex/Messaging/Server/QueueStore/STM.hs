@@ -303,10 +303,15 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
             setQueueService (services st) serviceRcvQueues rId prevSrvId serviceId
               $>> (writeTVar qr q' $> Right ())
 
+  -- TODO [certs]
+  -- - only leave subscription roles for services, remove "proxy" role
+  -- - make it one type with SMPSubParty
+  -- - parameterize by it.
+  -- - alternatively, use party as role and contrain by Constraint type family
   setQueueNtfService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
   setQueueNtfService st sq serviceId =
     atomically (readQueueRec qr $>>= setService)
-      $>>= \_ -> withLog "setQueueNtfService" st (\sl -> logQueueRcvService sl rId serviceId)
+      $>>= \_ -> withLog "setQueueNtfService" st (\sl -> logQueueNtfService sl rId serviceId)
     where
       qr = queueRec sq
       rId = recipientId sq

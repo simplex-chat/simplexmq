@@ -538,10 +538,18 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubStatuses st srv subStatuses
               logSubErrors srv subStatuses updated
-          CAServiceDisconnected {} -> error "TODO [certs] just log"
-          CAServiceSubscibed {} -> error "TODO [certs] just log"
-          CAServiceSubError {} -> error "TODO [certs] process error, can require re-associating the service?"
-          CAServiceUnavailable {} -> error "TODO [certs] resubscribe all queues associated with this service ID"
+          CAServiceDisconnected srv serviceSub ->
+            logWarn $ "SMP server service disconnected " <> showService srv serviceSub
+          CAServiceSubscribed srv serviceSub n ->
+            logWarn $ "SMP server service subscribed to " <> tshow n <> " subs: " <> showService srv serviceSub
+          CAServiceSubError srv serviceSub e ->
+            -- TODO [certs] process error, can require re-associating the service?
+            logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
+          CAServiceUnavailable srv serviceSub ->
+            -- TODO [certs] resubscribe all queues associated with this service ID
+            logError $ "SMP server service unavailable: " <> showService srv serviceSub
+      where
+        showService srv (party, serviceId) = showServer' srv  <> ", " <> tshow party <> " service ID " <> decodeLatin1 (strEncode serviceId)
 
     logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> IO ()
     logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do

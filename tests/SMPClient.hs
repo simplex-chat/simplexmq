@@ -33,9 +33,9 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Util (ifM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
@@ -143,10 +143,7 @@ xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 xit'' d = skipOnCI . it d
 
 skipOnCI :: SpecWith a -> SpecWith a
-skipOnCI t =
-  runIO (lookupEnv "CI") >>= \case
-    Just "true" -> skip "skipped on CI" t
-    _ -> t
+skipOnCI t = ifM (runIO envCI) (skip "skipped on CI" t) t
 
 testSMPClient :: Transport c => (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange

@@ -446,7 +446,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           CASubscribedService _ srv _ subs -> logError $ "SMP server subscribed queues as service " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
           CASubError srv _ errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
           CAServiceDisconnected {} -> error "TODO [certs] should not happen, just log error"
-          CAServiceSubscibed {} -> error "TODO [certs] should not happen, just log error"
+          CAServiceSubscribed {} -> error "TODO [certs] should not happen, just log error"
           CAServiceSubError {} -> error "TODO [certs] should not happen, just log error"
           CAServiceUnavailable {} -> error "TODO [certs] should not happen, just log error"
       where

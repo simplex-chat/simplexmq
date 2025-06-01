@@ -60,7 +60,7 @@ data SMPClientAgentEvent
   | CASubscribedService ServiceId SMPServer SMPSubParty (NonEmpty QueueId)
   | CASubError SMPServer SMPSubParty (NonEmpty (QueueId, SMPClientError))
   | CAServiceDisconnected SMPServer (SMPSubParty, ServiceId)
-  | CAServiceSubscibed SMPServer (SMPSubParty, ServiceId) Word32
+  | CAServiceSubscribed SMPServer (SMPSubParty, ServiceId) Word32
   | CAServiceSubError SMPServer (SMPSubParty, ServiceId) SMPClientError
   -- CAServiceUnavailable is used when service ID in pending subscription is different from the current service in connection.
   -- This will require resubscribing to all queues associated with this service ID individually, creating new associations.
@@ -466,7 +466,7 @@ smpSubscribeService ca smp srv sub@(party, serviceId) = case smpClientService sm
             (pure False)
       if ok
         then case r of
-          Right n -> notify ca $ CAServiceSubscibed srv sub n
+          Right n -> notify ca $ CAServiceSubscribed srv sub n
           Left PCEServiceUnavailable -> notifyUnavailable
           Left e
             | temporaryClientError e -> reconnectClient ca srv
