@@ -68,6 +68,7 @@ module Simplex.Messaging.Protocol
     Cmd (..),
     DirectParty,
     SubscriberParty,
+    ASubscriberParty (..),
     BrokerMsg (..),
     SParty (..),
     PartyI (..),
@@ -152,6 +153,8 @@ module Simplex.Messaging.Protocol
     currentSMPClientVersion,
     senderCanSecure,
     queueReqMode,
+    subscriberParty,
+    subscriberServiceRole,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -350,6 +353,40 @@ type family SubscriberParty (p :: Party) :: Constraint where
   SubscriberParty Notifier = ()
   SubscriberParty p =
     (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not subscriber"))
+
+data ASubscriberParty = forall p. (PartyI p, SubscriberParty p) => ASP (SParty p)
+
+deriving instance Show ASubscriberParty
+
+instance Eq ASubscriberParty where
+  ASP p == ASP p' = isJust $ testEquality p p'
+
+instance Encoding ASubscriberParty where
+  smpEncode = \case
+    ASP SRecipient -> "R"
+    ASP SNotifier -> "N"
+  smpP =
+    A.anyChar >>= \case
+      'R' -> pure $ ASP SRecipient
+      'N' -> pure $ ASP SNotifier
+      _ -> fail "bad ASubscriberParty"
+
+instance StrEncoding ASubscriberParty where
+  strEncode = smpEncode
+  strP = smpP
+
+subscriberParty :: SParty p -> Maybe (Dict (PartyI p, SubscriberParty p))
+subscriberParty = \case
+  SRecipient -> Just Dict
+  SNotifier -> Just Dict
+  _ -> Nothing
+{-# INLINE subscriberParty #-}
+
+subscriberServiceRole :: SubscriberParty p => SParty p -> SMPServiceRole
+subscriberServiceRole = \case
+  SRecipient -> SRMessaging
+  SNotifier -> SRNotifier
+{-# INLINE subscriberServiceRole #-}
 
 -- | Type for client command of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)

@@ -18,7 +18,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ErrorType, RecipientId, SParty (..))
+import Simplex.Messaging.Protocol (ASubscriberParty (..), ErrorType, RecipientId, SParty (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
@@ -62,8 +62,7 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
             Left e -> logError $ errPfx <> tshow e
             where
               errPfx = "STORE: getCreateService, stored service " <> decodeLatin1 (strEncode serviceId) <> ", "
-          QueueRcvService rId serviceId -> withQueue rId "QueueRcvService" $ \q -> setQueueRcvService st q serviceId
-          QueueNtfService rId serviceId -> withQueue rId "QueueNtfService" $ \q -> setQueueNtfService st q serviceId
+          QueueService rId (ASP party) serviceId -> withQueue rId "QueueService" $ \q -> setQueueService st q party serviceId
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
         withQueue :: forall a. RecipientId -> T.Text -> (q -> IO (Either ErrorType a)) -> IO ()

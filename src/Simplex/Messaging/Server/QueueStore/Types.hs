@@ -45,8 +45,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   updateQueueTime :: s -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   deleteStoreQueue :: s -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
-  setQueueRcvService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueNtfService :: s -> q -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueService :: (PartyI p, SubscriberParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int)
 

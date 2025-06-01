@@ -350,10 +350,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE deleteStoreQueue #-}
   getCreateService = withQS (getCreateService @(JournalQueue s))
   {-# INLINE getCreateService #-}
-  setQueueRcvService = withQS setQueueRcvService
-  {-# INLINE setQueueRcvService #-}
-  setQueueNtfService = withQS setQueueNtfService
-  {-# INLINE setQueueNtfService #-}
+  setQueueService = withQS setQueueService
+  {-# INLINE setQueueService #-}
   getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
   {-# INLINE getQueueNtfServices #-}
   getNtfServiceQueueCount = withQS (getNtfServiceQueueCount @(JournalQueue s))

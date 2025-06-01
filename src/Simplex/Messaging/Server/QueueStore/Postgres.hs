@@ -401,34 +401,28 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       when new $ withLog "getCreateService" st (`logNewService` sr)
       pure serviceId
 
-  setQueueRcvService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueRcvService st sq serviceId =
-    withQueueRec sq "setQueueRcvService" $ \q@QueueRec {rcvServiceId = prevSrvId} ->
-      if prevSrvId == serviceId
-        then pure ()
-        else do
-          assertUpdated $ withDB' "setQueueRcvService" st $ \db ->
+  setQueueService :: (PartyI p, SubscriberParty p) => PostgresQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueService st sq party serviceId = withQueueRec sq "setQueueService" $ \q -> case party of
+    SRecipient
+      | rcvServiceId q == serviceId -> pure ()
+      | otherwise -> do
+          assertUpdated $ withDB' "setQueueService" st $ \db ->
             DB.execute db "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id = ? AND deleted_at IS NULL" (serviceId, rId)
-          let !q' = Just q {rcvServiceId = serviceId}
-          atomically $ writeTVar (queueRec sq) q'
-          withLog "setQueueRcvService" st $ \sl -> logQueueRcvService sl rId serviceId
-    where
-      rId = recipientId sq
-
-  setQueueNtfService :: PostgresQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueNtfService st sq serviceId =
-    withQueueRec sq "setQueueRcvService" $ \q@QueueRec {notifier} -> case notifier of
+          updateQueueRec q {rcvServiceId = serviceId}
+    SNotifier -> case notifier q of
       Nothing -> throwE AUTH -- TODO [certs] different error? INTERNAL?
       Just nc@NtfCreds {ntfServiceId = prevSrvId}
         | prevSrvId == serviceId -> pure ()
         | otherwise -> do
-            assertUpdated $ withDB' "setQueueNtfService" st $ \db ->
+            assertUpdated $ withDB' "setQueueService" st $ \db ->
               DB.execute db "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id = ? AND notifier_id IS NOT NULL AND deleted_at IS NULL" (serviceId, rId)
-            let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
-            atomically $ writeTVar (queueRec sq) q'
-            withLog "setQueueNtfService" st $ \sl -> logQueueNtfService sl rId serviceId
+            updateQueueRec q {notifier = Just nc {ntfServiceId = serviceId}}
     where
       rId = recipientId sq
+      updateQueueRec :: QueueRec -> ExceptT ErrorType IO ()
+      updateQueueRec q' = do
+        atomically $ writeTVar (queueRec sq) $ Just q'
+        withLog "setQueueService" st $ \sl -> logQueueService sl rId party serviceId
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do

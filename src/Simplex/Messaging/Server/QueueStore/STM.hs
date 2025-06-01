@@ -289,40 +289,42 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         serviceNtfQueues <- newTVar S.empty
         pure STMService {serviceRec = sr, serviceRcvQueues, serviceNtfQueues}
 
-  setQueueRcvService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueRcvService st sq serviceId =
+  setQueueService :: (PartyI p, SubscriberParty p) => STMQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueService st sq party serviceId =
     atomically (readQueueRec qr $>>= setService)
-      $>>= \_ -> withLog "setQueueRcvService" st (\sl -> logQueueRcvService sl rId serviceId)
+      $>> withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
     where
       qr = queueRec sq
       rId = recipientId sq
-      setService q@QueueRec {rcvServiceId = prevSrvId}
-        | prevSrvId == serviceId = pure $ Right ()
-        | otherwise = do
-            let !q' = Just q {rcvServiceId = serviceId}
-            setQueueService (services st) serviceRcvQueues rId prevSrvId serviceId
-              $>> (writeTVar qr q' $> Right ())
-
-  -- TODO [certs]
-  -- - only leave subscription roles for services, remove "proxy" role
-  -- - make it one type with SMPSubParty
-  -- - parameterize by it.
-  -- - alternatively, use party as role and contrain by Constraint type family
-  setQueueNtfService :: STMQueueStore q -> q -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueNtfService st sq serviceId =
-    atomically (readQueueRec qr $>>= setService)
-      $>>= \_ -> withLog "setQueueNtfService" st (\sl -> logQueueNtfService sl rId serviceId)
-    where
-      qr = queueRec sq
-      rId = recipientId sq
-      setService q@QueueRec {notifier} = case notifier of
-        Nothing -> pure $ Left AUTH -- TODO [certs] different error? INTERNAL?
-        Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevSrvId}
+      setService :: QueueRec -> STM (Either ErrorType ())
+      setService q = case party of
+        SRecipient
           | prevSrvId == serviceId -> pure $ Right ()
           | otherwise -> do
-              let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
-              setQueueService (services st) serviceNtfQueues nId prevSrvId serviceId
+              let !q' = Just q {rcvServiceId = serviceId}
+              setQueueService_ (services st) serviceRcvQueues rId prevSrvId serviceId
                 $>> (writeTVar qr q' $> Right ())
+          where
+            prevSrvId = rcvServiceId q
+        SNotifier -> case notifier q of
+          Nothing -> pure $ Left AUTH -- TODO [certs] different error? INTERNAL?
+          Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevSrvId}
+            | prevSrvId == serviceId -> pure $ Right ()
+            | otherwise -> do
+                let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
+                setQueueService_ (services st) serviceNtfQueues nId prevSrvId serviceId
+                  $>> (writeTVar qr q' $> Right ())
+      setQueueService_ :: TMap ServiceId STMService -> (STMService -> TVar (Set QueueId)) -> QueueId -> Maybe ServiceId -> Maybe ServiceId -> STM (Either ErrorType ())
+      setQueueService_ ss serviceSel qId prevSrvId currSrvId = do
+        mapM_ (updateSet S.delete) prevSrvId
+        fromMaybe (Right ()) <$> mapM (updateSet S.insert) currSrvId
+        where
+          updateSet :: (QueueId -> Set QueueId -> Set QueueId) -> ServiceId -> STM (Either ErrorType ())
+          updateSet f sId =
+            TM.lookup sId ss >>= \case
+              Just s -> Right () <$ modifyTVar' (serviceSel s) (f qId)
+              Nothing -> pure $ Left AUTH -- TODO [certs] INTERNAL?
+
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do
@@ -351,17 +353,6 @@ setStatus qr status =
   atomically $ stateTVar qr $ \case
     Just q -> (Right (), Just q {status})
     Nothing -> (Left AUTH, Nothing)
-
-setQueueService :: TMap ServiceId STMService -> (STMService -> TVar (Set QueueId)) -> QueueId -> Maybe ServiceId -> Maybe ServiceId -> STM (Either ErrorType ())
-setQueueService ss serviceSel qId prevSrvId currSrvId = do
-  mapM_ (setService S.delete) prevSrvId
-  fromMaybe (Right ()) <$> mapM (setService S.insert) currSrvId
-  where
-    setService :: (QueueId -> Set QueueId -> Set QueueId) -> ServiceId -> STM (Either ErrorType ())
-    setService f sId =
-      TM.lookup sId ss >>= \case
-        Just s -> Right () <$ modifyTVar' (serviceSel s) (f qId)
-        Nothing -> pure $ Left AUTH -- TODO [certs] INTERNAL?
 
 readQueueRec :: TVar (Maybe QueueRec) -> STM (Either ErrorType QueueRec)
 readQueueRec qr = maybe (Left AUTH) Right <$> readTVar qr

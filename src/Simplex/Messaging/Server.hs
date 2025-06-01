@@ -1658,7 +1658,7 @@ client
                   pure $ SOK $ Just serviceId
               | otherwise ->
                   -- new or updated queue-service association
-                  liftIO (setQueueNtfService (queueStore ms) q (Just serviceId)) >>= \case
+                  liftIO (setQueueService (queueStore ms) q SNotifier (Just serviceId)) >>= \case
                     Left e -> pure $ ERR e
                     Right () -> do
                       hasSub <- atomically $ (<$ newServiceSubscription) =<< hasServiceSub
@@ -1674,7 +1674,7 @@ client
                   modifyTVar' (totalServiceSubs ntfSubscribers) (+ 1) -- server count for all services
             Nothing -> case ntfServiceId of
               Just _ ->
-                liftIO (setQueueNtfService (queueStore ms) q Nothing) >>= \case
+                liftIO (setQueueService (queueStore ms) q SNotifier Nothing) >>= \case
                   Left e -> pure $ ERR e
                   Right () -> do
                     hasSub <- atomically $ hasSubscription >>= newSub

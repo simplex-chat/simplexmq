@@ -46,8 +46,7 @@ module Simplex.Messaging.Client
     getSMPMessage,
     subscribeSMPQueueNotifications,
     subscribeSMPQueuesNtfs,
-    subscribeRcvService,
-    subscribeNtfService,
+    subscribeService,
     smpClientService,
     secureSMPQueue,
     secureSndSMPQueue,
@@ -842,25 +841,23 @@ nsubResponse_ = \case
   r' -> Left $ unexpectedResponse r'
 {-# INLINE nsubResponse_ #-}
 
-subscribeRcvService :: SMPClient -> ExceptT SMPClientError IO Word32
-subscribeRcvService c = subscribeService_ c SUBS
-{-# INLINE subscribeRcvService #-}
-
-subscribeNtfService :: SMPClient -> ExceptT SMPClientError IO Word32
-subscribeNtfService c = subscribeService_ c NSUBS
-{-# INLINE subscribeNtfService #-}
-
-subscribeService_ :: PartyI p => SMPClient -> Command p -> ExceptT SMPClientError IO Word32
-subscribeService_ c subCmd = case smpClientService c of
+subscribeService :: forall p. (PartyI p, SubscriberParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Word32
+subscribeService c party = case smpClientService c of
   Just THClientService {serviceId, serviceKey} -> do
     liftIO $ enablePings c
     sendSMPCommand c (Just (C.APrivateAuthKey C.SEd25519 serviceKey)) serviceId subCmd >>= \case
       SOKS n -> pure n
       r -> throwE $ unexpectedResponse r
+    where
+      subCmd :: Command p
+      subCmd = case party of
+        SRecipient -> SUBS
+        SNotifier -> NSUBS
   Nothing -> throwE PCEServiceUnavailable
 
 smpClientService :: SMPClient -> Maybe THClientService
 smpClientService = thAuth . thParams >=> clientService
+{-# INLINE smpClientService #-}
 
 enablePings :: SMPClient -> IO ()
 enablePings ProtocolClient {client_ = PClient {sendPings}} = atomically $ writeTVar sendPings True
