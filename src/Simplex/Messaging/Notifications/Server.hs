@@ -253,12 +253,12 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
 #endif
       let NtfSubscriber {smpSubscribers, smpAgent = a} = subscriber
           NtfPushServer {pushQ} = pushServer
-          SMPClientAgent {smpClients, smpSessions, srvSubs, pendingSrvSubs, smpSubWorkers} = a
+          SMPClientAgent {smpClients, smpSessions, activeQueueSubs, pendingQueueSubs, smpSubWorkers} = a
       srvSubscribers <- getSMPWorkerMetrics a smpSubscribers
       srvClients <- getSMPWorkerMetrics a smpClients
       srvSubWorkers <- getSMPWorkerMetrics a smpSubWorkers
-      ntfActiveSubs <- getSMPSubMetrics a srvSubs
-      ntfPendingSubs <- getSMPSubMetrics a pendingSrvSubs
+      ntfActiveSubs <- getSMPSubMetrics a activeQueueSubs
+      ntfPendingSubs <- getSMPSubMetrics a pendingQueueSubs
       smpSessionCount <- M.size <$> readTVarIO smpSessions
       apnsPushQLength <- atomically $ lengthTBQueue pushQ
       pure NtfRealTimeMetrics {threadsCount, srvSubscribers, srvClients, srvSubWorkers, ntfActiveSubs, ntfPendingSubs, smpSessionCount, apnsPushQLength}
@@ -271,8 +271,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
           pure (metrics' :: NtfSMPSubMetrics) {otherServers = S.size otherSrvs}
           where
             countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TMap NotifierId a) -> IO (NtfSMPSubMetrics, S.Set Text)
-            countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), srvSubs) =
-              result . M.size <$> readTVarIO srvSubs
+            countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), activeQueueSubs) =
+              result . M.size <$> readTVarIO activeQueueSubs
               where
                 result cnt
                   | isOwnServer a srv =
@@ -776,7 +776,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
             logDebug "TDEL"
             withNtfStore (`deleteNtfToken` tknId) $ \ss -> do
               forM_ ss $ \(smpServer, nIds) -> do
-                atomically $ removeSubscriptions ca smpServer nIds
+                atomically $ removeActiveSubs ca smpServer nIds
                 atomically $ removePendingSubs ca smpServer nIds
               incNtfStatT token tknDeleted
               pure NROk
@@ -815,7 +815,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
           SDEL -> do
             logDebug "SDEL"
             withNtfStore (`deleteNtfSubscription` subId) $ \_ -> do
-              atomically $ removeSubscription ca smpServer notifierId
+              atomically $ removeActiveSub ca smpServer notifierId
               atomically $ removePendingSub ca smpServer notifierId
               incNtfStat subDeleted
               pure NROk
