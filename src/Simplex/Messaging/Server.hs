@@ -438,13 +438,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
       forever $
         atomically (readTBQueue agentQ) >>= \case
-          -- TODO [certs] process service association
+          -- TODO [certs] log events
           CAConnected srv _service_ -> logInfo $ "SMP server connected " <> showServer' srv
-          CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
-          CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubscribed srv _ subs -> logError $ "SMP server subscribed queues " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubscribedService _ srv _ subs -> logError $ "SMP server subscribed queues as service " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubError srv _ errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+          CADisconnected srv qIds -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length qIds)
+          CASubscribed srv qIds -> logError $ "SMP server subscribed queues " <> showServer' srv <> " / subscriptions: " <> tshow (length qIds)
+          CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+          CASubscribedService _ srv n -> logError $ "SMP server subscribed queues as service " <> showServer' srv <> " / subscriptions: " <> tshow n
           CAServiceDisconnected {} -> error "TODO [certs] should not happen, just log error"
           CAServiceSubscribed {} -> error "TODO [certs] should not happen, just log error"
           CAServiceSubError {} -> error "TODO [certs] should not happen, just log error"
@@ -1325,7 +1324,7 @@ client
                 forkProxiedCmd $
                   liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
                     >>= proxyServerResponse a
-          proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
+          proxyServerResponse :: SMPClientAgent 'Sender -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
           proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn

@@ -342,7 +342,7 @@ randomSUBCmd_ a c = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
-  mkTransmission c True (Just rpKey, EntityId rId, Cmd SRecipient SUB)
+  mkTransmission c True (EntityId rId, Just rpKey, Cmd SRecipient SUB)
 
 randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do
@@ -417,7 +417,7 @@ randomSENDCmd_ a c len = do
   sId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair a g
   msg <- atomically $ C.randomBytes len g
-  mkTransmission c False (Just rpKey, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
+  mkTransmission c False (EntityId sId, Just rpKey, Cmd SSender $ SEND noMsgFlags msg)
 
 lenOk :: ByteString -> Bool
 lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2

@@ -62,7 +62,7 @@ ntfCreateSubscription c pKey newSub =
 ntfCreateSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty (NewNtfEntity 'Subscription) -> IO (NonEmpty (Either NtfClientError NtfSubscriptionId))
 ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands c cs
   where
-    cs = L.map (\newSub -> (Just pKey, NoEntity, NtfCmd SSubscription $ SNEW newSub)) newSubs
+    cs = L.map (\newSub -> (NoEntity, Just pKey, NtfCmd SSubscription $ SNEW newSub)) newSubs
     process (Response _ r) = case r of
       Right (NRSubId subId) -> Right subId
       Right r' -> Left $ unexpectedResponse r'
@@ -77,7 +77,7 @@ ntfCheckSubscription c pKey subId =
 ntfCheckSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty NtfSubscriptionId -> IO (NonEmpty (Either NtfClientError NtfSubStatus))
 ntfCheckSubscriptions c pKey subIds = L.map process <$> sendProtocolCommands c cs
   where
-    cs = L.map (\subId -> (Just pKey, subId, NtfCmd SSubscription SCHK)) subIds
+    cs = L.map (\subId -> (subId, Just pKey, NtfCmd SSubscription SCHK)) subIds
     process (Response _ r) = case r of
       Right (NRSub stat) -> Right stat
       Right r' -> Left $ unexpectedResponse r'

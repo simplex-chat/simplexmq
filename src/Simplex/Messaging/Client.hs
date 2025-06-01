@@ -236,7 +236,7 @@ smpClientStub g sessionId thVersion thAuth = do
 type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 
 -- | Type for client command data
-type ClientCommand msg = (Maybe C.APrivateAuthKey, EntityId, ProtoCommand msg)
+type ClientCommand msg = (EntityId, Maybe C.APrivateAuthKey, ProtoCommand msg)
 
 -- | Type synonym for transmission from SPM servers.
 -- Batch response is presented as a single `ServerTransmissionBatch` tuple.
@@ -773,17 +773,17 @@ subscribeSMPQueue c rpKey rId = do
   sendSMPCommand_ c True (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= either throwE pure
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
-subscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
+subscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
 subscribeSMPQueues c qs = do
   liftIO $ enablePings c
   sendProtocolCommands_ c True cs >>= mapM (processSUBResponse c)
   where
-    cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
+    cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
 
-streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> ([(RecipientId, Either SMPClientError (Maybe ServiceId))] -> IO ()) -> IO ()
+streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> ([(RecipientId, Either SMPClientError (Maybe ServiceId))] -> IO ()) -> IO ()
 streamSubscribeSMPQueues c qs cb = streamProtocolCommands c True cs $ mapM process >=> cb
   where
-    cs = L.map (\(rpKey, rId) -> (Just rpKey, rId, Cmd SRecipient SUB)) qs
+    cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
     process r@(Response rId _) = (rId,) <$> processSUBResponse c r
 
 processSUBResponse :: SMPClient -> Response ErrorType BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
@@ -824,12 +824,12 @@ subscribeSMPQueueNotifications c npKey nId = do
   either throwE pure . nsubResponse_ =<< sendSMPCommand_ c True (Just npKey) nId NSUB
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
-subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NtfPrivateAuthKey, NotifierId) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
+subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NotifierId, NtfPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
 subscribeSMPQueuesNtfs c qs = do
   liftIO $ enablePings c
   L.map nsubResponse <$> sendProtocolCommands_ c True cs
   where
-    cs = L.map (\(npKey, nId) -> (Just npKey, nId, Cmd SNotifier NSUB)) qs
+    cs = L.map (\(nId, npKey) -> (nId, Just npKey, Cmd SNotifier NSUB)) qs
 
 nsubResponse :: Response ErrorType BrokerMsg -> Either SMPClientError (Maybe ServiceId)
 nsubResponse (Response _ r) = either Left nsubResponse_ r
@@ -930,10 +930,10 @@ enableSMPQueueNotifications c rpKey rId notifierKey rcvNtfPublicDhKey =
     r -> throwE $ unexpectedResponse r
 
 -- | Enable notifications for the multiple queues for push notifications server.
-enableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId, NtfPublicAuthKey, RcvNtfPublicDhKey) -> IO (NonEmpty (Either SMPClientError (NotifierId, RcvNtfPublicDhKey)))
+enableSMPQueuesNtfs :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey, NtfPublicAuthKey, RcvNtfPublicDhKey) -> IO (NonEmpty (Either SMPClientError (NotifierId, RcvNtfPublicDhKey)))
 enableSMPQueuesNtfs c qs = L.map process <$> sendProtocolCommands c cs
   where
-    cs = L.map (\(rpKey, rId, notifierKey, rcvNtfPublicDhKey) -> (Just rpKey, rId, Cmd SRecipient $ NKEY notifierKey rcvNtfPublicDhKey)) qs
+    cs = L.map (\(rId, rpKey, notifierKey, rcvNtfPublicDhKey) -> (rId, Just rpKey, Cmd SRecipient $ NKEY notifierKey rcvNtfPublicDhKey)) qs
     process (Response _ r) = case r of
       Right (NID nId rcvNtfSrvPublicDhKey) -> Right (nId, rcvNtfSrvPublicDhKey)
       Right r' -> Left $ unexpectedResponse r'
@@ -947,7 +947,7 @@ disableSMPQueueNotifications = okSMPCommand NDEL
 {-# INLINE disableSMPQueueNotifications #-}
 
 -- | Disable notifications for multiple queues for push notifications server.
-disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
+disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
 disableSMPQueuesNtfs c = okSMPCommands NDEL c False
 {-# INLINE disableSMPQueuesNtfs #-}
 
@@ -989,7 +989,7 @@ deleteSMPQueue = okSMPCommand DEL
 {-# INLINE deleteSMPQueue #-}
 
 -- | Delete multiple SMP queues batching commands if supported.
-deleteSMPQueues :: SMPClient -> NonEmpty (RcvPrivateAuthKey, RecipientId) -> IO (NonEmpty (Either SMPClientError ()))
+deleteSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
 deleteSMPQueues c = okSMPCommands DEL c False
 {-# INLINE deleteSMPQueues #-}
 
@@ -1167,11 +1167,11 @@ okSMPCommand_ cmd c certAuth pKey qId =
     OK -> return ()
     r -> throwE $ unexpectedResponse r
 
-okSMPCommands :: PartyI p => Command p -> SMPClient -> Bool -> NonEmpty (C.APrivateAuthKey, QueueId) -> IO (NonEmpty (Either SMPClientError ()))
+okSMPCommands :: PartyI p => Command p -> SMPClient -> Bool -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
 okSMPCommands cmd c certAuth qs = L.map process <$> sendProtocolCommands_ c certAuth cs
   where
     aCmd = Cmd sParty cmd
-    cs = L.map (\(pKey, qId) -> (Just pKey, qId, aCmd)) qs
+    cs = L.map (\(qId, pKey) -> (qId, Just pKey, aCmd)) qs
     process (Response _ r) = case r of
       Right OK -> Right ()
       Right r' -> Left $ unexpectedResponse r'
@@ -1242,7 +1242,7 @@ sendProtocolCommand c certAuth = sendProtocolCommand_ c certAuth Nothing Nothing
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
 sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize, serviceAuth}} certAuth nonce_ tOut pKey entId cmd =
-  ExceptT $ uncurry sendRecv =<< mkTransmission_ c certAuth nonce_ (pKey, entId, cmd)
+  ExceptT $ uncurry sendRecv =<< mkTransmission_ c certAuth nonce_ (entId, pKey, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
@@ -1280,7 +1280,7 @@ mkTransmission :: Protocol v err msg => ProtocolClient v err msg -> Bool -> Clie
 mkTransmission c certAuth = mkTransmission_ c certAuth Nothing
 
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} certAuth nonce_ (pKey_, entityId, command) = do
+mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} certAuth nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) certAuth pKey_ nonce tForAuth

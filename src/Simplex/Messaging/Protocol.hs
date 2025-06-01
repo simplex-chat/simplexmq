@@ -67,6 +67,7 @@ module Simplex.Messaging.Protocol
     Party (..),
     Cmd (..),
     DirectParty,
+    SubscriberParty,
     BrokerMsg (..),
     SParty (..),
     PartyI (..),
@@ -343,6 +344,12 @@ type family DirectParty (p :: Party) :: Constraint where
   DirectParty ProxyService = ()
   DirectParty p =
     (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not direct"))
+
+type family SubscriberParty (p :: Party) :: Constraint where
+  SubscriberParty Recipient = ()
+  SubscriberParty Notifier = ()
+  SubscriberParty p =
+    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not subscriber"))
 
 -- | Type for client command of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)

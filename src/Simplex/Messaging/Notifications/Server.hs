@@ -62,7 +62,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessag
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
@@ -263,16 +263,16 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       apnsPushQLength <- atomically $ lengthTBQueue pushQ
       pure NtfRealTimeMetrics {threadsCount, srvSubscribers, srvClients, srvSubWorkers, ntfActiveSubs, ntfPendingSubs, smpSessionCount, apnsPushQLength}
       where
-        getSMPSubMetrics :: SMPClientAgent -> TMap SMPServer (TMap SMPSub a) -> IO NtfSMPSubMetrics
+        getSMPSubMetrics :: SMPClientAgent 'Notifier -> TMap SMPServer (TMap NotifierId a) -> IO NtfSMPSubMetrics
         getSMPSubMetrics a v = do
           subs <- readTVarIO v
           let metrics = NtfSMPSubMetrics {ownSrvSubs = M.empty, otherServers = 0, otherSrvSubCount = 0}
           (metrics', otherSrvs) <- foldM countSubs (metrics, S.empty) $ M.assocs subs
           pure (metrics' :: NtfSMPSubMetrics) {otherServers = S.size otherSrvs}
           where
-            countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TMap SMPSub a) -> IO (NtfSMPSubMetrics, S.Set Text)
-            countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), srvSubs) =
-              result . M.size <$> readTVarIO srvSubs
+            countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TMap NotifierId a) -> IO (NtfSMPSubMetrics, S.Set Text)
+            countSubs acc@(metrics, !otherSrvs) (srv@(SMPServer (h :| _) _ _), activeQueueSubs) =
+              result . M.size <$> readTVarIO activeQueueSubs
               where
                 result cnt
                   | isOwnServer a srv =
@@ -286,9 +286,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                 NtfSMPSubMetrics {ownSrvSubs, otherSrvSubCount} = metrics
                 host = safeDecodeUtf8 $ strEncode h
 
-        getSMPWorkerMetrics :: SMPClientAgent -> TMap SMPServer a -> IO NtfSMPWorkerMetrics
+        getSMPWorkerMetrics :: SMPClientAgent 'Notifier -> TMap SMPServer a -> IO NtfSMPWorkerMetrics
         getSMPWorkerMetrics a v = workerMetrics a . M.keys <$> readTVarIO v
-        workerMetrics :: SMPClientAgent -> [SMPServer] -> NtfSMPWorkerMetrics
+        workerMetrics :: SMPClientAgent 'Notifier -> [SMPServer] -> NtfSMPWorkerMetrics
         workerMetrics a srvs = NtfSMPWorkerMetrics {ownServers = reverse ownSrvs, otherServers}
           where
             (ownSrvs, otherServers) = foldl' countSrv ([], 0) srvs
@@ -524,32 +524,31 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
         atomically (readTBQueue agentQ) >>= \case
           CAConnected srv _service_ -> -- TODO [certs]
             logInfo $ "SMP server reconnected " <> showServer' srv
-          CADisconnected srv subs -> do
-            forM_ (L.nonEmpty $ map snd $ S.toList subs) $ \nIds -> do
-              updated <- batchUpdateSrvSubStatus st srv nIds NSInactive
-              logSubStatus srv "disconnected" (L.length nIds) updated
-          CASubscribed srv _ nIds -> do
+          CADisconnected srv nIds -> do
+            updated <- batchUpdateSrvSubStatus st srv nIds NSInactive
+            logSubStatus srv "disconnected" (L.length nIds) updated
+          CASubscribed srv nIds -> do
             updated <- batchUpdateSrvSubStatus st srv nIds NSActive
             logSubStatus srv "subscribed" (L.length nIds) updated
-          CASubscribedService serviceId srv _ nIds -> do
+          CASubscribedService serviceId srv nIds -> do
             updated <- batchUpdateSrvSubAssocs st srv (Just serviceId) nIds NSActive
             logSubStatus srv "subscribed as service" (L.length nIds) updated
-          CASubError srv _ errs -> do
+          CASubError srv errs -> do
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubStatuses st srv subStatuses
               logSubErrors srv subStatuses updated
-          CAServiceDisconnected srv serviceSub ->
-            logWarn $ "SMP server service disconnected " <> showService srv serviceSub
-          CAServiceSubscribed srv serviceSub n ->
-            logWarn $ "SMP server service subscribed to " <> tshow n <> " subs: " <> showService srv serviceSub
-          CAServiceSubError srv serviceSub e ->
+          CAServiceDisconnected srv serviceId ->
+            logWarn $ "SMP server service disconnected " <> showService srv serviceId
+          CAServiceSubscribed srv serviceId n ->
+            logWarn $ "SMP server service subscribed to " <> tshow n <> " subs: " <> showService srv serviceId
+          CAServiceSubError srv serviceId e ->
             -- TODO [certs] process error, can require re-associating the service?
-            logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
-          CAServiceUnavailable srv serviceSub ->
+            logError $ "SMP server service subscription error " <> showService srv serviceId <> ": " <> tshow e
+          CAServiceUnavailable srv serviceId ->
             -- TODO [certs] resubscribe all queues associated with this service ID
-            logError $ "SMP server service unavailable: " <> showService srv serviceSub
+            logError $ "SMP server service unavailable: " <> showService srv serviceId
       where
-        showService srv (party, serviceId) = showServer' srv  <> ", " <> tshow party <> " service ID " <> decodeLatin1 (strEncode serviceId)
+        showService srv serviceId = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId)
 
     logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> IO ()
     logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
@@ -793,8 +792,8 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
             logDebug "TDEL"
             withNtfStore (`deleteNtfToken` tknId) $ \ss -> do
               forM_ ss $ \(smpServer, nIds) -> do
-                atomically $ removeSubscriptions ca smpServer SPNotifier nIds
-                atomically $ removePendingSubs ca smpServer SPNotifier nIds
+                atomically $ removeActiveSubs ca smpServer nIds
+                atomically $ removePendingSubs ca smpServer nIds
               incNtfStatT token tknDeleted
               pure NROk
           TCRN 0 -> do
@@ -832,8 +831,8 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
           SDEL -> do
             logDebug "SDEL"
             withNtfStore (`deleteNtfSubscription` subId) $ \_ -> do
-              atomically $ removeSubscription ca smpServer (SPNotifier, notifierId)
-              atomically $ removePendingSub ca smpServer (SPNotifier, notifierId)
+              atomically $ removeActiveSub ca smpServer notifierId
+              atomically $ removePendingSub ca smpServer notifierId
               incNtfStat subDeleted
               pure NROk
           PING -> pure NRPong
