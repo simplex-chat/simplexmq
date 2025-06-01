@@ -1197,6 +1197,7 @@ protocolClientError protocolError_ host = \case
   PCEIncompatibleHost -> BROKER host HOST
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
+  PCEServiceUnavailable {} -> error "TODO [certs]"
   PCEIOError {} -> BROKER host NETWORK
 
 data ProtocolTestStep

@@ -46,6 +46,9 @@ module Simplex.Messaging.Client
     getSMPMessage,
     subscribeSMPQueueNotifications,
     subscribeSMPQueuesNtfs,
+    subscribeRcvService,
+    subscribeNtfService,
+    smpClientService,
     secureSMPQueue,
     secureSndSMPQueue,
     proxySecureSndSMPQueue,
@@ -137,6 +140,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
+import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -706,6 +710,8 @@ data ProtocolClientError err
     PCENetworkError
   | -- | No host compatible with network configuration
     PCEIncompatibleHost
+  | -- | Service is unavailable for command that requires service connection
+    PCEServiceUnavailable
   | -- | TCP transport handshake or some other transport error.
     -- Forwarded to the agent client as `ERR BROKER TRANSPORT e`.
     PCETransportError TransportError
@@ -734,6 +740,7 @@ smpProxyError = \case
   PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
   PCENetworkError -> PROXY $ BROKER NETWORK
   PCEIncompatibleHost -> PROXY $ BROKER HOST
+  PCEServiceUnavailable -> PROXY $ PROTOCOL SERVICE
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
@@ -834,6 +841,26 @@ nsubResponse_ = \case
   SOK serviceId_ -> Right serviceId_
   r' -> Left $ unexpectedResponse r'
 {-# INLINE nsubResponse_ #-}
+
+subscribeRcvService :: SMPClient -> ExceptT SMPClientError IO Word32
+subscribeRcvService c = subscribeService_ c SUBS
+{-# INLINE subscribeRcvService #-}
+
+subscribeNtfService :: SMPClient -> ExceptT SMPClientError IO Word32
+subscribeNtfService c = subscribeService_ c NSUBS
+{-# INLINE subscribeNtfService #-}
+
+subscribeService_ :: PartyI p => SMPClient -> Command p -> ExceptT SMPClientError IO Word32
+subscribeService_ c subCmd = case smpClientService c of
+  Just THClientService {serviceId, serviceKey} -> do
+    liftIO $ enablePings c
+    sendSMPCommand c (Just (C.APrivateAuthKey C.SEd25519 serviceKey)) serviceId subCmd >>= \case
+      SOKS n -> pure n
+      r -> throwE $ unexpectedResponse r
+  Nothing -> throwE PCEServiceUnavailable
+
+smpClientService :: SMPClient -> Maybe THClientService
+smpClientService = thAuth . thParams >=> clientService
 
 enablePings :: SMPClient -> IO ()
 enablePings ProtocolClient {client_ = PClient {sendPings}} = atomically $ writeTVar sendPings True

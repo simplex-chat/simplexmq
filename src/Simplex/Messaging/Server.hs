@@ -438,11 +438,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
       forever $
         atomically (readTBQueue agentQ) >>= \case
-          CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
+          -- TODO [certs] process service association
+          CAConnected srv _service_ -> logInfo $ "SMP server connected " <> showServer' srv
           CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
           CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubscribed srv _ subs -> logError $ "SMP server subscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CASubscribed srv _ subs -> logError $ "SMP server subscribed queues " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
+          CASubscribedService _ srv _ subs -> logError $ "SMP server subscribed queues as service " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
           CASubError srv _ errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+          CAServiceDisconnected {} -> error "TODO [certs] should not happen, just log error"
+          CAServiceSubscibed {} -> error "TODO [certs] should not happen, just log error"
+          CAServiceSubError {} -> error "TODO [certs] should not happen, just log error"
+          CAServiceUnavailable {} -> error "TODO [certs] should not happen, just log error"
       where
         showServer' = decodeLatin1 . strEncode . host
 
@@ -1169,10 +1175,10 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
   SRecipient | hasRole SRMessaging -> case cmd of
     NEW NewQueueReq {rcvAuthKey = k}
       | verifyServiceSig -> pure $ Nothing `verifiedWith` k
-      | otherwise -> pure $ VRFailed AUTH
+      | otherwise -> pure $ VRFailed SERVICE
     SUB
       | verifyServiceSig -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
-      | otherwise -> pure $ VRFailed AUTH
+      | otherwise -> pure $ VRFailed SERVICE
     SUBS -> pure verifyServiceCmd
     _ -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
   SSender | hasRole SRMessaging -> case cmd of
@@ -1186,7 +1192,7 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
   SNotifier | hasRole SRNotifier -> case cmd of
     NSUB
       | verifyServiceSig -> verifyQueue SNotifier $ \q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)
-      | otherwise -> pure $ VRFailed AUTH
+      | otherwise -> pure $ VRFailed SERVICE
     NSUBS -> pure verifyServiceCmd
   SProxiedClient | hasRole SRMessaging -> pure $ VRVerified Nothing
   SProxyService | hasRole SRProxy -> pure $ VRVerified Nothing
@@ -1238,7 +1244,6 @@ isSecuredMsgQueue QueueRec {queueMode, senderKey} = case queueMode of
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization auth_ tAuth authorized key = maybe False (verify key) tAuth
   where
-    -- TODO [certs] verify service cert key signature
     verify :: C.APublicAuthKey -> TAuthorizations -> Bool
     verify (C.APublicAuthKey a k) = \case
       (TASignature (C.ASignature a' s), _) -> case testEquality a a' of
@@ -1253,7 +1258,6 @@ verifyCmdAuth auth_ k authenticator authorized = case auth_ of
   Just (THAuthServer {serverPrivKey = pk}, nonce) -> C.cbVerify k pk nonce authenticator authorized
   Nothing -> False
 
--- TODO [certs]
 dummyVerifyCmd :: Maybe (THandleAuth 'TServer, C.CbNonce) -> ByteString -> TAuthorizations -> Bool
 dummyVerifyCmd auth_ authorized = \case
   (TASignature (C.ASignature a s), _) -> C.verify' (dummySignKey a) s authorized

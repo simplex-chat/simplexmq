@@ -465,12 +465,13 @@ updateSrvSubStatus st q status =
     forM_ subId_ $ \subId ->
       withLog "updateSrvSubStatus" st $ \sl -> logSubscriptionStatus sl subId status
 
-batchUpdateSrvSubAssocs :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, Maybe ServiceId) -> NtfSubStatus -> IO Int64
-batchUpdateSrvSubAssocs st srv nIds status =
+-- TODO [certs] associate service
+batchUpdateSrvSubAssocs :: NtfPostgresStore -> SMPServer -> Maybe ServiceId -> NonEmpty NotifierId -> NtfSubStatus -> IO Int64
+batchUpdateSrvSubAssocs st srv _serviceId_ nIds status =
   batchUpdateStatus_ st srv $ \srvId ->
     -- without executeMany
     -- L.toList $ L.map (status,srvId,,status) nIds
-    L.toList $ L.map ((status,srvId,) . fst) nIds -- TODO [certs] associate service
+    L.toList $ L.map ((status,srvId,)) nIds -- TODO [certs] associate service
 
 batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> NonEmpty NotifierId -> NtfSubStatus -> IO Int64
 batchUpdateSrvSubStatus st srv nIds status =
