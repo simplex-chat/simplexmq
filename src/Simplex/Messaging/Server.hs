@@ -351,10 +351,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       forever $
         atomically (readTBQueue agentQ) >>= \case
           CAConnected srv -> logInfo $ "SMP server connected " <> showServer' srv
-          CADisconnected srv [] -> logInfo $ "SMP server disconnected " <> showServer' srv
-          CADisconnected srv subs -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubscribed srv _ subs -> logError $ "SMP server subscribed " <> showServer' srv <> " / subscriptions: " <> tshow (length subs)
-          CASubError srv _ errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
+          CADisconnected srv qIds -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (L.length qIds)
+          CASubscribed srv qIds -> logError $ "SMP server subscribed " <> showServer' srv <> " / subscriptions: " <> tshow (L.length qIds)
+          CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (L.length errs)
       where
         showServer' = decodeLatin1 . strEncode . host
 
@@ -1163,7 +1162,7 @@ client
                 forkProxiedCmd $
                   liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
                     >>= proxyServerResponse a
-          proxyServerResponse :: SMPClientAgent -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
+          proxyServerResponse :: SMPClientAgent 'Sender -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
           proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn
