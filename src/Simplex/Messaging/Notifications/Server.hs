@@ -36,7 +36,7 @@ import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (mapMaybe)
+import Data.Maybe (isJust, mapMaybe)
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -426,16 +426,19 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
     counts <- mapConcurrently (subscribeSrvSubs st batchSize) srvs
     logNote $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
   where
-    subscribeSrvSubs st batchSize srv = do
+    subscribeSrvSubs st batchSize (srv, srvId, service_) = do
       let srvStr = safeDecodeUtf8 (strEncode $ L.head $ host srv)
       logNote $ "Starting SMP resubscriptions for " <> srvStr
-      n <- loop 0 Nothing
+      forM_ service_ $ \(serviceId, n) -> do
+        logNote $ "Subscribing service to " <> srvStr <> " with " <> tshow n <> " associated queues"
+        subscribeServiceNtfs ca srv serviceId
+      n <- subscribeLoop 0 Nothing
       logNote $ "Completed SMP resubscriptions for " <> srvStr <> " (" <> tshow n <> " subscriptions)"
       pure n
       where
         dbBatchSize = batchSize * 100
-        loop n afterSubId_ =
-          getServerNtfSubscriptions st srv afterSubId_ dbBatchSize >>= \case
+        subscribeLoop n afterSubId_ =
+          getServerNtfSubscriptions st srvId afterSubId_ dbBatchSize >>= \case
             Left _ -> exitFailure
             Right [] -> pure n
             Right subs -> do
@@ -443,15 +446,15 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
               let len = length subs
                   n' = n + len
                   afterSubId_' = Just $ fst $ last subs
-              if len < dbBatchSize then pure n' else loop n' afterSubId_'
+              if len < dbBatchSize then pure n' else subscribeLoop n' afterSubId_'
 
 -- this function is concurrency-safe - only onle subscriber per server can be created at a time,
 -- other threads would wait for the first thread to create it.
-subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> NonEmpty ServerNtfSub -> IO ()
-subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer ntfSubs =
+subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> ServerNtfSub -> IO ()
+subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer ntfSub =
   getSubscriberVar
     >>= either createSMPSubscriber waitForSMPSubscriber
-    >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSubs)
+    >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
   where
     getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
     getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
@@ -477,14 +480,13 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       atomically $ removeSessVar v smpServer smpSubscribers
       pure Nothing
 
-    runSMPSubscriber :: TQueue (NonEmpty ServerNtfSub) -> IO ()
+    runSMPSubscriber :: TQueue ServerNtfSub -> IO ()
     runSMPSubscriber q = forever $ do
       -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
       -- this should be analysed once we have prometheus stats
-      subs <- atomically $ readTQueue q
-      updated <- batchUpdateSubStatus st subs NSPending
-      logSubStatus smpServer "subscribing" (L.length subs) updated
-      subscribeQueuesNtfs ca smpServer $ L.map snd subs
+      (nId, sub) <- atomically $ readTQueue q
+      void $ updateSubStatus st nId NSPending
+      subscribeQueuesNtfs ca smpServer [sub]
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
@@ -525,17 +527,15 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
           CAConnected srv _service_ -> -- TODO [certs]
             logInfo $ "SMP server reconnected " <> showServer' srv
           CADisconnected srv nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv nIds NSInactive
+            updated <- batchUpdateSrvSubStatus st srv Nothing nIds NSInactive
             logSubStatus srv "disconnected" (L.length nIds) updated
-          CASubscribed srv nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv nIds NSActive
-            logSubStatus srv "subscribed" (L.length nIds) updated
-          CASubscribedService serviceId srv nIds -> do
-            updated <- batchUpdateSrvSubAssocs st srv (Just serviceId) nIds NSActive
-            logSubStatus srv "subscribed as service" (L.length nIds) updated
+          CASubscribed srv serviceId nIds -> do
+            updated <- batchUpdateSrvSubStatus st srv serviceId nIds NSActive
+            let asService = if isJust serviceId then " as service" else ""
+            logSubStatus srv ("subscribed" <> asService) (L.length nIds) updated
           CASubError srv errs -> do
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
-              updated <- batchUpdateSrvSubStatuses st srv subStatuses
+              updated <- batchUpdateSrvSubErrors st srv subStatuses
               logSubErrors srv subStatuses updated
           CAServiceDisconnected srv serviceId ->
             logWarn $ "SMP server service disconnected " <> showService srv serviceId
@@ -812,7 +812,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
           withNtfStore (`addNtfSubscription` sub) $ \case
             True -> do
               st <- asks store
-              liftIO $ subscribeNtfs ns st srv [(subId, (nId, nKey))]
+              liftIO $ subscribeNtfs ns st srv (subId, (nId, nKey))
               incNtfStat subCreated
               pure $ NRSubId subId
             False -> pure $ NRErr AUTH

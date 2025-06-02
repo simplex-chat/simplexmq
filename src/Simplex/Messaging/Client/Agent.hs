@@ -91,9 +91,8 @@ type SMPClientVar = SessionVar (Either (SMPClientError, Maybe UTCTime) (OwnServe
 data SMPClientAgentEvent
   = CAConnected SMPServer (Maybe ServiceId)
   | CADisconnected SMPServer (NonEmpty QueueId)
-  | CASubscribed SMPServer (NonEmpty QueueId)
+  | CASubscribed SMPServer (Maybe ServiceId) (NonEmpty QueueId)
   | CASubError SMPServer (NonEmpty (QueueId, SMPClientError))
-  | CASubscribedService ServiceId SMPServer (NonEmpty QueueId)
   | CAServiceDisconnected SMPServer ServiceId
   | CAServiceSubscribed SMPServer ServiceId Word32
   | CAServiceSubError SMPServer ServiceId SMPClientError
@@ -420,9 +419,8 @@ smpSubscribeQueues ca smp srv subs = do
         (pure Nothing)
   case rs' of
     Just (tempErrs, finalErrs, (qOks, sQs), _) -> do
-      notify_ CASubscribed $ map fst qOks
-      forM_ smpServiceId $ \serviceId ->
-        notify_ (CASubscribedService serviceId) sQs
+      notify_ (`CASubscribed` Nothing) $ map fst qOks
+      when (isJust smpServiceId) $ notify_ (`CASubscribed` smpServiceId) sQs
       notify_ CASubError finalErrs
       when tempErrs $ reconnectClient ca srv
     Nothing -> reconnectClient ca srv

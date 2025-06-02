@@ -99,9 +99,9 @@ ntfServerCLI cfgPath logPath =
               restoreServerLastNtfs stmStore defaultLastNtfsFile
               let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newNtfDbStore storeCfg
-              (tCnt, sCnt, nCnt) <- importNtfSTMStore ps stmStore skipTokens
+              (tCnt, sCnt, nCnt, serviceCnt) <- importNtfSTMStore ps stmStore skipTokens
               renameFile storeLogFile $ storeLogFile <> ".bak"
-              putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
+              putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show serviceCnt <> " service associations, " <> show nCnt <> " last token notifications."
               putStrLn "Configure database options in INI file."
         SCExport
           | schemaExists && storeLogExists -> exitConfigureNtfStore connstr schema

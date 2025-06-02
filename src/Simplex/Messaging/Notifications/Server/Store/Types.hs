@@ -9,6 +9,7 @@ module Simplex.Messaging.Notifications.Server.Store.Types where
 import Control.Applicative (optional)
 import Control.Concurrent.STM
 import qualified Data.ByteString.Char8 as B
+import Data.Maybe (fromMaybe)
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -77,30 +78,36 @@ data NtfSubRec = NtfSubRec
     smpQueue :: SMPQueueNtf,
     notifierKey :: NtfPrivateAuthKey,
     tokenId :: NtfTokenId,
-    subStatus :: NtfSubStatus
+    subStatus :: NtfSubStatus,
+    ntfServiceAssoc :: NtfAssociatedService -- Bool
   }
   deriving (Show)
 
 type ServerNtfSub = (NtfSubscriptionId, (NotifierId, NtfPrivateAuthKey))
 
+type NtfAssociatedService = Bool
+
 mkSubData :: NtfSubRec -> IO NtfSubData
-mkSubData NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do
+mkSubData NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status, ntfServiceAssoc = serviceAssoc} = do
   subStatus <- newTVarIO status
-  pure NtfSubData {ntfSubId, smpQueue, notifierKey, tokenId, subStatus}
+  ntfServiceAssoc <- newTVarIO serviceAssoc
+  pure NtfSubData {ntfSubId, smpQueue, notifierKey, tokenId, subStatus, ntfServiceAssoc}
 
 mkSubRec :: NtfSubData -> IO NtfSubRec
-mkSubRec NtfSubData {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status} = do
+mkSubRec NtfSubData {ntfSubId, smpQueue, notifierKey, tokenId, subStatus = status, ntfServiceAssoc = serviceAssoc} = do
   subStatus <- readTVarIO status
-  pure NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus}
+  ntfServiceAssoc <- readTVarIO serviceAssoc
+  pure NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus, ntfServiceAssoc}
 
 instance StrEncoding NtfSubRec where
-  strEncode NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus} =
+  strEncode NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus, ntfServiceAssoc} =
     B.unwords
       [ "subId=" <> strEncode ntfSubId,
         "smpQueue=" <> strEncode smpQueue,
         "notifierKey=" <> strEncode notifierKey,
         "tknId=" <> strEncode tokenId,
-        "subStatus=" <> strEncode subStatus
+        "subStatus=" <> strEncode subStatus,
+        "serviceAssoc=" <> strEncode ntfServiceAssoc
       ]
   strP = do
     ntfSubId <- "subId=" *> strP_
@@ -108,4 +115,5 @@ instance StrEncoding NtfSubRec where
     notifierKey <- "notifierKey=" *> strP_
     tokenId <- "tknId=" *> strP_
     subStatus <- "subStatus=" *> strP
-    pure NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus}
+    ntfServiceAssoc <- fromMaybe False <$> optional (" serviceAssoc=" *> strP)
+    pure NtfSubRec {ntfSubId, smpQueue, notifierKey, tokenId, subStatus, ntfServiceAssoc}

@@ -24,17 +24,21 @@ module Simplex.Messaging.Notifications.Server.StoreLog
   )
 where
 
+import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
+import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Word (Word16)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.Store.Types
-import Simplex.Messaging.Protocol (EntityId (..))
+import Simplex.Messaging.Protocol (EntityId (..), SMPServer, ServiceId)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
 import System.IO
@@ -47,8 +51,9 @@ data NtfStoreLogRecord
   | DeleteToken NtfTokenId
   | UpdateTokenTime NtfTokenId RoundedSystemTime
   | CreateSubscription NtfSubRec
-  | SubscriptionStatus NtfSubscriptionId NtfSubStatus
+  | SubscriptionStatus NtfSubscriptionId NtfSubStatus NtfAssociatedService
   | DeleteSubscription NtfSubscriptionId
+  | SetNtfService SMPServer (Maybe ServiceId)
   deriving (Show)
 
 instance StrEncoding NtfStoreLogRecord where
@@ -60,8 +65,11 @@ instance StrEncoding NtfStoreLogRecord where
     DeleteToken tknId -> strEncode (Str "TDELETE", tknId)
     UpdateTokenTime tknId ts -> strEncode (Str "TTIME", tknId, ts)
     CreateSubscription subRec -> strEncode (Str "SCREATE", subRec)
-    SubscriptionStatus subId subStatus -> strEncode (Str "SSTATUS", subId, subStatus)
+    SubscriptionStatus subId subStatus serviceAssoc -> strEncode (Str "SSTATUS", subId, subStatus) <> serviceStr
+      where
+        serviceStr = if serviceAssoc then " service=" <> strEncode True else ""
     DeleteSubscription subId -> strEncode (Str "SDELETE", subId)
+    SetNtfService srv serviceId -> strEncode (Str "SERVICE", srv) <> " service=" <> maybe "off" strEncode serviceId
   strP =
     A.choice
       [ "TCREATE " *> (CreateToken <$> strP),
@@ -71,8 +79,9 @@ instance StrEncoding NtfStoreLogRecord where
         "TDELETE " *> (DeleteToken <$> strP),
         "TTIME " *> (UpdateTokenTime <$> strP_ <*> strP),
         "SCREATE " *> (CreateSubscription <$> strP),
-        "SSTATUS " *> (SubscriptionStatus <$> strP_ <*> strP),
-        "SDELETE " *> (DeleteSubscription <$> strP)
+        "SSTATUS " *> (SubscriptionStatus <$> strP_ <*> strP <*> (fromMaybe False <$> optional (" service=" *> strP))),
+        "SDELETE " *> (DeleteSubscription <$> strP),
+        "SERVICE " *> (SetNtfService <$> strP <* " service=" <*> ("off" $> Nothing <|> strP))
       ]
 
 logNtfStoreRecord :: StoreLog 'WriteMode -> NtfStoreLogRecord -> IO ()
@@ -100,11 +109,14 @@ logUpdateTokenTime s tknId t = logNtfStoreRecord s $ UpdateTokenTime tknId t
 logCreateSubscription :: StoreLog 'WriteMode -> NtfSubRec -> IO ()
 logCreateSubscription s = logNtfStoreRecord s . CreateSubscription
 
-logSubscriptionStatus :: StoreLog 'WriteMode -> NtfSubscriptionId -> NtfSubStatus -> IO ()
-logSubscriptionStatus s subId subStatus = logNtfStoreRecord s $ SubscriptionStatus subId subStatus
+logSubscriptionStatus :: StoreLog 'WriteMode -> (NtfSubscriptionId, NtfSubStatus, NtfAssociatedService) -> IO ()
+logSubscriptionStatus s (subId, subStatus, serviceAssoc) = logNtfStoreRecord s $ SubscriptionStatus subId subStatus serviceAssoc
 
 logDeleteSubscription :: StoreLog 'WriteMode -> NtfSubscriptionId -> IO ()
 logDeleteSubscription s subId = logNtfStoreRecord s $ DeleteSubscription subId
+
+logSetNtfService :: StoreLog 'WriteMode -> SMPServer -> Maybe ServiceId -> IO ()
+logSetNtfService s srv serviceId = logNtfStoreRecord s $ SetNtfService srv serviceId
 
 readWriteNtfSTMStore :: Bool -> FilePath -> NtfSTMStore -> IO (StoreLog 'WriteMode)
 readWriteNtfSTMStore tty = readWriteStoreLog (readNtfStore tty) writeNtfStore
@@ -147,13 +159,19 @@ readNtfStore tty f st = readLogLines tty f $ \_ -> processLine
               Nothing -> B.putStrLn $ "Warning: no token " <> enc tokenId <> ", subscription " <> enc ntfSubId
             where
               enc = B64.encode . unEntityId
-          SubscriptionStatus subId status -> do
-            stmGetNtfSubscriptionIO st subId
-              >>= mapM_ (\NtfSubData {subStatus} -> atomically $ writeTVar subStatus status)
+          SubscriptionStatus subId status serviceAssoc -> do
+            stmGetNtfSubscriptionIO st subId >>= mapM_ update
+            where
+              update NtfSubData {subStatus, ntfServiceAssoc} = atomically $ do
+                writeTVar subStatus status
+                writeTVar ntfServiceAssoc serviceAssoc
           DeleteSubscription subId ->
             atomically $ stmDeleteNtfSubscription st subId
+          SetNtfService srv serviceId ->
+            atomically $ stmSetNtfService st srv serviceId
 
 writeNtfStore :: StoreLog 'WriteMode -> NtfSTMStore -> IO ()
-writeNtfStore s NtfSTMStore {tokens, subscriptions} = do
+writeNtfStore s NtfSTMStore {tokens, subscriptions, ntfServices} = do
   mapM_ (logCreateToken s <=< mkTknRec) =<< readTVarIO tokens
   mapM_ (logCreateSubscription s <=< mkSubRec) =<< readTVarIO subscriptions
+  mapM_ (\(srv, serviceId) -> logSetNtfService s srv $ Just serviceId) . M.assocs =<< readTVarIO ntfServices
