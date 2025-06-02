@@ -49,7 +49,6 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Set as S
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV

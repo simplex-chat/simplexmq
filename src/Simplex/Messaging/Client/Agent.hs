@@ -11,7 +11,27 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Client.Agent where
+module Simplex.Messaging.Client.Agent
+  ( SMPClientAgent (..),
+    SMPClientAgentConfig (..),
+    SMPClientAgentEvent (..),
+    OwnServer,
+    defaultSMPClientAgentConfig,
+    newSMPClientAgent,
+    getSMPServerClient'',
+    getConnectedSMPServerClient,
+    closeSMPClientAgent,
+    lookupSMPServerClient,
+    isOwnServer,
+    subscribeServiceNtfs,
+    subscribeQueuesNtfs,
+    activeClientSession',
+    removeActiveSub,
+    removeActiveSubs,
+    removePendingSub,
+    removePendingSubs,
+  )
+where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (Async, uninterruptibleCancel)
@@ -376,10 +396,6 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
       logInfo $ "SMP error (" <> safeDecodeUtf8 (strEncode $ host srv) <> "): " <> tshow e
       throwE e
 
-subscribeQueuesSMP :: SMPClientAgent 'Recipient -> SMPServer -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO ()
-subscribeQueuesSMP = subscribeQueues_
-{-# INLINE subscribeQueuesSMP #-}
-
 subscribeQueuesNtfs :: SMPClientAgent 'Notifier -> SMPServer -> NonEmpty (NotifierId, NtfPrivateAuthKey) -> IO ()
 subscribeQueuesNtfs = subscribeQueues_
 {-# INLINE subscribeQueuesNtfs #-}
@@ -440,10 +456,6 @@ smpSubscribeQueues ca smp srv subs = do
         | otherwise -> (tempErrs, (qId, e) : finalErrs, oks, qId : notPending)
     notify_ :: (SMPServer -> NonEmpty a -> SMPClientAgentEvent) -> [a] -> IO ()
     notify_ evt qs = mapM_ (notify ca . evt srv) $ L.nonEmpty qs
-
-subscribeServiceSMP :: SMPClientAgent 'Recipient -> SMPServer -> ServiceId -> IO ()
-subscribeServiceSMP = subscribeService_
-{-# INLINE subscribeServiceSMP #-}
 
 subscribeServiceNtfs :: SMPClientAgent 'Notifier -> SMPServer -> ServiceId -> IO ()
 subscribeServiceNtfs = subscribeService_
