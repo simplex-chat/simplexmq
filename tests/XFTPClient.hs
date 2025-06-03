@@ -15,9 +15,8 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Transport (supportedFileServerVRange, supportedXFTPhandshakes)
+import Simplex.FileTransfer.Transport (supportedFileServerVRange, alpnSupportedXFTPhandshakes)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.Transport (ALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
 
@@ -52,13 +51,13 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
 withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
 
-withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfg cfg = withXFTPServerCfgALPN cfg $ Just supportedXFTPhandshakes
+withXFTPServerCfgNoALPN :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfgNoALPN cfg = withXFTPServerCfg cfg {transportConfig = (transportConfig cfg) {serverALPN = Nothing}}
 
-withXFTPServerCfgALPN :: HasCallStack => XFTPServerConfig -> Maybe [ALPN] -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfgALPN cfg alpn_ =
+withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfg cfg =
   serverBracket
-    (\started -> runXFTPServerBlocking started cfg alpn_)
+    (\started -> runXFTPServerBlocking started cfg)
     (threadDelay 10000)
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
@@ -128,7 +127,7 @@ testXFTPServerConfig =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = defaultTransportServerConfig,
+      transportConfig = mkTransportServerConfig True $ Just alpnSupportedXFTPhandshakes,
       responseDelay = 0
     }
 

@@ -48,13 +48,13 @@ data HTTP2Server = HTTP2Server
   }
 
 -- This server is for testing only, it processes all requests in a single queue.
-getHTTP2Server :: HTTP2ServerConfig -> Maybe [ALPN] -> IO HTTP2Server
-getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} alpn_ = do
+getHTTP2Server :: HTTP2ServerConfig -> IO HTTP2Server
+getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, serverSupported, https2Credentials, transportConfig} = do
   srvCreds <- loadServerCredential https2Credentials
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize serverSupported srvCreds alpn_ transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize serverSupported srvCreds transportConfig Nothing (const $ pure ()) $ \sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
@@ -63,10 +63,10 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> HTTP2ServerFunc -> IO ()
-runHTTP2Server started port bufferSize srvSupported srvCreds alpn_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
+runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> HTTP2ServerFunc -> IO ()
+runHTTP2Server started port bufferSize srvSupported srvCreds transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
   where
-    setup = runTransportServer started port srvSupported srvCreds alpn_ transportConfig
+    setup = runTransportServer started port srvSupported srvCreds transportConfig
 
 -- HTTP2 server can be run on both client and server TLS connections.
 runHTTP2ServerWith :: BufferSize -> ((TLS p -> IO ()) -> a) -> HTTP2ServerFunc -> a

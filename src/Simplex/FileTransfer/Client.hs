@@ -57,7 +57,7 @@ import Simplex.Messaging.Protocol
     pattern NoEntity,
   )
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
-import Simplex.Messaging.Transport.Client (TransportClientConfig, TransportHost, alpn)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
@@ -99,7 +99,7 @@ defaultXFTPClientConfig =
   XFTPClientConfig
     { xftpNetworkConfig = defaultNetworkConfig,
       serverVRange = supportedFileServerVRange,
-      clientALPN = Just supportedXFTPhandshakes
+      clientALPN = Just alpnSupportedXFTPhandshakes
     }
 
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
@@ -107,7 +107,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
-  let tcConfig = (transportClientConfig xftpNetworkConfig useHost False) {alpn = clientALPN}
+  let tcConfig = transportClientConfig xftpNetworkConfig useHost False clientALPN
       http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port

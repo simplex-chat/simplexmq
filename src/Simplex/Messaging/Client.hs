@@ -393,9 +393,9 @@ defaultNetworkConfig =
       logTLSErrors = False
     }
 
-transportClientConfig :: NetworkConfig -> TransportHost -> Bool -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host useSNI =
-  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, alpn = Nothing, useSNI}
+transportClientConfig :: NetworkConfig -> TransportHost -> Bool -> Maybe [ALPN] -> TransportClientConfig
+transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} host useSNI clientALPN =
+  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, clientALPN, useSNI}
   where
     socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
     useSocksProxy SMAlways = socksProxy'
@@ -455,7 +455,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
 
 defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
 defaultSMPClientConfig =
-  (defaultClientConfig (Just supportedSMPHandshakes) False supportedClientSMPRelayVRange)
+  (defaultClientConfig (Just alpnSupportedSMPHandshakes) False supportedClientSMPRelayVRange)
     { defaultTransport = (show defaultSMPPort, transport @TLS),
       agreeSecret = True
     }
@@ -556,7 +556,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = (transportClientConfig networkConfig useHost useSNI) {alpn = clientALPN}
+      let tcConfig = transportClientConfig networkConfig useHost useSNI clientALPN
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)

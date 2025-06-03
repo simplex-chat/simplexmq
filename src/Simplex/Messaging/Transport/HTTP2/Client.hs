@@ -81,7 +81,7 @@ defaultHTTP2ClientConfig =
             tcpKeepAlive = Nothing,
             logTLSErrors = True,
             clientCredentials = Nothing,
-            alpn = Nothing,
+            clientALPN = Nothing,
             useSNI = False
           },
       bufferSize = defaultHTTP2BufferSize,

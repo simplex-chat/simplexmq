@@ -35,7 +35,7 @@ module Simplex.Messaging.Transport
     VersionSMP,
     VersionRangeSMP,
     THandleSMP,
-    supportedSMPHandshakes,
+    alpnSupportedSMPHandshakes,
     supportedClientSMPRelayVRange,
     supportedServerSMPRelayVRange,
     supportedProxyClientSMPRelayVRange,
@@ -233,8 +233,8 @@ supportedProxyClientSMPRelayVRange = mkVersionRange minServerSMPRelayVersion cur
 proxiedSMPRelayVRange :: VersionRangeSMP
 proxiedSMPRelayVRange = mkVersionRange sendingProxySMPVersion proxiedSMPRelayVersion
 
-supportedSMPHandshakes :: [ALPN]
-supportedSMPHandshakes = ["smp/1"]
+alpnSupportedSMPHandshakes :: [ALPN]
+alpnSupportedSMPHandshakes = ["smp/1"]
 
 simplexMQVersion :: String
 simplexMQVersion = showVersion SMQ.version

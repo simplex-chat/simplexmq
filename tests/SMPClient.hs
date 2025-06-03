@@ -11,6 +11,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module SMPClient where
 
@@ -31,7 +32,6 @@ import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
-import qualified Simplex.Messaging.Transport.Client as Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
@@ -158,14 +158,14 @@ testSMPClientVR vr client = do
 
 testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient_ host port vr client = do
-  let tcConfig = defaultTransportClientConfig {Client.alpn = clientALPN}
+  let tcConfig = defaultTransportClientConfig {clientALPN} :: TransportClientConfig
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
     runExceptT (smpClientHandshake h Nothing testKeyHash vr False) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
     clientALPN
-      | authCmdsSMPVersion `isCompatible` vr = Just supportedSMPHandshakes
+      | authCmdsSMPVersion `isCompatible` vr = Just alpnSupportedSMPHandshakes
       | otherwise = Nothing
 
 cfg :: AServerConfig
@@ -226,7 +226,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
           },
       httpCredentials = Nothing,
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = defaultTransportServerConfig,
+      transportConfig = mkTransportServerConfig True $ Just alpnSupportedSMPHandshakes,
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
