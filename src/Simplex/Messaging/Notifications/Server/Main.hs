@@ -37,7 +37,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientCo
 import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres (exportNtfDbStore, importNtfSTMStore, newNtfDbStore)
 import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
-import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
+import Simplex.Messaging.Notifications.Transport (alpnSupportedNTFHandshakes, supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
@@ -48,7 +48,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Transport (ASrvTransport, simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Exit (exitFailure)
@@ -274,9 +274,9 @@ ntfServerCLI cfgPath logPath =
               prometheusMetricsFile = combine logPath "ntf-server-metrics.txt",
               ntfServerVRange = supportedServerNTFVRange,
               transportConfig =
-                defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
-                  },
+                mkTransportServerConfig
+                  (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
+                  (Just alpnSupportedNTFHandshakes),
               startOptions
             }
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini

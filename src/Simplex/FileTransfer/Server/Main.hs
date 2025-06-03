@@ -21,7 +21,7 @@ import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Transport (supportedFileServerVRange)
+import Simplex.FileTransfer.Transport (supportedFileServerVRange, alpnSupportedXFTPhandshakes)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
@@ -29,7 +29,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -189,9 +189,9 @@ xftpServerCLI cfgPath logPath = do
               serverStatsLogFile = combine logPath "file-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "file-server-stats.log",
               transportConfig =
-                defaultTransportServerConfig
-                  { logTLSErrors = fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini
-                  },
+                mkTransportServerConfig
+                  (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
+                  (Just alpnSupportedXFTPhandshakes),
               responseDelay = 0
             }
 

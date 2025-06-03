@@ -61,7 +61,7 @@ import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatu
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
@@ -92,17 +92,17 @@ data XFTPTransportRequest = XFTPTransportRequest
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
   started <- newEmptyTMVarIO
-  runXFTPServerBlocking started cfg $ Just supportedXFTPhandshakes
+  runXFTPServerBlocking started cfg
 
-runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> Maybe [ALPN] -> IO ()
-runXFTPServerBlocking started cfg alpn_ = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started alpn_)
+runXFTPServerBlocking :: TMVar Bool -> XFTPServerConfig -> IO ()
+runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
 
 data Handshake
   = HandshakeSent C.PrivateKeyX25519
   | HandshakeAccepted (THandleParams XFTPVersion 'TServer)
 
-xftpServer :: XFTPServerConfig -> TMVar Bool -> Maybe [ALPN] -> M ()
-xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started alpn_ = do
+xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
+xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
   mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
   raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
@@ -116,7 +116,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       env <- ask
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize defaultSupportedParams srvCreds alpn_ transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize defaultSupportedParams srvCreds transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
         reqBody <- getHTTP2Body r xftpBlockSize
         let v = VersionXFTP 1
             thServerVRange = versionToRange v

@@ -62,8 +62,8 @@ legacyServerNTFVRange = mkVersionRange initialNTFVersion initialNTFVersion
 supportedServerNTFVRange :: VersionRangeNTF
 supportedServerNTFVRange = mkVersionRange initialNTFVersion currentServerNTFVersion
 
-supportedNTFHandshakes :: [ALPN]
-supportedNTFHandshakes = ["ntf/1"]
+alpnSupportedNTFHandshakes :: [ALPN]
+alpnSupportedNTFHandshakes = ["ntf/1"]
 
 type THandleNTF c p = THandle NTFVersion c p
 
