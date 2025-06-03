@@ -490,7 +490,7 @@ updateSrvSubStatus st q status =
     forM_ sub_ $ \(subId, serviceAssoc) ->
       withLog "updateSrvSubStatus" st $ \sl -> logSubscriptionStatus sl (subId, status, serviceAssoc)
 
-batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> Maybe ServiceId -> NonEmpty NotifierId -> NtfSubStatus -> IO Int64
+batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> Maybe ServiceId -> NonEmpty NotifierId -> NtfSubStatus -> IO Int
 batchUpdateSrvSubStatus st srv newServiceId nIds status =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubStatus" st $ \db -> runExceptT $ do
     (srvId, currServiceId) <- ExceptT $ getSMPServerService db
@@ -511,7 +511,7 @@ batchUpdateSrvSubStatus st srv newServiceId nIds status =
           |]
           (srvToRow srv)
 
-batchUpdateSrvSubErrors :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, NtfSubStatus) -> IO Int64
+batchUpdateSrvSubErrors :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, NtfSubStatus) -> IO Int
 batchUpdateSrvSubErrors st srv subs =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubErrors" st $ \db -> runExceptT $ do
     srvId <- ExceptT $ getSMPServerId db
@@ -529,7 +529,7 @@ batchUpdateSrvSubErrors st srv subs =
           |]
           (srvToRow srv)
 
-batchUpdateStatus_ :: NtfPostgresStore -> DB.Connection -> [(Int64, NtfAssociatedService, NtfSubStatus, NotifierId)] -> ExceptT ErrorType IO Int64
+batchUpdateStatus_ :: NtfPostgresStore -> DB.Connection -> [(Int64, NtfAssociatedService, NtfSubStatus, NotifierId)] -> ExceptT ErrorType IO Int
 batchUpdateStatus_ st db params = do
   subs <-
     liftIO $
@@ -546,7 +546,38 @@ batchUpdateStatus_ st db params = do
         |]
         params
   withLog "batchUpdateStatus_" st $ forM_ subs . logSubscriptionStatus
-  pure $ fromIntegral $ length subs
+  pure $ length subs
+
+removeServiceAssociation :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
+removeServiceAssociation st srv = do
+  withDB "removeServiceAssociation" st $ \db -> runExceptT $ do
+    srvId <- ExceptT $ removeServerService db
+    subs <-
+      liftIO $
+        DB.query
+          db
+          [sql|
+            UPDATE subscriptions s
+            SET status = ?, ntf_service_assoc = FALSE
+            WHERE smp_server_id = ?
+              AND (s.status != ? OR s.ntf_service_assoc != FALSE)
+            RETURNING s.subscription_id, s.status, s.ntf_service_assoc
+          |]
+          (NSInactive, srvId, NSInactive)
+    withLog "removeServiceAssociation" st $ forM_ subs . logSubscriptionStatus
+    pure (srvId, length subs)
+  where
+    removeServerService db =
+      firstRow fromOnly AUTH $
+        DB.query
+          db
+          [sql|
+            UPDATE smp_servers
+            SET ntf_service_id = NULL
+            WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
+            RETURNING smp_server_id
+          |]
+          (srvToRow srv)
 
 addTokenLastNtf :: NtfPostgresStore -> PNMessageData -> IO (Either ErrorType (NtfTknRec, NonEmpty PNMessageData))
 addTokenLastNtf st newNtf =

@@ -68,8 +68,6 @@ import Simplex.Messaging.Protocol
     PartyI,
     ProtocolServer (..),
     QueueId,
-    RcvPrivateAuthKey,
-    RecipientId,
     SMPServer,
     SParty (..),
     SubscriberParty,
@@ -93,14 +91,14 @@ data SMPClientAgentEvent
   | CADisconnected SMPServer (NonEmpty QueueId)
   | CASubscribed SMPServer (Maybe ServiceId) (NonEmpty QueueId)
   | CASubError SMPServer (NonEmpty (QueueId, SMPClientError))
-  | CAServiceDisconnected SMPServer ServiceId
-  | CAServiceSubscribed SMPServer ServiceId Word32
-  | CAServiceSubError SMPServer ServiceId SMPClientError
+  | CAServiceDisconnected SMPServer (ServiceId, Word32)
+  | CAServiceSubscribed SMPServer (ServiceId, Word32) Word32
+  | CAServiceSubError SMPServer (ServiceId, Word32) SMPClientError
   -- CAServiceUnavailable is used when service ID in pending subscription is different from the current service in connection.
   -- This will require resubscribing to all queues associated with this service ID individually, creating new associations.
   -- It may happen if, for example, SMP server deletes service information (e.g. via downgrade and§ upgrade)
   -- and assigns different service ID to the service certificate.
-  | CAServiceUnavailable SMPServer ServiceId
+  | CAServiceUnavailable SMPServer (ServiceId, Word32)
 
 data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: ProtocolClientConfig SMPVersion,
@@ -144,11 +142,11 @@ data SMPClientAgent p = SMPClientAgent
     -- Only one service subscription can exist per server with this agent.
     -- With correctly functioning SMP server, queue and service subscriptions cab't be
     -- active at the same time.
-    activeServiceSubs :: TMap SMPServer (TVar (Maybe (ServiceId, SessionId))),
+    activeServiceSubs :: TMap SMPServer (TVar (Maybe ((ServiceId, Word32), SessionId))),
     activeQueueSubs :: TMap SMPServer (TMap QueueId (SessionId, C.APrivateAuthKey)),
     -- Pending service subscriptions can co-exist with pending queue subscriptions
     -- on the same SMP server during subscriptions being transitioned from per-queue to service.
-    pendingServiceSubs :: TMap SMPServer (TVar (Maybe ServiceId)),
+    pendingServiceSubs :: TMap SMPServer (TVar (Maybe (ServiceId, Word32))),
     pendingQueueSubs :: TMap SMPServer (TMap QueueId C.APrivateAuthKey),
     smpSubWorkers :: TMap SMPServer (SessionVar (Async ())),
     workerSeq :: TVar Int
@@ -257,7 +255,7 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
       removeClientAndSubs smp >>= serverDown
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
-    removeClientAndSubs :: SMPClient -> IO (Maybe ServiceId, Maybe (Map QueueId C.APrivateAuthKey))
+    removeClientAndSubs :: SMPClient -> IO (Maybe (ServiceId, Word32), Maybe (Map QueueId C.APrivateAuthKey))
     removeClientAndSubs smp = do
       -- Looking up subscription vars outside of STM transaction to reduce re-evaluation.
       -- It is possible because these vars are never removed, they are only added.
@@ -273,13 +271,13 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
         sessId = sessionId $ thParams smp
         updateServiceSub sVar = do -- (sub, sessId')
           -- We don't change active subscription in case session ID is different from disconnected client
-          serviceId_ <- stateTVar sVar $ \case
-            Just (serviceId, sessId') | sessId == sessId' -> (Just serviceId, Nothing)
+          serviceSub_ <- stateTVar sVar $ \case
+            Just (serviceSub, sessId') | sessId == sessId' -> (Just serviceSub, Nothing)
             s -> (Nothing, s)
           -- We don't reset pending subscription to Nothing here to avoid any race conditions
           -- with subsequent client sessions that might have set pending already.
-          when (isJust serviceId_) $ setPendingServiceSub ca srv serviceId_
-          pure serviceId_
+          when (isJust serviceSub_) $ setPendingServiceSub ca srv serviceSub_
+          pure serviceSub_
         updateQueueSubs qVar = do
           -- removing subscriptions that have matching sessionId to disconnected client
           -- and keep the other ones (they can be made by the new client)
@@ -288,7 +286,7 @@ connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, random
             then pure Nothing
             else Just subs <$ addSubs_ (pendingQueueSubs ca) srv subs
 
-    serverDown :: (Maybe ServiceId, Maybe (Map QueueId C.APrivateAuthKey)) -> IO ()
+    serverDown :: (Maybe (ServiceId, Word32), Maybe (Map QueueId C.APrivateAuthKey)) -> IO ()
     serverDown (sSub, qSubs) = do
       mapM_ (notify ca . CAServiceDisconnected srv) sSub
       let qIds = L.nonEmpty . M.keys =<< qSubs
@@ -318,7 +316,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
           loop
     ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
     noPending (sSub, qSubs) = isNothing sSub && maybe True M.null qSubs
-    getPending :: Monad m => (forall a. SMPServer -> TMap SMPServer a -> m (Maybe a)) -> (forall a. TVar a -> m a) -> m (Maybe ServiceId, Maybe (Map QueueId C.APrivateAuthKey))
+    getPending :: Monad m => (forall a. SMPServer -> TMap SMPServer a -> m (Maybe a)) -> (forall a. TVar a -> m a) -> m (Maybe (ServiceId, Word32), Maybe (Map QueueId C.APrivateAuthKey))
     getPending lkup rd = do
       sSub <- lkup srv (pendingServiceSubs ca) $>>= rd
       qSubs <- lkup srv (pendingQueueSubs ca) >>= mapM rd
@@ -330,7 +328,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v srv smpSubWorkers
 
-reconnectSMPClient :: forall p. SMPClientAgent p -> SMPServer -> (Maybe ServiceId, Maybe (Map QueueId C.APrivateAuthKey)) -> ExceptT SMPClientError IO ()
+reconnectSMPClient :: forall p. SMPClientAgent p -> SMPServer -> (Maybe (ServiceId, Word32), Maybe (Map QueueId C.APrivateAuthKey)) -> ExceptT SMPClientError IO ()
 reconnectSMPClient ca@SMPClientAgent {agentCfg, agentParty} srv (sSub_, qSubs_) =
   withSMP ca srv $ \smp -> liftIO $ case subscriberParty agentParty of
     Just Dict -> resubscribe smp
@@ -431,7 +429,7 @@ smpSubscribeQueues ca smp srv subs = do
       let acc@(_, _, (qOks, sQs), notPending) = foldr (groupSub pending) (False, [], ([], []), []) (L.zip subs rs)
       unless (null qOks) $ addActiveSubs ca srv qOks
       unless (null sQs) $ forM_ smpServiceId $ \serviceId ->
-        setActiveServiceSub ca srv $ Just (serviceId, sessId)
+        updateActiveServiceSub ca srv ((serviceId, fromIntegral $ length sQs), sessId)
       unless (null notPending) $ removePendingSubs ca srv notPending
       pure acc
     sessId = sessionId $ thParams smp
@@ -455,19 +453,19 @@ smpSubscribeQueues ca smp srv subs = do
     notify_ :: (SMPServer -> NonEmpty a -> SMPClientAgentEvent) -> [a] -> IO ()
     notify_ evt qs = mapM_ (notify ca . evt srv) $ L.nonEmpty qs
 
-subscribeServiceNtfs :: SMPClientAgent 'Notifier -> SMPServer -> ServiceId -> IO ()
+subscribeServiceNtfs :: SMPClientAgent 'Notifier -> SMPServer -> (ServiceId, Word32) -> IO ()
 subscribeServiceNtfs = subscribeService_
 {-# INLINE subscribeServiceNtfs #-}
 
-subscribeService_ :: (PartyI p, SubscriberParty p) => SMPClientAgent p -> SMPServer -> ServiceId -> IO ()
-subscribeService_ ca srv serviceId = do
-  atomically $ setPendingServiceSub ca srv $ Just serviceId
+subscribeService_ :: (PartyI p, SubscriberParty p) => SMPClientAgent p -> SMPServer -> (ServiceId, Word32) -> IO ()
+subscribeService_ ca srv serviceSub = do
+  atomically $ setPendingServiceSub ca srv $ Just serviceSub
   runExceptT (getSMPServerClient' ca srv) >>= \case
-    Right smp -> smpSubscribeService ca smp srv serviceId
+    Right smp -> smpSubscribeService ca smp srv serviceSub
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
 
-smpSubscribeService :: (PartyI p, SubscriberParty p) => SMPClientAgent p -> SMPClient -> SMPServer -> ServiceId -> IO ()
-smpSubscribeService ca smp srv serviceId = case smpClientService smp of
+smpSubscribeService :: (PartyI p, SubscriberParty p) => SMPClientAgent p -> SMPClient -> SMPServer -> (ServiceId, Word32) -> IO ()
+smpSubscribeService ca smp srv serviceSub@(serviceId, _) = case smpClientService smp of
   Just service | serviceAvailable service -> subscribe
   _ -> notifyUnavailable
   where
@@ -481,20 +479,20 @@ smpSubscribeService ca smp srv serviceId = case smpClientService smp of
             (pure False)
       if ok
         then case r of
-          Right n -> notify ca $ CAServiceSubscribed srv serviceId n
+          Right n -> notify ca $ CAServiceSubscribed srv serviceSub n
           Left PCEServiceUnavailable -> notifyUnavailable
           Left e
             | temporaryClientError e -> reconnectClient ca srv
-            | otherwise -> notify ca $ CAServiceSubError srv serviceId e
+            | otherwise -> notify ca $ CAServiceSubError srv serviceSub e
         else reconnectClient ca srv
     processSubscription = mapM_ $ \_ -> do
-      setActiveServiceSub ca srv $ Just (serviceId, sessId)
+      setActiveServiceSub ca srv $ Just (serviceSub, sessId)
       setPendingServiceSub ca srv Nothing
     serviceAvailable THClientService {serviceRole, serviceId = serviceId'} =
       serviceId == serviceId' && subscriberServiceRole (agentParty ca) == serviceRole
     notifyUnavailable = do
       atomically $ setPendingServiceSub ca srv Nothing
-      notify ca $ CAServiceUnavailable srv serviceId -- this will resubscribe all queues directly
+      notify ca $ CAServiceUnavailable srv serviceSub -- this will resubscribe all queues directly
     sessId = sessionId $ thParams smp
 
 activeClientSession' :: SMPClientAgent p -> SessionId -> SMPServer -> STM Bool
@@ -530,11 +528,11 @@ addSubs_ subs srv ss =
     Just m -> TM.union ss m
     _ -> TM.insertM srv (newTVar ss) subs
 
-setActiveServiceSub :: SMPClientAgent p -> SMPServer -> Maybe (ServiceId, SessionId) -> STM ()
+setActiveServiceSub :: SMPClientAgent p -> SMPServer -> Maybe ((ServiceId, Word32), SessionId) -> STM ()
 setActiveServiceSub = setServiceSub_ activeServiceSubs
 {-# INLINE setActiveServiceSub #-}
 
-setPendingServiceSub :: SMPClientAgent p -> SMPServer -> Maybe ServiceId -> STM ()
+setPendingServiceSub :: SMPClientAgent p -> SMPServer -> Maybe (ServiceId, Word32) -> STM ()
 setPendingServiceSub = setServiceSub_ pendingServiceSubs
 {-# INLINE setPendingServiceSub #-}
 
@@ -548,6 +546,15 @@ setServiceSub_ subsSel ca srv sub =
   TM.lookup srv (subsSel ca) >>= \case
     Just v -> writeTVar v sub
     Nothing -> TM.insertM srv (newTVar sub) (subsSel ca)
+
+updateActiveServiceSub :: SMPClientAgent p -> SMPServer -> ((ServiceId, Word32), SessionId) -> STM ()
+updateActiveServiceSub ca srv sub@((serviceId', n'), sessId') =
+  TM.lookup srv (activeServiceSubs ca) >>= \case
+    Just v -> modifyTVar' v $ \case
+      Just ((serviceId, n), sessId) | serviceId == serviceId' && sessId == sessId' ->
+        Just ((serviceId, n + n'), sessId)
+      _ -> Just sub
+    Nothing -> TM.insertM srv (newTVar $ Just sub) (activeServiceSubs ca)
 
 removeActiveSub :: SMPClientAgent p -> SMPServer -> QueueId -> STM ()
 removeActiveSub = removeSub_ . activeQueueSubs

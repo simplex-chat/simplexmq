@@ -62,7 +62,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessag
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceId, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
@@ -423,30 +423,31 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
   liftIO $ do
     srvs <- getUsedSMPServers st
     logNote $ "Starting SMP resubscriptions for " <> tshow (length srvs) <> " servers..."
-    counts <- mapConcurrently (subscribeSrvSubs st batchSize) srvs
+    counts <- mapConcurrently (subscribeSrvSubs ca st batchSize) srvs
     logNote $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
+
+subscribeSrvSubs :: SMPClientAgent 'Notifier -> NtfPostgresStore -> Int -> (SMPServer, Int64, Maybe (ServiceId, Int64)) -> IO Int
+subscribeSrvSubs ca st batchSize (srv, srvId, service_) = do
+  let srvStr = safeDecodeUtf8 (strEncode $ L.head $ host srv)
+  logNote $ "Starting SMP resubscriptions for " <> srvStr
+  forM_ service_ $ \(serviceId, n) -> do
+    logNote $ "Subscribing service to " <> srvStr <> " with " <> tshow n <> " associated queues"
+    subscribeServiceNtfs ca srv (serviceId, fromIntegral n)
+  n <- subscribeLoop 0 Nothing
+  logNote $ "Completed SMP resubscriptions for " <> srvStr <> " (" <> tshow n <> " subscriptions)"
+  pure n
   where
-    subscribeSrvSubs st batchSize (srv, srvId, service_) = do
-      let srvStr = safeDecodeUtf8 (strEncode $ L.head $ host srv)
-      logNote $ "Starting SMP resubscriptions for " <> srvStr
-      forM_ service_ $ \(serviceId, n) -> do
-        logNote $ "Subscribing service to " <> srvStr <> " with " <> tshow n <> " associated queues"
-        subscribeServiceNtfs ca srv serviceId
-      n <- subscribeLoop 0 Nothing
-      logNote $ "Completed SMP resubscriptions for " <> srvStr <> " (" <> tshow n <> " subscriptions)"
-      pure n
-      where
-        dbBatchSize = batchSize * 100
-        subscribeLoop n afterSubId_ =
-          getServerNtfSubscriptions st srvId afterSubId_ dbBatchSize >>= \case
-            Left _ -> exitFailure
-            Right [] -> pure n
-            Right subs -> do
-              mapM_ (subscribeQueuesNtfs ca srv . L.map snd) $ toChunks batchSize subs
-              let len = length subs
-                  n' = n + len
-                  afterSubId_' = Just $ fst $ last subs
-              if len < dbBatchSize then pure n' else subscribeLoop n' afterSubId_'
+    dbBatchSize = batchSize * 100
+    subscribeLoop n afterSubId_ =
+      getServerNtfSubscriptions st srvId afterSubId_ dbBatchSize >>= \case
+        Left _ -> exitFailure
+        Right [] -> pure n
+        Right subs -> do
+          mapM_ (subscribeQueuesNtfs ca srv . L.map snd) $ toChunks batchSize subs
+          let len = length subs
+              n' = n + len
+              afterSubId_' = Just $ fst $ last subs
+          if len < dbBatchSize then pure n' else subscribeLoop n' afterSubId_'
 
 -- this function is concurrency-safe - only onle subscriber per server can be created at a time,
 -- other threads would wait for the first thread to create it.
@@ -522,6 +523,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
 
     receiveAgent = do
       st <- asks store
+      batchSize <- asks $ subsBatchSize . config
       liftIO $ forever $
         atomically (readTBQueue agentQ) >>= \case
           CAConnected srv _service_ -> -- TODO [certs]
@@ -537,20 +539,27 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> subErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubErrors st srv subStatuses
               logSubErrors srv subStatuses updated
-          CAServiceDisconnected srv serviceId ->
-            logNote $ "SMP server service disconnected " <> showService srv serviceId
-          CAServiceSubscribed srv serviceId n ->
-            logNote $ "SMP server service subscribed to " <> tshow n <> " subs: " <> showService srv serviceId
-          CAServiceSubError srv serviceId e ->
+          CAServiceDisconnected srv serviceSub ->
+            logNote $ "SMP server service disconnected " <> showService srv serviceSub
+          CAServiceSubscribed srv serviceSub@(_, expected) n
+            | expected == n -> logNote msg
+            | otherwise -> logWarn $ msg <> ", confirmed subs: " <> tshow n
+            where
+              msg = "SMP server service subscribed " <> showService srv serviceSub
+          CAServiceSubError srv serviceSub e ->
             -- TODO [certs] process error, can require re-associating the service?
-            logError $ "SMP server service subscription error " <> showService srv serviceId <> ": " <> tshow e
-          CAServiceUnavailable srv serviceId ->
-            -- TODO [certs] resubscribe all queues associated with this service ID
-            logError $ "SMP server service unavailable: " <> showService srv serviceId
+            logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
+          CAServiceUnavailable srv serviceSub -> do
+            logError $ "SMP server service unavailable: " <> showService srv serviceSub
+            removeServiceAssociation st srv >>= \case
+              Right (srvId, updated) -> do
+                logSubStatus srv "removed service association" updated updated
+                void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
+              Left e -> logError $ "SMP server update and resubscription error " <> tshow e
       where
-        showService srv serviceId = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId)
+        showService srv (serviceId, n) = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
 
-    logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int64 -> IO ()
+    logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int -> IO ()
     logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
       logError $ "SMP server subscription errors " <> showServer' srv <> ": " <> tshow (L.head ss) <> " (" <> tshow (length ss) <> " errors, " <> tshow updated <> " subs updated)"
 
@@ -572,7 +581,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
         updateErr :: Show e => ByteString -> e -> Maybe NtfSubStatus
         updateErr errType e = Just $ NSErr $ errType <> bshow e
 
-logSubStatus :: SMPServer -> T.Text -> Int -> Int64 -> IO ()
+logSubStatus :: SMPServer -> T.Text -> Int -> Int -> IO ()
 logSubStatus srv event n updated =
   logInfo $ "SMP server " <> event <> " " <> showServer' srv <> " (" <> tshow n <> " subs, " <> tshow updated <> " subs updated)"
 

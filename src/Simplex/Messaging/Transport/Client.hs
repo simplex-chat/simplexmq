@@ -36,6 +36,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAsciiLower, isDigit, isHexDigit)
 import Data.Default (def)
+import Data.IORef
 import Data.IP
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -158,8 +159,9 @@ runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, clientALPN, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
+  clientCredsSent <- newIORef False
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials clientALPN useSNI serverCert
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials clientCredsSent clientALPN useSNI serverCert
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName
@@ -170,7 +172,8 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     -- No TLS timeout to avoid failing connections via SOCKS
     tls <- connectTLS (Just hostName) tCfg clientParams sock
     chain <- takePeerCertChain serverCert `E.onException` closeTLS tls
-    getTransportConnection tCfg chain tls
+    sent <- readIORef clientCredsSent
+    getTransportConnection tCfg sent chain tls
   client c `E.finally` closeConnection c
   where
     hostAddr = \case
@@ -269,15 +272,15 @@ instance StrEncoding SocksAuth where
         password <- A.takeTill (== '@') <* A.char '@'
         pure SocksAuthUsername {username, password}
 
-mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe T.Credential -> Maybe [ALPN] -> Bool -> TMVar (Maybe X.CertificateChain) -> T.ClientParams
-mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serverCerts =
+mkTLSClientParams :: T.Supported -> Maybe XS.CertificateStore -> HostName -> ServiceName -> Maybe C.KeyHash -> Maybe T.Credential -> IORef Bool -> Maybe [ALPN] -> Bool -> TMVar (Maybe X.CertificateChain) -> T.ClientParams
+mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ clientCredsSent alpn_ sni serverCerts =
   (T.defaultParamsClient host p)
     { T.clientUseServerNameIndication = sni,
       T.clientShared = def {T.sharedCAStore = fromMaybe (T.sharedCAStore def) caStore_},
       T.clientHooks =
         def
           { T.onServerCertificate = onServerCert,
-            T.onCertificateRequest = maybe def (const . pure . Just) clientCreds_,
+            T.onCertificateRequest = onCertRequest,
             T.onSuggestALPN = pure alpn_
           },
       T.clientSupported = supported
@@ -288,6 +291,9 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ alpn_ sni serv
       errs <- maybe def (\ca -> validateCertificateChain ca host p cc) cafp_
       atomically $ putTMVar serverCerts $ if null errs then Just cc else Nothing
       pure errs
+    onCertRequest = case clientCreds_ of
+      Just _ -> \_ -> clientCreds_ <$ writeIORef clientCredsSent True
+      Nothing -> \_ -> pure Nothing
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain (C.KeyHash kh) host port cc = case chainIdCaCerts cc of

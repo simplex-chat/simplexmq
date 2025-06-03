@@ -114,7 +114,7 @@ runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
       tls <- connectTLS Nothing tCfg srvParams conn
-      getTransportConnection tCfg (X.CertificateChain []) tls
+      getTransportConnection tCfg True (X.CertificateChain []) tls
 
 runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
 runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds cfg server =
@@ -127,10 +127,10 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
           clientCert <- newEmptyTMVarIO
           tls <- connectTLS Nothing tCfg (paramsAskClientCert clientCert srvParams) conn
           chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
-          getTransportConnection tCfg chain tls
+          getTransportConnection tCfg True chain tls
       | otherwise = do
           tls <- connectTLS Nothing tCfg srvParams conn
-          getTransportConnection tCfg (X.CertificateChain []) tls
+          getTransportConnection tCfg True (X.CertificateChain []) tls
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (c 'TServer)) -> (Socket -> c 'TServer -> IO ()) -> IO ()

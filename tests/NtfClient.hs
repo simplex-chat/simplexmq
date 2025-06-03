@@ -241,7 +241,7 @@ apnsMockServerConfig =
       transportConfig = mkTransportServerConfig True Nothing False
     }
 
-withAPNSMockServer :: (APNSMockServer -> IO ()) -> IO ()
+withAPNSMockServer :: (APNSMockServer -> IO a) -> IO a
 withAPNSMockServer = E.bracket (getAPNSMockServer apnsMockServerConfig) closeAPNSMockServer
 
 deriving instance Generic APNSAlertBody

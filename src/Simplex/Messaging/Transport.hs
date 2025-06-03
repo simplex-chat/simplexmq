@@ -272,7 +272,12 @@ class Typeable c => Transport (c :: TransportPeer -> Type) where
   transportConfig :: c p -> TransportConfig
 
   -- | Upgrade TLS context to connection
-  getTransportConnection :: TransportPeerI p => TransportConfig -> X.CertificateChain -> T.Context -> IO (c p)
+  getTransportConnection :: TransportPeerI p => TransportConfig -> Bool -> X.CertificateChain -> T.Context -> IO (c p)
+
+  -- | Whether TLS certificate chain was provided to peer
+  -- It is always True for the server.
+  -- It is True for the client when server requested it AND non-empty chain is sent.
+  certificateSent :: c p -> Bool
 
   -- | TLS certificate chain, server's in the client, client's in the server (empty chain for non-service clients)
   getPeerCertChain :: c p -> X.CertificateChain
@@ -334,6 +339,7 @@ data TLS (p :: TransportPeer) = TLS
     tlsUniq :: ByteString,
     tlsBuffer :: TBuffer,
     tlsALPN :: Maybe ALPN,
+    tlsCertSent :: Bool, -- see comment for certificateSent
     tlsPeerCert :: X.CertificateChain,
     tlsTransportConfig :: TransportConfig
   }
@@ -349,13 +355,13 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
-getTLS :: forall p. TransportPeerI p => TransportConfig -> X.CertificateChain -> T.Context -> IO (TLS p)
-getTLS cfg tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS
+getTLS :: forall p. TransportPeerI p => TransportConfig -> Bool -> X.CertificateChain -> T.Context -> IO (TLS p)
+getTLS cfg tlsCertSent tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS
   where
     newTLS tlsUniq = do
       tlsBuffer <- newTBuffer
       tlsALPN <- T.getNegotiatedProtocol cxt
-      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsPeerCert, tlsUniq, tlsBuffer}
+      pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsCertSent, tlsPeerCert, tlsUniq, tlsBuffer}
 
 withTlsUnique :: forall c p. TransportPeerI p => T.Context -> (ByteString -> IO (c p)) -> IO (c p)
 withTlsUnique cxt f =
@@ -413,6 +419,8 @@ instance Transport TLS where
   {-# INLINE transportConfig #-}
   getTransportConnection = getTLS
   {-# INLINE getTransportConnection #-}
+  certificateSent = tlsCertSent
+  {-# INLINE certificateSent #-}
   getPeerCertChain = tlsPeerCert
   {-# INLINE getPeerCertChain #-}
   getSessionALPN = tlsALPN
@@ -801,7 +809,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
           (,certKey) <$> (C.x509ToPublic' =<< C.verifyX509 serverKey exact)
       let v = maxVersion vr
           serviceKeys = case serviceKeys_ of
-            Just sks | v >= serviceCertsSMPVersion -> Just sks
+            Just sks | v >= serviceCertsSMPVersion && certificateSent c -> Just sks
             _ -> Nothing
           clientService = mkClientService <$> serviceKeys
           hs = SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService}

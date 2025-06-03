@@ -39,6 +39,7 @@ data WS (p :: TransportPeer) = WS
     wsStream :: Stream,
     wsConnection :: Connection,
     wsTransportConfig :: TransportConfig,
+    wsCertSent :: Bool,
     wsPeerCert :: X.CertificateChain
   }
 
@@ -57,6 +58,8 @@ instance Transport WS where
   {-# INLINE transportConfig #-}
   getTransportConnection = getWS
   {-# INLINE getTransportConnection #-}
+  certificateSent = wsCertSent
+  {-# INLINE certificateSent #-}
   getPeerCertChain = wsPeerCert
   {-# INLINE getPeerCertChain #-}
   getSessionALPN = wsALPN
@@ -83,14 +86,14 @@ instance Transport WS where
       then E.throwIO TEBadBlock
       else pure $ B.init s
 
-getWS :: forall p. TransportPeerI p => TransportConfig -> X.CertificateChain -> T.Context -> IO (WS p)
-getWS cfg wsPeerCert cxt = withTlsUnique @WS @p cxt connectWS
+getWS :: forall p. TransportPeerI p => TransportConfig -> Bool -> X.CertificateChain -> T.Context -> IO (WS p)
+getWS cfg wsCertSent wsPeerCert cxt = withTlsUnique @WS @p cxt connectWS
   where
     connectWS tlsUniq = do
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer s
       wsALPN <- T.getNegotiatedProtocol cxt
-      pure $ WS {tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsPeerCert}
+      pure $ WS {tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsCertSent, wsPeerCert}
     connectPeer :: Stream -> IO Connection
     connectPeer = case sTransportPeer @p of
       STServer -> acceptClientRequest
