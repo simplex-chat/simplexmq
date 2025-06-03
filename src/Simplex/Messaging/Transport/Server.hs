@@ -59,6 +59,7 @@ import UnliftIO.STM
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
     serverALPN :: Maybe [ALPN],
+    askClientCert :: Bool,
     tlsSetupTimeout :: Int,
     transportTimeout :: Int
   }
@@ -73,11 +74,12 @@ data ServerCredentials = ServerCredentials
 
 type AddHTTP = Bool
 
-mkTransportServerConfig :: Bool -> Maybe [ALPN] ->TransportServerConfig
-mkTransportServerConfig logTLSErrors serverALPN =
+mkTransportServerConfig :: Bool -> Maybe [ALPN] -> Bool -> TransportServerConfig
+mkTransportServerConfig logTLSErrors serverALPN askClientCert =
   TransportServerConfig
     { logTLSErrors,
       serverALPN,
+      askClientCert,
       tlsSetupTimeout = 60000000,
       transportTimeout = 40000000
     }
@@ -107,7 +109,7 @@ runTransportServerState_ ss started port = runTransportServerSocketState ss star
 runTransportServerSocket :: Transport c => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
   ss <- newSocketState
-  runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS (const server)
+  runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS (const server)
   where
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
@@ -116,24 +118,28 @@ runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
 
 runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
 runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds cfg server =
-  runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS server
+  runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS server
   where
     tCfg = serverTransportConfig cfg
-    setupTLS conn = do
-      clientCert <- newEmptyTMVarIO
-      let srvParams = supportedTLSServerParams srvSupported srvCreds (serverALPN cfg) clientCert
-      tls <- connectTLS Nothing tCfg srvParams conn
-      chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
-      getTransportConnection tCfg chain tls
+    srvParams = supportedTLSServerParams srvSupported srvCreds $ serverALPN cfg
+    setupTLS conn
+      | askClientCert cfg = do
+          clientCert <- newEmptyTMVarIO
+          tls <- connectTLS Nothing tCfg (paramsAskClientCert clientCert srvParams) conn
+          chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
+          getTransportConnection tCfg chain tls
+      | otherwise = do
+          tls <- connectTLS Nothing tCfg srvParams conn
+          getTransportConnection tCfg (X.CertificateChain []) tls
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> TransportServerConfig -> (Socket -> IO (c 'TServer)) -> (Socket -> c 'TServer -> IO ()) -> IO ()
-runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS server = do
+runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (c 'TServer)) -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState_ ss started getSocket threadLabel tlsSetupTimeout setupTLS server = do
   labelMyThread $ "transport server for " <> threadLabel
   runTCPServerSocket ss started getSocket $ \conn -> do
     labelMyThread $ threadLabel <> "/setup"
     E.bracket
-      (timeout (tlsSetupTimeout cfg) (setupTLS conn) >>= maybe (fail "tls setup timeout") pure)
+      (timeout tlsSetupTimeout (setupTLS conn) >>= maybe (fail "tls setup timeout") pure)
       closeConnection
       (server conn)
 
@@ -228,19 +234,28 @@ loadServerCredential ServerCredentials {caCertificateFile, certificateFile, priv
     Right credential -> pure credential
     Left _ -> putStrLn "invalid credential" >> exitFailure
 
-supportedTLSServerParams :: T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TMVar (Maybe X.CertificateChain) -> T.ServerParams
-supportedTLSServerParams serverSupported creds alpn_ clientCert =
+supportedTLSServerParams :: T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> T.ServerParams
+supportedTLSServerParams serverSupported creds alpn_ =
   def
-    { T.serverWantClientCert = True,
+    { T.serverWantClientCert = False,
       T.serverHooks =
         def
           { T.onServerNameIndication = \host_ -> pure $ T.Credentials [creds host_],
-            T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_,
-            T.onClientCertificate = \cc -> validateClientCertificate cc >>= \case
-              Just reason -> T.CertificateUsageReject reason <$ atomically (writeTMVar clientCert Nothing)
-              Nothing -> T.CertificateUsageAccept <$ atomically (writeTMVar clientCert $ Just cc)
+            T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
           },
       T.serverSupported = serverSupported
+    }
+
+paramsAskClientCert :: TMVar (Maybe X.CertificateChain) -> T.ServerParams -> T.ServerParams
+paramsAskClientCert clientCert params =
+  params
+    { T.serverWantClientCert = True,
+      T.serverHooks =
+        (T.serverHooks params)
+          { T.onClientCertificate = \cc -> validateClientCertificate cc >>= \case
+              Just reason -> T.CertificateUsageReject reason <$ atomically (writeTMVar clientCert Nothing)
+              Nothing -> T.CertificateUsageAccept <$ atomically (writeTMVar clientCert $ Just cc)
+          }
     }
 
 validateClientCertificate :: X.CertificateChain -> IO (Maybe T.CertificateRejectReason)

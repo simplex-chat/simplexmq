@@ -279,7 +279,8 @@ ntfServerCLI cfgPath logPath =
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just alpnSupportedNTFHandshakes),
+                  (Just alpnSupportedNTFHandshakes)
+                  False,
               startOptions
             }
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini

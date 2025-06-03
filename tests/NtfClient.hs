@@ -155,7 +155,7 @@ ntfServerCfg =
       prometheusInterval = Nothing,
       prometheusMetricsFile = ntfTestPrometheusMetricsFile,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = mkTransportServerConfig True $ Just alpnSupportedNTFHandshakes,
+      transportConfig = mkTransportServerConfig True (Just alpnSupportedNTFHandshakes) False,
       startOptions = defaultStartOptions
     }
 
@@ -238,7 +238,7 @@ apnsMockServerConfig =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
-      transportConfig = mkTransportServerConfig True Nothing
+      transportConfig = mkTransportServerConfig True Nothing False
     }
 
 withAPNSMockServer :: (APNSMockServer -> IO ()) -> IO ()

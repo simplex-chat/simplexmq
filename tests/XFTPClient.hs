@@ -127,7 +127,7 @@ testXFTPServerConfig =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
-      transportConfig = mkTransportServerConfig True $ Just alpnSupportedXFTPhandshakes,
+      transportConfig = mkTransportServerConfig True (Just alpnSupportedXFTPhandshakes) False,
       responseDelay = 0
     }
 

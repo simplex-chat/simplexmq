@@ -246,7 +246,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
           },
       httpCredentials = Nothing,
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = mkTransportServerConfig True $ Just alpnSupportedSMPHandshakes,
+      transportConfig = mkTransportServerConfig True (Just alpnSupportedSMPHandshakes) True,
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
