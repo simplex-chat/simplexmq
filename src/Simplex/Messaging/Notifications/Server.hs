@@ -538,9 +538,9 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
               updated <- batchUpdateSrvSubErrors st srv subStatuses
               logSubErrors srv subStatuses updated
           CAServiceDisconnected srv serviceId ->
-            logWarn $ "SMP server service disconnected " <> showService srv serviceId
+            logNote $ "SMP server service disconnected " <> showService srv serviceId
           CAServiceSubscribed srv serviceId n ->
-            logWarn $ "SMP server service subscribed to " <> tshow n <> " subs: " <> showService srv serviceId
+            logNote $ "SMP server service subscribed to " <> tshow n <> " subs: " <> showService srv serviceId
           CAServiceSubError srv serviceId e ->
             -- TODO [certs] process error, can require re-associating the service?
             logError $ "SMP server service subscription error " <> showService srv serviceId <> ": " <> tshow e

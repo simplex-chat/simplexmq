@@ -165,6 +165,29 @@ testSMPClient_ host port vr client = do
       | authCmdsSMPVersion `isCompatible` vr = Just supportedSMPHandshakes
       | otherwise = Nothing
 
+testNtfServiceClient :: Transport c => TProxy c 'TServer -> C.KeyPairEd25519 -> (THandleSMP c 'TClient -> IO a) -> IO a
+testNtfServiceClient _ keys client = do
+  tlsNtfServerCreds <- loadServerCredential ntfTestServerCredentials
+  Right serviceSignKey <- pure $ C.x509ToPrivate' $ snd tlsNtfServerCreds
+  let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsNtfServerCreds, serviceSignKey}
+      tcConfig =
+        defaultTransportClientConfig
+          { Client.clientCredentials = Just tlsNtfServerCreds,
+            Client.alpn = Just supportedSMPHandshakes
+          }
+  runTransportClient tcConfig Nothing "localhost" testPort (Just testKeyHash) $ \h ->
+    runExceptT (smpClientHandshake h Nothing testKeyHash supportedClientSMPRelayVRange False $ Just (service, keys)) >>= \case
+      Right th -> client th
+      Left e -> error $ show e
+
+ntfTestServerCredentials :: ServerCredentials
+ntfTestServerCredentials =
+  ServerCredentials
+    { caCertificateFile = Just "tests/fixtures/ca.crt",
+      privateKeyFile = "tests/fixtures/server.key",
+      certificateFile = "tests/fixtures/server.crt"
+    }
+
 cfg :: AServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
 

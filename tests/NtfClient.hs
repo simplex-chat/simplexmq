@@ -34,7 +34,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (defaultStartOptions, ntfTestPort, prevRange, serverBracket)
+import SMPClient (defaultStartOptions, ntfTestPort, ntfTestServerCredentials, prevRange, serverBracket)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
@@ -144,12 +144,7 @@ ntfServerCfg =
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       dbStoreConfig = ntfTestDBCfg,
-      ntfCredentials =
-        ServerCredentials
-          { caCertificateFile = Just "tests/fixtures/ca.crt",
-            privateKeyFile = "tests/fixtures/server.key",
-            certificateFile = "tests/fixtures/server.crt"
-          },
+      ntfCredentials = ntfTestServerCredentials,
       useServiceCreds = True,
       periodicNtfsInterval = 1,
       -- stats config

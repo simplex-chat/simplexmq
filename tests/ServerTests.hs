@@ -79,7 +79,9 @@ serverTests = do
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
-  describe "Message notifications" testMessageNotifications
+  describe "Message notifications" $ do
+    testMessageNotifications
+    testMessageServiceNotifications
   describe "Message expiration" $ do
     testMsgExpireOnSend
     testMsgExpireOnInterval
@@ -108,12 +110,18 @@ sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
   tGet1 h
 
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
-signSendRecv h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
+signSendRecv h pk = signSendRecv_ h pk Nothing
+
+serviceSignSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+serviceSignSendRecv h pk = signSendRecv_ h pk . Just
+
+signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
   where
-    authorize t = (,Nothing) <$> case a of
+    authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
       C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
@@ -979,14 +987,17 @@ testMessageNotifications =
   it "should create simplex connection, subscribe notifier and deliver notifications" $ \(ATransport t, msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     smpTest4 t msType $ \rh sh nh1 nh2 -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec = decryptMsgV3 dhShared
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "1" _ (NID nId' _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       Resp "1a" _ (NID nId _) <- signSendRecv rh rKey ("1a", rId, NKEY nPub rcvNtfPubDhKey)
       nId' `shouldNotBe` nId
+      -- can't subscribe with service signature without service connection
+      (_, servicePK) <- atomically $ C.generateKeyPair g
+      Resp "2'" _ (ERR SERVICE) <- serviceSignSendRecv nh1 nKey servicePK ("2'", nId, NSUB)
       Resp "2" _ (SOK Nothing) <- signSendRecv nh1 nKey ("2", nId, NSUB)
       Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND' "hello")
       Resp "" _ (Msg mId1 msg1) <- tGet1 rh
@@ -1010,9 +1021,92 @@ testMessageNotifications =
       Resp "7" _ OK <- signSendRecv sh sKey ("7", sId, _SEND' "hello there")
       Resp "" _ (Msg mId3 msg3) <- tGet1 rh
       (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
+      Resp "7a" _ OK <- signSendRecv rh rKey ("7a", rId, ACK mId3)
       1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh2 >>= \case
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
+      (nPub'', nKey'') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey'', _) <- atomically $ C.generateKeyPair g
+      Resp "8" _ (NID nId'' _) <- signSendRecv rh rKey ("8", rId, NKEY nPub'' rcvNtfPubDhKey'')
+      Resp "9" _ (SOK Nothing) <- signSendRecv nh1 nKey'' ("9", nId'', NSUB)
+      Resp "10" _ OK <- signSendRecv sh sKey ("10", sId, _SEND' "one more")
+      Resp "" _ (Msg mId4 msg4) <- tGet1 rh
+      (dec mId4 msg4, Right "one more") #== "delivered from queue"
+      Resp "10a" _ OK <- signSendRecv rh rKey ("10a", rId, ACK mId4)
+      Resp "" _ (NMSG _ _) <- tGet1 nh1
+      pure ()
+
+testMessageServiceNotifications :: SpecWith (ASrvTransport, AStoreType)
+testMessageServiceNotifications =
+  it "should create simplex connection, subscribe notifier as service and deliver notifications" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest2 t msType $ \rh sh -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
+      let dec = decryptMsgV3 dhShared
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+      testNtfServiceClient t serviceKeys $ \nh1 -> do
+        -- can't subscribe without service signature in service connection
+        Resp "2a" _ (ERR SERVICE) <- signSendRecv nh1 nKey ("2a", nId, NSUB)
+        Resp "2b" _ (SOK (Just serviceId)) <- serviceSignSendRecv nh1 nKey servicePK ("2b", nId, NSUB)
+        deliverMessage rh rId rKey sh sId sKey nh1 "hello" dec
+        testNtfServiceClient t serviceKeys $ \nh2 -> do
+          Resp "4" _ (SOK (Just serviceId')) <- serviceSignSendRecv nh2 nKey servicePK ("4", nId, NSUB)
+          serviceId' `shouldBe` serviceId
+          -- service subscription is terminated
+          Resp "" serviceId2 (ENDS 1) <- tGet1 nh1
+          serviceId2 `shouldBe` serviceId
+          deliverMessage rh rId rKey sh sId sKey nh2 "hello again" dec
+          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh1 >>= \case
+            Nothing -> pure ()
+            Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
+          Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
+          Resp "" nId3 DELD <- tGet1 nh2
+          nId3 `shouldBe` nId
+          Resp "7" _ OK <- signSendRecv sh sKey ("7", sId, _SEND' "hello there")
+          Resp "" _ (Msg mId3 msg3) <- tGet1 rh
+          (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
+          Resp "7a" _ OK <- signSendRecv rh rKey ("7a", rId, ACK mId3)
+          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh2 >>= \case
+            Nothing -> pure ()
+            Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
+          -- new notification credentials
+          (nPub', nKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          (rcvNtfPubDhKey', _) <- atomically $ C.generateKeyPair g
+          Resp "8" _ (NID nId' _) <- signSendRecv rh rKey ("8", rId, NKEY nPub' rcvNtfPubDhKey')
+          nId' == nId `shouldBe` False
+          Resp "9" _ (SOK (Just serviceId3)) <- serviceSignSendRecv nh2 nKey' servicePK ("9", nId', NSUB)
+          serviceId3 `shouldBe` serviceId
+          -- another queue
+          (sPub'', sKey'') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          (sId'', rId'', rKey'', dhShared'') <- createAndSecureQueue rh sPub''
+          let dec'' = decryptMsgV3 dhShared''
+          (nPub'', nKey'') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+          (rcvNtfPubDhKey'', _) <- atomically $ C.generateKeyPair g
+          Resp "10" _ (NID nId'' _) <- signSendRecv rh rKey'' ("10", rId'', NKEY nPub'' rcvNtfPubDhKey'')
+          nId'' == nId `shouldBe` False
+          Resp "11" _ (SOK (Just serviceId4)) <- serviceSignSendRecv nh2 nKey'' servicePK ("11", nId'', NSUB)
+          serviceId4 `shouldBe` serviceId
+          deliverMessage rh rId rKey sh sId sKey nh2 "connection 1" dec
+          deliverMessage rh rId'' rKey'' sh sId'' sKey'' nh2 "connection 2" dec''
+          -- -- another client makes service subscription
+          Resp "12" serviceId5 (SOKS 2) <- signSendRecv nh1 (C.APrivateAuthKey C.SEd25519 servicePK) ("12", serviceId, NSUBS)
+          serviceId5 `shouldBe` serviceId
+          Resp "" serviceId6 (ENDS 2) <- tGet1 nh2
+          serviceId6 `shouldBe` serviceId
+          deliverMessage rh rId rKey sh sId sKey nh1 "connection 1 one more" dec
+          deliverMessage rh rId'' rKey'' sh sId'' sKey'' nh1 "connection 2 one more" dec''
+    where
+      deliverMessage rh rId rKey sh sId sKey nh msgText dec = do
+        Resp "msg-1" _ OK <- signSendRecv sh sKey ("msg-1", sId, _SEND' msgText)
+        Resp "" _ (Msg mId msg) <- tGet1 rh
+        Resp "msg-2" _ OK <- signSendRecv rh rKey ("msg-2", rId, ACK mId)
+        (dec mId msg, Right msgText) #== "delivered from queue"
+        Resp "" _ (NMSG _ _) <- tGet1 nh
+        pure ()
 
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =

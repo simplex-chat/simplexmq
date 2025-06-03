@@ -31,7 +31,6 @@ import Data.Functor (($>))
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -203,7 +202,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       qr = queueRec sq
       STMQueueStore {notifiers} = st
       add q = ifM (TM.member nId notifiers) (pure $ Left DUPLICATE_) $ do
-        nc_ <- forM (notifier q) $ \nc@NtfCreds {notifierId} -> TM.delete notifierId notifiers $> nc
+        nc_ <- forM (notifier q) $ \nc -> nc <$ removeNotifier st nc
         let !q' = q {notifier = Just ntfCreds}
         writeTVar qr $ Just q'
         TM.insert nId rId notifiers
@@ -215,8 +214,8 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       $>>= \nc_ -> nc_ <$$ withLog "deleteQueueNotifier" st (`logDeleteNotifier` recipientId sq)
     where
       qr = queueRec sq
-      delete q = forM (notifier q) $ \nc@NtfCreds {notifierId} -> do
-        TM.delete notifierId $ notifiers st
+      delete q = forM (notifier q) $ \nc -> do
+        removeNotifier st nc
         writeTVar qr $ Just q {notifier = Nothing}
         pure nc
 
@@ -251,14 +250,16 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   deleteStoreQueue :: STMQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
   deleteStoreQueue st sq =
     withQueueRec qr delete
-      $>>= \q -> withLog "deleteStoreQueue" st (`logDeleteQueue` recipientId sq)
+      $>>= \q -> withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
       >>= mapM (\_ -> (q,) <$> atomically (swapTVar (msgQueue sq) Nothing))
     where
+      rId = recipientId sq
       qr = queueRec sq
-      delete q = do
+      delete q@QueueRec {senderId, rcvServiceId} = do
         writeTVar qr Nothing
-        TM.delete (senderId q) $ senders st
-        forM_ (notifier q) $ \NtfCreds {notifierId} -> TM.delete notifierId $ notifiers st
+        TM.delete senderId $ senders st
+        mapM_ (removeServiceQueue st serviceRcvQueues rId) rcvServiceId
+        mapM_ (removeNotifier st) $ notifier q
         pure q
 
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
@@ -297,34 +298,25 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       qr = queueRec sq
       rId = recipientId sq
       setService :: QueueRec -> STM (Either ErrorType ())
-      setService q = case party of
+      setService q@QueueRec {rcvServiceId = prevSrvId} = case party of
         SRecipient
           | prevSrvId == serviceId -> pure $ Right ()
           | otherwise -> do
+              updateServiceQueues serviceRcvQueues rId prevSrvId
               let !q' = Just q {rcvServiceId = serviceId}
-              setQueueService_ (services st) serviceRcvQueues rId prevSrvId serviceId
-                $>> (writeTVar qr q' $> Right ())
-          where
-            prevSrvId = rcvServiceId q
+              writeTVar qr q' $> Right ()
         SNotifier -> case notifier q of
           Nothing -> pure $ Left AUTH -- TODO [certs] different error? INTERNAL?
-          Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevSrvId}
-            | prevSrvId == serviceId -> pure $ Right ()
+          Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevNtfSrvId}
+            | prevNtfSrvId == serviceId -> pure $ Right ()
             | otherwise -> do
                 let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
-                setQueueService_ (services st) serviceNtfQueues nId prevSrvId serviceId
-                  $>> (writeTVar qr q' $> Right ())
-      setQueueService_ :: TMap ServiceId STMService -> (STMService -> TVar (Set QueueId)) -> QueueId -> Maybe ServiceId -> Maybe ServiceId -> STM (Either ErrorType ())
-      setQueueService_ ss serviceSel qId prevSrvId currSrvId = do
-        mapM_ (updateSet S.delete) prevSrvId
-        fromMaybe (Right ()) <$> mapM (updateSet S.insert) currSrvId
-        where
-          updateSet :: (QueueId -> Set QueueId -> Set QueueId) -> ServiceId -> STM (Either ErrorType ())
-          updateSet f sId =
-            TM.lookup sId ss >>= \case
-              Just s -> Right () <$ modifyTVar' (serviceSel s) (f qId)
-              Nothing -> pure $ Left AUTH -- TODO [certs] INTERNAL?
-
+                updateServiceQueues serviceNtfQueues nId prevNtfSrvId
+                writeTVar qr q' $> Right ()
+      updateServiceQueues :: (STMService -> TVar (Set QueueId)) -> QueueId -> Maybe ServiceId -> STM ()
+      updateServiceQueues serviceSel qId prevSrvId = do
+        mapM_ (removeServiceQueue st serviceSel qId) prevSrvId
+        mapM_ (addServiceQueue st serviceSel qId) serviceId
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do
@@ -353,6 +345,21 @@ setStatus qr status =
   atomically $ stateTVar qr $ \case
     Just q -> (Right (), Just q {status})
     Nothing -> (Left AUTH, Nothing)
+
+addServiceQueue :: STMQueueStore q -> (STMService -> TVar (Set QueueId)) -> QueueId -> ServiceId -> STM ()
+addServiceQueue st serviceSel qId serviceId =
+  TM.lookup serviceId (services st) >>= mapM_ (\s -> modifyTVar' (serviceSel s) (S.insert qId))
+{-# INLINE addServiceQueue #-}
+
+removeServiceQueue :: STMQueueStore q -> (STMService -> TVar (Set QueueId)) -> QueueId -> ServiceId -> STM ()
+removeServiceQueue st serviceSel qId serviceId =
+  TM.lookup serviceId (services st) >>= mapM_ (\s -> modifyTVar' (serviceSel s) (S.delete qId))
+{-# INLINE removeServiceQueue #-}
+
+removeNotifier :: STMQueueStore q -> NtfCreds -> STM ()
+removeNotifier st NtfCreds {notifierId = nId, ntfServiceId} = do
+  TM.delete nId $ notifiers st
+  mapM_ (removeServiceQueue st serviceNtfQueues nId) ntfServiceId
 
 readQueueRec :: TVar (Maybe QueueRec) -> STM (Either ErrorType QueueRec)
 readQueueRec qr = maybe (Left AUTH) Right <$> readTVar qr

@@ -1701,11 +1701,12 @@ client
             then
               liftIO (getNtfServiceQueueCount @(StoreQueue s) (queueStore ms) serviceId) >>= \case
                 Left e -> pure $ ERR e
-                Right count -> atomically $ do
-                  writeTQueue (subQ ntfSubscribers) (CSService serviceId, clientId)
-                  modifyTVar' ntfServiceSubsCount (+ count) -- service count
-                  modifyTVar' (totalServiceSubs ntfSubscribers) (+ count) -- server count for all services
-                  pure $ SOKS $ fromIntegral srvSubs
+                Right count -> do
+                  atomically $ do
+                    modifyTVar' ntfServiceSubsCount (+ count) -- service count
+                    modifyTVar' (totalServiceSubs ntfSubscribers) (+ count) -- server count for all services
+                  atomically $ writeTQueue (subQ ntfSubscribers) (CSService serviceId, clientId)
+                  pure $ SOKS $ fromIntegral count
             else pure $ SOKS $ fromIntegral srvSubs
 
         acknowledgeMsg :: MsgId -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
