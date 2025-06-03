@@ -14,7 +14,7 @@ import Data.Word (Word16)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Transport (NTFVersion, supportedClientNTFVRange, supportedNTFHandshakes)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, supportedClientNTFVRange, alpnSupportedNTFHandshakes)
 import Simplex.Messaging.Protocol (ErrorType, pattern NoEntity)
 import Simplex.Messaging.Transport (TLS, Transport (..))
 
@@ -24,7 +24,7 @@ type NtfClientError = ProtocolClientError ErrorType
 
 defaultNTFClientConfig :: ProtocolClientConfig NTFVersion
 defaultNTFClientConfig =
-  (defaultClientConfig (Just supportedNTFHandshakes) False supportedClientNTFVRange)
+  (defaultClientConfig (Just alpnSupportedNTFHandshakes) False supportedClientNTFVRange)
     {defaultTransport = ("443", transport @TLS)}
 {-# INLINE defaultNTFClientConfig #-}
 

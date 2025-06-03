@@ -10,11 +10,10 @@ import Data.Bifunctor (bimap)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import Foreign (nullPtr)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
-import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (withDRG)
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (rngFuncPtr, withDRG)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 
@@ -43,7 +42,7 @@ sntrup761Keypair drg =
       c_SNTRUP761_SECRETKEY_SIZE
       ( \skPtr ->
           BA.alloc c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
-            withDRG drg $ c_sntrup761_keypair pkPtr skPtr nullPtr
+            withDRG drg $ \cxtPtr -> c_sntrup761_keypair pkPtr skPtr cxtPtr rngFuncPtr
       )
 
 sntrup761Enc :: TVar ChaChaDRG -> KEMPublicKey -> IO (KEMCiphertext, KEMSharedKey)
@@ -54,7 +53,7 @@ sntrup761Enc drg (KEMPublicKey pk) =
         c_SNTRUP761_SIZE
         ( \kPtr ->
             BA.alloc c_SNTRUP761_CIPHERTEXT_SIZE $ \cPtr ->
-              withDRG drg $ c_sntrup761_enc cPtr kPtr pkPtr nullPtr
+              withDRG drg $ \cxtPtr -> c_sntrup761_enc cPtr kPtr pkPtr cxtPtr rngFuncPtr
         )
 
 sntrup761Dec :: KEMCiphertext -> KEMSecretKey -> IO KEMSharedKey

@@ -13,7 +13,7 @@ module Simplex.FileTransfer.Transport
     authCmdsXFTPVersion,
     blockedFilesXFTPVersion,
     xftpClientHandshakeStub,
-    supportedXFTPhandshakes,
+    alpnSupportedXFTPhandshakes,
     XFTPClientHandshake (..),
     -- xftpClientHandshake,
     XFTPServerHandshake (..),
@@ -104,8 +104,8 @@ supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys = throwE TEVersion
 
-supportedXFTPhandshakes :: [ALPN]
-supportedXFTPhandshakes = ["xftp/1"]
+alpnSupportedXFTPhandshakes :: [ALPN]
+alpnSupportedXFTPhandshakes = ["xftp/1"]
 
 data XFTPServerHandshake = XFTPServerHandshake
   { xftpVersionRange :: VersionRangeXFTP,

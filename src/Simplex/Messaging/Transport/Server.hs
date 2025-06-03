@@ -10,7 +10,7 @@ module Simplex.Messaging.Transport.Server
   ( TransportServerConfig (..),
     ServerCredentials (..),
     AddHTTP,
-    defaultTransportServerConfig,
+    mkTransportServerConfig,
     runTransportServerState,
     runTransportServerState_,
     SocketState,
@@ -58,6 +58,7 @@ import UnliftIO.STM
 
 data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
+    serverALPN :: Maybe [ALPN],
     tlsSetupTimeout :: Int,
     transportTimeout :: Int
   }
@@ -72,10 +73,11 @@ data ServerCredentials = ServerCredentials
 
 type AddHTTP = Bool
 
-defaultTransportServerConfig :: TransportServerConfig
-defaultTransportServerConfig =
+mkTransportServerConfig :: Bool -> Maybe [ALPN] ->TransportServerConfig
+mkTransportServerConfig logTLSErrors serverALPN =
   TransportServerConfig
-    { logTLSErrors = True,
+    { logTLSErrors,
+      serverALPN,
       tlsSetupTimeout = 60000000,
       transportTimeout = 40000000
     }
@@ -88,15 +90,15 @@ serverTransportConfig TransportServerConfig {logTLSErrors} =
 -- | Run transport server (plain TCP or WebSockets) on passed TCP port and signal when server started and stopped via passed TMVar.
 --
 -- All accepted connections are passed to the passed function.
-runTransportServer :: Transport c => TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
-runTransportServer started port srvSupported srvCreds alpn_ cfg server = do
+runTransportServer :: Transport c => TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServer started port srvSupported srvCreds cfg server = do
   ss <- newSocketState
-  runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server
+  runTransportServerState ss started port srvSupported srvCreds cfg server
 
-runTransportServerState :: Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> Maybe [ALPN] -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
-runTransportServerState ss started port srvSupported srvCreds alpn_ cfg server = runTransportServerState_ ss started port srvSupported (const srvCreds) alpn_ cfg (const server)
+runTransportServerState :: Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
+runTransportServerState ss started port srvSupported srvCreds cfg server = runTransportServerState_ ss started port srvSupported (const srvCreds) cfg (const server)
 
-runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> (Maybe HostName -> T.Credential) -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
 runTransportServerState_ ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c 'TServer))
 
 -- | Run a transport server with provided connection setup and handler.
@@ -112,14 +114,14 @@ runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
       tls <- connectTLS Nothing tCfg srvParams conn
       getTransportConnection tCfg (X.CertificateChain []) tls
 
-runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> Maybe [ALPN] -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
-runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds alpn_ cfg server =
+runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> (Maybe HostName -> T.Credential) -> TransportServerConfig -> (Socket -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds cfg server =
   runTransportServerSocketState_ ss started getSocket threadLabel cfg setupTLS server
   where
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
       clientCert <- newEmptyTMVarIO
-      let srvParams = supportedTLSServerParams srvSupported srvCreds alpn_ clientCert
+      let srvParams = supportedTLSServerParams srvSupported srvCreds (serverALPN cfg) clientCert
       tls <- connectTLS Nothing tCfg srvParams conn
       chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
       getTransportConnection tCfg chain tls

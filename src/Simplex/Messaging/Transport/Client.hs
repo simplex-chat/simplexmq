@@ -126,7 +126,7 @@ data TransportClientConfig = TransportClientConfig
     tcpKeepAlive :: Maybe KeepAliveOpts,
     logTLSErrors :: Bool,
     clientCredentials :: Maybe T.Credential,
-    alpn :: Maybe [ALPN],
+    clientALPN :: Maybe [ALPN],
     useSNI :: Bool
   }
   deriving (Eq, Show)
@@ -143,7 +143,7 @@ defaultTransportClientConfig =
       tcpKeepAlive = Just defaultKeepAliveOpts,
       logTLSErrors = True,
       clientCredentials = Nothing,
-      alpn = Nothing,
+      clientALPN = Nothing,
       useSNI = True
     }
 
@@ -156,10 +156,10 @@ runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredent
 runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, alpn, useSNI} socksCreds host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, clientALPN, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   let hostName = B.unpack $ strEncode host
-      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials alpn useSNI serverCert
+      clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials clientALPN useSNI serverCert
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName

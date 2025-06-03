@@ -155,7 +155,7 @@ ntfServerCfg =
       prometheusInterval = Nothing,
       prometheusMetricsFile = ntfTestPrometheusMetricsFile,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = defaultTransportServerConfig,
+      transportConfig = mkTransportServerConfig True $ Just alpnSupportedNTFHandshakes,
       startOptions = defaultStartOptions
     }
 
@@ -238,7 +238,7 @@ apnsMockServerConfig =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
-      transportConfig = defaultTransportServerConfig
+      transportConfig = mkTransportServerConfig True Nothing
     }
 
 withAPNSMockServer :: (APNSMockServer -> IO ()) -> IO ()
@@ -269,7 +269,7 @@ deriving instance ToJSON APNSErrorResponse
 
 getAPNSMockServer :: HTTP2ServerConfig -> IO APNSMockServer
 getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
-  http2Server <- getHTTP2Server config Nothing
+  http2Server <- getHTTP2Server config
   notifications <- TM.emptyIO
   action <- async $ runAPNSMockServer notifications http2Server
   pure APNSMockServer {action, notifications, http2Server}

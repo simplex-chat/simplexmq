@@ -165,7 +165,7 @@ smpServerTestStatic = do
 
     threadDelay 2000000
 
-    let cfgHttp = defaultTransportClientConfig {alpn = Just ["h2"], useSNI = True}
+    let cfgHttp = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
       tlsALPN tls `shouldBe` Just "h2"
       case getCerts tls of
@@ -183,7 +183,7 @@ smpServerTestStatic = do
     -- "local" CA signing SMP credentials
     Fingerprint fpSMP <- loadFileFingerprint (cfgPath <> "/ca.crt")
     let caSMP = C.KeyHash fpSMP
-    let cfgSmp = defaultTransportClientConfig {alpn = Just ["smp/1"], useSNI = False}
+    let cfgSmp = defaultTransportClientConfig {clientALPN = Just ["smp/1"], useSNI = False}
     runTLSTransportClient defaultSupportedParams Nothing cfgSmp Nothing "localhost" "5223" (Just caSMP) $ \tls -> do
       tlsALPN tls `shouldBe` Just "smp/1"
       case getCerts tls of

@@ -125,7 +125,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       srvCreds <- asks tlsServerCreds
       serverSignKey <- either fail pure $ C.x509ToPrivate' $ snd srvCreds
       env <- ask
-      liftIO $ runTransportServer started tcpPort defaultSupportedParams srvCreds (Just supportedNTFHandshakes) tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+      liftIO $ runTransportServer started tcpPort defaultSupportedParams srvCreds tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
 
     runClient :: Transport c => C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
     runClient signKey _ h = do

@@ -26,7 +26,7 @@ import qualified Network.UDP as UDP
 import Simplex.Messaging.Transport (TransportPeer (..), defaultSupportedParams)
 import qualified Simplex.Messaging.Transport as Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (defaultTransportServerConfig, runTransportServerSocket, startTCPServer)
+import Simplex.Messaging.Transport.Server (mkTransportServerConfig, runTransportServerSocket, startTCPServer)
 import Simplex.Messaging.Util (ifM, tshow)
 import Simplex.RemoteControl.Discovery.Multicast (setMembership)
 import Simplex.RemoteControl.Types
@@ -81,7 +81,7 @@ startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ d
       port <- N.socketPort socket
       logInfo $ "System-assigned port: " <> tshow port
       setPort $ Just port
-      runTransportServerSocket started (pure socket) "RCP TLS" serverParams defaultTransportServerConfig server
+      runTransportServerSocket started (pure socket) "RCP TLS" serverParams (mkTransportServerConfig True Nothing) server
     setPort = void . atomically . tryPutTMVar startedOnPort
     serverParams =
       def
