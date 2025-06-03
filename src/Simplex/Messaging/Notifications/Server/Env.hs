@@ -17,7 +17,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
-import Data.X509.Validation (Fingerprint (..))
+import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
@@ -101,14 +101,14 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
-  Fingerprint fp <- loadFingerprint ntfCredentials
+  serviceCertHash@(XV.Fingerprint fp) <- loadFingerprint ntfCredentials
   smpAgentCfg' <-
     if useServiceCreds
       then do
         serviceSignKey <- case C.x509ToPrivate' $ snd tlsServerCreds of
           Right pk -> pure pk
           Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
-        let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsServerCreds, serviceSignKey}
+        let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsServerCreds, serviceCertHash, serviceSignKey}
         pure smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {serviceCredentials = Just service}}
       else pure smpAgentCfg
   subscriber <- newNtfSubscriber smpAgentCfg' random

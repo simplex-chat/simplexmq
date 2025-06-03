@@ -1305,15 +1305,21 @@ authTransmission thAuth certAuth pKey_ nonce t = traverse authenticate pKey_
     authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
     authenticate (C.APrivateAuthKey a pk) = (,serviceSig) <$> case a of
       C.SX25519 -> case thAuth of
-        Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t
+        Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t'
         Nothing -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
+    -- When command is signed by both entity key and service key,
+    -- entity key must sign over both transmission and service certificate hash.
+    t' = case thAuth >>= clientService of
+      Just THClientService {serviceCertHash = XV.Fingerprint fp} | certAuth -> fp <> t
+      _ -> t
+    -- service key only needs to sign transmission itself
     serviceSig = case thAuth >>= clientService of
       Just THClientService {serviceKey} | certAuth -> Just $ C.sign' serviceKey t
       _ -> Nothing
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
-    sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t)
+    sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t')
 
 data TBQueueInfo = TBQueueInfo
   { qLength :: Int,

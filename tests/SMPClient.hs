@@ -168,8 +168,9 @@ testSMPClient_ host port vr client = do
 testNtfServiceClient :: Transport c => TProxy c 'TServer -> C.KeyPairEd25519 -> (THandleSMP c 'TClient -> IO a) -> IO a
 testNtfServiceClient _ keys client = do
   tlsNtfServerCreds <- loadServerCredential ntfTestServerCredentials
+  serviceCertHash <- loadFingerprint ntfTestServerCredentials
   Right serviceSignKey <- pure $ C.x509ToPrivate' $ snd tlsNtfServerCreds
-  let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsNtfServerCreds, serviceSignKey}
+  let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsNtfServerCreds, serviceCertHash, serviceSignKey}
       tcConfig =
         defaultTransportClientConfig
           { clientCredentials = Just tlsNtfServerCreds,

@@ -1048,6 +1048,7 @@ testMessageServiceNotifications =
       (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+      -- TODO [certs] we need to get certificate fingerprint and include it into signed over for NSUB commands
       testNtfServiceClient t serviceKeys $ \nh1 -> do
         -- can't subscribe without service signature in service connection
         Resp "2a" _ (ERR SERVICE) <- signSendRecv nh1 nKey ("2a", nId, NSUB)

@@ -502,6 +502,7 @@ type THPeerClientService = THClientService' C.PublicKeyEd25519
 data THClientService' k = THClientService
   { serviceId :: ServiceId,
     serviceRole :: SMPServiceRole,
+    serviceCertHash :: XV.Fingerprint,
     serviceKey :: k
   }
 
@@ -574,6 +575,7 @@ data SMPClientHandshakeService = SMPClientHandshakeService
 data ServiceCredentials = ServiceCredentials
   { serviceRole :: SMPServiceRole,
     serviceCreds :: T.Credential,
+    serviceCertHash :: XV.Fingerprint,
     serviceSignKey :: C.APrivateSignKey
   }
 
@@ -769,7 +771,7 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVRange getService = do
       let fp = XV.getFingerprint idCert X.HashSHA256
       serviceId <- getService serviceRole cc fp
       sendHandshake th $ SMPServerHandshakeResponse {serviceId}
-      pure THClientService {serviceId, serviceRole, serviceKey}
+      pure THClientService {serviceId, serviceRole, serviceCertHash = fp, serviceKey}
     sendErr err = do
       sendHandshake th $ SMPServerHandshakeError {handshakeError = err}
       throwError err
@@ -824,9 +826,9 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
       let sk = C.signX509 serviceSignKey $ C.publicToX509 k
        in SMPClientHandshakeService {serviceRole, serviceCertKey = CertChainPubKey (fst serviceCreds) sk}
     getClientService :: (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO THClientService
-    getClientService (ServiceCredentials {serviceRole}, (_, pk)) =
+    getClientService (ServiceCredentials {serviceRole, serviceCertHash}, (_, pk)) =
       getHandshake th >>= \case
-        SMPServerHandshakeResponse {serviceId} -> pure THClientService {serviceId, serviceRole, serviceKey = pk}
+        SMPServerHandshakeResponse {serviceId} -> pure THClientService {serviceId, serviceRole, serviceCertHash, serviceKey = pk}
         SMPServerHandshakeError {handshakeError} -> throwE handshakeError
 
 smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> Bool -> Maybe THPeerClientService -> IO (THandleSMP c 'TServer)

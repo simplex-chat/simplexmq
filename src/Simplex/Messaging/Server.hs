@@ -1201,7 +1201,7 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
     hasRole role = case service of
       Just THClientService {serviceRole} -> serviceRole == role
       Nothing -> True
-    verify = verifyCmdAuthorization auth_ tAuth authorized
+    verify = verifyCmdAuthorization auth_ tAuth authorized'
     verifyServiceCmd :: VerificationResult s
     verifyServiceCmd = case (service, tAuth) of
       (Just THClientService {serviceKey = k}, Just (TASignature (C.ASignature C.SEd25519 s), Nothing))
@@ -1212,6 +1212,9 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
       (Just THClientService {serviceKey = k}, Just s) -> C.verify' k s authorized
       (Nothing, Nothing) -> True
       _ -> False
+    authorized' = case (service, snd =<< tAuth) of
+      (Just THClientService {serviceCertHash = XV.Fingerprint fp}, Just _) -> fp <> authorized
+      _ -> authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed AUTH
     verifyQueue :: DirectParty p => SParty p -> ((StoreQueue s, QueueRec) -> VerificationResult s) -> IO (VerificationResult s)
     verifyQueue p v = either err v <$> getQueueRec ms p queueId
