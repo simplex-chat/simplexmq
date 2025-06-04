@@ -487,8 +487,8 @@ smpSubscribeService ca smp srv serviceSub@(serviceId, _) = case smpClientService
             | temporaryClientError e -> reconnectClient ca srv
             | otherwise -> notify ca $ CAServiceSubError srv serviceSub e
         else reconnectClient ca srv
-    processSubscription = mapM_ $ \_ -> do
-      setActiveServiceSub ca srv $ Just (serviceSub, sessId)
+    processSubscription = mapM_ $ \n -> do
+      setActiveServiceSub ca srv $ Just ((serviceId, n), sessId)
       setPendingServiceSub ca srv Nothing
     serviceAvailable THClientService {serviceRole, serviceId = serviceId'} =
       serviceId == serviceId' && subscriberServiceRole (agentParty ca) == serviceRole
