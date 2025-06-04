@@ -31,6 +31,7 @@ import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.String (IsString (..))
 import Data.Type.Equality
+import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
@@ -122,12 +123,16 @@ signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, q
   tGet1 h
   where
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
-      C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t
-      C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t
-      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t) <$> thAuth params
+      C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
+      C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t'
+      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t') <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif
+      where
+        t' = case (serviceKey_, thAuth params >>= clientService) of
+          (Just _, Just THClientService {serviceCertHash = XV.Fingerprint fp}) -> fp <> t
+          _ -> t
 
 tPut1 :: Transport c => THandle v c 'TClient -> SentRawTransmission -> IO (Either TransportError ())
 tPut1 h t = do
