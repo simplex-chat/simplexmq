@@ -77,7 +77,7 @@ data ClientHandshake = ClientHandshake
 serviceCertKey :: Maybe (X.CertificateChain, X.SignedExact X.PubKey)
 ```
 
-Certificate here defines client identity. The actual key to be used to sign commands is session-scoped, and is signed by the certificate key. In case of notification server it MUST be the same certificate that is used for server TLS connections.  
+Certificate here defines client identity. The actual key to be used to sign commands is session-scoped, and is signed by the certificate key. In case of notification server it MUST be the same certificate that is used for server TLS connections.
 
 For operators' clients we may optionally include operators' certificate in the chain, and that would allow servers to identify operators if either wants to. This would improve end-user security, as not only the server would validate that its certificate matches the address, but it would also validate that it is operated by SimpleX Chat or by Flux, preventing any server impersonation (e.g., via DNS manipulations) - the client could then report that the files are hosted on SimpleX Chat servers, but then can stop and show additional warning in case certificate does not match the domain - same as the browsers do with CA stores in the client.
 
@@ -102,6 +102,8 @@ authenticator = queue_authenticator ("0" / "1" service_authenticator)
 ; "0" and "1" characters (digit characters, not x00 or x01) are conventionally used for Maybe types in the protocol.
 ```
 
+In case service_authenticator is present, queue_authenticator should authorize over `fingerprint authorized` (concatenation of service identity certificate fingerprint and the rest of the transmission).
+
 All queues created with client key will have to be double-authorized with both the queue key and the client key - both the client and the server would have to maintain this knowledge, whether the queue is associated with the client or not.
 
 Asymmetric retries have to be supported - the first request creating this association may succeed on the server and timeout on the client.
@@ -113,12 +115,15 @@ To subscribe to all associated queues the client has to send a single command au
 The command and response:
 
 ```haskell
-CSUB :: Command Recipient -- to enable all client subscriptions, empty entity ID in the transmission, signed by client key - it must be the same as was used in handover subscription signature.
-CSQS :: Word32 -> BrokerMsg -- response from the server, includes the number of subscribed queues
+SUBS :: Command Recipient -- to enable all client subscriptions, empty entity ID in the transmission, signed by client key - it must be the same as was used in handover subscription signature.
+NSUBS :: Command Recipient -- notification subscription
+SOK :: Maybe ServiceId -- new subscription response
+SOKS :: Int64 -> BrokerMsg -- response from the server, includes the number of subscribed queues
+ENDS :: Int64 -> BrokerMsg -- when another session subscribes with the same certificate
 ```
 
 Open questions:
-- What should used as an entity ID for `CSUB` transmission - certificate fingerprint or an empty string?
+- What should used as an entity ID for `SUBS` transmission - certificate fingerprint or an empty string?
 - Should there be a command to get the list of all associated queues? It is likely to be useful for debugging?
 - What should happen when `SUB` is sent for a single already associated queue? What if it is signed with the correct session key, but that is different from existing association? The current approach is that once associated, this associaiton would require authorization for single subscriptions, with the same certificate as already associated.
 
