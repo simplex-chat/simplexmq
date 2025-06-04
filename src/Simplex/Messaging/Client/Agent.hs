@@ -227,7 +227,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           atomically $ do
             putTMVar (sessionVar v) (Right c)
             TM.insert (sessionId $ thParams smp) c smpSessions
-          let serviceId_ = (\THClientService {serviceId} -> serviceId) <$> (clientService =<< thAuth (thParams smp))
+          let serviceId_ = (\THClientService {serviceId} -> serviceId) <$> smpClientService smp
           notify ca $ CAConnected srv serviceId_
           pure $ Right c
         Left e -> do

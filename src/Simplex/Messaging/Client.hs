@@ -727,15 +727,15 @@ temporaryClientError = \case
   PCENetworkError -> True
   PCEResponseTimeout -> True
   PCEIOError _ -> True
-  PCETransportError (TEHandshake BAD_SERVICE) -> True
   _ -> False
 {-# INLINE temporaryClientError #-}
 
 smpClientServiceError :: SMPClientError -> Bool
 smpClientServiceError = \case
   PCEServiceUnavailable -> True
+  PCETransportError (TEHandshake BAD_SERVICE) -> True -- TODO [certs] this error may be temporary, so we should possibly resubscribe.
   PCEProtocolError SERVICE -> True
-  PCEProtocolError (PROXY (BROKER NO_SERVICE)) -> True -- this is here for completeness, it cannot happen
+  PCEProtocolError (PROXY (BROKER NO_SERVICE)) -> True -- for completeness, it cannot happen.
   _ -> False
 
 -- converts error of client running on proxy to the error sent to client connected to proxy
@@ -747,7 +747,7 @@ smpProxyError = \case
   PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
   PCENetworkError -> PROXY $ BROKER NETWORK
   PCEIncompatibleHost -> PROXY $ BROKER HOST
-  PCEServiceUnavailable -> PROXY $ PROTOCOL $ SERVICE
+  PCEServiceUnavailable -> PROXY $ BROKER $ NO_SERVICE -- for completeness, it cannot happen.
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
@@ -1308,11 +1308,11 @@ authTransmission thAuth serviceAuth pKey_ nonce t = traverse authenticate pKey_
       C.SEd448 -> sign pk
     -- When command is signed by both entity key and service key,
     -- entity key must sign over both transmission and service certificate hash.
-    t' = case thAuth >>= clientService of
+    t' = case clientService =<< thAuth of
       Just THClientService {serviceCertHash = XV.Fingerprint fp} | serviceAuth -> fp <> t
       _ -> t
     -- service key only needs to sign transmission itself
-    serviceSig = case thAuth >>= clientService of
+    serviceSig = case clientService =<< thAuth of
       Just THClientService {serviceKey} | serviceAuth -> Just $ C.sign' serviceKey t
       _ -> Nothing
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth

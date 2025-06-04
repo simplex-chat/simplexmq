@@ -569,6 +569,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> queueSubErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubErrors st srv subStatuses
               logSubErrors srv subStatuses updated
+              -- TODO [certs] resubscribe queues with statuses NSErr and NSService
           CAServiceDisconnected srv serviceSub ->
             logNote $ "SMP server service disconnected " <> showService srv serviceSub
           CAServiceSubscribed srv serviceSub@(_, expected) n

@@ -228,6 +228,7 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
     where
       sigNoEntity
         | isNothing auth = Left $ CMD NO_AUTH
+        | not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
 instance ProtocolEncoding NTFVersion ErrorType NtfCmd where
