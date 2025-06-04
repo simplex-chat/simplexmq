@@ -156,7 +156,7 @@ type AttachHTTP = Socket -> TLS.Context -> IO ()
 data ClientSubAction
   = CSAEndSub QueueId
   | CSAEndServiceSub
-  | CSADecreaseSubs Int
+  | CSADecreaseSubs Int64
 
 type PrevClientSub s = (Client s, ClientSubAction, (EntityId, BrokerMsg))
 
@@ -243,7 +243,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       Server s ->
       (Server s -> ServerSubscribers s) ->
       (Client s -> TMap QueueId sub) ->
-      (Client s -> TVar Int) ->
+      (Client s -> TVar Int64) ->
       Maybe (sub -> IO ()) ->
       M s ()
     serverThread label srv srvSubscribers clientSubs clientServiceSubs unsub_ = do
@@ -308,7 +308,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             cancelServiceSubs serviceId =
               anotherClient $ \c -> do
                 n <- swapTVar (clientServiceSubs c) 0
-                pure [(c, CSADecreaseSubs n, (serviceId, ENDS (fromIntegral n)))]
+                pure [(c, CSADecreaseSubs n, (serviceId, ENDS n))]
             anotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
             anotherClient mkSub = \case
               Nothing -> pure []
@@ -1057,7 +1057,7 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceS
     updateSubscribers subs ServerSubscribers {queueSubscribers, subClients} = do
       mapM_ (\qId -> deleteSubcribedClient qId c queueSubscribers) (M.keys subs)
       atomically $ modifyTVar' subClients $ IS.delete clientId
-    updateServiceSubs :: ServiceId -> TVar Int -> ServerSubscribers s -> IO ()
+    updateServiceSubs :: ServiceId -> TVar Int64 -> ServerSubscribers s -> IO ()
     updateServiceSubs serviceId subsCount ServerSubscribers {totalServiceSubs, serviceSubscribers} = do
       deleteSubcribedClient serviceId c serviceSubscribers
       atomically . modifyTVar' totalServiceSubs . subtract =<< readTVarIO subsCount
@@ -1709,8 +1709,8 @@ client
                     modifyTVar' ntfServiceSubsCount (+ count) -- service count
                     modifyTVar' (totalServiceSubs ntfSubscribers) (+ count) -- server count for all services
                   atomically $ writeTQueue (subQ ntfSubscribers) (CSService serviceId, clientId)
-                  pure $ SOKS $ fromIntegral count
-            else pure $ SOKS $ fromIntegral srvSubs
+                  pure $ SOKS count
+            else pure $ SOKS srvSubs
 
         acknowledgeMsg :: MsgId -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         acknowledgeMsg msgId q qr = time "ACK" $ do

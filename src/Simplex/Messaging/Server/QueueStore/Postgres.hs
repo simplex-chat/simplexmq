@@ -443,7 +443,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
          in ((serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int)
+  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
   getNtfServiceQueueCount st serviceId =
     E.uninterruptibleMask_ $ runExceptT $ withDB' "getNtfServiceQueueCount" st $ \db ->
       fmap (fromMaybe 0) $ maybeFirstRow fromOnly $

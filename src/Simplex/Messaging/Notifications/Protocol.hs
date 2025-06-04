@@ -480,6 +480,8 @@ data NtfSubStatus
     NSDeleted
   | -- | SMP AUTH error
     NSAuth
+  | -- | SMP SERVICE error - rejected service signature on individual subscriptions
+    NSService
   | -- | SMP error other than AUTH
     NSErr ByteString
   deriving (Eq, Ord, Show)
@@ -493,6 +495,7 @@ ntfShouldSubscribe = \case
   NSEnd -> False
   NSDeleted -> False
   NSAuth -> False
+  NSService -> True
   NSErr _ -> False
 
 instance Encoding NtfSubStatus where
@@ -504,6 +507,7 @@ instance Encoding NtfSubStatus where
     NSEnd -> "END"
     NSDeleted -> "DELETED"
     NSAuth -> "AUTH"
+    NSService -> "SERVICE"
     NSErr err -> "ERR " <> err
   smpP =
     A.takeTill (== ' ') >>= \case
@@ -514,6 +518,7 @@ instance Encoding NtfSubStatus where
       "END" -> pure NSEnd
       "DELETED" -> pure NSDeleted
       "AUTH" -> pure NSAuth
+      "SERVICE" -> pure NSService
       "ERR" -> NSErr <$> (A.space *> A.takeByteString)
       _ -> fail "bad NtfSubStatus"
 

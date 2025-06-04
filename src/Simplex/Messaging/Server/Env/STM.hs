@@ -313,7 +313,7 @@ data ServerSubscribers s = ServerSubscribers
   { subQ :: TQueue (ClientSub, ClientId),
     queueSubscribers :: SubscribedClients s,
     serviceSubscribers :: SubscribedClients s, -- service clients with long-term certificates that have subscriptions
-    totalServiceSubs :: TVar Int,
+    totalServiceSubs :: TVar Int64,
     subClients :: TVar IntSet, -- clients with individual or service subscriptions
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
@@ -388,8 +388,8 @@ data Client s = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
-    serviceSubsCount :: TVar Int, -- only one service can be subscribed, based on its certificate, this is subscription count
-    ntfServiceSubsCount :: TVar Int, -- only one service can be subscribed, based on its certificate, this is subscription count
+    serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (Maybe THPeerClientService, NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),

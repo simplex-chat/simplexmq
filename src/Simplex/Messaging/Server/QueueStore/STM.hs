@@ -28,6 +28,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
@@ -332,10 +333,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
         pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int)
+  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
   getNtfServiceQueueCount st serviceId =
     TM.lookupIO serviceId (services st) >>=
-      maybe (pure $ Left AUTH) (fmap (Right . S.size) . readTVarIO . serviceNtfQueues)
+      maybe (pure $ Left AUTH) (fmap (Right . fromIntegral . S.size) . readTVarIO . serviceNtfQueues)
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

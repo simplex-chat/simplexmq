@@ -215,6 +215,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -225,7 +226,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
-import Data.Word (Word16, Word32)
+import Data.Word (Word16)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
@@ -623,7 +624,7 @@ data BrokerMsg where
   -- TODO [certs] as service ID is known from handshake, possibly this can be boolean to reduce size of responses
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues subscribed with SUBS command
-  SOKS :: Word32 -> BrokerMsg
+  SOKS :: Int64 -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
@@ -635,7 +636,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
-  ENDS :: Word32 -> BrokerMsg
+  ENDS :: Int64 -> BrokerMsg
   DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg

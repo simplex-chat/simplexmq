@@ -139,7 +139,6 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
-import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -841,7 +840,7 @@ nsubResponse_ = \case
   r' -> Left $ unexpectedResponse r'
 {-# INLINE nsubResponse_ #-}
 
-subscribeService :: forall p. (PartyI p, SubscriberParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Word32
+subscribeService :: forall p. (PartyI p, SubscriberParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Int64
 subscribeService c party = case smpClientService c of
   Just THClientService {serviceId, serviceKey} -> do
     liftIO $ enablePings c

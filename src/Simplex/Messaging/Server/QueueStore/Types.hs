@@ -47,7 +47,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
   setQueueService :: (PartyI p, SubscriberParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
-  getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int)
+  getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int64)
 
 data EntityCounts = EntityCounts
   { queueCount :: Int,

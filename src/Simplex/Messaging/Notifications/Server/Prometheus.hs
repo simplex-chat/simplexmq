@@ -37,8 +37,10 @@ data NtfRealTimeMetrics = NtfRealTimeMetrics
     srvSubscribers :: NtfSMPWorkerMetrics,
     srvClients :: NtfSMPWorkerMetrics,
     srvSubWorkers :: NtfSMPWorkerMetrics,
-    ntfActiveSubs :: NtfSMPSubMetrics,
-    ntfPendingSubs :: NtfSMPSubMetrics,
+    ntfActiveServiceSubs :: NtfSMPSubMetrics,
+    ntfActiveQueueSubs :: NtfSMPSubMetrics,
+    ntfPendingServiceSubs :: NtfSMPSubMetrics,
+    ntfPendingQueueSubs :: NtfSMPSubMetrics,
     smpSessionCount :: Int,
     apnsPushQLength :: Natural
   }
@@ -58,8 +60,10 @@ ntfPrometheusMetrics sm rtm ts =
         srvSubscribers,
         srvClients,
         srvSubWorkers,
-        ntfActiveSubs,
-        ntfPendingSubs,
+        ntfActiveServiceSubs,
+        ntfActiveQueueSubs,
+        ntfPendingServiceSubs,
+        ntfPendingQueueSubs,
         smpSessionCount,
         apnsPushQLength
       } = rtm
@@ -149,8 +153,10 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_subscriptions_approx_total gauge\n\
       \simplex_ntf_subscriptions_approx_total " <> mshow approxSubCount <> "\n# approxSubCount\n\
       \\n"
-      <> showSubMetric ntfActiveSubs "simplex_ntf_smp_subscription_active_" "Active"
-      <> showSubMetric ntfPendingSubs "simplex_ntf_smp_subscription_pending_" "Pending"
+      <> showSubMetric ntfActiveServiceSubs "simplex_ntf_smp_service_subscription_active_" "Active"
+      <> showSubMetric ntfActiveQueueSubs "simplex_ntf_smp_subscription_active_" "Active"
+      <> showSubMetric ntfPendingServiceSubs "simplex_ntf_smp_service_subscription_pending_" "Pending"
+      <> showSubMetric ntfPendingQueueSubs "simplex_ntf_smp_subscription_pending_" "Pending"
     notifications =
       "# Notifications\n\
       \# -------------\n\
