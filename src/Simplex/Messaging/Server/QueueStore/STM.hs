@@ -279,7 +279,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         TM.lookup sId services >>= \case
           Just STMService {serviceRec = ServiceRec {serviceId, serviceRole = role}}
             | role == serviceRole -> pure $ Right (serviceId, False)
-            | otherwise -> pure $ Left AUTH -- TODO [certs] remove associations?
+            | otherwise -> pure $ Left $ SERVICE
           Nothing -> newService_
       newService = ifM (TM.member newSrvId services) (pure $ Left DUPLICATE_) newService_
       newService_ = do
@@ -307,7 +307,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
               let !q' = Just q {rcvServiceId = serviceId}
               writeTVar qr q' $> Right ()
         SNotifier -> case notifier q of
-          Nothing -> pure $ Left AUTH -- TODO [certs] different error? INTERNAL?
+          Nothing -> pure $ Left AUTH
           Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevNtfSrvId}
             | prevNtfSrvId == serviceId -> pure $ Right ()
             | otherwise -> do

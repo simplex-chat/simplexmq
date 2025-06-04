@@ -1197,7 +1197,7 @@ protocolClientError protocolError_ host = \case
   PCEIncompatibleHost -> BROKER host HOST
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
-  PCEServiceUnavailable {} -> error "TODO [certs]"
+  PCEServiceUnavailable {} -> BROKER host NO_SERVICE
   PCEIOError {} -> BROKER host NETWORK
 
 data ProtocolTestStep
@@ -1382,7 +1382,7 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
   r@(thParams', QIK {rcvId, sndId, rcvPublicDhKey, queueMode, serviceId}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (thParams smp,) <$> createSMPQueue smp nonce_ rKeys dhKey auth subMode (queueReqData cqrd)
-  -- TODO [certs] validate that serviceId is the same as in the client session
+  -- TODO [certs rcv] validate that serviceId is the same as in the client session
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds r
   let rq =
@@ -1444,7 +1444,7 @@ processSubResult c sessId rq@RcvQueue {userId, server, connId} = \case
     unless (temporaryClientError e) $ do
       incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
-  Right _serviceId -> -- TODO [certs] store association with the service
+  Right _serviceId -> -- TODO [certs rcv] store association with the service
     ifM
       (hasPendingSubscription c connId)
       (incSMPServerStat c userId server connSubscribed >> addSubscription c sessId rq)

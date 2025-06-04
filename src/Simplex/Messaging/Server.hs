@@ -329,7 +329,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               modifyTVar' totalServiceSubs decrease
               where
                 decrease n = max 0 (n - 1)
-            -- TODO [certs] for SMP subscriptions CSADecreaseSubs should also remove all delivery threads of the passed client
+            -- TODO [certs rcv] for SMP subscriptions CSADecreaseSubs should also remove all delivery threads of the passed client
             CSADecreaseSubs n' -> atomically $ modifyTVar' totalServiceSubs $ \n -> max 0 (n - n')
           where
             endSub :: Client s -> QueueId -> STM (Maybe sub)
@@ -438,17 +438,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     receiveFromProxyAgent ProxyAgent {smpAgent = SMPClientAgent {agentQ}} =
       forever $
         atomically (readTBQueue agentQ) >>= \case
-          -- TODO [certs] log events
           CAConnected srv _service_ -> logInfo $ "SMP server connected " <> showServer' srv
           CADisconnected srv qIds -> logError $ "SMP server disconnected " <> showServer' srv <> " / subscriptions: " <> tshow (length qIds)
+          -- the errors below should never happen - messaging proxy does not make any subscriptions
           CASubscribed srv serviceId qIds -> logError $ "SMP server subscribed queues " <> asService <> showServer' srv <> " / subscriptions: " <> tshow (length qIds)
             where
               asService = if isJust serviceId then "as service " else ""
           CASubError srv errs -> logError $ "SMP server subscription errors " <> showServer' srv <> " / errors: " <> tshow (length errs)
-          CAServiceDisconnected {} -> error "TODO [certs] should not happen, just log error"
-          CAServiceSubscribed {} -> error "TODO [certs] should not happen, just log error"
-          CAServiceSubError {} -> error "TODO [certs] should not happen, just log error"
-          CAServiceUnavailable {} -> error "TODO [certs] should not happen, just log error"
+          CAServiceDisconnected {} -> logError "CAServiceDisconnected"
+          CAServiceSubscribed {} -> logError "CAServiceSubscribed"
+          CAServiceSubError {} -> logError "CAServiceSubError"
+          CAServiceUnavailable {} -> logError "CAServiceUnavailable"
       where
         showServer' = decodeLatin1 . strEncode . host
 
@@ -713,8 +713,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       newServiceId <- EntityId <$> atomically (C.randomBytes idSize g)
       ts <- liftIO getSystemDate
       let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
-      -- TODO [certs] another error?
-      withExceptT (const TEBadSession) $ ExceptT $
+      withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
         getCreateService @(StoreQueue s) (queueStore ms) sr
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
@@ -1202,7 +1201,7 @@ verifyTransmission ms service auth_ tAuth authorized queueId command@(Cmd party 
     verifyServiceCmd = case (service, tAuth) of
       (Just THClientService {serviceKey = k}, Just (TASignature (C.ASignature C.SEd25519 s), Nothing))
         | C.verify' k s authorized -> VRVerified Nothing
-      _ -> VRFailed AUTH
+      _ -> VRFailed SERVICE
     -- this function verify service signature for commands that use it in service sessions
     verifyServiceSig
       | useServiceAuth command = case (service, serviceSig) of
@@ -1273,7 +1272,6 @@ dummySignKey = \case
   C.SEd25519 -> dummyKeyEd25519
   C.SEd448 -> dummyKeyEd448
 
--- TODO [certs] probably, it should return two keys, in case client passed two signatures?
 dummyAuthKey :: Maybe TAuthorizations -> C.APublicAuthKey
 dummyAuthKey = \case
   Just (TASignature (C.ASignature a _), _) -> case a of
@@ -1300,7 +1298,7 @@ forkClient Client {endThreads, endThreadSeq} label action = do
 
 client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
 client
-  -- TODO [certs] rcv subscriptions
+  -- TODO [certs rcv] rcv subscriptions
   Server {subscribers, ntfSubscribers}
   ms
   clnt@Client {clientId, subscriptions, ntfSubscriptions, serviceSubsCount = _todo', ntfServiceSubsCount, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
@@ -1393,7 +1391,6 @@ client
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    -- TODO [certs] validate that command is allowed for client role (if provided). Possibly, in verify?
     processCommand :: Maybe THPeerClientService -> VersionSMP -> (Maybe (StoreQueue s, QueueRec), Transmission Cmd) -> M s (Maybe (Transmission BrokerMsg))
     processCommand service clntVersion (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
@@ -1421,7 +1418,7 @@ client
                 ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
                 pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
           SUB -> withQueue subscribeQueue
-          SUBS -> error "TODO [certs]"
+          SUBS -> error "TODO [certs rcv]"
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1563,7 +1560,7 @@ client
         suspendQueue_ :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         suspendQueue_ (q, _) = liftIO $ either err (const ok) <$> suspendQueue (queueStore ms) q
 
-        -- TODO [certs] if serviceId is passed, associate with the service and respond with SOK
+        -- TODO [certs rcv] if serviceId is passed, associate with the service and respond with SOK
         subscribeQueue :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         subscribeQueue q qr@QueueRec {rcvServiceId} =
           liftIO (TM.lookupIO rId subscriptions) >>= \case

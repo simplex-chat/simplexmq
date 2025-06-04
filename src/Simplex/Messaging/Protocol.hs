@@ -621,7 +621,6 @@ data BrokerMsg where
   IDS :: QueueIdsKeys -> BrokerMsg
   LNK :: SenderId -> QueueLinkData -> BrokerMsg
   -- | Service subscription success - confirms when queue was associated with the service
-  -- TODO [certs] as service ID is known from handshake, possibly this can be boolean to reduce size of responses
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues subscribed with SUBS command
   SOKS :: Int64 -> BrokerMsg
@@ -1395,7 +1394,7 @@ data ErrorType
     AUTH
   | -- | command with the entity that was blocked
     BLOCKED {blockInfo :: BlockingInfo}
-  | -- | service unavailable
+  | -- | service signature is not allowed for command or session; service command is sent not in service session
     SERVICE
   | -- | encryption/decryption error in proxy protocol
     CRYPTO
@@ -1489,6 +1488,8 @@ data BrokerErrorType
     NETWORK
   | -- | no compatible server host (e.g. onion when public is required, or vice versa)
     HOST
+  | -- | service unavailable client-side - used in agent errors
+    NO_SERVICE
   | -- | handshake or other transport error
     TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout
@@ -1930,6 +1931,7 @@ instance Encoding BrokerErrorType where
     NETWORK -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
+    NO_SERVICE -> "NO_SERVICE"
   smpP =
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _smpP
@@ -1938,6 +1940,7 @@ instance Encoding BrokerErrorType where
       "NETWORK" -> pure NETWORK
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
+      "NO_SERVICE" -> pure NO_SERVICE
       _ -> fail "bad BrokerErrorType"
 
 instance StrEncoding BrokerErrorType where
@@ -1948,6 +1951,7 @@ instance StrEncoding BrokerErrorType where
     NETWORK -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
+    NO_SERVICE -> "NO_SERVICE"
   strP =
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _textP
@@ -1956,6 +1960,7 @@ instance StrEncoding BrokerErrorType where
       "NETWORK" -> pure NETWORK
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
+      "NO_SERVICE" -> pure NO_SERVICE
       _ -> fail "bad BrokerErrorType"
     where
       _textP = A.space *> (T.unpack . safeDecodeUtf8 <$> A.takeByteString)

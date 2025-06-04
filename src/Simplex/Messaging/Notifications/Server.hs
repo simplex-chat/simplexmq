@@ -555,8 +555,9 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       batchSize <- asks $ subsBatchSize . config
       liftIO $ forever $
         atomically (readTBQueue agentQ) >>= \case
-          CAConnected srv _service_ -> -- TODO [certs]
-            logInfo $ "SMP server reconnected " <> showServer' srv
+          CAConnected srv serviceId -> do
+            let asService = if isJust serviceId then "as service " else ""
+            logInfo $ "SMP server reconnected " <> asService <> showServer' srv
           CADisconnected srv nIds -> do
             updated <- batchUpdateSrvSubStatus st srv Nothing nIds NSInactive
             logSubStatus srv "disconnected" (L.length nIds) updated
@@ -576,7 +577,8 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             where
               msg = "SMP server service subscribed " <> showService srv serviceSub
           CAServiceSubError srv serviceSub e ->
-            -- TODO [certs] process error, can require re-associating the service?
+            -- Errors that require re-subscribing queues directly are reported as CAServiceUnavailable.
+            -- See smpSubscribeService in Simplex.Messaging.Client.Agent
             logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
           CAServiceUnavailable srv serviceSub -> do
             logError $ "SMP server service unavailable: " <> showService srv serviceSub

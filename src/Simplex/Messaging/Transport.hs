@@ -688,6 +688,8 @@ data HandshakeError
     IDENTITY
   | -- | v7 authentication failed
     BAD_AUTH
+  | -- | error reading/creating service record
+    BAD_SERVICE
   deriving (Eq, Read, Show, Exception)
 
 instance Encoding TransportError where

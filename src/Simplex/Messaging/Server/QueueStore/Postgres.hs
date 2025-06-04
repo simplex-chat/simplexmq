@@ -393,7 +393,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp))) >>= \case
             Just (serviceId, role)
               | role == serviceRole -> pure $ Right (serviceId, False)
-              | otherwise -> pure $ Left AUTH -- TODO [certs] remove associations?
+              | otherwise -> pure $ Left SERVICE
             Nothing ->
               E.try (DB.execute db insertServiceQuery (serviceRecToRow sr))
                 >>= bimapM handleDuplicate (\_ -> pure (newSrvId, True))
@@ -409,7 +409,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
             DB.execute db "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id = ? AND deleted_at IS NULL" (serviceId, rId)
           updateQueueRec q {rcvServiceId = serviceId}
     SNotifier -> case notifier q of
-      Nothing -> throwE AUTH -- TODO [certs] different error? INTERNAL?
+      Nothing -> throwE AUTH
       Just nc@NtfCreds {ntfServiceId = prevSrvId}
         | prevSrvId == serviceId -> pure ()
         | otherwise -> do

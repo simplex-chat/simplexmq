@@ -94,6 +94,7 @@ module Simplex.Messaging.Client
     clientSocksCredentials,
     chooseTransportHost,
     temporaryClientError,
+    smpClientServiceError,
     smpProxyError,
     textToHostMode,
     ServerTransmissionBatch,
@@ -726,8 +727,16 @@ temporaryClientError = \case
   PCENetworkError -> True
   PCEResponseTimeout -> True
   PCEIOError _ -> True
+  PCETransportError (TEHandshake BAD_SERVICE) -> True
   _ -> False
 {-# INLINE temporaryClientError #-}
+
+smpClientServiceError :: SMPClientError -> Bool
+smpClientServiceError = \case
+  PCEServiceUnavailable -> True
+  PCEProtocolError SERVICE -> True
+  PCEProtocolError (PROXY (BROKER NO_SERVICE)) -> True -- this is here for completeness, it cannot happen
+  _ -> False
 
 -- converts error of client running on proxy to the error sent to client connected to proxy
 smpProxyError :: SMPClientError -> ErrorType
@@ -738,7 +747,7 @@ smpProxyError = \case
   PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
   PCENetworkError -> PROXY $ BROKER NETWORK
   PCEIncompatibleHost -> PROXY $ BROKER HOST
-  PCEServiceUnavailable -> PROXY $ PROTOCOL SERVICE
+  PCEServiceUnavailable -> PROXY $ PROTOCOL $ SERVICE
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL

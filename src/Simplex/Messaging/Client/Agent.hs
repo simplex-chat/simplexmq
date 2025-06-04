@@ -74,6 +74,7 @@ import Simplex.Messaging.Protocol
     subscriberParty,
     subscriberServiceRole
   )
+import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -226,7 +227,8 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           atomically $ do
             putTMVar (sessionVar v) (Right c)
             TM.insert (sessionId $ thParams smp) c smpSessions
-          notify ca $ CAConnected srv Nothing -- TODO [certs] add service role and ID here
+          let serviceId_ = (\THClientService {serviceId} -> serviceId) <$> (clientService =<< thAuth (thParams smp))
+          notify ca $ CAConnected srv serviceId_
           pure $ Right c
         Left e -> do
           let ei = persistErrorInterval agentCfg
@@ -480,8 +482,8 @@ smpSubscribeService ca smp srv serviceSub@(serviceId, _) = case smpClientService
       if ok
         then case r of
           Right n -> notify ca $ CAServiceSubscribed srv serviceSub n
-          Left PCEServiceUnavailable -> notifyUnavailable
           Left e
+            | smpClientServiceError e -> notifyUnavailable
             | temporaryClientError e -> reconnectClient ca srv
             | otherwise -> notify ca $ CAServiceSubError srv serviceSub e
         else reconnectClient ca srv

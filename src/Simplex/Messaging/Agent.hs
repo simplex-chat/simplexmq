@@ -458,7 +458,7 @@ resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either Agen
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
--- TODO [certs] how to communicate that service ID changed - as error or as result?
+-- TODO [certs rcv] how to communicate that service ID changed - as error or as result?
 subscribeClientService :: AgentClient -> ClientServiceId -> AE Int
 subscribeClientService c = withAgentEnv c . subscribeClientService' c
 {-# INLINE subscribeClientService #-}
@@ -1267,7 +1267,7 @@ subscribeConnections' c connIds = do
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    -- TODO [certs] store associations of queues with client service ID
+    -- TODO [certs rcv] store associations of queues with client service ID
     storeClientServiceAssocs :: Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
     storeClientServiceAssocs = pure . M.map (Nothing <$)
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> Map ConnId SomeConn -> AM' ()
@@ -1307,7 +1307,7 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
--- TODO [certs]
+-- TODO [certs rcv]
 subscribeClientService' :: AgentClient -> ClientServiceId -> AM Int
 subscribeClientService' = undefined
 
@@ -2573,7 +2573,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       withRcvConn entId $ \rq conn -> case cmd of
         SMP.SUB -> case respOrErr of
           Right SMP.OK -> processSubOk rq upConnIds
-          -- TODO [certs] associate queue with the service
+          -- TODO [certs rcv] associate queue with the service
           Right (SMP.SOK serviceId_) -> processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
             processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
