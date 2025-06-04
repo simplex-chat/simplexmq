@@ -224,14 +224,11 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
     -- other client commands must have both signature and entity ID
     _
       | isNothing auth || B.null entityId -> Left $ CMD NO_AUTH
-      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     where
       sigNoEntity
         | isNothing auth = Left $ CMD NO_AUTH
-        | hasServiceAuth || not (B.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
-      hasServiceAuth = maybe False (isJust . snd) auth
 
 instance ProtocolEncoding NTFVersion ErrorType NtfCmd where
   type Tag NtfCmd = NtfCmdTag

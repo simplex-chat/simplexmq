@@ -1628,7 +1628,6 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     -- SEND must have queue ID, signature is not always required
     SEND {}
       | B.null entId -> Left $ CMD NO_ENTITY
-      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     LGET -> entityCmd
     PING -> noAuthCmd
@@ -1640,7 +1639,6 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     -- other client commands must have both signature and queue ID
     _
       | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
-      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     where
       -- command must not have entity ID (queue or session ID) or signature
@@ -1657,11 +1655,11 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
       serviceCmd
         | isNothing auth || B.null entId = Left $ CMD NO_AUTH
         | otherwise = Right cmd
-      hasServiceAuth = maybe False (isJust . snd) auth
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
   encodeProtocol v (Cmd _ c) = encodeProtocol v c
+  {-# INLINE encodeProtocol #-}
 
   protocolP v = \case
     CT SRecipient tag ->
@@ -1719,6 +1717,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (Cmd p c) = Cmd p <$> checkCredentials t c
+  {-# INLINE checkCredentials #-}
 
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag

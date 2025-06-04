@@ -1095,6 +1095,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
+  -- serviceAuth is False here – proxied commands are not used with service certificates
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey nonce tForAuth
   b <- case batchTransmissions serverThParams [Right (auth, tToSend)] of
     [] -> throwE $ PCETransportError TELargeMsg
@@ -1267,8 +1268,7 @@ mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err 
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
-      serviceAuth = useServiceAuth command
-      auth = authTransmission (thAuth thParams) serviceAuth pKey_ nonce tForAuth
+      auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ nonce tForAuth
   r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where

@@ -22,7 +22,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, blockedFilesXFTPVersion, xftpClientHandshakeStub)
@@ -201,7 +201,7 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     -- FNEW must not have signature and chunk ID
     FNEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
-      | hasServiceAuth || not (B.null fileId) -> Left $ CMD HAS_AUTH
+      | not (B.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
       | isNothing auth && B.null fileId -> Right cmd
@@ -209,10 +209,7 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     -- other client commands must have both signature and queue ID
     _
       | isNothing auth || B.null fileId -> Left $ CMD NO_AUTH
-      | hasServiceAuth -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
-    where
-      hasServiceAuth = maybe False (isJust . snd) auth
 
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
   type Tag FileCmd = FileCmdTag
@@ -235,6 +232,7 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (FileCmd p c) = FileCmd p <$> checkCredentials t c
+  {-# INLINE checkCredentials #-}
 
 instance Encoding FileInfo where
   smpEncode FileInfo {sndKey, size, digest} = smpEncode (sndKey, size, digest)
@@ -340,6 +338,7 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
 xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion 'TClient -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
 xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey (corrId, fId, msg) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, fId, msg)
+  -- TODO [certs] serviceAuth is False, we need to pass command here when implementing file uploads by services
   xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth False (Just pKey) (C.cbNonce $ bs corrId) tForAuth
 
 xftpEncodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion p -> Transmission c -> Either TransportError ByteString
