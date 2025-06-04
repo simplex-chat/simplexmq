@@ -630,7 +630,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
           if remaining > 1_000_000 -- delay pings only for significant time
             then loop remaining
             else do
-              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c False Nothing NoEntity (protocolPing @v @err @msg)
+              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c Nothing NoEntity (protocolPing @v @err @msg)
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
               -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
@@ -758,7 +758,7 @@ createSMPQueue ::
   -- Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd =
-  sendProtocolCommand_ c True nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
+  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -768,18 +768,18 @@ createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd =
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO (Maybe ServiceId)
 subscribeSMPQueue c rpKey rId = do
   liftIO $ enablePings c
-  sendSMPCommand_ c True (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= either throwE pure
+  sendSMPCommand c (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= either throwE pure
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
 subscribeSMPQueues c qs = do
   liftIO $ enablePings c
-  sendProtocolCommands_ c True cs >>= mapM (processSUBResponse c)
+  sendProtocolCommands c cs >>= mapM (processSUBResponse c)
   where
     cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
 
 streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> ([(RecipientId, Either SMPClientError (Maybe ServiceId))] -> IO ()) -> IO ()
-streamSubscribeSMPQueues c qs cb = streamProtocolCommands c True cs $ mapM process >=> cb
+streamSubscribeSMPQueues c qs cb = streamProtocolCommands c cs $ mapM process >=> cb
   where
     cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
     process r@(Response rId _) = (rId,) <$> processSUBResponse c r
@@ -819,13 +819,13 @@ getSMPMessage c rpKey rId =
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateAuthKey -> NotifierId -> ExceptT SMPClientError IO (Maybe ServiceId)
 subscribeSMPQueueNotifications c npKey nId = do
   liftIO $ enablePings c
-  either throwE pure . nsubResponse_ =<< sendSMPCommand_ c True (Just npKey) nId NSUB
+  either throwE pure . nsubResponse_ =<< sendSMPCommand c (Just npKey) nId NSUB
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
 subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NotifierId, NtfPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
 subscribeSMPQueuesNtfs c qs = do
   liftIO $ enablePings c
-  L.map nsubResponse <$> sendProtocolCommands_ c True cs
+  L.map nsubResponse <$> sendProtocolCommands c cs
   where
     cs = L.map (\(nId, npKey) -> (nId, Just npKey, Cmd SNotifier NSUB)) qs
 
@@ -944,7 +944,7 @@ disableSMPQueueNotifications = okSMPCommand NDEL
 
 -- | Disable notifications for multiple queues for push notifications server.
 disableSMPQueuesNtfs :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
-disableSMPQueuesNtfs c = okSMPCommands NDEL c False
+disableSMPQueuesNtfs = okSMPCommands NDEL
 {-# INLINE disableSMPQueuesNtfs #-}
 
 -- | Send SMP message.
@@ -986,7 +986,7 @@ deleteSMPQueue = okSMPCommand DEL
 
 -- | Delete multiple SMP queues batching commands if supported.
 deleteSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
-deleteSMPQueues c = okSMPCommands DEL c False
+deleteSMPQueues = okSMPCommands DEL
 {-# INLINE deleteSMPQueues #-}
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
@@ -994,7 +994,7 @@ deleteSMPQueues c = okSMPCommands DEL c False
 connectSMPProxiedRelay :: SMPClient -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
 connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
   | thVersion (thParams c) >= sendingProxySMPVersion =
-      sendProtocolCommand_ c False Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
+      sendProtocolCommand_ c Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
         PKEY sId vr (CertChainPubKey chain key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
@@ -1104,7 +1104,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * tcpTimeout
-  tryE (sendProtocolCommand_ c False (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
+  tryE (sendProtocolCommand_ c (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
       PRES (EncResponse er) -> do
         -- server interaction errors are thrown directly
@@ -1139,7 +1139,7 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
   let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
-  sendProtocolCommand_ c False (Just nonce) Nothing Nothing NoEntity (Cmd SProxyService (RFWD eft)) >>= \case
+  sendProtocolCommand_ c (Just nonce) Nothing Nothing NoEntity (Cmd SProxyService (RFWD eft)) >>= \case
     RRES (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
@@ -1154,17 +1154,13 @@ getSMPQueueInfo c pKey qId =
     r -> throwE $ unexpectedResponse r
 
 okSMPCommand :: PartyI p => Command p -> SMPClient -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
-okSMPCommand cmd c = okSMPCommand_ cmd c False
-{-# INLINE okSMPCommand #-}
-
-okSMPCommand_ :: PartyI p => Command p -> SMPClient -> Bool -> C.APrivateAuthKey -> QueueId -> ExceptT SMPClientError IO ()
-okSMPCommand_ cmd c certAuth pKey qId =
-  sendSMPCommand_ c certAuth (Just pKey) qId cmd >>= \case
+okSMPCommand cmd c pKey qId =
+  sendSMPCommand c (Just pKey) qId cmd >>= \case
     OK -> return ()
     r -> throwE $ unexpectedResponse r
 
-okSMPCommands :: PartyI p => Command p -> SMPClient -> Bool -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
-okSMPCommands cmd c certAuth qs = L.map process <$> sendProtocolCommands_ c certAuth cs
+okSMPCommands :: PartyI p => Command p -> SMPClient -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))
+okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
   where
     aCmd = Cmd sParty cmd
     cs = L.map (\(qId, pKey) -> (qId, Just pKey, aCmd)) qs
@@ -1174,24 +1170,16 @@ okSMPCommands cmd c certAuth qs = L.map process <$> sendProtocolCommands_ c cert
       Left e -> Left e
 
 -- | Send SMP command
-sendSMPCommand :: PartyI p => SMPClient ->Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
-sendSMPCommand c = sendSMPCommand_ c False
+sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
+sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
 {-# INLINE sendSMPCommand #-}
-
-sendSMPCommand_ :: PartyI p => SMPClient -> Bool -> Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
-sendSMPCommand_ c certAuth pKey qId cmd = sendProtocolCommand c certAuth pKey qId (Cmd sParty cmd)
-{-# INLINE sendSMPCommand_ #-}
 
 type PCTransmission err msg = (Either TransportError SentRawTransmission, Request err msg)
 
 -- | Send multiple commands with batching and collect responses
 sendProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
-sendProtocolCommands c = sendProtocolCommands_ c False
-{-# INLINE sendProtocolCommands #-}
-
-sendProtocolCommands_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> NonEmpty (ClientCommand msg) -> IO (NonEmpty (Response err msg))
-sendProtocolCommands_ c@ProtocolClient {thParams} certAuth cs = do
-  bs <- batchTransmissions' thParams <$> mapM (mkTransmission c certAuth) cs
+sendProtocolCommands c@ProtocolClient {thParams} cs = do
+  bs <- batchTransmissions' thParams <$> mapM (mkTransmission c) cs
   validate . concat =<< mapM (sendBatch c) bs
   where
     validate :: [Response err msg] -> IO (NonEmpty (Response err msg))
@@ -1206,9 +1194,9 @@ sendProtocolCommands_ c@ProtocolClient {thParams} certAuth cs = do
       where
         diff = L.length cs - length rs
 
-streamProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
-streamProtocolCommands c@ProtocolClient {thParams} certAuth cs cb = do
-  bs <- batchTransmissions' thParams <$> mapM (mkTransmission c certAuth) cs
+streamProtocolCommands :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NonEmpty (ClientCommand msg) -> ([Response err msg] -> IO ()) -> IO ()
+streamProtocolCommands c@ProtocolClient {thParams} cs cb = do
+  bs <- batchTransmissions' thParams <$> mapM (mkTransmission c) cs
   mapM_ (cb <=< sendBatch c) bs
 
 sendBatch :: ProtocolClient v err msg -> TransportBatch (Request err msg) -> IO [Response err msg]
@@ -1227,8 +1215,8 @@ sendBatch c@ProtocolClient {client_ = PClient {sndQ}} b = do
       (: []) <$> getResponse c Nothing r
 
 -- | Send Protocol command
-sendProtocolCommand :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand c certAuth = sendProtocolCommand_ c certAuth Nothing Nothing
+sendProtocolCommand :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
+sendProtocolCommand c = sendProtocolCommand_ c Nothing Nothing
 
 -- Currently there is coupling - batch commands do not expire, and individually sent commands do.
 -- This is to reflect the fact that we send subscriptions only as batches, and also because we do not track a separate timeout for the whole batch, so it is not obvious when should we expire it.
@@ -1236,9 +1224,9 @@ sendProtocolCommand c certAuth = sendProtocolCommand_ c certAuth Nothing Nothing
 -- But a better solution is to process delayed delete responses.
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
-sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize, serviceAuth}} certAuth nonce_ tOut pKey entId cmd =
-  ExceptT $ uncurry sendRecv =<< mkTransmission_ c certAuth nonce_ (entId, pKey, cmd)
+sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize, serviceAuth}} nonce_ tOut pKey entId cmd =
+  ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
@@ -1272,14 +1260,15 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} t
       Nothing -> modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
   pure Response {entityId, response}
 
-mkTransmission :: Protocol v err msg => ProtocolClient v err msg -> Bool -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission c certAuth = mkTransmission_ c certAuth Nothing
+mkTransmission :: Protocol v err msg => ProtocolClient v err msg ->  ClientCommand msg -> IO (PCTransmission err msg)
+mkTransmission c = mkTransmission_ c Nothing
 
-mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Bool -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} certAuth nonce_ (entityId, pKey_, command) = do
+mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
+mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
-      auth = authTransmission (thAuth thParams) certAuth pKey_ nonce tForAuth
+      serviceAuth = useServiceAuth command
+      auth = authTransmission (thAuth thParams) serviceAuth pKey_ nonce tForAuth
   r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
@@ -1299,7 +1288,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       pure r
 
 authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
-authTransmission thAuth certAuth pKey_ nonce t = traverse authenticate pKey_
+authTransmission thAuth serviceAuth pKey_ nonce t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
     authenticate (C.APrivateAuthKey a pk) = (,serviceSig) <$> case a of
@@ -1311,11 +1300,11 @@ authTransmission thAuth certAuth pKey_ nonce t = traverse authenticate pKey_
     -- When command is signed by both entity key and service key,
     -- entity key must sign over both transmission and service certificate hash.
     t' = case thAuth >>= clientService of
-      Just THClientService {serviceCertHash = XV.Fingerprint fp} | certAuth -> fp <> t
+      Just THClientService {serviceCertHash = XV.Fingerprint fp} | serviceAuth -> fp <> t
       _ -> t
     -- service key only needs to sign transmission itself
     serviceSig = case thAuth >>= clientService of
-      Just THClientService {serviceKey} | certAuth -> Just $ C.sign' serviceKey t
+      Just THClientService {serviceKey} | serviceAuth -> Just $ C.sign' serviceKey t
       _ -> Nothing
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t')

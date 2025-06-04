@@ -154,10 +154,15 @@ instance Protocol NTFVersion ErrorType NtfResponse where
   type ProtoCommand NtfResponse = NtfCmd
   type ProtoType NtfResponse = 'PNTF
   protocolClientHandshake c _ks = ntfClientHandshake c
+  {-# INLINE protocolClientHandshake #-}
+  useServiceAuth _ = False
+  {-# INLINE useServiceAuth #-}
   protocolPing = NtfCmd SSubscription PING
+  {-# INLINE protocolPing #-}
   protocolError = \case
     NRErr e -> Just e
     _ -> Nothing
+  {-# INLINE protocolError #-}
 
 data NtfCommand (e :: NtfEntity) where
   -- | register new device token for notifications

@@ -88,7 +88,7 @@ ntfDeleteSubscription = okNtfCommand SDEL
 
 -- | Send notification server command
 sendNtfCommand :: NtfEntityI e => NtfClient -> Maybe C.APrivateAuthKey -> NtfEntityId -> NtfCommand e -> ExceptT NtfClientError IO NtfResponse
-sendNtfCommand c pKey entId cmd = sendProtocolCommand c False pKey entId (NtfCmd sNtfEntity cmd)
+sendNtfCommand c pKey entId cmd = sendProtocolCommand c pKey entId (NtfCmd sNtfEntity cmd)
 
 okNtfCommand :: NtfEntityI e => NtfCommand e -> NtfClient -> C.APrivateAuthKey -> NtfEntityId -> ExceptT NtfClientError IO ()
 okNtfCommand cmd c pKey entId =

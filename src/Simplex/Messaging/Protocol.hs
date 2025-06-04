@@ -1546,6 +1546,7 @@ class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncodi
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
   protocolClientHandshake :: Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle v c 'TClient)
+  useServiceAuth :: ProtoCommand msg -> Bool
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
@@ -1555,10 +1556,19 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
   type ProtoCommand BrokerMsg = Cmd
   type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
+  {-# INLINE protocolClientHandshake #-}
+  useServiceAuth = \case
+    Cmd _ (NEW _) -> True
+    Cmd _ SUB -> True
+    Cmd _ NSUB -> True
+    _ -> False
+  {-# INLINE useServiceAuth #-}
   protocolPing = Cmd SSender PING
+  {-# INLINE protocolPing #-}
   protocolError = \case
     ERR e -> Just e
     _ -> Nothing
+  {-# INLINE protocolError #-}
 
 class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -> v where
   type Tag msg

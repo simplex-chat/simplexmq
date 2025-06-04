@@ -1171,32 +1171,28 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
 verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> QueueId -> Cmd -> IO (VerificationResult s)
-verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = case party of
-  SRecipient | hasRole SRMessaging -> case cmd of
-    NEW NewQueueReq {rcvAuthKey = k}
-      | verifyServiceSig -> pure $ Nothing `verifiedWith` k
-      | otherwise -> pure $ VRFailed SERVICE
-    SUB
-      | verifyServiceSig -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
-      | otherwise -> pure $ VRFailed SERVICE
-    SUBS -> pure verifyServiceCmd
-    _ -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
-  SSender | hasRole SRMessaging -> case cmd of
-    SKEY k -> verifySecure SSender k
-    -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
-    SEND {} -> verifyQueue SSender $ \q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified (Just q) else VRFailed AUTH
-    PING -> pure $ VRVerified Nothing
-  SSenderLink | hasRole SRMessaging -> case cmd of
-    LKEY k -> verifySecure SSenderLink k
-    LGET -> verifyQueue SSenderLink $ \q -> if isContactQueue (snd q) then VRVerified (Just q) else VRFailed AUTH
-  SNotifier | hasRole SRNotifier -> case cmd of
-    NSUB
-      | verifyServiceSig -> verifyQueue SNotifier $ \q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)
-      | otherwise -> pure $ VRFailed SERVICE
-    NSUBS -> pure verifyServiceCmd
-  SProxiedClient | hasRole SRMessaging -> pure $ VRVerified Nothing
-  SProxyService | hasRole SRProxy -> pure $ VRVerified Nothing
-  _ -> pure $ VRFailed $ CMD PROHIBITED
+verifyTransmission ms service auth_ tAuth authorized queueId command@(Cmd party cmd)
+  | verifyServiceSig = case party of
+      SRecipient | hasRole SRMessaging -> case cmd of
+        NEW NewQueueReq {rcvAuthKey = k} -> pure $ Nothing `verifiedWith` k
+        SUB -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
+        SUBS -> pure verifyServiceCmd
+        _ -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
+      SSender | hasRole SRMessaging -> case cmd of
+        SKEY k -> verifySecure SSender k
+        -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
+        SEND {} -> verifyQueue SSender $ \q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified (Just q) else VRFailed AUTH
+        PING -> pure $ VRVerified Nothing
+      SSenderLink | hasRole SRMessaging -> case cmd of
+        LKEY k -> verifySecure SSenderLink k
+        LGET -> verifyQueue SSenderLink $ \q -> if isContactQueue (snd q) then VRVerified (Just q) else VRFailed AUTH
+      SNotifier | hasRole SRNotifier -> case cmd of
+        NSUB -> verifyQueue SNotifier $ \q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)
+        NSUBS -> pure verifyServiceCmd
+      SProxiedClient | hasRole SRMessaging -> pure $ VRVerified Nothing
+      SProxyService | hasRole SRProxy -> pure $ VRVerified Nothing
+      _ -> pure $ VRFailed $ CMD PROHIBITED
+  | otherwise = pure $ VRFailed SERVICE
   where
     hasRole role = case service of
       Just THClientService {serviceRole} -> serviceRole == role
@@ -1207,11 +1203,15 @@ verifyTransmission ms service auth_ tAuth authorized queueId (Cmd party cmd) = c
       (Just THClientService {serviceKey = k}, Just (TASignature (C.ASignature C.SEd25519 s), Nothing))
         | C.verify' k s authorized -> VRVerified Nothing
       _ -> VRFailed AUTH
-    -- this function is used for commands that require service signature in service sessions
-    verifyServiceSig = case (service, snd =<< tAuth) of
-      (Just THClientService {serviceKey = k}, Just s) -> C.verify' k s authorized
-      (Nothing, Nothing) -> True
-      _ -> False
+    -- this function verify service signature for commands that use it in service sessions
+    verifyServiceSig
+      | useServiceAuth command = case (service, serviceSig) of
+          (Just THClientService {serviceKey = k}, Just s) -> C.verify' k s authorized
+          (Nothing, Nothing) -> True
+          _ -> False
+      | otherwise = isNothing serviceSig
+      where
+        serviceSig = snd =<< tAuth
     authorized' = case (service, snd =<< tAuth) of
       (Just THClientService {serviceCertHash = XV.Fingerprint fp}, Just _) -> fp <> authorized
       _ -> authorized

@@ -144,10 +144,15 @@ instance Protocol XFTPVersion XFTPErrorType FileResponse where
   type ProtoCommand FileResponse = FileCmd
   type ProtoType FileResponse = 'PXFTP
   protocolClientHandshake = xftpClientHandshakeStub
+  {-# INLINE protocolClientHandshake #-}
+  useServiceAuth _ = False
+  {-# INLINE useServiceAuth #-}
   protocolPing = FileCmd SFRecipient PING
+  {-# INLINE protocolPing #-}
   protocolError = \case
     FRErr e -> Just e
     _ -> Nothing
+  {-# INLINE protocolError #-}
 
 data FileCommand (p :: FileParty) where
   FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
