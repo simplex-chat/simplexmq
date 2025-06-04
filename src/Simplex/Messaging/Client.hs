@@ -156,7 +156,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, defaultTcpConnectTimeout, runTransportClient)
 import Simplex.Messaging.Transport.KeepAlive
-import Simplex.Messaging.Util (bshow, diffToMicroseconds, ifM, liftEitherWith, raceAny_, threadDelay', tryWriteTBQueue, tshow, whenM)
+import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Timeout (timeout)
@@ -777,7 +777,7 @@ createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd =
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO (Maybe ServiceId)
 subscribeSMPQueue c rpKey rId = do
   liftIO $ enablePings c
-  sendSMPCommand c (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= either throwE pure
+  sendSMPCommand c (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= except
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 subscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
@@ -794,8 +794,7 @@ streamSubscribeSMPQueues c qs cb = streamProtocolCommands c cs $ mapM process >=
     process r@(Response rId _) = (rId,) <$> processSUBResponse c r
 
 processSUBResponse :: SMPClient -> Response ErrorType BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
-processSUBResponse _ (Response _ (Left e)) = pure $ Left e
-processSUBResponse c (Response rId (Right r)) = processSUBResponse_ c rId r
+processSUBResponse c (Response rId r) = pure r $>>= processSUBResponse_ c rId
 
 processSUBResponse_ :: SMPClient -> RecipientId -> BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
 processSUBResponse_ c rId = \case
@@ -828,7 +827,7 @@ getSMPMessage c rpKey rId =
 subscribeSMPQueueNotifications :: SMPClient -> NtfPrivateAuthKey -> NotifierId -> ExceptT SMPClientError IO (Maybe ServiceId)
 subscribeSMPQueueNotifications c npKey nId = do
   liftIO $ enablePings c
-  either throwE pure . nsubResponse_ =<< sendSMPCommand c (Just npKey) nId NSUB
+  sendSMPCommand c (Just npKey) nId NSUB >>= except . nsubResponse_
 
 -- | Subscribe to multiple SMP queues notifications batching commands if supported.
 subscribeSMPQueuesNtfs :: SMPClient -> NonEmpty (NotifierId, NtfPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
@@ -839,7 +838,7 @@ subscribeSMPQueuesNtfs c qs = do
     cs = L.map (\(nId, npKey) -> (nId, Just npKey, Cmd SNotifier NSUB)) qs
 
 nsubResponse :: Response ErrorType BrokerMsg -> Either SMPClientError (Maybe ServiceId)
-nsubResponse (Response _ r) = either Left nsubResponse_ r
+nsubResponse (Response _ r) = r >>= nsubResponse_
 {-# INLINE nsubResponse #-}
 
 nsubResponse_ :: BrokerMsg -> Either SMPClientError (Maybe ServiceId)
