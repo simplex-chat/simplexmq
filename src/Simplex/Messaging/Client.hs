@@ -1307,14 +1307,12 @@ authTransmission thAuth serviceAuth pKey_ nonce t = traverse authenticate pKey_
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
     -- When command is signed by both entity key and service key,
-    -- entity key must sign over both transmission and service certificate hash.
-    t' = case clientService =<< thAuth of
-      Just THClientService {serviceCertHash = XV.Fingerprint fp} | serviceAuth -> fp <> t
-      _ -> t
-    -- service key only needs to sign transmission itself
-    serviceSig = case clientService =<< thAuth of
-      Just THClientService {serviceKey} | serviceAuth -> Just $ C.sign' serviceKey t
-      _ -> Nothing
+    -- entity key must sign over both transmission and service certificate hash,
+    -- to prevent any service substitution via MITM inside TLS.
+    (t', serviceSig) = case clientService =<< thAuth of
+      Just THClientService {serviceCertHash = XV.Fingerprint fp, serviceKey} | serviceAuth ->
+        (fp <> t, Just $ C.sign' serviceKey t) -- service key only needs to sign transmission itself
+      _ -> (t, Nothing)
     sign :: forall a. (C.AlgorithmI a, C.SignatureAlgorithm a) => C.PrivateKey a -> Either TransportError TransmissionAuth
     sign pk = Right $ TASignature $ C.ASignature (C.sAlgorithm @a) (C.sign' pk t')
 

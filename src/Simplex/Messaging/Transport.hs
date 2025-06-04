@@ -875,7 +875,7 @@ smpTHandle_ th@THandle {params} v vr thAuth encryptBlock =
             thAuth,
             implySessId = v >= authCmdsSMPVersion,
             encryptBlock,
-            serviceAuth = v >= serviceCertsSMPVersion
+            serviceAuth = v >= serviceCertsSMPVersion -- optional service signature will be encoded for all commands and responses
           }
    in (th :: THandleSMP c p) {params = params'}
 
