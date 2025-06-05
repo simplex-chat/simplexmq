@@ -483,7 +483,7 @@ data THandleParams v p = THandleParams
 data THandleAuth (p :: TransportPeer) where
   THAuthClient ::
     { peerServerPubKey :: C.PublicKeyX25519, -- used by the client to combine with client's private per-queue key
-      peerServerCertKey :: CertChainPubKey, -- the key here is serverPeerPubKey signed with server certificate
+      peerServerCertKey :: CertChainPubKey, -- the key here is peerServerCertKey signed with server certificate
       clientService :: Maybe THClientService,
       sessSecret :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
@@ -559,7 +559,7 @@ data SMPClientHandshake = SMPClientHandshake
     -- - "handover" subscription command (in addition to queue key) - it also creates association,
     -- - bulk subscription command CSUB.
     -- SHA512 hash of this certificate is stored to associate queues with this client.
-    -- This certificates are used by the servers and services connecting to SMP servers:
+    -- These certificates are used by the servers and services connecting to SMP servers:
     -- - chat relays,
     -- - notification servers,
     -- - high traffic chat bots,
