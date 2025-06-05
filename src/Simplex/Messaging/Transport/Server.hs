@@ -104,8 +104,6 @@ runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -
 runTransportServerState_ ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c 'TServer))
 
 -- | Run a transport server with provided connection setup and handler.
--- TODO [cert] remove this function - client certificate is now received by default.
--- Alternatively, an additional hook can be passed that would validate this certificate of this function can be moved to RemoteControl
 runTransportServerSocket :: Transport c => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
   ss <- newSocketState

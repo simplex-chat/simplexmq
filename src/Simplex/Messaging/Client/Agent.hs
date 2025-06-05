@@ -97,7 +97,7 @@ data SMPClientAgentEvent
   | CAServiceSubError SMPServer (ServiceId, Int64) SMPClientError
   -- CAServiceUnavailable is used when service ID in pending subscription is different from the current service in connection.
   -- This will require resubscribing to all queues associated with this service ID individually, creating new associations.
-  -- It may happen if, for example, SMP server deletes service information (e.g. via downgrade and§ upgrade)
+  -- It may happen if, for example, SMP server deletes service information (e.g. via downgrade and upgrade)
   -- and assigns different service ID to the service certificate.
   | CAServiceUnavailable SMPServer (ServiceId, Int64)
 
@@ -141,7 +141,7 @@ data SMPClientAgent p = SMPClientAgent
     smpClients :: TMap SMPServer SMPClientVar,
     smpSessions :: TMap SessionId (OwnServer, SMPClient),
     -- Only one service subscription can exist per server with this agent.
-    -- With correctly functioning SMP server, queue and service subscriptions cab't be
+    -- With correctly functioning SMP server, queue and service subscriptions can't be
     -- active at the same time.
     activeServiceSubs :: TMap SMPServer (TVar (Maybe ((ServiceId, Int64), SessionId))),
     activeQueueSubs :: TMap SMPServer (TMap QueueId (SessionId, C.APrivateAuthKey)),
