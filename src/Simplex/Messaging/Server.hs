@@ -1207,9 +1207,8 @@ verifyTransmission ms service auth_ tAuth authorized queueId command@(Cmd party 
           (Nothing, Nothing) -> True
           _ -> False
       | otherwise = isNothing serviceSig
-      where
-        serviceSig = snd =<< tAuth
-    authorized' = case (service, snd =<< tAuth) of
+    serviceSig = snd =<< tAuth
+    authorized' = case (service, serviceSig) of
       (Just THClientService {serviceCertHash = XV.Fingerprint fp}, Just _) -> fp <> authorized
       _ -> authorized
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed AUTH
