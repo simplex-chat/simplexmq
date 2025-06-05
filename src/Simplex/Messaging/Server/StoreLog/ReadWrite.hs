@@ -20,22 +20,21 @@ import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ASubscriberParty (..), ErrorType, RecipientId, SParty (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)
 import System.IO
 
-writeQueueStore :: forall q s. QueueStoreClass q s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = withLoadedQueues st $ writeQueue
+writeQueueStore :: forall q. StoreQueueClass q => StoreLog 'WriteMode -> STMQueueStore q -> IO ()
+writeQueueStore s st = do
+  readTVarIO (services st) >>= mapM_ (logNewService s . serviceRec)
+  withLoadedQueues st $ writeQueue
   where
     writeQueue :: q -> IO ()
-    writeQueue q = do
-      let rId = recipientId q
-      readTVarIO (queueRec q) >>= \case
-        Just q' -> logCreateQueue s rId q'
-        Nothing -> pure ()
+    writeQueue q = readTVarIO (queueRec q) >>= mapM_ (logCreateQueue s $ recipientId q)
 
-readQueueStore :: forall q s. QueueStoreClass q s => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO ()
+readQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
 readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
   where
     processLine :: B.ByteString -> IO ()

@@ -23,6 +23,7 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import qualified Network.TLS as TLS
 import qualified Simplex.Messaging.Crypto as C
 import qualified Time.System as Hourglass
+import qualified Time.Types as HT
 
 -- | Generate a certificate chain to be used with TLS fingerprint-pinning
 --
@@ -54,7 +55,9 @@ genCredentials g parent (before, after) subjectName = do
         Nothing -> (subjectKeys, subject) -- self-signed
         Just (keys, cert) -> (keys, X509.certSubjectDN . X509.signedObject $ X509.getSigned cert)
   today <- Hourglass.dateCurrent
-  let signed =
+  -- remove nanoseconds from time - certificate encoding/decoding removes them.
+  let today' = today {HT.dtTime = (HT.dtTime today) {HT.todNSec = 0}}
+      signed =
         C.signCertificate
           (snd issuerKeys)
           X509.Certificate
@@ -62,7 +65,7 @@ genCredentials g parent (before, after) subjectName = do
               certSerial = 1,
               certSignatureAlg = C.signatureAlgorithmX509 issuerKeys,
               certIssuerDN = issuer,
-              certValidity = (timeAdd today (-before), timeAdd today after),
+              certValidity = (timeAdd today' (-before), timeAdd today' after),
               certSubjectDN = subject,
               certPubKey = C.toPubKey C.publicToX509 $ fst subjectKeys,
               certExtensions = X509.Extensions Nothing

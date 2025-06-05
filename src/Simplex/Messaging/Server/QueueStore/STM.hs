@@ -16,6 +16,7 @@
 
 module Simplex.Messaging.Server.QueueStore.STM
   ( STMQueueStore (..),
+    STMService (..),
     setStoreLog,
     withLog',
     readQueueRecIO,

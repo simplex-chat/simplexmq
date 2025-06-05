@@ -21,7 +21,9 @@
 module Simplex.Messaging.Server.QueueStore.Postgres
   ( PostgresQueueStore (..),
     PostgresStoreCfg (..),
+    batchInsertServices,
     batchInsertQueues,
+    foldServiceRecs,
     foldQueueRecs,
     handleDuplicate,
     withLog_,
@@ -73,7 +75,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
-import Simplex.Messaging.Server.QueueStore.STM (readQueueRecIO)
+import Simplex.Messaging.Server.QueueStore.STM (STMService (..), readQueueRecIO)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
@@ -449,6 +451,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
         DB.query db "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL" (Only serviceId)
 
+batchInsertServices :: [STMService] -> PostgresQueueStore q -> IO Int64
+batchInsertServices services' toStore =
+  withConnection (dbStore toStore) $ \db ->
+    DB.executeMany db insertServiceQuery $ map (serviceRecToRow . serviceRec) services'
+
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
 batchInsertQueues tty queues toStore = do
   qs <- catMaybes <$> mapM (\(rId, q) -> (rId,) <$$> readTVarIO (queueRec q)) (M.assocs queues)
@@ -488,6 +495,12 @@ insertServiceQuery =
       (service_id, service_role, service_cert, service_cert_hash, created_at)
     VALUES (?,?,?,?,?)
   |]
+
+foldServiceRecs :: forall a q. Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
+foldServiceRecs st f =
+  withConnection (dbStore st) $ \db ->
+    DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
+      \ !acc -> fmap (acc <>) . f . rowToServiceRec
 
 foldQueueRecs :: forall a q. Monoid a => Bool -> Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs tty withData st skipOld_ f = do
@@ -605,6 +618,10 @@ mkNotifier _ _ = Nothing
 serviceRecToRow :: ServiceRec -> (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, RoundedSystemTime)
 serviceRecToRow ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash = XV.Fingerprint fp, serviceCreatedAt} =
   (serviceId, serviceRole, serviceCert, Binary fp, serviceCreatedAt)
+
+rowToServiceRec :: (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, RoundedSystemTime) -> ServiceRec
+rowToServiceRec (serviceId, serviceRole, serviceCert, Binary fp, serviceCreatedAt) =
+  ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash = XV.Fingerprint fp, serviceCreatedAt}
 
 setStatusDB :: StoreQueueClass q => Text -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =

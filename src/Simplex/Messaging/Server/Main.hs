@@ -30,6 +30,7 @@ import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.Int (Int64)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -71,9 +72,10 @@ import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.MsgStore.Journal (postgresQueueStore)
-import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, foldQueueRecs)
+import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, batchInsertServices, foldQueueRecs, foldServiceRecs)
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue, openWriteStoreLog)
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, logNewService, logCreateQueue, openWriteStoreLog)
 import System.Directory (renameFile)
 #endif
 
@@ -180,8 +182,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: store log file " <> storeLogFile <> " will be compacted and imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
                 "Queue records not imported"
-              qCnt <- importStoreLogToDatabase logPath storeLogFile dbOpts
-              putStrLn $ "Import completed: " <> show qCnt <> " queues"
+              (sCnt, qCnt) <- importStoreLogToDatabase logPath storeLogFile dbOpts
+              putStrLn $ "Import completed: " <> show sCnt <> " services, " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> setToDbStr <> "\nstore_messages set to `memory`, import messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
                 Right (ASType SQSMemory SMSJournal) -> setToDbStr
@@ -202,8 +204,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
                 "Queue records not exported"
-              qCnt <- exportDatabaseToStoreLog logPath dbOpts storeLogFilePath
-              putStrLn $ "Export completed: " <> show qCnt <> " queues"
+              (sCnt, qCnt) <- exportDatabaseToStoreLog logPath dbOpts storeLogFilePath
+              putStrLn $ "Export completed: " <> show sCnt <> " services, " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
                 Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
@@ -555,26 +557,30 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       putStrLn "Configure queue storage."
       exitFailure
 
-importStoreLogToDatabase :: FilePath -> FilePath -> DBOpts -> IO Int64
+importStoreLogToDatabase :: FilePath -> FilePath -> DBOpts -> IO (Int64, Int64)
 importStoreLogToDatabase logPath storeLogFile dbOpts = do
   ms <- newJournalMsgStore logPath MQStoreCfg
-  sl <- readWriteQueueStore True (mkQueue ms False) storeLogFile (queueStore ms)
+  let st = stmQueueStore ms
+  sl <- readWriteQueueStore True (mkQueue ms False) storeLogFile st
   closeStoreLog sl
-  queues <- readTVarIO $ loadedQueues $ stmQueueStore ms
+  queues <- readTVarIO $ loadedQueues st
+  services' <- M.elems <$> readTVarIO (services st)
   let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
   ps <- newJournalMsgStore logPath $ PQStoreCfg storeCfg
+  sCnt <- batchInsertServices services' $ postgresQueueStore ps
   qCnt <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
   renameFile storeLogFile $ storeLogFile <> ".bak"
-  pure qCnt
+  pure (sCnt, qCnt)
 
-exportDatabaseToStoreLog :: FilePath -> DBOpts -> FilePath -> IO Int
+exportDatabaseToStoreLog :: FilePath -> DBOpts -> FilePath -> IO (Int, Int)
 exportDatabaseToStoreLog logPath dbOpts storeLogFilePath = do
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
   ps <- newJournalMsgStore logPath $ PQStoreCfg storeCfg
   sl <- openWriteStoreLog False storeLogFilePath
+  Sum sCnt <- foldServiceRecs (postgresQueueStore ps) $ \sr -> logNewService sl sr $> Sum (1 :: Int)
   Sum qCnt <- foldQueueRecs True True (postgresQueueStore ps) Nothing $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
   closeStoreLog sl
-  pure qCnt
+  pure (sCnt, qCnt)
 #endif
 
 newJournalMsgStore :: FilePath -> QStoreCfg s -> IO (JournalMsgStore s)
