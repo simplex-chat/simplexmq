@@ -266,15 +266,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             updateSubConnected c = case clntSub of
               CSClient qId prevServiceId serviceId_ -> do
                 modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+                as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
                 case serviceId_ of
                   Just serviceId -> do
                     as <- endQueueSub qId END
                     as' <- cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
-                    as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
                     pure $ as ++ as' ++ as''
                   Nothing -> do
                     as <- prevSub qId END (CSAEndSub qId) =<< upsertSubscribedClient qId c queueSubscribers
-                    as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
                     pure $ as ++ as''
               CSDeleted qId serviceId -> do
                 removeWhenNoSubs c
@@ -303,18 +302,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             endServiceSub (Just serviceId) qId msg = prevSub qId msg CSAEndServiceSub =<< lookupSubscribedClient serviceId serviceSubscribers
             prevSub :: QueueId -> BrokerMsg -> ClientSubAction -> Maybe (Client s) -> STM [PrevClientSub s]
             prevSub qId msg action =
-              anotherClient $ \c -> pure [(c, action, (qId, msg))]
+              checlAnotherClient $ \c -> pure [(c, action, (qId, msg))]
             cancelServiceSubs :: ServiceId -> Maybe (Client s) -> STM [PrevClientSub s]
             cancelServiceSubs serviceId =
-              anotherClient $ \c -> do
+              checlAnotherClient $ \c -> do
                 n <- swapTVar (clientServiceSubs c) 0
                 pure [(c, CSADecreaseSubs n, (serviceId, ENDS n))]
-            anotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
-            anotherClient mkSub = \case
-              Nothing -> pure []
-              Just c@Client {clientId, connected}
-                | clntId == clientId -> pure []
-                | otherwise -> ifM (readTVar connected) (mkSub c) (pure [])
+            checlAnotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
+            checlAnotherClient mkSub = \case
+              Just c@Client {clientId, connected} | clntId /= clientId ->
+                ifM (readTVar connected) (mkSub c) (pure [])
+              _ -> pure []
 
         endPreviousSubscriptions :: [PrevClientSub s] -> IO ()
         endPreviousSubscriptions = mapM_ $ \(c, subAction, evt) -> do
