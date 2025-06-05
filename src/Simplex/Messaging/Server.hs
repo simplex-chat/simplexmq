@@ -1213,6 +1213,7 @@ verifyTransmission ms service auth_ tAuth authorized queueId command@(Cmd party 
     authorized' = case (service, serviceSig) of
       (Just THClientService {serviceCertHash = XV.Fingerprint fp}, Just _) -> fp <> authorized
       _ -> authorized
+    dummyVerify :: VerificationResult s
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed AUTH
     verifyQueue :: DirectParty p => SParty p -> ((StoreQueue s, QueueRec) -> VerificationResult s) -> IO (VerificationResult s)
     verifyQueue p v = either err v <$> getQueueRec ms p queueId

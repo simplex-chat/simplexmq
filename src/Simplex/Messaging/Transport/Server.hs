@@ -251,8 +251,8 @@ paramsAskClientCert clientCert params =
       T.serverHooks =
         (T.serverHooks params)
           { T.onClientCertificate = \cc -> validateClientCertificate cc >>= \case
-              Just reason -> T.CertificateUsageReject reason <$ atomically (writeTMVar clientCert Nothing)
-              Nothing -> T.CertificateUsageAccept <$ atomically (writeTMVar clientCert $ Just cc)
+              Just reason -> T.CertificateUsageReject reason <$ atomically (tryPutTMVar clientCert Nothing)
+              Nothing -> T.CertificateUsageAccept <$ atomically (tryPutTMVar clientCert $ Just cc)
           }
     }
 
