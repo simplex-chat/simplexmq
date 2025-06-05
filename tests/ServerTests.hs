@@ -1058,6 +1058,9 @@ testMessageServiceNotifications =
         -- can't subscribe without service signature in service connection
         Resp "2a" _ (ERR SERVICE) <- signSendRecv nh1 nKey ("2a", nId, NSUB)
         Resp "2b" _ (SOK (Just serviceId)) <- serviceSignSendRecv nh1 nKey servicePK ("2b", nId, NSUB)
+        -- repeat subscription works, to support retries
+        Resp "2c" _ (SOK (Just serviceId'')) <- serviceSignSendRecv nh1 nKey servicePK ("2c", nId, NSUB)
+        serviceId'' `shouldBe` serviceId
         deliverMessage rh rId rKey sh sId sKey nh1 "hello" dec
         testNtfServiceClient t serviceKeys $ \nh2 -> do
           Resp "4" _ (SOK (Just serviceId')) <- serviceSignSendRecv nh2 nKey servicePK ("4", nId, NSUB)

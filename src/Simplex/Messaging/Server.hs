@@ -153,10 +153,11 @@ runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpSer
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
+-- actions used in serverThread to reduce STM transaction scope
 data ClientSubAction
-  = CSAEndSub QueueId
-  | CSAEndServiceSub
-  | CSADecreaseSubs Int64
+  = CSAEndSub QueueId -- end single direct queue subscription
+  | CSAEndServiceSub -- end service subscription to one queue
+  | CSADecreaseSubs Int64 -- reduce service subscriptions when cancelling. Fixed number is used to correctly handle race conditions when service resubscribes
 
 type PrevClientSub s = (Client s, ClientSubAction, (EntityId, BrokerMsg))
 
@@ -320,7 +321,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           case subAction of
             CSAEndSub qId -> atomically (endSub c qId) >>= a unsub_
               where
-                a (Just f) (Just x) = f x
+                a (Just unsub) (Just s) = unsub s
                 a _ _ = pure ()
             CSAEndServiceSub -> atomically $ do
               modifyTVar' (clientServiceSubs c) decrease
@@ -1042,7 +1043,7 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceS
       deleteServerClient clientId srv
       updateSubscribers subs subscribers
       updateSubscribers ntfSubs ntfSubscribers
-      case thAuth >>= peerClientService of
+      case peerClientService =<< thAuth of
         Just THClientService {serviceId, serviceRole}
           | serviceRole == SRMessaging -> updateServiceSubs serviceId serviceSubsCount subscribers
           | serviceRole == SRNotifier -> updateServiceSubs serviceId ntfServiceSubsCount ntfSubscribers
@@ -1076,11 +1077,11 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     ts <- tGet h
     unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
-    let service = thAuth >>= peerClientService
+    let service = peerClientService =<< thAuth
     (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats service) (L.toList ts)
     updateBatchStats stats cmds
-    mapM_ (atomically . writeTBQueue sndQ) $ L.nonEmpty errs
-    mapM_ (atomically . writeTBQueue rcvQ . (service,)) $ L.nonEmpty cmds
+    write sndQ errs
+    write rcvQ cmds
   where
     updateBatchStats :: ServerStats -> [(Maybe (StoreQueue s, QueueRec), Transmission Cmd)] -> IO ()
     updateBatchStats stats = \case
@@ -1109,6 +1110,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
                   Cmd _ GET -> incStat $ msgGetAuth stats
                   _ -> pure ()
                 pure $ Left (corrId, entId, ERR e)
+    write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
 send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
@@ -1301,9 +1303,10 @@ client
   clnt@Client {clientId, subscriptions, ntfSubscriptions, serviceSubsCount = _todo', ntfServiceSubsCount, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     let THandleParams {thVersion} = thParams'
+        service = peerClientService =<< thAuth thParams'
     forever $
       atomically (readTBQueue rcvQ)
-        >>= \(service, ts) -> mapM (processCommand service thVersion) ts
+        >>= mapM (processCommand service thVersion)
         >>= mapM_ reply . L.nonEmpty . catMaybes . L.toList
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
