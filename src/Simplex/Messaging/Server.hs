@@ -302,14 +302,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             endServiceSub (Just serviceId) qId msg = prevSub qId msg CSAEndServiceSub =<< lookupSubscribedClient serviceId serviceSubscribers
             prevSub :: QueueId -> BrokerMsg -> ClientSubAction -> Maybe (Client s) -> STM [PrevClientSub s]
             prevSub qId msg action =
-              checlAnotherClient $ \c -> pure [(c, action, (qId, msg))]
+              checkAnotherClient $ \c -> pure [(c, action, (qId, msg))]
             cancelServiceSubs :: ServiceId -> Maybe (Client s) -> STM [PrevClientSub s]
             cancelServiceSubs serviceId =
-              checlAnotherClient $ \c -> do
+              checkAnotherClient $ \c -> do
                 n <- swapTVar (clientServiceSubs c) 0
                 pure [(c, CSADecreaseSubs n, (serviceId, ENDS n))]
-            checlAnotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
-            checlAnotherClient mkSub = \case
+            checkAnotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
+            checkAnotherClient mkSub = \case
               Just c@Client {clientId, connected} | clntId /= clientId ->
                 ifM (readTVar connected) (mkSub c) (pure [])
               _ -> pure []
@@ -1648,7 +1648,7 @@ client
             Just THClientService {serviceId}
               | ntfServiceId == Just serviceId -> do
                   -- duplicate queue-service association - can only happen in case of response error/timeout
-                  hasSub <- atomically $ ifM hasServiceSub (pure True) (False <$ newServiceSubscription)
+                  hasSub <- atomically $ ifM hasServiceSub (pure True) (False <$ newServiceQueueSub)
                   unless hasSub $ do
                     incNtfSrvStat srvSubCount
                     incNtfSrvStat srvSubQueues
@@ -1659,14 +1659,15 @@ client
                   liftIO (setQueueService (queueStore ms) q SNotifier (Just serviceId)) >>= \case
                     Left e -> pure $ ERR e
                     Right () -> do
-                      hasSub <- atomically $ (<$ newServiceSubscription) =<< hasServiceSub
+                      hasSub <- atomically $ (<$ newServiceQueueSub) =<< hasServiceSub
                       unless hasSub $ incNtfSrvStat srvSubCount
                       incNtfSrvStat srvSubQueues
                       incNtfSrvStat $ maybe srvAssocNew (const srvAssocUpdated) ntfServiceId
                       pure $ SOK $ Just serviceId
               where
                 hasServiceSub = (0 /=) <$> readTVar ntfServiceSubsCount
-                newServiceSubscription = do
+                -- This function is used when queue is associated with the service.
+                newServiceQueueSub = do
                   writeTQueue (subQ ntfSubscribers) (CSClient entId ntfServiceId (Just serviceId), clientId)
                   modifyTVar' ntfServiceSubsCount (+ 1) -- service count
                   modifyTVar' (totalServiceSubs ntfSubscribers) (+ 1) -- server count for all services
@@ -1675,6 +1676,8 @@ client
                 liftIO (setQueueService (queueStore ms) q SNotifier Nothing) >>= \case
                   Left e -> pure $ ERR e
                   Right () -> do
+                    -- hasSubscription should never be True in this branch, because queue was associated with service.
+                    -- So unless storage and session states diverge, this check is redundant.
                     hasSub <- atomically $ hasSubscription >>= newSub
                     incNtfSrvStat srvAssocRemoved
                     sok hasSub
