@@ -84,8 +84,8 @@ module Simplex.Messaging.Protocol
     TAuthorizations,
     TransmissionAuth (..),
     SignedTransmission,
+    SignedTransmissionOrError,
     SentRawTransmission,
-    SignedRawTransmission,
     ClientMsgEnvelope (..),
     PubHeader (..),
     ClientMessage (..),
@@ -208,7 +208,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -395,10 +395,12 @@ data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
 deriving instance Show Cmd
 
 -- | Parsed SMP transmission without signature, size and session ID.
-type Transmission c = (CorrId, EntityId, c)
+type Transmission c = ((CorrId, EntityId), c)
 
 -- | signed parsed transmission, with original raw bytes and parsing error.
-type SignedTransmission e c = (Maybe TAuthorizations, Signed, Transmission (Either e c))
+type SignedTransmission c = ((Maybe TAuthorizations, Signed), Transmission c)
+
+type SignedTransmissionOrError e c = Either (Transmission e) (SignedTransmission c)
 
 type Signed = ByteString
 
@@ -438,9 +440,6 @@ decodeTAuthBytes s serviceSig
   | B.null s = Right Nothing
   | B.length s == C.cbAuthenticatorSize = Right $ Just (TAAuthenticator (C.CbAuthenticator s), serviceSig)
   | otherwise = (\sig -> Just (TASignature sig, serviceSig)) <$> C.decodeSignature s
-
--- | unparsed sent SMP transmission with signature, without session ID.
-type SignedRawTransmission = (Maybe TAuthorizations, CorrId, EntityId, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
 type SentRawTransmission = (Maybe TAuthorizations, ByteString)
@@ -1576,7 +1575,7 @@ class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -
   encodeProtocol :: Version v -> msg -> ByteString
   protocolP :: Version v -> Tag msg -> Parser msg
   fromProtocolError :: ProtocolErrorType -> err
-  checkCredentials :: SignedRawTransmission -> msg -> Either err msg
+  checkCredentials :: Maybe TAuthorizations -> EntityId -> msg -> Either err msg
 
 instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
@@ -1620,7 +1619,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, EntityId entId, _) cmd = case cmd of
+  checkCredentials auth (EntityId entId) cmd = case cmd of
     -- NEW must have signature but NOT queue ID
     NEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
@@ -1717,7 +1716,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials t (Cmd p c) = Cmd p <$> checkCredentials t c
+  checkCredentials tAuth entId (Cmd p c) = Cmd p <$> checkCredentials tAuth entId c
   {-# INLINE checkCredentials #-}
 
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
@@ -1804,7 +1803,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, EntityId entId, _) cmd = case cmd of
+  checkCredentials _ (EntityId entId) cmd = case cmd of
     -- IDS response should not have queue ID
     IDS _ -> Right cmd
     -- ERR response does not always have queue ID
@@ -2057,7 +2056,7 @@ encodeTransmission THandleParams {thVersion = v, sessionId, implySessId} t =
 {-# INLINE encodeTransmission #-}
 
 encodeTransmission_ :: ProtocolEncoding v e c => Version v -> Transmission c -> ByteString
-encodeTransmission_ v (CorrId corrId, queueId, command) =
+encodeTransmission_ v ((CorrId corrId, queueId), command) =
   smpEncode (corrId, queueId) <> encodeProtocol v command
 {-# INLINE encodeTransmission_ #-}
 
@@ -2078,25 +2077,24 @@ eitherList :: (a -> NonEmpty (Either e b)) -> Either e a -> NonEmpty (Either e b
 eitherList = either (\e -> [Left e])
 
 -- | Receive client and server transmissions (determined by `cmd` type).
-tGet :: forall v err cmd c p. (ProtocolEncoding v err cmd, Transport c) => THandle v c p -> IO (NonEmpty (SignedTransmission err cmd))
+tGet :: forall v err cmd c p. (ProtocolEncoding v err cmd, Transport c) => THandle v c p -> IO (NonEmpty (SignedTransmissionOrError err cmd))
 tGet th@THandle {params} = L.map (tDecodeParseValidate params) <$> tGetParse th
 
-tDecodeParseValidate :: forall v p err cmd. ProtocolEncoding v err cmd => THandleParams v p -> Either TransportError RawTransmission -> SignedTransmission err cmd
+tDecodeParseValidate :: forall v p err cmd. ProtocolEncoding v err cmd => THandleParams v p -> Either TransportError RawTransmission -> SignedTransmissionOrError err cmd
 tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \case
   Right RawTransmission {authenticator, serviceSig, authorized, sessId, corrId, entityId, command}
-    | implySessId || sessId == sessionId ->
-        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator serviceSig
-         in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
-    | otherwise -> (Nothing, "", (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd PESession))
+    | implySessId || sessId == sessionId -> case decodeTAuthBytes authenticator serviceSig of
+        Right tAuth -> bimap t (((tAuth, authorized),) . t) cmdOrErr
+          where
+            cmdOrErr = parseProtocol @v @err @cmd v command >>= checkCredentials tAuth entityId
+            t :: a -> ((CorrId, EntityId), a)
+            t = ((corrId, entityId),)
+        Left _ -> tError corrId
+    | otherwise -> Left ((corrId, NoEntity), fromProtocolError @v @err @cmd PESession)
   Left _ -> tError ""
   where
-    tError :: CorrId -> SignedTransmission err cmd
-    tError corrId = (Nothing, "", (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd PEBlock))
-
-    tParseValidate :: ByteString -> SignedRawTransmission -> SignedTransmission err cmd
-    tParseValidate signed t@(sig, corrId, entityId, command) =
-      let cmd = parseProtocol @v @err @cmd v command >>= checkCredentials t
-       in (sig, signed, (corrId, entityId, cmd))
+    tError :: CorrId -> SignedTransmissionOrError err cmd
+    tError corrId = Left ((corrId, NoEntity), fromProtocolError @v @err @cmd PEBlock)
 
 $(J.deriveJSON defaultJSON ''MsgFlags)
 

@@ -183,7 +183,7 @@ data PClient v err msg = PClient
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue (Maybe (Request err msg), ByteString),
-    rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
+    rcvQ :: TBQueue (NonEmpty (SignedTransmissionOrError err msg)),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
@@ -642,14 +642,19 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     process :: ProtocolClient v err msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= processMsgs c
 
-    processMsgs :: ProtocolClient v err msg -> NonEmpty (SignedTransmission err msg) -> IO ()
+    processMsgs :: ProtocolClient v err msg -> NonEmpty (SignedTransmissionOrError err msg) -> IO ()
     processMsgs c ts = do
-      ts' <- catMaybes <$> mapM (processMsg c) (L.toList ts)
+      ts' <- catMaybes <$> mapM (processMsg c . t) (L.toList ts)
       forM_ msgQ $ \q ->
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
+      where
+        t :: SignedTransmissionOrError err msg -> Transmission (Either err msg)
+        t = \case
+          Left (ce, err) -> (ce, Left err)
+          Right (_, (ce, cmd)) -> (ce, Right cmd)
 
-    processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
-    processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
+    processMsg :: ProtocolClient v err msg -> Transmission (Either err msg) -> IO (Maybe (EntityId, ServerTransmission err msg))
+    processMsg ProtocolClient {client_ = PClient {sentCommands}} ((corrId, entId), respOrErr)
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
           TM.lookupIO corrId sentCommands >>= \case
@@ -1102,7 +1107,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   let cmdSecret = C.dh' serverKey cmdPrivKey
   nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
   -- encode
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams ((CorrId corrId, sId), Cmd (sParty @p) command)
   -- serviceAuth is False here – proxied commands are not used with service certificates
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey nonce tForAuth
   b <- case batchTransmissions serverThParams [Right (auth, tToSend)] of
@@ -1120,10 +1125,10 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
-            (_auth, _signed, (_c, _e, cmd)) -> case cmd of
-              Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
-              Right r' -> pure $ Right r'
-              Left e -> throwE $ PCEResponseError e
+            Right (_tAuth, (_, cmd)) -> case cmd of
+              ERR e -> throwE $ PCEProtocolError e -- this is the error from the destination relay
+              r' -> pure $ Right r'
+            Left (_, err) -> throwE $ PCEResponseError err
           _ -> throwE $ PCETransportError TEBadBlock
       ERR e -> pure . Left $ ProxyProtocolError e -- this will not happen, this error is returned via Left
       _ -> pure . Left $ ProxyUnexpectedResponse $ take 32 $ show r
@@ -1275,7 +1280,7 @@ mkTransmission c = mkTransmission_ c Nothing
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams ((CorrId corrId, entityId), command)
       auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ nonce tForAuth
   r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
