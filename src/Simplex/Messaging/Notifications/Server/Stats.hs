@@ -263,7 +263,7 @@ instance StrEncoding NtfServerStatsData where
     _subCreated <- "subCreated=" *> strP <* A.endOfLine
     _subDeleted <- "subDeleted=" *> strP <* A.endOfLine
     _ntfReceived <- "ntfReceived=" *> strP <* A.endOfLine
-    _ntfReceivedAuth <- "ntfReceivedAuth=" *> strP <* A.endOfLine
+    _ntfReceivedAuth <- opt "ntfReceivedAuth="
     _ntfDelivered <- "ntfDelivered=" *> strP <* A.endOfLine
     _ntfFailed <- opt "ntfFailed="
     _ntfReceivedOwn <- statByServerP "ntfReceivedOwn="
