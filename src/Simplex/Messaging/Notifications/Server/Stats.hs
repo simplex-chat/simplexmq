@@ -26,9 +26,11 @@ data NtfServerStats = NtfServerStats
     subCreated :: IORef Int,
     subDeleted :: IORef Int,
     ntfReceived :: IORef Int,
+    ntfReceivedAuth :: IORef Int,
     ntfDelivered :: IORef Int,
     ntfFailed :: IORef Int,
     ntfReceivedOwn :: StatsByServer,
+    ntfReceivedAuthOwn :: StatsByServer,
     ntfDeliveredOwn :: StatsByServer,
     ntfFailedOwn :: StatsByServer,
     ntfCronDelivered :: IORef Int,
@@ -50,9 +52,11 @@ data NtfServerStatsData = NtfServerStatsData
     _subCreated :: Int,
     _subDeleted :: Int,
     _ntfReceived :: Int,
+    _ntfReceivedAuth :: Int,
     _ntfDelivered :: Int,
     _ntfFailed :: Int,
     _ntfReceivedOwn :: StatsByServerData,
+    _ntfReceivedAuthOwn :: StatsByServerData,
     _ntfDeliveredOwn :: StatsByServerData,
     _ntfFailedOwn :: StatsByServerData,
     _ntfCronDelivered :: Int,
@@ -75,9 +79,11 @@ newNtfServerStats ts = do
   subCreated <- newIORef 0
   subDeleted <- newIORef 0
   ntfReceived <- newIORef 0
+  ntfReceivedAuth <- newIORef 0
   ntfDelivered <- newIORef 0
   ntfFailed <- newIORef 0
   ntfReceivedOwn <- TM.emptyIO
+  ntfReceivedAuthOwn <- TM.emptyIO
   ntfDeliveredOwn <- TM.emptyIO
   ntfFailedOwn <- TM.emptyIO
   ntfCronDelivered <- newIORef 0
@@ -98,9 +104,11 @@ newNtfServerStats ts = do
         subCreated,
         subDeleted,
         ntfReceived,
+        ntfReceivedAuth,
         ntfDelivered,
         ntfFailed,
         ntfReceivedOwn,
+        ntfReceivedAuthOwn,
         ntfDeliveredOwn,
         ntfFailedOwn,
         ntfCronDelivered,
@@ -123,9 +131,11 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
   _subCreated <- readIORef $ subCreated s
   _subDeleted <- readIORef $ subDeleted s
   _ntfReceived <- readIORef $ ntfReceived s
+  _ntfReceivedAuth <- readIORef $ ntfReceivedAuth s
   _ntfDelivered <- readIORef $ ntfDelivered s
   _ntfFailed <- readIORef $ ntfFailed s
   _ntfReceivedOwn <- getStatsByServer $ ntfReceivedOwn s
+  _ntfReceivedAuthOwn <- getStatsByServer $ ntfReceivedAuthOwn s
   _ntfDeliveredOwn <- getStatsByServer $ ntfDeliveredOwn s
   _ntfFailedOwn <- getStatsByServer $ ntfFailedOwn s
   _ntfCronDelivered <- readIORef $ ntfCronDelivered s
@@ -146,9 +156,11 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
         _subCreated,
         _subDeleted,
         _ntfReceived,
+        _ntfReceivedAuth,
         _ntfDelivered,
         _ntfFailed,
         _ntfReceivedOwn,
+        _ntfReceivedAuthOwn,
         _ntfDeliveredOwn,
         _ntfFailedOwn,
         _ntfCronDelivered,
@@ -172,9 +184,11 @@ setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} =
   writeIORef (subCreated s) $! _subCreated d
   writeIORef (subDeleted s) $! _subDeleted d
   writeIORef (ntfReceived s) $! _ntfReceived d
+  writeIORef (ntfReceivedAuth s) $! _ntfReceivedAuth d
   writeIORef (ntfDelivered s) $! _ntfDelivered d
   writeIORef (ntfFailed s) $! _ntfFailed d
   setStatsByServer (ntfReceivedOwn s) $! _ntfReceivedOwn d
+  setStatsByServer (ntfReceivedAuthOwn s) $! _ntfReceivedAuthOwn d
   setStatsByServer (ntfDeliveredOwn s) $! _ntfDeliveredOwn d
   setStatsByServer (ntfFailedOwn s) $! _ntfFailedOwn d
   writeIORef (ntfCronDelivered s) $! _ntfCronDelivered d
@@ -197,9 +211,11 @@ instance StrEncoding NtfServerStatsData where
         _subCreated,
         _subDeleted,
         _ntfReceived,
+        _ntfReceivedAuth,
         _ntfDelivered,
         _ntfFailed,
         _ntfReceivedOwn,
+        _ntfReceivedAuthOwn,
         _ntfDeliveredOwn,
         _ntfFailedOwn,
         _ntfCronDelivered,
@@ -220,9 +236,11 @@ instance StrEncoding NtfServerStatsData where
         "subCreated=" <> strEncode _subCreated,
         "subDeleted=" <> strEncode _subDeleted,
         "ntfReceived=" <> strEncode _ntfReceived,
+        "ntfReceivedAuth=" <> strEncode _ntfReceivedAuth,
         "ntfDelivered=" <> strEncode _ntfDelivered,
         "ntfFailed=" <> strEncode _ntfFailed,
         "ntfReceivedOwn=" <> strEncode _ntfReceivedOwn,
+        "ntfReceivedAuthOwn=" <> strEncode _ntfReceivedAuthOwn,
         "ntfDeliveredOwn=" <> strEncode _ntfDeliveredOwn,
         "ntfFailedOwn=" <> strEncode _ntfFailedOwn,
         "ntfCronDelivered=" <> strEncode _ntfCronDelivered,
@@ -245,9 +263,11 @@ instance StrEncoding NtfServerStatsData where
     _subCreated <- "subCreated=" *> strP <* A.endOfLine
     _subDeleted <- "subDeleted=" *> strP <* A.endOfLine
     _ntfReceived <- "ntfReceived=" *> strP <* A.endOfLine
+    _ntfReceivedAuth <- "ntfReceivedAuth=" *> strP <* A.endOfLine
     _ntfDelivered <- "ntfDelivered=" *> strP <* A.endOfLine
     _ntfFailed <- opt "ntfFailed="
     _ntfReceivedOwn <- "ntfReceivedOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
+    _ntfReceivedAuthOwn <- "ntfReceivedAuthOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
     _ntfDeliveredOwn <- "ntfDeliveredOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
     _ntfFailedOwn <- "ntfFailedOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
     _ntfCronDelivered <- opt "ntfCronDelivered="
@@ -270,9 +290,11 @@ instance StrEncoding NtfServerStatsData where
           _subCreated,
           _subDeleted,
           _ntfReceived,
+          _ntfReceivedAuth,
           _ntfDelivered,
           _ntfFailed,
           _ntfReceivedOwn,
+          _ntfReceivedAuthOwn,
           _ntfDeliveredOwn,
           _ntfFailedOwn,
           _ntfCronDelivered,

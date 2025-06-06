@@ -538,11 +538,16 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
                 ntfTs <- getSystemTime
                 updatePeriodStats (activeSubs stats) ntfId
                 let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                ntfs_ <- addTokenLastNtf st newNtf
-                let srvHost_ = if isOwnServer ca srv then Just (safeDecodeUtf8 $ strEncode h) else Nothing
-                forM_ ntfs_ $ \(tkn, lastNtfs) -> atomically $ writeTBQueue pushQ (srvHost_, tkn, PNMessage lastNtfs)
-                incNtfStat_ stats ntfReceived
-                mapM_ (`incServerStat` ntfReceivedOwn stats) srvHost_
+                    srvHost_ = if isOwnServer ca srv then Just (safeDecodeUtf8 $ strEncode h) else Nothing
+                addTokenLastNtf st newNtf >>= \case
+                  Right (tkn, lastNtfs) -> do
+                    atomically $ writeTBQueue pushQ (srvHost_, tkn, PNMessage lastNtfs)
+                    incNtfStat_ stats ntfReceived
+                    mapM_ (`incServerStat` ntfReceivedOwn stats) srvHost_
+                  Left AUTH -> do
+                    incNtfStat_ stats ntfReceivedAuth
+                    mapM_ (`incServerStat` ntfReceivedAuthOwn stats) srvHost_
+                  Left _ -> pure ()
               Right SMP.END ->
                 whenM (atomically $ activeClientSession' ca sessionId srv) $
                   void $ updateSrvSubStatus st smpQueue NSEnd

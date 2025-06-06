@@ -76,9 +76,11 @@ ntfPrometheusMetrics sm rtm ts =
         _subCreated,
         _subDeleted,
         _ntfReceived,
+        _ntfReceivedAuth,
         _ntfDelivered,
         _ntfFailed,
         _ntfReceivedOwn,
+        _ntfReceivedAuthOwn,
         _ntfDeliveredOwn,
         _ntfFailedOwn,
         _ntfCronDelivered,
@@ -168,6 +170,10 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_notifications_received counter\n\
       \simplex_ntf_notifications_received " <> mshow _ntfReceived <> "\n# ntfReceived\n\
       \\n\
+      \# HELP simplex_ntf_notifications_received_auth Received notifications without token or subscription (AUTH error)\n\
+      \# TYPE simplex_ntf_notifications_received_auth counter\n\
+      \simplex_ntf_notifications_received_auth " <> mshow _ntfReceivedAuth <> "\n# ntfReceivedAuth\n\
+      \\n\
       \# HELP simplex_ntf_notifications_delivered Delivered notifications\n\
       \# TYPE simplex_ntf_notifications_delivered counter\n\
       \simplex_ntf_notifications_delivered " <> mshow _ntfDelivered <> "\n# ntfDelivered\n\
@@ -204,9 +210,10 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_notifications_total gauge\n\
       \simplex_ntf_notifications_total " <> mshow lastNtfCount <> "\n# lastNtfCount\n\
       \\n"
-      <> showNtfsByServer _ntfReceivedOwn "simplex_ntf_notifications_received_own" "Received" "ntfReceivedOwn"
-      <> showNtfsByServer _ntfDeliveredOwn "simplex_ntf_notifications_delivered_own" "Delivered" "ntfDeliveredOwn"
-      <> showNtfsByServer _ntfFailedOwn "simplex_ntf_notifications_failed_own" "Failed" "ntfFailedOwn"
+      <> showNtfsByServer _ntfReceivedOwn "simplex_ntf_notifications_received_own" "Received notifications" "ntfReceivedOwn"
+      <> showNtfsByServer _ntfReceivedAuthOwn "simplex_ntf_notifications_received_auth_own" "Received notifications without token or subscription (AUTH error)" "ntfReceivedAuthOwn"
+      <> showNtfsByServer _ntfDeliveredOwn "simplex_ntf_notifications_delivered_own" "Delivered notifications" "ntfDeliveredOwn"
+      <> showNtfsByServer _ntfFailedOwn "simplex_ntf_notifications_failed_own" "Failed notifications" "ntfFailedOwn"
     info =
       "# Info\n\
       \# ----\n\
@@ -245,10 +252,10 @@ ntfPrometheusMetrics sm rtm ts =
         showOtherSrvSubs =
           gaugeMetrics (mPfx <> "server_count_other") [("", otherServers)] (descrPfx <> " SMP subscriptions, other server count") "otherServers"
             <> gaugeMetrics (mPfx <> "sub_count_other") [("", otherSrvSubCount)] (descrPfx <> " SMP subscriptions count for other servers") "otherSrvSubCount"
-    showNtfsByServer (StatsByServerData srvNtfs) mName descrPfx varName
+    showNtfsByServer (StatsByServerData srvNtfs) mName descr varName
       | null srvNtfs = ""
       | otherwise =
-          "# HELP " <> mName <> " " <> descrPfx <> " notifications\n\
+          "# HELP " <> mName <> " " <> descr <> "\n\
           \# TYPE " <> mName <> " counter\n"
           <> showNtfMetrics
           <> "# " <> varName <> "\n\n"
