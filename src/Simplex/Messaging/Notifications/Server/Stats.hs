@@ -5,12 +5,18 @@
 module Simplex.Messaging.Notifications.Server.Stats where
 
 import Control.Applicative (optional, (<|>))
+import Control.Concurrent.STM
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.IORef
+import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport.Client (TransportHost)
 
 data NtfServerStats = NtfServerStats
   { fromTime :: IORef UTCTime,
@@ -23,6 +29,9 @@ data NtfServerStats = NtfServerStats
     ntfReceived :: IORef Int,
     ntfDelivered :: IORef Int,
     ntfFailed :: IORef Int,
+    ntfReceivedOwn :: StatsByServer,
+    ntfDeliveredOwn :: StatsByServer,
+    ntfFailedOwn :: StatsByServer,
     ntfCronDelivered :: IORef Int,
     ntfCronFailed :: IORef Int,
     ntfVrfQueued :: IORef Int,
@@ -44,6 +53,9 @@ data NtfServerStatsData = NtfServerStatsData
     _ntfReceived :: Int,
     _ntfDelivered :: Int,
     _ntfFailed :: Int,
+    _ntfReceivedOwn :: StatsByServerData,
+    _ntfDeliveredOwn :: StatsByServerData,
+    _ntfFailedOwn :: StatsByServerData,
     _ntfCronDelivered :: Int,
     _ntfCronFailed :: Int,
     _ntfVrfQueued :: Int,
@@ -66,6 +78,9 @@ newNtfServerStats ts = do
   ntfReceived <- newIORef 0
   ntfDelivered <- newIORef 0
   ntfFailed <- newIORef 0
+  ntfReceivedOwn <- TM.emptyIO
+  ntfDeliveredOwn <- TM.emptyIO
+  ntfFailedOwn <- TM.emptyIO
   ntfCronDelivered <- newIORef 0
   ntfCronFailed <- newIORef 0
   ntfVrfQueued <- newIORef 0
@@ -86,6 +101,9 @@ newNtfServerStats ts = do
         ntfReceived,
         ntfDelivered,
         ntfFailed,
+        ntfReceivedOwn,
+        ntfDeliveredOwn,
+        ntfFailedOwn,
         ntfCronDelivered,
         ntfCronFailed,
         ntfVrfQueued,
@@ -108,6 +126,9 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
   _ntfReceived <- readIORef $ ntfReceived s
   _ntfDelivered <- readIORef $ ntfDelivered s
   _ntfFailed <- readIORef $ ntfFailed s
+  _ntfReceivedOwn <- getStatsByServer $ ntfReceivedOwn s
+  _ntfDeliveredOwn <- getStatsByServer $ ntfDeliveredOwn s
+  _ntfFailedOwn <- getStatsByServer $ ntfFailedOwn s
   _ntfCronDelivered <- readIORef $ ntfCronDelivered s
   _ntfCronFailed <- readIORef $ ntfCronFailed s
   _ntfVrfQueued <- readIORef $ ntfVrfQueued s
@@ -128,6 +149,9 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
         _ntfReceived,
         _ntfDelivered,
         _ntfFailed,
+        _ntfReceivedOwn,
+        _ntfDeliveredOwn,
+        _ntfFailedOwn,
         _ntfCronDelivered,
         _ntfCronFailed,
         _ntfVrfQueued,
@@ -151,6 +175,9 @@ setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} =
   writeIORef (ntfReceived s) $! _ntfReceived d
   writeIORef (ntfDelivered s) $! _ntfDelivered d
   writeIORef (ntfFailed s) $! _ntfFailed d
+  setStatsByServer (ntfReceivedOwn s) $! _ntfReceivedOwn d
+  setStatsByServer (ntfDeliveredOwn s) $! _ntfDeliveredOwn d
+  setStatsByServer (ntfFailedOwn s) $! _ntfFailedOwn d
   writeIORef (ntfCronDelivered s) $! _ntfCronDelivered d
   writeIORef (ntfCronFailed s) $! _ntfCronFailed d
   writeIORef (ntfVrfQueued s) $! _ntfVrfQueued d
@@ -173,6 +200,9 @@ instance StrEncoding NtfServerStatsData where
         _ntfReceived,
         _ntfDelivered,
         _ntfFailed,
+        _ntfReceivedOwn,
+        _ntfDeliveredOwn,
+        _ntfFailedOwn,
         _ntfCronDelivered,
         _ntfCronFailed,
         _ntfVrfQueued,
@@ -193,6 +223,9 @@ instance StrEncoding NtfServerStatsData where
         "ntfReceived=" <> strEncode _ntfReceived,
         "ntfDelivered=" <> strEncode _ntfDelivered,
         "ntfFailed=" <> strEncode _ntfFailed,
+        "ntfReceivedOwn=" <> strEncodeList _ntfReceivedOwn,
+        "ntfDeliveredOwn=" <> strEncodeList _ntfDeliveredOwn,
+        "ntfFailedOwn=" <> strEncodeList _ntfFailedOwn,
         "ntfCronDelivered=" <> strEncode _ntfCronDelivered,
         "ntfCronFailed=" <> strEncode _ntfCronFailed,
         "ntfVrfQueued=" <> strEncode _ntfVrfQueued,
@@ -215,6 +248,9 @@ instance StrEncoding NtfServerStatsData where
     _ntfReceived <- "ntfReceived=" *> strP <* A.endOfLine
     _ntfDelivered <- "ntfDelivered=" *> strP <* A.endOfLine
     _ntfFailed <- opt "ntfFailed="
+    _ntfReceivedOwn <- "ntfReceivedOwn=" *> strListP <* A.endOfLine <|> pure []
+    _ntfDeliveredOwn <- "ntfDeliveredOwn=" *> strListP <* A.endOfLine <|> pure []
+    _ntfFailedOwn <- "ntfFailedOwn=" *> strListP <* A.endOfLine <|> pure []
     _ntfCronDelivered <- opt "ntfCronDelivered="
     _ntfCronFailed <- opt "ntfCronFailed="
     _ntfVrfQueued <- opt "ntfVrfQueued="
@@ -237,6 +273,9 @@ instance StrEncoding NtfServerStatsData where
           _ntfReceived,
           _ntfDelivered,
           _ntfFailed,
+          _ntfReceivedOwn,
+          _ntfDeliveredOwn,
+          _ntfFailedOwn,
           _ntfCronDelivered,
           _ntfCronFailed,
           _ntfVrfQueued,
@@ -248,3 +287,19 @@ instance StrEncoding NtfServerStatsData where
         }
     where
       opt s = A.string s *> strP <* A.endOfLine <|> pure 0
+
+type StatsByServer = TMap Text (TVar Int)
+
+type StatsByServerData = [(Text, Int)]
+
+getStatsByServer :: TMap Text (TVar Int) -> IO StatsByServerData
+getStatsByServer s = readTVarIO s >>= fmap M.toList . mapM readTVarIO
+
+setStatsByServer :: TMap Text (TVar Int) -> StatsByServerData -> IO ()
+setStatsByServer s d = mapM newTVarIO (M.fromList d) >>= atomically . writeTVar s
+
+-- double lookup avoids STM transaction with a shared map in most cases
+incServerStat :: Text -> TMap Text (TVar Int) -> IO ()
+incServerStat h s = TM.lookupIO h s >>= atomically . maybe newServerStat (`modifyTVar'` (+ 1))
+  where
+    newServerStat = TM.lookup h s >>= maybe (TM.insertM h (newTVar 1) s) (`modifyTVar'` (+ 1))
