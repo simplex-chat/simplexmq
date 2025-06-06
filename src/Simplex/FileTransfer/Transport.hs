@@ -57,7 +57,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
-import Simplex.Messaging.Transport (ALPN, CertChainPubKey, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
+import Simplex.Messaging.Transport (ALPN, CertChainPubKey, ServiceCredentials, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version
@@ -101,8 +101,8 @@ supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
 -- XFTP protocol does not use this handshake method
-xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
-xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer = throwE TEVersion
+xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
+xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys = throwE TEVersion
 
 alpnSupportedXFTPhandshakes :: [ALPN]
 alpnSupportedXFTPhandshakes = ["xftp/1"]

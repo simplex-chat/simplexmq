@@ -17,6 +17,8 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -29,6 +31,8 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.Transport (SMPServiceRole (..))
+import Simplex.Messaging.Transport.Credentials (genCredentials)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -43,7 +47,8 @@ testNtfCreds g = do
     NtfCreds
       { notifierId = EntityId "ijkl",
         notifierKey,
-        rcvNtfDhSecret = C.dh' k pk
+        rcvNtfDhSecret = C.dh' k pk,
+        ntfServiceId = Nothing
       }
 
 data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, compacted :: [r]}
@@ -51,6 +56,8 @@ data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, comp
 type SMPStoreLogTestCase = StoreLogTestCase StoreLogRecord (M.Map RecipientId QueueRec)
 
 deriving instance Eq QueueRec
+
+deriving instance Eq ServiceRec
 
 deriving instance Eq StoreLogRecord
 
@@ -60,8 +67,8 @@ storeLogTests :: Spec
 storeLogTests =
   forM_ [QMMessaging, QMContact] $ \qm -> do
     g <- runIO C.newRandom
-    ((rId, qr), ntfCreds, date) <- runIO $
-      (,,) <$> testNewQueueRec g qm <*> testNtfCreds g <*> getSystemDate
+    ((rId, qr), ntfCreds, date, sr@ServiceRec {serviceId}) <- runIO $
+      (,,,) <$> testNewQueueRec g qm <*> testNtfCreds g <*> getSystemDate <*> newTestServiceRec g
     ((rId', qr'), lnkId, qd) <- runIO $ do
       lnkId <- atomically $ EntityId <$> C.randomBytes 24 g
       let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
@@ -114,6 +121,12 @@ storeLogTests =
             state = M.fromList [(rId, qr {notifier = Just ntfCreds})]
           },
         SLTC
+          { name = "create queue, add notifier, register and associate notification service",
+            saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, NewService sr, QueueService rId (ASP SNotifier) (Just serviceId)],
+            compacted = [NewService sr, CreateQueue rId qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}}],
+            state = M.fromList [(rId, qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}})]
+          },
+        SLTC
           { name = "delete notifier",
             saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, DeleteNotifier rId],
             compacted = [CreateQueue rId qr],
@@ -133,6 +146,20 @@ storeLogTests =
           }
       ]
 
+newTestServiceRec :: TVar ChaChaDRG -> IO ServiceRec
+newTestServiceRec g = do
+  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
+  (_, cert) <- genCredentials g Nothing (0, 2400) "ntf.example.com"
+  serviceCreatedAt <- getSystemDate
+  pure
+    ServiceRec
+      { serviceId,
+        serviceRole = SRNotifier,
+        serviceCert  = X.CertificateChain [cert],
+        serviceCertHash = XV.getFingerprint cert X.HashSHA256,
+        serviceCreatedAt
+      }
+
 testSMPStoreLog :: String -> [SMPStoreLogTestCase] -> Spec
 testSMPStoreLog testSuite tests =
   describe testSuite $ forM_ tests $ \t@SLTC {name, saved} -> it name $ do
@@ -141,18 +168,19 @@ testSMPStoreLog testSuite tests =
     closeStoreLog l
     replicateM_ 3 $ testReadWrite t
 #if defined(dbServerPostgres)
-    qCnt <- fromIntegral <$> importStoreLogToDatabase "tests/tmp/" testStoreLogFile testStoreDBOpts
-    qCnt `shouldBe` length (compacted t)
+    (sCnt, qCnt) <- importStoreLogToDatabase "tests/tmp/" testStoreLogFile testStoreDBOpts
+    fromIntegral (sCnt + qCnt) `shouldBe` length (compacted t)
     imported <- B.readFile $ testStoreLogFile <> ".bak"
-    qCnt' <- exportDatabaseToStoreLog "tests/tmp/" testStoreDBOpts testStoreLogFile
-    qCnt' `shouldBe` qCnt
+    (sCnt', qCnt') <- exportDatabaseToStoreLog "tests/tmp/" testStoreDBOpts testStoreLogFile
+    sCnt' `shouldBe` fromIntegral sCnt
+    qCnt' `shouldBe` fromIntegral qCnt
     exported <- B.readFile testStoreLogFile
     imported `shouldBe` exported
 #endif
   where
     testReadWrite SLTC {compacted, state} = do
       st <- newMsgStore $ testJournalStoreCfg MQStoreCfg
-      l <- readWriteQueueStore True (mkQueue st True) testStoreLogFile $ queueStore st
+      l <- readWriteQueueStore True (mkQueue st True) testStoreLogFile $ stmQueueStore st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile

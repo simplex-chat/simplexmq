@@ -61,11 +61,12 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (intercalate, sort)
+import Data.List (sort)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show, iso8601ParseM)
@@ -296,7 +297,7 @@ instance StoreQueueClass (JournalQueue s) where
   {-# INLINE queueRec #-}
   msgQueue = msgQueue'
   {-# INLINE msgQueue #-}
-  withQueueLock :: JournalQueue s -> String -> IO a -> IO a
+  withQueueLock :: JournalQueue s -> Text -> IO a -> IO a
   withQueueLock JournalQueue {recipientId', queueLock, sharedLock} =
     withLockWaitShared recipientId' queueLock sharedLock
   {-# INLINE withQueueLock #-}
@@ -317,8 +318,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE loadedQueues #-}
   compactQueues = withQS (compactQueues @(JournalQueue s))
   {-# INLINE compactQueues #-}
-  queueCounts = withQS (queueCounts @(JournalQueue s))
-  {-# INLINE queueCounts #-}
+  getEntityCounts = withQS (getEntityCounts @(JournalQueue s))
+  {-# INLINE getEntityCounts #-}
   addQueue_ = withQS addQueue_
   {-# INLINE addQueue_ #-}
   getQueue_ = withQS getQueue_
@@ -347,6 +348,14 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE updateQueueTime #-}
   deleteStoreQueue = withQS deleteStoreQueue
   {-# INLINE deleteStoreQueue #-}
+  getCreateService = withQS (getCreateService @(JournalQueue s))
+  {-# INLINE getCreateService #-}
+  setQueueService = withQS setQueueService
+  {-# INLINE setQueueService #-}
+  getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
+  {-# INLINE getQueueNtfServices #-}
+  getNtfServiceQueueCount = withQS (getNtfServiceQueueCount @(JournalQueue s))
+  {-# INLINE getNtfServiceQueueCount #-}
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
@@ -377,7 +386,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     queueLocks <- TM.emptyIO
     sharedLock <- newEmptyTMVarIO
     queueStore_ <- newQueueStore @(JournalQueue s) queueStoreCfg
-    openedQueueCount <- newTVarIO 0 
+    openedQueueCount <- newTVarIO 0
     expireBackupsBefore <- addUTCTime (- expireBackupsAfter config) <$> getCurrentTime
     pure JournalMsgStore {config, random, queueLocks, sharedLock, queueStore_, openedQueueCount, expireBackupsBefore}
 
@@ -396,7 +405,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   -- It does not cache queues and is NOT concurrency safe.
   unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
   unsafeWithAllMsgQueues tty withData ms action = case queueStore_ ms of
-    MQStore st -> withLoadedQueues st run 
+    MQStore st -> withLoadedQueues st run
 #if defined(dbServerPostgres)
     PQStore st -> foldQueueRecs tty withData st Nothing $ uncurry (mkQueue ms False) >=> run
 #endif
@@ -638,28 +647,28 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q mq logState len hs $> Just ()
 
-  isolateQueue :: JournalQueue s -> String -> StoreIO s a -> ExceptT ErrorType IO a
+  isolateQueue :: JournalQueue s -> Text -> StoreIO s a -> ExceptT ErrorType IO a
   isolateQueue sq op = tryStore' op (recipientId' sq) . withQueueLock sq op . unStoreIO
 
-  unsafeRunStore :: JournalQueue s -> String -> StoreIO s a -> IO a
+  unsafeRunStore :: JournalQueue s -> Text -> StoreIO s a -> IO a
   unsafeRunStore sq op a =
     unStoreIO a `E.catch` \e -> storeError op (recipientId' sq) e >> E.throwIO e
 
 updateActiveAt :: JournalQueue s -> IO ()
 updateActiveAt q = atomically . writeTVar (activeAt q) . systemSeconds =<< getSystemTime
 
-tryStore' :: String -> RecipientId -> IO a -> ExceptT ErrorType IO a
+tryStore' :: Text -> RecipientId -> IO a -> ExceptT ErrorType IO a
 tryStore' op rId = tryStore op rId . fmap Right
 
-tryStore :: forall a. String -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
+tryStore :: forall a. Text -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
 tryStore op rId a = ExceptT $ E.mask_ $ a `E.catch` storeError op rId
 
-storeError :: String -> RecipientId -> E.SomeException -> IO (Either ErrorType a)
+storeError :: Text -> RecipientId -> E.SomeException -> IO (Either ErrorType a)
 storeError op rId e =
-  let e' = intercalate ", " [op, B.unpack $ strEncode rId, show e]
-    in logError ("STORE: " <> T.pack e') $> Left (STORE e')
+  let e' = T.intercalate ", " [op, decodeLatin1 $ strEncode rId, tshow e]
+    in logError ("STORE: " <> e') $> Left (STORE e')
 
-isolateQueueId :: String -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
+isolateQueueId :: Text -> JournalMsgStore s -> RecipientId -> IO (Either ErrorType a) -> ExceptT ErrorType IO a
 isolateQueueId op JournalMsgStore {queueLocks, sharedLock} rId =
   tryStore op rId . withLockMapWaitShared rId queueLocks sharedLock op
 

@@ -34,7 +34,7 @@ import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import SMPClient (defaultStartOptions, ntfTestPort, prevRange, serverBracket)
+import SMPClient (defaultStartOptions, ntfTestPort, ntfTestServerCredentials, prevRange, serverBracket)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
@@ -120,7 +120,7 @@ testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
-    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False) >>= \case
+    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False Nothing) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -144,12 +144,8 @@ ntfServerCfg =
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       dbStoreConfig = ntfTestDBCfg,
-      ntfCredentials =
-        ServerCredentials
-          { caCertificateFile = Just "tests/fixtures/ca.crt",
-            privateKeyFile = "tests/fixtures/server.key",
-            certificateFile = "tests/fixtures/server.crt"
-          },
+      ntfCredentials = ntfTestServerCredentials,
+      useServiceCreds = True,
       periodicNtfsInterval = 1,
       -- stats config
       logStatsInterval = Nothing,
@@ -159,7 +155,7 @@ ntfServerCfg =
       prometheusInterval = Nothing,
       prometheusMetricsFile = ntfTestPrometheusMetricsFile,
       ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = mkTransportServerConfig True $ Just alpnSupportedNTFHandshakes,
+      transportConfig = mkTransportServerConfig True (Just alpnSupportedNTFHandshakes) False,
       startOptions = defaultStartOptions
     }
 
@@ -200,11 +196,11 @@ ntfServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c 'TServer ->
-  (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-  IO (Maybe TransmissionAuth, ByteString, ByteString, NtfResponse)
+  (Maybe TAuthorizations, ByteString, ByteString, smp) ->
+  IO (Maybe TAuthorizations, ByteString, ByteString, NtfResponse)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandleNTF c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
@@ -242,10 +238,10 @@ apnsMockServerConfig =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
-      transportConfig = mkTransportServerConfig True Nothing
+      transportConfig = mkTransportServerConfig True Nothing False
     }
 
-withAPNSMockServer :: (APNSMockServer -> IO ()) -> IO ()
+withAPNSMockServer :: (APNSMockServer -> IO a) -> IO a
 withAPNSMockServer = E.bracket (getAPNSMockServer apnsMockServerConfig) closeAPNSMockServer
 
 deriving instance Generic APNSAlertBody

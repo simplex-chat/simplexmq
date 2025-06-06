@@ -18,7 +18,7 @@ deriving instance Eq (Connection d)
 
 deriving instance Eq (SConnType d)
 
-deriving instance Eq (StoredRcvQueue q)
+deriving instance Eq (StoredRcvQueue s)
 
 deriving instance Eq (StoredSndQueue q)
 

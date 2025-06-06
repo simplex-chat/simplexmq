@@ -191,7 +191,8 @@ xftpServerCLI cfgPath logPath = do
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just alpnSupportedXFTPhandshakes),
+                  (Just alpnSupportedXFTPhandshakes)
+                  False,
               responseDelay = 0
             }
 

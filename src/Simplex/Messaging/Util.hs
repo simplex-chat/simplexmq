@@ -192,7 +192,7 @@ catchThrow action err = catchAllErrors err action throwE
 {-# INLINE catchThrow #-}
 
 allFinally :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> ExceptT e m b -> ExceptT e m a
-allFinally err action final = tryAllErrors err action >>= \r -> final >> either throwE pure r
+allFinally err action final = tryAllErrors err action >>= \r -> final >> except r
 {-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b

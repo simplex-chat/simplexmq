@@ -246,6 +246,7 @@ import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
     EntityId (..),
+    ServiceId,
     ErrorType,
     MsgFlags (..),
     MsgId,
@@ -457,9 +458,9 @@ data AgentState = ASForeground | ASSuspending | ASSuspended
   deriving (Eq, Show)
 
 data AgentLocks = AgentLocks
-  { connLocks :: Map String String,
-    invLocks :: Map String String,
-    delLock :: Maybe String
+  { connLocks :: Map Text Text,
+    invLocks :: Map Text Text,
+    delLock :: Maybe Text
   }
   deriving (Show)
 
@@ -985,32 +986,32 @@ closeXFTPServerClient :: AgentClient -> UserId -> XFTPServer -> FileDigest -> IO
 closeXFTPServerClient c userId server (FileDigest chunkDigest) =
   mkTransportSession c userId server chunkDigest >>= closeClient c xftpClients
 
-withConnLock :: AgentClient -> ConnId -> String -> AM a -> AM a
+withConnLock :: AgentClient -> ConnId -> Text -> AM a -> AM a
 withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 {-# INLINE withConnLock #-}
 
-withConnLock' :: AgentClient -> ConnId -> String -> AM' a -> AM' a
+withConnLock' :: AgentClient -> ConnId -> Text -> AM' a -> AM' a
 withConnLock' _ "" _ = id
 withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId name
 {-# INLINE withConnLock' #-}
 
-withInvLock :: AgentClient -> ByteString -> String -> AM a -> AM a
+withInvLock :: AgentClient -> ByteString -> Text -> AM a -> AM a
 withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
 {-# INLINE withInvLock #-}
 
-withInvLock' :: AgentClient -> ByteString -> String -> AM' a -> AM' a
+withInvLock' :: AgentClient -> ByteString -> Text -> AM' a -> AM' a
 withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
-withConnLocks :: AgentClient -> Set ConnId -> String -> AM' a -> AM' a
+withConnLocks :: AgentClient -> Set ConnId -> Text -> AM' a -> AM' a
 withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks
 {-# INLINE withConnLocks #-}
 
-withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> String -> m a -> m a
+withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
 withLockMap = withGetLock . getMapLock
 {-# INLINE withLockMap #-}
 
-withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> String -> m a -> m a
+withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> Text -> m a -> m a
 withLocksMap_ = withGetLocks . getMapLock
 {-# INLINE withLocksMap_ #-}
 
@@ -1196,6 +1197,7 @@ protocolClientError protocolError_ host = \case
   PCEIncompatibleHost -> BROKER host HOST
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
+  PCEServiceUnavailable {} -> BROKER host NO_SERVICE
   PCEIOError {} -> BROKER host NETWORK
 
 data ProtocolTestStep
@@ -1377,9 +1379,10 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
   logServer "-->" c srv NoEntity "NEW"
   tSess <- mkTransportSession c userId srv connId
   -- TODO [notifications]
-  r@(thParams', QIK {rcvId, sndId, rcvPublicDhKey, queueMode}) <-
+  r@(thParams', QIK {rcvId, sndId, rcvPublicDhKey, queueMode, serviceId}) <-
     withClient c tSess $ \(SMPConnectedClient smp _) ->
       (thParams smp,) <$> createSMPQueue smp nonce_ rKeys dhKey auth subMode (queueReqData cqrd)
+  -- TODO [certs rcv] validate that serviceId is the same as in the client session
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds r
   let rq =
@@ -1395,6 +1398,7 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
             sndId,
             queueMode,
             shortLink,
+            clientService = ClientService DBNewEntity <$> serviceId,
             status = New,
             dbQueueId = DBNewEntity,
             primary = True,
@@ -1434,13 +1438,13 @@ newRcvQueue_ c userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode 
         newErr :: String -> AM (Maybe ShortLinkCreds)
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
-processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError () -> STM ()
+processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError (Maybe ServiceId) -> STM ()
 processSubResult c sessId rq@RcvQueue {userId, server, connId} = \case
   Left e ->
     unless (temporaryClientError e) $ do
       incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
-  Right () ->
+  Right _serviceId -> -- TODO [certs rcv] store association with the service
     ifM
       (hasPendingSubscription c connId)
       (incSMPServerStat c userId server connSubscribed >> addSubscription c sessId rq)
@@ -1479,7 +1483,7 @@ serverHostError = \case
       _ -> False
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([(RcvQueue, Either AgentErrorType ())], Maybe SessionId)
+subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([(RcvQueue, Either AgentErrorType (Maybe ServiceId))], Maybe SessionId)
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
@@ -1494,7 +1498,7 @@ subscribeQueues c qs = do
     checkQueue rq = do
       prohibited <- liftIO $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
-    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError ())
+    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError (Maybe ServiceId))
     subscribeQueues_ env session smp qs' = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
@@ -1514,7 +1518,7 @@ subscribeQueues c qs = do
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)
-        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError ()) -> STM ()
+        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError (Maybe ServiceId)) -> STM ()
         processSubResults = mapM_ $ uncurry $ processSubResult c sessId
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
@@ -1551,7 +1555,7 @@ sendTSessionBatches statCmd toRQ action c qs =
           where
             agentError = second . first $ protocolClientError SMP $ clientServer smp
 
-sendBatch :: (SMPClient -> NonEmpty (SMP.RecipientId, SMP.RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError ()))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError ())
+sendBatch :: (SMPClient -> NonEmpty (SMP.RecipientId, SMP.RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError a))) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError a)
 sendBatch smpCmdFunc smp qs = L.zip qs <$> smpCmdFunc smp (L.map queueCreds qs)
   where
     queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvId, rcvPrivateKey)

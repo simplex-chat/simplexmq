@@ -68,6 +68,7 @@ module Simplex.Messaging.Protocol
     Cmd (..),
     DirectParty,
     SubscriberParty,
+    ASubscriberParty (..),
     BrokerMsg (..),
     SParty (..),
     PartyI (..),
@@ -80,6 +81,7 @@ module Simplex.Messaging.Protocol
     BlockingInfo (..),
     BlockingReason (..),
     Transmission,
+    TAuthorizations,
     TransmissionAuth (..),
     SignedTransmission,
     SentRawTransmission,
@@ -117,6 +119,7 @@ module Simplex.Messaging.Protocol
     SenderId,
     LinkId,
     NotifierId,
+    ServiceId,
     RcvPrivateAuthKey,
     RcvPublicAuthKey,
     RcvPublicDhKey,
@@ -150,6 +153,8 @@ module Simplex.Messaging.Protocol
     currentSMPClientVersion,
     senderCanSecure,
     queueReqMode,
+    subscriberParty,
+    subscriberServiceRole,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -198,7 +203,6 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Exception (Exception)
-import Control.Monad
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
@@ -211,11 +215,13 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
 import Data.String
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
@@ -297,7 +303,7 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
-data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient
+data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient | ProxyService
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
@@ -307,6 +313,7 @@ data SParty :: Party -> Type where
   SNotifier :: SParty Notifier
   SSenderLink :: SParty LinkClient
   SProxiedClient :: SParty ProxiedClient
+  SProxyService :: SParty ProxyService
 
 instance TestEquality SParty where
   testEquality SRecipient SRecipient = Just Refl
@@ -314,6 +321,7 @@ instance TestEquality SParty where
   testEquality SNotifier SNotifier = Just Refl
   testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
+  testEquality SProxyService SProxyService = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
@@ -330,11 +338,14 @@ instance PartyI LinkClient where sParty = SSenderLink
 
 instance PartyI ProxiedClient where sParty = SProxiedClient
 
+instance PartyI ProxyService where sParty = SProxyService
+
 type family DirectParty (p :: Party) :: Constraint where
   DirectParty Recipient = ()
   DirectParty Sender = ()
   DirectParty Notifier = ()
   DirectParty LinkClient = ()
+  DirectParty ProxyService = ()
   DirectParty p =
     (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not direct"))
 
@@ -343,6 +354,40 @@ type family SubscriberParty (p :: Party) :: Constraint where
   SubscriberParty Notifier = ()
   SubscriberParty p =
     (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not subscriber"))
+
+data ASubscriberParty = forall p. (PartyI p, SubscriberParty p) => ASP (SParty p)
+
+deriving instance Show ASubscriberParty
+
+instance Eq ASubscriberParty where
+  ASP p == ASP p' = isJust $ testEquality p p'
+
+instance Encoding ASubscriberParty where
+  smpEncode = \case
+    ASP SRecipient -> "R"
+    ASP SNotifier -> "N"
+  smpP =
+    A.anyChar >>= \case
+      'R' -> pure $ ASP SRecipient
+      'N' -> pure $ ASP SNotifier
+      _ -> fail "bad ASubscriberParty"
+
+instance StrEncoding ASubscriberParty where
+  strEncode = smpEncode
+  strP = smpP
+
+subscriberParty :: SParty p -> Maybe (Dict (PartyI p, SubscriberParty p))
+subscriberParty = \case
+  SRecipient -> Just Dict
+  SNotifier -> Just Dict
+  _ -> Nothing
+{-# INLINE subscriberParty #-}
+
+subscriberServiceRole :: SubscriberParty p => SParty p -> SMPServiceRole
+subscriberServiceRole = \case
+  SRecipient -> SRMessaging
+  SNotifier -> SRNotifier
+{-# INLINE subscriberServiceRole #-}
 
 -- | Type for client command of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
@@ -353,13 +398,14 @@ deriving instance Show Cmd
 type Transmission c = (CorrId, EntityId, c)
 
 -- | signed parsed transmission, with original raw bytes and parsing error.
-type SignedTransmission e c = (Maybe TransmissionAuth, Signed, Transmission (Either e c))
+type SignedTransmission e c = (Maybe TAuthorizations, Signed, Transmission (Either e c))
 
 type Signed = ByteString
 
 -- | unparsed SMP transmission with signature.
 data RawTransmission = RawTransmission
   { authenticator :: ByteString, -- signature or encrypted transmission hash
+    serviceSig :: Maybe (C.Signature 'C.Ed25519), -- optional second signature with the key of the client service
     authorized :: ByteString, -- authorized transmission
     sessId :: SessionId,
     corrId :: CorrId,
@@ -368,32 +414,36 @@ data RawTransmission = RawTransmission
   }
   deriving (Show)
 
+type TAuthorizations = (TransmissionAuth, Maybe (C.Signature 'C.Ed25519))
+
 data TransmissionAuth
   = TASignature C.ASignature
   | TAAuthenticator C.CbAuthenticator
   deriving (Show)
 
--- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TAuthorization
-tAuthBytes :: Maybe TransmissionAuth -> ByteString
-tAuthBytes = \case
-  Nothing -> ""
-  Just (TASignature s) -> C.signatureBytes s
-  Just (TAAuthenticator (C.CbAuthenticator s)) -> s
+-- this encoding is backwards compatible with v6 that used Maybe C.ASignature instead of TransmissionAuth
+tEncodeAuth :: Bool -> Maybe TAuthorizations -> ByteString
+tEncodeAuth serviceAuth = \case
+  Nothing -> smpEncode B.empty
+  Just (auth, sig)
+    | serviceAuth -> smpEncode (authBytes auth, sig)
+    | otherwise -> smpEncode (authBytes auth)
+  where
+    authBytes = \case
+      TASignature s -> C.signatureBytes s
+      TAAuthenticator (C.CbAuthenticator s) -> s
 
-decodeTAuthBytes :: ByteString -> Either String (Maybe TransmissionAuth)
-decodeTAuthBytes s
+decodeTAuthBytes :: ByteString -> Maybe (C.Signature 'C.Ed25519) -> Either String (Maybe TAuthorizations)
+decodeTAuthBytes s serviceSig
   | B.null s = Right Nothing
-  | B.length s == C.cbAuthenticatorSize = Right . Just . TAAuthenticator $ C.CbAuthenticator s
-  | otherwise = Just . TASignature <$> C.decodeSignature s
-
-instance IsString (Maybe TransmissionAuth) where
-  fromString = parseString $ B64.decode >=> C.decodeSignature >=> pure . fmap TASignature
+  | B.length s == C.cbAuthenticatorSize = Right $ Just (TAAuthenticator (C.CbAuthenticator s), serviceSig)
+  | otherwise = (\sig -> Just (TASignature sig, serviceSig)) <$> C.decodeSignature s
 
 -- | unparsed sent SMP transmission with signature, without session ID.
-type SignedRawTransmission = (Maybe TransmissionAuth, CorrId, EntityId, ByteString)
+type SignedRawTransmission = (Maybe TAuthorizations, CorrId, EntityId, ByteString)
 
 -- | unparsed sent SMP transmission with signature.
-type SentRawTransmission = (Maybe TransmissionAuth, ByteString)
+type SentRawTransmission = (Maybe TAuthorizations, ByteString)
 
 -- | SMP queue ID for the recipient.
 type RecipientId = QueueId
@@ -409,14 +459,6 @@ type LinkId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
--- this type is used for server entities only
-newtype EntityId = EntityId {unEntityId :: ByteString}
-  deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, StrEncoding)
-
-pattern NoEntity :: EntityId
-pattern NoEntity = EntityId ""
-
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
@@ -426,6 +468,8 @@ data Command (p :: Party) where
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
   NEW :: NewQueueReq -> Command Recipient
   SUB :: Command Recipient
+  -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
+  SUBS :: Command Recipient
   KEY :: SndPublicAuthKey -> Command Recipient
   RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
@@ -448,6 +492,8 @@ data Command (p :: Party) where
   LGET :: Command LinkClient
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
+  -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
+  NSUBS :: Command Notifier
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -458,7 +504,7 @@ data Command (p :: Party) where
   -- Transmission forwarded to relay:
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
-  RFWD :: EncFwdTransmission -> Command Sender -- use CorrId as CbNonce, proxy to relay
+  RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
 
 deriving instance Show (Command p)
 
@@ -574,6 +620,10 @@ data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
   LNK :: SenderId -> QueueLinkData -> BrokerMsg
+  -- | Service subscription success - confirms when queue was associated with the service
+  SOK :: Maybe ServiceId -> BrokerMsg
+  -- | The number of queues subscribed with SUBS command
+  SOKS :: Int64 -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
@@ -585,6 +635,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
+  ENDS :: Int64 -> BrokerMsg
   DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
@@ -778,6 +829,7 @@ noMsgFlags = MsgFlags {notification = False}
 data CommandTag (p :: Party) where
   NEW_ :: CommandTag Recipient
   SUB_ :: CommandTag Recipient
+  SUBS_ :: CommandTag Recipient
   KEY_ :: CommandTag Recipient
   RKEY_ :: CommandTag Recipient
   LSET_ :: CommandTag Recipient
@@ -796,8 +848,9 @@ data CommandTag (p :: Party) where
   LGET_ :: CommandTag LinkClient
   PRXY_ :: CommandTag ProxiedClient
   PFWD_ :: CommandTag ProxiedClient
-  RFWD_ :: CommandTag Sender
+  RFWD_ :: CommandTag ProxyService
   NSUB_ :: CommandTag Notifier
+  NSUBS_ :: CommandTag Notifier
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -808,6 +861,8 @@ deriving instance Show CmdTag
 data BrokerMsgTag
   = IDS_
   | LNK_
+  | SOK_
+  | SOKS_
   | MSG_
   | NID_
   | NMSG_
@@ -815,6 +870,7 @@ data BrokerMsgTag
   | RRES_
   | PRES_
   | END_
+  | ENDS_
   | DELD_
   | INFO_
   | OK_
@@ -834,6 +890,7 @@ instance PartyI p => Encoding (CommandTag p) where
   smpEncode = \case
     NEW_ -> "NEW"
     SUB_ -> "SUB"
+    SUBS_ -> "SUBS"
     KEY_ -> "KEY"
     RKEY_ -> "RKEY"
     LSET_ -> "LSET"
@@ -854,12 +911,14 @@ instance PartyI p => Encoding (CommandTag p) where
     PFWD_ -> "PFWD"
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
+    NSUBS_ -> "NSUBS"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
   decodeTag = \case
     "NEW" -> Just $ CT SRecipient NEW_
     "SUB" -> Just $ CT SRecipient SUB_
+    "SUBS" -> Just $ CT SRecipient SUBS_
     "KEY" -> Just $ CT SRecipient KEY_
     "RKEY" -> Just $ CT SRecipient RKEY_
     "LSET" -> Just $ CT SRecipient LSET_
@@ -878,8 +937,9 @@ instance ProtocolMsgTag CmdTag where
     "LGET" -> Just $ CT SSenderLink LGET_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
     "PFWD" -> Just $ CT SProxiedClient PFWD_
-    "RFWD" -> Just $ CT SSender RFWD_
+    "RFWD" -> Just $ CT SProxyService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
+    "NSUBS" -> Just $ CT SNotifier NSUBS_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -893,6 +953,8 @@ instance Encoding BrokerMsgTag where
   smpEncode = \case
     IDS_ -> "IDS"
     LNK_ -> "LNK"
+    SOK_ -> "SOK"
+    SOKS_ -> "SOKS"
     MSG_ -> "MSG"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
@@ -900,6 +962,7 @@ instance Encoding BrokerMsgTag where
     RRES_ -> "RRES"
     PRES_ -> "PRES"
     END_ -> "END"
+    ENDS_ -> "ENDS"
     DELD_ -> "DELD"
     INFO_ -> "INFO"
     OK_ -> "OK"
@@ -911,6 +974,8 @@ instance ProtocolMsgTag BrokerMsgTag where
   decodeTag = \case
     "IDS" -> Just IDS_
     "LNK" -> Just LNK_
+    "SOK" -> Just SOK_
+    "SOKS" -> Just SOKS_
     "MSG" -> Just MSG_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
@@ -918,6 +983,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "RRES" -> Just RRES_
     "PRES" -> Just PRES_
     "END" -> Just END_
+    "ENDS" -> Just ENDS_
     "DELD" -> Just DELD_
     "INFO" -> Just INFO_
     "OK" -> Just OK_
@@ -1257,7 +1323,8 @@ data QueueIdsKeys = QIK
     sndId :: SenderId,
     rcvPublicDhKey :: RcvPublicDhKey,
     queueMode :: Maybe QueueMode, -- TODO remove Maybe when min version is 9 (sndAuthKeySMPVersion)
-    linkId :: Maybe LinkId
+    linkId :: Maybe LinkId,
+    serviceId :: Maybe ServiceId
     -- TODO [notifications]
     -- serverNtfCreds :: Maybe ServerNtfCreds
   }
@@ -1327,12 +1394,14 @@ data ErrorType
     AUTH
   | -- | command with the entity that was blocked
     BLOCKED {blockInfo :: BlockingInfo}
+  | -- | service signature is not allowed for command or session; service command is sent not in service session
+    SERVICE
   | -- | encryption/decryption error in proxy protocol
     CRYPTO
   | -- | SMP queue capacity is exceeded on the server
     QUOTA
   | -- | SMP server storage error
-    STORE {storeErr :: String}
+    STORE {storeErr :: Text}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
   | -- | sent message is too large (> maxMessageLength = 16088 bytes)
@@ -1353,9 +1422,10 @@ instance StrEncoding ErrorType where
     PROXY e -> "PROXY " <> strEncode e
     AUTH -> "AUTH"
     BLOCKED info -> "BLOCKED " <> strEncode info
+    SERVICE -> "SERVICE"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
-    STORE e -> "STORE " <> encodeUtf8 (T.pack e)
+    STORE e -> "STORE " <> encodeUtf8 e
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
     EXPIRED -> "EXPIRED"
@@ -1369,9 +1439,10 @@ instance StrEncoding ErrorType where
         "PROXY " *> (PROXY <$> strP),
         "AUTH" $> AUTH,
         "BLOCKED " *> strP,
+        "SERVICE" $> SERVICE,
         "CRYPTO" $> CRYPTO,
         "QUOTA" $> QUOTA,
-        "STORE " *> (STORE . T.unpack . safeDecodeUtf8 <$> A.takeByteString),
+        "STORE " *> (STORE . safeDecodeUtf8 <$> A.takeByteString),
         "NO_MSG" $> NO_MSG,
         "LARGE_MSG" $> LARGE_MSG,
         "EXPIRED" $> EXPIRED,
@@ -1385,7 +1456,7 @@ data CommandError
     UNKNOWN
   | -- | error parsing command
     SYNTAX
-  | -- | command is not allowed (SUB/GET cannot be used with the same queue in the same TCP connection)
+  | -- | command is not allowed (bad service role, or SUB/GET used with the same queue in the same TCP session)
     PROHIBITED
   | -- | transmission has no required credentials (signature or queue ID)
     NO_AUTH
@@ -1417,6 +1488,8 @@ data BrokerErrorType
     NETWORK
   | -- | no compatible server host (e.g. onion when public is required, or vice versa)
     HOST
+  | -- | service unavailable client-side - used in agent errors
+    NO_SERVICE
   | -- | handshake or other transport error
     TRANSPORT {transportErr :: TransportError}
   | -- | command response timeout
@@ -1456,23 +1529,25 @@ instance FromJSON BlockingReason where
 
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
-transmissionP THandleParams {sessionId, implySessId} = do
+transmissionP THandleParams {sessionId, implySessId, serviceAuth} = do
   authenticator <- smpP
+  serviceSig <- if serviceAuth && not (B.null authenticator) then smpP else pure Nothing
   authorized <- A.takeByteString
-  either fail pure $ parseAll (trn authenticator authorized) authorized
+  either fail pure $ parseAll (trn authenticator serviceSig authorized) authorized
   where
-    trn authenticator authorized = do
+    trn authenticator serviceSig authorized = do
       sessId <- if implySessId then pure "" else smpP
       let authorized' = if implySessId then smpEncode sessionId <> authorized else authorized
       corrId <- smpP
       entityId <- smpP
       command <- A.takeByteString
-      pure RawTransmission {authenticator, authorized = authorized', sessId, corrId, entityId, command}
+      pure RawTransmission {authenticator, serviceSig, authorized = authorized', sessId, corrId, entityId, command}
 
 class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle v c 'TClient)
+  useServiceAuth :: ProtoCommand msg -> Bool
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
 
@@ -1482,10 +1557,19 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
   type ProtoCommand BrokerMsg = Cmd
   type ProtoType BrokerMsg = 'PSMP
   protocolClientHandshake = smpClientHandshake
+  {-# INLINE protocolClientHandshake #-}
+  useServiceAuth = \case
+    Cmd _ (NEW _) -> True
+    Cmd _ SUB -> True
+    Cmd _ NSUB -> True
+    _ -> False
+  {-# INLINE useServiceAuth #-}
   protocolPing = Cmd SSender PING
+  {-# INLINE protocolPing #-}
   protocolError = \case
     ERR e -> Just e
     _ -> Nothing
+  {-# INLINE protocolError #-}
 
 class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -> v where
   type Tag msg
@@ -1505,6 +1589,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
+    SUBS -> e SUBS_
     KEY k -> e (KEY_, ' ', k)
     RKEY ks -> e (RKEY_, ' ', ks)
     LSET lnkId d -> e (LSET_, ' ', lnkId, d)
@@ -1520,6 +1605,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
+    NSUBS -> e NSUBS_
     LKEY k -> e (LKEY_, ' ', k)
     LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
@@ -1549,6 +1635,8 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY {} -> noAuthCmd
     PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
+    SUB -> serviceCmd
+    NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
     _
       | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
@@ -1564,10 +1652,15 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         | B.null entId = Left $ CMD NO_ENTITY
         | isNothing auth = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
+      serviceCmd :: Either ErrorType (Command p)
+      serviceCmd
+        | isNothing auth || B.null entId = Left $ CMD NO_AUTH
+        | otherwise = Right cmd
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
   type Tag Cmd = CmdTag
   encodeProtocol v (Cmd _ c) = encodeProtocol v c
+  {-# INLINE encodeProtocol #-}
 
   protocolP v = \case
     CT SRecipient tag ->
@@ -1589,6 +1682,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
             auth = optional (A.char 'A' *> smpP)
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
         SUB_ -> pure SUB
+        SUBS_ -> pure SUBS
         KEY_ -> KEY <$> _smpP
         RKEY_ -> RKEY <$> _smpP
         LSET_ -> LSET <$> _smpP <*> smpP
@@ -1605,7 +1699,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
         PING_ -> pure PING
-        RFWD_ -> RFWD <$> (EncFwdTransmission . unTail <$> _smpP)
+    CT SProxyService RFWD_ ->
+      Cmd SProxyService . RFWD . EncFwdTransmission . unTail <$> _smpP
     CT SSenderLink tag ->
       Cmd SSenderLink <$> case tag of
         LKEY_ -> LKEY <$> _smpP
@@ -1614,23 +1709,32 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SProxiedClient <$> case tag of
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
-    CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
+    CT SNotifier tag ->
+      pure $ Cmd SNotifier $ case tag of
+        NSUB_ -> NSUB
+        NSUBS_ -> NSUBS
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (Cmd p c) = Cmd p <$> checkCredentials t c
+  {-# INLINE checkCredentials #-}
 
 instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
-    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId}
+    IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId, serviceId}
+      | v >= serviceCertsSMPVersion -> ids <> e queueMode <> e linkId <> e serviceId
       | v >= shortLinksSMPVersion -> ids <> e queueMode <> e linkId
       | v >= sndAuthKeySMPVersion -> ids <> e (senderCanSecure queueMode)
       | otherwise -> ids
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     LNK sId d -> e (LNK_, ' ', sId, d)
+    SOK serviceId_
+      | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
+      | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
+    SOKS n -> e (SOKS_, ' ', n)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
@@ -1639,6 +1743,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
+    ENDS n -> e (ENDS_, ' ', n)
     DELD
       | v >= deletedEventSMPVersion -> e DELD_
       | otherwise -> e END_
@@ -1659,28 +1764,33 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     IDS_
-      | v >= shortLinksSMPVersion -> ids smpP smpP
-      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing
-      | otherwise -> ids nothing nothing
+      | v >= serviceCertsSMPVersion -> ids smpP smpP smpP
+      | v >= shortLinksSMPVersion -> ids smpP smpP nothing
+      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing nothing
+      | otherwise -> ids nothing nothing nothing
       where
         qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
         nothing = pure Nothing
-        ids p1 p2 = do
+        ids p1 p2 p3 = do
           rcvId <- _smpP
           sndId <- smpP
           rcvPublicDhKey <- smpP
           queueMode <- p1
           linkId <- p2
+          serviceId <- p3
           -- TODO [notifications]
           -- serverNtfCreds <- p3
-          pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId}
+          pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId}
     LNK_ -> LNK <$> _smpP <*> smpP
+    SOK_ -> SOK <$> _smpP
+    SOKS_ -> SOKS <$> _smpP
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
+    ENDS_ -> ENDS <$> _smpP
     DELD_ -> pure DELD
     INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
@@ -1737,9 +1847,10 @@ instance Encoding ErrorType where
     PROXY err -> "PROXY " <> smpEncode err
     AUTH -> "AUTH"
     BLOCKED info -> "BLOCKED " <> smpEncode info
+    SERVICE -> "SERVICE"
     CRYPTO -> "CRYPTO"
     QUOTA -> "QUOTA"
-    STORE err -> "STORE " <> smpEncode err
+    STORE err -> "STORE " <> encodeUtf8 err
     EXPIRED -> "EXPIRED"
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
@@ -1754,9 +1865,10 @@ instance Encoding ErrorType where
       "PROXY" -> PROXY <$> _smpP
       "AUTH" -> pure AUTH
       "BLOCKED" -> BLOCKED <$> _smpP
+      "SERVICE" -> pure SERVICE
       "CRYPTO" -> pure CRYPTO
       "QUOTA" -> pure QUOTA
-      "STORE" -> STORE <$> _smpP
+      "STORE" -> STORE . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
       "EXPIRED" -> pure EXPIRED
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
@@ -1819,6 +1931,7 @@ instance Encoding BrokerErrorType where
     NETWORK -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
+    NO_SERVICE -> "NO_SERVICE"
   smpP =
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _smpP
@@ -1827,6 +1940,7 @@ instance Encoding BrokerErrorType where
       "NETWORK" -> pure NETWORK
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
+      "NO_SERVICE" -> pure NO_SERVICE
       _ -> fail "bad BrokerErrorType"
 
 instance StrEncoding BrokerErrorType where
@@ -1837,6 +1951,7 @@ instance StrEncoding BrokerErrorType where
     NETWORK -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
+    NO_SERVICE -> "NO_SERVICE"
   strP =
     A.takeTill (== ' ') >>= \case
       "RESPONSE" -> RESPONSE <$> _textP
@@ -1845,13 +1960,14 @@ instance StrEncoding BrokerErrorType where
       "NETWORK" -> pure NETWORK
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
+      "NO_SERVICE" -> pure NO_SERVICE
       _ -> fail "bad BrokerErrorType"
     where
       _textP = A.space *> (T.unpack . safeDecodeUtf8 <$> A.takeByteString)
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
-tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions (batch params) (blockSize params)
+tPut th@THandle {params} = fmap concat . mapM tPutBatch . batchTransmissions params
   where
     tPutBatch :: TransportBatch () -> IO [Either TransportError ()]
     tPutBatch = \case
@@ -1870,13 +1986,13 @@ tPutLog th s = do
 -- ByteString in TBTransmissions includes byte with transmissions count
 data TransportBatch r = TBTransmissions ByteString Int [r] | TBTransmission ByteString r | TBError TransportError r
 
-batchTransmissions :: Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission) -> [TransportBatch ()]
-batchTransmissions batch bSize = batchTransmissions' batch bSize . L.map (,())
+batchTransmissions :: THandleParams v p -> NonEmpty (Either TransportError SentRawTransmission) -> [TransportBatch ()]
+batchTransmissions params = batchTransmissions' params . L.map (,())
 
 -- | encodes and batches transmissions into blocks
-batchTransmissions' :: forall r. Bool -> Int -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
-batchTransmissions' batch bSize ts
-  | batch = batchTransmissions_ bSize $ L.map (first $ fmap tEncodeForBatch) ts
+batchTransmissions' :: forall v p r. THandleParams v p -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
+batchTransmissions' THandleParams {batch, blockSize = bSize, serviceAuth} ts
+  | batch = batchTransmissions_ bSize $ L.map (first $ fmap $ tEncodeForBatch serviceAuth) ts
   | otherwise = map mkBatch1 $ L.toList ts
   where
     mkBatch1 :: (Either TransportError SentRawTransmission, r) -> TransportBatch r
@@ -1887,7 +2003,7 @@ batchTransmissions' batch bSize ts
         | B.length s <= bSize - 2 -> TBTransmission s r
         | otherwise -> TBError TELargeMsg r
         where
-          s = tEncode t
+          s = tEncode serviceAuth t
 
 -- | Pack encoded transmissions into batches
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
@@ -1910,16 +2026,16 @@ batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
       where
         b = B.concat $ B.singleton (lenEncode n) : ss
 
-tEncode :: SentRawTransmission -> ByteString
-tEncode (auth, t) = smpEncode (tAuthBytes auth) <> t
+tEncode :: Bool -> SentRawTransmission -> ByteString
+tEncode serviceAuth (auth, t) = tEncodeAuth serviceAuth auth <> t
 {-# INLINE tEncode #-}
 
-tEncodeForBatch :: SentRawTransmission -> ByteString
-tEncodeForBatch = smpEncode . Large . tEncode
+tEncodeForBatch :: Bool -> SentRawTransmission -> ByteString
+tEncodeForBatch serviceAuth = smpEncode . Large . tEncode serviceAuth
 {-# INLINE tEncodeForBatch #-}
 
-tEncodeBatch1 :: SentRawTransmission -> ByteString
-tEncodeBatch1 t = lenEncode 1 `B.cons` tEncodeForBatch t
+tEncodeBatch1 :: Bool -> SentRawTransmission -> ByteString
+tEncodeBatch1 serviceAuth t = lenEncode 1 `B.cons` tEncodeForBatch serviceAuth t
 {-# INLINE tEncodeBatch1 #-}
 
 -- tForAuth is lazy to avoid computing it when there is no key to sign
@@ -1967,9 +2083,9 @@ tGet th@THandle {params} = L.map (tDecodeParseValidate params) <$> tGetParse th
 
 tDecodeParseValidate :: forall v p err cmd. ProtocolEncoding v err cmd => THandleParams v p -> Either TransportError RawTransmission -> SignedTransmission err cmd
 tDecodeParseValidate THandleParams {sessionId, thVersion = v, implySessId} = \case
-  Right RawTransmission {authenticator, authorized, sessId, corrId, entityId, command}
+  Right RawTransmission {authenticator, serviceSig, authorized, sessId, corrId, entityId, command}
     | implySessId || sessId == sessionId ->
-        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator
+        let decodedTransmission = (,corrId,entityId,command) <$> decodeTAuthBytes authenticator serviceSig
          in either (const $ tError corrId) (tParseValidate authorized) decodedTransmission
     | otherwise -> (Nothing, "", (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd PESession))
   Left _ -> tError ""

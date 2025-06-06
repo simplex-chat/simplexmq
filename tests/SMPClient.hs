@@ -33,9 +33,9 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Util (ifM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.Environment (lookupEnv)
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
@@ -143,10 +143,7 @@ xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
 xit'' d = skipOnCI . it d
 
 skipOnCI :: SpecWith a -> SpecWith a
-skipOnCI t =
-  runIO (lookupEnv "CI") >>= \case
-    Just "true" -> skip "skipped on CI" t
-    _ -> t
+skipOnCI t = ifM (runIO envCI) (skip "skipped on CI" t) t
 
 testSMPClient :: Transport c => (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
@@ -160,13 +157,37 @@ testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP
 testSMPClient_ host port vr client = do
   let tcConfig = defaultTransportClientConfig {clientALPN} :: TransportClientConfig
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash vr False) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr False Nothing) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
     clientALPN
       | authCmdsSMPVersion `isCompatible` vr = Just alpnSupportedSMPHandshakes
       | otherwise = Nothing
+
+testNtfServiceClient :: Transport c => TProxy c 'TServer -> C.KeyPairEd25519 -> (THandleSMP c 'TClient -> IO a) -> IO a
+testNtfServiceClient _ keys client = do
+  tlsNtfServerCreds <- loadServerCredential ntfTestServerCredentials
+  serviceCertHash <- loadFingerprint ntfTestServerCredentials
+  Right serviceSignKey <- pure $ C.x509ToPrivate' $ snd tlsNtfServerCreds
+  let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsNtfServerCreds, serviceCertHash, serviceSignKey}
+      tcConfig =
+        defaultTransportClientConfig
+          { clientCredentials = Just tlsNtfServerCreds,
+            clientALPN = Just alpnSupportedSMPHandshakes
+          }
+  runTransportClient tcConfig Nothing "localhost" testPort (Just testKeyHash) $ \h ->
+    runExceptT (smpClientHandshake h Nothing testKeyHash supportedClientSMPRelayVRange False $ Just (service, keys)) >>= \case
+      Right th -> client th
+      Left e -> error $ show e
+
+ntfTestServerCredentials :: ServerCredentials
+ntfTestServerCredentials =
+  ServerCredentials
+    { caCertificateFile = Just "tests/fixtures/ca.crt",
+      privateKeyFile = "tests/fixtures/server.key",
+      certificateFile = "tests/fixtures/server.crt"
+    }
 
 cfg :: AServerConfig
 cfg = cfgMS (ASType SQSMemory SMSJournal)
@@ -226,7 +247,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
           },
       httpCredentials = Nothing,
       smpServerVRange = supportedServerSMPRelayVRange,
-      transportConfig = mkTransportServerConfig True $ Just alpnSupportedSMPHandshakes,
+      transportConfig = mkTransportServerConfig True (Just alpnSupportedSMPHandshakes) True,
       controlPort = Nothing,
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
@@ -257,9 +278,6 @@ serverStoreConfig_ useDbStoreLog = \case
 
 cfgV7 :: AServerConfig
 cfgV7 = updateCfg cfg $ \cfg' -> cfg' {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
-
-cfgV8 :: AStoreType -> AServerConfig
-cfgV8 msType = updateCfg (cfgMS msType) $ \cfg' -> cfg' {smpServerVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}
 
 cfgVPrev :: AStoreType -> AServerConfig
 cfgVPrev msType = updateCfg (cfgMS msType) $ \cfg' -> cfg' {smpServerVRange = prevRange $ smpServerVRange cfg'}
@@ -366,11 +384,11 @@ smpServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c 'TServer ->
-  (Maybe TransmissionAuth, ByteString, ByteString, smp) ->
-  IO (Maybe TransmissionAuth, ByteString, ByteString, BrokerMsg)
+  (Maybe TAuthorizations, ByteString, ByteString, smp) ->
+  IO (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandleSMP c 'TClient -> (Maybe TransmissionAuth, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
@@ -382,14 +400,8 @@ smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >
 smpTest :: (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest _ msType test' = runSmpTest msType test' `shouldReturn` ()
 
-smpTest' :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest' = (`smpTest` ASType SQSMemory SMSJournal)
-
 smpTestN :: (HasCallStack, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO ()) -> Expectation
 smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
-
-smpTest2' :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
-smpTest2' = (`smpTest2` ASType SQSMemory SMSJournal)
 
 smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2 t msType = smpTest2Cfg (cfgMS msType) supportedClientSMPRelayVRange t

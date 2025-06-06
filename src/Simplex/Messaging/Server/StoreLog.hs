@@ -29,6 +29,8 @@ module Simplex.Messaging.Server.StoreLog
     logDeleteQueue,
     logDeleteNotifier,
     logUpdateQueueTime,
+    logNewService,
+    logQueueService,
     readWriteStoreLog,
     readLogLines,
     foldLogLines,
@@ -74,6 +76,8 @@ data StoreLogRecord
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
   | UpdateTime QueueId RoundedSystemTime
+  | NewService ServiceRec
+  | QueueService RecipientId ASubscriberParty (Maybe ServiceId)
   deriving (Show)
 
 data SLRTag
@@ -89,24 +93,29 @@ data SLRTag
   | DeleteQueue_
   | DeleteNotifier_
   | UpdateTime_
+  | NewService_
+  | QueueService_
 
 instance StrEncoding QueueRec where
-  strEncode QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
-    B.unwords
-      [ "rk=" <> strEncode recipientKeys,
-        "rdh=" <> strEncode rcvDhSecret,
-        "sid=" <> strEncode senderId,
-        "sk=" <> strEncode senderKey
+  strEncode QueueRec {recipientKeys, rcvDhSecret, rcvServiceId, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
+    B.concat
+      [ p "rk=" recipientKeys,
+        p " rdh=" rcvDhSecret,
+        p " sid=" senderId,
+        p " sk=" senderKey,
+        maybe "" ((" queue_mode=" <>) . smpEncode) queueMode,
+        opt " link_id=" (fst <$> queueData),
+        opt " queue_data=" (snd <$> queueData),
+        opt " notifier=" notifier,
+        opt " updated_at=" updatedAt,
+        statusStr,
+        opt " rsrv=" rcvServiceId
       ]
-      <> maybe "" ((" queue_mode=" <>) . smpEncode) queueMode
-      <> opt " link_id=" (fst <$> queueData)
-      <> opt " queue_data=" (snd <$> queueData)
-      <> opt " notifier=" notifier
-      <> opt " updated_at=" updatedAt
-      <> statusStr
     where
+      p :: StrEncoding a => ByteString -> a -> ByteString
+      p param = (param <>) . strEncode
       opt :: StrEncoding a => ByteString -> Maybe a -> ByteString
-      opt param = maybe "" ((param <>) . strEncode)
+      opt = maybe "" . p
       statusStr = case status of
         EntityActive -> ""
         _ -> " status=" <> strEncode status
@@ -124,7 +133,20 @@ instance StrEncoding QueueRec where
     notifier <- optional $ " notifier=" *> strP
     updatedAt <- optional $ " updated_at=" *> strP
     status <- (" status=" *> strP) <|> pure EntityActive
-    pure QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt}
+    rcvServiceId <- optional $ " rsrv=" *> strP
+    pure
+      QueueRec
+        { recipientKeys,
+          rcvDhSecret,
+          senderId,
+          senderKey,
+          queueMode,
+          queueData,
+          notifier,
+          status,
+          updatedAt,
+          rcvServiceId
+        }
     where
       toQueueMode sndSecure = Just $ if sndSecure then QMMessaging else QMContact
 
@@ -142,6 +164,8 @@ instance StrEncoding SLRTag where
     DeleteQueue_ -> "DELETE"
     DeleteNotifier_ -> "NDELETE"
     UpdateTime_ -> "TIME"
+    NewService_ -> "NEW_SERVICE"
+    QueueService_ -> "QUEUE_SERVICE"
 
   strP =
     A.choice
@@ -156,7 +180,9 @@ instance StrEncoding SLRTag where
         "UNBLOCK" $> UnblockQueue_,
         "DELETE" $> DeleteQueue_,
         "NDELETE" $> DeleteNotifier_,
-        "TIME" $> UpdateTime_
+        "TIME" $> UpdateTime_,
+        "NEW_SERVICE" $> NewService_,
+        "QUEUE_SERVICE" $> QueueService_
       ]
 
 instance StrEncoding StoreLogRecord where
@@ -173,6 +199,8 @@ instance StrEncoding StoreLogRecord where
     DeleteQueue rId -> strEncode (DeleteQueue_, rId)
     DeleteNotifier rId -> strEncode (DeleteNotifier_, rId)
     UpdateTime rId t ->  strEncode (UpdateTime_, rId, t)
+    NewService sr -> strEncode (NewService_, sr)
+    QueueService rId party serviceId -> strEncode (QueueService_, rId, party, serviceId)
 
   strP =
     strP_ >>= \case
@@ -188,6 +216,8 @@ instance StrEncoding StoreLogRecord where
       DeleteQueue_ -> DeleteQueue <$> strP
       DeleteNotifier_ -> DeleteNotifier <$> strP
       UpdateTime_ -> UpdateTime <$> strP_ <*> strP
+      NewService_ -> NewService <$> strP
+      QueueService_ -> QueueService <$> strP_ <*> strP_ <*> strP
 
 openWriteStoreLog :: Bool -> FilePath -> IO (StoreLog 'WriteMode)
 openWriteStoreLog append f = do
@@ -252,6 +282,12 @@ logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
 logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
 logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
+
+logNewService :: StoreLog 'WriteMode -> ServiceRec -> IO ()
+logNewService s  = writeStoreLogRecord s . NewService
+
+logQueueService :: (PartyI p, SubscriberParty p) => StoreLog 'WriteMode -> RecipientId -> SParty p -> Maybe ServiceId -> IO ()
+logQueueService s rId party = writeStoreLogRecord s . QueueService rId (ASP party)
 
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteStoreLog readStore writeStore f st =

@@ -11,7 +11,8 @@ import Text.RawString.QQ (r)
 
 ntfServerSchemaMigrations :: [(String, Text, Maybe Text)]
 ntfServerSchemaMigrations =
-  [ ("20250417_initial", m20250417_initial, Nothing)
+  [ ("20250417_initial", m20250417_initial, Nothing),
+    ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -78,4 +79,28 @@ CREATE INDEX idx_last_notifications_token_id_sent_at ON last_notifications(token
 CREATE INDEX idx_last_notifications_subscription_id ON last_notifications(subscription_id);
 
 CREATE UNIQUE INDEX idx_last_notifications_token_subscription ON last_notifications(token_id, subscription_id);
+    |]
+
+m20250517_service_cert :: Text
+m20250517_service_cert =
+  T.pack
+    [r|
+ALTER TABLE smp_servers ADD COLUMN ntf_service_id BYTEA;
+
+ALTER TABLE subscriptions ADD COLUMN ntf_service_assoc BOOLEAN NOT NULL DEFAULT FALSE;
+
+DROP INDEX idx_subscriptions_smp_server_id_status;
+CREATE INDEX idx_subscriptions_smp_server_id_ntf_service_status ON subscriptions(smp_server_id, ntf_service_assoc, status);
+    |]
+
+down_m20250517_service_cert :: Text
+down_m20250517_service_cert =
+  T.pack
+    [r|
+DROP INDEX idx_subscriptions_smp_server_id_ntf_service_status;
+CREATE INDEX idx_subscriptions_smp_server_id_status ON subscriptions(smp_server_id, status);
+
+ALTER TABLE smp_servers DROP COLUMN ntf_service_id;
+
+ALTER TABLE subscriptions DROP COLUMN ntf_service_assoc;
     |]

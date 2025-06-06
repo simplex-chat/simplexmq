@@ -24,7 +24,7 @@ import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer)
+import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -37,7 +37,8 @@ data NtfSTMStore = NtfSTMStore
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
     subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId,
-    tokenLastNtfs :: TMap NtfTokenId (TVar (NonEmpty PNMessageData))
+    tokenLastNtfs :: TMap NtfTokenId (TVar (NonEmpty PNMessageData)),
+    ntfServices :: TMap SMPServer ServiceId
   }
 
 newNtfSTMStore :: IO NtfSTMStore
@@ -48,7 +49,8 @@ newNtfSTMStore = do
   tokenSubscriptions <- TM.emptyIO
   subscriptionLookup <- TM.emptyIO
   tokenLastNtfs <- TM.emptyIO
-  pure NtfSTMStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup, tokenLastNtfs}
+  ntfServices <- TM.emptyIO
+  pure NtfSTMStore {tokens, tokenRegistrations, subscriptions, tokenSubscriptions, subscriptionLookup, tokenLastNtfs, ntfServices}
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
@@ -74,7 +76,8 @@ data NtfSubData = NtfSubData
     smpQueue :: SMPQueueNtf,
     notifierKey :: NtfPrivateAuthKey,
     tokenId :: NtfTokenId,
-    subStatus :: TVar NtfSubStatus
+    subStatus :: TVar NtfSubStatus,
+    ntfServiceAssoc :: TVar Bool
   }
 
 ntfSubServer :: NtfSubData -> SMPServer
@@ -182,6 +185,10 @@ stmStoreTokenLastNtf (NtfSTMStore {tokens, tokenLastNtfs}) tknId ntf = do
     insertForExistingToken =
       whenM (TM.member tknId tokens) $
         TM.insertM tknId (newTVar [ntf]) tokenLastNtfs
+
+stmSetNtfService :: NtfSTMStore -> SMPServer -> Maybe ServiceId -> STM ()
+stmSetNtfService (NtfSTMStore {ntfServices}) srv serviceId =
+  maybe (TM.delete srv) (TM.insert srv) serviceId ntfServices
 
 data TokenNtfMessageRecord = TNMRv1 NtfTokenId PNMessageData
 

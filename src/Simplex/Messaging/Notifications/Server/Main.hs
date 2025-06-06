@@ -99,9 +99,9 @@ ntfServerCLI cfgPath logPath =
               restoreServerLastNtfs stmStore defaultLastNtfsFile
               let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
               ps <- newNtfDbStore storeCfg
-              (tCnt, sCnt, nCnt) <- importNtfSTMStore ps stmStore skipTokens
+              (tCnt, sCnt, nCnt, serviceCnt) <- importNtfSTMStore ps stmStore skipTokens
               renameFile storeLogFile $ storeLogFile <> ".bak"
-              putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
+              putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show serviceCnt <> " service associations, " <> show nCnt <> " last token notifications."
               putStrLn "Configure database options in INI file."
         SCExport
           | schemaExists && storeLogExists -> exitConfigureNtfStore connstr schema
@@ -195,6 +195,8 @@ ntfServerCLI cfgPath logPath =
                \# socks_mode: onion\n\n\
                \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n\
                \# own_server_domains: \n\n\
+               \# User service subscriptions with server certificate\n\n\
+               \# use_service_credentials: off\n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
                \disconnect: off\n"
@@ -265,6 +267,7 @@ ntfServerCLI cfgPath logPath =
                     privateKeyFile = c serverKeyFile,
                     certificateFile = c serverCrtFile
                   },
+              useServiceCreds = fromMaybe False $ iniOnOff "SUBSCRIBER" "use_service_credentials" ini,
               periodicNtfsInterval = 5 * 60, -- 5 minutes
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
@@ -276,7 +279,8 @@ ntfServerCLI cfgPath logPath =
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just alpnSupportedNTFHandshakes),
+                  (Just alpnSupportedNTFHandshakes)
+                  False,
               startOptions
             }
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini

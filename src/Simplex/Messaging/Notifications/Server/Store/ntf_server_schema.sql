@@ -52,7 +52,8 @@ CREATE TABLE ntf_server.smp_servers (
     smp_server_id bigint NOT NULL,
     smp_host text NOT NULL,
     smp_port text NOT NULL,
-    smp_keyhash bytea NOT NULL
+    smp_keyhash bytea NOT NULL,
+    ntf_service_id bytea
 );
 
 
@@ -74,7 +75,8 @@ CREATE TABLE ntf_server.subscriptions (
     smp_server_id bigint,
     smp_notifier_id bytea NOT NULL,
     smp_notifier_key bytea NOT NULL,
-    status text NOT NULL
+    status text NOT NULL,
+    ntf_service_assoc boolean DEFAULT false NOT NULL
 );
 
 
@@ -140,7 +142,7 @@ CREATE UNIQUE INDEX idx_subscriptions_smp_server_id_notifier_id ON ntf_server.su
 
 
 
-CREATE INDEX idx_subscriptions_smp_server_id_status ON ntf_server.subscriptions USING btree (smp_server_id, status);
+CREATE INDEX idx_subscriptions_smp_server_id_ntf_service_status ON ntf_server.subscriptions USING btree (smp_server_id, ntf_service_assoc, status);
 
 
 

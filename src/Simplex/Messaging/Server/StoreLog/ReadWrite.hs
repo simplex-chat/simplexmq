@@ -2,8 +2,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Server.StoreLog.ReadWrite where
 
@@ -16,24 +18,23 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ErrorType, RecipientId, SParty (..))
-import Simplex.Messaging.Server.QueueStore (QueueRec)
+import Simplex.Messaging.Protocol (ASubscriberParty (..), ErrorType, RecipientId, SParty (..))
+import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)
 import System.IO
 
-writeQueueStore :: forall q s. QueueStoreClass q s => StoreLog 'WriteMode -> s -> IO ()
-writeQueueStore s st = withLoadedQueues st $ writeQueue
+writeQueueStore :: forall q. StoreQueueClass q => StoreLog 'WriteMode -> STMQueueStore q -> IO ()
+writeQueueStore s st = do
+  readTVarIO (services st) >>= mapM_ (logNewService s . serviceRec)
+  withLoadedQueues st $ writeQueue
   where
     writeQueue :: q -> IO ()
-    writeQueue q = do
-      let rId = recipientId q
-      readTVarIO (queueRec q) >>= \case
-        Just q' -> logCreateQueue s rId q'
-        Nothing -> pure ()
+    writeQueue q = readTVarIO (queueRec q) >>= mapM_ (logCreateQueue s $ recipientId q)
 
-readQueueStore :: forall q s. QueueStoreClass q s => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO ()
+readQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
 readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
   where
     processLine :: B.ByteString -> IO ()
@@ -53,6 +54,14 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
           DeleteQueue qId -> withQueue qId "DeleteQueue" $ deleteStoreQueue st
           DeleteNotifier qId -> withQueue qId "DeleteNotifier" $ deleteQueueNotifier st
           UpdateTime qId t -> withQueue qId "UpdateTime" $ \q -> updateQueueTime st q t
+          NewService sr@ServiceRec {serviceId} -> getCreateService @q st sr >>= \case
+            Right serviceId'
+              | serviceId == serviceId' -> pure ()
+              | otherwise -> logError $ errPfx <> "created with the wrong ID " <> decodeLatin1 (strEncode serviceId')
+            Left e -> logError $ errPfx <> tshow e
+            where
+              errPfx = "STORE: getCreateService, stored service " <> decodeLatin1 (strEncode serviceId) <> ", "
+          QueueService rId (ASP party) serviceId -> withQueue rId "QueueService" $ \q -> setQueueService st q party serviceId
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
         withQueue :: forall a. RecipientId -> T.Text -> (q -> IO (Either ErrorType a)) -> IO ()

@@ -24,6 +24,7 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -178,10 +179,10 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  isolateQueue :: STMQueue -> String -> STM a -> ExceptT ErrorType IO a
+  isolateQueue :: STMQueue -> Text -> STM a -> ExceptT ErrorType IO a
   isolateQueue _ _ = liftIO . atomically
   {-# INLINE isolateQueue #-}
 
-  unsafeRunStore :: STMQueue -> String -> STM a -> IO a
+  unsafeRunStore :: STMQueue -> Text -> STM a -> IO a
   unsafeRunStore _ _ = atomically
   {-# INLINE unsafeRunStore #-}

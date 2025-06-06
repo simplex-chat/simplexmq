@@ -32,7 +32,7 @@ module Simplex.Messaging.Server.Env.STM
     ProxyAgent (..),
     Client (..),
     ClientId,
-    Subscribed,
+    ClientSub (..),
     Sub (..),
     ServerSub (..),
     SubscriptionThread (..),
@@ -51,6 +51,7 @@ module Simplex.Messaging.Server.Env.STM
     getSubscribedClients,
     getSubscribedClient,
     upsertSubscribedClient,
+    lookupSubscribedClient,
     lookupDeleteSubscribedClient,
     deleteSubcribedClient,
     sameClientId,
@@ -78,7 +79,6 @@ import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
-import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -120,7 +120,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, VersionRangeSMP, VersionSMP)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util (ifM, whenM, ($>>=))
 import System.Directory (doesFileExist)
@@ -299,8 +299,6 @@ data MsgStore s where
   StoreMemory :: STMMsgStore -> MsgStore STMMsgStore
   StoreJournal :: JournalMsgStore qs -> MsgStore (JournalMsgStore qs)
 
-type Subscribed = Bool
-
 data Server s = Server
   { clients :: ServerClients s,
     subscribers :: ServerSubscribers s,
@@ -312,9 +310,11 @@ data Server s = Server
 newtype ServerClients s = ServerClients {serverClients :: TVar (IntMap (Client s))}
 
 data ServerSubscribers s = ServerSubscribers
-  { subQ :: TQueue (QueueId, ClientId, Subscribed),
+  { subQ :: TQueue (ClientSub, ClientId),
     queueSubscribers :: SubscribedClients s,
-    subClients :: TVar IntSet,
+    serviceSubscribers :: SubscribedClients s, -- service clients with long-term certificates that have subscriptions
+    totalServiceSubs :: TVar Int64,
+    subClients :: TVar IntSet, -- clients with individual or service subscriptions
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
 
@@ -344,10 +344,15 @@ upsertSubscribedClient entId c (SubscribedClients cs) =
         Just c' | sameClientId c c' -> pure Nothing
         c_ -> c_ <$ writeTVar cv (Just c)
 
+lookupSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
+lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup entId cs $>>= readTVar
+{-# INLINE lookupSubscribedClient #-}
+
 -- lookup and delete currently subscribed client
 lookupDeleteSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
 lookupDeleteSubscribedClient entId (SubscribedClients cs) =
   TM.lookupDelete entId cs $>>= (`swapTVar` Nothing)
+{-# INLINE lookupDeleteSubscribedClient #-}
 
 deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients s -> IO ()
 deleteSubcribedClient entId c (SubscribedClients cs) =
@@ -368,6 +373,11 @@ sameClient :: Client s -> TVar (Maybe (Client s)) -> STM Bool
 sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 {-# INLINE sameClient #-}
 
+data ClientSub
+  = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
+  | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
+  | CSService ServiceId -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
+
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent 'Sender
   }
@@ -378,14 +388,15 @@ data Client s = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
+    serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
-    thVersion :: VersionSMP,
-    sessionId :: ByteString,
+    clientTHParams :: THandleParams SMPVersion 'TServer,
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
@@ -434,14 +445,18 @@ newServerSubscribers :: IO (ServerSubscribers s)
 newServerSubscribers = do
   subQ <- newTQueueIO
   queueSubscribers <- SubscribedClients <$> TM.emptyIO
+  serviceSubscribers <- SubscribedClients <$> TM.emptyIO
+  totalServiceSubs <- newTVarIO 0
   subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
-  pure ServerSubscribers {subQ, queueSubscribers, subClients, pendingEvents}
+  pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
-newClient :: ClientId -> Natural -> VersionSMP -> ByteString -> SystemTime -> IO (Client s)
-newClient clientId qSize thVersion sessionId createdAt = do
+newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client s)
+newClient clientId qSize clientTHParams createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
+  serviceSubsCount <- newTVarIO 0
+  ntfServiceSubsCount <- newTVarIO 0
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
@@ -456,14 +471,15 @@ newClient clientId qSize thVersion sessionId createdAt = do
       { clientId,
         subscriptions,
         ntfSubscriptions,
+        serviceSubsCount,
+        ntfServiceSubsCount,
         rcvQ,
         sndQ,
         msgQ,
         procThreads,
         endThreads,
         endThreadSeq,
-        thVersion,
-        sessionId,
+        clientTHParams,
         connected,
         createdAt,
         rcvActiveAt,
@@ -623,5 +639,5 @@ newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent SSender smpAgentCfg random
   pure ProxyAgent {smpAgent}
 
-readWriteQueueStore :: forall q s. QueueStoreClass q s => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> s -> IO (StoreLog 'WriteMode)
+readWriteQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO (StoreLog 'WriteMode)
 readWriteQueueStore tty mkQ = readWriteStoreLog (readQueueStore tty mkQ) (writeQueueStore @q)

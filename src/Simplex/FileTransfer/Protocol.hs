@@ -144,10 +144,15 @@ instance Protocol XFTPVersion XFTPErrorType FileResponse where
   type ProtoCommand FileResponse = FileCmd
   type ProtoType FileResponse = 'PXFTP
   protocolClientHandshake = xftpClientHandshakeStub
+  {-# INLINE protocolClientHandshake #-}
+  useServiceAuth _ = False
+  {-# INLINE useServiceAuth #-}
   protocolPing = FileCmd SFRecipient PING
+  {-# INLINE protocolPing #-}
   protocolError = \case
     FRErr e -> Just e
     _ -> Nothing
+  {-# INLINE protocolError #-}
 
 data FileCommand (p :: FileParty) where
   FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
@@ -227,6 +232,7 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
   {-# INLINE fromProtocolError #-}
 
   checkCredentials t (FileCmd p c) = FileCmd p <$> checkCredentials t c
+  {-# INLINE checkCredentials #-}
 
 instance Encoding FileInfo where
   smpEncode FileInfo {sndKey, size, digest} = smpEncode (sndKey, size, digest)
@@ -332,7 +338,7 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
 xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion 'TClient -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
 xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey (corrId, fId, msg) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (corrId, fId, msg)
-  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth (Just pKey) (C.cbNonce $ bs corrId) tForAuth
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth False (Just pKey) (C.cbNonce $ bs corrId) tForAuth
 
 xftpEncodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion p -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission thParams (corrId, fId, msg) = do
@@ -341,7 +347,7 @@ xftpEncodeTransmission thParams (corrId, fId, msg) = do
 
 -- this function uses batch syntax but puts only one transmission in the batch
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
-xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 t) xftpBlockSize
+xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 False t) xftpBlockSize
 
 xftpDecodeTransmission :: ProtocolEncoding XFTPVersion e c => THandleParams XFTPVersion p -> ByteString -> Either XFTPErrorType (SignedTransmission e c)
 xftpDecodeTransmission thParams t = do
