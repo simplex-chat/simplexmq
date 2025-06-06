@@ -234,37 +234,41 @@ ntfPrometheusMetrics sm rtm ts =
       showOwnSrvSubs <> showOtherSrvSubs
       where
         showOwnSrvSubs
-          | M.null ownSrvSubs = showOwn_ "" 0 0
-          | otherwise = T.concat $ map (\(host, cnt) -> showOwn_ (metricHost host) 1 cnt) $ M.assocs ownSrvSubs
-        showOwn_ param srvCnt subCnt =
-          gaugeMetric (mPfx <> "server_count_own") param srvCnt (descrPfx <> " SMP subscriptions, own server count") "ownSrvSubs server"
-            <> gaugeMetric (mPfx <> "sub_count_own") param subCnt (descrPfx <> " SMP subscriptions count for own servers") "ownSrvSubs count"
+          | M.null ownSrvSubs = ""
+          | otherwise =
+              gaugeMetrics (mPfx <> "server_count_own") srvMetrics (descrPfx <> " SMP subscriptions, own server count") "ownSrvSubs server"
+                <> gaugeMetrics (mPfx <> "sub_count_own") subMetrics (descrPfx <> " SMP subscriptions count for own servers") "ownSrvSubs count"
+          where
+            subs = M.assocs ownSrvSubs
+            srvMetrics = map (\(host, _) -> (metricHost host, 1)) subs
+            subMetrics = map (\(host, cnt) -> (metricHost host, cnt)) subs
         showOtherSrvSubs =
-          gaugeMetric (mPfx <> "server_count_other") "" otherServers (descrPfx <> " SMP subscriptions, other server count") "otherServers"
-            <> gaugeMetric (mPfx <> "sub_count_other") "" otherSrvSubCount (descrPfx <> " SMP subscriptions count for other servers") "otherSrvSubCount"
-    showNtfsByServer srvNtfs mName descrPfx varName =
-      "# HELP " <> mName <> " " <> descrPfx <> " notifications\n\
-      \# TYPE " <> mName <> " counter\n"
-      <> showNtfMetrics
-      <> "# " <> varName <> "\n\n"
+          gaugeMetrics (mPfx <> "server_count_other") [("", otherServers)] (descrPfx <> " SMP subscriptions, other server count") "otherServers"
+            <> gaugeMetrics (mPfx <> "sub_count_other") [("", otherSrvSubCount)] (descrPfx <> " SMP subscriptions count for other servers") "otherSrvSubCount"
+    showNtfsByServer (StatsByServerData srvNtfs) mName descrPfx varName
+      | null srvNtfs = ""
+      | otherwise =
+          "# HELP " <> mName <> " " <> descrPfx <> " notifications\n\
+          \# TYPE " <> mName <> " counter\n"
+          <> showNtfMetrics
+          <> "# " <> varName <> "\n\n"
       where
-        showNtfMetrics
-          | null srvNtfs = mName <> " " <> mshow 0 <> "\n"
-          | otherwise = T.concat $ map (\(host, value) -> mName <> metricHost host <> " " <> mshow value <> "\n") srvNtfs
+        showNtfMetrics = T.concat $ map (\(host, value) -> mName <> metricHost host <> " " <> mshow value <> "\n") srvNtfs
     showWorkerMetric NtfSMPWorkerMetrics {ownServers, otherServers} mPfx descrPfx =
       showOwnServers <> showOtherServers
       where
         showOwnServers
-          | null ownServers = showOwn_ "" 0
-          | otherwise = T.concat $ map (\host -> showOwn_ (metricHost host) 1) ownServers
-        showOwn_ param cnt = gaugeMetric (mPfx <> "count_own") param cnt (descrPfx <> " count for own servers") "ownServers"
-        showOtherServers = gaugeMetric (mPfx <> "count_other") "" otherServers (descrPfx <> " count for other servers") "otherServers"
-    gaugeMetric :: Text -> Text -> Int -> Text -> Text -> Text
-    gaugeMetric name param value descr codeRef =
+          | null ownServers = ""
+          | otherwise = gaugeMetrics (mPfx <> "count_own") subMetrics (descrPfx <> " count for own servers") "ownServers"
+          where
+            subMetrics = map (\host -> (metricHost host, 1)) ownServers
+        showOtherServers = gaugeMetrics (mPfx <> "count_other") [("", otherServers)] (descrPfx <> " count for other servers") "otherServers"
+    gaugeMetrics :: Text -> [(Text, Int)] -> Text -> Text -> Text
+    gaugeMetrics name subMetrics descr codeRef =
       "# HELP " <> name <> " " <> descr <> "\n\
-      \# TYPE " <> name <> " gauge\n\
-      \" <> name <> param <> " " <> mshow value <> "\n# " <> codeRef <> "\n\
-      \\n"
+      \# TYPE " <> name <> " gauge\n"
+      <> T.concat (map (\(param, value) -> name <> param <> " " <> mshow value <> "\n") subMetrics)
+      <> "# " <> codeRef <> "\n\n"
     metricHost host = "{server=\"" <> host <> "\"}"
     mstr a = a <> " " <> tsEpoch
     mshow :: Show a => a -> Text

@@ -16,7 +16,6 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport.Client (TransportHost)
 
 data NtfServerStats = NtfServerStats
   { fromTime :: IORef UTCTime,
@@ -223,9 +222,9 @@ instance StrEncoding NtfServerStatsData where
         "ntfReceived=" <> strEncode _ntfReceived,
         "ntfDelivered=" <> strEncode _ntfDelivered,
         "ntfFailed=" <> strEncode _ntfFailed,
-        "ntfReceivedOwn=" <> strEncodeList _ntfReceivedOwn,
-        "ntfDeliveredOwn=" <> strEncodeList _ntfDeliveredOwn,
-        "ntfFailedOwn=" <> strEncodeList _ntfFailedOwn,
+        "ntfReceivedOwn=" <> strEncode _ntfReceivedOwn,
+        "ntfDeliveredOwn=" <> strEncode _ntfDeliveredOwn,
+        "ntfFailedOwn=" <> strEncode _ntfFailedOwn,
         "ntfCronDelivered=" <> strEncode _ntfCronDelivered,
         "ntfCronFailed=" <> strEncode _ntfCronFailed,
         "ntfVrfQueued=" <> strEncode _ntfVrfQueued,
@@ -248,9 +247,9 @@ instance StrEncoding NtfServerStatsData where
     _ntfReceived <- "ntfReceived=" *> strP <* A.endOfLine
     _ntfDelivered <- "ntfDelivered=" *> strP <* A.endOfLine
     _ntfFailed <- opt "ntfFailed="
-    _ntfReceivedOwn <- "ntfReceivedOwn=" *> strListP <* A.endOfLine <|> pure []
-    _ntfDeliveredOwn <- "ntfDeliveredOwn=" *> strListP <* A.endOfLine <|> pure []
-    _ntfFailedOwn <- "ntfFailedOwn=" *> strListP <* A.endOfLine <|> pure []
+    _ntfReceivedOwn <- "ntfReceivedOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
+    _ntfDeliveredOwn <- "ntfDeliveredOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
+    _ntfFailedOwn <- "ntfFailedOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
     _ntfCronDelivered <- opt "ntfCronDelivered="
     _ntfCronFailed <- opt "ntfCronFailed="
     _ntfVrfQueued <- opt "ntfVrfQueued="
@@ -290,13 +289,19 @@ instance StrEncoding NtfServerStatsData where
 
 type StatsByServer = TMap Text (TVar Int)
 
-type StatsByServerData = [(Text, Int)]
+newtype StatsByServerData = StatsByServerData [(Text, Int)]
+
+instance StrEncoding StatsByServerData where
+  strEncode (StatsByServerData d) = strEncodeList d
+  strP = StatsByServerData <$> serverP `A.sepBy'` A.char ','
+    where
+      serverP = (,) <$> strP_ <*> A.decimal
 
 getStatsByServer :: TMap Text (TVar Int) -> IO StatsByServerData
-getStatsByServer s = readTVarIO s >>= fmap M.toList . mapM readTVarIO
+getStatsByServer s = readTVarIO s >>= fmap (StatsByServerData . M.toList) . mapM readTVarIO
 
 setStatsByServer :: TMap Text (TVar Int) -> StatsByServerData -> IO ()
-setStatsByServer s d = mapM newTVarIO (M.fromList d) >>= atomically . writeTVar s
+setStatsByServer s (StatsByServerData d) = mapM newTVarIO (M.fromList d) >>= atomically . writeTVar s
 
 -- double lookup avoids STM transaction with a shared map in most cases
 incServerStat :: Text -> TMap Text (TVar Int) -> IO ()

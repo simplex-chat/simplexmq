@@ -93,7 +93,7 @@ instance StrEncoding String where
 
 instance StrEncoding Text where
   strEncode = encodeUtf8
-  strP = safeDecodeUtf8 <$> A.takeTill (== ' ')
+  strP = safeDecodeUtf8 <$> A.takeTill (\c -> c == ' ' || c == '\n')
 
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s
