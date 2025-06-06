@@ -266,10 +266,10 @@ instance StrEncoding NtfServerStatsData where
     _ntfReceivedAuth <- "ntfReceivedAuth=" *> strP <* A.endOfLine
     _ntfDelivered <- "ntfDelivered=" *> strP <* A.endOfLine
     _ntfFailed <- opt "ntfFailed="
-    _ntfReceivedOwn <- "ntfReceivedOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
-    _ntfReceivedAuthOwn <- "ntfReceivedAuthOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
-    _ntfDeliveredOwn <- "ntfDeliveredOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
-    _ntfFailedOwn <- "ntfFailedOwn=" *> strP <* A.endOfLine <|> pure (StatsByServerData [])
+    _ntfReceivedOwn <- statByServerP "ntfReceivedOwn="
+    _ntfReceivedAuthOwn <- statByServerP "ntfReceivedAuthOwn="
+    _ntfDeliveredOwn <- statByServerP "ntfDeliveredOwn="
+    _ntfFailedOwn <- statByServerP "ntfFailedOwn="
     _ntfCronDelivered <- opt "ntfCronDelivered="
     _ntfCronFailed <- opt "ntfCronFailed="
     _ntfVrfQueued <- opt "ntfVrfQueued="
@@ -308,6 +308,7 @@ instance StrEncoding NtfServerStatsData where
         }
     where
       opt s = A.string s *> strP <* A.endOfLine <|> pure 0
+      statByServerP s = A.string s *> strP <* A.endOfLine <|> pure (StatsByServerData [])
 
 type StatsByServer = TMap Text (TVar Int)
 
