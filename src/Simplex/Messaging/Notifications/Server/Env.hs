@@ -127,7 +127,7 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriberVar,
     subscriberSeq :: TVar Int,
-    smpAgent :: SMPClientAgent 'Notifier
+    smpAgent :: SMPClientAgent 'NotifierService
   }
 
 type SMPSubscriberVar = SessionVar SMPSubscriber
@@ -136,7 +136,7 @@ newNtfSubscriber :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
 newNtfSubscriber smpAgentCfg random = do
   smpSubscribers <- TM.emptyIO
   subscriberSeq <- newTVarIO 0
-  smpAgent <- newSMPClientAgent SNotifier smpAgentCfg random
+  smpAgent <- newSMPClientAgent SNotifierService smpAgentCfg random
   pure NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent}
 
 data SMPSubscriber = SMPSubscriber

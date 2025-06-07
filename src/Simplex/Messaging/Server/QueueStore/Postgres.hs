@@ -180,18 +180,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
       -- hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.memberIO notifierId notifiers) notifier
 
-  getQueue_ :: DirectParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
     SRecipient -> getRcvQueue qId
-    SSender -> getSndQueue
-    SProxyService -> getSndQueue
+    SSender -> TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
     SSenderLink -> TM.lookupIO qId links >>= maybe (mask loadLinkQueue) getRcvQueue
     -- loaded queue is deleted from notifiers map to reduce cache size after queue was subscribed to by ntf server
     SNotifier -> TM.lookupIO qId notifiers >>= maybe (mask loadNtfQueue) (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
     where
       PostgresQueueStore {queues, senders, links, notifiers} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe (mask loadRcvQueue) (pure . Right)
-      getSndQueue = TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
       loadRcvQueue = do
         (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
         liftIO $ cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
@@ -227,6 +225,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
               insertRef rId
               TM.insert rId sq queues
               pure sq
+
+  getQueues_ = undefined -- TODO [batch]
 
   getQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   getQueueLinkData st sq lnkId = runExceptT $ do
@@ -402,15 +402,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       when new $ withLog "getCreateService" st (`logNewService` sr)
       pure serviceId
 
-  setQueueService :: (PartyI p, SubscriberParty p) => PostgresQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueService :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   setQueueService st sq party serviceId = withQueueRec sq "setQueueService" $ \q -> case party of
-    SRecipient
+    SRecipientService
       | rcvServiceId q == serviceId -> pure ()
       | otherwise -> do
           assertUpdated $ withDB' "setQueueService" st $ \db ->
             DB.execute db "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id = ? AND deleted_at IS NULL" (serviceId, rId)
           updateQueueRec q {rcvServiceId = serviceId}
-    SNotifier -> case notifier q of
+    SNotifierService -> case notifier q of
       Nothing -> throwE AUTH
       Just nc@NtfCreds {ntfServiceId = prevSrvId}
         | prevSrvId == serviceId -> pure ()

@@ -52,12 +52,13 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
 import Crypto.Random (ChaChaDRG)
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, second)
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
@@ -1077,40 +1078,61 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     ts <- tGet h
     unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
-    let service = peerClientService =<< thAuth
-    (errs, cmds) <- partitionEithers <$> mapM (cmdAction stats service) (L.toList ts)
-    updateBatchStats stats cmds
-    write sndQ errs
-    write rcvQ cmds
+    let (es, ts') = partitionEithers $ L.toList ts
+        errs = map (second ERR) es
+    case ts' of
+      [] -> write sndQ $ L.nonEmpty errs
+      (_, (_, cmd)) : _ -> do
+        let service = peerClientService =<< thAuth
+        errs' <- case batchCmd cmd of
+          Just bc | all (\(_, (_, cmd')) -> sameBatchCmd bc cmd') ts'-> do
+            updateBatchStats stats bc -- only if some verified?
+            (errs', qs) <- partitionEithers <$> verifyBatch stats service bc ts'
+            write rcvQ $ VerifiedBatch bc <$> L.nonEmpty qs
+            pure errs'
+          _ -> do
+            (errs', qCmds) <- partitionEithers <$> mapM (verifyCmd stats service) ts'
+            write rcvQ $ VerifiedCommands <$> L.nonEmpty qCmds
+            pure errs'
+        write sndQ $ L.nonEmpty $ errs ++ errs'
   where
-    updateBatchStats :: ServerStats -> [(Maybe (StoreQueue s, QueueRec), Transmission Cmd)] -> IO ()
-    updateBatchStats stats = \case
-      (_, (_, (Cmd _ cmd))) : _ -> do
-        let sel_ = case cmd of
-              SUB -> Just qSubAllB
-              DEL -> Just qDeletedAllB
-              NSUB -> Just ntfSubB
-              NDEL -> Just ntfDeletedB
-              _ -> Nothing
-        mapM_ (\sel -> incStat $ sel stats) sel_
-      [] -> pure ()
-    cmdAction :: ServerStats -> Maybe THPeerClientService -> SignedTransmissionOrError ErrorType Cmd -> IO (Either (Transmission BrokerMsg) (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
-    cmdAction stats service =
-      \case
-        Left (ceIds, e) -> pure $ Left (ceIds, ERR e)
-        Right (signed, (ceIds@(corrId, entId), cmd)) -> verified =<< verifyTransmission ms service ((,C.cbNonce (bs corrId)) <$> thAuth) signed entId cmd
-          where
-            verified = \case
-              VRVerified q -> pure $ Right (q, (ceIds, cmd))
-              VRFailed e -> do
-                case cmd of
-                  Cmd _ SEND {} -> incStat $ msgSentAuth stats
-                  Cmd _ SUB -> incStat $ qSubAuth stats
-                  Cmd _ NSUB -> incStat $ ntfSubAuth stats
-                  Cmd _ GET -> incStat $ msgGetAuth stats
-                  _ -> pure ()
-                pure $ Left (ceIds, ERR e)
-    write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
+    sameBatchCmd :: ABatchCmd -> Cmd -> Bool
+    sameBatchCmd _ _ = True -- TODO [batch]
+    updateBatchStats :: ServerStats -> ABatchCmd -> IO ()
+    updateBatchStats stats (ABC _ bc) = case bc of
+      BatchSUB -> incStat $ qSubAllB stats
+      BatchDEL -> incStat $ qDeletedAllB stats
+      BatchNDEL -> incStat $ ntfDeletedB stats
+      BatchNSUB -> incStat $ ntfSubB stats
+    verifyBatch :: ServerStats -> Maybe THPeerClientService -> ABatchCmd -> [SignedTransmission Cmd] -> IO [Either (Transmission BrokerMsg) ((StoreQueue s, QueueRec), (CorrId, EntityId))]
+    verifyBatch stats service (ABC p bc) ts =
+      zipWith verifyQueue ts <$> getQueueRecs ms p (map queueId ts)
+      where
+        queueId (_, ((_, qId), _)) = qId
+        verifyQueue :: SignedTransmission Cmd -> Either ErrorType (StoreQueue s, QueueRec) -> Either (Transmission BrokerMsg) ((StoreQueue s, QueueRec), (CorrId, EntityId))
+        verifyQueue (signed, (ceIds, cmd)) = \case
+          Right q -> case verifyQueueTransmission service (auth_ ceIds) signed (Just q) cmd of
+            VRVerified _ -> Right (q, ceIds)
+            VRFailed e -> Left (ceIds, ERR e)
+          -- TODO [batch] dummyVerify, also error stats need to be done somehow
+          -- Left AUTH -> dummyVerify
+          Left e -> Left (ceIds, ERR e)
+    verifyCmd :: ServerStats -> Maybe THPeerClientService -> SignedTransmission Cmd -> IO (Either (Transmission BrokerMsg) (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
+    verifyCmd stats service (signed, (ceIds@(_, entId), cmd@(Cmd _ command))) =
+      verified =<< verifyTransmission ms service (auth_ ceIds) signed entId cmd
+      where
+        verified = \case
+          VRVerified q -> pure $ Right (q, (ceIds, cmd))
+          VRFailed e -> do
+            case command of
+              SEND {} -> incStat $ msgSentAuth stats
+              SUB -> incStat $ qSubAuth stats
+              NSUB -> incStat $ ntfSubAuth stats
+              GET -> incStat $ msgGetAuth stats
+              _ -> pure ()
+            pure $ Left (ceIds, ERR e)
+    auth_ (CorrId corrId, _) = (,C.cbNonce corrId) <$> thAuth
+    write q = mapM_ (atomically . writeTBQueue q)
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
 send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
@@ -1170,60 +1192,69 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
 verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer, C.CbNonce) -> (Maybe TAuthorizations, ByteString) -> QueueId -> Cmd -> IO (VerificationResult s)
-verifyTransmission ms service auth_ (tAuth, authorized) queueId command@(Cmd party cmd)
-  | verifyServiceSig = case party of
-      SRecipient | hasRole SRMessaging -> case cmd of
-        NEW NewQueueReq {rcvAuthKey = k} -> pure $ Nothing `verifiedWith` k
-        SUB -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
-        SUBS -> pure verifyServiceCmd
-        _ -> verifyQueue SRecipient $ \q -> Just q `verifiedWithKeys` recipientKeys (snd q)
-      SSender | hasRole SRMessaging -> case cmd of
-        SKEY k -> verifySecure SSender k
-        -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
-        SEND {} -> verifyQueue SSender $ \q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified (Just q) else VRFailed AUTH
-        PING -> pure $ VRVerified Nothing
-      SSenderLink | hasRole SRMessaging -> case cmd of
-        LKEY k -> verifySecure SSenderLink k
-        LGET -> verifyQueue SSenderLink $ \q -> if isContactQueue (snd q) then VRVerified (Just q) else VRFailed AUTH
-      SNotifier | hasRole SRNotifier -> case cmd of
-        NSUB -> verifyQueue SNotifier $ \q -> maybe dummyVerify (\n -> Just q `verifiedWith` notifierKey n) (notifier $ snd q)
-        NSUBS -> pure verifyServiceCmd
-      SProxiedClient | hasRole SRMessaging -> pure $ VRVerified Nothing
-      SProxyService | hasRole SRProxy -> pure $ VRVerified Nothing
-      _ -> pure $ VRFailed $ CMD PROHIBITED
+verifyTransmission ms service auth_ signed@(tAuth, authorized) queueId cmd@(Cmd p _)
+  | not checkRole = pure $ VRFailed $ CMD PROHIBITED
+  | verifyServiceSig = case queueParty p of
+      Just Dict -> either err (\q -> vt (Just q) cmd) <$> getQueueRec ms p queueId
+        where
+          -- this prevents reporting any STORE errors as AUTH errors
+          err = \case
+            AUTH -> dummyVerify
+            e -> VRFailed e
+          dummyVerify :: VerificationResult s
+          dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed AUTH
+          verify = verifyCmdAuthorization auth_ tAuth authorized
+      Nothing -> pure $ vt Nothing cmd
   | otherwise = pure $ VRFailed SERVICE
   where
-    hasRole role = case service of
-      Just THClientService {serviceRole} -> serviceRole == role
-      Nothing -> True
+    vt = verifyQueueTransmission service auth_ signed
+    -- this function verifies service signature for commands that use it in service sessions
+    verifyServiceSig
+      | useServiceAuth cmd = case (service, serviceSig) of
+          (Just THClientService {serviceKey = k}, Just s) -> C.verify' k s authorized
+          (Nothing, Nothing) -> True
+          _ -> False
+      | otherwise = isNothing serviceSig
+    serviceSig = snd =<< tAuth
+    checkRole = case (service, partyClientRole p) of
+      (Just THClientService {serviceRole}, Just role) -> serviceRole == role
+      _ -> True
+
+verifyQueueTransmission :: forall s. Maybe THPeerClientService -> Maybe (THandleAuth 'TServer, C.CbNonce) -> (Maybe TAuthorizations, ByteString) -> Maybe (StoreQueue s, QueueRec) -> Cmd -> VerificationResult s
+verifyQueueTransmission service auth_ (tAuth, authorized) qr_ = \case
+  Cmd SCreator (NEW NewQueueReq {rcvAuthKey = k}) -> Nothing `verifiedWith` k
+  Cmd SRecipient SUB -> verifyQueue $ \q -> qr_ `verifiedWithKeys` recipientKeys (snd q)
+  Cmd SRecipient _ -> verifyQueue $ \q -> qr_ `verifiedWithKeys` recipientKeys (snd q)
+  Cmd SRecipientService SUBS -> verifyServiceCmd
+  Cmd SSender (SKEY k) -> verifySecure k
+  -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
+  Cmd SSender SEND {} -> verifyQueue $ \q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified qr_ else VRFailed AUTH
+  Cmd SIdleClient PING -> VRVerified Nothing
+  Cmd SSenderLink (LKEY k) -> verifySecure k
+  Cmd SSenderLink LGET -> verifyQueue $ \q -> if isContactQueue (snd q) then VRVerified qr_ else VRFailed AUTH
+  Cmd SNotifier NSUB -> verifyQueue $ \q -> maybe dummyVerify (\n -> qr_ `verifiedWith` notifierKey n) (notifier $ snd q)
+  Cmd SNotifierService NSUBS -> verifyServiceCmd
+  Cmd SProxiedClient _ -> VRVerified Nothing
+  Cmd SProxyService (RFWD _) -> VRVerified Nothing
+  where
     verify = verifyCmdAuthorization auth_ tAuth authorized'
     verifyServiceCmd :: VerificationResult s
     verifyServiceCmd = case (service, tAuth) of
       (Just THClientService {serviceKey = k}, Just (TASignature (C.ASignature C.SEd25519 s), Nothing))
         | C.verify' k s authorized -> VRVerified Nothing
       _ -> VRFailed SERVICE
-    -- this function verify service signature for commands that use it in service sessions
-    verifyServiceSig
-      | useServiceAuth command = case (service, serviceSig) of
-          (Just THClientService {serviceKey = k}, Just s) -> C.verify' k s authorized
-          (Nothing, Nothing) -> True
-          _ -> False
-      | otherwise = isNothing serviceSig
     serviceSig = snd =<< tAuth
     authorized' = case (service, serviceSig) of
       (Just THClientService {serviceCertHash = XV.Fingerprint fp}, Just _) -> fp <> authorized
       _ -> authorized
     dummyVerify :: VerificationResult s
     dummyVerify = verify (dummyAuthKey tAuth) `seq` VRFailed AUTH
-    verifyQueue :: DirectParty p => SParty p -> ((StoreQueue s, QueueRec) -> VerificationResult s) -> IO (VerificationResult s)
-    verifyQueue p v = either err v <$> getQueueRec ms p queueId
-      where
-        -- this prevents reporting any STORE errors as AUTH errors
-        err = \case
-          AUTH -> dummyVerify
-          e -> VRFailed e
-    verifySecure :: DirectParty p => SParty p -> SndPublicAuthKey -> IO (VerificationResult s)
-    verifySecure p k = verifyQueue p $ \q -> if k `allowedKey` snd q then Just q `verifiedWith` k else dummyVerify
+    -- That a specific command requires queue signature verification is determined by `queueParty`,
+    -- it should be coordinated with the case in this function (`verifyQueueTransmission`)
+    verifyQueue :: ((StoreQueue s, QueueRec) -> VerificationResult s) -> VerificationResult s
+    verifyQueue v = maybe (VRFailed INTERNAL) v qr_
+    verifySecure :: SndPublicAuthKey -> VerificationResult s
+    verifySecure k = verifyQueue $ \q -> if k `allowedKey` snd q then Just q `verifiedWith` k else dummyVerify
     verifiedWith :: Maybe (StoreQueue s, QueueRec) -> C.APublicAuthKey -> VerificationResult s
     verifiedWith q_ k = if verify k then VRVerified q_ else VRFailed AUTH
     verifiedWithKeys :: Maybe (StoreQueue s, QueueRec) -> NonEmpty C.APublicAuthKey -> VerificationResult s
@@ -1307,11 +1338,24 @@ client
         service = peerClientService =<< thAuth thParams'
     forever $
       atomically (readTBQueue rcvQ)
-        >>= mapM (processCommand service thVersion)
+        >>= processVerifiedCommands service thVersion
         >>= mapM_ reply . L.nonEmpty . catMaybes . L.toList
   where
     reply :: MonadIO m => NonEmpty (Transmission BrokerMsg) -> m ()
     reply = atomically . writeTBQueue sndQ
+
+-- data VerifiedCommandsOrBatch s
+--   = VerifiedCommands (NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
+
+    processVerifiedCommands :: Maybe THPeerClientService -> VersionSMP -> VerifiedCommandsOrBatch s -> M s (NonEmpty (Maybe (Transmission BrokerMsg)))
+    processVerifiedCommands service thVersion = \case
+      VerifiedCommands cmds -> mapM (processCommand service thVersion) cmds
+      VerifiedBatch (ABC _ bc) _qs -> case bc of
+        --   | VerifiedBatch ABatchCmd (NonEmpty ((StoreQueue s, QueueRec), (CorrId, EntityId)))
+        BatchSUB -> undefined
+        BatchDEL -> undefined
+        BatchNDEL -> undefined
+        BatchNSUB -> undefined
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M s (Maybe (Transmission BrokerMsg))
     processProxiedCmd (ceIds@(corrId, EntityId sessId), command) = (ceIds,) <$$> case command of
       PRXY srv auth -> ifM allowProxy getRelay (pure $ Just $ ERR $ PROXY BASIC_AUTH)
@@ -1398,28 +1442,26 @@ client
       Cmd SSender command -> Just <$> case command of
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
         SEND flags msgBody -> withQueue_ False $ sendMessage flags msgBody
-        PING -> pure ((corrId, NoEntity), PONG)
+      Cmd SIdleClient PING -> pure $ Just ((corrId, NoEntity), PONG)
       Cmd SProxyService (RFWD encBlock) -> Just . ((corrId, NoEntity),) <$> processForwardedCommand encBlock
       Cmd SSenderLink command -> Just <$> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
-      Cmd SNotifier command -> Just . (ceIds,) <$> case command of
-        NSUB -> case q_ of
-          Just (q, QueueRec {notifier = Just ntfCreds}) -> subscribeNotifications q ntfCreds
-          _ -> pure $ ERR INTERNAL
-        NSUBS -> case service of
-          Just s -> subscribeServiceNotifications s
-          Nothing -> pure $ ERR INTERNAL
+      Cmd SNotifier NSUB -> Just . (ceIds,) <$> case q_ of
+        Just (q, QueueRec {notifier = Just ntfCreds}) -> subscribeNotifications q ntfCreds
+        _ -> pure $ ERR INTERNAL
+      Cmd SNotifierService NSUBS -> Just . (ceIds,) <$> case service of
+        Just s -> subscribeServiceNotifications s
+        Nothing -> pure $ ERR INTERNAL
+      Cmd SCreator (NEW nqr@NewQueueReq {auth_}) ->
+        Just <$> ifM allowNew (createQueue nqr) (pure (ceIds, ERR AUTH))
+          where
+            allowNew = do
+              ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
+              pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
       Cmd SRecipient command ->
         Just <$> case command of
-          NEW nqr@NewQueueReq {auth_} ->
-            ifM allowNew (createQueue nqr) (pure (ceIds, ERR AUTH))
-            where
-              allowNew = do
-                ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
-                pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
           SUB -> withQueue subscribeQueue
-          SUBS -> pure $ err (CMD PROHIBITED) -- "TODO [certs rcv]"
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (ceIds,) <$> secureQueue_ q sKey
@@ -1438,6 +1480,7 @@ client
           OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
           DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_
           QUE -> withQueue $ \q qr -> (ceIds,) <$> getQueueInfo q qr
+      Cmd SRecipientService SUBS -> pure $ Just $ err (CMD PROHIBITED) -- "TODO [certs rcv]"
       where
         createQueue :: NewQueueReq -> M s (Transmission BrokerMsg)
         createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData}
@@ -1660,7 +1703,7 @@ client
                   pure $ SOK $ Just serviceId
               | otherwise ->
                   -- new or updated queue-service association
-                  liftIO (setQueueService (queueStore ms) q SNotifier (Just serviceId)) >>= \case
+                  liftIO (setQueueService (queueStore ms) q SNotifierService (Just serviceId)) >>= \case
                     Left e -> pure $ ERR e
                     Right () -> do
                       hasSub <- atomically $ (<$ newServiceQueueSub) =<< hasServiceSub
@@ -1677,7 +1720,7 @@ client
                   modifyTVar' (totalServiceSubs ntfSubscribers) (+ 1) -- server count for all services
             Nothing -> case ntfServiceId of
               Just _ ->
-                liftIO (setQueueService (queueStore ms) q SNotifier Nothing) >>= \case
+                liftIO (setQueueService (queueStore ms) q SNotifierService Nothing) >>= \case
                   Left e -> pure $ ERR e
                   Right () -> do
                     -- hasSubscription should never be True in this branch, because queue was associated with service.
