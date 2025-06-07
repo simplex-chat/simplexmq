@@ -324,6 +324,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE addQueue_ #-}
   getQueue_ = withQS getQueue_
   {-# INLINE getQueue_ #-}
+  getQueues_ = withQS getQueues_
+  {-# INLINE getQueues_ #-}
   addQueueLinkData = withQS addQueueLinkData
   {-# INLINE addQueueLinkData #-}
   getQueueLinkData = withQS getQueueLinkData

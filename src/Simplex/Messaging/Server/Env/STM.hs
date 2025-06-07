@@ -3,11 +3,15 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -39,11 +43,15 @@ module Simplex.Messaging.Server.Env.STM
     MsgStoreType,
     MsgStore (..),
     AStoreType (..),
+    VerifiedCommandsOrBatch (..),
+    BatchCommand (..),
+    ABatchCmd (..),
     newEnv,
     mkJournalStoreConfig,
     msgStore,
     fromMsgStore,
     newClient,
+    batchCmd,
     getServerClients,
     getServerClient,
     insertServerClient,
@@ -390,7 +398,8 @@ data Client s = Client
     ntfSubscriptions :: TMap NotifierId (),
     serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
-    rcvQ :: TBQueue (NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
+    -- rcvQ :: TBQueue (NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd)),
+    rcvQ :: TBQueue (VerifiedCommandsOrBatch s),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
@@ -402,6 +411,27 @@ data Client s = Client
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime
   }
+
+data VerifiedCommandsOrBatch s
+  = VerifiedCommands (NonEmpty (Maybe (StoreQueue s, QueueRec), Transmission Cmd))
+  | VerifiedBatch ABatchCmd (NonEmpty ((StoreQueue s, QueueRec), (CorrId, EntityId)))
+
+data BatchCommand (p :: Party) where
+  BatchSUB :: BatchCommand 'Recipient
+  BatchDEL :: BatchCommand 'Recipient
+  BatchNDEL :: BatchCommand 'Recipient
+  BatchNSUB :: BatchCommand 'Notifier
+
+batchCmd :: Cmd -> Maybe ABatchCmd
+batchCmd (Cmd p cmd) = case cmd of
+  -- SUB -> Just (ABC p BatchSUB)
+  -- DEL -> Just (ABC p BatchDEL)
+  -- NDEL -> Just (ABC p BatchNDEL)
+  -- NSUB -> Just (ABC p BatchNSUB)
+  _ -> Nothing
+{-# INLINE batchCmd #-}
+
+data ABatchCmd = forall p. (PartyI p, QueueParty p) => ABC (SParty p) (BatchCommand p)
 
 data ServerSub = ServerSub (TVar SubscriptionThread) | ProhibitSub
 

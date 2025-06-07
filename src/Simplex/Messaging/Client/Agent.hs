@@ -70,9 +70,9 @@ import Simplex.Messaging.Protocol
     QueueId,
     SMPServer,
     SParty (..),
-    SubscriberParty,
-    subscriberParty,
-    subscriberServiceRole
+    ServiceParty,
+    serviceParty,
+    partyServiceRole
   )
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
@@ -331,11 +331,11 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
 
 reconnectSMPClient :: forall p. SMPClientAgent p -> SMPServer -> (Maybe (ServiceId, Int64), Maybe (Map QueueId C.APrivateAuthKey)) -> ExceptT SMPClientError IO ()
 reconnectSMPClient ca@SMPClientAgent {agentCfg, agentParty} srv (sSub_, qSubs_) =
-  withSMP ca srv $ \smp -> liftIO $ case subscriberParty agentParty of
+  withSMP ca srv $ \smp -> liftIO $ case serviceParty agentParty of
     Just Dict -> resubscribe smp
     Nothing -> pure ()
   where
-    resubscribe :: (PartyI p, SubscriberParty p) => SMPClient -> IO ()
+    resubscribe :: (PartyI p, ServiceParty p) => SMPClient -> IO ()
     resubscribe smp = do
       mapM_ (smpSubscribeService ca smp srv) sSub_
       forM_ qSubs_ $ \qSubs -> do
@@ -394,22 +394,22 @@ withSMP ca srv action = (getSMPServerClient' ca srv >>= action) `catchE` logSMPE
       logInfo $ "SMP error (" <> safeDecodeUtf8 (strEncode $ host srv) <> "): " <> tshow e
       throwE e
 
-subscribeQueuesNtfs :: SMPClientAgent 'Notifier -> SMPServer -> NonEmpty (NotifierId, NtfPrivateAuthKey) -> IO ()
+subscribeQueuesNtfs :: SMPClientAgent 'NotifierService -> SMPServer -> NonEmpty (NotifierId, NtfPrivateAuthKey) -> IO ()
 subscribeQueuesNtfs = subscribeQueues_
 {-# INLINE subscribeQueuesNtfs #-}
 
-subscribeQueues_ :: SubscriberParty p => SMPClientAgent p -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
+subscribeQueues_ :: ServiceParty p => SMPClientAgent p -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
 subscribeQueues_ ca srv subs = do
   atomically $ addPendingSubs ca srv $ L.toList subs
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeQueues ca smp srv subs
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
 
-smpSubscribeQueues :: SubscriberParty p => SMPClientAgent p -> SMPClient -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
+smpSubscribeQueues :: ServiceParty p => SMPClientAgent p -> SMPClient -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
 smpSubscribeQueues ca smp srv subs = do
   rs <- case agentParty ca of
-    SRecipient -> subscribeSMPQueues smp subs
-    SNotifier -> subscribeSMPQueuesNtfs smp subs
+    SRecipientService -> subscribeSMPQueues smp subs
+    SNotifierService -> subscribeSMPQueuesNtfs smp subs
   rs' <-
     atomically $
       ifM
@@ -454,18 +454,18 @@ smpSubscribeQueues ca smp srv subs = do
     notify_ :: (SMPServer -> NonEmpty a -> SMPClientAgentEvent) -> [a] -> IO ()
     notify_ evt qs = mapM_ (notify ca . evt srv) $ L.nonEmpty qs
 
-subscribeServiceNtfs :: SMPClientAgent 'Notifier -> SMPServer -> (ServiceId, Int64) -> IO ()
+subscribeServiceNtfs :: SMPClientAgent 'NotifierService -> SMPServer -> (ServiceId, Int64) -> IO ()
 subscribeServiceNtfs = subscribeService_
 {-# INLINE subscribeServiceNtfs #-}
 
-subscribeService_ :: (PartyI p, SubscriberParty p) => SMPClientAgent p -> SMPServer -> (ServiceId, Int64) -> IO ()
+subscribeService_ :: (PartyI p, ServiceParty p) => SMPClientAgent p -> SMPServer -> (ServiceId, Int64) -> IO ()
 subscribeService_ ca srv serviceSub = do
   atomically $ setPendingServiceSub ca srv $ Just serviceSub
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeService ca smp srv serviceSub
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
 
-smpSubscribeService :: (PartyI p, SubscriberParty p) => SMPClientAgent p -> SMPClient -> SMPServer -> (ServiceId, Int64) -> IO ()
+smpSubscribeService :: (PartyI p, ServiceParty p) => SMPClientAgent p -> SMPClient -> SMPServer -> (ServiceId, Int64) -> IO ()
 smpSubscribeService ca smp srv serviceSub@(serviceId, _) = case smpClientService smp of
   Just service | serviceAvailable service -> subscribe
   _ -> notifyUnavailable
@@ -490,7 +490,7 @@ smpSubscribeService ca smp srv serviceSub@(serviceId, _) = case smpClientService
       setActiveServiceSub ca srv $ Just ((serviceId, n), sessId)
       setPendingServiceSub ca srv Nothing
     serviceAvailable THClientService {serviceRole, serviceId = serviceId'} =
-      serviceId == serviceId' && subscriberServiceRole (agentParty ca) == serviceRole
+      serviceId == serviceId' && partyServiceRole (agentParty ca) == serviceRole
     notifyUnavailable = do
       atomically $ setPendingServiceSub ca srv Nothing
       notify ca $ CAServiceUnavailable srv serviceSub -- this will resubscribe all queues directly
