@@ -316,23 +316,20 @@ data ServerFile = ServerFile
 
 processRequest :: XFTPTransportRequest -> M ()
 processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
-  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
-  | otherwise = do
+  | B.length bodyHead /= xftpBlockSize = sendErr ("", NoEntity) BLOCK
+  | otherwise =
       case xftpDecodeTransmission thParams bodyHead of
-        Right (sig_, signed, (corrId, fId, cmdOrErr)) ->
-          case cmdOrErr of
-            Right cmd -> do
-              let THandleParams {thAuth} = thParams
-              verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) sig_ signed fId cmd >>= \case
-                VRVerified req -> uncurry send =<< processXFTPRequest body req
-                VRFailed e -> send (FRErr e) Nothing
-            Left e -> send (FRErr e) Nothing
-          where
-            send resp = sendXFTPResponse (corrId, fId, resp)
-        Left e -> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
+        Right (Right (signed, (cfIds@(corrId, fId), cmd))) -> do
+          let THandleParams {thAuth} = thParams
+          verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) signed fId cmd >>= \case
+            VRVerified req -> uncurry (sendXFTPResponse cfIds) =<< processXFTPRequest body req
+            VRFailed e -> sendErr cfIds e
+        Right (Left (cfIds, e)) -> sendErr cfIds e
+        Left e -> sendErr ("", NoEntity) e
   where
-    sendXFTPResponse (corrId, fId, resp) serverFile_ = do
-      let t_ = xftpEncodeTransmission thParams (corrId, fId, resp)
+    sendErr cfIds e = sendXFTPResponse cfIds (FRErr e) Nothing
+    sendXFTPResponse cfIds resp serverFile_ = do
+      let t_ = xftpEncodeTransmission thParams (cfIds, resp)
 #ifdef slow_servers
       randomDelay
 #endif
@@ -361,8 +358,8 @@ randomDelay = do
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
-verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> Maybe TAuthorizations -> ByteString -> XFTPFileId -> FileCmd -> M VerificationResult
-verifyXFTPTransmission auth_ tAuth authorized fId cmd =
+verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> (Maybe TAuthorizations, ByteString) -> XFTPFileId -> FileCmd -> M VerificationResult
+verifyXFTPTransmission auth_ (tAuth, authorized) fId cmd =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing

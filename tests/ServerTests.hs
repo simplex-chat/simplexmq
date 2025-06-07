@@ -92,8 +92,8 @@ serverTests = do
     testInvQueueLinkData
     testContactQueueLinkData
 
-pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
-pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
+pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmissionOrError ErrorType BrokerMsg
+pattern Resp corrId queueId command <- Right (_, ((corrId, queueId), command))
 
 pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
 pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
@@ -104,21 +104,21 @@ pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing)
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (SignedTransmissionOrError ErrorType BrokerMsg)
 sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
-  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params ((CorrId corrId, qId), cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (SignedTransmissionOrError ErrorType BrokerMsg)
 signSendRecv h pk = signSendRecv_ h pk Nothing
 
-serviceSignSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+serviceSignSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmissionOrError ErrorType BrokerMsg)
 serviceSignSendRecv h pk = signSendRecv_ h pk . Just
 
-signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmissionOrError ErrorType BrokerMsg)
 signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params ((CorrId corrId, qId), cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
   where
@@ -139,7 +139,7 @@ tPut1 h t = do
   [r] <- tPut h [Right t]
   pure r
 
-tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c 'TClient -> IO (SignedTransmission err cmd)
+tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c 'TClient -> IO (SignedTransmissionOrError err cmd)
 tGet1 h = do
   [r] <- liftIO $ tGet h
   pure r

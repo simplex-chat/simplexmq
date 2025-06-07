@@ -74,7 +74,6 @@ import Simplex.Messaging.Protocol
     subscriberParty,
     subscriberServiceRole
   )
-import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
