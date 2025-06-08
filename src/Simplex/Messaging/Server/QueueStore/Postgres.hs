@@ -258,9 +258,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
             pure $ map (result qs_) qs'
         where
           result :: Either ErrorType (M.Map QueueId q) -> Either QueueId q -> Either ErrorType q
-          result qs_ = \case
-            Right q -> Right q
-            Left qId -> maybe (Left AUTH) Right . M.lookup qId =<< qs_
+          result _ (Right q) = Right q
+          result qs_ (Left qId) = maybe (Left AUTH) Right . M.lookup qId =<< qs_
       cacheRcvQueue (rId, qRec) = do
         sq <- mkQ True rId qRec
         sq' <- withQueueLock sq "getQueue_" $ atomically $

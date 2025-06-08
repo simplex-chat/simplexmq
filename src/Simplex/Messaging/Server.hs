@@ -1108,15 +1108,14 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     verified :: ServerStats -> SignedTransmission Cmd -> VerificationResult s -> IO (VerifiedTransmissionOrError s)
     verified stats (_, _, t@(corrId, entId, Cmd _ command)) = \case
       VRVerified q -> pure $ Right (q, t)
-      VRFailed AUTH -> do
-        case command of
-          SEND {} -> incStat $ msgSentAuth stats
-          SUB -> incStat $ qSubAuth stats
-          NSUB -> incStat $ ntfSubAuth stats
-          GET -> incStat $ msgGetAuth stats
-          _ -> pure ()
-        pure $ Left (corrId, entId, ERR AUTH)
-      VRFailed e -> pure $ Left (corrId, entId, ERR e)
+      VRFailed e -> Left (corrId, entId, ERR e) <$ when (e == AUTH) incAuthStat
+        where
+          incAuthStat = case command of
+            SEND {} -> incStat $ msgSentAuth stats
+            SUB -> incStat $ qSubAuth stats
+            NSUB -> incStat $ ntfSubAuth stats
+            GET -> incStat $ msgGetAuth stats
+            _ -> pure ()
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
