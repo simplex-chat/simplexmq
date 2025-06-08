@@ -112,12 +112,12 @@ getQueue :: (MsgStoreClass s, QueueParty p) => s -> SParty p -> QueueId -> IO (E
 getQueue st = getQueue_ (queueStore st) (mkQueue st)
 {-# INLINE getQueue #-}
 
+getQueueRec :: (MsgStoreClass s, QueueParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+getQueueRec st party qId = getQueue st party qId $>>= readQueueRec
+
 getQueues :: (MsgStoreClass s, BatchParty p) => s -> SParty p -> [QueueId] -> IO [Either ErrorType (StoreQueue s)]
 getQueues st = getQueues_ (queueStore st) (mkQueue st)
 {-# INLINE getQueues #-}
-
-getQueueRec :: (MsgStoreClass s, QueueParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
-getQueueRec st party qId = getQueue st party qId $>>= readQueueRec
 
 getQueueRecs :: (MsgStoreClass s, BatchParty p) => s -> SParty p -> [QueueId] -> IO [Either ErrorType (StoreQueue s, QueueRec)]
 getQueueRecs st party qIds = getQueues st party qIds >>= mapM (fmap join . mapM readQueueRec)

@@ -1083,7 +1083,6 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
     case ts' of
-      [] -> write sndQ errs
       (_, _, (_, _, Cmd p cmd)) : _ -> do
         let service = peerClientService =<< thAuth
         (errs', cmds) <- partitionEithers <$> case batchParty p of
@@ -1095,6 +1094,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
           _ -> mapM (\t -> verified stats t =<< verifyTransmission ms service thAuth t) ts'
         write rcvQ cmds
         write sndQ $ errs ++ errs'
+      [] -> write sndQ errs
   where
     sameParty :: SParty p -> SignedTransmission Cmd -> Bool
     sameParty p (_, _, (_, _, Cmd p' _)) = isJust $ testEquality p p'
@@ -1184,14 +1184,14 @@ verifyTransmission ms service thAuth t@(_, _, (_, queueId, Cmd p _)) = case queu
 verifyLoadedQueue :: Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
 verifyLoadedQueue service thAuth t@(tAuth, authorized, (corrId, _, _)) = \case
   Right q -> verifyQueueTransmission service thAuth t (Just q)
-  Left AUTH -> (dummyVerifyCmd thAuth tAuth authorized corrId) `seq` VRFailed AUTH
+  Left AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
   Left e -> VRFailed e
 
 verifyQueueTransmission :: forall s. Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Maybe (StoreQueue s, QueueRec) -> VerificationResult s
-verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, _, cmd@(Cmd p command))) q_
+verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, _, command@(Cmd p cmd))) q_
   | not checkRole = VRFailed $ CMD PROHIBITED
   | not verifyServiceSig = VRFailed SERVICE
-  | otherwise = vc p command
+  | otherwise = vc p cmd
   where
     vc :: SParty p -> Command p -> VerificationResult s -- this pattern match works with ghc8.10.7, flat case sees it as non-exhastive.
     vc SCreator (NEW NewQueueReq {rcvAuthKey = k}) = verifiedWith k
@@ -1219,7 +1219,7 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, _, cmd@(Cmd 
       _ -> VRFailed SERVICE
     -- this function verify service signature for commands that use it in service sessions
     verifyServiceSig
-      | useServiceAuth cmd = case (service, serviceSig) of
+      | useServiceAuth command = case (service, serviceSig) of
           (Just THClientService {serviceKey = k}, Just s) -> C.verify' k s authorized
           (Nothing, Nothing) -> True
           _ -> False
@@ -1229,7 +1229,7 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, _, cmd@(Cmd 
       (Just THClientService {serviceCertHash = XV.Fingerprint fp}, Just _) -> fp <> authorized
       _ -> authorized
     dummyVerify :: VerificationResult s
-    dummyVerify = (dummyVerifyCmd thAuth tAuth authorized corrId) `seq` VRFailed AUTH
+    dummyVerify = dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
     -- That a specific command requires queue signature verification is determined by `queueParty`,
     -- it should be coordinated with the case in this function (`verifyQueueTransmission`)
     verifyQueue :: ((StoreQueue s, QueueRec) -> VerificationResult s) -> VerificationResult s
@@ -1274,11 +1274,11 @@ verifyCmdAuth thAuth k authenticator authorized (CorrId corrId) = case thAuth of
   Nothing -> False
 
 dummyVerifyCmd :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> Maybe Bool
-dummyVerifyCmd thAuth tAuth authorized corrId = verify . fst <$> tAuth
+dummyVerifyCmd thAuth tAuth authorized corrId = verify <$> tAuth
   where
     verify = \case
-      TASignature (C.ASignature a s) -> C.verify' (dummySignKey a) s authorized
-      TAAuthenticator s -> verifyCmdAuth thAuth dummyKeyX25519 s authorized corrId
+      (TASignature (C.ASignature a s), _) -> C.verify' (dummySignKey a) s authorized
+      (TAAuthenticator s, _) -> verifyCmdAuth thAuth dummyKeyX25519 s authorized corrId
 
 -- These dummy keys are used with `dummyVerify` function to mitigate timing attacks
 -- by having the same time of the response whether a queue exists or nor, for all valid key/signature sizes
@@ -1934,22 +1934,21 @@ client
           pure r3
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
-            rejectOrVerify clntThAuth =
-              \case
-                Left (corrId', entId', e) -> pure $ Left (corrId', entId', ERR e)
-                Right t'@(_, _, t''@(corrId', entId', cmd'))
-                  | allowed -> liftIO $ verified <$> verifyTransmission ms Nothing clntThAuth t'
-                  | otherwise -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
-                  where
-                    allowed = case cmd' of
-                      Cmd SSender SEND {} -> True
-                      Cmd SSender (SKEY _) -> True
-                      Cmd SSenderLink (LKEY _) -> True
-                      Cmd SSenderLink LGET -> True
-                      _ -> False
-                    verified = \case
-                      VRVerified q -> Right (q, t'')
-                      VRFailed e -> Left (corrId', entId', ERR e)
+            rejectOrVerify clntThAuth = \case
+              Left (corrId', entId', e) -> pure $ Left (corrId', entId', ERR e)
+              Right t'@(_, _, t''@(corrId', entId', cmd'))
+                | allowed -> liftIO $ verified <$> verifyTransmission ms Nothing clntThAuth t'
+                | otherwise -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
+                where
+                  allowed = case cmd' of
+                    Cmd SSender SEND {} -> True
+                    Cmd SSender (SKEY _) -> True
+                    Cmd SSenderLink (LKEY _) -> True
+                    Cmd SSenderLink LGET -> True
+                    _ -> False
+                  verified = \case
+                    VRVerified q -> Right (q, t'')
+                    VRFailed e -> Left (corrId', entId', ERR e)
 
         deliverMessage :: T.Text -> QueueRec -> RecipientId -> Sub -> Maybe Message -> IO (Transmission BrokerMsg)
         deliverMessage name qr rId s@Sub {subThread} msg_ = time (name <> " deliver") . atomically $
