@@ -128,17 +128,29 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
       hasLink = maybe (pure False) (\(lnkId, _) -> TM.member lnkId links) queueData
 
-  getQueue_ :: DirectParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
-      SSender -> getSndQueue
-      SProxyService -> getSndQueue
+      SSender -> TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
       SNotifier -> TM.lookupIO qId notifiers $>>= (`TM.lookupIO` queues)
       SSenderLink -> TM.lookupIO qId links $>>= (`TM.lookupIO` queues)
     where
       STMQueueStore {queues, senders, notifiers, links} = st
-      getSndQueue = TM.lookupIO qId senders $>>= (`TM.lookupIO` queues)
+
+  getQueues_ :: BatchParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueues_ st _ party qIds = case party of
+    SRecipient -> do
+      qs <- readTVarIO queues
+      pure $ map (get qs) qIds
+    SNotifier -> do
+      ns <- readTVarIO notifiers
+      qs <- readTVarIO queues
+      pure $ map (get qs <=< get ns) qIds
+    where
+      STMQueueStore {queues, notifiers} = st
+      get :: M.Map QueueId a -> QueueId -> Either ErrorType a
+      get m = maybe (Left AUTH) Right . (`M.lookup` m)
 
   getQueueLinkData :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   getQueueLinkData _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData
@@ -292,7 +304,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         serviceNtfQueues <- newTVar S.empty
         pure STMService {serviceRec = sr, serviceRcvQueues, serviceNtfQueues}
 
-  setQueueService :: (PartyI p, SubscriberParty p) => STMQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueService :: (PartyI p, ServiceParty p) => STMQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   setQueueService st sq party serviceId =
     atomically (readQueueRec qr $>>= setService)
       $>> withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
@@ -301,13 +313,13 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       rId = recipientId sq
       setService :: QueueRec -> STM (Either ErrorType ())
       setService q@QueueRec {rcvServiceId = prevSrvId} = case party of
-        SRecipient
+        SRecipientService
           | prevSrvId == serviceId -> pure $ Right ()
           | otherwise -> do
               updateServiceQueues serviceRcvQueues rId prevSrvId
               let !q' = Just q {rcvServiceId = serviceId}
               writeTVar qr q' $> Right ()
-        SNotifier -> case notifier q of
+        SNotifierService -> case notifier q of
           Nothing -> pure $ Left AUTH
           Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevNtfSrvId}
             | prevNtfSrvId == serviceId -> pure $ Right ()

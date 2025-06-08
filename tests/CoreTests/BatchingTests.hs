@@ -328,7 +328,7 @@ randomSUB_ a v sessId = do
   (rKey, rpKey) <- atomically $ C.generateAuthKeyPair a g
   thAuth_ <- testTHandleAuth v g rKey
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams ((CorrId corrId, EntityId rId), Cmd SRecipient SUB)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId rId, Cmd SRecipient SUB)
   pure $ (,tToSend) <$> authTransmission thAuth_ True (Just rpKey) nonce tForAuth
 
 randomSUBCmdV6 :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
@@ -348,7 +348,7 @@ randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do
   g <- C.newRandom
   rId <- atomically $ C.randomBytes 24 g
-  pure ((CorrId "", EntityId rId), END)
+  pure (CorrId "", EntityId rId, END)
 
 randomNMSGCmd :: SystemTime -> IO (Transmission BrokerMsg)
 randomNMSGCmd ts = do
@@ -359,7 +359,7 @@ randomNMSGCmd ts = do
   nonce <- atomically $ C.randomCbNonce g
   let msgMeta = NMsgMeta {msgId, msgTs = ts}
   Right encNMsgMeta <- pure $ C.cbEncrypt (C.dh' k pk) nonce (smpEncode msgMeta) 128
-  pure ((CorrId "", EntityId nId), NMSG nonce encNMsgMeta)
+  pure (CorrId "", EntityId nId, NMSG nonce encNMsgMeta)
 
 randomSENDv6 :: ByteString -> Int -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSENDv6 = randomSEND_ C.SEd25519 minServerSMPRelayVersion
@@ -376,7 +376,7 @@ randomSEND_ a v sessId len = do
   thAuth_ <- testTHandleAuth v g sKey
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams v sessId
-      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams ((CorrId corrId, EntityId sId), Cmd SSender $ SEND noMsgFlags msg)
+      TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ False (Just spKey) nonce tForAuth
 
 testTHandleParams :: VersionSMP -> ByteString -> THandleParams SMPVersion 'TClient

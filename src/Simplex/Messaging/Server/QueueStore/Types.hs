@@ -31,7 +31,8 @@ class StoreQueueClass q => QueueStoreClass q s where
   loadedQueues :: s -> TMap RecipientId q
   compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  getQueue_ :: DirectParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueues_ :: BatchParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueueLinkData :: s -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   addQueueLinkData :: s -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
   deleteQueueLinkData :: s -> q -> IO (Either ErrorType ())
@@ -45,7 +46,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   updateQueueTime :: s -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
   deleteStoreQueue :: s -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
-  setQueueService :: (PartyI p, SubscriberParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
+  setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getNtfServiceQueueCount :: s -> ServiceId -> IO (Either ErrorType Int64)
 

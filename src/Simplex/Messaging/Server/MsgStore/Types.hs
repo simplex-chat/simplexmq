@@ -18,6 +18,7 @@
 module Simplex.Messaging.Server.MsgStore.Types where
 
 import Control.Concurrent.STM
+import Control.Monad
 import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -107,14 +108,23 @@ addQueue :: MsgStoreClass s => s -> RecipientId -> QueueRec -> IO (Either ErrorT
 addQueue st = addQueue_ (queueStore st) (mkQueue st True)
 {-# INLINE addQueue #-}
 
-getQueue :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
+getQueue :: (MsgStoreClass s, QueueParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s))
 getQueue st = getQueue_ (queueStore st) (mkQueue st)
 {-# INLINE getQueue #-}
 
-getQueueRec :: (MsgStoreClass s, DirectParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
-getQueueRec st party qId =
-  getQueue st party qId
-    $>>= (\q -> maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec q))
+getQueues :: (MsgStoreClass s, BatchParty p) => s -> SParty p -> [QueueId] -> IO [Either ErrorType (StoreQueue s)]
+getQueues st = getQueues_ (queueStore st) (mkQueue st)
+{-# INLINE getQueues #-}
+
+getQueueRec :: (MsgStoreClass s, QueueParty p) => s -> SParty p -> QueueId -> IO (Either ErrorType (StoreQueue s, QueueRec))
+getQueueRec st party qId = getQueue st party qId $>>= readQueueRec
+
+getQueueRecs :: (MsgStoreClass s, BatchParty p) => s -> SParty p -> [QueueId] -> IO [Either ErrorType (StoreQueue s, QueueRec)]
+getQueueRecs st party qIds = getQueues st party qIds >>= mapM (fmap join . mapM readQueueRec)
+
+readQueueRec :: StoreQueueClass q => q -> IO (Either ErrorType (q, QueueRec))
+readQueueRec q = maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec q)
+{-# INLINE readQueueRec #-}
 
 getQueueSize :: MsgStoreClass s => s -> StoreQueue s -> ExceptT ErrorType IO Int
 getQueueSize st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure 0) (getQueueSize_ . fst)

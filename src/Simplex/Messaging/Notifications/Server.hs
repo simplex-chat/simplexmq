@@ -62,7 +62,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessag
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceId, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceId, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
@@ -277,21 +277,21 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             apnsPushQLength
           }
       where
-        getSMPServiceSubMetrics :: forall sub. SMPClientAgent 'Notifier -> (SMPClientAgent 'Notifier -> TMap SMPServer (TVar (Maybe sub))) -> (sub -> Int64) -> IO NtfSMPSubMetrics
+        getSMPServiceSubMetrics :: forall sub. SMPClientAgent 'NotifierService -> (SMPClientAgent 'NotifierService -> TMap SMPServer (TVar (Maybe sub))) -> (sub -> Int64) -> IO NtfSMPSubMetrics
         getSMPServiceSubMetrics a sel subQueueCount = getSubMetrics_ a sel countSubs
           where
             countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TVar (Maybe sub)) -> IO (NtfSMPSubMetrics, S.Set Text)
             countSubs acc (srv, serviceSubs) = maybe acc (subMetricsResult a acc srv . fromIntegral . subQueueCount) <$> readTVarIO serviceSubs
 
-        getSMPSubMetrics :: SMPClientAgent 'Notifier -> (SMPClientAgent 'Notifier -> TMap SMPServer (TMap NotifierId a)) -> IO NtfSMPSubMetrics
+        getSMPSubMetrics :: SMPClientAgent 'NotifierService -> (SMPClientAgent 'NotifierService -> TMap SMPServer (TMap NotifierId a)) -> IO NtfSMPSubMetrics
         getSMPSubMetrics a sel = getSubMetrics_ a sel countSubs
           where
             countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TMap NotifierId a) -> IO (NtfSMPSubMetrics, S.Set Text)
             countSubs acc (srv, queueSubs) = subMetricsResult a acc srv . M.size <$> readTVarIO queueSubs
 
         getSubMetrics_ ::
-          SMPClientAgent 'Notifier ->
-          (SMPClientAgent 'Notifier -> TVar (M.Map SMPServer sub')) ->
+          SMPClientAgent 'NotifierService ->
+          (SMPClientAgent 'NotifierService -> TVar (M.Map SMPServer sub')) ->
           ((NtfSMPSubMetrics, S.Set Text) -> (SMPServer, sub') -> IO (NtfSMPSubMetrics, S.Set Text)) ->
           IO NtfSMPSubMetrics
         getSubMetrics_ a sel countSubs = do
@@ -300,7 +300,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
           (metrics', otherSrvs) <- foldM countSubs (metrics, S.empty) $ M.assocs subs
           pure (metrics' :: NtfSMPSubMetrics) {otherServers = S.size otherSrvs}
 
-        subMetricsResult :: SMPClientAgent 'Notifier -> (NtfSMPSubMetrics, S.Set Text) -> SMPServer -> Int -> (NtfSMPSubMetrics, S.Set Text)
+        subMetricsResult :: SMPClientAgent 'NotifierService -> (NtfSMPSubMetrics, S.Set Text) -> SMPServer -> Int -> (NtfSMPSubMetrics, S.Set Text)
         subMetricsResult a acc@(metrics, !otherSrvs) srv@(SMPServer (h :| _) _ _) cnt
           | isOwnServer a srv =
               let !ownSrvSubs' = M.alter (Just . maybe cnt (+ cnt)) host ownSrvSubs
@@ -314,9 +314,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             NtfSMPSubMetrics {ownSrvSubs, otherSrvSubCount} = metrics
             host = safeDecodeUtf8 $ strEncode h
 
-        getSMPWorkerMetrics :: SMPClientAgent 'Notifier -> TMap SMPServer a -> IO NtfSMPWorkerMetrics
+        getSMPWorkerMetrics :: SMPClientAgent 'NotifierService -> TMap SMPServer a -> IO NtfSMPWorkerMetrics
         getSMPWorkerMetrics a v = workerMetrics a . M.keys <$> readTVarIO v
-        workerMetrics :: SMPClientAgent 'Notifier -> [SMPServer] -> NtfSMPWorkerMetrics
+        workerMetrics :: SMPClientAgent 'NotifierService -> [SMPServer] -> NtfSMPWorkerMetrics
         workerMetrics a srvs = NtfSMPWorkerMetrics {ownServers = reverse ownSrvs, otherServers}
           where
             (ownSrvs, otherServers) = foldl' countSrv ([], 0) srvs
@@ -455,7 +455,7 @@ resubscribe NtfSubscriber {smpAgent = ca} = do
     counts <- mapConcurrently (subscribeSrvSubs ca st batchSize) srvs
     logNote $ "Completed all SMP resubscriptions for " <> tshow (length srvs) <> " servers (" <> tshow (sum counts) <> " subscriptions)"
 
-subscribeSrvSubs :: SMPClientAgent 'Notifier -> NtfPostgresStore -> Int -> (SMPServer, Int64, Maybe (ServiceId, Int64)) -> IO Int
+subscribeSrvSubs :: SMPClientAgent 'NotifierService -> NtfPostgresStore -> Int -> (SMPServer, Int64, Maybe (ServiceId, Int64)) -> IO Int
 subscribeSrvSubs ca st batchSize (srv, srvId, service_) = do
   let srvStr = safeDecodeUtf8 (strEncode $ L.head $ host srv)
   logNote $ "Starting SMP resubscriptions for " <> srvStr
@@ -709,25 +709,24 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: Transport c => NtfPostgresStore -> THandleNTF c 'TServer -> NtfServerClient -> IO ()
 receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
-  ts <- L.toList <$> tGet th
+  ts <- L.toList <$> tGetServer th
   atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
   (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
   write sndQ errs
   write rcvQ cmds
   where
-    cmdAction =
-      \case
-        Left (ceIds, e) -> do
-          logError $ "invalid client request: " <> tshow e
-          pure $ Left (ceIds, NRErr e)
-        Right t@(_, (ceIds@(corrId, _), cmd)) ->
-          verified =<< verifyNtfTransmission st ((,C.cbNonce (SMP.bs corrId)) <$> thAuth) t cmd
-          where
-            verified = \case
-              VRVerified req -> pure $ Right req
-              VRFailed e -> do
-                logError "unauthorized client request"
-                pure $ Left (ceIds, NRErr e)
+    cmdAction = \case
+      Left (corrId, entId, e) -> do
+        logError $ "invalid client request: " <> tshow e
+        pure $ Left (corrId, entId, NRErr e)
+      Right t@(_, _, (corrId, entId, _)) ->
+        verified =<< verifyNtfTransmission st thAuth t
+        where
+          verified = \case
+            VRVerified req -> pure $ Right req
+            VRFailed e -> do
+              logError "unauthorized client request"
+              pure $ Left (corrId, entId, NRErr e)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
@@ -738,10 +737,10 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
 
 data VerificationResult = VRVerified NtfRequest | VRFailed ErrorType
 
-verifyNtfTransmission :: NtfPostgresStore -> Maybe (THandleAuth 'TServer, C.CbNonce) -> SignedTransmission NtfCmd -> NtfCmd -> IO VerificationResult
-verifyNtfTransmission st auth_ ((tAuth, authorized), (ceIds@(corrId, entId), _)) = \case
+verifyNtfTransmission :: NtfPostgresStore -> Maybe (THandleAuth 'TServer) -> SignedTransmission NtfCmd -> IO VerificationResult
+verifyNtfTransmission st thAuth (tAuth, authorized, (corrId, entId, cmd)) = case cmd of
   NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _))
-    | verifyCmdAuthorization auth_ tAuth authorized k ->
+    | verifyCmdAuthorization thAuth tAuth authorized corrId k ->
         result <$> findNtfTokenRegistration st tkn
     | otherwise -> pure $ VRFailed AUTH
     where
@@ -761,19 +760,19 @@ verifyNtfTransmission st auth_ ((tAuth, authorized), (ceIds@(corrId, entId), _))
       verify (t, s_) = verifyToken t $ case s_ of
         Nothing -> NtfReqNew corrId (ANE SSubscription sub)
         Just s -> subCmd s c
-  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing ceIds
+  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
   NtfCmd SSubscription c -> either err verify <$> getNtfSubscription st entId
     where
       verify (t, s) = verifyToken t $ subCmd s c
   where
-    tknCmd t c = NtfReqCmd SToken (NtfTkn t) (ceIds, c)
-    subCmd s c = NtfReqCmd SSubscription (NtfSub s) (ceIds, c)
+    tknCmd t c = NtfReqCmd SToken (NtfTkn t) (corrId, entId, c)
+    subCmd s c = NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c)
     verifyToken :: NtfTknRec -> NtfRequest -> VerificationResult
     verifyToken NtfTknRec {tknVerifyKey} r
-      | verifyCmdAuthorization auth_ tAuth authorized tknVerifyKey = VRVerified r
+      | verifyCmdAuthorization thAuth tAuth authorized corrId tknVerifyKey = VRVerified r
       | otherwise = VRFailed AUTH
     err = \case -- signature verification for AUTH errors mitigates timing attacks for existence checks
-      AUTH -> maybe False (dummyVerifyCmd auth_ authorized) tAuth `seq` VRFailed AUTH
+      AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
       e -> VRFailed e
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
@@ -785,7 +784,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> ((corrId, NoEntity),) <$> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
         logDebug "TNEW - new token"
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
@@ -798,8 +797,8 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
           incNtfStatT token ntfVrfQueued
           incNtfStatT token tknCreated
           pure $ NRTknId tknId srvDhPubKey
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (ctIds@(_, tknId), cmd) -> do
-        (ctIds,) <$> case cmd of
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
+        (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
             logDebug "TNEW - registered token"
             let dhSecret = C.dh' dhPubKey tknDhPrivKey
@@ -860,9 +859,9 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
               incNtfStat subCreated
               pure $ NRSubId subId
             False -> pure $ NRErr AUTH
-        pure ((corrId, NoEntity), resp)
-      NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (csIds@(_, subId), cmd) -> do
-        (csIds,) <$> case cmd of
+        pure (corrId, NoEntity, resp)
+      NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+        (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
             pure $
@@ -880,7 +879,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
               incNtfStat subDeleted
               pure NROk
           PING -> pure NRPong
-      NtfReqPing ceIds -> pure (ceIds, NRPong)
+      NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
     getId = fmap EntityId . randomBytes =<< asks (subIdBytes . config)
     getRegCode :: M NtfRegCode
