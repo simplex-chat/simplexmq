@@ -1083,10 +1083,10 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
     case ts' of
-      (_, _, (_, _, Cmd p cmd)) : _ -> do
+      (_, _, (_, _, Cmd p cmd)) : rest -> do
         let service = peerClientService =<< thAuth
         (errs', cmds) <- partitionEithers <$> case batchParty p of
-          Just Dict | all (sameParty p) ts'-> do
+          Just Dict | not (null rest) && all (sameParty p) ts'-> do
             updateBatchStats stats cmd -- even if nothing is verified
             let queueId (_, _, (_, qId, _)) = qId
             qs <- getQueueRecs ms p $ map queueId ts'
