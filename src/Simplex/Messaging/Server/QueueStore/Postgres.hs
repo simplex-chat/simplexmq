@@ -352,7 +352,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           db
           [sql|
             UPDATE msg_queues
-            SET notifier_id = ?, notifier_key = ?, rcv_ntf_dh_secret = ?
+            SET notifier_id = ?, notifier_key = ?, rcv_ntf_dh_secret = ?, ntf_service_id = NULL
             WHERE recipient_id = ? AND deleted_at IS NULL
           |]
           (nId, notifierKey, rcvNtfDhSecret, rId)
