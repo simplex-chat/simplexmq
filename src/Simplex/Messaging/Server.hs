@@ -1188,25 +1188,26 @@ verifyLoadedQueue service thAuth (signed, ((corrId, _), cmd)) = \case
   Left e -> VRFailed e
 
 verifyQueueTransmission :: forall s. Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SentRawTransmission -> CorrId -> Maybe (StoreQueue s, QueueRec) -> Cmd -> VerificationResult s
-verifyQueueTransmission service thAuth signed@(tAuth, authorized) corrId q_ cmd@(Cmd p _)
+verifyQueueTransmission service thAuth signed@(tAuth, authorized) corrId q_ cmd@(Cmd p command)
   | not checkRole = VRFailed $ CMD PROHIBITED
   | not verifyServiceSig = VRFailed SERVICE
-  | otherwise = case cmd of
-      Cmd SCreator (NEW NewQueueReq {rcvAuthKey = k}) -> verifiedWith k
-      Cmd SRecipient SUB -> verifyQueue $ \q -> verifiedWithKeys $ recipientKeys (snd q)
-      Cmd SRecipient _ -> verifyQueue $ \q -> verifiedWithKeys $ recipientKeys (snd q)
-      Cmd SRecipientService SUBS -> verifyServiceCmd
-      Cmd SSender (SKEY k) -> verifySecure k
-      -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
-      Cmd SSender SEND {} -> verifyQueue $ \q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified q_ else VRFailed AUTH
-      Cmd SIdleClient PING -> VRVerified Nothing
-      Cmd SSenderLink (LKEY k) -> verifySecure k
-      Cmd SSenderLink LGET -> verifyQueue $ \q -> if isContactQueue (snd q) then VRVerified q_ else VRFailed AUTH
-      Cmd SNotifier NSUB -> verifyQueue $ \q -> maybe dummyVerify (\n -> verifiedWith $ notifierKey n) (notifier $ snd q)
-      Cmd SNotifierService NSUBS -> verifyServiceCmd
-      Cmd SProxiedClient _ -> VRVerified Nothing
-      Cmd SProxyService (RFWD _) -> VRVerified Nothing
+  | otherwise = vc p command
   where
+    vc :: SParty p -> Command p -> VerificationResult s -- this pattern match works with ghc8.10.7, flat case sees it as non-exhastive.
+    vc SCreator (NEW NewQueueReq {rcvAuthKey = k}) = verifiedWith k
+    vc SRecipient SUB = verifyQueue $ \q -> verifiedWithKeys $ recipientKeys (snd q)
+    vc SRecipient _ = verifyQueue $ \q -> verifiedWithKeys $ recipientKeys (snd q)
+    vc SRecipientService SUBS = verifyServiceCmd
+    vc SSender (SKEY k) = verifySecure k
+    -- SEND will be accepted without authorization before the queue is secured with KEY, SKEY or LSKEY command
+    vc SSender SEND {} = verifyQueue $ \q -> if maybe (isNothing tAuth) verify (senderKey $ snd q) then VRVerified q_ else VRFailed AUTH
+    vc SIdleClient PING = VRVerified Nothing
+    vc SSenderLink (LKEY k) = verifySecure k
+    vc SSenderLink LGET = verifyQueue $ \q -> if isContactQueue (snd q) then VRVerified q_ else VRFailed AUTH
+    vc SNotifier NSUB = verifyQueue $ \q -> maybe dummyVerify (\n -> verifiedWith $ notifierKey n) (notifier $ snd q)
+    vc SNotifierService NSUBS = verifyServiceCmd
+    vc SProxiedClient _ = VRVerified Nothing
+    vc SProxyService (RFWD _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True
