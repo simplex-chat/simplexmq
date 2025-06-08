@@ -286,7 +286,7 @@ logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
 logNewService :: StoreLog 'WriteMode -> ServiceRec -> IO ()
 logNewService s  = writeStoreLogRecord s . NewService
 
-logQueueService :: (PartyI p, SubscriberParty p) => StoreLog 'WriteMode -> RecipientId -> SParty p -> Maybe ServiceId -> IO ()
+logQueueService :: (PartyI p, ServiceParty p) => StoreLog 'WriteMode -> RecipientId -> SParty p -> Maybe ServiceId -> IO ()
 logQueueService s rId party = writeStoreLogRecord s . QueueService rId (ASP party)
 
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)

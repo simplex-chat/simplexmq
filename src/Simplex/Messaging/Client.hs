@@ -772,7 +772,7 @@ createSMPQueue ::
   -- Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd =
-  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
+  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SCreator $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -853,7 +853,7 @@ nsubResponse_ = \case
   r' -> Left $ unexpectedResponse r'
 {-# INLINE nsubResponse_ #-}
 
-subscribeService :: forall p. (PartyI p, SubscriberParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Int64
+subscribeService :: forall p. (PartyI p, ServiceParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Int64
 subscribeService c party = case smpClientService c of
   Just THClientService {serviceId, serviceKey} -> do
     liftIO $ enablePings c
@@ -863,8 +863,8 @@ subscribeService c party = case smpClientService c of
     where
       subCmd :: Command p
       subCmd = case party of
-        SRecipient -> SUBS
-        SNotifier -> NSUBS
+        SRecipientService -> SUBS
+        SNotifierService -> NSUBS
   Nothing -> throwE PCEServiceUnavailable
 
 smpClientService :: SMPClient -> Maybe THClientService

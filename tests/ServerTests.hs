@@ -95,7 +95,7 @@ serverTests = do
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmissionOrError ErrorType BrokerMsg
 pattern Resp corrId queueId command <- Right (_, ((corrId, queueId), command))
 
-pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
+pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Creator
 pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg

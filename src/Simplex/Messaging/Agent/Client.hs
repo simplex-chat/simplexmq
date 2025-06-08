@@ -33,6 +33,7 @@ module Simplex.Messaging.Agent.Client
     withConnLocks,
     withInvLock,
     withLockMap,
+    withLocksMap,
     getMapLock,
     ipAddressProtected,
     closeAgentClient,
@@ -1004,16 +1005,16 @@ withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
 withConnLocks :: AgentClient -> Set ConnId -> Text -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks} = withLocksMap_ connLocks
+withConnLocks AgentClient {connLocks} = withLocksMap connLocks
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
 withLockMap = withGetLock . getMapLock
 {-# INLINE withLockMap #-}
 
-withLocksMap_ :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> Text -> m a -> m a
-withLocksMap_ = withGetLocks . getMapLock
-{-# INLINE withLocksMap_ #-}
+withLocksMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> Text -> m a -> m a
+withLocksMap = withGetLocks . getMapLock
+{-# INLINE withLocksMap #-}
 
 getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
 getMapLock locks key = TM.lookup key locks >>= maybe newLock pure

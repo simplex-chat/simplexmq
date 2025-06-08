@@ -53,7 +53,7 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (CorrId (..), BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, TAuthorizations, pattern NoEntity)
+import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
 import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
@@ -319,9 +319,9 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   | B.length bodyHead /= xftpBlockSize = sendErr ("", NoEntity) BLOCK
   | otherwise =
       case xftpDecodeTransmission thParams bodyHead of
-        Right (Right (signed, (cfIds@(corrId, fId), cmd))) -> do
+        Right (Right t@(_, (cfIds, _))) -> do
           let THandleParams {thAuth} = thParams
-          verifyXFTPTransmission ((,C.cbNonce (bs corrId)) <$> thAuth) signed fId cmd >>= \case
+          verifyXFTPTransmission thAuth t >>= \case
             VRVerified req -> uncurry (sendXFTPResponse cfIds) =<< processXFTPRequest body req
             VRFailed e -> sendErr cfIds e
         Right (Left (cfIds, e)) -> sendErr cfIds e
@@ -358,8 +358,8 @@ randomDelay = do
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
-verifyXFTPTransmission :: Maybe (THandleAuth 'TServer, C.CbNonce) -> (Maybe TAuthorizations, ByteString) -> XFTPFileId -> FileCmd -> M VerificationResult
-verifyXFTPTransmission auth_ (tAuth, authorized) fId cmd =
+verifyXFTPTransmission :: Maybe (THandleAuth 'TServer) -> SignedTransmission FileCmd -> M VerificationResult
+verifyXFTPTransmission thAuth (signed, ((corrId, fId), cmd)) =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
@@ -378,9 +378,9 @@ verifyXFTPTransmission auth_ (tAuth, authorized) fId cmd =
                 EntityBlocked info -> VRFailed $ BLOCKED info
                 EntityOff -> noFileAuth
           Left _ -> pure noFileAuth
-        noFileAuth = maybe False (dummyVerifyCmd Nothing authorized) tAuth `seq` VRFailed AUTH
+        noFileAuth = dummyVerifyCmd thAuth signed corrId `seq` VRFailed AUTH
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdAuthorization auth_ tAuth authorized k then VRVerified req else VRFailed AUTH
+    req `verifyWith` k = if verifyCmdAuthorization thAuth signed corrId k then VRVerified req else VRFailed AUTH
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case

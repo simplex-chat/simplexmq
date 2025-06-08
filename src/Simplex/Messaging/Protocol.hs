@@ -66,8 +66,9 @@ module Simplex.Messaging.Protocol
     EncDataBytes (..),
     Party (..),
     Cmd (..),
-    DirectParty,
-    SubscriberParty,
+    QueueParty,
+    BatchParty,
+    ServiceParty,
     ASubscriberParty (..),
     BrokerMsg (..),
     SParty (..),
@@ -153,8 +154,11 @@ module Simplex.Messaging.Protocol
     currentSMPClientVersion,
     senderCanSecure,
     queueReqMode,
-    subscriberParty,
-    subscriberServiceRole,
+    queueParty,
+    batchParty,
+    serviceParty,
+    partyClientRole,
+    partyServiceRole,
     userProtocol,
     rcvMessageMeta,
     noMsgFlags,
@@ -303,22 +307,40 @@ e2eEncMessageLength :: Int
 e2eEncMessageLength = 16000 -- 15988 .. 16005
 
 -- | SMP protocol clients
-data Party = Recipient | Sender | Notifier | LinkClient | ProxiedClient | ProxyService
+data Party
+  = Creator
+  | Recipient
+  | RecipientService
+  | Sender
+  | IdleClient
+  | Notifier
+  | NotifierService
+  | LinkClient
+  | ProxiedClient
+  | ProxyService
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
 data SParty :: Party -> Type where
+  SCreator :: SParty Creator
   SRecipient :: SParty Recipient
+  SRecipientService :: SParty RecipientService
   SSender :: SParty Sender
+  SIdleClient :: SParty IdleClient
   SNotifier :: SParty Notifier
+  SNotifierService :: SParty NotifierService
   SSenderLink :: SParty LinkClient
   SProxiedClient :: SParty ProxiedClient
   SProxyService :: SParty ProxyService
 
 instance TestEquality SParty where
+  testEquality SCreator SCreator = Just Refl
   testEquality SRecipient SRecipient = Just Refl
+  testEquality SRecipientService SRecipientService = Just Refl
   testEquality SSender SSender = Just Refl
+  testEquality SIdleClient SIdleClient = Just Refl
   testEquality SNotifier SNotifier = Just Refl
+  testEquality SNotifierService SNotifierService = Just Refl
   testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
   testEquality SProxyService SProxyService = Just Refl
@@ -328,11 +350,19 @@ deriving instance Show (SParty p)
 
 class PartyI (p :: Party) where sParty :: SParty p
 
+instance PartyI Creator where sParty = SCreator
+
 instance PartyI Recipient where sParty = SRecipient
+
+instance PartyI RecipientService where sParty = SRecipientService
 
 instance PartyI Sender where sParty = SSender
 
+instance PartyI IdleClient where sParty = SIdleClient
+
 instance PartyI Notifier where sParty = SNotifier
+
+instance PartyI NotifierService where sParty = SNotifierService
 
 instance PartyI LinkClient where sParty = SSenderLink
 
@@ -340,22 +370,52 @@ instance PartyI ProxiedClient where sParty = SProxiedClient
 
 instance PartyI ProxyService where sParty = SProxyService
 
-type family DirectParty (p :: Party) :: Constraint where
-  DirectParty Recipient = ()
-  DirectParty Sender = ()
-  DirectParty Notifier = ()
-  DirectParty LinkClient = ()
-  DirectParty ProxyService = ()
-  DirectParty p =
-    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not direct"))
+-- command parties that can read queues
+type family QueueParty (p :: Party) :: Constraint where
+  QueueParty Recipient = ()
+  QueueParty Sender = ()
+  QueueParty Notifier = ()
+  QueueParty LinkClient = ()
+  QueueParty p =
+    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not QueueParty"))
 
-type family SubscriberParty (p :: Party) :: Constraint where
-  SubscriberParty Recipient = ()
-  SubscriberParty Notifier = ()
-  SubscriberParty p =
-    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not subscriber"))
+queueParty :: SParty p -> Maybe (Dict (PartyI p, QueueParty p))
+queueParty = \case
+  SRecipient -> Just Dict
+  SSender -> Just Dict
+  SSenderLink -> Just Dict
+  SNotifier -> Just Dict
+  _ -> Nothing
+{-# INLINE queueParty #-}
 
-data ASubscriberParty = forall p. (PartyI p, SubscriberParty p) => ASP (SParty p)
+type family BatchParty (p :: Party) :: Constraint where
+  BatchParty Recipient = ()
+  BatchParty Notifier = ()
+  BatchParty p =
+    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not BatchParty"))
+
+batchParty :: SParty p -> Maybe (Dict (PartyI p, BatchParty p))
+batchParty = \case
+  SRecipient -> Just Dict
+  SNotifier -> Just Dict
+  _ -> Nothing
+{-# INLINE batchParty #-}
+
+-- command parties that can subscribe to individual queues
+type family ServiceParty (p :: Party) :: Constraint where
+  ServiceParty RecipientService = ()
+  ServiceParty NotifierService = ()
+  ServiceParty p =
+    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not ServiceParty"))
+
+serviceParty :: SParty p -> Maybe (Dict (PartyI p, ServiceParty p))
+serviceParty = \case
+  SRecipientService -> Just Dict
+  SNotifierService -> Just Dict
+  _ -> Nothing
+{-# INLINE serviceParty #-}
+
+data ASubscriberParty = forall p. (PartyI p, ServiceParty p) => ASP (SParty p)
 
 deriving instance Show ASubscriberParty
 
@@ -364,30 +424,37 @@ instance Eq ASubscriberParty where
 
 instance Encoding ASubscriberParty where
   smpEncode = \case
-    ASP SRecipient -> "R"
-    ASP SNotifier -> "N"
+    ASP SRecipientService -> "R"
+    ASP SNotifierService -> "N"
   smpP =
     A.anyChar >>= \case
-      'R' -> pure $ ASP SRecipient
-      'N' -> pure $ ASP SNotifier
+      'R' -> pure $ ASP SRecipientService
+      'N' -> pure $ ASP SNotifierService
       _ -> fail "bad ASubscriberParty"
 
 instance StrEncoding ASubscriberParty where
   strEncode = smpEncode
   strP = smpP
 
-subscriberParty :: SParty p -> Maybe (Dict (PartyI p, SubscriberParty p))
-subscriberParty = \case
-  SRecipient -> Just Dict
-  SNotifier -> Just Dict
-  _ -> Nothing
-{-# INLINE subscriberParty #-}
+partyClientRole :: SParty p -> Maybe SMPServiceRole
+partyClientRole = \case
+  SCreator -> Just SRMessaging
+  SRecipient -> Just SRMessaging
+  SRecipientService -> Just SRMessaging
+  SSender -> Just SRMessaging
+  SIdleClient -> Nothing
+  SNotifier -> Just SRNotifier
+  SNotifierService -> Just SRNotifier
+  SSenderLink -> Just SRMessaging
+  SProxiedClient -> Just SRMessaging
+  SProxyService -> Just SRProxy
+{-# INLINE partyClientRole #-}
 
-subscriberServiceRole :: SubscriberParty p => SParty p -> SMPServiceRole
-subscriberServiceRole = \case
-  SRecipient -> SRMessaging
-  SNotifier -> SRNotifier
-{-# INLINE subscriberServiceRole #-}
+partyServiceRole :: ServiceParty p => SParty p -> SMPServiceRole
+partyServiceRole = \case
+  SRecipientService -> SRMessaging
+  SNotifierService -> SRNotifier
+{-# INLINE partyServiceRole #-}
 
 -- | Type for client command of any participant.
 data Cmd = forall p. PartyI p => Cmd (SParty p) (Command p)
@@ -465,10 +532,10 @@ data Command (p :: Party) where
   -- v6 of SMP servers only support signature algorithm for command authorization.
   -- v7 of SMP servers additionally support additional layer of authenticated encryption.
   -- RcvPublicAuthKey is defined as C.APublicKey - it can be either signature or DH public keys.
-  NEW :: NewQueueReq -> Command Recipient
+  NEW :: NewQueueReq -> Command Creator
   SUB :: Command Recipient
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  SUBS :: Command Recipient
+  SUBS :: Command RecipientService
   KEY :: SndPublicAuthKey -> Command Recipient
   RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
@@ -485,14 +552,14 @@ data Command (p :: Party) where
   -- SEND v1 has to be supported for encoding/decoding
   -- SEND :: MsgBody -> Command Sender
   SEND :: MsgFlags -> MsgBody -> Command Sender
-  PING :: Command Sender
+  PING :: Command IdleClient
   -- Client accessing short links
   LKEY :: SndPublicAuthKey -> Command LinkClient
   LGET :: Command LinkClient
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  NSUBS :: Command Notifier
+  NSUBS :: Command NotifierService
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -826,9 +893,9 @@ noMsgFlags = MsgFlags {notification = False}
 -- * SMP command tags
 
 data CommandTag (p :: Party) where
-  NEW_ :: CommandTag Recipient
+  NEW_ :: CommandTag Creator
   SUB_ :: CommandTag Recipient
-  SUBS_ :: CommandTag Recipient
+  SUBS_ :: CommandTag RecipientService
   KEY_ :: CommandTag Recipient
   RKEY_ :: CommandTag Recipient
   LSET_ :: CommandTag Recipient
@@ -842,14 +909,14 @@ data CommandTag (p :: Party) where
   QUE_ :: CommandTag Recipient
   SKEY_ :: CommandTag Sender
   SEND_ :: CommandTag Sender
-  PING_ :: CommandTag Sender
+  PING_ :: CommandTag IdleClient
   LKEY_ :: CommandTag LinkClient
   LGET_ :: CommandTag LinkClient
   PRXY_ :: CommandTag ProxiedClient
   PFWD_ :: CommandTag ProxiedClient
   RFWD_ :: CommandTag ProxyService
   NSUB_ :: CommandTag Notifier
-  NSUBS_ :: CommandTag Notifier
+  NSUBS_ :: CommandTag NotifierService
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -915,9 +982,9 @@ instance PartyI p => Encoding (CommandTag p) where
 
 instance ProtocolMsgTag CmdTag where
   decodeTag = \case
-    "NEW" -> Just $ CT SRecipient NEW_
+    "NEW" -> Just $ CT SCreator NEW_
     "SUB" -> Just $ CT SRecipient SUB_
-    "SUBS" -> Just $ CT SRecipient SUBS_
+    "SUBS" -> Just $ CT SRecipientService SUBS_
     "KEY" -> Just $ CT SRecipient KEY_
     "RKEY" -> Just $ CT SRecipient RKEY_
     "LSET" -> Just $ CT SRecipient LSET_
@@ -931,14 +998,14 @@ instance ProtocolMsgTag CmdTag where
     "QUE" -> Just $ CT SRecipient QUE_
     "SKEY" -> Just $ CT SSender SKEY_
     "SEND" -> Just $ CT SSender SEND_
-    "PING" -> Just $ CT SSender PING_
+    "PING" -> Just $ CT SIdleClient PING_
     "LKEY" -> Just $ CT SSenderLink LKEY_
     "LGET" -> Just $ CT SSenderLink LGET_
     "PRXY" -> Just $ CT SProxiedClient PRXY_
     "PFWD" -> Just $ CT SProxiedClient PFWD_
     "RFWD" -> Just $ CT SProxyService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
-    "NSUBS" -> Just $ CT SNotifier NSUBS_
+    "NSUBS" -> Just $ CT SNotifierService NSUBS_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1563,7 +1630,7 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
     Cmd _ NSUB -> True
     _ -> False
   {-# INLINE useServiceAuth #-}
-  protocolPing = Cmd SSender PING
+  protocolPing = Cmd SIdleClient PING
   {-# INLINE protocolPing #-}
   protocolError = \case
     ERR e -> Just e
@@ -1662,14 +1729,14 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
   {-# INLINE encodeProtocol #-}
 
   protocolP v = \case
-    CT SRecipient tag ->
-      Cmd SRecipient <$> case tag of
-        NEW_
-          | v >= shortLinksSMPVersion -> NEW <$> new smpP smpP
-          | v >= sndAuthKeySMPVersion -> NEW <$> new smpP (qReq <$> smpP)
-          | otherwise -> NEW <$> new auth (pure Nothing)
+    CT SCreator NEW_ -> Cmd SCreator <$> newCmd
+      where
+        newCmd
+          | v >= shortLinksSMPVersion = new smpP smpP
+          | v >= sndAuthKeySMPVersion = new smpP (qReq <$> smpP)
+          | otherwise = new auth (pure Nothing)
           where
-            new p1 p2 = do
+            new p1 p2 = NEW <$> do
               rcvAuthKey <- _smpP
               rcvDhKey <- smpP
               auth_ <- p1
@@ -1680,8 +1747,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
               pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData} -- ntfCreds
             auth = optional (A.char 'A' *> smpP)
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
+    CT SRecipient tag ->
+      Cmd SRecipient <$> case tag of
         SUB_ -> pure SUB
-        SUBS_ -> pure SUBS
         KEY_ -> KEY <$> _smpP
         RKEY_ -> RKEY <$> _smpP
         LSET_ -> LSET <$> _smpP <*> smpP
@@ -1693,11 +1761,12 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         OFF_ -> pure OFF
         DEL_ -> pure DEL
         QUE_ -> pure QUE
+    CT SRecipientService SUBS_ -> pure $ Cmd SRecipientService SUBS
     CT SSender tag ->
       Cmd SSender <$> case tag of
         SKEY_ -> SKEY <$> _smpP
         SEND_ -> SEND <$> _smpP <*> (unTail <$> _smpP)
-        PING_ -> pure PING
+    CT SIdleClient PING_ -> pure $ Cmd SIdleClient PING
     CT SProxyService RFWD_ ->
       Cmd SProxyService . RFWD . EncFwdTransmission . unTail <$> _smpP
     CT SSenderLink tag ->
@@ -1708,10 +1777,8 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       Cmd SProxiedClient <$> case tag of
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
-    CT SNotifier tag ->
-      pure $ Cmd SNotifier $ case tag of
-        NSUB_ -> NSUB
-        NSUBS_ -> NSUBS
+    CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
+    CT SNotifierService NSUBS_ -> pure $ Cmd SNotifierService NSUBS
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
