@@ -44,6 +44,7 @@ import Simplex.Messaging.Protocol
     EntityId (..),
     RecipientId,
     SenderId,
+    RawTransmission,
     SentRawTransmission,
     SignedTransmissionOrError,
     SndPublicAuthKey,
@@ -53,7 +54,8 @@ import Simplex.Messaging.Protocol
     encodeTransmission,
     encodeTransmissionForAuth,
     messageTagP,
-    tDecodeParseValidate,
+    tDecodeServer,
+    tDecodeClient,
     tEncodeBatch1,
     tParse,
   )
@@ -336,7 +338,7 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   _ -> Nothing
 
 xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion XFTPErrorType c => THandleParams XFTPVersion 'TClient -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey t@((corrId, _), _) = do
+xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey t@(corrId, _, _) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams t
   xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth False (Just pKey) (C.cbNonce $ bs corrId) tForAuth
 
@@ -347,11 +349,23 @@ xftpEncodeTransmission thParams t = xftpEncodeBatch1 (Nothing, encodeTransmissio
 xftpEncodeBatch1 :: SentRawTransmission -> Either TransportError ByteString
 xftpEncodeBatch1 t = first (const TELargeMsg) $ C.pad (tEncodeBatch1 False t) xftpBlockSize
 
-xftpDecodeTransmission :: ProtocolEncoding XFTPVersion XFTPErrorType c => THandleParams XFTPVersion p -> ByteString -> Either XFTPErrorType (SignedTransmissionOrError XFTPErrorType c)
-xftpDecodeTransmission thParams t = do
+xftpDecodeTServer :: THandleParams XFTPVersion 'TServer -> ByteString -> Either XFTPErrorType (SignedTransmissionOrError XFTPErrorType FileCmd)
+xftpDecodeTServer = xftpDecodeTransmission tDecodeServer
+{-# INLINE xftpDecodeTServer #-}
+
+xftpDecodeTClient :: THandleParams XFTPVersion 'TClient -> ByteString -> Either XFTPErrorType (Transmission (Either XFTPErrorType FileResponse))
+xftpDecodeTClient = xftpDecodeTransmission tDecodeClient
+{-# INLINE xftpDecodeTClient #-}
+
+xftpDecodeTransmission ::
+  (THandleParams XFTPVersion p -> Either TransportError RawTransmission -> r) ->
+  THandleParams XFTPVersion p ->
+  ByteString ->
+  Either XFTPErrorType r
+xftpDecodeTransmission tDecode thParams t = do
   t' <- first (const BLOCK) $ C.unPad t
   case tParse thParams t' of
-    t'' :| [] -> Right $ tDecodeParseValidate thParams t''
+    t'' :| [] -> Right $ tDecode thParams t''
     _ -> Left BLOCK
 
 $(J.deriveJSON (enumJSON $ dropPrefix "F") ''FileParty)

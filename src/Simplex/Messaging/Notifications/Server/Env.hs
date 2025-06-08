@@ -172,7 +172,7 @@ getPushClient s@NtfPushServer {pushClients} pp =
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity
   | forall e. NtfEntityI e => NtfReqCmd (SNtfEntity e) (NtfEntityRec e) (Transmission (NtfCommand e))
-  | NtfReqPing (CorrId, NtfEntityId)
+  | NtfReqPing CorrId NtfEntityId
 
 data NtfServerClient = NtfServerClient
   { rcvQ :: TBQueue (NonEmpty NtfRequest),

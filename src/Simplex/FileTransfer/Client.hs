@@ -194,7 +194,7 @@ sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
   let corrIdUsedAsNonce = ""
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeAuthTransmission thParams pKey ((corrIdUsedAsNonce, fId), FileCmd (sFileParty @p) cmd)
+      xftpEncodeAuthTransmission thParams pKey (corrIdUsedAsNonce, fId, FileCmd (sFileParty @p) cmd)
   sendXFTPTransmission c t chunkSpec_
 
 sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
@@ -204,11 +204,12 @@ sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = d
   HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req (Just reqTimeout)
   when (B.length bodyHead /= xftpBlockSize) $ throwE $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
-  liftEither (first PCEResponseError $ xftpDecodeTransmission thParams bodyHead) >>= \case
-    Right (_, (_, r)) -> case protocolError r of
+  (_, _fId, respOrErr) <-liftEither $ first PCEResponseError $ xftpDecodeTClient thParams bodyHead
+  case respOrErr of
+    Right r -> case protocolError r of
       Just e -> throwE $ PCEProtocolError e
       _ -> pure (r, body)
-    Left (_, e) -> throwE $ PCEResponseError e
+    Left e -> throwE $ PCEResponseError e
   where
     streamBody :: (Builder -> IO ()) -> IO () -> IO ()
     streamBody send done = do
@@ -283,7 +284,7 @@ pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
 pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission thParams (("", NoEntity), FileCmd SFRecipient PING)
+      xftpEncodeTransmission thParams ("", NoEntity, FileCmd SFRecipient PING)
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()

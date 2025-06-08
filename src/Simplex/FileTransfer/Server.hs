@@ -316,20 +316,21 @@ data ServerFile = ServerFile
 
 processRequest :: XFTPTransportRequest -> M ()
 processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
-  | B.length bodyHead /= xftpBlockSize = sendErr ("", NoEntity) BLOCK
+  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
   | otherwise =
-      case xftpDecodeTransmission thParams bodyHead of
-        Right (Right t@(_, (cfIds, _))) -> do
+      case xftpDecodeTServer thParams bodyHead of
+        Right (Right t@(_, _, (corrId, fId, _))) -> do
           let THandleParams {thAuth} = thParams
           verifyXFTPTransmission thAuth t >>= \case
-            VRVerified req -> uncurry (sendXFTPResponse cfIds) =<< processXFTPRequest body req
-            VRFailed e -> sendErr cfIds e
-        Right (Left (cfIds, e)) -> sendErr cfIds e
-        Left e -> sendErr ("", NoEntity) e
+            VRVerified req -> uncurry send =<< processXFTPRequest body req
+            VRFailed e -> send (FRErr e) Nothing
+          where
+            send resp = sendXFTPResponse (corrId, fId, resp)
+        Right (Left (corrId, fId, e)) -> sendXFTPResponse (corrId, fId, FRErr e) Nothing
+        Left e -> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
   where
-    sendErr cfIds e = sendXFTPResponse cfIds (FRErr e) Nothing
-    sendXFTPResponse cfIds resp serverFile_ = do
-      let t_ = xftpEncodeTransmission thParams (cfIds, resp)
+    sendXFTPResponse t' serverFile_ = do
+      let t_ = xftpEncodeTransmission thParams t'
 #ifdef slow_servers
       randomDelay
 #endif
@@ -359,7 +360,7 @@ randomDelay = do
 data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 
 verifyXFTPTransmission :: Maybe (THandleAuth 'TServer) -> SignedTransmission FileCmd -> M VerificationResult
-verifyXFTPTransmission thAuth (signed, ((corrId, fId), cmd)) =
+verifyXFTPTransmission thAuth (tAuth, authorized, (corrId, fId, cmd)) =
   case cmd of
     FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
@@ -378,9 +379,9 @@ verifyXFTPTransmission thAuth (signed, ((corrId, fId), cmd)) =
                 EntityBlocked info -> VRFailed $ BLOCKED info
                 EntityOff -> noFileAuth
           Left _ -> pure noFileAuth
-        noFileAuth = dummyVerifyCmd thAuth signed corrId `seq` VRFailed AUTH
+        noFileAuth = dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
     -- TODO verify with DH authorization
-    req `verifyWith` k = if verifyCmdAuthorization thAuth signed corrId k then VRVerified req else VRFailed AUTH
+    req `verifyWith` k = if verifyCmdAuthorization thAuth tAuth authorized corrId k then VRVerified req else VRFailed AUTH
 
 processXFTPRequest :: HTTP2Body -> XFTPRequest -> M (FileResponse, Maybe ServerFile)
 processXFTPRequest HTTP2Body {bodyPart} = \case

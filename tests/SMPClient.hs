@@ -394,7 +394,7 @@ smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [Right ((Nothing, _), ((CorrId corrId, EntityId qId), cmd))] <- tGet h
+      [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
       pure (Nothing, corrId, qId, cmd)
 
 smpTest :: (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation

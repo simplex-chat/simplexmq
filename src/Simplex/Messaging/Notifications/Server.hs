@@ -62,7 +62,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessag
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceId, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGet, tPut)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceId, SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
@@ -709,25 +709,24 @@ clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connecte
 
 receive :: Transport c => NtfPostgresStore -> THandleNTF c 'TServer -> NtfServerClient -> IO ()
 receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
-  ts <- L.toList <$> tGet th
+  ts <- L.toList <$> tGetServer th
   atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
   (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
   write sndQ errs
   write rcvQ cmds
   where
-    cmdAction =
-      \case
-        Left (ceIds, e) -> do
-          logError $ "invalid client request: " <> tshow e
-          pure $ Left (ceIds, NRErr e)
-        Right t@(_, (ceIds, _)) ->
-          verified =<< verifyNtfTransmission st thAuth t
-          where
-            verified = \case
-              VRVerified req -> pure $ Right req
-              VRFailed e -> do
-                logError "unauthorized client request"
-                pure $ Left (ceIds, NRErr e)
+    cmdAction = \case
+      Left (corrId, entId, e) -> do
+        logError $ "invalid client request: " <> tshow e
+        pure $ Left (corrId, entId, NRErr e)
+      Right t@(_, _, (corrId, entId, _)) ->
+        verified =<< verifyNtfTransmission st thAuth t
+        where
+          verified = \case
+            VRVerified req -> pure $ Right req
+            VRFailed e -> do
+              logError "unauthorized client request"
+              pure $ Left (corrId, entId, NRErr e)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
@@ -739,9 +738,9 @@ send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do
 data VerificationResult = VRVerified NtfRequest | VRFailed ErrorType
 
 verifyNtfTransmission :: NtfPostgresStore -> Maybe (THandleAuth 'TServer) -> SignedTransmission NtfCmd -> IO VerificationResult
-verifyNtfTransmission st thAuth (signed, (ceIds@(corrId, entId), cmd)) = case cmd of
+verifyNtfTransmission st thAuth (tAuth, authorized, (corrId, entId, cmd)) = case cmd of
   NtfCmd SToken c@(TNEW tkn@(NewNtfTkn _ k _))
-    | verifyCmdAuthorization thAuth signed corrId k ->
+    | verifyCmdAuthorization thAuth tAuth authorized corrId k ->
         result <$> findNtfTokenRegistration st tkn
     | otherwise -> pure $ VRFailed AUTH
     where
@@ -761,19 +760,19 @@ verifyNtfTransmission st thAuth (signed, (ceIds@(corrId, entId), cmd)) = case cm
       verify (t, s_) = verifyToken t $ case s_ of
         Nothing -> NtfReqNew corrId (ANE SSubscription sub)
         Just s -> subCmd s c
-  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing ceIds
+  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing corrId entId
   NtfCmd SSubscription c -> either err verify <$> getNtfSubscription st entId
     where
       verify (t, s) = verifyToken t $ subCmd s c
   where
-    tknCmd t c = NtfReqCmd SToken (NtfTkn t) (ceIds, c)
-    subCmd s c = NtfReqCmd SSubscription (NtfSub s) (ceIds, c)
+    tknCmd t c = NtfReqCmd SToken (NtfTkn t) (corrId, entId, c)
+    subCmd s c = NtfReqCmd SSubscription (NtfSub s) (corrId, entId, c)
     verifyToken :: NtfTknRec -> NtfRequest -> VerificationResult
     verifyToken NtfTknRec {tknVerifyKey} r
-      | verifyCmdAuthorization thAuth signed corrId tknVerifyKey = VRVerified r
+      | verifyCmdAuthorization thAuth tAuth authorized corrId tknVerifyKey = VRVerified r
       | otherwise = VRFailed AUTH
     err = \case -- signature verification for AUTH errors mitigates timing attacks for existence checks
-      AUTH -> dummyVerifyCmd thAuth signed corrId `seq` VRFailed AUTH
+      AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
       e -> VRFailed e
 
 client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
@@ -785,7 +784,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> ((corrId, NoEntity),) <$> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
         logDebug "TNEW - new token"
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
@@ -798,8 +797,8 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
           incNtfStatT token ntfVrfQueued
           incNtfStatT token tknCreated
           pure $ NRTknId tknId srvDhPubKey
-      NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (ctIds@(_, tknId), cmd) -> do
-        (ctIds,) <$> case cmd of
+      NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
+        (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
             logDebug "TNEW - registered token"
             let dhSecret = C.dh' dhPubKey tknDhPrivKey
@@ -860,9 +859,9 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
               incNtfStat subCreated
               pure $ NRSubId subId
             False -> pure $ NRErr AUTH
-        pure ((corrId, NoEntity), resp)
-      NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (csIds@(_, subId), cmd) -> do
-        (csIds,) <$> case cmd of
+        pure (corrId, NoEntity, resp)
+      NtfReqCmd SSubscription (NtfSub NtfSubRec {ntfSubId, smpQueue = SMPQueueNtf {smpServer, notifierId}, notifierKey = registeredNKey, subStatus}) (corrId, subId, cmd) -> do
+        (corrId,subId,) <$> case cmd of
           SNEW (NewNtfSub _ _ notifierKey) -> do
             logDebug "SNEW - existing subscription"
             pure $
@@ -880,7 +879,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} NtfPushServ
               incNtfStat subDeleted
               pure NROk
           PING -> pure NRPong
-      NtfReqPing ceIds -> pure (ceIds, NRPong)
+      NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
     getId = fmap EntityId . randomBytes =<< asks (subIdBytes . config)
     getRegCode :: M NtfRegCode
