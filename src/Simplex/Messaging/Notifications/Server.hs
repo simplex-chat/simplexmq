@@ -761,7 +761,7 @@ verifyNtfTransmission st auth_ ((tAuth, authorized), (ceIds@(corrId, entId), _))
       verify (t, s_) = verifyToken t $ case s_ of
         Nothing -> NtfReqNew corrId (ANE SSubscription sub)
         Just s -> subCmd s c
-  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing (corrId, entId)
+  NtfCmd SSubscription PING -> pure $ VRVerified $ NtfReqPing ceIds
   NtfCmd SSubscription c -> either err verify <$> getNtfSubscription st entId
     where
       verify (t, s) = verifyToken t $ subCmd s c

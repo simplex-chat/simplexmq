@@ -1125,7 +1125,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
-            Right (_tAuth, (_, cmd)) -> case cmd of
+            Right (_, (_, cmd)) -> case cmd of
               ERR e -> throwE $ PCEProtocolError e -- this is the error from the destination relay
               r' -> pure $ Right r'
             Left (_, err) -> throwE $ PCEResponseError err
