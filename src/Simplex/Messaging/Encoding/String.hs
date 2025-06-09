@@ -43,7 +43,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util (bshow, (<$?>))
+import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 
 class TextEncoding a where
   textEncode :: a -> Text
@@ -90,6 +90,10 @@ instance StrEncoding Str where
 instance StrEncoding String where
   strEncode = strEncode . B.pack
   strP = B.unpack <$> strP
+
+instance StrEncoding Text where
+  strEncode = encodeUtf8
+  strP = safeDecodeUtf8 <$> A.takeTill (\c -> c == ' ' || c == '\n')
 
 instance ToJSON Str where
   toJSON (Str s) = strToJSON s

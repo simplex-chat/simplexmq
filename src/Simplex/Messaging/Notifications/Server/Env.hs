@@ -146,7 +146,7 @@ data SMPSubscriber = SMPSubscriber
   }
 
 data NtfPushServer = NtfPushServer
-  { pushQ :: TBQueue (NtfTknRec, PushNotification),
+  { pushQ :: TBQueue (Maybe T.Text, NtfTknRec, PushNotification), -- Maybe Text is a hostname of "own" server
     pushClients :: TMap PushProvider PushProviderClient,
     apnsConfig :: APNSPushClientConfig
   }

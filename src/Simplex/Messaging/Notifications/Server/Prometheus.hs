@@ -76,8 +76,13 @@ ntfPrometheusMetrics sm rtm ts =
         _subCreated,
         _subDeleted,
         _ntfReceived,
+        _ntfReceivedAuth,
         _ntfDelivered,
         _ntfFailed,
+        _ntfReceivedOwn,
+        _ntfReceivedAuthOwn,
+        _ntfDeliveredOwn,
+        _ntfFailedOwn,
         _ntfCronDelivered,
         _ntfCronFailed,
         _ntfVrfQueued,
@@ -165,6 +170,10 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_notifications_received counter\n\
       \simplex_ntf_notifications_received " <> mshow _ntfReceived <> "\n# ntfReceived\n\
       \\n\
+      \# HELP simplex_ntf_notifications_received_auth Received notifications without token or subscription (AUTH error)\n\
+      \# TYPE simplex_ntf_notifications_received_auth counter\n\
+      \simplex_ntf_notifications_received_auth " <> mshow _ntfReceivedAuth <> "\n# ntfReceivedAuth\n\
+      \\n\
       \# HELP simplex_ntf_notifications_delivered Delivered notifications\n\
       \# TYPE simplex_ntf_notifications_delivered counter\n\
       \simplex_ntf_notifications_delivered " <> mshow _ntfDelivered <> "\n# ntfDelivered\n\
@@ -201,6 +210,10 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_notifications_total gauge\n\
       \simplex_ntf_notifications_total " <> mshow lastNtfCount <> "\n# lastNtfCount\n\
       \\n"
+      <> showNtfsByServer _ntfReceivedOwn "simplex_ntf_notifications_received_own" "Received notifications" "ntfReceivedOwn"
+      <> showNtfsByServer _ntfReceivedAuthOwn "simplex_ntf_notifications_received_auth_own" "Received notifications without token or subscription (AUTH error)" "ntfReceivedAuthOwn"
+      <> showNtfsByServer _ntfDeliveredOwn "simplex_ntf_notifications_delivered_own" "Delivered notifications" "ntfDeliveredOwn"
+      <> showNtfsByServer _ntfFailedOwn "simplex_ntf_notifications_failed_own" "Failed notifications" "ntfFailedOwn"
     info =
       "# Info\n\
       \# ----\n\
@@ -228,28 +241,41 @@ ntfPrometheusMetrics sm rtm ts =
       showOwnSrvSubs <> showOtherSrvSubs
       where
         showOwnSrvSubs
-          | M.null ownSrvSubs = showOwn_ "" 0 0
-          | otherwise = T.concat $ map (\(host, cnt) -> showOwn_ (metricHost host) 1 cnt) $ M.assocs ownSrvSubs
-        showOwn_ param srvCnt subCnt =
-          gaugeMetric (mPfx <> "server_count_own") param srvCnt (descrPfx <> " SMP subscriptions, own server count") "ownSrvSubs server"
-            <> gaugeMetric (mPfx <> "sub_count_own") param subCnt (descrPfx <> " SMP subscriptions count for own servers") "ownSrvSubs count"
+          | M.null ownSrvSubs = ""
+          | otherwise =
+              gaugeMetrics (mPfx <> "server_count_own") srvMetrics (descrPfx <> " SMP subscriptions, own server count") "ownSrvSubs server"
+                <> gaugeMetrics (mPfx <> "sub_count_own") subMetrics (descrPfx <> " SMP subscriptions count for own servers") "ownSrvSubs count"
+          where
+            subs = M.assocs ownSrvSubs
+            srvMetrics = map (\(host, _) -> (metricHost host, 1)) subs
+            subMetrics = map (\(host, cnt) -> (metricHost host, cnt)) subs
         showOtherSrvSubs =
-          gaugeMetric (mPfx <> "server_count_other") "" otherServers (descrPfx <> " SMP subscriptions, other server count") "otherServers"
-            <> gaugeMetric (mPfx <> "sub_count_other") "" otherSrvSubCount (descrPfx <> " SMP subscriptions count for other servers") "otherSrvSubCount"
+          gaugeMetrics (mPfx <> "server_count_other") [("", otherServers)] (descrPfx <> " SMP subscriptions, other server count") "otherServers"
+            <> gaugeMetrics (mPfx <> "sub_count_other") [("", otherSrvSubCount)] (descrPfx <> " SMP subscriptions count for other servers") "otherSrvSubCount"
+    showNtfsByServer (StatsByServerData srvNtfs) mName descr varName
+      | null srvNtfs = ""
+      | otherwise =
+          "# HELP " <> mName <> " " <> descr <> "\n\
+          \# TYPE " <> mName <> " counter\n"
+          <> showNtfMetrics
+          <> "# " <> varName <> "\n\n"
+      where
+        showNtfMetrics = T.concat $ map (\(host, value) -> mName <> metricHost host <> " " <> mshow value <> "\n") srvNtfs
     showWorkerMetric NtfSMPWorkerMetrics {ownServers, otherServers} mPfx descrPfx =
       showOwnServers <> showOtherServers
       where
         showOwnServers
-          | null ownServers = showOwn_ "" 0
-          | otherwise = T.concat $ map (\host -> showOwn_ (metricHost host) 1) ownServers
-        showOwn_ param cnt = gaugeMetric (mPfx <> "count_own") param cnt (descrPfx <> " count for own servers") "ownServers"
-        showOtherServers = gaugeMetric (mPfx <> "count_other") "" otherServers (descrPfx <> " count for other servers") "otherServers"
-    gaugeMetric :: Text -> Text -> Int -> Text -> Text -> Text
-    gaugeMetric name param value descr codeRef =
+          | null ownServers = ""
+          | otherwise = gaugeMetrics (mPfx <> "count_own") subMetrics (descrPfx <> " count for own servers") "ownServers"
+          where
+            subMetrics = map (\host -> (metricHost host, 1)) ownServers
+        showOtherServers = gaugeMetrics (mPfx <> "count_other") [("", otherServers)] (descrPfx <> " count for other servers") "otherServers"
+    gaugeMetrics :: Text -> [(Text, Int)] -> Text -> Text -> Text
+    gaugeMetrics name subMetrics descr codeRef =
       "# HELP " <> name <> " " <> descr <> "\n\
-      \# TYPE " <> name <> " gauge\n\
-      \" <> name <> param <> " " <> mshow value <> "\n# " <> codeRef <> "\n\
-      \\n"
+      \# TYPE " <> name <> " gauge\n"
+      <> T.concat (map (\(param, value) -> name <> param <> " " <> mshow value <> "\n") subMetrics)
+      <> "# " <> codeRef <> "\n\n"
     metricHost host = "{server=\"" <> host <> "\"}"
     mstr a = a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
