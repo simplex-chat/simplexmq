@@ -238,8 +238,15 @@ supportedTLSServerParams serverSupported creds alpn_ =
     { T.serverWantClientCert = False,
       T.serverHooks =
         def
-          { T.onServerNameIndication = \host_ -> pure $ T.Credentials [creds host_],
-            T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
+          { T.onServerNameIndication = \host_ -> do
+              putStrLn $ "onServerNameIndication " <> show (host_)
+              pure $ T.Credentials [creds host_],
+            T.onALPNClientSuggest =
+              ( \alpn -> \clAlpn -> do
+                  let r =fromMaybe "" $ find (`elem` alpn) clAlpn
+                  putStrLn $ "onALPNClientSuggest " <> show (clAlpn)
+                  pure r
+              ) <$> alpn_
           },
       T.serverSupported = serverSupported
     }
