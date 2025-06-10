@@ -256,11 +256,11 @@ supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCre
     { T.serverWantClientCert = False,
       T.serverHooks =
         def
-          { T.onServerNameIndication = \host_ -> do
-              cred <- case (host_, sniCredential) of
-                (Just _, Just cred) -> cred <$ atomically (writeTVar sniCredUsed True)
-                _ -> pure credential
-              pure $ T.Credentials [cred],
+          { T.onServerNameIndication = case sniCredential of
+              Nothing -> \_ -> pure $ T.Credentials [credential]
+              Just sniCred -> \case
+                Nothing -> pure $ T.Credentials [credential]
+                Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True)
             T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
           },
       T.serverSupported = serverSupported
