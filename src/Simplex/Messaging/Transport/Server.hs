@@ -144,7 +144,9 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
           sniUsed <- newTVarIO False
           tls <- connectTLS Nothing tCfg (srvParams sniUsed) conn
           mkConnection sniUsed tls $ X.CertificateChain []
-    mkConnection sniUsed tls chain = (,) <$> readTVarIO sniUsed <*> getTransportConnection tCfg True chain tls
+    mkConnection sniUsed tls chain = do
+      sni <- readTVarIO sniUsed
+      (sni,) <$> getTransportConnection tCfg True chain tls
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (SNICredentialUsed, c 'TServer)) -> (Socket -> SNICredentialUsed -> c 'TServer -> IO ()) -> IO ()
@@ -154,8 +156,8 @@ runTransportServerSocketState_ ss started getSocket threadLabel tlsSetupTimeout 
     labelMyThread $ threadLabel <> "/setup"
     E.bracket
       (timeout tlsSetupTimeout (setupTLS conn) >>= maybe (fail "tls setup timeout") pure)
-      (closeConnection . snd)
-      (uncurry $ server conn)
+      (\(_, c) -> closeConnection c)
+      (\(sni, c) -> server conn sni c)
 
 -- | Run TCP server without TLS
 runLocalTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
