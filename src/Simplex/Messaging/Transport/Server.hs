@@ -109,55 +109,56 @@ runTransportServer started port srvSupported srvCreds cfg server = do
   runTransportServerState ss started port srvSupported srvCreds cfg server
 
 runTransportServerState :: Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> T.Credential -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
-runTransportServerState ss started port srvSupported credential cfg server = runTransportServerState_ ss started port srvSupported srvCreds cfg (\_ _ -> server)
+runTransportServerState ss started port srvSupported credential cfg server = runTransportServerState_ ss started port srvSupported srvCreds cfg (\_ -> server . snd)
   where
     srvCreds = TLSServerCredential {credential, sniCredential = Nothing}
 
-runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> TLSServerCredential -> TransportServerConfig -> (Socket -> SNICredentialUsed -> c 'TServer -> IO ()) -> IO ()
+runTransportServerState_ :: forall c. Transport c => SocketState -> TMVar Bool -> ServiceName -> T.Supported -> TLSServerCredential -> TransportServerConfig -> (Socket -> (SNICredentialUsed, c 'TServer) -> IO ()) -> IO ()
 runTransportServerState_ ss started port = runTransportServerSocketState ss started (startTCPServer started Nothing port) (transportName (TProxy :: TProxy c 'TServer))
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocket :: Transport c => TMVar Bool -> IO Socket -> String -> T.ServerParams -> TransportServerConfig -> (c 'TServer -> IO ()) -> IO ()
 runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
   ss <- newSocketState
-  runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS (\_ _ -> server)
+  runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS (\_ -> server . snd)
   where
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
       tls <- connectTLS Nothing tCfg srvParams conn
       (False,) <$> getTransportConnection tCfg True (X.CertificateChain []) tls
 
-runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> TLSServerCredential -> TransportServerConfig -> (Socket -> SNICredentialUsed -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> TLSServerCredential -> TransportServerConfig -> (Socket -> (SNICredentialUsed, c 'TServer) -> IO ()) -> IO ()
 runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds cfg server =
   runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS server
   where
     tCfg = serverTransportConfig cfg
-    srvParams sniUsed = supportedTLSServerParams srvSupported srvCreds sniUsed $ serverALPN cfg
-    setupTLS conn
-      | askClientCert cfg = do
-          sniUsed <- newTVarIO False
-          clientCert <- newEmptyTMVarIO
-          tls <- connectTLS Nothing tCfg (paramsAskClientCert clientCert $ srvParams sniUsed) conn
-          chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
-          mkConnection sniUsed tls chain
-      | otherwise = do
-          sniUsed <- newTVarIO False
-          tls <- connectTLS Nothing tCfg (srvParams sniUsed) conn
-          mkConnection sniUsed tls $ X.CertificateChain []
-    mkConnection sniUsed tls chain = do
+    setupTLS conn = do
+      sniUsed <- newTVarIO False
+      let srvParams = supportedTLSServerParams srvSupported srvCreds sniUsed $ serverALPN cfg
+      h <- setupTLS_ srvParams
       sni <- readTVarIO sniUsed
-      (sni,) <$> getTransportConnection tCfg True chain tls
+      pure (sni, h)
+      where
+        setupTLS_ srvParams
+          | askClientCert cfg = do
+              clientCert <- newEmptyTMVarIO
+              tls <- connectTLS Nothing tCfg (paramsAskClientCert clientCert srvParams) conn
+              chain <- takePeerCertChain clientCert `E.onException` closeTLS tls
+              getTransportConnection tCfg True chain tls
+          | otherwise = do
+              tls <- connectTLS Nothing tCfg srvParams conn
+              getTransportConnection tCfg True (X.CertificateChain []) tls
 
 -- | Run a transport server with provided connection setup and handler.
-runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (SNICredentialUsed, c 'TServer)) -> (Socket -> SNICredentialUsed -> c 'TServer -> IO ()) -> IO ()
+runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (SNICredentialUsed, c 'TServer)) -> (Socket -> (SNICredentialUsed, c 'TServer) -> IO ()) -> IO ()
 runTransportServerSocketState_ ss started getSocket threadLabel tlsSetupTimeout setupTLS server = do
   labelMyThread $ "transport server for " <> threadLabel
   runTCPServerSocket ss started getSocket $ \conn -> do
     labelMyThread $ threadLabel <> "/setup"
     E.bracket
       (timeout tlsSetupTimeout (setupTLS conn) >>= maybe (fail "tls setup timeout") pure)
-      (\(_, c) -> closeConnection c)
-      (\(sni, c) -> server conn sni c)
+      (closeConnection . snd)
+      (server conn)
 
 -- | Run TCP server without TLS
 runLocalTCPServer :: TMVar Bool -> ServiceName -> (Socket -> IO ()) -> IO ()
@@ -260,7 +261,7 @@ supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCre
               Nothing -> \_ -> pure $ T.Credentials [credential]
               Just sniCred -> \case
                 Nothing -> pure $ T.Credentials [credential]
-                Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True)
+                Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True),
             T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
           },
       T.serverSupported = serverSupported

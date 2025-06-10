@@ -200,7 +200,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
-          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg {serverALPN = Just combinedALPNs} $ \s sniUsed h ->
+          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg {serverALPN = Just combinedALPNs} $ \s (sniUsed, h) ->
             case cast h of
               Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
               _ -> runClient srvCert srvSignKey t h `runReaderT` env
