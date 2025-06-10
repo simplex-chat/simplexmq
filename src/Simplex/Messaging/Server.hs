@@ -198,20 +198,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
       srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
+      let runSMPClient h = runClient srvCert srvSignKey t h `runReaderT` env
       liftIO $ case (httpCreds_, attachHTTP_) of
-        (Just httpCreds, Just attachHTTP) | addHTTP ->
-          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS chooseCreds tCfg {serverALPN = Just combinedALPNs} $ \s h -> do
+        (Just httpCreds, Just attachHTTP) | addHTTP -> do
+          useHTTP <- newTVarIO False
+          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS (chooseCreds useHTTP) tCfg {serverALPN = Just combinedALPNs} $ \s h -> do
             putStrLn $ "server request ALPN " <> show (getSessionALPN h)
             case cast h of
-              Just (TLS {tlsContext} :: TLS 'TServer) | maybe False (`elem` httpALPN) (getSessionALPN h) -> labelMyThread "https client" >> attachHTTP s tlsContext
-              _ -> runClient srvCert srvSignKey t h `runReaderT` env
+              Just (TLS {tlsContext} :: TLS 'TServer) ->
+                ifM (readTVarIO useHTTP)
+                  (labelMyThread "https client" >> attachHTTP s tlsContext)
+                  (runSMPClient h)
+              _ -> runSMPClient h
           where
-            chooseCreds = maybe smpCreds (\_host -> httpCreds)
+            chooseCreds useHTTP = maybe (pure smpCreds) (\_host -> httpCreds <$ atomically (writeTVar useHTTP True))
             combinedALPNs = alpnSupportedSMPHandshakes <> httpALPN
             httpALPN :: [ALPN]
             httpALPN = ["h2", "http/1.1"]
         _ ->
-          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg runSMPClient
 
     sigIntHandlerThread :: M s ()
     sigIntHandlerThread = do
