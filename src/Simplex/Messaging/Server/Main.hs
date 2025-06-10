@@ -40,7 +40,7 @@ import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (connReqUriP')
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
-import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
+import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SMPWebPortServers (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -464,7 +464,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                               { socksProxy = either error id <$!> strDecodeIni "PROXY" "socks_proxy" ini,
                                 socksMode = maybe SMOnion (either error id) $! strDecodeIni "PROXY" "socks_mode" ini,
                                 hostMode = either (const HMPublic) (either error id . textToHostMode) $ lookupValue "PROXY" "host_mode" ini,
-                                requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini
+                                requiredHostMode = fromMaybe False $ iniOnOff "PROXY" "required_host_mode" ini,
+                                smpWebPortServers = SWPOff
                               }
                         },
                     ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini,
