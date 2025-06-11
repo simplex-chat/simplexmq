@@ -210,7 +210,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       mask = E.uninterruptibleMask_ . runExceptT
       cacheSender rId = TM.insert qId rId senders
       loadQueue condition =
-        withFastDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
+        withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
           DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
       cacheQueue rId qRec insertRef = do
         sq <- mkQ True rId qRec -- loaded queue
@@ -391,7 +391,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
     withLockMap (serviceLocks st) fp "getCreateService" $ E.uninterruptibleMask_ $ runExceptT $ do
       (serviceId, new) <-
-        withFastDB "getCreateService" st $ \db ->
+        withDB "getCreateService" st $ \db ->
           maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp))) >>= \case
             Just (serviceId, role)
               | role == serviceRole -> pure $ Right (serviceId, False)
@@ -640,19 +640,10 @@ assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
 
 withDB' :: Text -> PostgresQueueStore q -> (DB.Connection -> IO a) -> ExceptT ErrorType IO a
 withDB' op st action = withDB op st $ fmap Right . action
-{-# INLINE withDB' #-}
-
-withFastDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
-withFastDB op st = withDB_ op st True
-{-# INLINE withFastDB #-}
 
 withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
-withDB op st = withDB_ op st False
-{-# INLINE withDB #-}
-
-withDB_ :: forall a q. Text -> PostgresQueueStore q -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
-withDB_ op st priority action =
-  ExceptT $ E.try (withTransactionPriority (dbStore st) priority action) >>= either logErr pure
+withDB op st action =
+  ExceptT $ E.try (withConnection (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)
