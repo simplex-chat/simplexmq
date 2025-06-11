@@ -881,10 +881,10 @@ connPQEncryption = \case
   IKUsePQ -> PQSupportOn
   IKLinkPQ pq -> pq -- default for creating connection is IKLinkPQ PQEncOn
 
-joinContactInitialKeys :: PQSupport -> InitialKeys
-joinContactInitialKeys = \case
-  PQSupportOn -> IKUsePQ
-  PQSupportOff -> IKLinkPQ PQSupportOff
+joinContactInitialKeys :: Bool -> PQSupport -> InitialKeys
+joinContactInitialKeys pqCompatible = \case
+  PQSupportOn | pqCompatible -> IKUsePQ
+  pqEnc -> IKLinkPQ pqEnc
 
 rcCheckCanPad :: Int -> ByteString -> ExceptT CryptoError IO ()
 rcCheckCanPad paddedMsgLen msg =

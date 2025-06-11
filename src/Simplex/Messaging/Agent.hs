@@ -1141,8 +1141,9 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
-    Just (qInfo, vrsn) -> do
-      (CCLink cReq _, service) <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing (CR.joinContactInitialKeys pqSup) subMode srv
+    Just (qInfo, vrsn@(Compatible v)) -> do
+      let pqInitKeys = CR.joinContactInitialKeys (v >= pqdrSMPAgentVersion) pqSup
+      (CCLink cReq _, service) <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys subMode srv
       void $ sendInvitation c userId connId qInfo vrsn cReq cInfo
       pure (False, service)
     Nothing -> throwE $ AGENT A_VERSION
