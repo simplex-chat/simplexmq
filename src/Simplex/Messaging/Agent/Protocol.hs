@@ -1919,7 +1919,7 @@ commandP binaryP =
     s :: Parser a -> Parser a
     s p = A.space *> p
     pqIKP :: Parser InitialKeys
-    pqIKP = strP_ <|> pure (IKNoPQ PQSupportOff)
+    pqIKP = strP_ <|> pure (IKLinkPQ PQSupportOff)
     pqSupP :: Parser PQSupport
     pqSupP = strP_ <|> pure PQSupportOff
 

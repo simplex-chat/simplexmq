@@ -224,7 +224,7 @@ agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty 
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 baseId =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
-      (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+      (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
       aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
@@ -280,7 +280,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- agent connections have to be set up in advance
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
-      (bobId, (CCLink qInfo Nothing, Nothing)) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+      (bobId, (CCLink qInfo Nothing, Nothing)) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
       aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       (sqSecured, Nothing) <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
@@ -331,7 +331,7 @@ agentViaProxyVersionError =
   withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
       withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
-        (_bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+        (_bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
         aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
         A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
@@ -351,7 +351,7 @@ agentViaProxyRetryOffline = do
       let pqEnc = CR.PQEncOn
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
-          (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing (CR.IKNoPQ PQSupportOn) SMSubscribe
+          (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
           aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
           (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True

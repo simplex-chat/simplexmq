@@ -270,7 +270,7 @@ inAnyOrder g rs = withFrozenCallStack $ do
 
 createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
 createConnection c userId enableNtfs cMode clientData subMode = do
-  (connId, (CCLink cReq _, Nothing)) <- A.createConnection c userId enableNtfs cMode Nothing clientData (IKNoPQ PQSupportOn) subMode
+  (connId, (CCLink cReq _, Nothing)) <- A.createConnection c userId enableNtfs cMode Nothing clientData IKPQOn subMode
   pure (connId, cReq)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
@@ -662,7 +662,7 @@ withAgentClients3 runTest =
 
 runAgentClientTest :: HasCallStack => PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientTest pqSupport sqSecured viaProxy alice bob baseId =
-  runAgentClientTestPQ sqSecured viaProxy (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
+  runAgentClientTestPQ sqSecured viaProxy (alice, IKLinkPQ pqSupport) (bob, pqSupport) baseId
 
 runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
@@ -864,7 +864,7 @@ testAgentClient3 =
 
 runAgentClientContactTest :: HasCallStack => PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =
-  runAgentClientContactTestPQ sqSecured viaProxy pqSupport (alice, IKNoPQ pqSupport) (bob, pqSupport) baseId
+  runAgentClientContactTestPQ sqSecured viaProxy pqSupport (alice, IKLinkPQ pqSupport) (bob, pqSupport) baseId
 
 runAgentClientContactTestPQ :: HasCallStack => SndQueueSecured -> Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
@@ -2067,7 +2067,7 @@ makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn True
 
 makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
-  (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice aliceUserId True SCMInvitation Nothing Nothing (CR.IKNoPQ pqSupport) SMSubscribe
+  (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice aliceUserId True SCMInvitation Nothing Nothing (IKLinkPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
   (sqSecured', Nothing) <- A.joinConnection bob bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
   liftIO $ sqSecured' `shouldBe` sqSecured
@@ -2338,7 +2338,7 @@ receiveMsg c cId msgId msg = do
 testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 testAsyncCommands sqSecured alice bob baseId =
   runRight_ $ do
-    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation (IKNoPQ PQSupportOn) SMSubscribe
+    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
@@ -2389,7 +2389,7 @@ testAsyncCommands sqSecured alice bob baseId =
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
 testAsyncCommandsRestore ps = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation (IKNoPQ PQSupportOn) SMSubscribe
+  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disposeAgentClient alice
   withAgent 2 agentCfg initAgentServers testDB $ \alice' ->
@@ -2670,7 +2670,7 @@ testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
   withAgent 1 cfg' initAgentServers testDB $ \a ->
     withAgent 2 cfg' initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-        bId <- createConnectionAsync a 1 "1" True SCMInvitation (IKNoPQ PQSupportOn) SMSubscribe
+        bId <- createConnectionAsync a 1 "1" True SCMInvitation IKPQOn SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
@@ -2715,7 +2715,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-        bId <- createConnectionAsync a 1 "1" True SCMInvitation (IKNoPQ PQSupportOn) SMSubscribe
+        bId <- createConnectionAsync a 1 "1" True SCMInvitation IKPQOn SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
