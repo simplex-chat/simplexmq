@@ -974,7 +974,8 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
         SCMContact -> pure $ CRContactUri crData
         SCMInvitation -> do
           g <- asks random
-          (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) (CR.initialPQEncryption pqInitKeys)
+          let pqEnc = CR.initialPQEncryption (isJust userData_) pqInitKeys
+          (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
           withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
     prepareLinkData :: ConnInfo -> C.PublicKeyX25519 -> AM (C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
@@ -1002,11 +1003,13 @@ newRcvConnSrv c userId connId enableNtfs cMode userData_ clientData pqInitKeys s
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
-        | qUri == qUri'  ->
-            let link = case cReq of
-                  CRContactUri _ -> CSLContact SLSServer CCTContact srv shortLinkKey
-                  CRInvitationUri {} -> CSLInvitation SLSServer srv shortLinkId shortLinkKey
-             in pure $ CCLink cReq (Just link)
+        | qUri == qUri'  -> pure $ case cReq of
+            CRContactUri _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
+            CRInvitationUri crData (CR.E2ERatchetParamsUri vr k1 k2 _) ->
+              let cReq' = case pqInitKeys of
+                    CR.IKPQOn -> CRInvitationUri crData $ CR.E2ERatchetParamsUri vr k1 k2 Nothing -- remove PQ keys
+                    _ -> cReq -- either PQ is disabled, or disabled for initial request because there is no short link
+               in CCLink cReq' $ Just $ CSLInvitation SLSServer srv shortLinkId shortLinkKey
         | otherwise -> throwE $ INTERNAL "different rcv queue address"
       Nothing ->
         let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri'] clientData)
@@ -1139,7 +1142,7 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn) -> do
-      (CCLink cReq _, service) <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing (CR.IKNoPQ pqSup) subMode srv
+      (CCLink cReq _, service) <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing (CR.joinContactInitialKeys pqSup) subMode srv
       void $ sendInvitation c userId connId qInfo vrsn cReq cInfo
       pure (False, service)
     Nothing -> throwE $ AGENT A_VERSION

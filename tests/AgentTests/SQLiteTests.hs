@@ -49,7 +49,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
-import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), pattern PQSupportOn)
+import Simplex.Messaging.Crypto.Ratchet (pattern IKPQOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMode (..), pattern VersionSMPC)
@@ -697,7 +697,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db connId (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ NEW True (ACM SCMInvitation) (IKNoPQ PQSupportOn) SMSubscribe
+    command = AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 

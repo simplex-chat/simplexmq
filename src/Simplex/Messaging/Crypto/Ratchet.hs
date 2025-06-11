@@ -57,6 +57,7 @@ module Simplex.Messaging.Crypto.Ratchet
     generateSndE2EParams,
     initialPQEncryption,
     connPQEncryption,
+    joinContactInitialKeys,
     replyKEM_,
     pqSupportToEnc,
     pqEncToSupport,
@@ -308,7 +309,7 @@ instance (RatchetKEMStateI s, AlgorithmI a) => StrEncoding (E2ERatchetParamsUri 
             RKParamsAccepted ct k -> [("kem_ct", strEncode ct), ("kem_key", strEncode k)]
   strP = toE2ERatchetParamsUri <$?> strP
   {-# INLINE strP #-}
-    
+
 toE2ERatchetParamsUri :: RatchetKEMStateI s => AE2ERatchetParamsUri a -> Either String (E2ERatchetParamsUri s a)
 toE2ERatchetParamsUri = \case
   AE2ERatchetParamsUri _ (E2ERatchetParamsUri vr k1 k2 Nothing) -> Right $ E2ERatchetParamsUri vr k1 k2 Nothing
@@ -851,32 +852,39 @@ instance StrEncoding PQSupport where
   strP = pqEncToSupport <$> strP
   {-# INLINE strP #-}
 
-data InitialKeys = IKUsePQ | IKNoPQ PQSupport
+data InitialKeys
+  = IKUsePQ -- use PQ keys in contact request and short link data
+  | IKLinkPQ PQSupport -- use PQ keys in short link data only, if PQSupport enabled
   deriving (Eq, Show)
 
 pattern IKPQOn :: InitialKeys
-pattern IKPQOn = IKNoPQ PQSupportOn
+pattern IKPQOn = IKLinkPQ PQSupportOn
 
 pattern IKPQOff :: InitialKeys
-pattern IKPQOff = IKNoPQ PQSupportOff
+pattern IKPQOff = IKLinkPQ PQSupportOff
 
 instance StrEncoding InitialKeys where
   strEncode = \case
     IKUsePQ -> "pq=invitation"
-    IKNoPQ pq -> strEncode pq
-  strP = IKNoPQ <$> strP <|> "pq=invitation" $> IKUsePQ
+    IKLinkPQ pq -> strEncode pq
+  strP = IKLinkPQ <$> strP <|> "pq=invitation" $> IKUsePQ
 
 -- determines whether PQ key should be included in invitation link
-initialPQEncryption :: InitialKeys -> PQSupport
-initialPQEncryption = \case
+initialPQEncryption :: Bool -> InitialKeys -> PQSupport
+initialPQEncryption shortLink = \case
   IKUsePQ -> PQSupportOn
-  IKNoPQ _ -> PQSupportOff -- default
+  IKLinkPQ (PQSupport enable) -> PQSupport $ enable && shortLink
 
 -- determines whether PQ encryption should be used in connection
 connPQEncryption :: InitialKeys -> PQSupport
 connPQEncryption = \case
   IKUsePQ -> PQSupportOn
-  IKNoPQ pq -> pq -- default for creating connection is IKNoPQ PQEncOn
+  IKLinkPQ pq -> pq -- default for creating connection is IKLinkPQ PQEncOn
+
+joinContactInitialKeys :: PQSupport -> InitialKeys
+joinContactInitialKeys = \case
+  PQSupportOn -> IKUsePQ
+  PQSupportOff -> IKLinkPQ PQSupportOff
 
 rcCheckCanPad :: Int -> ByteString -> ExceptT CryptoError IO ()
 rcCheckCanPad paddedMsgLen msg =
@@ -1187,7 +1195,7 @@ instance (AlgorithmI a, Typeable a) => FromField (Ratchet a) where fromField = b
 
 instance ToField PQEncryption where toField (PQEncryption pqEnc) = toField (BI pqEnc)
 
-instance FromField PQEncryption where 
+instance FromField PQEncryption where
 #if defined(dbPostgres)
   fromField f dat = PQEncryption . unBI <$> fromField f dat
 #else
