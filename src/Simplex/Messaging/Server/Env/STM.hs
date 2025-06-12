@@ -40,6 +40,7 @@ module Simplex.Messaging.Server.Env.STM
     MsgStore (..),
     AStoreType (..),
     VerifiedTransmission,
+    ResponseAndMessage,
     newEnv,
     mkJournalStoreConfig,
     msgStore,
@@ -392,8 +393,8 @@ data Client s = Client
     serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
-    sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
-    msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [(RecipientId, RcvMessage)]),
+    msgQ :: TBQueue (NonEmpty (RecipientId, RcvMessage)),
     procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
@@ -405,6 +406,8 @@ data Client s = Client
   }
 
 type VerifiedTransmission s = (Maybe (StoreQueue s, QueueRec), Transmission Cmd)
+
+type ResponseAndMessage = (Transmission BrokerMsg, Maybe (RecipientId, RcvMessage))
 
 data ServerSub = ServerSub (TVar SubscriptionThread) | ProhibitSub
 
