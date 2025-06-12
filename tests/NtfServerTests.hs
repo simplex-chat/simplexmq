@@ -72,18 +72,18 @@ ntfSyntaxTests (ATransport t) = do
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
-pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> SignedTransmission ErrorType NtfResponse
-pattern RespNtf corrId queueId command <- (_, _, (corrId, queueId, Right command))
+pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> Transmission (Either ErrorType NtfResponse)
+pattern RespNtf corrId queueId command <- (corrId, queueId, Right command)
 
 deriving instance Eq NtfResponse
 
-sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, NtfEntityId, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, NtfEntityId, NtfCommand e) -> IO (Transmission (Either ErrorType NtfResponse))
 sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> C.APrivateAuthKey -> (ByteString, NtfEntityId, NtfCommand e) -> IO (SignedTransmission ErrorType NtfResponse)
+signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> C.APrivateAuthKey -> (ByteString, NtfEntityId, NtfCommand e) -> IO (Transmission (Either ErrorType NtfResponse))
 signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)

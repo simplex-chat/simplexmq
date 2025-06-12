@@ -122,7 +122,7 @@ storeLogTests =
           },
         SLTC
           { name = "create queue, add notifier, register and associate notification service",
-            saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, NewService sr, QueueService rId (ASP SNotifier) (Just serviceId)],
+            saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, NewService sr, QueueService rId (ASP SNotifierService) (Just serviceId)],
             compacted = [NewService sr, CreateQueue rId qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}}],
             state = M.fromList [(rId, qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}})]
           },

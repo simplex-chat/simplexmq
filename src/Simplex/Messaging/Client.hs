@@ -183,7 +183,7 @@ data PClient v err msg = PClient
     clientCorrId :: TVar ChaChaDRG,
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue (Maybe (Request err msg), ByteString),
-    rcvQ :: TBQueue (NonEmpty (SignedTransmission err msg)),
+    rcvQ :: TBQueue (NonEmpty (Transmission (Either err msg))),
     msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
@@ -615,7 +615,7 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
-      tGet h >>= atomically . writeTBQueue rcvQ
+      tGetClient h >>= atomically . writeTBQueue rcvQ
       getCurrentTime >>= atomically . writeTVar lastReceived
       atomically $ writeTVar timeoutErrorCount 0
 
@@ -642,14 +642,14 @@ getProtocolClient g transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize
     process :: ProtocolClient v err msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= processMsgs c
 
-    processMsgs :: ProtocolClient v err msg -> NonEmpty (SignedTransmission err msg) -> IO ()
+    processMsgs :: ProtocolClient v err msg -> NonEmpty (Transmission (Either err msg)) -> IO ()
     processMsgs c ts = do
       ts' <- catMaybes <$> mapM (processMsg c) (L.toList ts)
       forM_ msgQ $ \q ->
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
-    processMsg :: ProtocolClient v err msg -> SignedTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
-    processMsg ProtocolClient {client_ = PClient {sentCommands}} (_, _, (corrId, entId, respOrErr))
+    processMsg :: ProtocolClient v err msg -> Transmission (Either err msg) -> IO (Maybe (EntityId, ServerTransmission err msg))
+    processMsg ProtocolClient {client_ = PClient {sentCommands}} (corrId, entId, respOrErr)
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
       | otherwise =
           TM.lookupIO corrId sentCommands >>= \case
@@ -767,7 +767,7 @@ createSMPQueue ::
   -- Maybe NewNtfCreds ->
   ExceptT SMPClientError IO QueueIdsKeys
 createSMPQueue c nonce_ (rKey, rpKey) dhKey auth subMode qrd =
-  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SRecipient $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
+  sendProtocolCommand_ c nonce_ Nothing (Just rpKey) NoEntity (Cmd SCreator $ NEW $ NewQueueReq rKey dhKey auth subMode (Just qrd)) >>= \case
     IDS qik -> pure qik
     r -> throwE $ unexpectedResponse r
 
@@ -848,7 +848,7 @@ nsubResponse_ = \case
   r' -> Left $ unexpectedResponse r'
 {-# INLINE nsubResponse_ #-}
 
-subscribeService :: forall p. (PartyI p, SubscriberParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Int64
+subscribeService :: forall p. (PartyI p, ServiceParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Int64
 subscribeService c party = case smpClientService c of
   Just THClientService {serviceId, serviceKey} -> do
     liftIO $ enablePings c
@@ -858,8 +858,8 @@ subscribeService c party = case smpClientService c of
     where
       subCmd :: Command p
       subCmd = case party of
-        SRecipient -> SUBS
-        SNotifier -> NSUBS
+        SRecipientService -> SUBS
+        SNotifierService -> NSUBS
   Nothing -> throwE PCEServiceUnavailable
 
 smpClientService :: SMPClient -> Maybe THClientService
@@ -1119,8 +1119,8 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
         -- server interaction errors are thrown directly
         t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
         case tParse serverThParams t' of
-          t'' :| [] -> case tDecodeParseValidate serverThParams t'' of
-            (_auth, _signed, (_c, _e, cmd)) -> case cmd of
+          t'' :| [] -> case tDecodeClient serverThParams t'' of
+            (_, _, cmd) -> case cmd of
               Right (ERR e) -> throwE $ PCEProtocolError e -- this is the error from the destination relay
               Right r' -> pure $ Right r'
               Left e -> throwE $ PCEResponseError e

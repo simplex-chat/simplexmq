@@ -214,7 +214,7 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
   fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (auth, _, EntityId entityId, _) cmd = case cmd of
+  checkCredentials auth (EntityId entityId) cmd = case cmd of
     -- TNEW and SNEW must have signature but NOT token/subscription IDs
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
@@ -254,7 +254,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfCmd where
   fromProtocolError = fromProtocolError @NTFVersion @ErrorType @NtfResponse
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials t (NtfCmd e c) = NtfCmd e <$> checkCredentials t c
+  checkCredentials tAuth entId (NtfCmd e c) = NtfCmd e <$> checkCredentials tAuth entId c
 
 data NtfResponseTag
   = NRTknId_
@@ -334,7 +334,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
     PEBlock -> BLOCK
   {-# INLINE fromProtocolError #-}
 
-  checkCredentials (_, _, EntityId entId, _) cmd = case cmd of
+  checkCredentials _ (EntityId entId) cmd = case cmd of
     -- IDTKN response must not have queue ID
     NRTknId {} -> noEntity
     -- IDSUB response must not have queue ID

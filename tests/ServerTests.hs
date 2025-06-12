@@ -92,10 +92,10 @@ serverTests = do
     testInvQueueLinkData
     testContactQueueLinkData
 
-pattern Resp :: CorrId -> QueueId -> BrokerMsg -> SignedTransmission ErrorType BrokerMsg
-pattern Resp corrId queueId command <- (_, _, (corrId, queueId, Right command))
+pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
+pattern Resp corrId queueId command <- (corrId, queueId, Right command)
 
-pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Recipient
+pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Creator
 pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
@@ -104,19 +104,19 @@ pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing)
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
-sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
-signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
 signSendRecv h pk = signSendRecv_ h pk Nothing
 
-serviceSignSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+serviceSignSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
 serviceSignSendRecv h pk = signSendRecv_ h pk . Just
 
-signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (SignedTransmission ErrorType BrokerMsg)
+signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
 signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
@@ -139,9 +139,9 @@ tPut1 h t = do
   [r] <- tPut h [Right t]
   pure r
 
-tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c 'TClient -> IO (SignedTransmission err cmd)
+tGet1 :: (ProtocolEncoding v err cmd, Transport c) => THandle v c 'TClient -> IO (Transmission (Either err cmd))
 tGet1 h = do
-  [r] <- liftIO $ tGet h
+  [r] <- liftIO $ tGetClient h
   pure r
 
 (#==) :: (HasCallStack, Eq a, Show a) => (a, a) -> String -> Assertion
@@ -519,7 +519,7 @@ testSwitchSub =
       Resp "" rId' DELD <- tGet1 rh2
       (rId', rId) #== "connection deleted event delivered to subscribed client"
 
-      1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh1 >>= \case
+      1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh1 >>= \case
         Nothing -> return ()
         Just _ -> error "nothing else is delivered to the 1st TCP connection"
 
@@ -1017,7 +1017,7 @@ testMessageNotifications =
       Resp "5a" _ OK <- signSendRecv rh rKey ("5a", rId, ACK mId2)
       (dec mId2 msg2, Right "hello again") #== "delivered from queue again"
       Resp "" _ (NMSG _ _) <- tGet1 nh2
-      1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh1 >>= \case
+      1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh1 >>= \case
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
       Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
@@ -1027,7 +1027,7 @@ testMessageNotifications =
       Resp "" _ (Msg mId3 msg3) <- tGet1 rh
       (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
       Resp "7a" _ OK <- signSendRecv rh rKey ("7a", rId, ACK mId3)
-      1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh2 >>= \case
+      1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh2 >>= \case
         Nothing -> pure ()
         Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
       (nPub'', nKey'') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1069,7 +1069,7 @@ testMessageServiceNotifications =
           Resp "" serviceId2 (ENDS 1) <- tGet1 nh1
           serviceId2 `shouldBe` serviceId
           deliverMessage rh rId rKey sh sId sKey nh2 "hello again" dec
-          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh1 >>= \case
+          1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh1 >>= \case
             Nothing -> pure ()
             Just _ -> error "nothing else should be delivered to the 1st notifier's TCP connection"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, NDEL)
@@ -1079,7 +1079,7 @@ testMessageServiceNotifications =
           Resp "" _ (Msg mId3 msg3) <- tGet1 rh
           (dec mId3 msg3, Right "hello there") #== "delivered from queue again"
           Resp "7a" _ OK <- signSendRecv rh rKey ("7a", rId, ACK mId3)
-          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg nh2 >>= \case
+          1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh2 >>= \case
             Nothing -> pure ()
             Just _ -> error "nothing else should be delivered to the 2nd notifier's TCP connection"
           -- new notification credentials
@@ -1133,7 +1133,7 @@ testMsgExpireOnSend =
         testSMPClient @c $ \rh -> do
           Resp "3" _ (Msg mId msg) <- signSendRecv rh rKey ("3", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
-          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh >>= \case
+          1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 
@@ -1153,7 +1153,7 @@ testMsgExpireOnInterval =
           signSendRecv rh rKey ("2", rId, SUB) >>= \case
             Resp "2" _ OK -> pure ()
             r -> unexpected r
-          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh >>= \case
+          1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
 
@@ -1172,7 +1172,7 @@ testMsgNOTExpireOnInterval =
         testSMPClient @c $ \rh -> do
           Resp "2" _ (Msg mId msg) <- signSendRecv rh rKey ("2", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
-          1000 `timeout` tGet @SMPVersion @ErrorType @BrokerMsg rh >>= \case
+          1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing else should be delivered"
 

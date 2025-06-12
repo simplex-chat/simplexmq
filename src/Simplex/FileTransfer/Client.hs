@@ -204,7 +204,7 @@ sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = d
   HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req (Just reqTimeout)
   when (B.length bodyHead /= xftpBlockSize) $ throwE $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
-  (_, _, (_, _fId, respOrErr)) <- liftEither . first PCEResponseError $ xftpDecodeTransmission thParams bodyHead
+  (_, _fId, respOrErr) <-liftEither $ first PCEResponseError $ xftpDecodeTClient thParams bodyHead
   case respOrErr of
     Right r -> case protocolError r of
       Just e -> throwE $ PCEProtocolError e
