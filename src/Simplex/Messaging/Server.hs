@@ -1498,7 +1498,7 @@ client
                             | clntIds -> pure $ ERR AUTH -- no retry on collision if sender ID is client-supplied
                             | otherwise -> tryCreate (n - 1)
                           Left e -> pure $ ERR e
-                          Right q -> do
+                          Right _q -> do
                             stats <- asks serverStats
                             incStat $ qCreated stats
                             incStat $ qCount stats
@@ -1506,7 +1506,7 @@ client
                             -- when (isJust ntf) $ incStat $ ntfCreated stats
                             case subMode of
                               SMOnlyCreate -> pure ()
-                              SMSubscribe -> void $ subscribeQueue q qr -- no need to check if message is available, it's a new queue
+                              SMSubscribe -> subscribeNewQueue rcvId qr -- no need to check if message is available, it's a new queue
                             pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serviceId = rcvServiceId} -- , serverNtfCreds = snd <$> ntf
               (corrId,entId,) <$> tryCreate (3 :: Int)
 
@@ -1569,32 +1569,35 @@ client
 
         -- TODO [certs rcv] if serviceId is passed, associate with the service and respond with SOK
         subscribeQueueAndDeliver :: StoreQueue s -> QueueRec -> M s ResponseAndMessage
-        subscribeQueueAndDeliver q qr =
-          liftIO (TM.lookupIO rId $ subscriptions clnt) >>= \case
-            Nothing -> subscribeQueue q qr >>= deliver True
+        subscribeQueueAndDeliver q qr@QueueRec {rcvServiceId} =
+          liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
+            Nothing ->
+              sharedSubscribeQueue SRecipientService q rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices >>= \case
+                Left e -> pure (err e, Nothing)
+                Right s -> deliver s
             Just s@Sub {subThread} -> do
               stats <- asks serverStats
               case subThread of
                 ProhibitSub -> do
                   -- cannot use SUB in the same connection where GET was used
                   incStat $ qSubProhibited stats
-                  pure ((corrId, rId, ERR $ CMD PROHIBITED), Nothing)
+                  pure (err (CMD PROHIBITED), Nothing)
                 _ -> do
                   incStat $ qSubDuplicate stats
-                  atomically (tryTakeTMVar $ delivered s) >> deliver False (Just s)
+                  let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> service
+                  atomically (tryTakeTMVar $ delivered s) >> deliver (True, Just s, clntServiceId)
           where
-            rId = recipientId q
-            deliver :: Bool -> Maybe Sub -> M s ResponseAndMessage
-            deliver inc sub_ = do
+            deliver :: (Bool, Maybe Sub, Maybe ServiceId) -> M s ResponseAndMessage
+            deliver (hasSub, sub_, serviceId) = do
               stats <- asks serverStats
-              fmap (either (\e -> ((corrId, rId, ERR e), Nothing)) id) $ liftIO $ runExceptT $ do
+              fmap (either ((,Nothing) . err) id) $ liftIO $ runExceptT $ do
                 msg_ <- tryPeekMsg ms q
                 msg' <- forM msg_ $ \msg -> do
-                  sub <- maybe (atomically $ getSub rId) pure sub_
+                  sub <- maybe (atomically $ getSub entId) pure sub_
                   void $ atomically $ setDelivered sub msg
-                  when inc $ incStat $ qSub stats
-                  pure (rId, encryptMsg qr msg)
-                pure ((corrId, rId, SOK Nothing), msg')
+                  unless hasSub $ incStat $ qSub stats
+                  pure (entId, encryptMsg qr msg)
+                pure ((corrId, entId, SOK serviceId), msg')
 
         getSub :: RecipientId -> STM Sub
         getSub rId =
@@ -1605,14 +1608,14 @@ client
               TM.insert rId sub $ subscriptions clnt
               pure sub
 
-        subscribeQueue :: StoreQueue s -> QueueRec -> M s (Maybe Sub) -- (Either ErrorType (Bool, Maybe Sub, Maybe ServiceId))
-        subscribeQueue q QueueRec {rcvServiceId} = do
-          -- sharedSubscribeQueue SRecipientService q rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
-          let rId = recipientId q
-          sub <- atomically $ newSubscription NoSub
-          atomically $ TM.insert rId sub $ subscriptions clnt
-          atomically $ writeTQueue (subQ subscribers) (CSClient rId rcvServiceId Nothing, clientId)
-          pure $ Just sub
+        subscribeNewQueue :: RecipientId -> QueueRec -> M s ()
+        subscribeNewQueue rId QueueRec {rcvServiceId} = do
+          case rcvServiceId of
+            Just _ -> atomically $ modifyTVar' (serviceSubsCount clnt) (+ 1)
+            Nothing -> do
+              sub <- atomically $ newSubscription NoSub
+              atomically $ TM.insert rId sub $ subscriptions clnt
+          atomically $ writeTQueue (subQ subscribers) (CSClient rId rcvServiceId rcvServiceId, clientId)
 
         -- clients that use GET are not added to server subscribers
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
@@ -1867,10 +1870,13 @@ client
             tryDeliverMessage msg =
               -- the subscribed client var is read outside of STM to avoid transaction cost
               -- in case no client is subscribed.
-              getSubscribedClient rId (queueSubscribers subscribers)
+              getSubscribed
                 $>>= atomically . deliverToSub
                 >>= mapM_ forkDeliver
               where
+                getSubscribed = case rcvServiceId qr of
+                  Just serviceId -> getSubscribedClient serviceId $ serviceSubscribers subscribers
+                  Nothing -> getSubscribedClient rId $ queueSubscribers subscribers
                 rId = recipientId q
                 deliverToSub rcv =
                   -- reading client TVar in the same transaction,
@@ -1879,6 +1885,7 @@ client
                   -- the new client will receive message in response to SUB.
                   readTVar rcv
                     $>>= \rc@Client {subscriptions = subs, sndQ = sndQ'} -> TM.lookup rId subs
+                    >>= maybe (newServiceDeliverySub subs) (pure . Just)
                     $>>= \s@Sub {subThread, delivered} -> case subThread of
                       ProhibitSub -> pure Nothing
                       ServerSub st -> readTVar st >>= \case
@@ -1891,6 +1898,12 @@ client
                                 (writeTVar st SubPending $> Just (rc, s, st))
                                 (deliver sndQ' s $> Nothing)
                         _ -> pure Nothing
+                newServiceDeliverySub subs
+                  | isJust (rcvServiceId qr) = do
+                      sub <- newSubscription NoSub
+                      TM.insert rId sub subs
+                      pure $ Just sub
+                  | otherwise = pure Nothing
                 deliver sndQ' s = do
                   let encMsg = encryptMsg qr msg
                   writeTBQueue sndQ' ([(NoCorrId, rId, MSG encMsg)], [])
