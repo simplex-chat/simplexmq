@@ -939,7 +939,7 @@ testTiming =
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
     similarTime t1 t2
-      | t1 <= t2 = abs (1 - t1 / t2) < 0.35 -- normally the difference between "no queue" and "wrong key" is less than 5%
+      | t1 <= t2 = abs (1 - t1 / t2) < 0.3 -- normally the difference between "no queue" and "wrong key" is less than 5%
       | otherwise = similarTime t2 t1
     testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
     testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
