@@ -8,7 +8,7 @@ import AgentTests.ConnectionRequestTests (contactConnRequest, invConnRequest)
 import AgentTests.EqInstances ()
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SMPAgentError (..), linkUserData, supportedSMPAgentVRange)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SConnectionMode (..), SMPAgentError (..), linkUserData, supportedSMPAgentVRange)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Test.Hspec hiding (fit, it)
@@ -79,7 +79,7 @@ testUpdateContactShortLink = do
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
   -- encrypt updated user data
   let updatedUserData = "updated user data"
-      signed = SL.encodeSignUserData (snd sigKeys) supportedSMPAgentVRange updatedUserData
+      signed = SL.encodeSignUserData SCMContact (snd sigKeys) supportedSMPAgentVRange updatedUserData
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
   Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k (fd, ud')
@@ -114,7 +114,7 @@ testContactShortLinkBadSignature = do
   let updatedUserData = "updated user data"
   -- another signature key
   (_, pk) <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let signed = SL.encodeSignUserData pk supportedSMPAgentVRange updatedUserData
+  let signed = SL.encodeSignUserData SCMContact pk supportedSMPAgentVRange updatedUserData
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decryption fails
   SL.decryptLinkData @'CMContact linkKey k (fd, ud')
