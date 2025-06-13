@@ -859,7 +859,7 @@ setConnShortLink' c connId cMode userData clientData =
         Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
           let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
           unless (shortLinkId == linkId) $ throwE $ INTERNAL "setConnShortLink: link ID is not derived from link"
-          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
+          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData SCMContact linkPrivSigKey smpAgentVRange userData
           pure (rq, linkId, cslContact shortLinkKey, (linkEncFixedData, d))
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
@@ -877,7 +877,7 @@ setConnShortLink' c connId cMode userData clientData =
         g <- asks random
         AgentConfig {smpAgentVRange} <- asks config
         let k = SL.invShortLinkKdf shortLinkKey
-        d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData linkPrivSigKey smpAgentVRange userData
+        d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData SCMInvitation linkPrivSigKey smpAgentVRange userData
         let sl = CSLInvitation SLSServer (qServer rq) shortLinkId shortLinkKey
         pure (rq, shortLinkId, sl, (linkEncFixedData, d))
       Nothing -> throwE $ CMD PROHIBITED "setConnShortLink: no ShortLinkCreds in invitation"
