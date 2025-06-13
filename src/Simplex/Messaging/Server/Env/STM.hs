@@ -378,7 +378,7 @@ sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 data ClientSub
   = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
-  | CSService ServiceId -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
+  | CSService ServiceId Int64 -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent 'Sender
