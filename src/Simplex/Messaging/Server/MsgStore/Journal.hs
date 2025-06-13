@@ -356,8 +356,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE setQueueService #-}
   getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
   {-# INLINE getQueueNtfServices #-}
-  getNtfServiceQueueCount = withQS (getNtfServiceQueueCount @(JournalQueue s))
-  {-# INLINE getNtfServiceQueueCount #-}
+  getServiceQueueCount = withQS (getServiceQueueCount @(JournalQueue s))
+  {-# INLINE getServiceQueueCount #-}
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
