@@ -1685,9 +1685,9 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
-    InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, userData)
+    InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, Large userData)
     ContactLinkData {agentVRange, direct, owners, relays, userData} ->
-      B.concat [smpEncode (CMContact, agentVRange, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+      B.concat [smpEncode (CMContact, agentVRange, direct), smpEncodeList owners, smpEncodeList relays, smpEncode (Large userData)]
   smpP = (\(ACLD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1697,13 +1697,13 @@ instance Encoding AConnLinkData where
   smpP =
     smpP >>= \case
       CMInvitation -> do
-        (vr, userData) <- smpP
+        (vr, Large userData) <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
       CMContact -> do
         (agentVRange, direct) <- smpP
         owners <- smpListP
         relays <- smpListP
-        userData <- smpP
+        Large userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
 
 data StoredClientService (s :: DBStored) = ClientService
