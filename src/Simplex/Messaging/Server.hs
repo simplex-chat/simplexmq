@@ -1272,8 +1272,8 @@ verifyCmdAuth thAuth k authenticator authorized (CorrId corrId) = case thAuth of
   Just THAuthServer {serverPrivKey = pk} -> C.cbVerify k pk (C.cbNonce corrId) authenticator authorized
   Nothing -> False
 
-dummyVerifyCmd :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> Maybe Bool
-dummyVerifyCmd thAuth tAuth authorized corrId = verify <$> tAuth
+dummyVerifyCmd :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> Bool
+dummyVerifyCmd thAuth tAuth authorized corrId = maybe False verify tAuth
   where
     verify = \case
       (TASignature (C.ASignature a s), _) -> C.verify' (dummySignKey a) s authorized
