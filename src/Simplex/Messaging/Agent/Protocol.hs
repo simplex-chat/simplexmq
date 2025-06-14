@@ -1697,13 +1697,13 @@ instance Encoding AConnLinkData where
   smpP =
     smpP >>= \case
       CMInvitation -> do
-        (vr, userData) <- smpP
+        (vr, userData) <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
       CMContact -> do
         (agentVRange, direct) <- smpP
         owners <- smpListP
         relays <- smpListP
-        userData <- smpP
+        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
 
 data StoredClientService (s :: DBStored) = ClientService
