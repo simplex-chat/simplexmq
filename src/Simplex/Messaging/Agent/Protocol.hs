@@ -111,6 +111,7 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    UserLinkData (..),
     OwnerAuth (..),
     OwnerId,
     ConnectionLink (..),
@@ -167,6 +168,7 @@ module Simplex.Messaging.Agent.Protocol
     shortenShortLink,
     restoreShortLink,
     linkUserData,
+    linkUserData',
   )
 where
 
@@ -1633,7 +1635,7 @@ data FixedLinkData c = FixedLinkData
   }
 
 data ConnLinkData c where
-  InvitationLinkData :: VersionRangeSMPA -> ConnInfo -> ConnLinkData 'CMInvitation
+  InvitationLinkData :: VersionRangeSMPA -> UserLinkData -> ConnLinkData 'CMInvitation
   ContactLinkData ::
     { agentVRange :: VersionRangeSMPA,
       -- direct connection via connReq in fixed data is allowed.
@@ -1642,15 +1644,22 @@ data ConnLinkData c where
       owners :: [OwnerAuth],
       -- alternative addresses of chat relays that receive requests for this contact address.
       relays :: [ConnShortLink 'CMContact],
-      userData :: ConnInfo
+      userData :: UserLinkData
     } -> ConnLinkData 'CMContact
+
+newtype UserLinkData = UserLinkData ByteString
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
 
-linkUserData :: ConnLinkData c -> ConnInfo
+linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
   InvitationLinkData _ d -> d
   ContactLinkData {userData} -> userData
+{-# INLINE linkUserData #-}
+
+linkUserData' :: ConnLinkData c -> ByteString
+linkUserData' d = let UserLinkData s = linkUserData d in s
+{-# INLINE linkUserData' #-}
 
 type OwnerId = ByteString
 
@@ -1705,6 +1714,12 @@ instance Encoding AConnLinkData where
         relays <- smpListP
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
+
+instance Encoding UserLinkData where
+  smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
+  {-# INLINE smpEncode #-}
+  smpP = UserLinkData <$> ((A.char '\255' *> (unLarge <$> smpP)) <|> smpP)
+  {-# INLINE smpP #-}
 
 data StoredClientService (s :: DBStored) = ClientService
   { dbServiceId :: DBEntityId' s,

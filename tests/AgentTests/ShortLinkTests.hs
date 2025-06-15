@@ -8,7 +8,7 @@ import AgentTests.ConnectionRequestTests (contactConnRequest, invConnRequest)
 import AgentTests.EqInstances ()
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SConnectionMode (..), SMPAgentError (..), linkUserData, supportedSMPAgentVRange)
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), SConnectionMode (..), SMPAgentError (..), UserLinkData (..), linkUserData, supportedSMPAgentVRange)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Test.Hspec hiding (fit, it)
@@ -30,7 +30,7 @@ testInvShortLink = do
   -- encrypt
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let userData = "some user data"
+  let userData = UserLinkData "some user data"
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange invConnRequest userData
       k = SL.invShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
@@ -44,7 +44,7 @@ testInvShortLinkBadDataHash = do
   -- encrypt
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let userData = "some user data"
+  let userData = UserLinkData "some user data"
       (_linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange invConnRequest userData
   -- different key
   linkKey <- LinkKey <$> atomically (C.randomBytes 32 g)
@@ -59,7 +59,7 @@ testContactShortLink = do
   -- encrypt
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let userData = "some user data"
+  let userData = UserLinkData "some user data"
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest userData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
@@ -73,12 +73,12 @@ testUpdateContactShortLink = do
   -- encrypt
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let userData = "some user data"
+  let userData = UserLinkData "some user data"
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest userData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
   -- encrypt updated user data
-  let updatedUserData = "updated user data"
+  let updatedUserData = UserLinkData "updated user data"
       signed = SL.encodeSignUserData SCMContact (snd sigKeys) supportedSMPAgentVRange updatedUserData
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
@@ -91,7 +91,7 @@ testContactShortLinkBadDataHash = do
   -- encrypt
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let userData = "some user data"
+  let userData = UserLinkData "some user data"
       (_linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest userData
   -- different key
   linkKey <- LinkKey <$> atomically (C.randomBytes 32 g)
@@ -106,12 +106,12 @@ testContactShortLinkBadSignature = do
   -- encrypt
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let userData = "some user data"
+  let userData = UserLinkData "some user data"
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest userData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
   -- encrypt updated user data
-  let updatedUserData = "updated user data"
+  let updatedUserData = UserLinkData "updated user data"
   -- another signature key
   (_, pk) <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let signed = SL.encodeSignUserData SCMContact pk supportedSMPAgentVRange updatedUserData

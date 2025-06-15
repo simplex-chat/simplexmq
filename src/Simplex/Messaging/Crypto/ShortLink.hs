@@ -48,17 +48,17 @@ contactShortLinkKdf (LinkKey k) =
 invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
-encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> ConnInfo -> (LinkKey, (ByteString, ByteString))
+encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> UserLinkData -> (LinkKey, (ByteString, ByteString))
 encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
   let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq}
       md = smpEncode $ connLinkData @c agentVRange userData
    in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
 
-encodeSignUserData :: forall c. ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> ConnInfo -> ByteString
+encodeSignUserData :: forall c. ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> UserLinkData -> ByteString
 encodeSignUserData _ pk agentVRange userData =
   encodeSign pk $ smpEncode $ connLinkData @c agentVRange userData
 
-connLinkData :: forall c. ConnectionModeI c => VersionRangeSMPA -> ConnInfo -> ConnLinkData c
+connLinkData :: forall c. ConnectionModeI c => VersionRangeSMPA -> UserLinkData -> ConnLinkData c
 connLinkData agentVRange userData = case sConnectionMode @c of
   SCMInvitation -> InvitationLinkData agentVRange userData
   SCMContact -> ContactLinkData {agentVRange, direct = True, owners = [], relays = [], userData}

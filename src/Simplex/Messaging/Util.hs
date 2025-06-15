@@ -265,9 +265,11 @@ atomicModifyIORef'_ r f = atomicModifyIORef' r (\v -> (f v, ()))
 
 encodeJSON :: ToJSON a => a -> Text
 encodeJSON = safeDecodeUtf8 . LB.toStrict . J.encode
+{-# INLINE encodeJSON #-}
 
 decodeJSON :: FromJSON a => Text -> Maybe a
-decodeJSON = J.decode . LB.fromStrict . encodeUtf8
+decodeJSON = J.decodeStrict . encodeUtf8
+{-# INLINE decodeJSON #-}
 
 traverseWithKey_ :: Monad m => (k -> v -> m ()) -> Map k v -> m ()
 traverseWithKey_ f = M.foldrWithKey (\k v -> (f k v >>)) (pure ())
