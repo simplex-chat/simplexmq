@@ -54,9 +54,9 @@ encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
       md = smpEncode $ connLinkData @c agentVRange userData
    in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
 
-encodeSignUserData :: C.PrivateKeyEd25519 -> VersionRangeSMPA -> ConnInfo -> ByteString
-encodeSignUserData pk agentVRange userData =
-  encodeSign pk $ smpEncode $ connLinkData @'CMContact agentVRange userData
+encodeSignUserData :: forall c. ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> ConnInfo -> ByteString
+encodeSignUserData _ pk agentVRange userData =
+  encodeSign pk $ smpEncode $ connLinkData @c agentVRange userData
 
 connLinkData :: forall c. ConnectionModeI c => VersionRangeSMPA -> ConnInfo -> ConnLinkData c
 connLinkData agentVRange userData = case sConnectionMode @c of
