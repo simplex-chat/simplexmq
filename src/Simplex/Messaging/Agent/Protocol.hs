@@ -1716,9 +1716,9 @@ instance Encoding AConnLinkData where
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
 
 instance Encoding UserLinkData where
-  smpEncode (UserLinkData s) = if B.length s <= 255 then smpEncode s else smpEncode (Large s)
+  smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
   {-# INLINE smpEncode #-}
-  smpP = (UserLinkData . unLarge <$> smpP) <|> (UserLinkData <$> smpP)
+  smpP = UserLinkData <$> ((A.char '\255' *> (unLarge <$> smpP)) <|> smpP)
   {-# INLINE smpP #-}
 
 data StoredClientService (s :: DBStored) = ClientService
