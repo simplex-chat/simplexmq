@@ -495,6 +495,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         SRecipientService -> "SELECT count(1) FROM msg_queues WHERE rcv_service_id = ? AND deleted_at IS NULL"
         SNotifierService -> "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL"
 
+  foldRcvServiceQueues :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
+  foldRcvServiceQueues st mkQ serviceId f acc =
+    withConnection (dbStore st) $ \db ->
+      DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \acc' -> do
+
+        f' acc' . rowToQueueRec
+      DB.fold db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
+        \ !acc -> fmap (acc <>) . f . rowToServiceRec
+
 batchInsertServices :: [STMService] -> PostgresQueueStore q -> IO Int64
 batchInsertServices services' toStore =
   withConnection (dbStore toStore) $ \db ->

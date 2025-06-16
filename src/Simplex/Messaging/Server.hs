@@ -426,7 +426,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 if sent
                   then updateEndStats
                   else -- if queue is full it can block
-                    forkClient c ("sendPendingEvtsThread.queueEvts") $
+                    forkClient c "sendPendingEvtsThread.queueEvts" $
                       atomically (writeTBQueue sndQ (ts, [])) >> updateEndStats
               where
                 ts = L.map (\(entId, evt) -> (NoCorrId, entId, evt)) evts
@@ -1307,7 +1307,7 @@ client
   -- TODO [certs rcv] rcv subscriptions
   Server {subscribers, ntfSubscribers}
   ms
-  clnt@Client {clientId, serviceSubsCount = _todo', rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     let THandleParams {thVersion} = thParams'
         clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
@@ -1751,8 +1751,33 @@ client
           sharedSubscribeService SRecipientService serviceId subscribers serviceSubsCount >>= \case
             Left e -> pure $ ERR e
             Right (hasSub, count) -> do
-              unless hasSub $ pure () -- TODO [certs rcv] if hasSubs is False, deliver all pending messages on a separate thread
+              unless hasSub $ forkClient clnt "deliverServiceMessages" $ liftIO $ deliverServiceMessages count
               pure $ SOKS count
+          where
+            deliverServiceMessages expectedCnt = do
+              (qCnt, _msgCnt, _dupCnt, _errCnt) <- foldRcvServiceQueues (queueStore ms) serviceId deliverQueueMsg (0, 0, 0, 0)
+              -- TODO [cert rcv] compare with expected
+              logNote $ "Service subscriptions for " <> tshow serviceId <> " (" <> tshow qCnt <> " queues)"
+            deliverQueueMsg :: (Int, Int, Int, Int) -> (StoreQueue s, QueueRec) -> IO (Int, Int, Int, Int)
+            deliverQueueMsg acc@(!qCnt, !msgCnt, !dupCnt, !errCnt) (q, qr) =
+              runExceptT (tryPeekMsg ms q) >>= \case
+                Left e -> pure (qCnt + 1, msgCnt, dupCnt, errCnt + 1) -- TODO deliver subscription error
+                Right Nothing -> pure acc
+                Right (Just msg) -> do
+                  let rId = recipientId q
+                  atomically (getNewSub rId) >>= \case
+                    Nothing -> pure (qCnt + 1, msgCnt, dupCnt + 1, errCnt)
+                    Just sub -> do
+                      void $ atomically $ setDelivered sub msg
+                      atomically $ writeTBQueue msgQ [(rId, encryptMsg qr msg)]
+                      pure (qCnt + 1, msgCnt + 1, dupCnt, errCnt)
+            getNewSub rId =
+              TM.lookup rId (subscriptions clnt) >>= \case
+                Just _sub -> pure Nothing -- if delivery subscription already exists, then there is no need to deliver message
+                Nothing -> do
+                  sub <- newSubscription NoSub
+                  TM.insert rId sub $ subscriptions clnt
+                  pure $ Just sub
 
         sharedSubscribeService :: (PartyI p, ServiceParty p) => SParty p -> ServiceId -> ServerSubscribers s -> (Client s -> TVar Int64) -> M s (Either ErrorType (Bool, Int64))
         sharedSubscribeService party serviceId srvSubscribers clientServiceSubs = do
