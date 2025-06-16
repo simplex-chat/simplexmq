@@ -910,6 +910,12 @@ changeConnectionUser' c oldUserId connId newUserId = do
   case conn of
     NewConnection {} -> updateConn
     RcvConnection {} -> updateConn
+    -- RcvConnection _ rq -> do
+    --   atomically $ removeSubscription c connId
+    --   let rq' = rq {userId = newUserId}
+    --   -- todo get tSess, sessId
+    --   addNewQueueSubscription c rq' tSess sessId
+    --   updateConn
     _ -> throwE $ CMD PROHIBITED "changeConnectionUser: established connection"
   where
     updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
@@ -1675,7 +1681,7 @@ submitPendingMsg c cData sq = do
   void $ getDeliveryWorker True c cData sq
 
 runSmpQueueMsgDelivery :: AgentClient -> ConnData -> SndQueue -> (Worker, TMVar ()) -> AM ()
-runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userId, server, queueMode} (Worker {doWork}, qLock) = do
+runSmpQueueMsgDelivery c@AgentClient {clientId, subQ} ConnData {connId} sq@SndQueue {userId, server, queueMode} (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
@@ -1783,7 +1789,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                         notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
-                AM_A_MSG_ -> notify $ SENT mId proxySrv_
+                AM_A_MSG_ -> do
+                  liftIO $ print $ show clientId <> ": SENT"
+                  notify $ SENT mId proxySrv_
                 AM_A_RCVD_ -> pure ()
                 AM_QCONT_ -> pure ()
                 AM_QADD_ -> pure ()
@@ -2444,8 +2452,9 @@ getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {msgQ} = forever $ do
+subscriber c@AgentClient {clientId, msgQ} = forever $ do
   t <- atomically $ readTBQueue msgQ
+  liftIO $ print $ show clientId <> ": subscriber received message"
   agentOperationBracket c AORcvNetwork waitUntilActive $
     processSMPTransmissions c t
 
@@ -2527,8 +2536,9 @@ data ACKd = ACKd | ACKPending
 -- It cannot be finally, as sometimes it needs to be ACK+DEL,
 -- and sometimes ACK has to be sent from the consumer.
 processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
-processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId, ts) = do
+processSMPTransmissions c@AgentClient {clientId, subQ} (tSess@(userId, srv, _), _v, sessId, ts) = do
   upConnIds <- newTVarIO []
+  liftIO $ print $ show clientId <> ": processSMPTransmissions userId = " <> show userId
   forM_ ts $ \(entId, t) -> case t of
     STEvent msgOrErr ->
       withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
@@ -2584,6 +2594,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     notifyErr connId = notify' connId . ERR . protocolClientError SMP (B.unpack $ strEncode srv)
     runProcessSMP :: RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
     runProcessSMP rq conn cData msg = do
+      liftIO $ print $ show clientId <> ": processSMPTransmissions runProcessSMP"
       pending <- newTVarIO []
       processSMP rq conn cData msg pending
       mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
@@ -2596,6 +2607,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       pendingMsgs =
         withConnLock c connId "processSMP" $ case smpMsg of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> do
+            liftIO $ print $ show clientId <> ": processSMPTransmissions processSMP MSG"
             atomically $ incSMPServerStat c userId srv recvMsgs
             void . handleNotifyAck $ do
               msg' <- decryptSMPMessage rq msg
@@ -2653,6 +2665,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' srvMsgId
+                                liftIO $ print $ show clientId <> ": processSMPTransmissions processSMP A_MSG body = " <> show body
                                 notify $ MSG msgMeta msgFlags body
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
@@ -2804,6 +2817,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
 
           smpConfirmation :: SMP.MsgId -> Connection c -> Maybe C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()
           smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion = do
+            liftIO $ print $ show clientId <> ": processSMPTransmissions smpConfirmation"
             logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret' srvMsgId
             AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
             let ConnData {pqSupport} = toConnData conn'
@@ -2816,6 +2830,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               New -> case (conn', e2eEncryption) of
                 -- party initiating connection
                 (RcvConnection _ _, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _))) -> do
+                  liftIO $ print $ show clientId <> ": processSMPTransmissions smpConfirmation party initiating connection"
                   unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwE $ AGENT A_VERSION)
                   (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
                   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams

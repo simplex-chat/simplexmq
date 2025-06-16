@@ -681,7 +681,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} tSess@(_, srv, _) prs v =
+smpConnectClient c@AgentClient {clientId, smpClients, msgQ, proxySessTs} tSess@(_, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAgentError` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
@@ -692,7 +692,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} tSess@(_, srv, _)
       env <- ask
       liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
-        smp <- ExceptT $ getProtocolClient g tSess cfg (presetSMPDomains c) (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+        smp <- ExceptT $ getProtocolClient clientId g tSess cfg (presetSMPDomains c) (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
         pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
@@ -795,7 +795,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs} tS
       g <- asks random
       ts <- readTVarIO proxySessTs
       liftError' (protocolClientError NTF $ B.unpack $ strEncode srv) $
-        getProtocolClient g tSess cfg [] Nothing ts $
+        getProtocolClient 0 g tSess cfg [] Nothing ts $
           clientDisconnected v
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
@@ -1227,7 +1227,7 @@ runSMPServerTest c userId (ProtoServerWithAuth srv auth) = do
   liftIO $ do
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
-    getProtocolClient g tSess cfg (presetSMPDomains c) Nothing ts (\_ -> pure ()) >>= \case
+    getProtocolClient 0 g tSess cfg (presetSMPDomains c) Nothing ts (\_ -> pure ()) >>= \case
       Right smp -> do
         rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
@@ -1304,7 +1304,7 @@ runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
   liftIO $ do
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
-    getProtocolClient g tSess cfg [] Nothing ts (\_ -> pure ()) >>= \case
+    getProtocolClient 0 g tSess cfg [] Nothing ts (\_ -> pure ()) >>= \case
       Right ntf -> do
         (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g

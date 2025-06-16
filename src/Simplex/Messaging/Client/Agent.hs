@@ -198,7 +198,7 @@ isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
 -- | Run an SMP client for SMPClientVar
 connectClient :: SMPClientAgent -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
 connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg, startedAt} srv v =
-  getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) [] (Just msgQ) startedAt clientDisconnected
+  getProtocolClient 0 randomDrg (1, srv, Nothing) (smpCfg agentCfg) [] (Just msgQ) startedAt clientDisconnected
   where
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do

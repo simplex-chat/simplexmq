@@ -297,7 +297,7 @@ functionalAPITests ps = do
   it "should support rejecting contact request" $
     withSmpServer ps testRejectContactRequest
   describe "Changing connection user id" $ do
-    it "should change user id for new connections" $ do
+    fit "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
   describe "Establishing connection asynchronously" $ do
     it "should connect with initiating client going offline" $
@@ -956,19 +956,20 @@ testRejectContactRequest =
 testUpdateConnectionUserId :: HasCallStack => IO ()
 testUpdateConnectionUserId =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+    (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
     newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
-    _ <- changeConnectionUser alice 1 connId newUserId
+    _ <- changeConnectionUser alice 1 bobId newUserId
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     sqSecured' <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured' `shouldBe` True
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` PQSupportOn
-    allowConnection alice connId confId "alice's connInfo"
+    allowConnection alice bobId confId "alice's connInfo"
     let pqEnc = CR.pqSupportToEnc PQSupportOn
-    get alice ##> ("", connId, A.CON pqEnc)
+    get alice ##> ("", bobId, A.CON pqEnc)
     get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
     get bob ##> ("", aliceId, A.CON pqEnc)
+    exchangeGreetings alice bobId bob aliceId
 
 testAsyncInitiatingOffline :: HasCallStack => IO ()
 testAsyncInitiatingOffline =
@@ -3583,14 +3584,21 @@ exchangeGreetingsViaProxyMsgId_ :: HasCallStack => Bool -> PQEncryption -> Int64
 exchangeGreetingsViaProxyMsgId_ viaProxy pqEnc msgId alice bobId bob aliceId = do
   msgId1 <- A.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
   liftIO $ msgId1 `shouldBe` (msgId, pqEnc)
+  liftIO $ print "test 1"
   get alice =##> \case ("", c, A.SENT mId srv_) -> c == bobId && mId == msgId && viaProxy == isJust srv_; _ -> False
+  liftIO $ print "test 2"
   get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqEnc; _ -> False
+  liftIO $ print "test 3"
   ackMessage bob aliceId msgId Nothing
+  liftIO $ print "test 4 before bob sendMessage"
   msgId2 <- A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
   let msgId' = msgId + 1
   liftIO $ msgId2 `shouldBe` (msgId', pqEnc)
+  liftIO $ print "test 5 after bob sendMessage"
   get bob =##> \case ("", c, A.SENT mId srv_) -> c == aliceId && mId == msgId' && viaProxy == isJust srv_; _ -> False
+  liftIO $ print "test 6 after bob SENT"
   get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == msgId' && pq == pqEnc; _ -> False
+  liftIO $ print "test 7"
   ackMessage alice bobId msgId' Nothing
 
 exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
