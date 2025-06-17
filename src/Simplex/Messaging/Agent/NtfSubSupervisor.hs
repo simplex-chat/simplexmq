@@ -17,7 +17,6 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     instantNotifications,
     deleteToken,
     closeNtfSupervisor,
-    getNtfServer,
   )
 where
 
@@ -582,14 +581,3 @@ closeNtfSupervisor ns = do
   stopWorkers $ ntfTknDelWorkers ns
   where
     stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
-
-getNtfServer :: AgentClient -> AM' (Maybe NtfServer)
-getNtfServer c = do
-  ntfServers <- readTVarIO $ ntfServers c
-  case ntfServers of
-    [] -> pure Nothing
-    [srv] -> pure $ Just srv
-    servers -> do
-      gen <- asks randomServer
-      atomically . stateTVar gen $
-        first (Just . (servers !!)) . randomR (0, length servers - 1)

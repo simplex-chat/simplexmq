@@ -14,7 +14,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Protocol (NotifierId, NtfServer, SMPServer)
+import Simplex.Messaging.Protocol (NotifierId, NtfServer, SMPServer, NtfServerWithAuth)
 
 data NtfTknAction
   = NTARegister

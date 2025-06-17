@@ -94,7 +94,7 @@ type AM a = ExceptT AgentErrorType (ReaderT Env IO) a
 
 data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty (ServerCfg 'PSMP)),
-    ntf :: [NtfServer],
+    ntf :: Map UserId (NonEmpty (ServerCfg 'PNTF)),
     xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
     netCfg :: NetworkConfig,
     presetDomains :: [HostName]

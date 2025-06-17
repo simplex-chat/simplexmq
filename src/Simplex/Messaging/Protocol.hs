@@ -1090,6 +1090,7 @@ instance ProtocolTypeI 'PXFTP where protocolTypeI = SPXFTP
 type family UserProtocol (p :: ProtocolType) :: Constraint where
   UserProtocol PSMP = ()
   UserProtocol PXFTP = ()
+  UserProtocol PNTF = ()
   UserProtocol a =
     (Int ~ Bool, TypeError (TE.Text "Servers for protocol " :<>: ShowType a :<>: TE.Text " cannot be configured by the users"))
 
@@ -1097,7 +1098,8 @@ userProtocol :: SProtocolType p -> Maybe (Dict (UserProtocol p))
 userProtocol = \case
   SPSMP -> Just Dict
   SPXFTP -> Just Dict
-  _ -> Nothing
+  SPNTF -> Just Dict
+  -- _ -> Nothing
 
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer

@@ -452,7 +452,7 @@ testNtfTokenChangeServers t apns =
     tkn1 <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
       tkn <- registerTestToken a "abcd" NMInstant apns
       NTActive <- checkNtfToken a tkn
-      liftIO $ setNtfServers a [testNtfServer2]
+      liftIO $ setNtfServers a [noAuthSrvCfg testNtfServer2]
       NTActive <- checkNtfToken a tkn -- still works on old server
       pure tkn
 
@@ -462,7 +462,7 @@ testNtfTokenChangeServers t apns =
       runRight_ $ do
         getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
         NTActive <- checkNtfToken a tkn1
-        liftIO $ setNtfServers a [testNtfServer2] -- just change configured server list
+        liftIO $ setNtfServers a [noAuthSrvCfg testNtfServer2] -- just change configured server list
         getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
         -- trigger token replace
         tkn2 <- registerTestToken a "xyzw" NMInstant apns
@@ -894,7 +894,7 @@ testNotificationsOldToken apns =
     liftIO $ threadDelay 250000
     testMessageAB "hello"
     -- change server
-    liftIO $ setNtfServers a [testNtfServer2] -- server 2 isn't running now, don't use
+    liftIO $ setNtfServers a [noAuthSrvCfg testNtfServer2] -- server 2 isn't running now, don't use
     -- replacing token keeps server
     _ <- registerTestToken a "xyzw" NMInstant apns
     getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort
@@ -914,7 +914,7 @@ testNotificationsNewToken apns oldNtf =
     liftIO $ threadDelay 250000
     testMessageAB "hello"
     -- switch
-    liftIO $ setNtfServers a [testNtfServer2]
+    liftIO $ setNtfServers a [noAuthSrvCfg testNtfServer2]
     deleteNtfToken a tkn
     _ <- registerTestToken a "abcd" NMInstant apns
     getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort2

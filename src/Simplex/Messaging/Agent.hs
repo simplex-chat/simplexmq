@@ -98,7 +98,6 @@ module Simplex.Messaging.Agent
     verifyNtfToken,
     checkNtfToken,
     deleteNtfToken,
-    getNtfServers,
     getNtfToken,
     getNtfTokenData,
     toggleConnectionNtfs,
@@ -213,7 +212,7 @@ import Simplex.Messaging.Protocol
     SubscriptionMode (..),
     UserProtocol,
     VersionSMPC,
-    senderCanSecure,
+    senderCanSecure, NtfServerWithAuth,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
@@ -317,8 +316,8 @@ resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
 {-# INLINE resumeAgentClient #-}
 
-createUser :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AE UserId
-createUser c = withAgentEnv c .: createUser' c
+createUser :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> NonEmpty (ServerCfg 'PNTF) -> AE UserId
+createUser c = withAgentEnv c .:. createUser' c
 {-# INLINE createUser #-}
 
 -- | Delete user record optionally deleting all user's connections on SMP servers
@@ -577,13 +576,13 @@ reconnectAllServers c = do
   reconnectServerClients c ntfClients
 
 -- | Register device notifications token
-registerNtfToken :: AgentClient -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
-registerNtfToken c = withAgentEnv c .: registerNtfToken' c
+registerNtfToken :: AgentClient -> UserId -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
+registerNtfToken c userId = withAgentEnv c .: registerNtfToken' c userId
 {-# INLINE registerNtfToken #-}
 
 -- | Verify device notifications token
-verifyNtfToken :: AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
-verifyNtfToken c = withAgentEnv c .:. verifyNtfToken' c
+verifyNtfToken :: AgentClient -> UserId -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
+verifyNtfToken c userId = withAgentEnv c .:. verifyNtfToken' c userId
 {-# INLINE verifyNtfToken #-}
 
 checkNtfToken :: AgentClient -> DeviceToken -> AE NtfTknStatus
@@ -697,13 +696,15 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
-createUser' :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AM UserId
-createUser' c smp xftp = do
+createUser' :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> NonEmpty (ServerCfg 'PNTF) -> AM UserId
+createUser' c smp xftp ntf = do
   liftIO $ checkUserServers "createUser SMP" smp
   liftIO $ checkUserServers "createUser XFTP" xftp
+  liftIO $ checkUserServers "createUser NTF" ntf
   userId <- withStore' c createUserRecord
   atomically $ TM.insert userId (mkUserServers smp) $ smpServers c
   atomically $ TM.insert userId (mkUserServers xftp) $ xftpServers c
+  atomically $ TM.insert userId (mkUserServers ntf) $ ntfServers c
   pure userId
 
 deleteUser' :: AgentClient -> UserId -> Bool -> AM ()
@@ -2177,8 +2178,8 @@ checkUserServers name srvs =
   unless (any (\ServerCfg {enabled} -> enabled) srvs) $
     logWarn (name <> ": all passed servers are disabled, using all servers.")
 
-registerNtfToken' :: AgentClient -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
-registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
+registerNtfToken' :: AgentClient -> UserId -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
+registerNtfToken' c userId suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
       status <- case (ntfTokenId, ntfTknAction) of
@@ -2222,30 +2223,28 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
               else do
                 withStore' c $ \db -> removeNtfToken db tkn
                 atomically $ nsRemoveNtfToken ns
-                createToken
+                createToken userId
           where
             tryReplace ns = do
               agentNtfReplaceToken c tknId tkn suppliedDeviceToken
               withStore' c $ \db -> updateDeviceToken db tkn suppliedDeviceToken
               atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
               pure NTRegistered
-    _ -> createToken
+    _ -> createToken userId
   where
-    t tkn = withToken c tkn Nothing
-    createToken :: AM NtfTknStatus
-    createToken =
-      lift (getNtfServer c) >>= \case
-        Just ntfServer ->
-          asks (rcvAuthAlg . config) >>= \case
-            C.AuthAlg a -> do
-              g <- asks random
-              tknKeys <- atomically $ C.generateAuthKeyPair a g
-              dhKeys <- atomically $ C.generateKeyPair g
-              let tkn = newNtfToken suppliedDeviceToken ntfServer tknKeys dhKeys suppliedNtfMode
-              withStore' c (`createNtfToken` tkn)
-              registerToken tkn
-              pure NTRegistered
-        _ -> throwE $ CMD PROHIBITED "createToken"
+    t tkn = withToken c userId tkn Nothing
+    createToken :: UserId -> AM NtfTknStatus
+    createToken userId = do
+      ntfServer <- getNtfServer c userId
+      asks (rcvAuthAlg . config) >>= \case
+        C.AuthAlg a -> do
+          g <- asks random
+          tknKeys <- atomically $ C.generateAuthKeyPair a g
+          dhKeys <- atomically $ C.generateKeyPair g
+          let tkn = newNtfToken suppliedDeviceToken (protoServer ntfServer) tknKeys dhKeys suppliedNtfMode
+          withStore' c (`createNtfToken` tkn)
+          registerToken tkn
+          pure NTRegistered
     registerToken :: NtfToken -> AM ()
     registerToken tkn@NtfToken {ntfPubKey, ntfDhKeys = (pubDhKey, privDhKey)} = do
       (tknId, srvPubDhKey) <- agentNtfRegisterToken c tkn ntfPubKey pubDhKey
@@ -2254,14 +2253,14 @@ registerNtfToken' c suppliedDeviceToken suppliedNtfMode =
       ns <- asks ntfSupervisor
       atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
 
-verifyNtfToken' :: AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> AM ()
-verifyNtfToken' c deviceToken nonce code =
+verifyNtfToken' :: AgentClient -> UserId -> DeviceToken -> C.CbNonce -> ByteString -> AM ()
+verifyNtfToken' c userId deviceToken nonce code =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
       when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "verifyNtfToken: different token"
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
       toStatus <-
-        withToken c tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+        withToken c userId tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
           agentNtfVerifyToken c tknId tkn code'
       when (toStatus == NTActive) $ do
         lift $ setCronInterval c tknId tkn
@@ -2327,8 +2326,8 @@ toggleConnectionNtfs' c connId enable = do
           let cmd = if enable then NSCCreate else NSCSmpDelete
           atomically $ sendNtfSubCommand ns (cmd, [connId])
 
-withToken :: AgentClient -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
-withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do
+withToken :: AgentClient -> UserId -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
+withToken c userId tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do
   ns <- asks ntfSupervisor
   forM_ from_ $ \(status, action) -> do
     withStore' c $ \db -> updateNtfToken db tkn status (Just action)
@@ -2342,7 +2341,7 @@ withToken c tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = 
     Left e@(NTF _ AUTH) -> do
       withStore' c $ \db -> removeNtfToken db tkn
       atomically $ nsRemoveNtfToken ns
-      void $ registerNtfToken' c deviceToken ntfMode
+      void $ registerNtfToken' c userId deviceToken ntfMode
       throwE e
     Left e -> throwE e
 
@@ -2378,13 +2377,12 @@ sendNtfConnCommands c cmd = do
           (connId, Right Nothing) -> (cIds, (connId, INTERNAL "no connection data") : errs)
           (connId, Left e) -> (cIds, (connId, e) : errs)
 
-setNtfServers :: AgentClient -> [NtfServer] -> IO ()
-setNtfServers c = atomically . writeTVar (ntfServers c)
+setNtfServers :: AgentClient -> Map UserId (NonEmpty (ServerCfg 'PNTF)) -> IO ()
+setNtfServers c ntfs = do
+  atomically $ writeTVar (ntfServers c) newNtfs
+  where
+    newNtfs = M.map mkUserServers ntfs
 {-# INLINE setNtfServers #-}
-
-getNtfServers :: AgentClient -> IO [NtfServer]
-getNtfServers c =  readTVarIO $ ntfServers c
-{-# INLINE getNtfServers #-}
 
 resetAgentServersStats' :: AgentClient -> AM ()
 resetAgentServersStats' c@AgentClient {smpServersStats, xftpServersStats, srvStatsStartedAt} = do
@@ -2447,6 +2445,14 @@ getSMPServer c userId = getNextSMPServer c userId []
 getNextSMPServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServerWithAuth
 getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
+
+getNtfServer :: AgentClient -> UserId -> AM NtfServerWithAuth
+getNtfServer c userId = getNextNtfServer c userId []
+{-# INLINE getNtfServer #-}
+
+getNextNtfServer :: AgentClient -> UserId -> [NtfServer] -> AM NtfServerWithAuth
+getNextNtfServer c userId = getNextServer c userId storageSrvs
+{-# INLINE getNextNtfServer #-}
 
 subscriber :: AgentClient -> AM' ()
 subscriber c@AgentClient {msgQ} = forever $ do

@@ -222,6 +222,7 @@ import Simplex.Messaging.Protocol
     MsgFlags,
     MsgId,
     NMsgMeta,
+    NtfServerWithAuth,
     ProtocolServer (..),
     QueueMode (..),
     SMPClientVersion,

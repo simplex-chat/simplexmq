@@ -321,7 +321,7 @@ data AgentClient = AgentClient
     -- SMPTransportSession defines connection from proxy to relay,
     -- SMPServerWithAuth defines client connected to SMP proxy (with the same userId and entityId in TransportSession)
     smpProxiedRelays :: TMap SMPTransportSession SMPServerWithAuth,
-    ntfServers :: TVar [NtfServer],
+    ntfServers :: TMap UserId (UserServers 'PNTF),
     ntfClients :: TMap NtfTransportSession NtfClientVar,
     xftpServers :: TMap UserId (UserServers 'PXFTP),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
@@ -490,7 +490,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
   smpProxiedRelays <- TM.emptyIO
-  ntfServers <- newTVarIO ntf
+  ntfServers <- newTVarIO $ M.map mkUserServers ntf
   ntfClients <- TM.emptyIO
   xftpServers <- newTVarIO $ M.map mkUserServers xftp
   xftpClients <- TM.emptyIO
@@ -2138,6 +2138,7 @@ userServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient -> TMa
 userServers c = case protocolTypeI @p of
   SPSMP -> smpServers c
   SPXFTP -> xftpServers c
+  SPNTF -> ntfServers c
 {-# INLINE userServers #-}
 
 pickServer :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p) -> AM (ProtoServerWithAuth p)
