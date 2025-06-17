@@ -1179,8 +1179,8 @@ okSMPCommands cmd c qs = L.map process <$> sendProtocolCommands c cs
       Left e -> Left e
 
 -- | Send SMP command
-sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateAuthKey -> QueueId -> Command p -> ExceptT SMPClientError IO BrokerMsg
-sendSMPCommand c pKey qId cmd = sendProtocolCommand c pKey qId (Cmd sParty cmd)
+sendSMPCommand :: PartyI p => SMPClient -> Maybe C.APrivateAuthKey -> EntityId -> Command p -> ExceptT SMPClientError IO BrokerMsg
+sendSMPCommand c pKey entId cmd = sendProtocolCommand c pKey entId (Cmd sParty cmd)
 {-# INLINE sendSMPCommand #-}
 
 type PCTransmission err msg = (Either TransportError SentRawTransmission, Request err msg)

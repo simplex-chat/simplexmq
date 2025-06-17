@@ -47,6 +47,7 @@ batchingTests = do
       it "should batch with 135 subscriptions per batch" testClientBatchSubscriptions
       it "should batch with 255 ENDs per batch" testClientBatchENDs
       it "should batch with 80 NMSGs per batch" testClientBatchNMSGs
+      it "should batch subscription responses with message" testBatchSubResponses
       it "should break on message that does not fit" testClientBatchWithMessage
       it "should break on large message" testClientBatchWithLargeMessage
 
@@ -207,6 +208,20 @@ testClientBatchNMSGs = do
   (length rs1, length rs2, length rs3) `shouldBe` (40, 80, 80)
   all lenOk [s1, s2, s3] `shouldBe` True
 
+-- 4 responses are used in Simplex.Messaging.Server / `send`
+testBatchSubResponses :: IO ()
+testBatchSubResponses = do
+  client <- testClientStub
+  soks <- replicateM 4 $ randomSOK
+  msg <- randomMSG
+  let msgs = map (\t -> Right (Nothing, encodeTransmission (thParams client) t)) (soks <> [msg])
+      batches = batchTransmissions (thParams client) $ L.fromList msgs
+  length batches `shouldBe` 1
+  soks' <- replicateM 5 $ randomSOK
+  let msgs' = map (\t -> Right (Nothing, encodeTransmission (thParams client) t)) (soks' <> [msg])
+      batches' = batchTransmissions (thParams client) $ L.fromList msgs'
+  length batches' `shouldBe` 2
+
 testClientBatchWithMessageV6 :: IO ()
 testClientBatchWithMessageV6 = do
   client <- testClientStubV6
@@ -360,6 +375,22 @@ randomNMSGCmd ts = do
   let msgMeta = NMsgMeta {msgId, msgTs = ts}
   Right encNMsgMeta <- pure $ C.cbEncrypt (C.dh' k pk) nonce (smpEncode msgMeta) 128
   pure (CorrId "", EntityId nId, NMSG nonce encNMsgMeta)
+
+randomSOK :: IO (Transmission BrokerMsg)
+randomSOK = do
+  g <- C.newRandom
+  corrId <- atomically $ C.randomBytes 24 g
+  rId <- atomically $ C.randomBytes 24 g
+  pure (CorrId corrId, EntityId rId, SOK Nothing)
+
+randomMSG :: IO (Transmission BrokerMsg)
+randomMSG = do
+  g <- C.newRandom
+  corrId <- atomically $ C.randomBytes 24 g
+  rId <- atomically $ C.randomBytes 24 g
+  msgId <- atomically $ C.randomBytes 24 g
+  msg <- atomically $ C.randomBytes (maxMessageLength currentClientSMPRelayVersion) g
+  pure (CorrId corrId, EntityId rId, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody msg})
 
 randomSENDv6 :: ByteString -> Int -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSENDv6 = randomSEND_ C.SEd25519 minServerSMPRelayVersion
