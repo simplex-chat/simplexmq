@@ -34,6 +34,7 @@ data RealTimeMetrics = RealTimeMetrics
   { socketStats :: [(ServiceName, SocketStats)],
     threadsCount :: Int,
     clientsCount :: Int,
+    deliveredSubs :: RTSubscriberMetrics,
     smpSubs :: RTSubscriberMetrics,
     ntfSubs :: RTSubscriberMetrics,
     loadedCounts :: LoadedQueueCounts
@@ -55,6 +56,7 @@ prometheusMetrics sm rtm ts =
       { socketStats,
         threadsCount,
         clientsCount,
+        deliveredSubs,
         smpSubs,
         ntfSubs,
         loadedCounts
@@ -425,6 +427,14 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_clients_total Clients\n\
       \# TYPE simplex_smp_clients_total gauge\n\
       \simplex_smp_clients_total " <> mshow clientsCount <> "\n\
+      \\n\
+      \# HELP simplex_smp_delivered_total Total SMP subscriptions with delivered messages\n\
+      \# TYPE simplex_smp_delivered_total gauge\n\
+      \simplex_smp_delivered_total " <> mshow (subsCount deliveredSubs) <> "\n# delivered.subsCount\n\
+      \\n\
+      \# HELP simplex_smp_delivered_clients_total Subscribed clients\n\
+      \# TYPE simplex_smp_delivered_clients_total gauge\n\
+      \simplex_smp_delivered_clients_total " <> mshow (subClientsCount deliveredSubs) <> "\n# delivered.subClientsCount\n\
       \\n\
       \# HELP simplex_smp_subscribtion_total Total SMP subscriptions\n\
       \# TYPE simplex_smp_subscribtion_total gauge\n\
