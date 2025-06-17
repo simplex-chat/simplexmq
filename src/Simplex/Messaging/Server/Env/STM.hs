@@ -415,7 +415,7 @@ data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
   { subThread :: ServerSub, -- Nothing value indicates that sub
-    delivered :: TMVar MsgId
+    delivered :: TVar (Maybe (MsgId, RoundedSystemTime))
   }
 
 newServer :: IO (Server s)
@@ -494,13 +494,13 @@ newClient clientId qSize clientTHParams createdAt = do
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do
-  delivered <- newEmptyTMVar
+  delivered <- newTVar Nothing
   subThread <- ServerSub <$> newTVar st
   return Sub {subThread, delivered}
 
 newProhibitedSub :: STM Sub
 newProhibitedSub = do
-  delivered <- newEmptyTMVar
+  delivered <- newTVar Nothing
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)

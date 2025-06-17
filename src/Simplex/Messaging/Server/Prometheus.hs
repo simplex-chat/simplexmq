@@ -35,9 +35,15 @@ data RealTimeMetrics = RealTimeMetrics
     threadsCount :: Int,
     clientsCount :: Int,
     deliveredSubs :: RTSubscriberMetrics,
+    deliveredTimes :: TimeAggregations,
     smpSubs :: RTSubscriberMetrics,
     ntfSubs :: RTSubscriberMetrics,
     loadedCounts :: LoadedQueueCounts
+  }
+
+data TimeAggregations = TimeAggregations
+  { avgTime :: Int64,
+    maxTime :: Int64
   }
 
 data RTSubscriberMetrics = RTSubscriberMetrics
@@ -57,6 +63,7 @@ prometheusMetrics sm rtm ts =
         threadsCount,
         clientsCount,
         deliveredSubs,
+        deliveredTimes,
         smpSubs,
         ntfSubs,
         loadedCounts
@@ -435,6 +442,14 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_delivered_clients_total Subscribed clients\n\
       \# TYPE simplex_smp_delivered_clients_total gauge\n\
       \simplex_smp_delivered_clients_total " <> mshow (subClientsCount deliveredSubs) <> "\n# delivered.subClientsCount\n\
+      \\n\
+      \# HELP simplex_smp_delivery_conf_time_avg Average time to confirm message delivery\n\
+      \# TYPE simplex_smp_delivery_conf_time_avg gauge\n\
+      \simplex_smp_delivery_conf_time_avg " <> mshow (avgTime deliveredTimes) <> "\n# delivered.avgTime\n\
+      \\n\
+      \# HELP simplex_smp_delivery_conf_time_max Max time to confirm message delivery\n\
+      \# TYPE simplex_smp_delivery_conf_time_max gauge\n\
+      \simplex_smp_delivery_conf_time_max " <> mshow (maxTime deliveredTimes) <> "\n# delivered.maxTime\n\
       \\n\
       \# HELP simplex_smp_subscribtion_total Total SMP subscriptions\n\
       \# TYPE simplex_smp_subscribtion_total gauge\n\
