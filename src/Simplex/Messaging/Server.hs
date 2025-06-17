@@ -579,15 +579,23 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let threadsCount = 0
 #endif
       clientsCount <- IM.size <$> getServerClients srv
+      deliveredSubs <- getDeliveredMetrics
       smpSubs <- getSubscribersMetrics subscribers
       ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts ms
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, smpSubs, ntfSubs, loadedCounts}
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, smpSubs, ntfSubs, loadedCounts}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, subClients} = do
           subsCount <- M.size <$> getSubscribedClients queueSubscribers
           subClientsCount <- IS.size <$> readTVarIO subClients
           pure RTSubscriberMetrics {subsCount, subClientsCount}
+        getDeliveredMetrics = foldM countClnd (RTSubscriberMetrics 0 0) =<< getServerClients srv
+        countClnd metrics (AClient _ _ Client {subscriptions}) = do
+          cnt <- foldM countSubs 0 =<< readTVarIO subscriptions
+          pure $ if cnt > 0
+            then metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}
+            else metrics
+        countSubs !cnt Sub {delivered} = (\empty -> if empty then cnt else cnt + 1) <$> atomically (isEmptyTMVar delivered)
 
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
     runClient srvCert srvSignKey tp h = do
