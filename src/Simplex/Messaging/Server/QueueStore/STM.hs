@@ -44,7 +44,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$))
+import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.IO
 import UnliftIO.STM
 
@@ -346,10 +346,25 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
         pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  getNtfServiceQueueCount :: STMQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
-  getNtfServiceQueueCount st serviceId =
+  getServiceQueueCount :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
+  getServiceQueueCount st party serviceId =
     TM.lookupIO serviceId (services st) >>=
-      maybe (pure $ Left AUTH) (fmap (Right . fromIntegral . S.size) . readTVarIO . serviceNtfQueues)
+      maybe (pure $ Left AUTH) (fmap (Right . fromIntegral . S.size) . readTVarIO . serviceSel)
+    where
+      serviceSel :: STMService -> TVar (Set QueueId)
+      serviceSel = case party of
+        SRecipientService -> serviceRcvQueues
+        SNotifierService -> serviceNtfQueues
+
+  foldRcvServiceQueues :: STMQueueStore q -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
+  foldRcvServiceQueues st serviceId f acc =
+    TM.lookupIO serviceId (services st) >>= \case
+      Nothing -> pure acc
+      Just s ->
+        readTVarIO (serviceRcvQueues s)
+          >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc
+    where
+      get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

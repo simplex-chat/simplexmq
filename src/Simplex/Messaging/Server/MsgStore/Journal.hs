@@ -356,8 +356,10 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE setQueueService #-}
   getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
   {-# INLINE getQueueNtfServices #-}
-  getNtfServiceQueueCount = withQS (getNtfServiceQueueCount @(JournalQueue s))
-  {-# INLINE getNtfServiceQueueCount #-}
+  getServiceQueueCount = withQS (getServiceQueueCount @(JournalQueue s))
+  {-# INLINE getServiceQueueCount #-}
+  foldRcvServiceQueues = withQS foldRcvServiceQueues
+  {-# INLINE foldRcvServiceQueues #-}
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
@@ -443,6 +445,9 @@ instance MsgStoreClass (JournalMsgStore s) where
       -- Also see the comment in loadQueue in PostgresQueueStore
       getLoadedQueue :: JournalQueue s -> IO (JournalQueue s)
       getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
+
+  foldRcvServiceMessages :: JournalMsgStore s -> Service -> (a -> RecipientId -> Message -> IO a) -> IO a
+  foldRcvServiceMessages = undefined
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState
