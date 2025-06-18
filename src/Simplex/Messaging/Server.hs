@@ -1874,26 +1874,25 @@ client
                 rId = recipientId q
                 deliverToSub rcv = do
                   ts <- getSystemSeconds
-                  atomically $ deliverToSub_ rcv ts
-                deliverToSub_ rcv ts = do
-                  -- reading client TVar in the same transaction,
-                  -- so that if subscription ends, it re-evalutates
-                  -- and delivery is cancelled -
-                  -- the new client will receive message in response to SUB.
-                  readTVar rcv
-                    $>>= \rc@Client {subscriptions = subs, sndQ = sndQ'} -> TM.lookup rId subs
-                    $>>= \s@Sub {subThread, delivered} -> case subThread of
-                      ProhibitSub -> pure Nothing
-                      ServerSub st -> readTVar st >>= \case
-                        NoSub ->
-                          readTVar delivered >>= \case
-                            Just _ -> pure Nothing -- if a message was already delivered, should not deliver more
-                            Nothing ->
-                              ifM
-                                (isFullTBQueue sndQ')
-                                (writeTVar st SubPending $> Just (rc, s, st))
-                                (deliver sndQ' s ts $> Nothing)
-                        _ -> pure Nothing
+                  atomically $
+                    -- reading client TVar in the same transaction,
+                    -- so that if subscription ends, it re-evalutates
+                    -- and delivery is cancelled -
+                    -- the new client will receive message in response to SUB.
+                    readTVar rcv
+                      $>>= \rc@Client {subscriptions = subs, sndQ = sndQ'} -> TM.lookup rId subs
+                      $>>= \s@Sub {subThread, delivered} -> case subThread of
+                        ProhibitSub -> pure Nothing
+                        ServerSub st -> readTVar st >>= \case
+                          NoSub ->
+                            readTVar delivered >>= \case
+                              Just _ -> pure Nothing -- if a message was already delivered, should not deliver more
+                              Nothing ->
+                                ifM
+                                  (isFullTBQueue sndQ')
+                                  (writeTVar st SubPending $> Just (rc, s, st))
+                                  (deliver sndQ' s ts $> Nothing)
+                          _ -> pure Nothing
                 deliver sndQ' s ts = do
                   let encMsg = encryptMsg qr msg
                   writeTBQueue sndQ' ([(NoCorrId, rId, MSG encMsg)], [])
