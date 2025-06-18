@@ -6,6 +6,8 @@
 module Simplex.Messaging.Server.Prometheus where
 
 import Data.Int (Int64)
+import qualified Data.IntMap as IM
+import Data.List (mapAccumL)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime)
@@ -42,8 +44,9 @@ data RealTimeMetrics = RealTimeMetrics
   }
 
 data TimeAggregations = TimeAggregations
-  { avgTime :: Int64,
-    maxTime :: Int64
+  { sumTime :: Int64,
+    maxTime :: Int64,
+    timeBuckets :: IM.IntMap Int
   }
 
 data RTSubscriberMetrics = RTSubscriberMetrics
@@ -443,13 +446,16 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_delivered_clients_total gauge\n\
       \simplex_smp_delivered_clients_total " <> mshow (subClientsCount deliveredSubs) <> "\n# delivered.subClientsCount\n\
       \\n\
-      \# HELP simplex_smp_delivery_conf_time_avg Average time to confirm message delivery\n\
-      \# TYPE simplex_smp_delivery_conf_time_avg gauge\n\
-      \simplex_smp_delivery_conf_time_avg " <> mshow (avgTime deliveredTimes) <> "\n# delivered.avgTime\n\
-      \\n\
-      \# HELP simplex_smp_delivery_conf_time_max Max time to confirm message delivery\n\
-      \# TYPE simplex_smp_delivery_conf_time_max gauge\n\
-      \simplex_smp_delivery_conf_time_max " <> mshow (maxTime deliveredTimes) <> "\n# delivered.maxTime\n\
+      \# HELP simplex_smp_delivery_ack_time Times to confirm message delivery\n\
+      \# TYPE simplex_smp_delivery_ack_time histogram\n\
+      \simplex_smp_delivery_ack_time_sum " <> mshow (sumTime deliveredTimes) <> "\n# delivered.sumTime\n\
+      \simplex_smp_delivery_ack_time_count " <> mshow (subsCount deliveredSubs) <> "\n# delivered.subsCount\n"
+      <> showTimeBuckets (timeBuckets deliveredTimes)
+      <> showTimeBucket "+Inf" (subsCount deliveredSubs)
+      <> "\n\
+      \# HELP simplex_smp_delivery_ack_time_max Max time to confirm message delivery\n\
+      \# TYPE simplex_smp_delivery_ack_time_max gauge\n\
+      \simplex_smp_delivery_ack_time_max " <> mshow (maxTime deliveredTimes) <> "\n# delivered.maxTime\n\
       \\n\
       \# HELP simplex_smp_subscribtion_total Total SMP subscriptions\n\
       \# TYPE simplex_smp_subscribtion_total gauge\n\
@@ -495,6 +501,10 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_loaded_queues_ntf_lock_count gauge\n\
       \simplex_smp_loaded_queues_ntf_lock_count " <> mshow (notifierLockCount loadedCounts) <> "\n# loadedCounts.notifierLockCount\n"
 
+    showTimeBuckets :: IM.IntMap Int -> Text
+    showTimeBuckets = T.concat . snd . mapAccumL (\total (sec, cnt) -> (total + cnt, showTimeBucket (tshow sec) (total + cnt))) 0 . IM.assocs
+    showTimeBucket :: Text -> Int -> Text
+    showTimeBucket sec count = "simplex_smp_delivery_ack_time_bucket{le=\"" <> sec <> "\"} " <> mshow count <> "\n# delivered.timeBuckets\n"
     socketsMetric :: (SocketStats -> Int) -> Text -> Text -> Text
     socketsMetric sel metric descr =
       "# HELP " <> metric <> " " <> descr <> "\n"

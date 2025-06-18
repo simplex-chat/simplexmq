@@ -687,12 +687,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let threadsCount = 0
 #endif
       clientsCount <- IM.size <$> getServerClients srv
-      (deliveredSubs, sumTimes, maxTime) <- getDeliveredMetrics =<< getSystemSeconds
+      (deliveredSubs, deliveredTimes) <- getDeliveredMetrics =<< getSystemSeconds
       smpSubs <- getSubscribersMetrics subscribers
       ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts $ fromMsgStore ms
-      let avgTime = sumTimes `div` fromIntegral (subsCount deliveredSubs)
-          deliveredTimes = TimeAggregations {avgTime, maxTime}
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, subClients} = do
@@ -700,20 +698,33 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           subClientsCount <- IS.size <$> readTVarIO subClients
           subServicesCount <- M.size <$> getSubscribedClients serviceSubscribers
           pure RTSubscriberMetrics {subsCount, subClientsCount, subServicesCount}
-        getDeliveredMetrics (RoundedSystemTime ts') = foldM countClnt (RTSubscriberMetrics 0 0 0, 0, 0) =<< getServerClients srv
+        getDeliveredMetrics (RoundedSystemTime ts') = foldM countClnt (RTSubscriberMetrics 0 0 0, TimeAggregations 0 0 IM.empty) =<< getServerClients srv
           where
-            countClnt acc@(metrics, !sumTimes, !maxTime) Client {subscriptions} = do
-              (cnt, sumTimes', maxTime') <- foldM countSubs (0, sumTimes, maxTime) =<< readTVarIO subscriptions
+            countClnt acc@(metrics, times) Client {subscriptions} = do
+              (cnt, times') <- foldM countSubs (0, times) =<< readTVarIO subscriptions
               pure $ if cnt > 0
-                then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, sumTimes', maxTime')
+                then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, times')
                 else acc
-            countSubs acc@(!cnt, !sumTimes, !maxTime) Sub {delivered} = do
-              delivered_ <- readTVarIO delivered
+            countSubs acc@(!cnt, TimeAggregations {sumTime, maxTime, timeBuckets}) Sub {delivered} = do
+              delivered_ <- atomically $ tryReadTMVar delivered
               pure $ case delivered_ of
                 Nothing -> acc
                 Just (_, RoundedSystemTime ts) ->
                   let t = ts' - ts
-                   in (cnt + 1, sumTimes + t, max maxTime t)
+                      seconds
+                        | t <= 5 = fromIntegral t
+                        | t <= 30 = t `toBucket` 5
+                        | t <= 60 = t `toBucket` 10
+                        | t <= 180 = t `toBucket` 30
+                        | otherwise = t `toBucket` 60
+                      toBucket n m = - fromIntegral (((- n) `div` m) * m) -- round up
+                      times' =
+                        TimeAggregations
+                          { sumTime = sumTime + t,
+                            maxTime = max maxTime t,
+                            timeBuckets = IM.alter (Just . maybe 1 (+ 1)) seconds timeBuckets
+                          }
+                   in (cnt + 1, times')
 
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
     runClient srvCert srvSignKey tp h = do
