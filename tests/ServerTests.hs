@@ -18,6 +18,7 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
+import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
@@ -29,6 +30,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
+import Data.List.NonEmpty (NonEmpty)
 import Data.String (IsString (..))
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
@@ -75,6 +77,7 @@ serverTests = do
     describe "GET command" testGetCommand
     describe "GET & SUB commands" testGetSubCommands
     describe "Exceeding queue quota" testExceedQueueQuota
+    describe "Concurrent sending and delivery" testConcurrentSendDelivery
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -111,16 +114,25 @@ sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
   tGet1 h
 
 signSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
-signSendRecv h pk = signSendRecv_ h pk Nothing
+signSendRecv h pk t = do
+  [r] <- signSendRecv_ h pk Nothing t
+  pure r
+
+signSendRecv2 :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg), Transmission (Either ErrorType BrokerMsg))
+signSendRecv2 h pk t = do
+  [r1, r2] <- signSendRecv_ h pk Nothing t
+  pure (r1, r2)
 
 serviceSignSendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
-serviceSignSendRecv h pk = signSendRecv_ h pk . Just
+serviceSignSendRecv h pk serviceKey t = do
+  [r] <- signSendRecv_ h pk (Just serviceKey) t
+  pure r
 
-signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
+signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (NonEmpty (Transmission (Either ErrorType BrokerMsg)))
 signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
-  tGet1 h
+  liftIO $ tGetClient h
   where
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
@@ -365,7 +377,7 @@ testCreateDelete =
       Resp "bcda" _ ok4 <- signSendRecv rh rKey ("bcda", rId, OFF)
       (ok4, OK) #== "accepts OFF when suspended"
 
-      Resp "cdab" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("cdab", rId, SUB)
+      (Resp "cdab" _ (SOK Nothing), Resp "" _ (Msg mId2 msg2)) <- signSendRecv2 rh rKey ("cdab", rId, SUB)
       (dec mId2 msg2, Right "hello") #== "accepts SUB when suspended and delivers the message again (because was not ACKed)"
 
       Resp "dabc" _ err5 <- sendRecv rh (sampleSig, "dabc", rId, DEL)
@@ -404,7 +416,7 @@ stressTest =
         Resp "" NoEntity (Ids rId _ _) <- signSendRecv h1 rKey ("", NoEntity, New rPub dhPub)
         pure rId
       let subscribeQueues h = forM_ rIds $ \rId -> do
-            Resp "" rId' OK <- signSendRecv h rKey ("", rId, SUB)
+            Resp "" rId' (SOK Nothing) <- signSendRecv h rKey ("", rId, SUB)
             rId' `shouldBe` rId
       closeConnection $ connection h1
       subscribeQueues h2
@@ -497,7 +509,7 @@ testSwitchSub =
       Resp "abcd" _ (Msg mId2 msg2) <- signSendRecv rh1 rKey ("abcd", rId, ACK mId1)
       (dec mId2 msg2, Right "test2, no ACK") #== "test message 2 delivered, no ACK"
 
-      Resp "bcda" _ (Msg mId2' msg2') <- signSendRecv rh2 rKey ("bcda", rId, SUB)
+      (Resp "bcda" _ (SOK Nothing), Resp "" _ (Msg mId2' msg2')) <- signSendRecv2 rh2 rKey ("bcda", rId, SUB)
       (dec mId2' msg2', Right "test2, no ACK") #== "same simplex queue via another TCP connection, tes2 delivered again (no ACK in 1st queue)"
       Resp "cdab" _ OK <- signSendRecv rh2 rKey ("cdab", rId, ACK mId2')
 
@@ -620,6 +632,27 @@ testExceedQueueQuota =
         Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId4)
         pure ()
 
+testConcurrentSendDelivery :: SpecWith (ASrvTransport, AStoreType)
+testConcurrentSendDelivery =
+  it "should continue delivering messages if message is sent before it is acknowledged" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest3 t msType $ \rh sh1 sh2 -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
+      let dec = decryptMsgV3 dhShared
+          sndMsg sh n = do
+            Resp (CorrId n') _ OK <- signSendRecv sh sKey (n, sId, _SEND ("msg " <> n))
+            n' `shouldBe` n
+          isMsg1or2 mId msg = dec mId msg == Right "msg 1" || dec mId msg == Right "msg 2" `shouldBe` True
+      replicateM_ 50 $ do
+        concurrently_ (sndMsg sh1 "1") (sndMsg sh2 "2")
+        Resp "" _ (Msg mId1 msg1) <- tGet1 rh
+        isMsg1or2 mId1 msg1
+        Resp "3" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("3", rId, ACK mId1)
+        isMsg1or2 mId2 msg2
+        Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, ACK mId2)
+        pure ()
+
 testWithStoreLog :: SpecWith (ASrvTransport, AStoreType)
 testWithStoreLog =
   it "should store simplex queues to log and restore them after server restart" $ \(at@(ATransport t), msType) -> do
@@ -684,7 +717,7 @@ testWithStoreLog =
       nId <- readTVarIO notifierId
       Resp "dabc" _ (SOK Nothing) <- signSendRecv h1 nKey ("dabc", nId, NSUB)
       Resp "bcda" _ OK <- signSendRecv h sKey1 ("bcda", sId1, _SEND' "hello")
-      Resp "cdab" _ (Msg mId3 msg3) <- signSendRecv h rKey1 ("cdab", rId1, SUB)
+      (Resp "cdab" _ (SOK Nothing), Resp "" _ (Msg mId3 msg3)) <- signSendRecv2 h rKey1 ("cdab", rId1, SUB)
       (decryptMsgV3 dh1 mId3 msg3, Right "hello") #== "delivered from restored queue"
       Resp "" _ (NMSG _ _) <- tGet1 h1
       -- this queue is removed - not restored
@@ -769,7 +802,7 @@ testRestoreMessages =
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
-      Resp "2" _ (Msg mId2 msg2) <- signSendRecv h rKey ("2", rId, SUB)
+      (Resp "2" _ (SOK Nothing), Resp "" _ (Msg mId2 msg2)) <- signSendRecv2 h rKey ("2", rId, SUB)
       (dec mId2 msg2, Right "hello 2") #== "restored message delivered"
       Resp "3" _ (Msg mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
       (dec mId3 msg3, Right "hello 3") #== "restored message delivered"
@@ -786,7 +819,7 @@ testRestoreMessages =
       Just rKey <- readTVarIO recipientKey
       Just dh <- readTVarIO dhShared
       let dec = decryptMsgV3 dh
-      Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, SUB)
+      (Resp "4" _ (SOK Nothing), Resp "" _ (Msg mId4 msg4)) <- signSendRecv2 h rKey ("4", rId, SUB)
       (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
       Resp "5" _ (Msg mId5 msg5) <- signSendRecv h rKey ("5", rId, ACK mId4)
       (dec mId5 msg5, Right "hello 5") #== "restored message delivered"
@@ -1131,7 +1164,7 @@ testMsgExpireOnSend =
         threadDelay 2500000
         Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND "hello (should NOT expire)")
         testSMPClient @c $ \rh -> do
-          Resp "3" _ (Msg mId msg) <- signSendRecv rh rKey ("3", rId, SUB)
+          (Resp "3" _ (SOK Nothing), Resp "" _ (Msg mId msg)) <- signSendRecv2 rh rKey ("3", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
           1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
@@ -1139,8 +1172,7 @@ testMsgExpireOnSend =
 
 testMsgExpireOnInterval :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnInterval =
-  -- fails on ubuntu
-  xit' "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
+  it "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}, idleQueueInterval = 1}
@@ -1151,7 +1183,7 @@ testMsgExpireOnInterval =
         threadDelay 3000000
         testSMPClient @c $ \rh -> do
           signSendRecv rh rKey ("2", rId, SUB) >>= \case
-            Resp "2" _ OK -> pure ()
+            Resp "2" _ (SOK Nothing) -> pure ()
             r -> unexpected r
           1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
@@ -1170,7 +1202,7 @@ testMsgNOTExpireOnInterval =
         Resp "1" _ OK <- signSendRecv sh sKey ("1", sId, _SEND "hello (should NOT expire)")
         threadDelay 2500000
         testSMPClient @c $ \rh -> do
-          Resp "2" _ (Msg mId msg) <- signSendRecv rh rKey ("2", rId, SUB)
+          (Resp "2" _ (SOK Nothing), Resp "" _ (Msg mId msg)) <- signSendRecv2 rh rKey ("2", rId, SUB)
           (dec mId msg, Right "hello (should NOT expire)") #== "delivered"
           1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
