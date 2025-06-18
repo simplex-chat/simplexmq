@@ -695,33 +695,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           subClientsCount <- IS.size <$> readTVarIO subClients
           subServicesCount <- M.size <$> getSubscribedClients serviceSubscribers
           pure RTSubscriberMetrics {subsCount, subClientsCount, subServicesCount}
-        getDeliveredMetrics (RoundedSystemTime ts') = foldM countClnt (RTSubscriberMetrics 0 0 0, TimeAggregations 0 0 IM.empty) =<< getServerClients srv
+        getDeliveredMetrics ts' = foldM countClnt (RTSubscriberMetrics 0 0 0, TimeBuckets 0 0 IM.empty) =<< getServerClients srv
           where
             countClnt acc@(metrics, times) Client {subscriptions} = do
               (cnt, times') <- foldM countSubs (0, times) =<< readTVarIO subscriptions
               pure $ if cnt > 0
                 then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, times')
                 else acc
-            countSubs acc@(!cnt, TimeAggregations {sumTime, maxTime, timeBuckets}) Sub {delivered} = do
+            countSubs acc@(!cnt, times) Sub {delivered} = do
               delivered_ <- atomically $ tryReadTMVar delivered
               pure $ case delivered_ of
                 Nothing -> acc
-                Just (_, RoundedSystemTime ts) ->
-                  let t = ts' - ts
-                      seconds
-                        | t <= 5 = fromIntegral t
-                        | t <= 30 = t `toBucket` 5
-                        | t <= 60 = t `toBucket` 10
-                        | t <= 180 = t `toBucket` 30
-                        | otherwise = t `toBucket` 60
-                      toBucket n m = - fromIntegral (((- n) `div` m) * m) -- round up
-                      times' =
-                        TimeAggregations
-                          { sumTime = sumTime + t,
-                            maxTime = max maxTime t,
-                            timeBuckets = IM.alter (Just . maybe 1 (+ 1)) seconds timeBuckets
-                          }
-                   in (cnt + 1, times')
+                Just (_, ts) -> (cnt + 1, updateTimeBuckets ts ts' times)
 
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
     runClient srvCert srvSignKey tp h = do
@@ -1755,28 +1740,28 @@ client
             Nothing -> pure $ err NO_MSG
             Just sub ->
               atomically (getDelivered sub) >>= \case
-                Just st -> do
+                Just (st, ts) -> do
                   stats <- asks serverStats
                   fmap (either err id) $ liftIO $ runExceptT $ do
                     case st of
                       ProhibitSub -> do
                         deletedMsg_ <- tryDelMsg ms q msgId
-                        liftIO $ mapM_ (updateStats stats True) deletedMsg_
+                        liftIO $ mapM_ (updateStats stats True ts) deletedMsg_
                         pure ok
                       _ -> do
                         (deletedMsg_, msg_) <- tryDelPeekMsg ms q msgId
-                        liftIO $ mapM_ (updateStats stats False) deletedMsg_
+                        liftIO $ mapM_ (updateStats stats False ts) deletedMsg_
                         liftIO $ deliverMessage "ACK" qr entId sub msg_
                 _ -> pure $ err NO_MSG
           where
-            getDelivered :: Sub -> STM (Maybe ServerSub)
+            getDelivered :: Sub -> STM (Maybe (ServerSub, RoundedSystemTime))
             getDelivered Sub {delivered, subThread} = do
-              tryTakeTMVar delivered $>>= \v@(msgId', _) ->
+              tryTakeTMVar delivered $>>= \v@(msgId', ts) ->
                 if msgId == msgId' || B.null msgId
-                  then pure $ Just subThread
+                  then pure $ Just (subThread, ts)
                   else putTMVar delivered v $> Nothing
-            updateStats :: ServerStats -> Bool -> Message -> IO ()
-            updateStats stats isGet = \case
+            updateStats :: ServerStats -> Bool -> RoundedSystemTime -> Message -> IO ()
+            updateStats stats isGet deliveryTime = \case
               MessageQuota {} -> pure ()
               Message {msgFlags} -> do
                 incStat $ msgRecv stats
@@ -1793,6 +1778,8 @@ client
                 when (notification msgFlags) $ do
                   incStat $ msgRecvNtf stats
                   updatePeriodStats (activeQueuesNtf stats) entId
+                currTime <- getSystemSeconds
+                atomicModifyIORef'_ (msgRecvAckTimes stats) $ updateTimeBuckets deliveryTime currTime
 
         sendMessage :: MsgFlags -> MsgBody -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         sendMessage msgFlags msgBody q qr

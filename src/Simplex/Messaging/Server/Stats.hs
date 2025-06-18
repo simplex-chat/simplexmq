@@ -14,6 +14,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Hashable (hash)
 import Data.IORef
+import Data.Int (Int64)
+import qualified Data.IntMap.Strict as IM
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import Data.Set (Set)
@@ -25,6 +27,7 @@ import Data.Time.Clock (UTCTime (..))
 import GHC.IORef (atomicSwapIORef)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..))
+import Simplex.Messaging.Server.QueueStore (RoundedSystemTime (..))
 import Simplex.Messaging.Util (atomicModifyIORef'_, tshow, unlessM)
 
 data ServerStats = ServerStats
@@ -57,6 +60,7 @@ data ServerStats = ServerStats
     msgSentLarge :: IORef Int,
     msgSentBlock :: IORef Int,
     msgRecv :: IORef Int,
+    msgRecvAckTimes :: IORef TimeBuckets,
     msgRecvGet :: IORef Int,
     msgGet :: IORef Int,
     msgGetNoMsg :: IORef Int,
@@ -115,6 +119,7 @@ data ServerStatsData = ServerStatsData
     _msgSentLarge :: Int,
     _msgSentBlock :: Int,
     _msgRecv :: Int,
+    _msgRecvAckTimes :: TimeBuckets,
     _msgRecvGet :: Int,
     _msgGet :: Int,
     _msgGetNoMsg :: Int,
@@ -174,6 +179,7 @@ newServerStats ts = do
   msgSentLarge <- newIORef 0
   msgSentBlock <- newIORef 0
   msgRecv <- newIORef 0
+  msgRecvAckTimes <- newIORef $ TimeBuckets 0 0 IM.empty
   msgRecvGet <- newIORef 0
   msgGet <- newIORef 0
   msgGetNoMsg <- newIORef 0
@@ -230,6 +236,7 @@ newServerStats ts = do
         msgSentLarge,
         msgSentBlock,
         msgRecv,
+        msgRecvAckTimes,
         msgRecvGet,
         msgGet,
         msgGetNoMsg,
@@ -288,6 +295,7 @@ getServerStatsData s = do
   _msgSentLarge <- readIORef $ msgSentLarge s
   _msgSentBlock <- readIORef $ msgSentBlock s
   _msgRecv <- readIORef $ msgRecv s
+  _msgRecvAckTimes <- readIORef $ msgRecvAckTimes s
   _msgRecvGet <- readIORef $ msgRecvGet s
   _msgGet <- readIORef $ msgGet s
   _msgGetNoMsg <- readIORef $ msgGetNoMsg s
@@ -344,6 +352,7 @@ getServerStatsData s = do
         _msgSentLarge,
         _msgSentBlock,
         _msgRecv,
+        _msgRecvAckTimes,
         _msgRecvGet,
         _msgGet,
         _msgGetNoMsg,
@@ -403,6 +412,7 @@ setServerStats s d = do
   writeIORef (msgSentLarge s) $! _msgSentLarge d
   writeIORef (msgSentBlock s) $! _msgSentBlock d
   writeIORef (msgRecv s) $! _msgRecv d
+  writeIORef (msgRecvAckTimes s) $! _msgRecvAckTimes d
   writeIORef (msgRecvGet s) $! _msgRecvGet d
   writeIORef (msgGet s) $! _msgGet d
   writeIORef (msgGetNoMsg s) $! _msgGetNoMsg d
@@ -462,6 +472,7 @@ instance StrEncoding ServerStatsData where
         "msgSentLarge=" <> strEncode (_msgSentLarge d),
         "msgSentBlock=" <> strEncode (_msgSentBlock d),
         "msgRecv=" <> strEncode (_msgRecv d),
+        "msgRecvAckTimes=" <> strEncode (_msgRecvAckTimes d),
         "msgRecvGet=" <> strEncode (_msgRecvGet d),
         "msgGet=" <> strEncode (_msgGet d),
         "msgGetNoMsg=" <> strEncode (_msgGetNoMsg d),
@@ -525,6 +536,7 @@ instance StrEncoding ServerStatsData where
     _msgSentLarge <- opt "msgSentLarge="
     _msgSentBlock <- opt "msgSentBlock="
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
+    _msgRecvAckTimes <- "msgRecvAckTimes=" *> strP <* A.endOfLine <|> pure (TimeBuckets 0 0 IM.empty)
     _msgRecvGet <- opt "msgRecvGet="
     _msgGet <- opt "msgGet="
     _msgGetNoMsg <- opt "msgGetNoMsg="
@@ -592,6 +604,7 @@ instance StrEncoding ServerStatsData where
           _msgSentLarge,
           _msgSentBlock,
           _msgRecv,
+          _msgRecvAckTimes,
           _msgRecvGet,
           _msgGet,
           _msgGetNoMsg,
@@ -944,3 +957,38 @@ instance StrEncoding ServiceStatsData where
           _srvSubQueues,
           _srvSubEnd
         }
+
+data TimeBuckets = TimeBuckets
+  { sumTime :: Int64,
+    maxTime :: Int64,
+    timeBuckets :: IM.IntMap Int
+  }
+  deriving (Show)
+
+updateTimeBuckets :: RoundedSystemTime -> RoundedSystemTime -> TimeBuckets -> TimeBuckets
+updateTimeBuckets
+  (RoundedSystemTime deliveryTime)
+  (RoundedSystemTime currTime)
+  TimeBuckets {sumTime, maxTime, timeBuckets} =
+    TimeBuckets
+      { sumTime = sumTime + t,
+        maxTime = max maxTime t,
+        timeBuckets = IM.alter (Just . maybe 1 (+ 1)) seconds timeBuckets
+      }
+  where
+    t = currTime - deliveryTime
+    seconds
+      | t <= 5 = fromIntegral t
+      | t <= 30 = t `toBucket` 5
+      | t <= 60 = t `toBucket` 10
+      | t <= 180 = t `toBucket` 30
+      | otherwise = t `toBucket` 60
+    toBucket n m = - fromIntegral (((- n) `div` m) * m) -- round up
+
+instance StrEncoding TimeBuckets where
+  strEncode TimeBuckets {sumTime, maxTime, timeBuckets} =
+    strEncode (sumTime, maxTime) <> " " <> strEncodeList (IM.toList timeBuckets)
+  strP = do
+    (sumTime, maxTime) <- strP_
+    tbs <- strListP
+    pure TimeBuckets {sumTime, maxTime, timeBuckets = IM.fromList tbs}
