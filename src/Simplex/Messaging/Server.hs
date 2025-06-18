@@ -1419,12 +1419,12 @@ client
     processCommand :: Maybe ServiceId -> VersionSMP -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
     processCommand clntServiceId clntVersion (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
-      Cmd SSender command -> response <$> case command of
+      Cmd SSender command -> case command of
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
-        SEND flags msgBody -> withQueue_ False err $ sendMessage flags msgBody
+        SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> response . (corrId,NoEntity,) <$> processForwardedCommand encBlock
-      Cmd SSenderLink command -> response <$> case command of
+      Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
       Cmd SNotifier NSUB -> response . (corrId,entId,) <$> case q_ of
@@ -1439,9 +1439,9 @@ client
             allowNew = do
               ServerConfig {allowNewQueues, newQueueBasicAuth} <- asks config
               pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
-      Cmd SRecipient SUB -> Just <$> withQueue' subscribeQueueAndDeliver
       Cmd SRecipient command ->
-        response <$> case command of
+        case command of
+          SUB -> withQueue' subscribeQueueAndDeliver
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1457,8 +1457,8 @@ client
               Nothing -> pure ok
           NKEY nKey dhKey -> withQueue $ \q _ -> addQueueNotifier_ q nKey dhKey
           NDEL -> withQueue $ \q _ -> deleteQueueNotifier_ q
-          OFF -> maybe (pure $ err INTERNAL) suspendQueue_ q_
-          DEL -> maybe (pure $ err INTERNAL) delQueueAndMsgs q_
+          OFF -> response <$> maybe (pure $ err INTERNAL) suspendQueue_ q_
+          DEL -> response <$> maybe (pure $ err INTERNAL) delQueueAndMsgs q_
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       Cmd SRecipientService SUBS -> pure $ response $ err (CMD PROHIBITED) -- "TODO [certs rcv]"
       where
@@ -1666,11 +1666,13 @@ client
                     atomically $ setDelivered s msg ts $> (corrId, entId, MSG encMsg)
                   Nothing -> incStat (msgGetNoMsg stats) $> ok
 
-        withQueue :: (StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)) -> M s (Transmission BrokerMsg)
-        withQueue = withQueue_ True err
+        withQueue :: (StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)) -> M s (Maybe ResponseAndMessage)
+        withQueue = fmap response . withQueue_ True err
+        {-# INLINE withQueue #-}
 
-        withQueue' :: (StoreQueue s -> QueueRec -> M s ResponseAndMessage) -> M s ResponseAndMessage
-        withQueue' = withQueue_ True ((,Nothing) . err)
+        withQueue' :: (StoreQueue s -> QueueRec -> M s ResponseAndMessage) -> M s (Maybe ResponseAndMessage)
+        withQueue' = fmap Just . withQueue_ True ((,Nothing) . err)
+        {-# INLINE withQueue' #-}
 
         -- SEND passes queueNotBlocked False here to update time, but it fails anyway on blocked queues (see code for SEND).
         withQueue_ :: Bool -> (ErrorType -> r) -> (StoreQueue s -> QueueRec -> M s r) -> M s r
