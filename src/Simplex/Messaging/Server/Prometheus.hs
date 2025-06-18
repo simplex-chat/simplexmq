@@ -448,11 +448,14 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_delivery_ack_time Times to confirm message delivery\n\
       \# TYPE simplex_smp_delivery_ack_time histogram\n\
-      \simplex_smp_delivery_ack_time_max " <> mshow (maxTime deliveredTimes) <> "\n# delivered.maxTime\n\
       \simplex_smp_delivery_ack_time_sum " <> mshow (sumTime deliveredTimes) <> "\n# delivered.sumTime\n\
       \simplex_smp_delivery_ack_time_count " <> mshow (subsCount deliveredSubs) <> "\n# delivered.subsCount\n"
       <> T.concat (map (showTimeBucket . first tshow)  $ IM.assocs $ minuteBuckets deliveredTimes)
       <> "simplex_smp_delivery_ack_time_bucket{le=\"+Inf\"} " <> mshow (subsCount deliveredSubs) <> "\n# delivered.minuteBuckets\n\
+      \\n\
+      \# HELP simplex_smp_delivery_ack_time_max Max time to confirm message delivery\n\
+      \# TYPE simplex_smp_delivery_ack_time_max gauge\n\
+      \simplex_smp_delivery_ack_time_max " <> mshow (maxTime deliveredTimes) <> "\n# delivered.maxTime\n\
       \\n\
       \# HELP simplex_smp_subscribtion_total Total SMP subscriptions\n\
       \# TYPE simplex_smp_subscribtion_total gauge\n\
