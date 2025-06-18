@@ -596,18 +596,24 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               pure $ if cnt > 0
                 then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, times')
                 else acc
-            countSubs acc@(!cnt, TimeAggregations {sumTime, maxTime, minuteBuckets}) Sub {delivered} = do
+            countSubs acc@(!cnt, TimeAggregations {sumTime, maxTime, timeBuckets}) Sub {delivered} = do
               delivered_ <- atomically $ tryReadTMVar delivered
               pure $ case delivered_ of
                 Nothing -> acc
                 Just (_, RoundedSystemTime ts) ->
                   let t = ts' - ts
-                      mins = - fromIntegral ((- t) `div` 60) -- round up
+                      seconds
+                        | t <= 5 = fromIntegral t
+                        | t <= 30 = t `toBucket` 5
+                        | t <= 60 = t `toBucket` 10
+                        | t <= 180 = t `toBucket` 30
+                        | otherwise = t `toBucket` 60
+                      toBucket n m = - fromIntegral (((- n) `div` m) * m) -- round up
                       times' =
                         TimeAggregations
                           { sumTime = sumTime + t,
                             maxTime = max maxTime t,
-                            minuteBuckets = IM.alter (Just . maybe 1 (+ 1)) mins minuteBuckets
+                            timeBuckets = IM.alter (Just . maybe 1 (+ 1)) seconds timeBuckets
                           }
                    in (cnt + 1, times')
 
