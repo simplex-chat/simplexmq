@@ -127,3 +127,6 @@ getRoundedSystemTime prec = (\t -> RoundedSystemTime $ (systemSeconds t `div` pr
 
 getSystemDate :: IO RoundedSystemTime
 getSystemDate = getRoundedSystemTime 86400
+
+getSystemSeconds :: IO RoundedSystemTime
+getSystemSeconds = RoundedSystemTime . systemSeconds <$> getSystemTime

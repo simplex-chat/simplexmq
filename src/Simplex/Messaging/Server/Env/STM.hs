@@ -409,7 +409,7 @@ data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
   { subThread :: ServerSub, -- Nothing value indicates that sub
-    delivered :: TMVar MsgId
+    delivered :: TMVar (MsgId, RoundedSystemTime)
   }
 
 newServer :: IO (Server s)
