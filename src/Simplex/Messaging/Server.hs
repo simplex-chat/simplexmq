@@ -579,23 +579,37 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let threadsCount = 0
 #endif
       clientsCount <- IM.size <$> getServerClients srv
-      deliveredSubs <- getDeliveredMetrics
+      (deliveredSubs, deliveredTimes) <- getDeliveredMetrics =<< getSystemSeconds
       smpSubs <- getSubscribersMetrics subscribers
       ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts ms
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, smpSubs, ntfSubs, loadedCounts}
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, subClients} = do
           subsCount <- M.size <$> getSubscribedClients queueSubscribers
           subClientsCount <- IS.size <$> readTVarIO subClients
           pure RTSubscriberMetrics {subsCount, subClientsCount}
-        getDeliveredMetrics = foldM countClnd (RTSubscriberMetrics 0 0) =<< getServerClients srv
-        countClnd metrics (AClient _ _ Client {subscriptions}) = do
-          cnt <- foldM countSubs 0 =<< readTVarIO subscriptions
-          pure $ if cnt > 0
-            then metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}
-            else metrics
-        countSubs !cnt Sub {delivered} = (\empty -> if empty then cnt else cnt + 1) <$> atomically (isEmptyTMVar delivered)
+        getDeliveredMetrics (RoundedSystemTime ts') = foldM countClnt (RTSubscriberMetrics 0 0, TimeAggregations 0 0 IM.empty) =<< getServerClients srv
+          where
+            countClnt acc@(metrics, times) (AClient _ _ Client {subscriptions}) = do
+              (cnt, times') <- foldM countSubs (0, times) =<< readTVarIO subscriptions
+              pure $ if cnt > 0
+                then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, times')
+                else acc
+            countSubs acc@(!cnt, TimeAggregations {sumTime, maxTime, minuteBuckets}) Sub {delivered} = do
+              delivered_ <- atomically $ tryReadTMVar delivered
+              pure $ case delivered_ of
+                Nothing -> acc
+                Just (_, RoundedSystemTime ts) ->
+                  let t = ts' - ts
+                      mins = - fromIntegral ((- t) `div` 60) -- round up
+                      times' =
+                        TimeAggregations
+                          { sumTime = sumTime + t,
+                            maxTime = max maxTime t,
+                            minuteBuckets = IM.alter (Just . maybe 1 (+ 1)) mins minuteBuckets
+                          }
+                   in (cnt + 1, times')
 
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
     runClient srvCert srvSignKey tp h = do
@@ -1449,7 +1463,7 @@ client
               -- This is tracked as "subscription" in the client to prevent these
               -- clients from being able to subscribe.
               pure s
-            getMessage_ :: Sub -> Maybe MsgId -> M (Transmission BrokerMsg)
+            getMessage_ :: Sub -> Maybe (MsgId, RoundedSystemTime) -> M (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               stats <- asks serverStats
               fmap (either err id) $ liftIO $ runExceptT $
@@ -1457,7 +1471,8 @@ client
                   Just msg -> do
                     let encMsg = encryptMsg qr msg
                     incStat $ (if isJust delivered_ then msgGetDuplicate else msgGet) stats
-                    atomically $ setDelivered s msg $> (corrId, entId, MSG encMsg)
+                    ts <- liftIO getSystemSeconds
+                    atomically $ setDelivered s msg ts $> (corrId, entId, MSG encMsg)
                   Nothing -> incStat (msgGetNoMsg stats) $> ok
 
         withQueue :: (StoreQueue s -> QueueRec -> M (Transmission BrokerMsg)) -> M (Transmission BrokerMsg)
@@ -1512,10 +1527,10 @@ client
           where
             getDelivered :: Sub -> STM (Maybe ServerSub)
             getDelivered Sub {delivered, subThread} = do
-              tryTakeTMVar delivered $>>= \msgId' ->
+              tryTakeTMVar delivered $>>= \v@(msgId', _) ->
                 if msgId == msgId' || B.null msgId
                   then pure $ Just subThread
-                  else putTMVar delivered msgId' $> Nothing
+                  else putTMVar delivered v $> Nothing
             updateStats :: ServerStats -> Bool -> Message -> IO ()
             updateStats stats isGet = \case
               MessageQuota {} -> pure ()
@@ -1601,33 +1616,35 @@ client
               -- the subscribed client var is read outside of STM to avoid transaction cost
               -- in case no client is subscribed.
               getSubscribedClient rId (queueSubscribers subscribers)
-                $>>= atomically . deliverToSub
+                $>>= deliverToSub
                 >>= mapM_ forkDeliver
               where
                 rId = recipientId q
-                deliverToSub rcv =
+                deliverToSub rcv = do
+                  ts <- getSystemSeconds
+                  atomically $
                   -- reading client TVar in the same transaction,
                   -- so that if subscription ends, it re-evalutates
                   -- and delivery is cancelled -
                   -- the new client will receive message in response to SUB.
-                  readTVar rcv
-                    $>>= \rc@(AClient _ _ Client {subscriptions = subs, sndQ = sndQ'}) -> TM.lookup rId subs
-                    $>>= \s@Sub {subThread, delivered} -> case subThread of
-                      ProhibitSub -> pure Nothing
-                      ServerSub st -> readTVar st >>= \case
-                        NoSub ->
-                          tryTakeTMVar delivered >>= \case
-                            Just _ -> pure Nothing -- if a message was already delivered, should not deliver more
-                            Nothing ->
-                              ifM
-                                (isFullTBQueue sndQ')
-                                (writeTVar st SubPending $> Just (rc, s, st))
-                                (deliver sndQ' s $> Nothing)
-                        _ -> pure Nothing
-                deliver sndQ' s = do
+                    readTVar rcv
+                      $>>= \rc@(AClient _ _ Client {subscriptions = subs, sndQ = sndQ'}) -> TM.lookup rId subs
+                      $>>= \s@Sub {subThread, delivered} -> case subThread of
+                        ProhibitSub -> pure Nothing
+                        ServerSub st -> readTVar st >>= \case
+                          NoSub ->
+                            tryTakeTMVar delivered >>= \case
+                              Just _ -> pure Nothing -- if a message was already delivered, should not deliver more
+                              Nothing ->
+                                ifM
+                                  (isFullTBQueue sndQ')
+                                  (writeTVar st SubPending $> Just (rc, s, st))
+                                  (deliver sndQ' s ts $> Nothing)
+                          _ -> pure Nothing
+                deliver sndQ' s ts = do
                   let encMsg = encryptMsg qr msg
                   writeTBQueue sndQ' [(CorrId "", rId, MSG encMsg)]
-                  void $ setDelivered s msg
+                  void $ setDelivered s msg ts
                 forkDeliver ((AClient _ _ rc@Client {sndQ = sndQ'}), s@Sub {delivered}, st) = do
                   t <- mkWeakThreadId =<< forkIO deliverThread
                   atomically $ modifyTVar' st $ \case
@@ -1640,13 +1657,14 @@ client
                       -- lookup can be outside of STM transaction,
                       -- as long as the check that it is the same client is inside.
                       getSubscribedClient rId (queueSubscribers subscribers) >>= mapM_ deliverIfSame
-                    deliverIfSame rcv = time "deliver" . atomically $
-                      whenM (sameClient rc rcv) $
+                    deliverIfSame rcv = time "deliver" $ do
+                      ts <- getSystemSeconds
+                      atomically $ whenM (sameClient rc rcv) $
                         tryTakeTMVar delivered >>= \case
                           Just _ -> pure () -- if a message was already delivered, should not deliver more
                           Nothing -> do
                             -- a separate thread is needed because it blocks when client sndQ is full.
-                            deliver sndQ' s
+                            deliver sndQ' s ts
                             writeTVar st NoSub
 
             enqueueNotification :: NtfCreds -> Message -> M ()
@@ -1721,13 +1739,14 @@ client
                       VRVerified q -> Right (q, (corrId', entId', cmd'))
                       VRFailed -> Left (corrId', entId', ERR AUTH)
         deliverMessage :: T.Text -> QueueRec -> RecipientId -> Sub -> Maybe Message -> IO (Transmission BrokerMsg)
-        deliverMessage name qr rId s@Sub {subThread} msg_ = time (name <> " deliver") . atomically $
+        deliverMessage name qr rId s@Sub {subThread} msg_ = time (name <> " deliver") $
           case subThread of
             ProhibitSub -> pure resp
             _ -> case msg_ of
-              Just msg ->
+              Just msg -> do
+                ts <- getSystemSeconds
                 let encMsg = encryptMsg qr msg
-                 in setDelivered s msg $> (corrId, rId, MSG encMsg)
+                atomically (setDelivered s msg ts) $> (corrId, rId, MSG encMsg)
               _ -> pure resp
           where
             resp = (corrId, rId, OK)
@@ -1745,8 +1764,10 @@ client
             msgId' = messageId msg
             msgTs' = messageTs msg
 
-        setDelivered :: Sub -> Message -> STM Bool
-        setDelivered s msg = tryPutTMVar (delivered s) $! messageId msg
+        setDelivered :: Sub -> Message -> RoundedSystemTime -> STM Bool
+        setDelivered Sub {delivered} msg !ts = do
+          let !msgId = messageId msg
+          tryPutTMVar delivered (msgId, ts)
 
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M (Transmission BrokerMsg)
         delQueueAndMsgs (q, _) = do
@@ -1787,7 +1808,7 @@ client
                     SubPending -> QSubPending
                     SubThread _ -> QSubThread
                 ProhibitSub -> pure QProhibitSub
-              qDelivered <- atomically $ decodeLatin1 . encode <$$> tryReadTMVar delivered
+              qDelivered <- atomically $ decodeLatin1 . encode . fst <$$> tryReadTMVar delivered
               pure QSub {qSubThread, qDelivered}
 
         ok :: Transmission BrokerMsg
