@@ -706,7 +706,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, times')
                 else acc
             countSubs acc@(!cnt, TimeAggregations {sumTime, maxTime, timeBuckets}) Sub {delivered} = do
-              delivered_ <- atomically $ tryReadTMVar delivered
+              delivered_ <- readTVarIO delivered
               pure $ case delivered_ of
                 Nothing -> acc
                 Just (_, RoundedSystemTime ts) ->
