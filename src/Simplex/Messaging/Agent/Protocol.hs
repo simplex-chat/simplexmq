@@ -1153,22 +1153,39 @@ connReqUriP overrideScheme = do
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"
+  {-# INLINE parseJSON #-}
 
 instance ConnectionModeI m => ToJSON (ConnectionRequestUri m) where
   toJSON = strToJSON
+  {-# INLINE toJSON #-}
   toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
 
 instance FromJSON AConnectionRequestUri where
   parseJSON = strParseJSON "ConnectionRequestUri"
+  {-# INLINE parseJSON #-}
 
 instance ToJSON AConnectionRequestUri where
   toJSON = strToJSON
+  {-# INLINE toJSON #-}
   toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
 
 instance ConnectionModeI m => FromJSON (ConnShortLink m) where
   parseJSON = strParseJSON "ConnShortLink"
+  {-# INLINE parseJSON #-}
 
 instance ConnectionModeI m => ToJSON (ConnShortLink m) where
+  toJSON = strToJSON
+  {-# INLINE toJSON #-}
+  toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
+
+instance FromJSON AConnShortLink where
+  parseJSON = strParseJSON "AConnShortLink"
+  {-# INLINE parseJSON #-}
+
+instance ToJSON AConnShortLink where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
@@ -1431,6 +1448,13 @@ instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fr
 data ContactConnType = CCTContact | CCTChannel | CCTGroup deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
+
+instance Eq AConnShortLink where
+  ACSL m sl == ACSL m' sl' = case testEquality m m' of
+    Just Refl -> sl == sl'
+    Nothing -> False
+
+deriving instance Show AConnShortLink
 
 instance ToField AConnShortLink where toField = toField . Binary . strEncode
 
