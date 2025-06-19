@@ -493,11 +493,11 @@ updateSrvSubStatus st q status =
 batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> Maybe ServiceId -> NonEmpty NotifierId -> NtfSubStatus -> IO Int
 batchUpdateSrvSubStatus st srv newServiceId nIds status =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubStatus" st $ \db -> runExceptT $ do
-    (srvId, currServiceId) <- ExceptT $ getSMPServerService db
+    (srvId :: Int64, currServiceId) <- ExceptT $ getSMPServerService db
     unless (currServiceId == newServiceId) $ liftIO $ void $
       DB.execute db "UPDATE smp_servers SET ntf_service_id = ? WHERE smp_server_id = ?" (newServiceId, srvId)
     let params = L.toList $ L.map (srvId,isJust newServiceId,status,) nIds
-    batchUpdateStatus_ st db params
+    liftIO $ fromIntegral <$> DB.executeMany db updateSubStatusQuery params
   where
     getSMPServerService db =
       firstRow id AUTH $
@@ -514,9 +514,11 @@ batchUpdateSrvSubStatus st srv newServiceId nIds status =
 batchUpdateSrvSubErrors :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, NtfSubStatus) -> IO Int
 batchUpdateSrvSubErrors st srv subs =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubErrors" st $ \db -> runExceptT $ do
-    srvId <- ExceptT $ getSMPServerId db
-    let params = L.toList $ L.map (\(nId, status) -> (srvId, False, status, nId)) subs
-    batchUpdateStatus_ st db params
+    srvId :: Int64 <- ExceptT $ getSMPServerId db
+    let params = map (\(nId, status) -> (srvId, False, status, nId)) $ L.toList subs
+    subs' <- liftIO $ DB.returning db (updateSubStatusQuery <> " RETURNING s.subscription_id, s.status, s.ntf_service_assoc") params
+    withLog "batchUpdateStatus_" st $ forM_ subs' . logSubscriptionStatus
+    pure $ length subs'
   where
     getSMPServerId db =
       firstRow fromOnly AUTH $
@@ -529,24 +531,16 @@ batchUpdateSrvSubErrors st srv subs =
           |]
           (srvToRow srv)
 
-batchUpdateStatus_ :: NtfPostgresStore -> DB.Connection -> [(Int64, NtfAssociatedService, NtfSubStatus, NotifierId)] -> ExceptT ErrorType IO Int
-batchUpdateStatus_ st db params = do
-  subs <-
-    liftIO $
-      DB.returning
-        db
-        [sql|
-          UPDATE subscriptions s
-          SET status = upd.status, ntf_service_assoc = upd.ntf_service_assoc
-          FROM (VALUES(?, ?, ?, ?)) AS upd(smp_server_id, ntf_service_assoc, status, smp_notifier_id)
-          WHERE s.smp_server_id = upd.smp_server_id
-            AND s.smp_notifier_id = (upd.smp_notifier_id :: BYTEA)
-            AND (s.status != upd.status OR s.ntf_service_assoc != upd.ntf_service_assoc)
-          RETURNING s.subscription_id, s.status, s.ntf_service_assoc
-        |]
-        params
-  withLog "batchUpdateStatus_" st $ forM_ subs . logSubscriptionStatus
-  pure $ length subs
+updateSubStatusQuery :: Query
+updateSubStatusQuery =
+  [sql|
+    UPDATE subscriptions s
+    SET status = upd.status, ntf_service_assoc = upd.ntf_service_assoc
+    FROM (VALUES(?, ?, ?, ?)) AS upd(smp_server_id, ntf_service_assoc, status, smp_notifier_id)
+    WHERE s.smp_server_id = upd.smp_server_id
+      AND s.smp_notifier_id = (upd.smp_notifier_id :: BYTEA)
+      AND (s.status != upd.status OR s.ntf_service_assoc != upd.ntf_service_assoc)
+  |]
 
 removeServiceAssociation :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
 removeServiceAssociation st srv = do
