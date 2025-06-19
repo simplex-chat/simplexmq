@@ -174,6 +174,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
+import qualified Data.Aeson as J'
+import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -192,6 +194,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
@@ -1192,6 +1195,16 @@ instance Encoding ConnectionMode where
       'I' -> pure CMInvitation
       'C' -> pure CMContact
       _ -> fail "bad connection mode"
+
+instance ToJSON ConnectionMode where
+  toJSON = J'.String . T.toLower . decodeLatin1 . strEncode
+  {-# INLINE toJSON #-}
+  toEncoding = JE.text . T.toLower . decodeLatin1 . strEncode
+  {-# INLINE toEncoding #-}
+
+instance FromJSON ConnectionMode where
+  parseJSON = J'.withText "ConnectionMode" $ either fail pure . parseAll strP . encodeUtf8 . T.toUpper
+  {-# INLINE parseJSON #-}
 
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
