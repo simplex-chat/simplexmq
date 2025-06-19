@@ -24,6 +24,7 @@ import Data.Text (Text)
 import Data.Time.Calendar.Month (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
+import Data.Time.Clock.System (systemEpochDay)
 import GHC.IORef (atomicSwapIORef)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..))
@@ -179,7 +180,7 @@ newServerStats ts = do
   msgSentLarge <- newIORef 0
   msgSentBlock <- newIORef 0
   msgRecv <- newIORef 0
-  msgRecvAckTimes <- newIORef $ TimeBuckets 0 0 IM.empty
+  msgRecvAckTimes <- newIORef $ TimeBuckets 0 0 IM.empty ts
   msgRecvGet <- newIORef 0
   msgGet <- newIORef 0
   msgGetNoMsg <- newIORef 0
@@ -472,7 +473,6 @@ instance StrEncoding ServerStatsData where
         "msgSentLarge=" <> strEncode (_msgSentLarge d),
         "msgSentBlock=" <> strEncode (_msgSentBlock d),
         "msgRecv=" <> strEncode (_msgRecv d),
-        "msgRecvAckTimes=" <> strEncode (_msgRecvAckTimes d),
         "msgRecvGet=" <> strEncode (_msgRecvGet d),
         "msgGet=" <> strEncode (_msgGet d),
         "msgGetNoMsg=" <> strEncode (_msgGetNoMsg d),
@@ -536,7 +536,6 @@ instance StrEncoding ServerStatsData where
     _msgSentLarge <- opt "msgSentLarge="
     _msgSentBlock <- opt "msgSentBlock="
     _msgRecv <- "msgRecv=" *> strP <* A.endOfLine
-    _msgRecvAckTimes <- "msgRecvAckTimes=" *> strP <* A.endOfLine <|> pure (TimeBuckets 0 0 IM.empty)
     _msgRecvGet <- opt "msgRecvGet="
     _msgGet <- opt "msgGet="
     _msgGetNoMsg <- opt "msgGetNoMsg="
@@ -604,7 +603,7 @@ instance StrEncoding ServerStatsData where
           _msgSentLarge,
           _msgSentBlock,
           _msgRecv,
-          _msgRecvAckTimes,
+          _msgRecvAckTimes = emptyTimeBuckets,
           _msgRecvGet,
           _msgGet,
           _msgGetNoMsg,
@@ -961,16 +960,20 @@ instance StrEncoding ServiceStatsData where
 data TimeBuckets = TimeBuckets
   { sumTime :: Int64,
     maxTime :: Int64,
-    timeBuckets :: IM.IntMap Int
+    timeBuckets :: IM.IntMap Int,
+    createdAt :: UTCTime
   }
   deriving (Show)
+
+emptyTimeBuckets :: TimeBuckets
+emptyTimeBuckets = TimeBuckets 0 0 IM.empty (UTCTime systemEpochDay 0)
 
 updateTimeBuckets :: RoundedSystemTime -> RoundedSystemTime -> TimeBuckets -> TimeBuckets
 updateTimeBuckets
   (RoundedSystemTime deliveryTime)
   (RoundedSystemTime currTime)
-  TimeBuckets {sumTime, maxTime, timeBuckets} =
-    TimeBuckets
+  times@TimeBuckets {sumTime, maxTime, timeBuckets} =
+    times
       { sumTime = sumTime + t,
         maxTime = max maxTime t,
         timeBuckets = IM.alter (Just . maybe 1 (+ 1)) seconds timeBuckets
@@ -984,11 +987,3 @@ updateTimeBuckets
       | t <= 180 = t `toBucket` 30
       | otherwise = t `toBucket` 60
     toBucket n m = - fromIntegral (((- n) `div` m) * m) -- round up
-
-instance StrEncoding TimeBuckets where
-  strEncode TimeBuckets {sumTime, maxTime, timeBuckets} =
-    strEncode (sumTime, maxTime) <> " " <> strEncodeList (IM.toList timeBuckets)
-  strP = do
-    (sumTime, maxTime) <- strP_
-    tbs <- strListP
-    pure TimeBuckets {sumTime, maxTime, timeBuckets = IM.fromList tbs}

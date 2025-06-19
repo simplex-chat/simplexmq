@@ -695,7 +695,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           subClientsCount <- IS.size <$> readTVarIO subClients
           subServicesCount <- M.size <$> getSubscribedClients serviceSubscribers
           pure RTSubscriberMetrics {subsCount, subClientsCount, subServicesCount}
-        getDeliveredMetrics ts' = foldM countClnt (RTSubscriberMetrics 0 0 0, TimeBuckets 0 0 IM.empty) =<< getServerClients srv
+        getDeliveredMetrics ts' = foldM countClnt (RTSubscriberMetrics 0 0 0, emptyTimeBuckets) =<< getServerClients srv
           where
             countClnt acc@(metrics, times) Client {subscriptions} = do
               (cnt, times') <- foldM countSubs (0, times) =<< readTVarIO subscriptions
