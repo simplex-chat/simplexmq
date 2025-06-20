@@ -442,7 +442,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_delivered_clients_total " <> mshow (subClientsCount deliveredSubs) <> "\n# delivered.subClientsCount\n\
       \\n\
       \# HELP simplex_smp_delivery_ack_time Times to confirm message delivery, including pending confirmation\n\
-      \# TYPE simplex_smp_delivery_ack_time gaugehistogram\n\
+      \# TYPE simplex_smp_delivery_ack_time gauge_histogram\n\
       \simplex_smp_delivery_ack_time_gsum " <> mshow (sumTime _msgRecvAckTimes + sumTime deliveredTimes) <> "\n# delivered.sumTime\n\
       \simplex_smp_delivery_ack_time_gcount " <> mshow (_msgRecv + _msgRecvGet + subsCount deliveredSubs) <> "\n# delivered.subsCount\n"
       <> showTimeBuckets "simplex_smp_delivery_ack_time" (IM.unionWith (+) (timeBuckets _msgRecvAckTimes) (timeBuckets deliveredTimes))
@@ -450,14 +450,14 @@ prometheusMetrics sm rtm ts =
       <> "\n\
       \# HELP simplex_smp_delivery_ack_confirmed_time Times to confirm message delivery, only confirmed deliveries\n\
       \# TYPE simplex_smp_delivery_ack_confirmed_time histogram\n\
-      \simplex_smp_delivery_ack_confirmed_time_created " <> mshow (createdAt _msgRecvAckTimes) <> "\n# delivered.createdAt\n\
+      \simplex_smp_delivery_ack_confirmed_time_created " <> tsEpoch (createdAt _msgRecvAckTimes) <> " " <> tsEpoch ts <> "\n# delivered.createdAt\n\
       \simplex_smp_delivery_ack_confirmed_time_sum " <> mshow (sumTime _msgRecvAckTimes) <> "\n# delivered.sumTime\n\
       \simplex_smp_delivery_ack_confirmed_time_count " <> mshow (_msgRecv + _msgRecvGet) <> "\n# delivered.subsCount\n"
       <> showTimeBuckets "simplex_smp_delivery_ack_confirmed_time" (timeBuckets _msgRecvAckTimes)
       <> showTimeBucket "simplex_smp_delivery_ack_confirmed_time" "+Inf" (_msgRecv + _msgRecvGet)
       <> "\n\
       \# HELP simplex_smp_delivery_ack_pending_time Times to confirm message delivery, only pending confirmations\n\
-      \# TYPE simplex_smp_delivery_ack_pending_time gaugehistogram\n\
+      \# TYPE simplex_smp_delivery_ack_pending_time gauge_histogram\n\
       \simplex_smp_delivery_ack_pending_time_gsum " <> mshow (sumTime deliveredTimes) <> "\n# delivered.sumTime\n\
       \simplex_smp_delivery_ack_pending_time_gcount " <> mshow (subsCount deliveredSubs) <> "\n# delivered.subsCount\n"
       <> showTimeBuckets "simplex_smp_delivery_ack_pending_time" (timeBuckets deliveredTimes)
@@ -527,9 +527,9 @@ prometheusMetrics sm rtm ts =
         <> "# TYPE " <> metric <> " gauge\n"
         <> T.concat (map (\(port, ss) -> metric <> "{port=\"" <> T.pack port <> "\"} " <> mshow (sel ss) <> "\n") socketStats)
         <> "\n"
-    mstr a = a <> " " <> tsEpoch
+    mstr a = a <> " " <> tsEpoch ts
     mshow :: Show a => a -> Text
     mshow = mstr . tshow
-    tsEpoch = tshow @Int64 $ floor @Double $ realToFrac (ts `diffUTCTime` epoch) * 1000
+    tsEpoch t = tshow @Int64 $ floor @Double $ realToFrac (t `diffUTCTime` epoch) * 1000
     epoch = UTCTime systemEpochDay 0
 {-# FOURMOLU_ENABLE\n#-}
