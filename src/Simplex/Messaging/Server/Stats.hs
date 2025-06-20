@@ -24,7 +24,6 @@ import Data.Text (Text)
 import Data.Time.Calendar.Month (pattern MonthDay)
 import Data.Time.Calendar.OrdinalDate (mondayStartWeek)
 import Data.Time.Clock (UTCTime (..))
-import Data.Time.Clock.System (systemEpochDay)
 import GHC.IORef (atomicSwapIORef)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..))
@@ -180,7 +179,7 @@ newServerStats ts = do
   msgSentLarge <- newIORef 0
   msgSentBlock <- newIORef 0
   msgRecv <- newIORef 0
-  msgRecvAckTimes <- newIORef $ TimeBuckets 0 0 IM.empty ts
+  msgRecvAckTimes <- newIORef $ TimeBuckets 0 0 IM.empty
   msgRecvGet <- newIORef 0
   msgGet <- newIORef 0
   msgGetNoMsg <- newIORef 0
@@ -960,20 +959,19 @@ instance StrEncoding ServiceStatsData where
 data TimeBuckets = TimeBuckets
   { sumTime :: Int64,
     maxTime :: Int64,
-    timeBuckets :: IM.IntMap Int,
-    createdAt :: UTCTime
+    timeBuckets :: IM.IntMap Int
   }
   deriving (Show)
 
 emptyTimeBuckets :: TimeBuckets
-emptyTimeBuckets = TimeBuckets 0 0 IM.empty (UTCTime systemEpochDay 0)
+emptyTimeBuckets = TimeBuckets 0 0 IM.empty
 
 updateTimeBuckets :: RoundedSystemTime -> RoundedSystemTime -> TimeBuckets -> TimeBuckets
 updateTimeBuckets
   (RoundedSystemTime deliveryTime)
   (RoundedSystemTime currTime)
-  times@TimeBuckets {sumTime, maxTime, timeBuckets} =
-    times
+  TimeBuckets {sumTime, maxTime, timeBuckets} =
+    TimeBuckets
       { sumTime = sumTime + t,
         maxTime = max maxTime t,
         timeBuckets = IM.alter (Just . maybe 1 (+ 1)) seconds timeBuckets

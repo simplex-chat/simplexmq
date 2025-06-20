@@ -441,27 +441,20 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_delivered_clients_total gauge\n\
       \simplex_smp_delivered_clients_total " <> mshow (subClientsCount deliveredSubs) <> "\n# delivered.subClientsCount\n\
       \\n\
-      \# HELP simplex_smp_delivery_ack_time Times to confirm message delivery, including pending confirmation\n\
-      \# TYPE simplex_smp_delivery_ack_time gaugehistogram\n\
-      \simplex_smp_delivery_ack_time_gsum " <> mshow (sumTime _msgRecvAckTimes + sumTime deliveredTimes) <> "\n\
-      \simplex_smp_delivery_ack_time_gcount " <> mshow (_msgRecv + _msgRecvGet + subsCount deliveredSubs) <> "\n"
-      <> showTimeBuckets "simplex_smp_delivery_ack_time" (IM.unionWith (+) (timeBuckets _msgRecvAckTimes) (timeBuckets deliveredTimes))
-      <> showTimeBucket "simplex_smp_delivery_ack_time" "+Inf" (_msgRecv + _msgRecvGet + subsCount deliveredSubs)
-      <> "\n\
       \# HELP simplex_smp_delivery_ack_confirmed_time Times to confirm message delivery, only confirmed deliveries\n\
       \# TYPE simplex_smp_delivery_ack_confirmed_time histogram\n\
-      \simplex_smp_delivery_ack_confirmed_time_created " <> tsEpoch ts <> "\n\
       \simplex_smp_delivery_ack_confirmed_time_sum " <> mshow (sumTime _msgRecvAckTimes) <> "\n\
       \simplex_smp_delivery_ack_confirmed_time_count " <> mshow (_msgRecv + _msgRecvGet) <> "\n"
       <> showTimeBuckets "simplex_smp_delivery_ack_confirmed_time" (timeBuckets _msgRecvAckTimes)
       <> showTimeBucket "simplex_smp_delivery_ack_confirmed_time" "+Inf" (_msgRecv + _msgRecvGet)
       <> "\n\
-      \# HELP simplex_smp_delivery_ack_pending_time Times to confirm message delivery, only pending confirmations\n\
-      \# TYPE simplex_smp_delivery_ack_pending_time gaugehistogram\n\
-      \simplex_smp_delivery_ack_pending_time_gsum " <> mshow (sumTime deliveredTimes) <> "\n\
-      \simplex_smp_delivery_ack_pending_time_gcount " <> mshow (subsCount deliveredSubs) <> "\n"
-      <> showTimeBuckets "simplex_smp_delivery_ack_pending_time" (timeBuckets deliveredTimes)
-      <> showTimeBucket "simplex_smp_delivery_ack_pending_time" "+Inf" (subsCount deliveredSubs)
+      \# HELP simplex_smp_delivery_ack_confirmed_count Counts for confirmed deliveries\n\
+      \# TYPE simplex_smp_delivery_ack_confirmed_count counter\n"
+      <> showBucketSums "simplex_smp_delivery_ack_confirmed_count" (timeBuckets _msgRecvAckTimes)
+      <> "\n\
+      \# HELP simplex_smp_delivery_ack_pending_count Counts for pending delivery\n\
+      \# TYPE simplex_smp_delivery_ack_pending_count gauge\n"
+      <> showBucketSums "simplex_smp_delivery_ack_pending_count" (timeBuckets deliveredTimes)
       <> "\n\
       \# HELP simplex_smp_delivery_ack_time_max Max time to confirm message delivery\n\
       \# TYPE simplex_smp_delivery_ack_time_max gauge\n\
@@ -521,6 +514,13 @@ prometheusMetrics sm rtm ts =
            in ((sec, total + cnt), t <> showTimeBucket metric (tshow sec) (total + cnt))
     showTimeBucket :: Text -> Text -> Int -> Text
     showTimeBucket metric sec count = metric <> "_bucket{le=\"" <> sec <> "\"} " <> mshow count <> "\n"
+    showBucketSums :: Text -> IM.IntMap Int -> Text
+    showBucketSums metric buckets = T.concat $ map showBucketSum [(0, 60), (60, 300), (300, 1200), (1200, 3600), (3600, maxBound)]
+      where
+        showBucketSum (minTime, maxTime) =
+          metric <> "{period=\"" <> tshow minTime <> (if maxTime <= 3600 then "-" <> tshow maxTime else "+") <> "\"} " <> mshow bucketsSum <> "\n"
+          where
+            bucketsSum = IM.foldl' (+) 0 $ IM.filter (\sec -> minTime <= sec && sec < maxTime) buckets
     socketsMetric :: (SocketStats -> Int) -> Text -> Text -> Text
     socketsMetric sel metric descr =
       "# HELP " <> metric <> " " <> descr <> "\n"
