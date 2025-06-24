@@ -1837,7 +1837,7 @@ data AgentErrorType
   = -- | command or response error
     CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
-    CONN {connErr :: ConnectionErrorType}
+    CONN {connErr :: ConnectionErrorType, errContext :: String}
   | -- | user not found in database
     NO_USER
   | -- | SMP protocol errors forwarded to agent clients

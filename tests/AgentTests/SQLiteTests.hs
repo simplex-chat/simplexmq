@@ -421,10 +421,10 @@ testUpgradeRcvConnToDuplex =
               smpClientVersion = VersionSMPC 1
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
-      `shouldReturn` Left (SEBadConnType CSnd)
+      `shouldReturn` Left (SEBadConnType "upgradeRcvConnToDuplex" CSnd)
     _ <- upgradeSndConnToDuplex db "conn1" rcvQueue1
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
-      `shouldReturn` Left (SEBadConnType CDuplex)
+      `shouldReturn` Left (SEBadConnType "upgradeRcvConnToDuplex" CDuplex)
 
 testUpgradeSndConnToDuplex :: SpecWith DBStore
 testUpgradeSndConnToDuplex =
@@ -455,10 +455,10 @@ testUpgradeSndConnToDuplex =
               deleteErrors = 0
             }
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
-      `shouldReturn` Left (SEBadConnType CRcv)
+      `shouldReturn` Left (SEBadConnType "upgradeSndConnToDuplex" CRcv)
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
     upgradeSndConnToDuplex db "conn1" anotherRcvQueue
-      `shouldReturn` Left (SEBadConnType CDuplex)
+      `shouldReturn` Left (SEBadConnType "upgradeSndConnToDuplex" CDuplex)
 
 testSetRcvQueueStatus :: SpecWith DBStore
 testSetRcvQueueStatus =
