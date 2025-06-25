@@ -1142,11 +1142,33 @@ joinConnSrv c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMod
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 joinConnSrv c userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
-    Just (qInfo, vrsn@(Compatible v)) -> do
-      let pqInitKeys = CR.joinContactInitialKeys (v >= pqdrSMPAgentVersion) pqSup
-      (CCLink cReq _, service) <- newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys subMode srv
-      void $ sendInvitation c userId connId qInfo vrsn cReq cInfo
-      pure (False, service)
+    Just (qInfo, vrsn@(Compatible v)) ->
+      withInvLock c (strEncode cReqUri) "joinConnSrv" $ do
+        SomeConn cType conn <- withStore c (`getConn` connId)
+        let pqInitKeys = CR.joinContactInitialKeys (v >= pqdrSMPAgentVersion) pqSup
+        (CCLink cReq _, service) <- case conn of
+          NewConnection _ -> newRcvConnSrv c userId connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys subMode srv
+          RcvConnection _ rq -> mkJoinInvitation rq pqInitKeys
+          _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
+        void $ sendInvitation c userId connId qInfo vrsn cReq cInfo
+        pure (False, service)
+      where
+        mkJoinInvitation rq@RcvQueue {clientService} pqInitKeys = do
+          g <- asks random
+          AgentConfig {smpClientVRange = vr, smpAgentVRange, e2eEncryptVRange = e2eVR} <- asks config
+          let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMMessaging}
+              crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] Nothing
+          e2eRcvParams <- withStore' c $ \db ->
+            getRatchetX3dhKeys db connId >>= \case
+              Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eVR) keys
+              Left e -> do
+                nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no rcv ratchet " <> show e))
+                let pqEnc = CR.initialPQEncryption False pqInitKeys
+                (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
+                createRatchetX3dhKeys db connId pk1 pk2 pKem
+                pure e2eRcvParams
+          let cReq = CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eVR
+          pure (CCLink cReq Nothing, dbServiceId <$> clientService)
     Nothing -> throwE $ AGENT A_VERSION
 
 delInvSL :: AgentClient -> ConnId -> SMPServerWithAuth -> SMP.LinkId -> AM ()
@@ -1754,8 +1776,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                 SMP _ SMP.QUOTA -> do
                   atomically $ incSMPServerStat c userId server sentQuotaErrs
                   case msgType of
-                    AM_CONN_INFO -> connError msgId "QUOTA AM_CONN_INFO" NOT_AVAILABLE
-                    AM_CONN_INFO_REPLY -> connError msgId "QUOTA AM_CONN_INFO_REPLY" NOT_AVAILABLE
+                    AM_CONN_INFO -> connError msgId NOT_AVAILABLE
+                    AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
                     _ -> do
                       expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
                       if internalTs < expireTs
@@ -1766,16 +1788,16 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
                 SMP _ SMP.AUTH -> do
                   atomically $ incSMPServerStat c userId server sentAuthErrs
                   case msgType of
-                    AM_CONN_INFO -> connError msgId "AUTH AM_CONN_INFO" NOT_AVAILABLE
-                    AM_CONN_INFO_REPLY -> connError msgId "AUTH AM_CONN_INFO_REPLY" NOT_AVAILABLE
-                    AM_RATCHET_INFO -> connError msgId "AUTH AM_RATCHET_INFO" NOT_AVAILABLE
+                    AM_CONN_INFO -> connError msgId NOT_AVAILABLE
+                    AM_CONN_INFO_REPLY -> connError msgId NOT_AVAILABLE
+                    AM_RATCHET_INFO -> connError msgId NOT_AVAILABLE
                     -- in duplexHandshake mode (v2) HELLO is only sent once, without retrying,
                     -- because the queue must be secured by the time the confirmation or the first HELLO is received
                     AM_HELLO_ -> case rq_ of
                       -- party initiating connection
-                      Just _ -> connError msgId "AUTH AM_HELLO_" NOT_AVAILABLE
+                      Just _ -> connError msgId NOT_AVAILABLE
                       -- party joining connection
-                      _ -> connError msgId "AUTH AM_HELLO_" NOT_ACCEPTED
+                      _ -> connError msgId NOT_ACCEPTED
                     AM_A_MSG_ -> notifyDel msgId err
                     AM_A_RCVD_ -> notifyDel msgId err
                     AM_QCONT_ -> notifyDel msgId err
@@ -1886,7 +1908,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} ConnData {connId} sq@SndQueue {userI
     notify cmd = atomically $ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) cmd)
     notifyDel :: AEntityI e => InternalId -> AEvent e -> AM ()
     notifyDel msgId cmd = notify cmd >> delMsg msgId
-    connError msgId cxt = notifyDel msgId . ERR . (`CONN` cxt)
+    connError msgId = notifyDel msgId . ERR . (`CONN` "")
     qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
     internalErr msgId = notifyDel msgId . ERR . INTERNAL
 

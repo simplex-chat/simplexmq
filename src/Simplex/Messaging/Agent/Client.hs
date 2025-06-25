@@ -867,7 +867,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
+      liftIO $ nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
       ei <- asks $ persistErrorInterval . config
