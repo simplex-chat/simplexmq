@@ -119,6 +119,10 @@ rcvQueueInfo :: RcvQueue -> RcvQueueInfo
 rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
   RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus, canAbortSwitch = canAbortRcvSwitch rq}
 
+rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
+rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
+  SMPQueueAddress server sndId (C.publicKey e2ePrivKey) queueMode
+
 canAbortRcvSwitch :: RcvQueue -> Bool
 canAbortRcvSwitch = maybe False canAbort . rcvSwchStatus
   where
@@ -662,7 +666,7 @@ data StoreError
     SESndQueueExists
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
-    SEBadConnType ConnType
+    SEBadConnType String ConnType
   | -- | Confirmation not found.
     SEConfirmationNotFound
   | -- | Invitation not found

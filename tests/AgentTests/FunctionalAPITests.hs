@@ -66,7 +66,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, nub)
+import Data.List (find, isSuffixOf, nub)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -253,6 +253,12 @@ runRight action =
     Right x -> pure x
     Left e -> error $ "Unexpected error: " <> show e
 
+runLeft :: (Show a, HasCallStack) => ExceptT e IO a -> IO e
+runLeft action =
+  runExceptT action >>= \case
+    Right x -> error $ "unexpected result " <> show x
+    Left e -> pure e
+
 getInAnyOrder :: HasCallStack => AgentClient -> [ATransmission -> Bool] -> Expectation
 getInAnyOrder c ts = withFrozenCallStack $ inAnyOrder (pGet c) ts
 
@@ -331,6 +337,13 @@ functionalAPITests ps = do
       testAsyncServerOffline ps
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
+  describe "Establishing connections with user retries" $ do
+    describe "Via invitation" $ do
+      it "should connect after errors" $ testInvitationErrors ps False
+      it "should connect after errors with client restarts" $ testInvitationErrors ps True
+    describe "Via contact" $ do
+      it "should connect after errors" $ testContactErrors ps False
+      it "should connect after errors with client restarts" $ testContactErrors ps True
   describe "Short connection links" $ do
     describe "should connect via 1-time short link" $ testProxyMatrix ps testInviationShortLink
     describe "should connect via 1-time short link with async join" $ testProxyMatrix ps testInviationShortLinkAsync
@@ -971,7 +984,7 @@ testRejectContactRequest =
     (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
-    liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND)
+    liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND "")
     rejectContact alice addrConnId invId
     liftIO $ noMessages bob "nothing delivered to bob"
 
@@ -1133,6 +1146,161 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
         exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
+
+testInvitationErrors :: HasCallStack => (ASrvTransport, AStoreType) -> Bool -> IO ()
+testInvitationErrors ps restart = do
+  a <- getAgentA
+  b <- getAgentB
+  (bId, cReq) <- withServer1 ps $ runRight $ createConnection a 1 True SCMInvitation Nothing SMSubscribe
+  ("", "", DOWN _ [_]) <- nGet a
+  aId <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
+  -- fails to secure the queue on testPort
+  BROKER srv NETWORK <- runLeft $ A.joinConnection b 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+  (testPort `isSuffixOf` srv) `shouldBe` True
+  withServer1 ps $ do
+    ("", "", UP _ [_]) <- nGet a
+    let loopSecure = do
+          -- secures the queue on testPort, but fails to create reply queue on testPort2
+          BROKER srv2 NETWORK <- runLeft $ A.joinConnection b 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+          unless (testPort2 `isSuffixOf` srv2) $ putStrLn "retrying secure" >> threadDelay 200000 >> loopSecure
+    loopSecure
+  ("", "", DOWN _ [_]) <- nGet a
+  b' <- withServer2 ps $ do
+    threadDelay 200000
+    let loopCreate = do
+          -- creates the reply queue on testPort2, but fails to send it to testPort
+          BROKER srv' NETWORK <- runLeft $ A.joinConnection b 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+          unless (testPort `isSuffixOf` srv') $ putStrLn "retrying create" >> threadDelay 200000 >> loopCreate
+    loopCreate
+    restartAgentB restart b [aId]
+  ("", "", DOWN _ [_]) <- nGet b'
+  n <- withServer1 ps $ do
+    ("", "", UP _ [_]) <- nGet a
+    threadDelay 200000
+    let loopConfirm n =
+          runExceptT (A.joinConnection b' 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
+            Right (True, Nothing) -> pure n
+            Right r -> error $ "unexpected result " <> show r
+            Left _ -> putStrLn "retrying confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
+    n <- loopConfirm 1
+    runRight $ do
+      ("", _, CONF confId _ "bob's connInfo") <- get a
+      allowConnectionAsync a "1" bId confId "alice's connInfo"
+      get a ##> ("1", bId, OK)
+    pure n
+  ("", "", DOWN _ [_]) <- nGet a
+  withServer2 ps $ do
+    get a ##> ("", bId, CON) -- note that server 1 is down, CON event is sent when HELLO is sent to server 2
+    ("", "", UP _ [_]) <- nGet b'
+    get b' ##> ("", aId, INFO "alice's connInfo")
+    get b' ##> ("", aId, CON)
+    withServer1 ps $ do
+      ("", "", UP _ [_]) <- nGet a
+      runRight_ $ exchangeGreetingsViaProxyMsgId_ False PQEncOn 2 (2 + n) a bId b' aId
+      disposeAgentClient a
+      disposeAgentClient b'
+
+restartAgentA :: Bool -> AgentClient -> [ConnId] -> IO AgentClient
+restartAgentA = restartAgent_ getAgentA
+
+restartAgentB :: Bool -> AgentClient -> [ConnId] -> IO AgentClient
+restartAgentB = restartAgent_ getAgentB
+
+restartAgent_ :: IO AgentClient -> Bool -> AgentClient -> [ConnId] -> IO AgentClient
+restartAgent_ getAgent restart c cIds
+  | restart = do
+      disposeAgentClient c
+      threadDelay 200000
+      c' <- getAgent
+      rs <- runRight $ subscribeConnections c' cIds
+      all isRight rs `shouldBe` True
+      pure c'
+  | otherwise = pure c
+
+testContactErrors :: HasCallStack => (ASrvTransport, AStoreType) -> Bool -> IO ()
+testContactErrors ps restart = do
+  a <- getAgentA
+  b <- getAgentB
+  (contactId, cReq) <- withServer1 ps $ runRight $ createConnection a 1 True SCMContact Nothing SMSubscribe
+  ("", "", DOWN _ [_]) <- nGet a
+  aId <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
+  -- fails to create queue on testPort2
+  BROKER srv2 NETWORK <- runLeft $ A.joinConnection b 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+  (testPort2 `isSuffixOf` srv2) `shouldBe` True
+  b' <- restartAgentB restart b [aId]
+  let loopCreate2 = do
+        -- creates the reply queue on testPort2, but fails to send invitation to testPort
+        BROKER srv' NETWORK <- runLeft $ A.joinConnection b' 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+        unless (testPort `isSuffixOf` srv') $ putStrLn "retrying create 2" >> threadDelay 200000 >> loopCreate2
+  b'' <- withServer2 ps $ do
+    loopCreate2
+    restartAgentB restart b' [aId]
+  ("", "", DOWN _ [_]) <- nGet b''
+  invId <- withServer1 ps $ do
+    ("", "", UP _ [_]) <- nGet a
+    let loopSend = do
+          -- sends the invitation to testPort
+          runExceptT (A.joinConnection b'' 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
+            Right (False, Nothing) -> pure ()
+            Right r -> error $ "unexpected result " <> show r
+            Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
+    loopSend
+    ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get a
+    pure invId
+  ("", "", DOWN _ [_]) <- nGet a
+  bId <- runRight $ A.prepareConnectionToAccept a True invId PQSupportOn
+  withServer2 ps $ do
+    ("", "", UP _ [_]) <- nGet b''
+    let loopSecure = do
+          -- secures the queue on testPort2, but fails to create reply queue on testPort
+          BROKER srv NETWORK <- runLeft $ acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+          unless (testPort `isSuffixOf` srv) $ putStrLn "retrying secure" >> threadDelay 200000 >> loopSecure
+    loopSecure
+  ("", "", DOWN _ [_]) <- nGet b''
+  a' <- withServer1 ps $ do
+    ("", "", UP _ [_]) <- nGet a
+    let loopCreate = do
+          -- creates the reply queue on testPort, but fails to send confirmation to testPort2
+          BROKER srv2' NETWORK <- runLeft $ acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+          unless (testPort2 `isSuffixOf` srv2') $ putStrLn "retrying create" >> threadDelay 200000 >> loopCreate
+    loopCreate
+    restartAgentA restart a [contactId, bId]
+  ("", "", DOWN _ [_, _]) <- nGet a' -- the second connection is from accept
+  (n, confId) <- withServer2 ps $ do
+    ("", "", UP _ [_]) <- nGet b''
+    let loopConfirm n =
+          runExceptT (acceptContact a' bId True invId "alice's connInfo" PQSupportOn SMSubscribe) >>= \case
+            Right (True, Nothing) -> pure n
+            Right r -> error $ "unexpected result " <> show r
+            Left _ -> putStrLn "retrying accept confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
+    n <- loopConfirm 1
+    ("", _, A.CONF confId PQSupportOn _ "alice's connInfo") <- get b''
+    pure (n, confId)
+  ("", "", DOWN _ [_]) <- nGet b''
+  runRight_ $ allowConnection b'' aId confId "bob's connInfo"
+  withServer1 ps $ do
+    ("", "", UP _ [_, _]) <- nGet a'
+    get a' ##> ("", bId, A.INFO PQSupportOn "bob's connInfo")
+    get a' ##> ("", bId, A.CON PQEncOn)
+    get b'' ##> ("", aId, A.CON PQEncOn) -- note that server 2 is down, this event is delivered when HELLO is sent to server 1
+    a'' <- restartAgentA restart a' [contactId, bId]
+    withServer2 ps $ do
+      ("", "", UP _ [_]) <- nGet b''
+      runRight_ $ exchangeGreetingsViaProxyMsgId_ False PQEncOn (2 + n) 2 a'' bId b'' aId
+      disposeAgentClient a''
+      disposeAgentClient b''
+
+getAgentA :: IO AgentClient
+getAgentA = getSMPAgentClient' 1 agentCfg initAgentServers testDB
+
+getAgentB :: IO AgentClient
+getAgentB = getSMPAgentClient' 2 agentCfg (initAgentServers {smp = userServers [testSMPServer2]}) testDB2
+
+withServer1 :: (ASrvTransport, AStoreType) -> IO a -> IO a
+withServer1 ps = withSmpServerStoreLogOn ps testPort . const
+
+withServer2 :: (ASrvTransport, AStoreType) -> IO a -> IO a
+withServer2 (t, ASType qsType _) = withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 . const
 
 testInviationShortLink :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testInviationShortLink viaProxy a b =
@@ -2235,7 +2403,7 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) =
       liftIO $ do
         let dc = S.fromList $ take nDel cs
         all isRight (M.withoutKeys r dc) `shouldBe` True
-        all (== Left (CONN NOT_FOUND)) (M.restrictKeys r dc) `shouldBe` True
+        all (== Left (CONN NOT_FOUND "")) (M.restrictKeys r dc) `shouldBe` True
         M.keys r `shouldMatchList` cs
     delete :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     delete c cs = do
@@ -2247,7 +2415,7 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) =
     deleteFail c cs = do
       r <- deleteConnections c cs
       liftIO $ do
-        all (== Left (CONN NOT_FOUND)) r `shouldBe` True
+        all (== Left (CONN NOT_FOUND "")) r `shouldBe` True
         M.keys r `shouldMatchList` cs
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
@@ -3651,24 +3819,29 @@ exchangeGreetingsMsgId :: HasCallStack => Int64 -> AgentClient -> ConnId -> Agen
 exchangeGreetingsMsgId = exchangeGreetingsMsgId_ PQEncOn
 
 exchangeGreetingsMsgId_ :: HasCallStack => PQEncryption -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsMsgId_ = exchangeGreetingsViaProxyMsgId_ False
+exchangeGreetingsMsgId_ pqEnc msgId = exchangeGreetingsViaProxyMsgId_ False pqEnc msgId msgId
 
 exchangeGreetingsViaProxy :: HasCallStack => Bool -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsViaProxy viaProxy = exchangeGreetingsViaProxyMsgId_ viaProxy PQEncOn 2
+exchangeGreetingsViaProxy viaProxy = exchangeGreetingsViaProxyMsgId_ viaProxy PQEncOn 2 2
 
-exchangeGreetingsViaProxyMsgId_ :: HasCallStack => Bool -> PQEncryption -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
-exchangeGreetingsViaProxyMsgId_ viaProxy pqEnc msgId alice bobId bob aliceId = do
+exchangeGreetingsViaProxyMsgId_ :: HasCallStack => Bool -> PQEncryption -> Int64 -> Int64 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+exchangeGreetingsViaProxyMsgId_ viaProxy pqEnc aMsgId bMsgId alice bobId bob aliceId = do
   msgId1 <- A.sendMessage alice bobId pqEnc SMP.noMsgFlags "hello"
-  liftIO $ msgId1 `shouldBe` (msgId, pqEnc)
-  get alice =##> \case ("", c, A.SENT mId srv_) -> c == bobId && mId == msgId && viaProxy == isJust srv_; _ -> False
-  get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == msgId && pq == pqEnc; _ -> False
-  ackMessage bob aliceId msgId Nothing
+  liftIO $ msgId1 `shouldBe` (aMsgId, pqEnc)
+  get alice =##> \case ("", c, A.SENT mId srv_) -> c == bobId && mId == aMsgId && viaProxy == isJust srv_; _ -> False
+  if aMsgId <= bMsgId
+    then get bob =##> \case ("", c, Msg' mId pq "hello") -> c == aliceId && mId == bMsgId && pq == pqEnc; _ -> False
+    else get bob =##> \case ("", c, MsgErr' mId (MsgSkipped 2 _) pq "hello") -> c == aliceId && mId == bMsgId && pq == pqEnc; _ -> False
+  ackMessage bob aliceId bMsgId Nothing
   msgId2 <- A.sendMessage bob aliceId pqEnc SMP.noMsgFlags "hello too"
-  let msgId' = msgId + 1
-  liftIO $ msgId2 `shouldBe` (msgId', pqEnc)
-  get bob =##> \case ("", c, A.SENT mId srv_) -> c == aliceId && mId == msgId' && viaProxy == isJust srv_; _ -> False
-  get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == msgId' && pq == pqEnc; _ -> False
-  ackMessage alice bobId msgId' Nothing
+  let aMsgId' = aMsgId + 1
+      bMsgId' = bMsgId + 1
+  liftIO $ msgId2 `shouldBe` (bMsgId', pqEnc)
+  get bob =##> \case ("", c, A.SENT mId srv_) -> c == aliceId && mId == bMsgId' && viaProxy == isJust srv_; _ -> False
+  if aMsgId >= bMsgId
+    then get alice =##> \case ("", c, Msg' mId pq "hello too") -> c == bobId && mId == aMsgId' && pq == pqEnc; _ -> False
+    else get alice =##> \case ("", c, MsgErr' mId (MsgSkipped 2 _) pq "hello too") -> c == bobId && mId == aMsgId' && pq == pqEnc; _ -> False
+  ackMessage alice bobId aMsgId' Nothing
 
 exchangeGreetingsMsgIds :: HasCallStack => AgentClient -> ConnId -> Int64 -> AgentClient -> ConnId -> Int64 -> ExceptT AgentErrorType IO ()
 exchangeGreetingsMsgIds alice bobId aliceMsgId bob aliceId bobMsgId = do

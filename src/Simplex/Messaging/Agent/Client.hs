@@ -867,7 +867,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
+      liftIO $ nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
       ei <- asks $ persistErrorInterval . config
@@ -2126,12 +2126,12 @@ withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)
 
 storeError :: StoreError -> AgentErrorType
 storeError = \case
-  SEConnNotFound -> CONN NOT_FOUND
+  SEConnNotFound -> CONN NOT_FOUND ""
   SEUserNotFound -> NO_USER
-  SERatchetNotFound -> CONN NOT_FOUND
-  SEConnDuplicate -> CONN DUPLICATE
-  SEBadConnType CRcv -> CONN SIMPLEX
-  SEBadConnType CSnd -> CONN SIMPLEX
+  SERatchetNotFound -> CONN NOT_FOUND ""
+  SEConnDuplicate -> CONN DUPLICATE ""
+  SEBadConnType cxt CRcv -> CONN SIMPLEX cxt
+  SEBadConnType cxt CSnd -> CONN SIMPLEX cxt
   SEInvitationNotFound cxt invId -> CMD PROHIBITED $ "SEInvitationNotFound " <> cxt <> ", invitationId = " <> show invId
   -- this error is never reported as store error,
   -- it is used to wrap agent operations when "transaction-like" store access is needed
