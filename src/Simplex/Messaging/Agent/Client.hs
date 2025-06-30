@@ -1309,7 +1309,7 @@ runNTFServerTest c userId (ProtoServerWithAuth srv _) = do
         (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          let deviceToken = DeviceToken PPApnsNull "test_ntf_token"
+          let deviceToken = APNSDeviceToken PPApnsNull "test_ntf_token"
           (tknId, _) <- liftError (testErr TSCreateNtfToken) $ ntfRegisterToken ntf npKey (NewNtfTkn deviceToken nKey dhKey)
           liftError (testErr TSDeleteNtfToken) $ ntfDeleteToken ntf npKey tknId
         ok <- tcpTimeout (networkConfig cfg) `timeout` closeProtocolClient ntf

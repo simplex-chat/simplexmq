@@ -131,6 +131,7 @@ apnsProviderHost = \case
   PPApnsTest -> Just "localhost"
   PPApnsDev -> Just "api.sandbox.push.apple.com"
   PPApnsProd -> Just "api.push.apple.com"
+  _ -> Nothing
 
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
@@ -258,6 +259,7 @@ data PushProviderError
   | PPTokenInvalid NTInvalidReason
   | PPRetryLater
   | PPPermanentError
+  | PPInvalidPusher
   deriving (Show, Exception)
 
 type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
@@ -268,7 +270,8 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = DeviceToken _ tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token} pn = do
+  tknStr <- deviceToken token
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
@@ -282,6 +285,9 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
     else logWarn $ "APNS error: " <> T.pack (show status) <> " " <> reason' <> apnsIds response
   result status reason'
   where
+    deviceToken t = case t of
+      APNSDeviceToken _ dt -> pure dt
+      _ -> throwE PPInvalidPusher
     apnsIds response = headerStr "apns-id" <> headerStr "apns-unique-id"
       where
         headerStr name =

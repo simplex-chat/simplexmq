@@ -56,7 +56,8 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Control
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Prometheus
-import Simplex.Messaging.Notifications.Server.Push.APNS (PushNotification (..), PushProviderError (..))
+import Simplex.Messaging.Notifications.Server.Push (PushNotification(..))
+import Simplex.Messaging.Notifications.Server.Push.APNS (PushProviderError (..))
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessageRecord (..), stmStoreTokenLastNtf)
 import Simplex.Messaging.Notifications.Server.Store.Postgres
@@ -567,7 +568,8 @@ showServer' = decodeLatin1 . strEncode . host
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
-  (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  (tkn@NtfTknRec {ntfTknId, token, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  let (pp, _) = deviceTokenFields token
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
   case ntf of
@@ -575,19 +577,19 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ setTknStatusConfirmed st tkn
-          incNtfStatT t ntfVrfDelivered
-        Left _ -> incNtfStatT t ntfVrfFailed
+          incNtfStatT token ntfVrfDelivered
+        Left _ -> incNtfStatT token ntfVrfFailed
     PNCheckMessages -> do
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
-          incNtfStatT t ntfCronDelivered
-        Left _ -> incNtfStatT t ntfCronFailed
+          incNtfStatT token ntfCronDelivered
+        Left _ -> incNtfStatT token ntfCronFailed
     PNMessage {} -> checkActiveTkn tknStatus $ do
       stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
       liftIO (deliverNotification st pp tkn ntf)
-        >>= incNtfStatT t . (\case Left _ -> ntfFailed; Right () -> ntfDelivered)
+        >>= incNtfStatT token . (\case Left _ -> ntfFailed; Right () -> ntfDelivered)
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action
@@ -607,6 +609,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             void $ updateTknStatus st tkn $ NTInvalid $ Just r
             err e
           PPPermanentError -> err e
+          PPInvalidPusher -> err e
       where
         retryDeliver :: IO (Either PushProviderError ())
         retryDeliver = do
@@ -838,7 +841,7 @@ withNtfStore stAction continue = do
     Right a -> continue a
 
 incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
-incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
+incNtfStatT (APNSDeviceToken PPApnsNull _) _ = pure ()
 incNtfStatT _ statSel = incNtfStat statSel
 {-# INLINE incNtfStatT #-}
 
