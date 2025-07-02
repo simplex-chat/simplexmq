@@ -728,7 +728,7 @@ createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInf
       db
       [sql|
         INSERT INTO conn_invitations
-        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
+        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
       |]
       (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo)
 
