@@ -208,6 +208,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250322_short_links
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250702_conn_invitations_remove_cascade_delete
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Client.Main

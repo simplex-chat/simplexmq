@@ -772,14 +772,11 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 -- while marking invitation as accepted inside "lock level transaction" after successful `joinConnAsync`.
 acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
 acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
-  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
-        withStore' c (`unacceptInvitation` invId)
-        throwE err
-    _ -> throwE $ CMD PROHIBITED "acceptContactAsync"
+  Invitation {userId, connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
+  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
+    withStore' c (`unacceptInvitation` invId)
+    throwE err
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
@@ -1038,11 +1035,8 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
 
 newConnToAccept :: AgentClient -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
 newConnToAccept c connId enableNtfs invId pqSup = do
-  Invitation {connReq, contactConnId} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) ->
-      newConnToJoin c userId connId enableNtfs connReq pqSup
-    _ -> throwE $ CMD PROHIBITED "newConnToAccept"
+  Invitation {userId, connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
+  newConnToJoin c userId connId enableNtfs connReq pqSup
 
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM (SndQueueSecured, Maybe ClientServiceId)
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
@@ -1222,13 +1216,10 @@ allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConne
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM (SndQueueSecured, Maybe ClientServiceId)
 acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
-  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      r <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
-      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      pure r
-    _ -> throwE $ CMD PROHIBITED "acceptContact"
+  Invitation {userId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
+  r <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
+  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  pure r
 
 -- | Reject contact (RJCT command) in Reader monad
 rejectContact' :: AgentClient -> InvitationId -> AM ()
@@ -3087,12 +3078,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData _) cInfo = do
             logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret' srvMsgId
             case conn' of
-              ContactConnection {} -> do
+              ContactConnection ConnData {userId} _ -> do
                 -- show connection request even if invitaion via contact address is not compatible.
                 -- in case invitation not compatible, assume there is no PQ encryption support.
                 pqSupport <- lift $ maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq
                 g <- asks random
-                let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
+                let newInv = NewInvitation {userId, contactConnId = connId, connReq, recipientConnInfo = cInfo}
                 invId <- withStore c $ \db -> createInvitation db g newInv
                 let srvs = L.map qServer $ crSmpQueues crData
                 notify $ REQ invId pqSupport srvs cInfo
