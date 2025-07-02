@@ -764,12 +764,9 @@ unacceptInvitation :: DB.Connection -> InvitationId -> IO ()
 unacceptInvitation db invitationId =
   DB.execute db "UPDATE conn_invitations SET accepted = 0, own_conn_info = NULL WHERE invitation_id = ?" (Only (Binary invitationId))
 
-deleteInvitation :: DB.Connection -> ConnId -> InvitationId -> IO (Either StoreError ())
-deleteInvitation db contactConnId invId =
-  getConn db contactConnId $>>= \case
-    SomeConn SCContact _ ->
-      Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, Binary invId)
-    _ -> pure $ Left SEConnNotFound
+deleteInvitation :: DB.Connection -> InvitationId -> IO ()
+deleteInvitation db invId =
+  DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (Only (Binary invId))
 
 getInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO (Maybe InvShortLink)
 getInvShortLink db server linkId =

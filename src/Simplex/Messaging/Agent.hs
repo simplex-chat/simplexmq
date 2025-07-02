@@ -426,8 +426,8 @@ acceptContact c connId enableNtfs = withAgentEnv c .:: acceptContact' c connId e
 {-# INLINE acceptContact #-}
 
 -- | Reject contact (RJCT command)
-rejectContact :: AgentClient -> ConnId -> ConfirmationId -> AE ()
-rejectContact c = withAgentEnv c .: rejectContact' c
+rejectContact :: AgentClient -> ConfirmationId -> AE ()
+rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
 
 -- | Subscribe to receive connection messages (SUB command)
@@ -1231,9 +1231,9 @@ acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withCon
     _ -> throwE $ CMD PROHIBITED "acceptContact"
 
 -- | Reject contact (RJCT command) in Reader monad
-rejectContact' :: AgentClient -> ConnId -> InvitationId -> AM ()
-rejectContact' c contactConnId invId =
-  withStore c $ \db -> deleteInvitation db contactConnId invId
+rejectContact' :: AgentClient -> InvitationId -> AM ()
+rejectContact' c invId =
+  withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad

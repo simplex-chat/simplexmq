@@ -979,13 +979,12 @@ noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (addrConnId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    (_addrConnId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
-    liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND "")
-    rejectContact alice addrConnId invId
+    rejectContact alice invId
     liftIO $ noMessages bob "nothing delivered to bob"
 
 testUpdateConnectionUserId :: HasCallStack => IO ()
