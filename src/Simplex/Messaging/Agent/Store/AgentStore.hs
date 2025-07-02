@@ -722,15 +722,15 @@ removeConfirmations db connId =
     (Only connId)
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
-createInvitation db gVar NewInvitation {userId, contactConnId, connReq, recipientConnInfo} =
+createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
   createWithRandomId gVar $ \invitationId ->
     DB.execute
       db
       [sql|
         INSERT INTO conn_invitations
-        (invitation_id, user_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
+        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, ?, 0);
       |]
-      (Binary invitationId, userId, contactConnId, connReq, Binary recipientConnInfo)
+      (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo)
 
 getInvitation :: DB.Connection -> String -> InvitationId -> IO (Either StoreError Invitation)
 getInvitation db cxt invitationId =
@@ -738,15 +738,15 @@ getInvitation db cxt invitationId =
     DB.query
       db
       [sql|
-        SELECT user_id, contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
+        SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
         FROM conn_invitations
         WHERE invitation_id = ?
           AND accepted = 0
       |]
       (Only (Binary invitationId))
   where
-    invitation (userId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
-      Invitation {userId, invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted}
+    invitation (contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
+      Invitation {invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted}
 
 acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
 acceptInvitation db invitationId ownConnInfo =

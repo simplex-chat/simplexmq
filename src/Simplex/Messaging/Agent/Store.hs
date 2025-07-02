@@ -508,15 +508,13 @@ data AcceptedConfirmation = AcceptedConfirmation
 -- * Invitations
 
 data NewInvitation = NewInvitation
-  { userId :: UserId,
-    contactConnId :: ConnId,
+  { contactConnId :: ConnId,
     connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
-    userId :: UserId,
     contactConnId_ :: Maybe ConnId,
     connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo,

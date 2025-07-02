@@ -160,8 +160,6 @@ CREATE TABLE conn_invitations(
   accepted INTEGER NOT NULL DEFAULT 0,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
-  ,
-  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE
 ) WITHOUT ROWID;
 CREATE TABLE ratchets(
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
@@ -574,4 +572,3 @@ CREATE UNIQUE INDEX idx_inv_short_links_link_id ON inv_short_links(
   port,
   link_id
 );
-CREATE INDEX idx_conn_invitations_user_id ON conn_invitations(user_id);
