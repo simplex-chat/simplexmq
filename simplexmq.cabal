@@ -208,6 +208,13 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250322_short_links
+  if flag(client_postgres) || flag(server_postgres)
+      exposed-modules:
+          Simplex.Messaging.Agent.Store.Postgres
+          Simplex.Messaging.Agent.Store.Postgres.Common
+          Simplex.Messaging.Agent.Store.Postgres.DB
+          Simplex.Messaging.Agent.Store.Postgres.Migrations
+          Simplex.Messaging.Agent.Store.Postgres.Util
   if !flag(client_library)
       exposed-modules:
           Simplex.FileTransfer.Client.Main
@@ -240,14 +247,6 @@ library
           Simplex.Messaging.Server.StoreLog.ReadWrite
           Simplex.Messaging.Server.StoreLog.Types
           Simplex.Messaging.Transport.WebSockets
-      if flag(client_postgres) || flag(server_postgres)
-          exposed-modules:
-              Simplex.Messaging.Agent.Store.Postgres
-              Simplex.Messaging.Agent.Store.Postgres.Common
-              Simplex.Messaging.Agent.Store.Postgres.DB
-              Simplex.Messaging.Agent.Store.Postgres.Migrations
-              Simplex.Messaging.Agent.Store.Postgres.Util
-
       if flag(server_postgres)
           exposed-modules:
               Simplex.Messaging.Notifications.Server
