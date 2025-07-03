@@ -888,8 +888,8 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
-    bobId <- A.prepareConnectionToAccept alice True invId (CR.connPQEncryption aPQ)
-    (sqSecured', Nothing) <- acceptContact alice bobId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+    bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
+    (sqSecured', Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
     liftIO $ pqSup'' `shouldBe` bPQ
@@ -939,8 +939,8 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
       liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
       ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
-      bId <- A.prepareConnectionToAccept alice True invId (CR.connPQEncryption aPQ)
-      (sqSecuredAccept, Nothing) <- acceptContact alice bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+      bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
+      (sqSecuredAccept, Nothing) <- acceptContact alice 1 bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
       liftIO $ sqSecuredAccept `shouldBe` False -- agent cfg is v8
       ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get b
       liftIO $ pqSup'' `shouldBe` pq
@@ -979,13 +979,12 @@ noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (addrConnId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    (_addrConnId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMContact Nothing Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
-    liftIO $ runExceptT (rejectContact alice "abcd" invId) `shouldReturn` Left (CONN NOT_FOUND "")
-    rejectContact alice addrConnId invId
+    rejectContact alice invId
     liftIO $ noMessages bob "nothing delivered to bob"
 
 testUpdateConnectionUserId :: HasCallStack => IO ()
@@ -1248,12 +1247,12 @@ testContactErrors ps restart = do
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get a
     pure invId
   ("", "", DOWN _ [_]) <- nGet a
-  bId <- runRight $ A.prepareConnectionToAccept a True invId PQSupportOn
+  bId <- runRight $ A.prepareConnectionToAccept a 1 True invId PQSupportOn
   withServer2 ps $ do
     ("", "", UP _ [_]) <- nGet b''
     let loopSecure = do
           -- secures the queue on testPort2, but fails to create reply queue on testPort
-          BROKER srv NETWORK <- runLeft $ acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+          BROKER srv NETWORK <- runLeft $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
           unless (testPort `isSuffixOf` srv) $ putStrLn "retrying secure" >> threadDelay 200000 >> loopSecure
     loopSecure
   ("", "", DOWN _ [_]) <- nGet b''
@@ -1261,7 +1260,7 @@ testContactErrors ps restart = do
     ("", "", UP _ [_]) <- nGet a
     let loopCreate = do
           -- creates the reply queue on testPort, but fails to send confirmation to testPort2
-          BROKER srv2' NETWORK <- runLeft $ acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+          BROKER srv2' NETWORK <- runLeft $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
           unless (testPort2 `isSuffixOf` srv2') $ putStrLn "retrying create" >> threadDelay 200000 >> loopCreate
     loopCreate
     restartAgentA restart a [contactId, bId]
@@ -1269,7 +1268,7 @@ testContactErrors ps restart = do
   (n, confId) <- withServer2 ps $ do
     ("", "", UP _ [_]) <- nGet b''
     let loopConfirm n =
-          runExceptT (acceptContact a' bId True invId "alice's connInfo" PQSupportOn SMSubscribe) >>= \case
+          runExceptT (acceptContact a' 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe) >>= \case
             Right (True, Nothing) -> pure n
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying accept confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
@@ -1384,8 +1383,8 @@ testContactShortLink viaProxy a b =
       (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
       liftIO $ sndSecure `shouldBe` False
       ("", _, REQ invId _ "bob's connInfo") <- get a
-      bId <- A.prepareConnectionToAccept a True invId PQSupportOn
-      (sndSecure', Nothing) <- acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      bId <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
+      (sndSecure', Nothing) <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
       liftIO $ sndSecure' `shouldBe` True
       ("", _, CONF confId  _ "alice's connInfo") <- get b
       allowConnection b aId confId "bob's connInfo"
@@ -1431,8 +1430,8 @@ testAddContactShortLink viaProxy a b =
       (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
       liftIO $ sndSecure `shouldBe` False
       ("", _, REQ invId _ "bob's connInfo") <- get a
-      bId <- A.prepareConnectionToAccept a True invId PQSupportOn
-      (sndSecure', Nothing) <- acceptContact a bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      bId <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
+      (sndSecure', Nothing) <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
       liftIO $ sndSecure' `shouldBe` True
       ("", _, CONF confId  _ "alice's connInfo") <- get b
       allowConnection b aId confId "bob's connInfo"
@@ -2573,7 +2572,7 @@ testAcceptContactAsync sqSecured alice bob baseId =
     (aliceId, sqSecuredJoin) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContactAsync alice "1" True invId "alice's connInfo" PQSupportOn SMSubscribe
+    bobId <- acceptContactAsync alice 1 "1" True invId "alice's connInfo" PQSupportOn SMSubscribe
     get alice =##> \case ("1", c, JOINED sqSecured') -> c == bobId && sqSecured' == sqSecured; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"

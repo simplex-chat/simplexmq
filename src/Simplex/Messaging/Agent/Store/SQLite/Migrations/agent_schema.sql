@@ -154,7 +154,7 @@ CREATE TABLE conn_confirmations(
 ) WITHOUT ROWID;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,
-  contact_conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  contact_conn_id BLOB REFERENCES connections ON DELETE SET NULL,
   cr_invitation BLOB NOT NULL,
   recipient_conn_info BLOB NOT NULL,
   accepted INTEGER NOT NULL DEFAULT 0,

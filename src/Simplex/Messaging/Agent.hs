@@ -343,8 +343,8 @@ allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 {-# INLINE allowConnectionAsync #-}
 
 -- | Accept contact after REQ notification (ACPT command) asynchronously, synchronous response is new connection id
-acceptContactAsync :: AgentClient -> ACorrId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
-acceptContactAsync c aCorrId enableNtfs = withAgentEnv c .:: acceptContactAsync' c aCorrId enableNtfs
+acceptContactAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
+acceptContactAsync c userId aCorrId enableNtfs = withAgentEnv c .:: acceptContactAsync' c userId aCorrId enableNtfs
 {-# INLINE acceptContactAsync #-}
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
@@ -406,8 +406,8 @@ prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c 
 {-# INLINE prepareConnectionToJoin #-}
 
 -- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
-prepareConnectionToAccept :: AgentClient -> Bool -> ConfirmationId -> PQSupport -> AE ConnId
-prepareConnectionToAccept c enableNtfs = withAgentEnv c .: newConnToAccept c "" enableNtfs
+prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> ConfirmationId -> PQSupport -> AE ConnId
+prepareConnectionToAccept c userId enableNtfs = withAgentEnv c .: newConnToAccept c userId "" enableNtfs
 {-# INLINE prepareConnectionToAccept #-}
 
 -- | Join SMP agent connection (JOIN command).
@@ -421,13 +421,13 @@ allowConnection c = withAgentEnv c .:. allowConnection' c
 {-# INLINE allowConnection #-}
 
 -- | Accept contact after REQ notification (ACPT command)
-acceptContact :: AgentClient -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE (SndQueueSecured, Maybe ClientServiceId)
-acceptContact c connId enableNtfs = withAgentEnv c .:: acceptContact' c connId enableNtfs
+acceptContact :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE (SndQueueSecured, Maybe ClientServiceId)
+acceptContact c userId connId enableNtfs = withAgentEnv c .:: acceptContact' c userId connId enableNtfs
 {-# INLINE acceptContact #-}
 
 -- | Reject contact (RJCT command)
-rejectContact :: AgentClient -> ConnId -> ConfirmationId -> AE ()
-rejectContact c = withAgentEnv c .: rejectContact' c
+rejectContact :: AgentClient -> ConfirmationId -> AE ()
+rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
 
 -- | Subscribe to receive connection messages (SUB command)
@@ -770,16 +770,13 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 -- and also it can't be triggered by user concurrently several times in a row. It could be improved similarly to
 -- `acceptContact` by creating a new map for invitation locks and taking lock here, and removing `unacceptInvitation`
 -- while marking invitation as accepted inside "lock level transaction" after successful `joinConnAsync`.
-acceptContactAsync' :: AgentClient -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
-acceptContactAsync' c corrId enableNtfs invId ownConnInfo pqSupport subMode = do
-  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
-        withStore' c (`unacceptInvitation` invId)
-        throwE err
-    _ -> throwE $ CMD PROHIBITED "acceptContactAsync"
+acceptContactAsync' :: AgentClient -> UserId -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
+acceptContactAsync' c userId corrId enableNtfs invId ownConnInfo pqSupport subMode = do
+  Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
+  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAgentError` \err -> do
+    withStore' c (`unacceptInvitation` invId)
+    throwE err
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
@@ -1036,13 +1033,10 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
           cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
-newConnToAccept :: AgentClient -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
-newConnToAccept c connId enableNtfs invId pqSup = do
-  Invitation {connReq, contactConnId} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) ->
-      newConnToJoin c userId connId enableNtfs connReq pqSup
-    _ -> throwE $ CMD PROHIBITED "newConnToAccept"
+newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
+newConnToAccept c userId connId enableNtfs invId pqSup = do
+  Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
+  newConnToJoin c userId connId enableNtfs connReq pqSup
 
 joinConn :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM (SndQueueSecured, Maybe ClientServiceId)
 joinConn c userId connId enableNtfs cReq cInfo pqSupport subMode = do
@@ -1220,20 +1214,17 @@ allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConne
     _ -> throwE $ CMD PROHIBITED "allowConnection"
 
 -- | Accept contact (ACPT command) in Reader monad
-acceptContact' :: AgentClient -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM (SndQueueSecured, Maybe ClientServiceId)
-acceptContact' c connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
-  Invitation {contactConnId, connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
-  withStore c (`getConn` contactConnId) >>= \case
-    SomeConn _ (ContactConnection ConnData {userId} _) -> do
-      r <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
-      withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-      pure r
-    _ -> throwE $ CMD PROHIBITED "acceptContact"
+acceptContact' :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM (SndQueueSecured, Maybe ClientServiceId)
+acceptContact' c userId connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
+  Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
+  r <- joinConn c userId connId enableNtfs connReq ownConnInfo pqSupport subMode
+  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  pure r
 
 -- | Reject contact (RJCT command) in Reader monad
-rejectContact' :: AgentClient -> ConnId -> InvitationId -> AM ()
-rejectContact' c contactConnId invId =
-  withStore c $ \db -> deleteInvitation db contactConnId invId
+rejectContact' :: AgentClient -> InvitationId -> AM ()
+rejectContact' c invId =
+  withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad

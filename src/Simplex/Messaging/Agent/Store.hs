@@ -515,7 +515,7 @@ data NewInvitation = NewInvitation
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
-    contactConnId :: ConnId,
+    contactConnId_ :: Maybe ConnId,
     connReq :: ConnectionRequestUri 'CMInvitation,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
