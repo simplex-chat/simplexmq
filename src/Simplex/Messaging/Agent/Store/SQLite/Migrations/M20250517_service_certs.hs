@@ -5,6 +5,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250517_service_certs w
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
+-- TODO move date forward, create migration for postgres
 m20250517_service_certs :: Query
 m20250517_service_certs =
   [sql|

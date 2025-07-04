@@ -162,6 +162,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250322_short_links
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250702_conn_invitations_remove_cascade_delete
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -208,6 +209,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20241224_ratchet_e2e_snd_params
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250322_short_links
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250702_conn_invitations_remove_cascade_delete
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:
           Simplex.Messaging.Agent.Store.Postgres
@@ -558,7 +560,7 @@ test-suite simplexmq-test
     build-depends:
         memory
       , sqlcipher-simple
-  if !flag(client_postgres) || flag(server_postgres)
+  if !flag(client_postgres) || flag(client_postgres) || flag(server_postgres)
     build-depends:
         deepseq ==1.4.*
       , process
