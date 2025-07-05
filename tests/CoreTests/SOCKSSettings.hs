@@ -91,7 +91,7 @@ testSocksMode = do
   where
     transportSocks proxy socksMode = transportSocksCfg defaultNetworkConfig {socksProxy = proxy, socksMode}
     transportSocksCfg cfg host =
-      let TransportClientConfig {socksProxy} = transportClientConfig cfg host False Nothing
+      let TransportClientConfig {socksProxy} = transportClientConfig cfg NRMInteractive host False Nothing
        in socksProxy
 
 testSocksProxyEncoding :: Spec
