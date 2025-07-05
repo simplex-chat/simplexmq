@@ -19,7 +19,7 @@ import SMPClient (proxyVRangeV8, ntfTestPort, testPort)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Client (ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), defaultNetworkConfig, defaultSMPClientConfig)
+import Simplex.Messaging.Client (NetworkTimeout (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), defaultNetworkConfig, defaultSMPClientConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer)
 import Simplex.Messaging.Transport
@@ -64,7 +64,7 @@ initAgentServers =
     { smp = userServers [testSMPServer],
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
-      netCfg = defaultNetworkConfig {tcpTimeout = 500_000, tcpConnectTimeout = 500_000},
+      netCfg = defaultNetworkConfig {tcpTimeout = NetworkTimeout 500000 500000, tcpConnectTimeout = NetworkTimeout 500000 500000},
       presetDomains = []
     }
 
@@ -96,7 +96,7 @@ agentCfg =
       certificateFile = "tests/fixtures/server.crt"
     }
   where
-    networkConfig = defaultNetworkConfig {tcpConnectTimeout = 1_000_000, tcpTimeout = 2_000_000}
+    networkConfig = defaultNetworkConfig {tcpConnectTimeout = NetworkTimeout 1_000000 1_000000, tcpTimeout = NetworkTimeout 2_000000 2_000000}
 
 agentProxyCfgV8 :: AgentConfig
 agentProxyCfgV8 = agentCfg {smpCfg = (smpCfg agentCfg) {serverVRange = proxyVRangeV8}}

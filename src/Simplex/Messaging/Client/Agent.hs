@@ -203,7 +203,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
     waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO (OwnServer, SMPClient)
     waitForSMPClient v = do
       let ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
-      smpClient_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar $ sessionVar v)
+      smpClient_ <- liftIO $ netTimeoutInt tcpConnectTimeout NRMBackground `timeout` atomically (readTMVar $ sessionVar v)
       case smpClient_ of
         Just (Right smpClient) -> pure smpClient
         Just (Left (e, ts_)) -> case ts_ of
@@ -249,7 +249,7 @@ isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
 -- | Run an SMP client for SMPClientVar
 connectClient :: SMPClientAgent p -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
 connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg, startedAt} srv v =
-  getProtocolClient randomDrg (1, srv, Nothing) (smpCfg agentCfg) [] (Just msgQ) startedAt clientDisconnected
+  getProtocolClient randomDrg NRMBackground (1, srv, Nothing) (smpCfg agentCfg) [] (Just msgQ) startedAt clientDisconnected
   where
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do
@@ -313,7 +313,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
         subs <- getPending TM.lookupIO readTVarIO
         unless (noPending subs) $ whenM (readTVarIO active) $ do
-          void $ tcpConnectTimeout `timeout` runExceptT (reconnectSMPClient ca srv subs)
+          void $ netTimeoutInt tcpConnectTimeout NRMBackground `timeout` runExceptT (reconnectSMPClient ca srv subs)
           loop
     ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
     noPending (sSub, qSubs) = isNothing sSub && maybe True M.null qSubs

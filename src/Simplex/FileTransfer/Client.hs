@@ -36,8 +36,10 @@ import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
 import Simplex.Messaging.Client
   ( NetworkConfig (..),
+    NetworkRequestMode (..),
     ProtocolClientError (..),
     TransportSession,
+    netTimeoutInt,
     chooseTransportHost,
     defaultNetworkConfig,
     transportClientConfig,
@@ -107,7 +109,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
-  let tcConfig = transportClientConfig xftpNetworkConfig useHost False clientALPN
+  let tcConfig = transportClientConfig xftpNetworkConfig NRMBackground useHost False clientALPN
       http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
@@ -178,7 +180,7 @@ xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkCon
   defaultHTTP2ClientConfig
     { bodyHeadSize = xftpBlockSize,
       suportedTLSParams = defaultSupportedParams,
-      connTimeout = tcpConnectTimeout,
+      connTimeout = netTimeoutInt tcpConnectTimeout NRMBackground,
       transportConfig
     }
 
@@ -268,11 +270,11 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
 
 xftpReqTimeout :: XFTPClientConfig -> Maybe Word32 -> Int
 xftpReqTimeout cfg@XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpTimeout}} chunkSize_ =
-  maybe tcpTimeout (chunkTimeout cfg) chunkSize_
+  maybe (netTimeoutInt tcpTimeout NRMBackground) (chunkTimeout cfg) chunkSize_
 
 chunkTimeout :: XFTPClientConfig -> Word32 -> Int
 chunkTimeout XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpTimeout, tcpTimeoutPerKb}} sz =
-  tcpTimeout + fromIntegral (min ((fromIntegral sz `div` 1024) * tcpTimeoutPerKb) (fromIntegral (maxBound :: Int)))
+  netTimeoutInt tcpTimeout NRMBackground + fromIntegral (min ((fromIntegral sz `div` 1024) * tcpTimeoutPerKb) (fromIntegral (maxBound :: Int)))
 
 deleteXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> SenderId -> ExceptT XFTPClientError IO ()
 deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse

@@ -167,37 +167,37 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
   msgQ <- newTBQueueIO 1024
-  rc' <- getProtocolClient g (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] (Just msgQ) ts (\_ -> pure ())
+  rc' <- getProtocolClient g NRMInteractive (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] (Just msgQ) ts (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
   (rdhPub, rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-  SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc Nothing (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QRMessaging Nothing)
+  SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QRMessaging Nothing)
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
-  sess0 <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")
-  sess <- runExceptT' $ connectSMPProxiedRelay pc relayServ (Just "correct")
+  sess0 <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct")
+  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct")
   sess0 `shouldBe` sess
   -- send via proxy to unsecured queue
   forM_ unsecuredMsgs $ \msg -> do
-    runExceptT' (proxySMPMessage pc sess Nothing sndId noMsgFlags msg) `shouldReturn` Right ()
-    runExceptT' (proxySMPMessage pc sess {prSessionId = "bad session"} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY SMP.NO_SESSION)
+    runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sndId noMsgFlags msg) `shouldReturn` Right ()
+    runExceptT' (proxySMPMessage pc NRMInteractive sess {prSessionId = "bad session"} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY SMP.NO_SESSION)
     -- receive 1
     (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
     dec msgId encBody `shouldBe` Right msg
     runExceptT' $ ackSMPMessage rc rPriv rcvId msgId
   -- secure queue
   (sPub, sPriv) <- atomically $ C.generateAuthKeyPair alg g
-  runExceptT' $ secureSMPQueue rc rPriv rcvId sPub
+  runExceptT' $ secureSMPQueue rc NRMInteractive rPriv rcvId sPub
   -- send via proxy to secured queue
   waitSendRecv
     ( forM_ securedMsgs $ \msg' ->
-        runExceptT' (proxySMPMessage pc sess (Just sPriv) sndId noMsgFlags msg') `shouldReturn` Right ()
+        runExceptT' (proxySMPMessage pc NRMInteractive sess (Just sPriv) sndId noMsgFlags msg') `shouldReturn` Right ()
     )
     ( forM_ securedMsgs $ \msg' -> do
         (_tSess, _v, _sid, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId = msgId', msgBody = EncRcvMsgBody encBody'})))]) <- atomically $ readTBQueue msgQ
@@ -210,12 +210,12 @@ proxyConnectDeadRelay n d proxyServ = do
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion} [] Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion} [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session
   replicateM_ n $ do
-    sess0 <- runExceptT $ connectSMPProxiedRelay pc (SMPServer testHost "45678" testKeyHash) (Just "correct")
+    sess0 <- runExceptT $ connectSMPProxiedRelay pc NRMInteractive (SMPServer testHost "45678" testKeyHash) (Just "correct")
     case sess0 of
       Right !_noWay -> error "got unexpected client"
       Left !_err -> threadDelay d
@@ -224,9 +224,9 @@ agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty 
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 baseId =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
-      (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
       aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      (sqSecured, Nothing) <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -280,9 +280,9 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- agent connections have to be set up in advance
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
-      (bobId, (CCLink qInfo Nothing, Nothing)) <- runExceptT' $ A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      (bobId, (CCLink qInfo Nothing, Nothing)) <- runExceptT' $ A.createConnection alice NRMInteractive 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
       aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      (sqSecured, Nothing) <- runExceptT' $ A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      (sqSecured, Nothing) <- runExceptT' $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
@@ -331,9 +331,9 @@ agentViaProxyVersionError =
   withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
       withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
-        (_bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+        (_bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
         aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-        A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
     servers srvs = (initAgentServersProxy_ SPMUnknown SPFProhibit) {smp = userServers srvs}
@@ -351,9 +351,9 @@ agentViaProxyRetryOffline = do
       let pqEnc = CR.PQEncOn
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
-          (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+          (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
           aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-          (sqSecured, Nothing) <- A.joinConnection bob 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+          (sqSecured, Nothing) <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn

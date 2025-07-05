@@ -45,6 +45,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Client (NetworkRequestMode (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
@@ -572,7 +573,7 @@ runNtfTknDelWorker c srv Worker {doWork} =
           notifyInternalError' c (show e)
     processTknToDelete :: NtfTokenToDelete -> AM ()
     processTknToDelete (tknDbId, ntfPrivKey, tknId) = do
-      agentNtfDeleteToken c srv ntfPrivKey tknId
+      agentNtfDeleteToken c NRMBackground srv ntfPrivKey tknId
       withStore' c $ \db -> deleteNtfTokenToDelete db tknDbId
 
 closeNtfSupervisor :: NtfSupervisor -> IO ()

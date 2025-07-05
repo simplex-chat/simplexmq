@@ -28,39 +28,39 @@ defaultNTFClientConfig =
     {defaultTransport = ("443", transport @TLS)}
 {-# INLINE defaultNTFClientConfig #-}
 
-ntfRegisterToken :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Token -> ExceptT NtfClientError IO (NtfTokenId, C.PublicKeyX25519)
-ntfRegisterToken c pKey newTkn =
-  sendNtfCommand c (Just pKey) NoEntity (TNEW newTkn) >>= \case
+ntfRegisterToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NewNtfEntity 'Token -> ExceptT NtfClientError IO (NtfTokenId, C.PublicKeyX25519)
+ntfRegisterToken c nm pKey newTkn =
+  sendNtfCommand c nm (Just pKey) NoEntity (TNEW newTkn) >>= \case
     NRTknId tknId dhKey -> pure (tknId, dhKey)
     r -> throwE $ unexpectedResponse r
 
-ntfVerifyToken :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> NtfRegCode -> ExceptT NtfClientError IO ()
-ntfVerifyToken c pKey tknId code = okNtfCommand (TVFY code) c pKey tknId
+ntfVerifyToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> NtfRegCode -> ExceptT NtfClientError IO ()
+ntfVerifyToken c nm pKey tknId code = okNtfCommand (TVFY code) c nm pKey tknId
 
-ntfCheckToken :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> ExceptT NtfClientError IO NtfTknStatus
-ntfCheckToken c pKey tknId =
-  sendNtfCommand c (Just pKey) tknId TCHK >>= \case
+ntfCheckToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> ExceptT NtfClientError IO NtfTknStatus
+ntfCheckToken c nm pKey tknId =
+  sendNtfCommand c nm (Just pKey) tknId TCHK >>= \case
     NRTkn stat -> pure stat
     r -> throwE $ unexpectedResponse r
 
-ntfReplaceToken :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> DeviceToken -> ExceptT NtfClientError IO ()
-ntfReplaceToken c pKey tknId token = okNtfCommand (TRPL token) c pKey tknId
+ntfReplaceToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> DeviceToken -> ExceptT NtfClientError IO ()
+ntfReplaceToken c nm pKey tknId token = okNtfCommand (TRPL token) c nm pKey tknId
 
-ntfDeleteToken :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> ExceptT NtfClientError IO ()
+ntfDeleteToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> ExceptT NtfClientError IO ()
 ntfDeleteToken = okNtfCommand TDEL
 
 -- set to 0 to disable
-ntfSetCronInterval :: NtfClient -> C.APrivateAuthKey -> NtfTokenId -> Word16 -> ExceptT NtfClientError IO ()
-ntfSetCronInterval c pKey tknId int = okNtfCommand (TCRN int) c pKey tknId
+ntfSetCronInterval :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> Word16 -> ExceptT NtfClientError IO ()
+ntfSetCronInterval c nm pKey tknId int = okNtfCommand (TCRN int) c nm pKey tknId
 
 ntfCreateSubscription :: NtfClient -> C.APrivateAuthKey -> NewNtfEntity 'Subscription -> ExceptT NtfClientError IO NtfSubscriptionId
 ntfCreateSubscription c pKey newSub =
-  sendNtfCommand c (Just pKey) NoEntity (SNEW newSub) >>= \case
+  sendNtfCommand c NRMBackground (Just pKey) NoEntity (SNEW newSub) >>= \case
     NRSubId subId -> pure subId
     r -> throwE $ unexpectedResponse r
 
 ntfCreateSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty (NewNtfEntity 'Subscription) -> IO (NonEmpty (Either NtfClientError NtfSubscriptionId))
-ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands c cs
+ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands c NRMBackground cs
   where
     cs = L.map (\newSub -> (NoEntity, Just pKey, NtfCmd SSubscription $ SNEW newSub)) newSubs
     process (Response _ r) = case r of
@@ -70,12 +70,12 @@ ntfCreateSubscriptions c pKey newSubs = L.map process <$> sendProtocolCommands c
 
 ntfCheckSubscription :: NtfClient -> C.APrivateAuthKey -> NtfSubscriptionId -> ExceptT NtfClientError IO NtfSubStatus
 ntfCheckSubscription c pKey subId =
-  sendNtfCommand c (Just pKey) subId SCHK >>= \case
+  sendNtfCommand c NRMBackground (Just pKey) subId SCHK >>= \case
     NRSub stat -> pure stat
     r -> throwE $ unexpectedResponse r
 
 ntfCheckSubscriptions :: NtfClient -> C.APrivateAuthKey -> NonEmpty NtfSubscriptionId -> IO (NonEmpty (Either NtfClientError NtfSubStatus))
-ntfCheckSubscriptions c pKey subIds = L.map process <$> sendProtocolCommands c cs
+ntfCheckSubscriptions c pKey subIds = L.map process <$> sendProtocolCommands c NRMBackground cs
   where
     cs = L.map (\subId -> (subId, Just pKey, NtfCmd SSubscription SCHK)) subIds
     process (Response _ r) = case r of
@@ -84,14 +84,14 @@ ntfCheckSubscriptions c pKey subIds = L.map process <$> sendProtocolCommands c c
       Left e -> Left e
 
 ntfDeleteSubscription :: NtfClient -> C.APrivateAuthKey -> NtfSubscriptionId -> ExceptT NtfClientError IO ()
-ntfDeleteSubscription = okNtfCommand SDEL
+ntfDeleteSubscription c = okNtfCommand SDEL c NRMBackground
 
 -- | Send notification server command
-sendNtfCommand :: NtfEntityI e => NtfClient -> Maybe C.APrivateAuthKey -> NtfEntityId -> NtfCommand e -> ExceptT NtfClientError IO NtfResponse
-sendNtfCommand c pKey entId cmd = sendProtocolCommand c pKey entId (NtfCmd sNtfEntity cmd)
+sendNtfCommand :: NtfEntityI e => NtfClient -> NetworkRequestMode -> Maybe C.APrivateAuthKey -> NtfEntityId -> NtfCommand e -> ExceptT NtfClientError IO NtfResponse
+sendNtfCommand c nm pKey entId cmd = sendProtocolCommand c nm pKey entId (NtfCmd sNtfEntity cmd)
 
-okNtfCommand :: NtfEntityI e => NtfCommand e -> NtfClient -> C.APrivateAuthKey -> NtfEntityId -> ExceptT NtfClientError IO ()
-okNtfCommand cmd c pKey entId =
-  sendNtfCommand c (Just pKey) entId cmd >>= \case
+okNtfCommand :: NtfEntityI e => NtfCommand e -> NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfEntityId -> ExceptT NtfClientError IO ()
+okNtfCommand cmd c nm pKey entId =
+  sendNtfCommand c nm (Just pKey) entId cmd >>= \case
     NROk -> return ()
     r -> throwE $ unexpectedResponse r
