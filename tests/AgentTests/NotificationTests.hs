@@ -70,7 +70,7 @@ import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, reopenDBStore)
-import Simplex.Messaging.Client (NetworkRequestMode (..))
+import Simplex.Messaging.Client (pattern NRMInteractive)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol

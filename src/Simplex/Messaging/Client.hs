@@ -8,6 +8,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
@@ -83,6 +84,7 @@ module Simplex.Messaging.Client
     NetworkConfig (..),
     NetworkTimeout (..),
     NetworkRequestMode (..),
+    pattern NRMInteractive,
     TransportSessionMode (..),
     HostMode (..),
     SocksMode (..),
@@ -324,19 +326,22 @@ data NetworkTimeout = NetworkTimeout {backgroundTimeout :: Int, interactiveTimeo
 
 data NetworkRequestMode
   = NRMBackground
-  | NRMInteractive
-  | NRMRetry Int -- retry count
+  | NRMInteractive' {retryCount :: Int}
+
+pattern NRMInteractive :: NetworkRequestMode
+pattern NRMInteractive = NRMInteractive' 0
 
 netTimeoutInt :: NetworkTimeout -> NetworkRequestMode -> Int
 netTimeoutInt NetworkTimeout {backgroundTimeout, interactiveTimeout} = \case
   NRMBackground -> backgroundTimeout
-  NRMInteractive -> interactiveTimeout
-  NRMRetry n ->
-    let (m, d)
-          | n <= 1 = (3, 2)
-          | n == 2 = (9, 4)
-          | otherwise = (27, 8)
-     in (interactiveTimeout * m) `div` d
+  NRMInteractive' n
+    | n <= 0 -> interactiveTimeout
+    | otherwise ->
+        let (m, d)
+              | n == 1 = (3, 2)
+              | n == 2 = (9, 4)
+              | otherwise = (27, 8)
+         in (interactiveTimeout * m) `div` d
 
 data TransportSessionMode = TSMUser | TSMSession | TSMServer | TSMEntity
   deriving (Eq, Show)
