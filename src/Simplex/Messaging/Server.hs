@@ -1321,7 +1321,7 @@ client
   -- TODO [certs rcv] rcv subscriptions
   Server {subscribers, ntfSubscribers}
   ms
-  clnt@Client {clientId, subscriptions, ntfSubscriptions, serviceSubsCount = _todo', ntfServiceSubsCount, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {clientId, subscriptions, ntfSubscriptions, ntfServiceSubscribed, serviceSubsCount = _todo', ntfServiceSubsCount, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     let THandleParams {thVersion} = thParams'
         service = peerClientService =<< thAuth thParams'
@@ -1721,18 +1721,19 @@ client
 
         subscribeServiceNotifications :: THPeerClientService -> M s BrokerMsg
         subscribeServiceNotifications THClientService {serviceId} = do
-          srvSubs <- readTVarIO ntfServiceSubsCount
-          if srvSubs == 0
-            then
+          subscribed <- readTVarIO ntfServiceSubscribed
+          if subscribed
+            then SOKS <$> readTVarIO ntfServiceSubsCount
+            else
               liftIO (getNtfServiceQueueCount @(StoreQueue s) (queueStore ms) serviceId) >>= \case
                 Left e -> pure $ ERR e
-                Right count -> do
+                Right !count' -> do
                   atomically $ do
-                    modifyTVar' ntfServiceSubsCount (+ count) -- service count
-                    modifyTVar' (totalServiceSubs ntfSubscribers) (+ count) -- server count for all services
+                    writeTVar ntfServiceSubscribed True
+                    count <- swapTVar ntfServiceSubsCount count'
+                    modifyTVar' (totalServiceSubs ntfSubscribers) (+ (count' - count)) -- server count for all services
                   atomically $ writeTQueue (subQ ntfSubscribers) (CSService serviceId, clientId)
-                  pure $ SOKS count
-            else pure $ SOKS srvSubs
+                  pure $ SOKS count'
 
         acknowledgeMsg :: MsgId -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         acknowledgeMsg msgId q qr = time "ACK" $ do
