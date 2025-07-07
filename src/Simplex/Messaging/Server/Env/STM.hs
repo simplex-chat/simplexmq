@@ -389,6 +389,8 @@ data Client s = Client
   { clientId :: ClientId,
     subscriptions :: TMap RecipientId Sub,
     ntfSubscriptions :: TMap NotifierId (),
+    serviceSubscribed :: TVar Bool, -- set independently of serviceSubsCount, to track whether service subscription command was received
+    ntfServiceSubscribed :: TVar Bool,
     serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
@@ -458,6 +460,8 @@ newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemT
 newClient clientId qSize clientTHParams createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
+  serviceSubscribed <- newTVarIO False
+  ntfServiceSubscribed <- newTVarIO False
   serviceSubsCount <- newTVarIO 0
   ntfServiceSubsCount <- newTVarIO 0
   rcvQ <- newTBQueueIO qSize
@@ -474,6 +478,8 @@ newClient clientId qSize clientTHParams createdAt = do
       { clientId,
         subscriptions,
         ntfSubscriptions,
+        serviceSubscribed,
+        ntfServiceSubscribed,
         serviceSubsCount,
         ntfServiceSubsCount,
         rcvQ,
