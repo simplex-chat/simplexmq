@@ -401,13 +401,13 @@ updateTokenCronSentAt st tknId now =
   withDB' "updateTokenCronSentAt" st $ \db ->
     void $ DB.execute db "UPDATE tokens t SET cron_sent_at = ? WHERE token_id = ?" (now, tknId)
 
-addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType Bool)
+addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType (Int64, Bool))
 addNtfSubscription st sub =
   withFastDB "addNtfSubscription" st $ \db -> runExceptT $ do
     srvId :: Int64 <- ExceptT $ upsertServer db $ ntfSubServer' sub
     n <- liftIO $ DB.execute db insertNtfSubQuery $ ntfSubToRow srvId sub
     withLog "addNtfSubscription" st (`logCreateSubscription` sub)
-    pure $ n > 0
+    pure (srvId, n > 0)
   where
     -- It is possible to combine these two statements into one with CTEs,
     -- to reduce roundtrips in case of `insert`, but it would be making 2 queries in all cases.
@@ -454,8 +454,8 @@ deleteNtfSubscription st subId =
       DB.execute db "DELETE FROM subscriptions WHERE subscription_id = ?" (Only subId)
     withLog "deleteNtfSubscription" st (`logDeleteSubscription` subId)
 
-updateSubStatus :: NtfPostgresStore -> NotifierId -> NtfSubStatus -> IO (Either ErrorType ())
-updateSubStatus st nId status =
+updateSubStatus :: NtfPostgresStore -> Int64 -> NotifierId -> NtfSubStatus -> IO (Either ErrorType ())
+updateSubStatus st srvId nId status =
   withFastDB' "updateSubStatus" st $ \db -> do
     sub_ :: Maybe (NtfSubscriptionId, NtfAssociatedService) <-
       maybeFirstRow id $
@@ -463,10 +463,10 @@ updateSubStatus st nId status =
           db
           [sql|
             UPDATE subscriptions SET status = ?
-            WHERE smp_notifier_id = ? AND status != ?
+            WHERE smp_server_id = ? AND smp_notifier_id = ? AND status != ?
             RETURNING subscription_id, ntf_service_assoc
           |]
-          (status, nId, status)
+          (status, srvId, nId, status)
     forM_ sub_ $ \(subId, serviceAssoc) ->
       withLog "updateSubStatus" st $ \sl -> logSubscriptionStatus sl (subId, status, serviceAssoc)
 
