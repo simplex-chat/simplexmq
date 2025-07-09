@@ -59,7 +59,7 @@ initServers :: InitialAgentServers
 initServers =
   InitialAgentServers
     { smp = M.fromList [(1, testSMPServers)],
-      ntf = [testNtfServer],
+      ntf = userServers [testNtfServer],
       xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig,
       presetDomains = []
