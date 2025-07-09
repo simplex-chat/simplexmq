@@ -1430,6 +1430,7 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
     prepareConn s (Right ((_, pqEnc, msgFlags, msgOrRef), SomeConn cType conn)) = case conn of
       DuplexConnection cData _ sqs -> prepareMsg cData $ L.toList sqs
       SndConnection cData sq -> prepareMsg cData [sq]
+      -- we can't fail here, as it may prevent delivery of subsequent messages that reference the body of the failed message.
       _ -> prepareMsg (toConnData conn) []
       where
         prepareMsg :: ConnData -> [SndQueue] -> (Set ConnId, Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
