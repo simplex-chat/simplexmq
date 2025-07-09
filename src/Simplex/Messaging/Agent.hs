@@ -1650,33 +1650,35 @@ enqueueMessageB c reqs = do
   cfg <- asks config
   (_, reqMids) <- unsafeWithStore c $ \db -> do
     mapAccumLM (\ids r -> storeSentMsg db cfg ids r `E.catchAny` \e -> (ids,) <$> handleInternal e) IM.empty reqs
-  forME reqMids $ \((cData, sq :| sqs, _, _, _), InternalId msgId, pqSecr) -> do
-    submitPendingMsg c cData sq
-    let sqs' = filter isActiveSndQ sqs
-    pure $ Right ((msgId, pqSecr), if null sqs' then Nothing else Just (cData, sqs', msgId))
+  forME reqMids $ \((cData, _, sqs_, _, _, _), InternalId msgId, pqSecr) -> case sqs_ of
+    [] -> pure $ Left $ CONN SIMPLEX "enqueueMessageB" -- this error is impossible here, as the empty list fails in storeSentMsg, but we reuse the same req tuple
+    sq : sqs -> do
+      submitPendingMsg c cData sq
+      let sqs' = filter isActiveSndQ sqs
+      pure $ Right ((msgId, pqSecr), if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
     storeSentMsg ::
       DB.Connection ->
       AgentConfig ->
       IntMap (Maybe Int64, AMessage) ->
       Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage) ->
-      IO (IntMap (Maybe Int64, AMessage), Either AgentErrorType ((ConnData, NonEmpty SndQueue, Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
+      IO (IntMap (Maybe Int64, AMessage), Either AgentErrorType ((ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
     storeSentMsg db cfg aMessageIds = \case
       Left e -> pure (aMessageIds, Left e)
-      Right (cData@ConnData {connId}, cType, sqs, pqEnc_, msgFlags, mbr) -> case mbr of
+      Right req@(cData@ConnData {connId}, cType, sqs, pqEnc_, msgFlags, mbr) -> case mbr of
         VRValue i_ aMessage -> case  i_ >>= (`IM.lookup` aMessageIds) of
           Just _ -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg duplicate saved message body")
           Nothing -> do
             (mbId_, r) <- case sqs of
               [] -> pure (Nothing, Left $ CONN SIMPLEX ("enqueueMessageB " <> show cType))
-              sq : sqs' -> do
+              sq : _ -> do
                 mbId <- createSndMsgBody db aMessage
-                (Just mbId,) <$> storeSentMsg_ (sq :| sqs') mbId aMessage
+                (Just mbId,) <$> storeSentMsg_ sq mbId aMessage
             let aMessageIds' = maybe id (`IM.insert` (mbId_, aMessage)) i_ aMessageIds
             pure (aMessageIds', r)
         VRRef i -> case sqs of
           [] -> pure $ (aMessageIds, Left $ CONN SIMPLEX ("enqueueMessageB " <> show cType))
-          sq : sqs' -> case IM.lookup i aMessageIds of
+          sq : _ -> case IM.lookup i aMessageIds of
             Just (mbId_, aMessage) -> do
               (aMessageIds', mbId) <- case mbId_ of
                 Just mbId -> pure (aMessageIds, mbId)
@@ -1684,10 +1686,10 @@ enqueueMessageB c reqs = do
                   mbId <- createSndMsgBody db aMessage
                   let aMessageIds' = IM.insert i (Just mbId, aMessage) aMessageIds
                   pure (aMessageIds', mbId)
-              (aMessageIds',) <$> storeSentMsg_ (sq :| sqs') mbId aMessage
+              (aMessageIds',) <$> storeSentMsg_ sq mbId aMessage
             Nothing -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
         where
-          storeSentMsg_ sqs'@(sq :| _) sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do
+          storeSentMsg_ sq sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do
             let AgentConfig {e2eEncryptVRange} = cfg
             internalTs <- liftIO getCurrentTime
             (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
@@ -1705,8 +1707,7 @@ enqueueMessageB c reqs = do
                 msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = "", pqEncryption = pqEnc, internalHash, prevMsgHash, sndMsgPrepData_ = Just SndMsgPrepData {encryptKey = mek, paddedLen, sndMsgBodyId}}
             liftIO $ createSndMsg db connId msgData
             liftIO $ createSndMsgDelivery db connId sq internalId
-            let req' = (cData, sqs', pqEnc_, msgFlags, mbr)
-            pure (req', internalId, pqEnc)
+            pure (req, internalId, pqEnc)
     handleInternal :: E.SomeException -> IO (Either AgentErrorType b)
     handleInternal = pure . Left . INTERNAL . show
 
