@@ -1425,25 +1425,24 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
           else do
             conn <- first storeError <$> getConn db connId
             conn <$ atomically (writeTVar prev $ Just conn)
-    prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, SomeConn) -> (Set ConnId, Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
+    prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, SomeConn) -> (Set ConnId, Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
     prepareConn s (Left e) = (s, Left e)
     prepareConn s (Right ((_, pqEnc, msgFlags, msgOrRef), SomeConn cType conn)) = case conn of
-      DuplexConnection cData _ sqs -> prepareMsg cData $ L.toList sqs
+      DuplexConnection cData _ sqs -> prepareMsg cData sqs
       SndConnection cData sq -> prepareMsg cData [sq]
       -- we can't fail here, as it may prevent delivery of subsequent messages that reference the body of the failed message.
-      _ -> prepareMsg (toConnData conn) []
+      _ -> (s, mkReq $ Left $ CONN SIMPLEX $ "sendMessagesB_ " <> show (connType cType))
       where
-        prepareMsg :: ConnData -> [SndQueue] -> (Set ConnId, Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
+        prepareMsg :: ConnData -> NonEmpty SndQueue -> (Set ConnId, Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
         prepareMsg cData@ConnData {connId, pqSupport} sqs
-          | ratchetSyncSendProhibited cData = (s, Left $ CMD PROHIBITED "sendMessagesB: send prohibited")
+          | ratchetSyncSendProhibited cData = (s, mkReq $ Left $ CMD PROHIBITED "sendMessagesB: send prohibited")
           -- connection is only updated if PQ encryption was disabled, and now it has to be enabled.
           -- support for PQ encryption (small message envelopes) will not be disabled when message is sent.
           | pqEnc == PQEncOn && pqSupport == PQSupportOff =
               let cData' = cData {pqSupport = PQSupportOn} :: ConnData
-               in (S.insert connId s, mkReq cData')
-          | otherwise = (s, mkReq cData)
-          where
-            mkReq cData' = Right (cData', connType cType, sqs, Just pqEnc, msgFlags, A_MSG <$> msgOrRef)
+               in (S.insert connId s, mkReq $ Right (cData', sqs))
+          | otherwise = (s, mkReq $ Right (cData, sqs))
+        mkReq csqs = Right (csqs, Just pqEnc, msgFlags, A_MSG <$> msgOrRef)
 
 -- / async command processing v v v
 
@@ -1531,7 +1530,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             _ -> throwE $ INTERNAL $ "incorrect connection type " <> show (internalCmdTag cmd)
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
-          void $ enqueueMessage c cData CDuplex sq SMP.MsgFlags {notification = True} HELLO
+          void $ enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
         ICDeleteRcvQueue rId -> withServer $ \srv -> tryWithLock "ICDeleteRcvQueue" $ do
@@ -1549,7 +1548,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                     -- not accounting secure during rotation for now:
                     -- atomically $ incSMPServerStat c userId server connSecured
                     withStore' c $ \db -> setRcvQueueStatus db rq' Secured
-                    void . enqueueMessages c cData CDuplex sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
+                    void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
                     rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 $ Just RSSendingQUSE
                     let rqs' = updatedQs rq1' rqs
                         conn' = DuplexConnection cData rqs' sqs
@@ -1620,17 +1619,17 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
            in atomically $ ifM (isFullTBQueue subQ) (modifyTVar' pendingCmds (t :)) (writeTBQueue subQ t)
 -- ^ ^ ^ async command processing /
 
-enqueueMessages :: AgentClient -> ConnData -> ConnType -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
-enqueueMessages c cData cType sqs msgFlags aMessage = do
+enqueueMessages :: AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
+enqueueMessages c cData sqs msgFlags aMessage = do
   when (ratchetSyncSendProhibited cData) $ throwE $ INTERNAL "enqueueMessages: ratchet is not synchronized"
-  enqueueMessages' c cData cType sqs msgFlags aMessage
+  enqueueMessages' c cData sqs msgFlags aMessage
 
-enqueueMessages' :: AgentClient -> ConnData -> ConnType -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, CR.PQEncryption)
-enqueueMessages' c cData cType sqs msgFlags aMessage =
-  ExceptT $ runIdentity <$> enqueueMessagesB c (Identity (Right (cData, cType, L.toList sqs, Nothing, msgFlags, vrValue aMessage)))
+enqueueMessages' :: AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, CR.PQEncryption)
+enqueueMessages' c cData sqs msgFlags aMessage =
+  ExceptT $ runIdentity <$> enqueueMessagesB c (Identity (Right (Right (cData, sqs), Nothing, msgFlags, vrValue aMessage)))
 {-# INLINE enqueueMessages' #-}
 
-enqueueMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
+enqueueMessagesB :: Traversable t => AgentClient -> t (Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 enqueueMessagesB c reqs = do
   reqs' <- enqueueMessageB c reqs
   enqueueSavedMessageB c $ mapMaybe snd $ rights $ toList reqs'
@@ -1640,57 +1639,52 @@ isActiveSndQ :: SndQueue -> Bool
 isActiveSndQ SndQueue {status} = status == Secured || status == Active
 {-# INLINE isActiveSndQ #-}
 
-enqueueMessage :: AgentClient -> ConnData -> ConnType -> SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
-enqueueMessage c cData cType sq msgFlags aMessage =
-  ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (cData, cType, [sq], Nothing, msgFlags, vrValue aMessage)))
+enqueueMessage :: AgentClient -> ConnData -> SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
+enqueueMessage c cData sq msgFlags aMessage =
+  ExceptT $ fmap fst . runIdentity <$> enqueueMessageB c (Identity (Right (Right (cData, [sq]), Nothing, msgFlags, vrValue aMessage)))
 {-# INLINE enqueueMessage #-}
 
 -- this function is used only for sending messages in batch, it returns the list of successes to enqueue additional deliveries
-enqueueMessageB :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
+enqueueMessageB :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage)) -> AM' (t (Either AgentErrorType ((AgentMsgId, PQEncryption), Maybe (ConnData, [SndQueue], AgentMsgId))))
 enqueueMessageB c reqs = do
   cfg <- asks config
   (_, reqMids) <- unsafeWithStore c $ \db -> do
     mapAccumLM (\ids r -> storeSentMsg db cfg ids r `E.catchAny` \e -> (ids,) <$> handleInternal e) IM.empty reqs
-  forME reqMids $ \((cData, _, sqs_, _, _, _), InternalId msgId, pqSecr) -> case sqs_ of
-    [] -> pure $ Left $ CONN SIMPLEX "enqueueMessageB" -- this error is impossible here, as the empty list fails in storeSentMsg, but we reuse the same req tuple
-    sq : sqs -> do
-      submitPendingMsg c cData sq
-      let sqs' = filter isActiveSndQ sqs
-      pure $ Right ((msgId, pqSecr), if null sqs' then Nothing else Just (cData, sqs', msgId))
+  forME reqMids $ \((csqs_, _, _, _), InternalId msgId, pqSecr) -> forM csqs_ $ \(cData, sq :| sqs) -> do
+    submitPendingMsg c cData sq
+    let sqs' = filter isActiveSndQ sqs
+    pure ((msgId, pqSecr), if null sqs' then Nothing else Just (cData, sqs', msgId))
   where
     storeSentMsg ::
       DB.Connection ->
       AgentConfig ->
       IntMap (Maybe Int64, AMessage) ->
-      Either AgentErrorType (ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage) ->
-      IO (IntMap (Maybe Int64, AMessage), Either AgentErrorType ((ConnData, ConnType, [SndQueue], Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
+      Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage) ->
+      IO (IntMap (Maybe Int64, AMessage), Either AgentErrorType ((Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
     storeSentMsg db cfg aMessageIds = \case
       Left e -> pure (aMessageIds, Left e)
-      Right req@(cData@ConnData {connId}, cType, sqs, pqEnc_, msgFlags, mbr) -> case mbr of
+      Right req@(sqs_, pqEnc_, msgFlags, mbr) -> case mbr of
         VRValue i_ aMessage -> case  i_ >>= (`IM.lookup` aMessageIds) of
           Just _ -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg duplicate saved message body")
           Nothing -> do
-            (mbId_, r) <- case sqs of
-              [] -> pure (Nothing, Left $ CONN SIMPLEX ("enqueueMessageB " <> show cType))
-              sq : _ -> do
+            (mbId_, r) <- case sqs_ of
+              Left e -> pure (Nothing, Left e)
+              Right (cData, sq :| _) -> do
                 mbId <- createSndMsgBody db aMessage
-                (Just mbId,) <$> storeSentMsg_ sq mbId aMessage
+                (Just mbId,) <$> storeSentMsg_ cData sq mbId aMessage
             let aMessageIds' = maybe id (`IM.insert` (mbId_, aMessage)) i_ aMessageIds
             pure (aMessageIds', r)
-        VRRef i -> case sqs of
-          [] -> pure $ (aMessageIds, Left $ CONN SIMPLEX ("enqueueMessageB " <> show cType))
-          sq : _ -> case IM.lookup i aMessageIds of
-            Just (mbId_, aMessage) -> do
-              (aMessageIds', mbId) <- case mbId_ of
-                Just mbId -> pure (aMessageIds, mbId)
-                Nothing -> do
-                  mbId <- createSndMsgBody db aMessage
-                  let aMessageIds' = IM.insert i (Just mbId, aMessage) aMessageIds
-                  pure (aMessageIds', mbId)
-              (aMessageIds',) <$> storeSentMsg_ sq mbId aMessage
+        VRRef i -> case sqs_ of
+          Left e -> pure $ (aMessageIds, Left e)
+          Right (cData, sq :| _) -> case IM.lookup i aMessageIds of
+            Just (Just mbId, aMessage) -> (aMessageIds,) <$> storeSentMsg_ cData sq mbId aMessage
+            Just (Nothing, aMessage) -> do
+              mbId <- createSndMsgBody db aMessage
+              let aMessageIds' = IM.insert i (Just mbId, aMessage) aMessageIds
+              (aMessageIds',) <$> storeSentMsg_ cData sq mbId aMessage
             Nothing -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
         where
-          storeSentMsg_ sq sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do
+          storeSentMsg_ cData@ConnData {connId} sq sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do
             let AgentConfig {e2eEncryptVRange} = cfg
             internalTs <- liftIO getCurrentTime
             (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
@@ -1958,7 +1952,7 @@ ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
           when (connAgentVersion >= deliveryRcptsSMPAgentVersion) $ do
             let RcvMsg {msgMeta = MsgMeta {sndMsgId}, internalHash} = msg
                 rcpt = A_RCVD [AMessageReceipt {agentMsgId = sndMsgId, msgHash = internalHash, rcptInfo}]
-            void $ enqueueMessages c cData CDuplex sqs SMP.MsgFlags {notification = False} rcpt
+            void $ enqueueMessages c cData sqs SMP.MsgFlags {notification = False} rcpt
         Nothing -> case (msgType, msgReceipt) of
           -- only remove sent message if receipt hash was Ok, both to debug and for future redundancy
           (AM_A_RCVD_, Just MsgReceipt {agentMsgId = sndMsgId, msgRcptStatus = MROk}) ->
@@ -1999,7 +1993,7 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId
-  void . enqueueMessages c cData CDuplex sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
+  void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
   let rqs' = updatedQs rq1 rqs <> [rq'']
   pure . connectionStats $ DuplexConnection cData rqs' sqs
@@ -2685,7 +2679,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                 SMP.ClientRcvMsgQuota {} -> queueDrained >> ack
             where
               queueDrained = case conn of
-                DuplexConnection _ _ sqs -> void $ enqueueMessages c cData CDuplex sqs SMP.noMsgFlags $ A_QCONT (sndAddress rq)
+                DuplexConnection _ _ sqs -> void $ enqueueMessages c cData sqs SMP.noMsgFlags $ A_QCONT (sndAddress rq)
                 _ -> pure ()
               processClientMsg srvTs msgFlags msgBody = do
                 clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
@@ -2977,7 +2971,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               enqueueDuplexHello :: SndQueue -> AM ()
               enqueueDuplexHello sq = do
                 let cData' = toConnData conn'
-                void $ enqueueMessage c cData' CDuplex sq SMP.MsgFlags {notification = True} HELLO
+                void $ enqueueMessage c cData' sq SMP.MsgFlags {notification = True} HELLO
 
           continueSending :: SMP.MsgId -> (SMPServer, SMP.SenderId) -> Connection 'CDuplex -> AM ()
           continueSending srvMsgId addr (DuplexConnection _ _ sqs) =
@@ -3034,7 +3028,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                           addConnSndQueue db connId (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
                         logServer "<--" c srv rId $ "MSG <QADD>:" <> logSecret' srvMsgId <> " " <> logSecret (senderId queueAddress)
                         let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = queueAddress {dhPublicKey}}
-                        void . enqueueMessages c cData' CDuplex sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPublicKey)]
+                        void . enqueueMessages c cData' sqs SMP.noMsgFlags $ QKEY [(sqInfo', sndPublicKey)]
                         sq1 <- withStore' c $ \db -> setSndSwitchStatus db sq $ Just SSSendingQKEY
                         let sqs'' = updatedQs sq1 sqs' <> [sq2]
                             conn' = DuplexConnection cData' rqs sqs''
@@ -3078,7 +3072,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                     withStore' c $ \db -> setSndQueueStatus db sq' Secured
                     let sq'' = (sq' :: SndQueue) {status = Secured}
                     -- sending QTEST to the new queue only, the old one will be removed if sent successfully
-                    void $ enqueueMessages c cData' CDuplex [sq''] SMP.noMsgFlags $ QTEST [addr]
+                    void $ enqueueMessages c cData' [sq''] SMP.noMsgFlags $ QTEST [addr]
                     sq1' <- withStore' c $ \db -> setSndSwitchStatus db sq1 $ Just SSSendingQTEST
                     let sqs' = updatedQs sq1' sqs
                         conn' = DuplexConnection cData' rqs sqs'
@@ -3094,7 +3088,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
             let CR.Ratchet {rcSnd} = rcPrev
             -- if ratchet was initialized as receiving, it means EREADY wasn't sent on key negotiation
             when (isNothing rcSnd) . void $
-              enqueueMessages' c cData' CDuplex sqs SMP.MsgFlags {notification = True} (EREADY lastExternalSndId)
+              enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} (EREADY lastExternalSndId)
 
           smpInvitation :: SMP.MsgId -> Connection c -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM ()
           smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData _) cInfo = do
@@ -3180,7 +3174,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
                     rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 (CR.APRKP CR.SRKSProposed <$> pKem) e2eOtherPartyParams
                     recreateRatchet $ CR.initSndRatchet rcVs k2Rcv rcDHRs rcParams
-                    void . enqueueMessages' c cData' CDuplex sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
+                    void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
           checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash receivedPrevMsgHash
