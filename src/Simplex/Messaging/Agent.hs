@@ -1412,26 +1412,28 @@ sendMessagesB' c reqs = do
 sendMessagesB_ :: forall t. Traversable t => AgentClient -> t (Either AgentErrorType MsgReq) -> Set ConnId -> AM' (t (Either AgentErrorType (AgentMsgId, PQEncryption)))
 sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
   prev <- newTVarIO Nothing
-  reqs' <- withStoreBatch c $ \db -> fmap (bindRight $ getConn_ db prev) reqs
+  reqs' <- withStoreBatch c $ \db -> fmap (mapM $ getConn_ db prev) reqs
   let (toEnable, reqs'') = mapAccumL prepareConn [] reqs'
   void $ withStoreBatch' c $ \db -> map (\connId -> setConnPQSupport db connId PQSupportOn) $ S.toList toEnable
   enqueueMessagesB c reqs''
   where
-    getConn_ :: DB.Connection -> TVar (Maybe (Either AgentErrorType SomeConn)) -> MsgReq -> IO (Either AgentErrorType (MsgReq, SomeConn))
+    getConn_ :: DB.Connection -> TVar (Maybe (Either AgentErrorType SomeConn)) -> MsgReq -> IO (MsgReq, Either AgentErrorType SomeConn)
     getConn_ db prev req@(connId, _, _, _) =
       (req,)
-        <$$> if B.null connId
+        <$> if B.null connId
           then fromMaybe (Left $ INTERNAL "sendMessagesB_: empty prev connId") <$> readTVarIO prev
           else do
             conn <- first storeError <$> getConn db connId
             conn <$ atomically (writeTVar prev $ Just conn)
-    prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, SomeConn) -> (Set ConnId, Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
+    prepareConn :: Set ConnId -> Either AgentErrorType (MsgReq, Either AgentErrorType SomeConn) -> (Set ConnId, Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
     prepareConn s (Left e) = (s, Left e)
-    prepareConn s (Right ((_, pqEnc, msgFlags, msgOrRef), SomeConn cType conn)) = case conn of
-      DuplexConnection cData _ sqs -> prepareMsg cData sqs
-      SndConnection cData sq -> prepareMsg cData [sq]
-      -- we can't fail here, as it may prevent delivery of subsequent messages that reference the body of the failed message.
-      _ -> (s, mkReq $ Left $ CONN SIMPLEX $ "sendMessagesB_ " <> show (connType cType))
+    prepareConn s (Right ((_, pqEnc, msgFlags, msgOrRef), conn_)) = case conn_ of
+      Right (SomeConn cType conn) -> case conn of
+        DuplexConnection cData _ sqs -> prepareMsg cData sqs
+        SndConnection cData sq -> prepareMsg cData [sq]
+        -- we can't fail here, as it may prevent delivery of subsequent messages that reference the body of the failed message.
+        _ -> (s, mkReq $ Left $ CONN SIMPLEX $ "sendMessagesB_ " <> show (connType cType))
+      Left e -> (s, mkReq $ Left e)
       where
         prepareMsg :: ConnData -> NonEmpty SndQueue -> (Set ConnId, Either AgentErrorType (Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage))
         prepareMsg cData@ConnData {connId, pqSupport} sqs
@@ -1442,7 +1444,7 @@ sendMessagesB_ c reqs connIds = withConnLocks c connIds "sendMessages" $ do
               let cData' = cData {pqSupport = PQSupportOn} :: ConnData
                in (S.insert connId s, mkReq $ Right (cData', sqs))
           | otherwise = (s, mkReq $ Right (cData, sqs))
-        mkReq csqs = Right (csqs, Just pqEnc, msgFlags, A_MSG <$> msgOrRef)
+        mkReq csqs_ = Right (csqs_, Just pqEnc, msgFlags, A_MSG <$> msgOrRef)
 
 -- / async command processing v v v
 
@@ -1663,18 +1665,18 @@ enqueueMessageB c reqs = do
       IO (IntMap (Maybe Int64, AMessage), Either AgentErrorType ((Either AgentErrorType (ConnData, NonEmpty SndQueue), Maybe PQEncryption, MsgFlags, ValueOrRef AMessage), InternalId, PQEncryption))
     storeSentMsg db cfg aMessageIds = \case
       Left e -> pure (aMessageIds, Left e)
-      Right req@(sqs_, pqEnc_, msgFlags, mbr) -> case mbr of
+      Right req@(csqs_, pqEnc_, msgFlags, mbr) -> case mbr of
         VRValue i_ aMessage -> case  i_ >>= (`IM.lookup` aMessageIds) of
           Just _ -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg duplicate saved message body")
           Nothing -> do
-            (mbId_, r) <- case sqs_ of
+            (mbId_, r) <- case csqs_ of
               Left e -> pure (Nothing, Left e)
               Right (cData, sq :| _) -> do
                 mbId <- createSndMsgBody db aMessage
                 (Just mbId,) <$> storeSentMsg_ cData sq mbId aMessage
             let aMessageIds' = maybe id (`IM.insert` (mbId_, aMessage)) i_ aMessageIds
             pure (aMessageIds', r)
-        VRRef i -> case sqs_ of
+        VRRef i -> case csqs_ of
           Left e -> pure $ (aMessageIds, Left e)
           Right (cData, sq :| _) -> case IM.lookup i aMessageIds of
             Just (Just mbId, aMessage) -> (aMessageIds,) <$> storeSentMsg_ cData sq mbId aMessage
