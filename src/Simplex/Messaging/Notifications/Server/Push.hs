@@ -30,6 +30,12 @@ import Data.Time.Clock.System
 import qualified Data.X509 as X
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2ClientError)
+import qualified Simplex.Messaging.Crypto as C
+import Network.HTTP.Types (Status)
+import Control.Exception (Exception)
+import Simplex.Messaging.Notifications.Server.Store.Types (NtfTknRec)
+import Control.Monad.Except (ExceptT)
 
 data JWTHeader = JWTHeader
   { alg :: Text, -- key algorithm, ES256 for APNS
@@ -79,3 +85,15 @@ data PushNotification
   | -- | PNAlert Text
     PNCheckMessages
   deriving (Show)
+
+data PushProviderError
+  = PPConnection HTTP2ClientError
+  | PPCryptoError C.CryptoError
+  | PPResponseError (Maybe Status) Text
+  | PPTokenInvalid NTInvalidReason
+  | PPRetryLater
+  | PPPermanentError
+  | PPInvalidPusher
+  deriving (Show, Exception)
+
+type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
