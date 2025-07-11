@@ -10,7 +10,6 @@
 
 module Simplex.Messaging.Notifications.Server.Push.APNS where
 
-import Control.Exception (Exception)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -251,18 +250,6 @@ apnsRequest c tkn ntf@APNSNotification {aps} = do
     pushType = \case
       APNSBackground {} -> "background"
       _ -> "alert"
-
-data PushProviderError
-  = PPConnection HTTP2ClientError
-  | PPCryptoError C.CryptoError
-  | PPResponseError (Maybe Status) Text
-  | PPTokenInvalid NTInvalidReason
-  | PPRetryLater
-  | PPPermanentError
-  | PPInvalidPusher
-  deriving (Show, Exception)
-
-type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
 
 -- this is not a newtype on purpose to have a correct JSON encoding as a record
 data APNSErrorResponse = APNSErrorResponse {reason :: Text}
