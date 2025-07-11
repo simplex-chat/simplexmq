@@ -19,7 +19,7 @@ import Data.Text.Encoding (decodeUtf8)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Simplex.FileTransfer.Client
 import Simplex.Messaging.Agent.RetryInterval
-import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClientError (..), temporaryClientError)
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClientError (..), netTimeoutInt, temporaryClientError)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
@@ -90,7 +90,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, startedAt, config} srv = do
     waitForXFTPClient :: XFTPClientVar -> ME XFTPClient
     waitForXFTPClient clientVar = do
       let XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpConnectTimeout}} = xftpConfig config
-      client_ <- liftIO $ tcpConnectTimeout `timeout` atomically (readTMVar clientVar)
+      client_ <- liftIO $ netTimeoutInt tcpConnectTimeout NRMBackground `timeout` atomically (readTMVar clientVar)
       liftEither $ case client_ of
         Just (Right c) -> Right c
         Just (Left e) -> Left e
@@ -127,6 +127,6 @@ closeXFTPServerClient XFTPClientAgent {xftpClients, config} srv =
   where
     closeClient cVar = do
       let NetworkConfig {tcpConnectTimeout} = xftpNetworkConfig $ xftpConfig config
-      tcpConnectTimeout `timeout` atomically (readTMVar cVar) >>= \case
+      netTimeoutInt tcpConnectTimeout NRMBackground `timeout` atomically (readTMVar cVar) >>= \case
         Just (Right client) -> closeXFTPClient client `catchAll_` pure ()
         _ -> pure ()

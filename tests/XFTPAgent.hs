@@ -33,6 +33,7 @@ import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFi
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
 import Simplex.Messaging.Agent.Protocol (AEvent (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
+import Simplex.Messaging.Client (pattern NRMInteractive)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
@@ -674,4 +675,4 @@ testXFTPServerTest newFileBasicAuth srv =
   withXFTPServerCfg testXFTPServerConfig {newFileBasicAuth, xftpPort = xftpTestPort2} $ \_ ->
     -- initially passed server is not running
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a 1 srv
+      testProtocolServer a NRMInteractive 1 srv

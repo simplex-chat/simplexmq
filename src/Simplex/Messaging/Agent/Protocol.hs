@@ -174,6 +174,8 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
+import qualified Data.Aeson as J'
+import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -192,6 +194,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
@@ -1150,22 +1153,39 @@ connReqUriP overrideScheme = do
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"
+  {-# INLINE parseJSON #-}
 
 instance ConnectionModeI m => ToJSON (ConnectionRequestUri m) where
   toJSON = strToJSON
+  {-# INLINE toJSON #-}
   toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
 
 instance FromJSON AConnectionRequestUri where
   parseJSON = strParseJSON "ConnectionRequestUri"
+  {-# INLINE parseJSON #-}
 
 instance ToJSON AConnectionRequestUri where
   toJSON = strToJSON
+  {-# INLINE toJSON #-}
   toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
 
 instance ConnectionModeI m => FromJSON (ConnShortLink m) where
   parseJSON = strParseJSON "ConnShortLink"
+  {-# INLINE parseJSON #-}
 
 instance ConnectionModeI m => ToJSON (ConnShortLink m) where
+  toJSON = strToJSON
+  {-# INLINE toJSON #-}
+  toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
+
+instance FromJSON AConnShortLink where
+  parseJSON = strParseJSON "AConnShortLink"
+  {-# INLINE parseJSON #-}
+
+instance ToJSON AConnShortLink where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
@@ -1192,6 +1212,16 @@ instance Encoding ConnectionMode where
       'I' -> pure CMInvitation
       'C' -> pure CMContact
       _ -> fail "bad connection mode"
+
+instance ToJSON ConnectionMode where
+  toJSON = J'.String . T.toLower . decodeLatin1 . strEncode
+  {-# INLINE toJSON #-}
+  toEncoding = JE.text . T.toLower . decodeLatin1 . strEncode
+  {-# INLINE toEncoding #-}
+
+instance FromJSON ConnectionMode where
+  parseJSON = J'.withText "ConnectionMode" $ either fail pure . parseAll strP . encodeUtf8 . T.toUpper
+  {-# INLINE parseJSON #-}
 
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
@@ -1418,6 +1448,13 @@ instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fr
 data ContactConnType = CCTContact | CCTChannel | CCTGroup deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
+
+instance Eq AConnShortLink where
+  ACSL m sl == ACSL m' sl' = case testEquality m m' of
+    Just Refl -> sl == sl'
+    Nothing -> False
+
+deriving instance Show AConnShortLink
 
 instance ToField AConnShortLink where toField = toField . Binary . strEncode
 
@@ -1800,7 +1837,7 @@ data AgentErrorType
   = -- | command or response error
     CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
-    CONN {connErr :: ConnectionErrorType}
+    CONN {connErr :: ConnectionErrorType, errContext :: String}
   | -- | user not found in database
     NO_USER
   | -- | SMP protocol errors forwarded to agent clients

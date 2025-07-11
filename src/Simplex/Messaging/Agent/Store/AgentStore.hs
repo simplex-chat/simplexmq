@@ -387,7 +387,7 @@ updateNewConnRcv db connId rq =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn _ RcvConnection {}) -> updateConn -- to allow retries
-    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnRcv" $ connType c
   where
     updateConn :: IO (Either StoreError RcvQueue)
     updateConn = Right <$> addConnRcvQueue_ db connId rq
@@ -396,7 +396,7 @@ updateNewConnSnd :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreEr
 updateNewConnSnd db connId sq =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
-    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnSnd" $ connType c
   where
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = Right <$> addConnSndQueue_ db connId sq
@@ -472,14 +472,14 @@ upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either S
 upgradeRcvConnToDuplex db connId sq =
   getConn db connId $>>= \case
     (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
-    (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    (SomeConn c _) -> pure . Left . SEBadConnType "upgradeRcvConnToDuplex" $ connType c
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 upgradeSndConnToDuplex db connId rq =
   getConn db connId >>= \case
     Right (SomeConn _ SndConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
-    Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    Right (SomeConn c _) -> pure . Left . SEBadConnType "upgradeSndConnToDuplex" $ connType c
     _ -> pure $ Left SEConnNotFound
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
@@ -487,7 +487,7 @@ addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreErr
 addConnRcvQueue db connId rq =
   getConn db connId >>= \case
     Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
-    Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnRcvQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
 
 addConnRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> IO RcvQueue
@@ -499,7 +499,7 @@ addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreErr
 addConnSndQueue db connId sq =
   getConn db connId >>= \case
     Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnSndQueue_ db connId sq
-    Right (SomeConn c _) -> pure . Left . SEBadConnType $ connType c
+    Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnSndQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
 
 addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO SndQueue
@@ -728,7 +728,7 @@ createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInf
       db
       [sql|
         INSERT INTO conn_invitations
-        (invitation_id,  contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
       |]
       (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo)
 
@@ -745,8 +745,8 @@ getInvitation db cxt invitationId =
       |]
       (Only (Binary invitationId))
   where
-    invitation (contactConnId, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
-      Invitation {invitationId, contactConnId, connReq, recipientConnInfo, ownConnInfo, accepted}
+    invitation (contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
+      Invitation {invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted}
 
 acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
 acceptInvitation db invitationId ownConnInfo =
@@ -764,12 +764,9 @@ unacceptInvitation :: DB.Connection -> InvitationId -> IO ()
 unacceptInvitation db invitationId =
   DB.execute db "UPDATE conn_invitations SET accepted = 0, own_conn_info = NULL WHERE invitation_id = ?" (Only (Binary invitationId))
 
-deleteInvitation :: DB.Connection -> ConnId -> InvitationId -> IO (Either StoreError ())
-deleteInvitation db contactConnId invId =
-  getConn db contactConnId $>>= \case
-    SomeConn SCContact _ ->
-      Right <$> DB.execute db "DELETE FROM conn_invitations WHERE contact_conn_id = ? AND invitation_id = ?" (contactConnId, Binary invId)
-    _ -> pure $ Left SEConnNotFound
+deleteInvitation :: DB.Connection -> InvitationId -> IO ()
+deleteInvitation db invId =
+  DB.execute db "DELETE FROM conn_invitations WHERE invitation_id = ?" (Only (Binary invId))
 
 getInvShortLink :: DB.Connection -> SMPServer -> LinkId -> IO (Maybe InvShortLink)
 getInvShortLink db server linkId =
