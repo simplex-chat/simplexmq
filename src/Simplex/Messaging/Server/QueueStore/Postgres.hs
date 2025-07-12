@@ -43,14 +43,13 @@ import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy as LB
 import Data.Bitraversable (bimapM)
-import Data.Either (fromRight, lefts, rights)
+import Data.Either (fromRight, lefts)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', intersperse, partition)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -65,7 +64,7 @@ import Database.PostgreSQL.Simple.ToField (Action (..), ToField (..))
 import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import GHC.IO (catchAny)
-import Simplex.Messaging.Agent.Client (withLockMap, withLocksMap)
+import Simplex.Messaging.Agent.Client (withLockMap)
 import Simplex.Messaging.Agent.Lock (Lock)
 import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore, closeDBStore)
@@ -84,7 +83,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, tshow, (<$$>), ($>>=))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -485,11 +484,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
          in ((serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  getNtfServiceQueueCount :: PostgresQueueStore q -> ServiceId -> IO (Either ErrorType Int64)
-  getNtfServiceQueueCount st serviceId =
-    E.uninterruptibleMask_ $ runExceptT $ withDB' "getNtfServiceQueueCount" st $ \db ->
+  getServiceQueueCount :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
+  getServiceQueueCount st party serviceId =
+    E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCount" st $ \db ->
       fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
-        DB.query db "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL" (Only serviceId)
+        DB.query db query (Only serviceId)
+    where
+      query = case party of
+        SRecipientService -> "SELECT count(1) FROM msg_queues WHERE rcv_service_id = ? AND deleted_at IS NULL"
+        SNotifierService -> "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL"
 
 batchInsertServices :: [STMService] -> PostgresQueueStore q -> IO Int64
 batchInsertServices services' toStore =

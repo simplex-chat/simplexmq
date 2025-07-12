@@ -40,6 +40,7 @@ module Simplex.Messaging.Server.Env.STM
     MsgStore (..),
     AStoreType (..),
     VerifiedTransmission,
+    ResponseAndMessage,
     newEnv,
     mkJournalStoreConfig,
     msgStore,
@@ -377,7 +378,7 @@ sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 data ClientSub
   = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
-  | CSService ServiceId -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
+  | CSService ServiceId Int64 -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent 'Sender
@@ -394,7 +395,7 @@ data Client s = Client
     serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
-    sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
@@ -408,13 +409,15 @@ data Client s = Client
 
 type VerifiedTransmission s = (Maybe (StoreQueue s, QueueRec), Transmission Cmd)
 
+type ResponseAndMessage = (Transmission BrokerMsg, Maybe (Transmission BrokerMsg))
+
 data ServerSub = ServerSub (TVar SubscriptionThread) | ProhibitSub
 
 data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
   { subThread :: ServerSub, -- Nothing value indicates that sub
-    delivered :: TMVar (MsgId, RoundedSystemTime)
+    delivered :: TVar (Maybe (MsgId, RoundedSystemTime))
   }
 
 newServer :: IO (Server s)
@@ -497,13 +500,13 @@ newClient clientId qSize clientTHParams createdAt = do
 
 newSubscription :: SubscriptionThread -> STM Sub
 newSubscription st = do
-  delivered <- newEmptyTMVar
+  delivered <- newTVar Nothing
   subThread <- ServerSub <$> newTVar st
   return Sub {subThread, delivered}
 
 newProhibitedSub :: STM Sub
 newProhibitedSub = do
-  delivered <- newEmptyTMVar
+  delivered <- newTVar Nothing
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)

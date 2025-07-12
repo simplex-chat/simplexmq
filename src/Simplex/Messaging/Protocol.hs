@@ -114,6 +114,7 @@ module Simplex.Messaging.Protocol
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
+    pattern NoCorrId,
     EntityId (..),
     pattern NoEntity,
     QueueId,
@@ -1369,6 +1370,9 @@ serverStrP = do
 newtype CorrId = CorrId {bs :: ByteString}
   deriving (Eq, Ord, Show)
   deriving newtype (Encoding)
+
+pattern NoCorrId :: CorrId
+pattern NoCorrId = CorrId ""
 
 instance IsString CorrId where
   fromString = CorrId . fromString
