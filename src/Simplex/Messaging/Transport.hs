@@ -54,6 +54,7 @@ module Simplex.Messaging.Transport
     blockedEntitySMPVersion,
     shortLinksSMPVersion,
     serviceCertsSMPVersion,
+    newNtfCredsSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -166,6 +167,7 @@ smpBlockSize = 16384
 -- 14 - proxyServer handshake property to disable transport encryption between server and proxy (1/19/2025)
 -- 15 - short links, with associated data passed in NEW of LSET command (3/30/2025)
 -- 16 - service certificates (5/31/2025)
+-- 17 - create notification credentials with NEW (7/12/2025)
 
 data SMPVersion
 
@@ -208,6 +210,9 @@ shortLinksSMPVersion = VersionSMP 15
 serviceCertsSMPVersion :: VersionSMP
 serviceCertsSMPVersion = VersionSMP 16
 
+newNtfCredsSMPVersion :: VersionSMP
+newNtfCredsSMPVersion = VersionSMP 17
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 6
 
@@ -215,13 +220,13 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 16
+currentClientSMPRelayVersion = VersionSMP 17
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 16
+currentServerSMPRelayVersion = VersionSMP 17
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -229,7 +234,7 @@ currentServerSMPRelayVersion = VersionSMP 16
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 15
+proxiedSMPRelayVersion = VersionSMP 16
 
 -- minimal supported protocol version is 6
 -- TODO remove code that supports sending commands without batching

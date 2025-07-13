@@ -99,10 +99,10 @@ pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
 
 pattern New :: RcvPublicAuthKey -> RcvPublicDhKey -> Command 'Creator
-pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)))
+pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) Nothing)
 
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
-pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing)
+pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing Nothing)
 
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
@@ -294,7 +294,7 @@ testSndSecureProhibited =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing))))
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv r rKey ("abcd", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing)) Nothing))
       (rId1, NoEntity) #== "creates queue"
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
@@ -309,7 +309,7 @@ testCreateUpdateKeys =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "1" NoEntity (Ids rId _sId _srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing))))
+      Resp "1" NoEntity (Ids rId _sId _srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRContact Nothing)) Nothing))
       (rPub', rKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       Resp "2" rId1 OK <- signSendRecv h rKey ("2", rId, RKEY [rPub, rPub'])
       rId1 `shouldBe` rId
@@ -1247,9 +1247,9 @@ testInvQueueLinkData =
           qrd = QRMessaging $ Just (sId, ld)
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
-        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId) Nothing)) <-
-        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId) Nothing Nothing)) <-
+        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
       (sId', sId) #== "should return the same sender ID"
       corrId' `shouldBe` CorrId corrId
       -- can't read link data with LGET
@@ -1304,9 +1304,9 @@ testContactQueueLinkData =
           qrd = QRContact $ Just (lnkId, (sId, ld))
       -- sender ID must be derived from corrId
       Resp "1" NoEntity (ERR (CMD PROHIBITED)) <-
-        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
-      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId') Nothing)) <-
-        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd)))
+        signSendRecv r rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
+      Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMContact) (Just lnkId') Nothing Nothing)) <-
+        signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
       (lnkId', lnkId) #== "should return the same link ID"
       (sId', sId) #== "should return the same sender ID"
       corrId' `shouldBe` CorrId corrId

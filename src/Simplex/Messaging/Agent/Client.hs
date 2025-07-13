@@ -251,7 +251,6 @@ import Simplex.Messaging.Protocol
     ErrorType,
     MsgFlags (..),
     MsgId,
-    NtfPublicAuthKey,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -261,12 +260,14 @@ import Simplex.Messaging.Protocol
     ProtocolType (..),
     ProtocolTypeI (..),
     QueueIdsKeys (..),
+    ServerNtfCreds (..),
     RcvMessage (..),
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SProtocolType (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
+    NewNtfCreds (..),
     QueueReqData (..),
     QueueLinkData,
     UserProtocol,
@@ -283,7 +284,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion)
+import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1240,8 +1241,7 @@ runSMPServerTest c nm userId (ProtoServerWithAuth srv auth) = do
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          -- TODO [notifications]
-          SMP.QIK {rcvId, sndId, queueMode} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp nm Nothing rKeys dhKey auth SMSubscribe (QRMessaging Nothing) -- Nothing
+          SMP.QIK {rcvId, sndId, queueMode} <- liftError (testErr TSCreateQueue) $ createSMPQueue smp nm Nothing rKeys dhKey auth SMSubscribe (QRMessaging Nothing) Nothing
           liftError (testErr TSSecureQueue) $
             case queueMode of
               Just QMMessaging -> secureSndSMPQueue smp nm spKey sndId sKey
@@ -1352,12 +1352,11 @@ getSessionMode :: MonadIO m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
--- TODO [notifications]
-newRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
-newRcvQueue c nm userId connId srv vRange cMode subMode = do
+newRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> Bool -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue c nm userId connId srv vRange cMode enableNtfs subMode = do
   let qrd = case cMode of SCMInvitation -> CQRMessaging Nothing; SCMContact -> CQRContact Nothing
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
-  newRcvQueue_ c nm userId connId srv vRange qrd subMode Nothing e2eKeys
+  newRcvQueue_ c nm userId connId srv vRange qrd enableNtfs subMode Nothing e2eKeys
 
 data ClntQueueReqData
   = CQRMessaging (Maybe (CQRData (SMP.SenderId, QueueLinkData)))
@@ -1374,21 +1373,21 @@ queueReqData = \case
   CQRMessaging d -> QRMessaging $ srvReq <$> d
   CQRContact d -> QRContact $ srvReq <$> d
 
-newRcvQueue_ :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> ClntQueueReqData -> SubscriptionMode -> Maybe C.CbNonce -> C.KeyPairX25519 -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
-newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMode nonce_ (e2eDhKey, e2ePrivKey) = do
+newRcvQueue_ :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> ClntQueueReqData -> Bool -> SubscriptionMode -> Maybe C.CbNonce -> C.KeyPairX25519 -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enableNtfs subMode nonce_ (e2eDhKey, e2ePrivKey) = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
   rKeys@(_, rcvPrivateKey) <- atomically $ C.generateAuthKeyPair a g
   (dhKey, privDhKey) <- atomically $ C.generateKeyPair g
   logServer "-->" c srv NoEntity "NEW"
   tSess <- mkTransportSession c userId srv connId
-  -- TODO [notifications]
-  r@(thParams', QIK {rcvId, sndId, rcvPublicDhKey, queueMode, serviceId}) <-
-    withClient c nm tSess $ \(SMPConnectedClient smp _) ->
-      (thParams smp,) <$> createSMPQueue smp nm nonce_ rKeys dhKey auth subMode (queueReqData cqrd)
+  (thParams', ntfKeys, qik@QIK {rcvId, sndId, rcvPublicDhKey, queueMode, serviceId, serverNtfCreds}) <-
+    withClient c nm tSess $ \(SMPConnectedClient smp _) -> do
+      (ntfKeys, ntfCreds) <- liftIO $ mkNtfCreds a g smp
+      (thParams smp,ntfKeys,) <$> createSMPQueue smp nm nonce_ rKeys dhKey auth subMode (queueReqData cqrd) ntfCreds
   -- TODO [certs rcv] validate that serviceId is the same as in the client session
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
-  shortLink <- mkShortLinkCreds r
+  shortLink <- mkShortLinkCreds thParams' qik
   let rq =
         RcvQueue
           { userId,
@@ -1409,14 +1408,26 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd subMo
             dbReplaceQueueId = Nothing,
             rcvSwchStatus = Nothing,
             smpClientVersion = maxVersion vRange,
-            clientNtfCreds = Nothing,
+            clientNtfCreds = mkClientNtfCreds ntfKeys serverNtfCreds,
             deleteErrors = 0
           }
       qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey queueMode
   pure (rq, qUri, tSess, sessionId thParams')
   where
-    mkShortLinkCreds :: (THandleParams SMPVersion 'TClient, QueueIdsKeys) -> AM (Maybe ShortLinkCreds)
-    mkShortLinkCreds (thParams', QIK {sndId, queueMode, linkId}) = case (cqrd, queueMode) of
+    mkNtfCreds :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> TVar ChaChaDRG -> SMPClient -> IO (Maybe (C.AAuthKeyPair, C.PrivateKeyX25519), Maybe NewNtfCreds)
+    mkNtfCreds a g smp
+      | enableNtfs && thVersion (thParams smp) >= newNtfCredsSMPVersion = do
+          authKeys@(k, _) <- atomically $ C.generateAuthKeyPair a g
+          (dhk, dhpk) <- atomically $ C.generateKeyPair g
+          pure (Just (authKeys, dhpk), Just $ NewNtfCreds k dhk)
+      | otherwise = pure (Nothing, Nothing)
+    mkClientNtfCreds :: Maybe (C.AAuthKeyPair, C.PrivateKeyX25519) -> Maybe ServerNtfCreds -> Maybe ClientNtfCreds
+    mkClientNtfCreds ntfKeys serverNtfCreds = case (ntfKeys, serverNtfCreds) of
+      (Just ((ntfPublicKey, ntfPrivateKey), dhpk), Just (ServerNtfCreds notifierId dhk')) ->
+        Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret = C.dh' dhk' dhpk}
+      _ -> Nothing
+    mkShortLinkCreds :: THandleParams SMPVersion 'TClient -> QueueIdsKeys -> AM (Maybe ShortLinkCreds)
+    mkShortLinkCreds thParams' QIK {sndId, queueMode, linkId} = case (cqrd, queueMode) of
       (CQRMessaging ld, Just QMMessaging) ->
         withLinkData ld $ \lnkId CQRData {linkKey, privSigKey, srvReq = (sndId', d)} ->
           if sndId == sndId'
@@ -1807,7 +1818,7 @@ getQueueInfo c nm rq@RcvQueue {server, rcvId, rcvPrivateKey, sndId, status, clie
   where
     enc = decodeLatin1 . B64.encode . unEntityId
 
-agentNtfRegisterToken :: AgentClient -> NetworkRequestMode -> NtfToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
+agentNtfRegisterToken :: AgentClient -> NetworkRequestMode -> NtfToken -> SMP.NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c nm NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =
   withClient c nm (0, ntfServer, Nothing) $ \ntf -> ntfRegisterToken ntf nm ntfPrivKey (NewNtfTkn deviceToken ntfPubKey pubDhKey)
 

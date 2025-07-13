@@ -953,12 +953,11 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
     createRcvQueue :: Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
-      -- TODO [notifications] send correct NTF credentials here
-      -- let ntfCreds_ = Nothing
-      (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
+      (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd enableNtfs subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
       lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+      -- TODO [notifications] send next command if already created
       when enableNtfs $ do
         ns <- asks ntfSupervisor
         atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
@@ -981,7 +980,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
       nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
       sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-      -- TODO [notifications] the remaining 24 bytes are reserved for notifier ID
+      -- the remaining 24 bytes are reserved, possibly for notifier ID in the new notifications protocol
       let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
@@ -1192,12 +1191,12 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 
 createReplyQueue :: AgentClient -> NetworkRequestMode -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM (SMPQueueInfo, Maybe ClientServiceId)
 createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
-  -- TODO [notifications] send correct NTF credentials here
-  (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation subMode -- Nothing
+  (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation enableNtfs subMode
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+  -- TODO [notifications] send next command if already created
   when enableNtfs $ do
     ns <- asks ntfSupervisor
     atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
@@ -1984,17 +1983,17 @@ switchConnection' c nm connId =
       _ -> throwE $ CMD PROHIBITED "switchConnection: not duplex"
 
 switchDuplexConnection :: AgentClient -> NetworkRequestMode -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
-switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
+switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId, enableNtfs} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
-  -- TODO [notifications] send correct NTF credentials here
-  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation SMSubscribe -- Nothing
+  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation enableNtfs SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId
+  -- TODO [notifications] send ntf supervisor command
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
   let rqs' = updatedQs rq1 rqs <> [rq'']
