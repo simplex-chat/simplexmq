@@ -49,7 +49,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getServiceQueueCount :: (PartyI p, ServiceParty p) => s -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
-  foldRcvServiceQueues :: s -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
+  foldRcvServiceQueues :: s -> (RecipientId -> QueueRec -> IO q) -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
 
 data EntityCounts = EntityCounts
   { queueCount :: Int,

@@ -141,6 +141,7 @@ newNtfSubscriber smpAgentCfg random = do
 
 data SMPSubscriber = SMPSubscriber
   { smpServer :: SMPServer,
+    smpServerId :: Int64,
     subscriberSubQ :: TQueue ServerNtfSub,
     subThreadId :: Weak ThreadId
   }

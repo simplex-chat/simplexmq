@@ -61,7 +61,8 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
 import SMPClient
-import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
+import Simplex.Messaging.Agent hiding (checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
+import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
@@ -69,6 +70,7 @@ import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, reopenDBStore)
+import Simplex.Messaging.Client (pattern NRMInteractive)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
@@ -193,6 +195,15 @@ testNtfMatrix ps@(_, msType) runTest = do
   where
     cfg' = cfgMS msType
     cfgVPrev' = cfgVPrev msType
+
+registerNtfToken :: AgentClient -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
+registerNtfToken c = A.registerNtfToken c NRMInteractive
+
+checkNtfToken :: AgentClient -> DeviceToken -> AE NtfTknStatus
+checkNtfToken c = A.checkNtfToken c NRMInteractive
+
+verifyNtfToken :: AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
+verifyNtfToken c = A.verifyNtfToken c NRMInteractive
 
 runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> AServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
 runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
@@ -529,7 +540,7 @@ testRunNTFServerTests :: ASrvTransport -> NtfServer -> IO (Maybe ProtocolTestFai
 testRunNTFServerTests t srv =
   withNtfServer t $
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a 1 $ ProtoServerWithAuth srv Nothing
+      testProtocolServer a NRMInteractive 1 $ ProtoServerWithAuth srv Nothing
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
 testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do

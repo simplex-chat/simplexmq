@@ -111,6 +111,7 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    UserLinkData (..),
     OwnerAuth (..),
     OwnerId,
     ConnectionLink (..),
@@ -167,11 +168,14 @@ module Simplex.Messaging.Agent.Protocol
     shortenShortLink,
     restoreShortLink,
     linkUserData,
+    linkUserData',
   )
 where
 
 import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
+import qualified Data.Aeson as J'
+import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
@@ -190,6 +194,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.System (SystemTime)
@@ -1148,22 +1153,39 @@ connReqUriP overrideScheme = do
 
 instance ConnectionModeI m => FromJSON (ConnectionRequestUri m) where
   parseJSON = strParseJSON "ConnectionRequestUri"
+  {-# INLINE parseJSON #-}
 
 instance ConnectionModeI m => ToJSON (ConnectionRequestUri m) where
   toJSON = strToJSON
+  {-# INLINE toJSON #-}
   toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
 
 instance FromJSON AConnectionRequestUri where
   parseJSON = strParseJSON "ConnectionRequestUri"
+  {-# INLINE parseJSON #-}
 
 instance ToJSON AConnectionRequestUri where
   toJSON = strToJSON
+  {-# INLINE toJSON #-}
   toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
 
 instance ConnectionModeI m => FromJSON (ConnShortLink m) where
   parseJSON = strParseJSON "ConnShortLink"
+  {-# INLINE parseJSON #-}
 
 instance ConnectionModeI m => ToJSON (ConnShortLink m) where
+  toJSON = strToJSON
+  {-# INLINE toJSON #-}
+  toEncoding = strToJEncoding
+  {-# INLINE toEncoding #-}
+
+instance FromJSON AConnShortLink where
+  parseJSON = strParseJSON "AConnShortLink"
+  {-# INLINE parseJSON #-}
+
+instance ToJSON AConnShortLink where
   toJSON = strToJSON
   toEncoding = strToJEncoding
 
@@ -1190,6 +1212,16 @@ instance Encoding ConnectionMode where
       'I' -> pure CMInvitation
       'C' -> pure CMContact
       _ -> fail "bad connection mode"
+
+instance ToJSON ConnectionMode where
+  toJSON = J'.String . T.toLower . decodeLatin1 . strEncode
+  {-# INLINE toJSON #-}
+  toEncoding = JE.text . T.toLower . decodeLatin1 . strEncode
+  {-# INLINE toEncoding #-}
+
+instance FromJSON ConnectionMode where
+  parseJSON = J'.withText "ConnectionMode" $ either fail pure . parseAll strP . encodeUtf8 . T.toUpper
+  {-# INLINE parseJSON #-}
 
 connModeT :: Text -> Maybe ConnectionMode
 connModeT = \case
@@ -1417,6 +1449,13 @@ data ContactConnType = CCTContact | CCTChannel | CCTGroup deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
+instance Eq AConnShortLink where
+  ACSL m sl == ACSL m' sl' = case testEquality m m' of
+    Just Refl -> sl == sl'
+    Nothing -> False
+
+deriving instance Show AConnShortLink
+
 instance ToField AConnShortLink where toField = toField . Binary . strEncode
 
 instance FromField AConnShortLink where fromField = blobFieldDecoder strDecode
@@ -1633,7 +1672,7 @@ data FixedLinkData c = FixedLinkData
   }
 
 data ConnLinkData c where
-  InvitationLinkData :: VersionRangeSMPA -> ConnInfo -> ConnLinkData 'CMInvitation
+  InvitationLinkData :: VersionRangeSMPA -> UserLinkData -> ConnLinkData 'CMInvitation
   ContactLinkData ::
     { agentVRange :: VersionRangeSMPA,
       -- direct connection via connReq in fixed data is allowed.
@@ -1642,15 +1681,22 @@ data ConnLinkData c where
       owners :: [OwnerAuth],
       -- alternative addresses of chat relays that receive requests for this contact address.
       relays :: [ConnShortLink 'CMContact],
-      userData :: ConnInfo
+      userData :: UserLinkData
     } -> ConnLinkData 'CMContact
+
+newtype UserLinkData = UserLinkData ByteString
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
 
-linkUserData :: ConnLinkData c -> ConnInfo
+linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
   InvitationLinkData _ d -> d
   ContactLinkData {userData} -> userData
+{-# INLINE linkUserData #-}
+
+linkUserData' :: ConnLinkData c -> ByteString
+linkUserData' d = let UserLinkData s = linkUserData d in s
+{-# INLINE linkUserData' #-}
 
 type OwnerId = ByteString
 
@@ -1705,6 +1751,12 @@ instance Encoding AConnLinkData where
         relays <- smpListP
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
+
+instance Encoding UserLinkData where
+  smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
+  {-# INLINE smpEncode #-}
+  smpP = UserLinkData <$> ((A.char '\255' *> (unLarge <$> smpP)) <|> smpP)
+  {-# INLINE smpP #-}
 
 data StoredClientService (s :: DBStored) = ClientService
   { dbServiceId :: DBEntityId' s,
@@ -1785,7 +1837,7 @@ data AgentErrorType
   = -- | command or response error
     CMD {cmdErr :: CommandErrorType, errContext :: String}
   | -- | connection errors
-    CONN {connErr :: ConnectionErrorType}
+    CONN {connErr :: ConnectionErrorType, errContext :: String}
   | -- | user not found in database
     NO_USER
   | -- | SMP protocol errors forwarded to agent clients

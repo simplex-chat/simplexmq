@@ -56,6 +56,7 @@ import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..), NtfSubData (..), NtfTknData (..), TokenNtfMessageRecord (..), ntfSubServer)
@@ -75,7 +76,6 @@ import System.IO (IOMode (..), hFlush, stdout, withFile)
 import Text.Hex (decodeHex)
 
 #if !defined(dbPostgres)
-import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Util (eitherToMaybe)
 #endif
 
@@ -401,13 +401,13 @@ updateTokenCronSentAt st tknId now =
   withDB' "updateTokenCronSentAt" st $ \db ->
     void $ DB.execute db "UPDATE tokens t SET cron_sent_at = ? WHERE token_id = ?" (now, tknId)
 
-addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType Bool)
+addNtfSubscription :: NtfPostgresStore -> NtfSubRec -> IO (Either ErrorType (Int64, Bool))
 addNtfSubscription st sub =
   withFastDB "addNtfSubscription" st $ \db -> runExceptT $ do
     srvId :: Int64 <- ExceptT $ upsertServer db $ ntfSubServer' sub
     n <- liftIO $ DB.execute db insertNtfSubQuery $ ntfSubToRow srvId sub
     withLog "addNtfSubscription" st (`logCreateSubscription` sub)
-    pure $ n > 0
+    pure (srvId, n > 0)
   where
     -- It is possible to combine these two statements into one with CTEs,
     -- to reduce roundtrips in case of `insert`, but it would be making 2 queries in all cases.
@@ -454,8 +454,8 @@ deleteNtfSubscription st subId =
       DB.execute db "DELETE FROM subscriptions WHERE subscription_id = ?" (Only subId)
     withLog "deleteNtfSubscription" st (`logDeleteSubscription` subId)
 
-updateSubStatus :: NtfPostgresStore -> NotifierId -> NtfSubStatus -> IO (Either ErrorType ())
-updateSubStatus st nId status =
+updateSubStatus :: NtfPostgresStore -> Int64 -> NotifierId -> NtfSubStatus -> IO (Either ErrorType ())
+updateSubStatus st srvId nId status =
   withFastDB' "updateSubStatus" st $ \db -> do
     sub_ :: Maybe (NtfSubscriptionId, NtfAssociatedService) <-
       maybeFirstRow id $
@@ -463,10 +463,10 @@ updateSubStatus st nId status =
           db
           [sql|
             UPDATE subscriptions SET status = ?
-            WHERE smp_notifier_id = ? AND status != ?
+            WHERE smp_server_id = ? AND smp_notifier_id = ? AND status != ?
             RETURNING subscription_id, ntf_service_assoc
           |]
-          (status, nId, status)
+          (status, srvId, nId, status)
     forM_ sub_ $ \(subId, serviceAssoc) ->
       withLog "updateSubStatus" st $ \sl -> logSubscriptionStatus sl (subId, status, serviceAssoc)
 
@@ -493,11 +493,11 @@ updateSrvSubStatus st q status =
 batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> Maybe ServiceId -> NonEmpty NotifierId -> NtfSubStatus -> IO Int
 batchUpdateSrvSubStatus st srv newServiceId nIds status =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubStatus" st $ \db -> runExceptT $ do
-    (srvId, currServiceId) <- ExceptT $ getSMPServerService db
+    (srvId :: Int64, currServiceId) <- ExceptT $ getSMPServerService db
     unless (currServiceId == newServiceId) $ liftIO $ void $
       DB.execute db "UPDATE smp_servers SET ntf_service_id = ? WHERE smp_server_id = ?" (newServiceId, srvId)
     let params = L.toList $ L.map (srvId,isJust newServiceId,status,) nIds
-    batchUpdateStatus_ st db params
+    liftIO $ fromIntegral <$> DB.executeMany db updateSubStatusQuery params
   where
     getSMPServerService db =
       firstRow id AUTH $
@@ -514,9 +514,11 @@ batchUpdateSrvSubStatus st srv newServiceId nIds status =
 batchUpdateSrvSubErrors :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, NtfSubStatus) -> IO Int
 batchUpdateSrvSubErrors st srv subs =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubErrors" st $ \db -> runExceptT $ do
-    srvId <- ExceptT $ getSMPServerId db
-    let params = L.toList $ L.map (\(nId, status) -> (srvId, False, status, nId)) subs
-    batchUpdateStatus_ st db params
+    srvId :: Int64 <- ExceptT $ getSMPServerId db
+    let params = map (\(nId, status) -> (srvId, False, status, nId)) $ L.toList subs
+    subs' <- liftIO $ DB.returning db (updateSubStatusQuery <> " RETURNING s.subscription_id, s.status, s.ntf_service_assoc") params
+    withLog "batchUpdateStatus_" st $ forM_ subs' . logSubscriptionStatus
+    pure $ length subs'
   where
     getSMPServerId db =
       firstRow fromOnly AUTH $
@@ -529,24 +531,16 @@ batchUpdateSrvSubErrors st srv subs =
           |]
           (srvToRow srv)
 
-batchUpdateStatus_ :: NtfPostgresStore -> DB.Connection -> [(Int64, NtfAssociatedService, NtfSubStatus, NotifierId)] -> ExceptT ErrorType IO Int
-batchUpdateStatus_ st db params = do
-  subs <-
-    liftIO $
-      DB.returning
-        db
-        [sql|
-          UPDATE subscriptions s
-          SET status = upd.status, ntf_service_assoc = upd.ntf_service_assoc
-          FROM (VALUES(?, ?, ?, ?)) AS upd(smp_server_id, ntf_service_assoc, status, smp_notifier_id)
-          WHERE s.smp_server_id = upd.smp_server_id
-            AND s.smp_notifier_id = (upd.smp_notifier_id :: BYTEA)
-            AND (s.status != upd.status OR s.ntf_service_assoc != upd.ntf_service_assoc)
-          RETURNING s.subscription_id, s.status, s.ntf_service_assoc
-        |]
-        params
-  withLog "batchUpdateStatus_" st $ forM_ subs . logSubscriptionStatus
-  pure $ length subs
+updateSubStatusQuery :: Query
+updateSubStatusQuery =
+  [sql|
+    UPDATE subscriptions s
+    SET status = upd.status, ntf_service_assoc = upd.ntf_service_assoc
+    FROM (VALUES(?, ?, ?, ?)) AS upd(smp_server_id, ntf_service_assoc, status, smp_notifier_id)
+    WHERE s.smp_server_id = upd.smp_server_id
+      AND s.smp_notifier_id = (upd.smp_notifier_id :: BYTEA)
+      AND (s.status != upd.status OR s.ntf_service_assoc != upd.ntf_service_assoc)
+  |]
 
 removeServiceAssociation :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
 removeServiceAssociation st srv = do

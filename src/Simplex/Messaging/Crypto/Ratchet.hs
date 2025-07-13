@@ -55,6 +55,7 @@ module Simplex.Messaging.Crypto.Ratchet
     supportedE2EEncryptVRange,
     generateRcvE2EParams,
     generateSndE2EParams,
+    mkRcvE2ERatchetParams,
     initialPQEncryption,
     connPQEncryption,
     joinContactInitialKeys,
@@ -195,6 +196,8 @@ deriving instance Show (RKEMParams s)
 data ARKEMParams = forall s. RatchetKEMStateI s => ARKP (SRatchetKEMState s) (RKEMParams s)
 
 deriving instance Show ARKEMParams
+
+type RcvRKEMParams = RKEMParams 'RKSProposed
 
 instance RatchetKEMStateI s => Encoding (RKEMParams s) where
   smpEncode = \case
@@ -405,6 +408,12 @@ data UseKEM (s :: RatchetKEMState) where
   AcceptKEM :: KEMPublicKey -> UseKEM 'RKSAccepted
 
 data AUseKEM = forall s. RatchetKEMStateI s => AUseKEM (SRatchetKEMState s) (UseKEM s)
+
+mkRcvE2ERatchetParams :: VersionE2E -> (PrivateKey a, PrivateKey a, Maybe RcvPrivRKEMParams) -> RcvE2ERatchetParams a
+mkRcvE2ERatchetParams v (pk1, pk2, pKem) = E2ERatchetParams v (publicKey pk1) (publicKey pk2) (mkKem <$> pKem)
+  where
+    mkKem :: RcvPrivRKEMParams -> RcvRKEMParams
+    mkKem (PrivateRKParamsProposed (k, _)) = RKParamsProposed k
 
 generateE2EParams :: forall s a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe (UseKEM s) -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams s), E2ERatchetParams s a)
 generateE2EParams g v useKEM_ = do

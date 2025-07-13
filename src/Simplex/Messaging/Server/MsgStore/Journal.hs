@@ -446,7 +446,7 @@ instance MsgStoreClass (JournalMsgStore s) where
       getLoadedQueue :: JournalQueue s -> IO (JournalQueue s)
       getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
 
-  foldRcvServiceMessages :: JournalMsgStore s -> Service -> (a -> RecipientId -> Message -> IO a) -> IO a
+  foldRcvServiceMessages :: JournalMsgStore s -> ServiceId -> (a -> RecipientId -> Message -> IO a) -> IO a
   foldRcvServiceMessages = undefined
 
   logQueueStates :: JournalMsgStore s -> IO ()

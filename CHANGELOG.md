@@ -1,3 +1,21 @@
+# 6.4.0
+
+SMP protocol (server/client):
+- support associated queue data and short connection links (see [RFC](./rfcs/2025-03-16-smp-queues.md)).
+- service certificates to optimize subscriptions.
+
+SMP agent:
+- support retries for interactive connection handshakes.
+- use web port 443 by default for preset servers.
+- use static RNG function to avoid creating dynamic C stubs when generating sntrup keys (it was detected as Dynamic Code Loading in GrapheneOS).
+- different timeouts for interactive and background operations.
+
+Ntf server:
+- PostgreSQL storage.
+- Prometheus metrics.
+- use service certificates.
+- fix repeat token registration.
+
 # 6.3.2
 
 Servers:
@@ -18,7 +36,7 @@ Servers:
 - update script (simplex-servers-update) downloads scripts from the specified or the latest stable tag.
 
 SMP server:
-- support for PostrgreSQL database for queue records for higher traffic servers.
+- support for PostgreSQL database for queue records for higher traffic servers.
 - fix old clients sending messages to new servers (#1443)
 - remove empty journals when opening message queues and expiring idle queues (#1456, #1458).
 - additional start options (#1465):
@@ -74,7 +92,7 @@ Servers: more reliable restoring of state.
 
 SMP server: reduced memory usage and faster start.
 
-Notifications: compensate for iOS notifications being droppted by Apple while device is offline (#1378):
+Notifications: compensate for iOS notifications being dropped by Apple while device is offline (#1378):
 - Ntf server: send multiple SMP notifications in one iOS notification.
 - Agent: get multiple messages for one iOS notification.
 

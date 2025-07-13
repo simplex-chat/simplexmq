@@ -356,8 +356,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         SRecipientService -> serviceRcvQueues
         SNotifierService -> serviceNtfQueues
 
-  foldRcvServiceQueues :: STMQueueStore q -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
-  foldRcvServiceQueues st serviceId f acc =
+  -- TODO [rcv certs] this should create queue with mkQ
+  foldRcvServiceQueues :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
+  foldRcvServiceQueues st mkQ serviceId f acc =
     TM.lookupIO serviceId (services st) >>= \case
       Nothing -> pure acc
       Just s ->

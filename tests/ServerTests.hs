@@ -18,6 +18,7 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
+import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
@@ -76,6 +77,7 @@ serverTests = do
     describe "GET command" testGetCommand
     describe "GET & SUB commands" testGetSubCommands
     describe "Exceeding queue quota" testExceedQueueQuota
+    describe "Concurrent sending and delivery" testConcurrentSendDelivery
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -628,6 +630,27 @@ testExceedQueueQuota =
         Resp "" _ (Msg mId4 msg4) <- tGet1 rh
         (dec mId4 msg4, Right "hello 3") #== "hello 3"
         Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId4)
+        pure ()
+
+testConcurrentSendDelivery :: SpecWith (ASrvTransport, AStoreType)
+testConcurrentSendDelivery =
+  it "should continue delivering messages if message is sent before it is acknowledged" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest3 t msType $ \rh sh1 sh2 -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
+      let dec = decryptMsgV3 dhShared
+          sndMsg sh n = do
+            Resp (CorrId n') _ OK <- signSendRecv sh sKey (n, sId, _SEND ("msg " <> n))
+            n' `shouldBe` n
+          isMsg1or2 mId msg = dec mId msg == Right "msg 1" || dec mId msg == Right "msg 2" `shouldBe` True
+      replicateM_ 50 $ do
+        concurrently_ (sndMsg sh1 "1") (sndMsg sh2 "2")
+        Resp "" _ (Msg mId1 msg1) <- tGet1 rh
+        isMsg1or2 mId1 msg1
+        Resp "3" _ (Msg mId2 msg2) <- signSendRecv rh rKey ("3", rId, ACK mId1)
+        isMsg1or2 mId2 msg2
+        Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, ACK mId2)
         pure ()
 
 testWithStoreLog :: SpecWith (ASrvTransport, AStoreType)

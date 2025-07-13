@@ -89,7 +89,7 @@ instance MsgStoreClass STMMsgStore where
   expireOldMessages _tty ms now ttl =
     withLoadedQueues (queueStore_ ms) $ atomically . expireQueueMsgs ms now (now - ttl)
 
-  foldRcvServiceMessages :: STMMsgStore -> Service -> (a -> RecipientId -> Message -> IO a) -> IO a
+  foldRcvServiceMessages :: STMMsgStore -> ServiceId -> (a -> RecipientId -> Message -> IO a) -> IO a
   foldRcvServiceMessages = undefined
 
   logQueueStates _ = pure ()
