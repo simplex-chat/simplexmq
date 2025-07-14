@@ -1378,8 +1378,8 @@ serverSyntaxTests (ATransport t) = do
   describe "NEW" $ do
     it "no parameters" $ (sampleSig, "bcda", "", NEW_) >#> ("", "bcda", "", ERR $ CMD SYNTAX)
     it "many parameters" $ (sampleSig, "cdab", "", (NEW_, ' ', ('\x01', 'A'), samplePubKey, sampleDhPubKey)) >#> ("", "cdab", "", ERR $ CMD SYNTAX)
-    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing)))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
-    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing)))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
+    it "no signature" $ ("", "dabc", "", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing), '0'))) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
+    it "queue ID" $ (sampleSig, "abcd", "12345678", ((NEW_, ' ', samplePubKey, sampleDhPubKey), ('0', SMSubscribe, Just (QRMessaging Nothing), '0'))) >#> ("", "abcd", "12345678", ERR $ CMD HAS_AUTH)
   describe "KEY" $ do
     it "valid syntax" $ (sampleSig, "bcda", "12345678", (KEY_, ' ', samplePubKey)) >#> ("", "bcda", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "cdab", "12345678", KEY_) >#> ("", "cdab", "12345678", ERR $ CMD SYNTAX)

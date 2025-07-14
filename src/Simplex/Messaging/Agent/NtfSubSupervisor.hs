@@ -14,6 +14,7 @@ module Simplex.Messaging.Agent.NtfSubSupervisor
     nsUpdateToken,
     nsRemoveNtfToken,
     sendNtfSubCommand,
+    hasInstantNotifications,
     instantNotifications,
     deleteToken,
     closeNtfSupervisor,
@@ -51,7 +52,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow)
+import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, whenM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -526,15 +527,19 @@ nsUpdateToken ns tkn = writeTVar (ntfTkn ns) $ Just tkn
 nsRemoveNtfToken :: NtfSupervisor -> STM ()
 nsRemoveNtfToken ns = writeTVar (ntfTkn ns) Nothing
 
-sendNtfSubCommand :: NtfSupervisor -> (NtfSupervisorCommand, NonEmpty ConnId) -> STM ()
-sendNtfSubCommand ns cmd = do
-  tkn <- readTVar (ntfTkn ns)
-  when (instantNotifications tkn) $ writeTBQueue (ntfSubQ ns) cmd
+sendNtfSubCommand :: NtfSupervisor -> (NtfSupervisorCommand, NonEmpty ConnId) -> IO ()
+sendNtfSubCommand ns cmd =
+  whenM (hasInstantNotifications ns) $ atomically $ writeTBQueue (ntfSubQ ns) cmd
 
-instantNotifications :: Maybe NtfToken -> Bool
-instantNotifications = \case
-  Just NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} -> True
-  _ -> False
+hasInstantNotifications :: NtfSupervisor -> IO Bool
+hasInstantNotifications ns = do
+  tkn <- readTVarIO $ ntfTkn ns
+  pure $ maybe False instantNotifications tkn
+
+instantNotifications :: NtfToken -> Bool
+instantNotifications NtfToken {ntfTknStatus = NTActive, ntfMode = NMInstant} = True
+instantNotifications _ = False
+{-# INLINE instantNotifications #-}
 
 deleteToken :: AgentClient -> NtfToken -> AM ()
 deleteToken c tkn@NtfToken {ntfServer, ntfTokenId, ntfPrivKey} = do
