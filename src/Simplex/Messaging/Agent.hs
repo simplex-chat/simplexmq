@@ -1582,7 +1582,9 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                 where
                   finalizeSwitch = do
                     withStore' c $ \db -> deleteConnRcvQueue db rq'
-                    when (enableNtfs cData) $ mapM_ (newQueueNtfSubscription c rq'') =<< newQueueNtfServer
+                    when (enableNtfs cData) $ do
+                      ns <- asks ntfSupervisor
+                      liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
                     let conn' = DuplexConnection cData (rq'' :| rqs') sqs
                     notify $ SWITCH QDRcv SPCompleted $ connectionStats conn'
               _ -> internalErr "ICQDelete: cannot delete the only queue in connection"
@@ -1991,14 +1993,15 @@ switchConnection' c nm connId =
       _ -> throwE $ CMD PROHIBITED "switchConnection: not duplex"
 
 switchDuplexConnection :: AgentClient -> NetworkRequestMode -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
-switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId, enableNtfs} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
+switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
-  ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
-  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation (isJust ntfServer_) SMSubscribe
+  -- TODO [notications] possible improvement would be to create ntf credentials here, to avoid creating them after rotation completes.
+  -- The problem is that currently subscription already exists, and we do not support queues with credentials but without subscriptions.
+  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId
