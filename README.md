@@ -1,6 +1,6 @@
 # SimpleXMQ
 
-[![GitHub build](https://github.com/simplex-chat/simplexmq/workflows/build/badge.svg)](https://github.com/simplex-chat/simplexmq/actions?query=workflow%3Abuild)
+[![GitHub build](https://github.com/simplex-chat/simplexmq/actions/workflows/build.yml/badge.svg)](https://github.com/simplex-chat/simplexmq/actions/workflows/build.yml)
 [![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
 
 📢 SimpleXMQ v1 is released - with many security, privacy and efficiency improvements, new functionality - see [release notes](https://github.com/simplex-chat/simplexmq/releases/tag/v1.0.0).
@@ -116,7 +116,7 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
 2. Run your Docker container.
 
    - `smp-server`
-   
+
      You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
      ```sh
      docker run -d \
@@ -129,7 +129,7 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
      ```
 
    - `xftp-server`
-   
+
      You must change **your_ip_or_domain** and **maximum_storage**.
      ```sh
      docker run -d \
@@ -187,7 +187,7 @@ On Linux, you can build smp server using Docker.
 3. Run your Docker container.
 
    - `smp-server`
-   
+
      You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
      ```sh
      docker run -d \
@@ -200,7 +200,7 @@ On Linux, you can build smp server using Docker.
      ```
 
    - `xftp-server`
-   
+
      You must change **your_ip_or_domain** and **maximum_storage**.
      ```sh
      docker run -d \
@@ -247,7 +247,7 @@ On Linux, you can build smp server using Docker.
 
    `xftp-server`
    ```sh
-   cabal list-bin exe:xftp-server 
+   cabal list-bin exe:xftp-server
    ```
 
 - Initialize SMP server with `smp-server init [-l] -n <fqdn>` or `smp-server init [-l] --ip <ip>` - depending on how you initialize it, either FQDN or IP will be used for server's address.
