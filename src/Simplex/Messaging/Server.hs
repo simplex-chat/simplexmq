@@ -1512,7 +1512,7 @@ client
                             stats <- asks serverStats
                             incStat $ qCreated stats
                             incStat $ qCount stats
-                            when (isJust ntf) $ incStat $ ntfCreated stats
+                            when (isJust ntf) $ incStat $ ntfNewCreated stats
                             case subMode of
                               SMOnlyCreate -> pure ()
                               SMSubscribe -> subscribeNewQueue rcvId qr -- no need to check if message is available, it's a new queue

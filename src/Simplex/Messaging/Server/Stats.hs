@@ -48,6 +48,7 @@ data ServerStats = ServerStats
     qSubEnd :: IORef Int,
     qSubEndB :: IORef Int,
     ntfCreated :: IORef Int,
+    ntfNewCreated :: IORef Int, -- credentials created at the time of queue creation
     ntfDeleted :: IORef Int,
     ntfDeletedB :: IORef Int,
     ntfSub :: IORef Int,
@@ -107,6 +108,7 @@ data ServerStatsData = ServerStatsData
     _qSubEnd :: Int,
     _qSubEndB :: Int,
     _ntfCreated :: Int,
+    _ntfNewCreated :: Int,
     _ntfDeleted :: Int,
     _ntfDeletedB :: Int,
     _ntfSub :: Int,
@@ -167,6 +169,7 @@ newServerStats ts = do
   qSubEnd <- newIORef 0
   qSubEndB <- newIORef 0
   ntfCreated <- newIORef 0
+  ntfNewCreated <- newIORef 0
   ntfDeleted <- newIORef 0
   ntfDeletedB <- newIORef 0
   ntfSub <- newIORef 0
@@ -224,6 +227,7 @@ newServerStats ts = do
         qSubEnd,
         qSubEndB,
         ntfCreated,
+        ntfNewCreated,
         ntfDeleted,
         ntfDeletedB,
         ntfSub,
@@ -283,6 +287,7 @@ getServerStatsData s = do
   _qSubEnd <- readIORef $ qSubEnd s
   _qSubEndB <- readIORef $ qSubEndB s
   _ntfCreated <- readIORef $ ntfCreated s
+  _ntfNewCreated <- readIORef $ ntfNewCreated s
   _ntfDeleted <- readIORef $ ntfDeleted s
   _ntfDeletedB <- readIORef $ ntfDeletedB s
   _ntfSub <- readIORef $ ntfSub s
@@ -340,6 +345,7 @@ getServerStatsData s = do
         _qSubEnd,
         _qSubEndB,
         _ntfCreated,
+        _ntfNewCreated,
         _ntfDeleted,
         _ntfDeletedB,
         _ntfSub,
@@ -400,6 +406,7 @@ setServerStats s d = do
   writeIORef (qSubEnd s) $! _qSubEnd d
   writeIORef (qSubEndB s) $! _qSubEndB d
   writeIORef (ntfCreated s) $! _ntfCreated d
+  writeIORef (ntfNewCreated s) $! _ntfNewCreated d
   writeIORef (ntfDeleted s) $! _ntfDeleted d
   writeIORef (ntfDeletedB s) $! _ntfDeletedB d
   writeIORef (ntfSub s) $! _ntfSub d
@@ -460,6 +467,7 @@ instance StrEncoding ServerStatsData where
         "qSubEnd=" <> strEncode (_qSubEnd d),
         "qSubEndB=" <> strEncode (_qSubEndB d),
         "ntfCreated=" <> strEncode (_ntfCreated d),
+        "ntfNewCreated=" <> strEncode (_ntfNewCreated d),
         "ntfDeleted=" <> strEncode (_ntfDeleted d),
         "ntfDeletedB=" <> strEncode (_ntfDeletedB d),
         "ntfSub=" <> strEncode (_ntfSub d),
@@ -523,6 +531,7 @@ instance StrEncoding ServerStatsData where
     _qSubEnd <- opt "qSubEnd="
     _qSubEndB <- opt "qSubEndB="
     _ntfCreated <- opt "ntfCreated="
+    _ntfNewCreated <- opt "ntfNewCreated="
     _ntfDeleted <- opt "ntfDeleted="
     _ntfDeletedB <- opt "ntfDeletedB="
     _ntfSub <- opt "ntfSub="
@@ -590,6 +599,7 @@ instance StrEncoding ServerStatsData where
           _qSubEnd,
           _qSubEndB,
           _ntfCreated,
+          _ntfNewCreated,
           _ntfDeleted,
           _ntfDeletedB,
           _ntfSub,
