@@ -953,15 +953,12 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
     createRcvQueue :: Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
-      -- TODO [notifications] send correct NTF credentials here
-      -- let ntfCreds_ = Nothing
-      (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
+      ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
+      (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
       lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
-      when enableNtfs $ do
-        ns <- asks ntfSupervisor
-        atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
+      mapM_ (newQueueNtfSubscription c rq') ntfServer_
       pure (rq', qUri)
     createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
     createConnReq qUri = do
@@ -981,7 +978,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
       nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
       sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-      -- TODO [notifications] the remaining 24 bytes are reserved for notifier ID
+      -- the remaining 24 bytes are reserved, possibly for notifier ID in the new notifications protocol
       let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
@@ -1014,6 +1011,21 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
               CRContactUri crData -> CRContactUri (updated crData)
               CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams
          in pure $ CCLink cReq' Nothing
+
+newQueueNtfServer :: AM (Maybe NtfServer)
+newQueueNtfServer = fmap ntfServer_ . readTVarIO . ntfTkn =<< asks ntfSupervisor
+  where
+    ntfServer_ = \case
+      Just tkn@NtfToken {ntfServer} | instantNotifications tkn -> Just ntfServer
+      _ -> Nothing
+
+newQueueNtfSubscription :: AgentClient -> RcvQueue -> NtfServer -> AM ()
+newQueueNtfSubscription c RcvQueue {userId, connId, server, clientNtfCreds} ntfServer = do
+  forM_ clientNtfCreds $ \ClientNtfCreds {notifierId} -> do
+    let sub = newNtfSubscription userId connId server (Just notifierId) ntfServer NASKey
+    withStore c $ \db -> createNtfSubscription db sub (NSANtf NSACreate)
+  ns <- asks ntfSupervisor
+  liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
 
 newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> PQSupport -> AM ConnId
 newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
@@ -1192,15 +1204,13 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 
 createReplyQueue :: AgentClient -> NetworkRequestMode -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM (SMPQueueInfo, Maybe ClientServiceId)
 createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
-  -- TODO [notifications] send correct NTF credentials here
-  (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation subMode -- Nothing
+  ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
+  (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
-  when enableNtfs $ do
-    ns <- asks ntfSupervisor
-    atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
+  mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure (qInfo, clientServiceId rq')
 
 -- | Approve confirmation (LET command) in Reader monad
@@ -1256,8 +1266,7 @@ subscribeConnections' c connIds = do
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
-  tkn <- readTVarIO (ntfTkn ns)
-  lift $ when (instantNotifications tkn) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
+  lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
   let rs = M.unions ([errs', subRs, rcvRs'] :: [Map ConnId (Either AgentErrorType (Maybe ClientServiceId))])
   notifyResultError rs
   pure rs
@@ -1575,7 +1584,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                     withStore' c $ \db -> deleteConnRcvQueue db rq'
                     when (enableNtfs cData) $ do
                       ns <- asks ntfSupervisor
-                      atomically $ sendNtfSubCommand ns (NSCCreate, [connId])
+                      liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
                     let conn' = DuplexConnection cData (rq'' :| rqs') sqs
                     notify $ SWITCH QDRcv SPCompleted $ connectionStats conn'
               _ -> internalErr "ICQDelete: cannot delete the only queue in connection"
@@ -1990,8 +1999,9 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
   srvAuth@(ProtoServerWithAuth srv _) <- getNextSMPServer c userId $ map qServer (L.toList rqs) <> map qServer (L.toList sqs)
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
-  -- TODO [notifications] send correct NTF credentials here
-  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation SMSubscribe -- Nothing
+  -- TODO [notications] possible improvement would be to create ntf credentials here, to avoid creating them after rotation completes.
+  -- The problem is that currently subscription already exists, and we do not support queues with credentials but without subscriptions.
+  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId
@@ -2399,7 +2409,7 @@ toggleConnectionNtfs' c connId enable = do
           withStore' c $ \db -> setConnectionNtfs db connId enable
           ns <- asks ntfSupervisor
           let cmd = if enable then NSCCreate else NSCSmpDelete
-          atomically $ sendNtfSubCommand ns (cmd, [connId])
+          liftIO $ sendNtfSubCommand ns (cmd, [connId])
 
 withToken :: AgentClient -> NetworkRequestMode -> NtfToken -> Maybe (NtfTknStatus, NtfTknAction) -> (NtfTknStatus, Maybe NtfTknAction) -> AM a -> AM NtfTknStatus
 withToken c nm tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f = do

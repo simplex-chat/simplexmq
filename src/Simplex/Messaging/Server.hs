@@ -1461,19 +1461,18 @@ client
         Nothing -> pure $ ERR INTERNAL
       where
         createQueue :: NewQueueReq -> M s (Transmission BrokerMsg)
-        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData}
+        createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData, ntfCreds}
           | isJust clntServiceId && subMode == SMOnlyCreate = pure (corrId, entId, ERR $ CMD PROHIBITED)
           | otherwise = do
               g <- asks random
               idSize <- asks $ queueIdBytes . config
               updatedAt <- Just <$> liftIO getSystemDate
               (rcvPublicDhKey, privDhKey) <- atomically $ C.generateKeyPair g
-              -- TODO [notifications]
-              -- ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
-              --   (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
-              --   pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
+              ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
+                (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
+                pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
               let randId = EntityId <$> atomically (C.randomBytes idSize g)
-                  -- TODO [notifications] the remaining 24 bytes are reserver for notifier ID
+                  -- the remaining 24 bytes are reserved, possibly for notifier ID in the new notifications protocol
                   sndId' = B.take 24 $ C.sha3_384 (bs corrId)
                   tryCreate 0 = pure $ ERR INTERNAL
                   tryCreate n = do
@@ -1488,10 +1487,10 @@ client
                       then pure $ ERR $ CMD PROHIBITED
                       else do
                         rcvId <- randId
-                        -- TODO [notifications]
-                        -- ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
-                        --   notifierId <- randId
-                        --   pure (NtfCreds {notifierId, notifierKey, rcvNtfDhSecret}, ServerNtfCreds notifierId rcvPubDhKey)
+                        ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
+                          notifierId <- randId
+                          let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
+                          pure (ntfCreds, ServerNtfCreds notifierId rcvPubDhKey)
                         let queueMode = queueReqMode <$> queueReqData
                             qr =
                               QueueRec
@@ -1501,8 +1500,7 @@ client
                                   senderKey = Nothing,
                                   queueMode,
                                   queueData,
-                                  -- TODO [notifications]
-                                  notifier = Nothing, -- fst <$> ntf,
+                                  notifier = fst <$> ntf,
                                   status = EntityActive,
                                   updatedAt,
                                   rcvServiceId = clntServiceId
@@ -1516,12 +1514,11 @@ client
                             stats <- asks serverStats
                             incStat $ qCreated stats
                             incStat $ qCount stats
-                            -- TODO [notifications]
-                            -- when (isJust ntf) $ incStat $ ntfCreated stats
+                            when (isJust ntf) $ incStat $ ntfCreated stats
                             case subMode of
                               SMOnlyCreate -> pure ()
                               SMSubscribe -> subscribeNewQueue rcvId qr -- no need to check if message is available, it's a new queue
-                            pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serviceId = clntServiceId} -- , serverNtfCreds = snd <$> ntf
+                            pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId = fst <$> queueData, serviceId = clntServiceId, serverNtfCreds = snd <$> ntf}
               (corrId,entId,) <$> tryCreate (3 :: Int)
 
         -- this check allows to support contact queues created prior to SKEY,
@@ -1833,8 +1830,8 @@ client
                         liftIO $ do
                           mapM_ (updateStats stats False ts) deletedMsg_
                           forM_ msg_ $ \msg -> do
-                            ts <- getSystemSeconds
-                            atomically $ setDelivered sub msg ts
+                            ts' <- getSystemSeconds
+                            atomically $ setDelivered sub msg ts'
                           pure (corrId, entId, maybe OK (MSG . encryptMsg qr) msg_)
                 _ -> pure $ err NO_MSG
           where
