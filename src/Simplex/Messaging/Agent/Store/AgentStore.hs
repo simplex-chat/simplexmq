@@ -1969,15 +1969,22 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
       INSERT INTO rcv_queues
         ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret,
           snd_id, queue_mode, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash,
-          link_id, link_key, link_priv_sig_key, link_enc_fixed_data
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+          link_id, link_key, link_priv_sig_key, link_enc_fixed_data,
+          ntf_public_key, ntf_private_key, ntf_id, rcv_ntf_dh_secret
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ( (host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
         :. (sndId, queueMode, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
         :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
+        :. ntfCredsFields
     )
   -- TODO [certs rcv] save client service
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, clientService = Nothing}
+  where
+    ntfCredsFields = case clientNtfCreds of
+      Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} ->
+        (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
+      Nothing -> (Nothing, Nothing, Nothing, Nothing)
 
 -- * createSndConn helpers
 
