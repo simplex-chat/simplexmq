@@ -609,6 +609,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             err e
           PPPermanentError -> err e
           PPInvalidPusher -> err e
+          _ -> err e
       where
         retryDeliver :: IO (Either PushProviderError ())
         retryDeliver = do
