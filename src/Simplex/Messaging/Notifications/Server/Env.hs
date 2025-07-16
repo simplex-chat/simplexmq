@@ -47,6 +47,9 @@ import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 import Simplex.Messaging.Notifications.Server.Push (PushNotification, PushProviderClient)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient)
+import Network.HTTP.Client (newManager)
+import Network.HTTP.Client.TLS (tlsManagerSettings)
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
@@ -161,11 +164,25 @@ newNtfPushServer qSize apnsConfig = do
   pure NtfPushServer {pushQ, pushClients, apnsConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
+newPushClient s pp = do
+  case pp of
+    PPWebPush -> newWPPushClient s
+    _ -> newAPNSPushClient s pp
+
+newAPNSPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
+newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
   c <- case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
   atomically $ TM.insert pp c pushClients
+  pure c
+
+newWPPushClient :: NtfPushServer -> IO PushProviderClient
+newWPPushClient NtfPushServer {pushClients} = do
+  logDebug "New WP Client requested"
+  manager <- newManager tlsManagerSettings
+  let c = wpPushProviderClient manager
+  atomically $ TM.insert PPWebPush c pushClients
   pure c
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
