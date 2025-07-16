@@ -1489,8 +1489,8 @@ client
                         rcvId <- randId
                         ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
                           notifierId <- randId
-                          let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
-                          pure (ntfCreds, ServerNtfCreds notifierId rcvPubDhKey)
+                          let ntfCreds' = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
+                          pure (ntfCreds', ServerNtfCreds notifierId rcvPubDhKey)
                         let queueMode = queueReqMode <$> queueReqData
                             qr =
                               QueueRec
@@ -1603,19 +1603,19 @@ client
                 msg_ <- tryPeekMsg ms q
                 msg' <- forM msg_ $ \msg -> liftIO $ do
                   ts <- getSystemSeconds
-                  sub <- maybe (atomically $ getSub entId) pure sub_
+                  sub <- maybe (atomically getSub) pure sub_
                   atomically $ setDelivered sub msg ts
                   unless hasSub $ incStat $ qSub stats
                   pure (NoCorrId, entId, MSG (encryptMsg qr msg))
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
-        getSub :: RecipientId -> STM Sub
-        getSub rId =
-          TM.lookup rId (subscriptions clnt) >>= \case
+        getSub :: STM Sub
+        getSub =
+          TM.lookup entId (subscriptions clnt) >>= \case
             Just sub -> pure sub
             Nothing -> do
               sub <- newSubscription NoSub
-              TM.insert rId sub $ subscriptions clnt
+              TM.insert entId sub $ subscriptions clnt
               pure sub
 
         subscribeNewQueue :: RecipientId -> QueueRec -> M s ()
@@ -1736,12 +1736,11 @@ client
                 incServiceQueueSubs = modifyTVar' (clientServiceSubs clnt) (+ 1) -- service count
             Nothing -> case queueServiceId of
               Just _ -> runExceptT $ do
-                -- getSubscription should never be Just in this branch, because queue was associated with service.
-                -- So unless storage and session states diverge, this check is redundant.
                 ExceptT $ setQueueService (queueStore ms) q party Nothing
                 liftIO $ incSrvStat srvAssocRemoved
+                -- getSub may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
+                -- For notification service it can only be Just if storage and session states diverge.
                 r <- atomically $ getSubscription >>= newSub
-
                 atomically writeSub
                 pure r
               Nothing -> do
@@ -1766,26 +1765,27 @@ client
               pure $ SOKS count
           where
             deliverServiceMessages expectedCnt = do
-              (qCnt, _msgCnt, _dupCnt, _errCnt) <- foldRcvServiceQueues (queueStore ms) (mkQueue ms True) serviceId deliverQueueMsg (0, 0, 0, 0)
+              (qCnt, _msgCnt, _dupCnt, _errCnt) <- foldRcvServiceMessages ms serviceId deliverQueueMsg (0, 0, 0, 0)
               -- TODO [cert rcv] compare with expected
               logNote $ "Service subscriptions for " <> tshow serviceId <> " (" <> tshow qCnt <> " queues)"
-            deliverQueueMsg :: (Int, Int, Int, Int) -> (StoreQueue s, QueueRec) -> IO (Int, Int, Int, Int)
-            deliverQueueMsg acc@(!qCnt, !msgCnt, !dupCnt, !errCnt) (q, qr) =
-              runExceptT (tryPeekMsg ms q) >>= \case
-                Left e -> pure (qCnt + 1, msgCnt, dupCnt, errCnt + 1) -- TODO deliver subscription error
-                Right Nothing -> pure acc
-                Right (Just msg) -> do
-                  let rId = recipientId q
-                  atomically (getNewSub rId) >>= \case
+            deliverQueueMsg :: (Int, Int, Int, Int) -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO (Int, Int, Int, Int)
+            deliverQueueMsg (!qCnt, !msgCnt, !dupCnt, !errCnt) rId = \case
+              Left e -> pure (qCnt + 1, msgCnt, dupCnt, errCnt + 1) -- TODO deliver subscription error
+              Right qMsg_ -> case qMsg_ of
+                Nothing -> pure (qCnt + 1, msgCnt, dupCnt, errCnt)
+                Just (qr, msg) ->
+                  atomically (getSubscription rId) >>= \case
                     Nothing -> pure (qCnt + 1, msgCnt, dupCnt + 1, errCnt)
                     Just sub -> do
                       ts <- getSystemSeconds
                       atomically $ setDelivered sub msg ts
                       atomically $ writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]
                       pure (qCnt + 1, msgCnt + 1, dupCnt, errCnt)
-            getNewSub rId =
+            getSubscription rId =
               TM.lookup rId (subscriptions clnt) >>= \case
-                Just _sub -> pure Nothing -- if delivery subscription already exists, then there is no need to deliver message
+                -- If delivery subscription already exists, then there is no need to deliver message.
+                -- It may have been created when the message is sent after service subscription is created.
+                Just _sub -> pure Nothing
                 Nothing -> do
                   sub <- newSubscription NoSub
                   TM.insert rId sub $ subscriptions clnt

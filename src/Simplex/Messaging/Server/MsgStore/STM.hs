@@ -89,8 +89,10 @@ instance MsgStoreClass STMMsgStore where
   expireOldMessages _tty ms now ttl =
     withLoadedQueues (queueStore_ ms) $ atomically . expireQueueMsgs ms now (now - ttl)
 
-  foldRcvServiceMessages :: STMMsgStore -> ServiceId -> (a -> RecipientId -> Message -> IO a) -> IO a
-  foldRcvServiceMessages = undefined
+  foldRcvServiceMessages :: STMMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO a
+  foldRcvServiceMessages ms serviceId f=
+    foldRcvServiceQueues (queueStore_ ms) serviceId $ \a (q, qr) ->
+      runExceptT (tryPeekMsg ms q) >>= f a (recipientId q) . ((qr,) <$$>)
 
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}

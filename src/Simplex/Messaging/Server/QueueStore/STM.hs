@@ -17,6 +17,7 @@
 module Simplex.Messaging.Server.QueueStore.STM
   ( STMQueueStore (..),
     STMService (..),
+    foldRcvServiceQueues,
     setStoreLog,
     withLog',
     readQueueRecIO,
@@ -356,16 +357,15 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         SRecipientService -> serviceRcvQueues
         SNotifierService -> serviceNtfQueues
 
-  -- TODO [rcv certs] this should create queue with mkQ
-  foldRcvServiceQueues :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> ServiceId -> (a -> (q, QueueRec) -> IO a) -> a -> IO a
-  foldRcvServiceQueues st mkQ serviceId f acc =
-    TM.lookupIO serviceId (services st) >>= \case
-      Nothing -> pure acc
-      Just s ->
-        readTVarIO (serviceRcvQueues s)
-          >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc
-    where
-      get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
+foldRcvServiceQueues :: StoreQueueClass q => STMQueueStore q -> ServiceId -> (a -> (q, QueueRec)  -> IO a) -> a -> IO a
+foldRcvServiceQueues st serviceId f acc =
+  TM.lookupIO serviceId (services st) >>= \case
+    Nothing -> pure acc
+    Just s ->
+      readTVarIO (serviceRcvQueues s)
+        >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc
+  where
+    get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

@@ -44,7 +44,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> s -> (StoreQueue s -> IO a) -> IO a
   -- tty, store, now, ttl
   expireOldMessages :: Bool -> s -> Int64 -> Int64 -> IO MessageStats
-  foldRcvServiceMessages :: s -> ServiceId -> (a -> RecipientId -> Message -> IO a) -> IO a
+  foldRcvServiceMessages :: s -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO a
   logQueueStates :: s -> IO ()
   logQueueState :: StoreQueue s -> StoreMonad s ()
   queueStore :: s -> QueueStore s
