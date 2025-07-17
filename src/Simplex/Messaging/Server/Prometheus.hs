@@ -267,9 +267,9 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_queues_notify_created counter\n\
       \simplex_smp_queues_notify_created " <> mshow _ntfCreated <> "\n# ntfCreated\n\
       \\n\
-      \# HELP simplex_smp_queues_notify_created Created new queues with notification credentials.\n\
-      \# TYPE simplex_smp_queues_notify_created counter\n\
-      \simplex_smp_queues_notify_created " <> mshow _ntfNewCreated <> "\n# ntfNewCreated\n\
+      \# HELP simplex_smp_queues_notify_new_created Created new queues with notification credentials.\n\
+      \# TYPE simplex_smp_queues_notify_new_created counter\n\
+      \simplex_smp_queues_notify_new_created " <> mshow _ntfNewCreated <> "\n# ntfNewCreated\n\
       \\n\
       \# HELP simplex_smp_queues_notify_deleted Deleted queue notification credentials.\n\
       \# TYPE simplex_smp_queues_notify_deleted counter\n\
