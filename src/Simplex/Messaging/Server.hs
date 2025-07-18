@@ -1512,7 +1512,7 @@ client
                             stats <- asks serverStats
                             incStat $ qCreated stats
                             incStat $ qCount stats
-                            when (isJust ntf) $ incStat $ ntfCreated stats
+                            when (isJust ntf) $ incStat $ ntfNewCreated stats
                             case subMode of
                               SMOnlyCreate -> pure ()
                               SMSubscribe -> subscribeNewQueue rcvId qr -- no need to check if message is available, it's a new queue
@@ -1580,7 +1580,7 @@ client
         subscribeQueueAndDeliver :: StoreQueue s -> QueueRec -> M s ResponseAndMessage
         subscribeQueueAndDeliver q qr =
           liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
-            Nothing -> subscribeRcvQueue qr >>= deliver True
+            Nothing -> subscribeRcvQueue qr >>= deliver False
             Just s@Sub {subThread} -> do
               stats <- asks serverStats
               case subThread of
@@ -1590,7 +1590,7 @@ client
                   pure (err (CMD PROHIBITED), Nothing)
                 _ -> do
                   incStat $ qSubDuplicate stats
-                  atomically (writeTVar (delivered s) Nothing) >> deliver False s
+                  atomically (writeTVar (delivered s) Nothing) >> deliver True s
           where
             deliver :: Bool -> Sub -> M s ResponseAndMessage
             deliver hasSub sub = do
