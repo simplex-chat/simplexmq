@@ -69,9 +69,7 @@ liftPPWPError :: IO a -> ExceptT PushProviderError IO a
 liftPPWPError = liftPPWPError' toPPWPError
 
 liftPPWPError' :: (SomeException -> PushProviderError) -> IO a -> ExceptT PushProviderError IO a
-liftPPWPError' err a = do
-  res <- liftIO $ try @SomeException a
-  either (throwError . err) return res
+liftPPWPError' err a = liftIO (try @SomeException a) >>= either (throwError . err) return
 
 toPPWPError :: SomeException -> PushProviderError
 toPPWPError e = case fromException e of
