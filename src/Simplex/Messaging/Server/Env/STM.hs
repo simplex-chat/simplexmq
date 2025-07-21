@@ -149,6 +149,7 @@ data ServerConfig s = ServerConfig
     -- | control port passwords,
     controlPortUserAuth :: Maybe BasicAuth,
     controlPortAdminAuth :: Maybe BasicAuth,
+    dailyBlockQueueQuota :: Int,
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     expireMessagesOnStart :: Bool,

@@ -559,6 +559,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
           msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
           msgNtfExpired' <- atomicSwapIORef (msgNtfExpired ss) 0
+          _qBlocked <- atomicSwapIORef (qBlocked ss) 0 -- not logged, only reset
           pRelays' <- getResetProxyStatsData pRelays
           pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
@@ -962,7 +963,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                               SubPending -> (c1, c2 + 1, c3, c4)
                               SubThread _ -> (c1, c2, c3 + 1, c4)
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
-              CPDelete sId -> withUserRole $ unliftIO u $ do
+              CPDelete sId -> withAdminRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
                   q <- ExceptT $ getQueue st SSender sId
@@ -981,14 +982,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", queueMode: " <> show queueMode
               CPBlock sId info -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
-                r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
-                  ExceptT $ blockQueue (queueStore st) q info
-                case r of
-                  Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
-                  Right () -> do
-                    incStat . qBlocked =<< asks serverStats
-                    liftIO $ hPutStrLn h "ok"
+                stats <- asks serverStats
+                blocked <- liftIO $ readIORef $ qBlocked stats
+                let quota = dailyBlockQueueQuota cfg
+                if blocked >= quota
+                  then liftIO $ hPutStrLn h $ "error: reached limit of " <> show quota <> " queues blocked daily"
+                  else do
+                    r <- liftIO $ runExceptT $ do
+                      q <- ExceptT $ getQueue st SSender sId
+                      ExceptT $ blockQueue (queueStore st) q info
+                    case r of
+                      Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
+                      Right () -> do
+                        incStat $ qBlocked stats
+                        liftIO $ hPutStrLn h "ok"
               CPUnblock sId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
