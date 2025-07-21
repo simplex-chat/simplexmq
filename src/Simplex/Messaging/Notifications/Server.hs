@@ -364,12 +364,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                   CPSkip -> False
                   _ -> True
             processCP h role = \case
-              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+              CPAuth auth -> controlPortAuth h user admin role auth
                 where
-                  newRole NtfServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
-                    | Just auth == admin = CPRAdmin
-                    | Just auth == user = CPRUser
-                    | otherwise = CPRNone
+                  NtfServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin} = cfg
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
                 let getStat :: (NtfServerStats -> IORef a) -> IO a
