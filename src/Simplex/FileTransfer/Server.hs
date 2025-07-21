@@ -54,7 +54,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
-import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
+import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..), getRoundedSystemTime)
@@ -277,12 +277,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                   CPSkip -> False
                   _ -> True
             processCP h role = \case
-              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+              CPAuth auth -> controlPortAuth h user admin role auth
                 where
-                  newRole XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
-                    | Just auth == admin = CPRAdmin
-                    | Just auth == user = CPRUser
-                    | otherwise = CPRNone
+                  XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin} = cfg
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
               CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store

@@ -31,6 +31,7 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
+    controlPortAuth,
     importMessages,
     exportMessages,
     printMessageStats,
@@ -558,6 +559,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
           msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
           msgNtfExpired' <- atomicSwapIORef (msgNtfExpired ss) 0
+          _qBlocked <- atomicSwapIORef (qBlocked ss) 0 -- not logged, only reset
           pRelays' <- getResetProxyStatsData pRelays
           pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
@@ -770,12 +772,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   CPSkip -> False
                   _ -> True
             processCP h role = \case
-              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+              CPAuth auth -> controlPortAuth h user admin role auth
                 where
-                  newRole ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
-                    | Just auth == admin = CPRAdmin
-                    | Just auth == user = CPRUser
-                    | otherwise = CPRNone
+                  ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin} = cfg
               CPSuspend -> withAdminRole $ hPutStrLn h "suspend not implemented"
               CPResume -> withAdminRole $ hPutStrLn h "resume not implemented"
               CPClients -> withAdminRole $ do
@@ -964,7 +963,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                               SubPending -> (c1, c2 + 1, c3, c4)
                               SubThread _ -> (c1, c2, c3 + 1, c4)
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
-              CPDelete sId -> withUserRole $ unliftIO u $ do
+              CPDelete sId -> withAdminRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
                   q <- ExceptT $ getQueue st SSender sId
@@ -983,14 +982,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", queueMode: " <> show queueMode
               CPBlock sId info -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
-                r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
-                  ExceptT $ blockQueue (queueStore st) q info
-                case r of
-                  Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
-                  Right () -> do
-                    incStat . qBlocked =<< asks serverStats
-                    liftIO $ hPutStrLn h "ok"
+                stats <- asks serverStats
+                blocked <- liftIO $ readIORef $ qBlocked stats
+                let quota = dailyBlockQueueQuota cfg
+                if blocked >= quota && quota /= 0
+                  then liftIO $ hPutStrLn h $ "error: reached limit of " <> show quota <> " queues blocked daily"
+                  else do
+                    r <- liftIO $ runExceptT $ do
+                      q <- ExceptT $ getQueue st SSender sId
+                      ExceptT $ blockQueue (queueStore st) q info
+                    case r of
+                      Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
+                      Right () -> do
+                        incStat $ qBlocked stats
+                        liftIO $ hPutStrLn h "ok"
               CPUnblock sId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
@@ -1044,6 +1049,20 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
       not <$> anyM [hasSubs (subscribers s), hasSubs (ntfSubscribers s)]
       where
         hasSubs ServerSubscribers {subClients} = IS.member clientId <$> readTVarIO subClients
+
+controlPortAuth :: Handle -> Maybe BasicAuth -> Maybe BasicAuth -> TVar CPClientRole -> BasicAuth -> IO ()
+controlPortAuth h user admin role auth = do
+  readTVarIO role >>= \case
+    CPRNone -> do
+      atomically $ writeTVar role $! newRole
+      hPutStrLn h $ currentRole newRole
+    r -> hPutStrLn h $ currentRole r <> if r == newRole then "" else ", start new session to change."
+  where
+    currentRole r = "Current role is " <> show r
+    newRole
+      | Just auth == admin = CPRAdmin
+      | Just auth == user = CPRUser
+      | otherwise = CPRNone
 
 clientDisconnected :: forall s. Client s -> M s ()
 clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceSubsCount, ntfServiceSubsCount, connected, clientTHParams = THandleParams {sessionId, thAuth}, endThreads} = do
