@@ -1,3 +1,12 @@
+# 6.4.1
+
+SMP protocol:
+- create notification credentials via NEW command that creates the queue (#1586)
+
+SMP server:
+- control port session improvements (#1591)
+- additional stat counter for ntf credentials created together with the queue (#1589)
+
 # 6.4.0
 
 SMP protocol (server/client):
