@@ -109,7 +109,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> (optDisabled controlPortPwds <> "control_port_admin_password: " <> maybe "" fst controlPortPwds <> "\n")
     <> (optDisabled controlPortPwds <> "control_port_user_password: " <> maybe "" snd controlPortPwds <> "\n\n")
     <> "# The limit for queues that can be blocked via control port per day, resets at 0:00 UTC.\n\
-        \# Set to 0 to disable limit. Default is 20.\n\
+        \# Set to 0 to disable limit, to -1 to prohibit blocking. Default is 20.\n\
         \# daily_block_queue_quota: 20\n\
         \n\
         \[TRANSPORT]\n\

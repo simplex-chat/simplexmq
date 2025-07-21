@@ -985,7 +985,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 stats <- asks serverStats
                 blocked <- liftIO $ readIORef $ qBlocked stats
                 let quota = dailyBlockQueueQuota cfg
-                if blocked >= quota
+                if blocked >= quota && quota /= 0
                   then liftIO $ hPutStrLn h $ "error: reached limit of " <> show quota <> " queues blocked daily"
                   else do
                     r <- liftIO $ runExceptT $ do
