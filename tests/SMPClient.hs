@@ -226,6 +226,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       newQueueBasicAuth = Nothing,
       controlPortUserAuth = Nothing,
       controlPortAdminAuth = Nothing,
+      dailyBlockQueueQuota = 20,
       messageExpiration = Just defaultMessageExpiration,
       expireMessagesOnStart = True,
       idleQueueInterval = defaultIdleQueueInterval,
