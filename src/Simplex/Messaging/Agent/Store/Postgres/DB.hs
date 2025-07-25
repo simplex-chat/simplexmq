@@ -18,7 +18,6 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
   )
 where
 
-import Control.Exception (catch)
 import qualified Control.Exception as E
 import Control.Monad (void)
 import Data.ByteString.Char8 (ByteString)
@@ -68,7 +67,12 @@ withLoggedErrors :: Show q => q -> IO a -> IO a
 withLoggedErrors q action =
   action
     `E.catch` (\(e :: SqlError) -> logSqlErrorAndRethrow e)
-    `E.catch` (\(e :: E.SomeException) -> logGenericErrorAndRethrow e)
+    `E.catch`
+      (\(e :: E.SomeException) ->
+        case E.fromException e :: Maybe SqlError of
+          Just sqlErr -> E.throwIO sqlErr  -- rethrow SqlError without logging
+          Nothing -> logGenericErrorAndRethrow e
+      )
   where
     logSqlErrorAndRethrow :: SqlError -> IO a
     logSqlErrorAndRethrow e = do
