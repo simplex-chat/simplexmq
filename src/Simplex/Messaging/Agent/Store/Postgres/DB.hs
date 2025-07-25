@@ -11,21 +11,24 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
     execute,
     execute_,
     executeMany,
-    PSQL.query,
-    PSQL.query_,
+    query,
+    query_,
     blobFieldDecoder,
     fromTextField_,
   )
 where
 
+import Control.Exception (catch)
+import qualified Control.Exception as E
 import Control.Monad (void)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
-import Database.PostgreSQL.Simple (ResultError (..))
+import Database.PostgreSQL.Simple (ResultError (..), SqlError (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.FromField (Field (..), FieldParser, FromField (..), returnError)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
@@ -42,16 +45,43 @@ instance ToField BoolInt where
   {-# INLINE toField #-}
 
 execute :: PSQL.ToRow q => PSQL.Connection -> PSQL.Query -> q -> IO ()
-execute db q qs = void $ PSQL.execute db q qs
+execute db q qs = withLoggedErrors q $ void $ PSQL.execute db q qs
 {-# INLINE execute #-}
 
 execute_ :: PSQL.Connection -> PSQL.Query -> IO ()
-execute_ db q = void $ PSQL.execute_ db q
+execute_ db q = withLoggedErrors q $ void $ PSQL.execute_ db q
 {-# INLINE execute_ #-}
 
 executeMany :: PSQL.ToRow q => PSQL.Connection -> PSQL.Query -> [q] -> IO ()
-executeMany db q qs = void $ PSQL.executeMany db q qs
+executeMany db q qs = withLoggedErrors q $ void $ PSQL.executeMany db q qs
 {-# INLINE executeMany #-}
+
+query :: (PSQL.ToRow q, PSQL.FromRow r) => PSQL.Connection -> PSQL.Query -> q -> IO [r]
+query db q qs = withLoggedErrors q $ PSQL.query db q qs
+{-# INLINE query #-}
+
+query_ :: PSQL.FromRow r => PSQL.Connection -> PSQL.Query -> IO [r]
+query_ db q = withLoggedErrors q $ PSQL.query_ db q
+{-# INLINE query_ #-}
+
+withLoggedErrors :: Show q => q -> IO a -> IO a
+withLoggedErrors q action =
+  action
+    `E.catch` (\(e :: SqlError) -> logSqlErrorAndRethrow e)
+    `E.catch` (\(e :: E.SomeException) -> logGenericErrorAndRethrow e)
+  where
+    logSqlErrorAndRethrow :: SqlError -> IO a
+    logSqlErrorAndRethrow e = do
+      putStrLn "Caught SqlError"
+      putStrLn $ "Message: " <> B.unpack (sqlErrorMsg e)
+      putStrLn $ "SQL State: " <> B.unpack (sqlState e)
+      putStrLn $ "Query: " <> show q
+      E.throwIO e
+    logGenericErrorAndRethrow :: E.SomeException -> IO a
+    logGenericErrorAndRethrow e = do
+      putStrLn $ "Caught generic exception: " <> show e
+      putStrLn $ "Query: " <> show q
+      E.throwIO e
 
 -- orphan instances
 
