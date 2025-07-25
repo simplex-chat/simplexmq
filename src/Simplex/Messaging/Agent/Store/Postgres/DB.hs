@@ -70,7 +70,7 @@ withLoggedErrors q action =
     `E.catch`
       (\(e :: E.SomeException) ->
         case E.fromException e :: Maybe SqlError of
-          Just sqlErr -> E.throwIO sqlErr  -- rethrow SqlError without logging
+          Just sqlErr -> E.throwIO sqlErr -- rethrow SqlError without logging
           Nothing -> logGenericErrorAndRethrow e
       )
   where
