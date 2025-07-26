@@ -49,7 +49,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow)
+import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow, unlessM)
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -172,12 +172,13 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
   E.bracket getSocket (closeServer started clients) $ \sock ->
     forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId' `seq` (cId', cId')
+      closed <- newTVarIO False
       let closeConn _ = do
-            atomically $ modifyTVar' clients $ IM.delete cId
+            atomically $ writeTVar closed True >> modifyTVar' clients (IM.delete cId)
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
             atomically $ modifyTVar' gracefullyClosed (+ 1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
-      atomically $ modifyTVar' clients $ IM.insert cId tId
+      atomically $ unlessM (readTVar closed) $ modifyTVar' clients $ IM.insert cId tId
 
 -- | Recover from errors in `accept` whenever it is safe.
 -- Some errors are safe to ignore, while blindly restaring `accept` may trigger a busy loop.

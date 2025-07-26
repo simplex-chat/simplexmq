@@ -989,13 +989,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   then liftIO $ hPutStrLn h $ "error: reached limit of " <> show quota <> " queues blocked daily"
                   else do
                     r <- liftIO $ runExceptT $ do
-                      q <- ExceptT $ getQueue st SSender sId
-                      ExceptT $ blockQueue (queueStore st) q info
+                      (q, QueueRec {status}) <- ExceptT $ getQueueRec st SSender sId
+                      when (status == EntityActive) $ ExceptT $ blockQueue (queueStore st) q info
+                      pure status
                     case r of
                       Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
-                      Right () -> do
+                      Right EntityActive -> do
                         incStat $ qBlocked stats
-                        liftIO $ hPutStrLn h "ok"
+                        liftIO $ hPutStrLn h "ok, queue blocked"
+                      Right status -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status
               CPUnblock sId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
@@ -1003,7 +1005,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   ExceptT $ unblockQueue (queueStore st) q
                 liftIO $ hPutStrLn h $ case r of
                   Left e -> "error: " <> show e
-                  Right () -> "ok"
+                  Right () -> "ok, queue unblocked"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False
