@@ -95,7 +95,7 @@ xftpPrometheusMetrics sm ts =
       \\n\
       \# HELP simplex_xftp_files_count_total Total files count \n\
       \# TYPE simplex_xftp_files_count_total gauge\n\
-      \simplex_xftp_files_count " <> mshow _filesCount <> "\n\
+      \simplex_xftp_files_count_total " <> mshow _filesCount <> "\n\
       \# filesCount\n\
       \\n\
       \# HELP simplex_xftp_files_size Size of files \n\
