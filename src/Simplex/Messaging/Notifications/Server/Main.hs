@@ -167,6 +167,9 @@ ntfServerCLI cfgPath logPath =
             <> "Time to retain deleted entities in the database, days.\n"
             <> ("# db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
             <> "log_stats: off\n\n\
+               \# Log interval for real-time Prometheus metrics\n\
+               \# prometheus_interval: 60\n\
+               \\n\
                \[AUTH]\n\
                \# control_port_admin_password:\n\
                \# control_port_user_password:\n\

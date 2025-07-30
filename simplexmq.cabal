@@ -224,6 +224,7 @@ library
           Simplex.FileTransfer.Server.Control
           Simplex.FileTransfer.Server.Env
           Simplex.FileTransfer.Server.Main
+          Simplex.FileTransfer.Server.Prometheus
           Simplex.FileTransfer.Server.Stats
           Simplex.FileTransfer.Server.Store
           Simplex.FileTransfer.Server.StoreLog
