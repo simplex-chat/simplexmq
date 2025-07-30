@@ -64,6 +64,8 @@ data XFTPServerConfig = XFTPServerConfig
     logStatsStartTime :: Int64,
     serverStatsLogFile :: FilePath,
     serverStatsBackupFile :: Maybe FilePath,
+    prometheusInterval :: Maybe Int,
+    prometheusMetricsFile :: FilePath,
     transportConfig :: TransportServerConfig,
     responseDelay :: Int
   }

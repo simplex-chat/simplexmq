@@ -99,6 +99,9 @@ testXFTPLogFile = "tests/tmp/xftp-server-store.log"
 testXFTPStatsBackupFile :: FilePath
 testXFTPStatsBackupFile = "tests/tmp/xftp-server-stats.log"
 
+xftpTestPrometheusMetricsFile :: FilePath
+xftpTestPrometheusMetricsFile = "tests/tmp/xftp-server-metrics.txt"
+
 testXFTPServerConfig :: XFTPServerConfig
 testXFTPServerConfig =
   XFTPServerConfig
@@ -127,6 +130,8 @@ testXFTPServerConfig =
       logStatsStartTime = 0,
       serverStatsLogFile = "tests/tmp/xftp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      prometheusInterval = Nothing,
+      prometheusMetricsFile = xftpTestPrometheusMetricsFile,
       transportConfig = mkTransportServerConfig True (Just alpnSupportedXFTPhandshakes) False,
       responseDelay = 0
     }
