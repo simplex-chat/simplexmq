@@ -912,12 +912,19 @@ getConnShortLink' c nm userId = \case
   where
     decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (ConnectionRequestUri c, ConnLinkData c)
     decryptData srv linkKey k (sndId, d) = do
-      r@(cReq, _) <- liftEither $ SL.decryptLinkData @c linkKey k d
+      r@(cReq, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
       let (srv', sndId') = qAddress (connReqQueue cReq)
       unless (srv `sameSrvHost` srv' && sndId == sndId') $
         throwE $ AGENT $ A_LINK "different address"
-      pure r
+      pure $ if srv' == srv then r else (updateConnReqServer srv cReq, clData)
     sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
+    updateConnReqServer :: SMPServer -> ConnectionRequestUri c -> ConnectionRequestUri c
+    updateConnReqServer srv = \case
+      CRInvitationUri crData e2eParams -> CRInvitationUri (updateQueues crData) e2eParams
+      CRContactUri crData -> CRContactUri $ updateQueues crData
+      where
+        updateQueues crData@(ConnReqUriData {crSmpQueues = SMPQueueUri vr addr :| qs}) =
+          crData {crSmpQueues = SMPQueueUri vr addr {smpServer = srv} :| qs}
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
