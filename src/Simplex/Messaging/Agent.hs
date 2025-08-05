@@ -96,6 +96,7 @@ module Simplex.Messaging.Agent
     reconnectSMPServer,
     registerNtfToken,
     verifyNtfToken,
+    verifySavedNtfToken,
     checkNtfToken,
     deleteNtfToken,
     getNtfToken,
@@ -584,6 +585,11 @@ registerNtfToken c userId = withAgentEnv c .: registerNtfToken' c userId
 verifyNtfToken :: AgentClient -> UserId -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
 verifyNtfToken c userId = withAgentEnv c .:. verifyNtfToken' c userId
 {-# INLINE verifyNtfToken #-}
+
+-- | Verify device notifications token
+verifySavedNtfToken :: AgentClient -> UserId -> ByteString -> AE ()
+verifySavedNtfToken c userId = withAgentEnv c . verifySavedNtfToken' c userId
+{-# INLINE verifySavedNtfToken #-}
 
 checkNtfToken :: AgentClient -> DeviceToken -> AE NtfTknStatus
 checkNtfToken c = withAgentEnv c . checkNtfToken' c
@@ -2259,6 +2265,19 @@ verifyNtfToken' c userId deviceToken nonce code =
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
       when (deviceToken /= savedDeviceToken) . throwE $ CMD PROHIBITED "verifyNtfToken: different token"
       code' <- liftEither . bimap cryptoError NtfRegCode $ C.cbDecrypt dhSecret nonce code
+      toStatus <-
+        withToken c userId tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+          agentNtfVerifyToken c tknId tkn code'
+      when (toStatus == NTActive) $ do
+        lift $ setCronInterval c tknId tkn
+        when (ntfMode == NMInstant) $ initializeNtfSubs c
+    _ -> throwE $ CMD PROHIBITED "verifyNtfToken: no token"
+
+verifySavedNtfToken' :: AgentClient -> UserId -> ByteString -> AM ()
+verifySavedNtfToken' c userId code =
+  withStore' c getSavedNtfToken >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfMode} -> do
+      let code' = NtfRegCode code
       toStatus <-
         withToken c userId tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
           agentNtfVerifyToken c tknId tkn code'
