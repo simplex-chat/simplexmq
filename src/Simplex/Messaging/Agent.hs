@@ -99,6 +99,7 @@ module Simplex.Messaging.Agent
     verifySavedNtfToken,
     checkNtfToken,
     deleteNtfToken,
+    deleteSavedNtfToken,
     getNtfToken,
     getNtfTokenData,
     toggleConnectionNtfs,
@@ -598,6 +599,10 @@ checkNtfToken c = withAgentEnv c . checkNtfToken' c
 deleteNtfToken :: AgentClient -> DeviceToken -> AE ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 {-# INLINE deleteNtfToken #-}
+
+deleteSavedNtfToken :: AgentClient -> AE ()
+deleteSavedNtfToken c = withAgentEnv c $ deleteSavedNtfToken' c
+{-# INLINE deleteSavedNtfToken #-}
 
 getNtfToken :: AgentClient -> AE (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken c = withAgentEnv c $ getNtfToken' c
@@ -2310,6 +2315,14 @@ deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
       when (deviceToken /= savedDeviceToken) $ logWarn "deleteNtfToken: different token"
+      deleteToken c tkn
+      deleteNtfSubs c NSCSmpDelete
+    _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
+
+deleteSavedNtfToken' :: AgentClient -> AM ()
+deleteSavedNtfToken' c =
+  withStore' c getSavedNtfToken >>= \case
+    Just tkn -> do
       deleteToken c tkn
       deleteNtfSubs c NSCSmpDelete
     _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
