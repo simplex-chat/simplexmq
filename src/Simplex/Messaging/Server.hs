@@ -963,24 +963,24 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                               SubPending -> (c1, c2 + 1, c3, c4)
                               SubThread _ -> (c1, c2, c3 + 1, c4)
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
-              CPDelete sId -> withAdminRole $ unliftIO u $ do
+              CPDelete qId -> withAdminRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
+                  (q, _) <- ExceptT $ getSenderQueue st qId
                   ExceptT $ deleteQueueSize st q
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
                   Right (qr, numDeleted) -> do
                     updateDeletedStats qr
                     liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
-              CPStatus sId -> withUserRole $ unliftIO u $ do
+              CPStatus qId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
-                q <- liftIO $ getQueueRec st SSender sId
+                q <- liftIO $ getSenderQueue st qId
                 liftIO $ hPutStrLn h $ case q of
                   Left e -> "error: " <> show e
                   Right (_, QueueRec {queueMode, status, updatedAt}) ->
                     "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", queueMode: " <> show queueMode
-              CPBlock sId info -> withUserRole $ unliftIO u $ do
+              CPBlock qId info -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 stats <- asks serverStats
                 blocked <- liftIO $ readIORef $ qBlocked stats
@@ -989,7 +989,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   then liftIO $ hPutStrLn h $ "error: reached limit of " <> show quota <> " queues blocked daily"
                   else do
                     r <- liftIO $ runExceptT $ do
-                      (q, QueueRec {status}) <- ExceptT $ getQueueRec st SSender sId
+                      (q, QueueRec {status}) <- ExceptT $ getSenderQueue st qId
                       when (status == EntityActive) $ ExceptT $ blockQueue (queueStore st) q info
                       pure status
                     case r of
@@ -998,14 +998,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                         incStat $ qBlocked stats
                         liftIO $ hPutStrLn h "ok, queue blocked"
                       Right status -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status
-              CPUnblock sId -> withUserRole $ unliftIO u $ do
+              CPUnblock qId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
-                  ExceptT $ unblockQueue (queueStore st) q
+                  (q, QueueRec {status}) <- ExceptT $ getSenderQueue st qId
+                  case status of
+                    EntityBlocked info -> Right info <$ ExceptT (unblockQueue (queueStore st) q)
+                    EntityActive -> pure $ Left True
+                    EntityOff -> pure $ Left False
                 liftIO $ hPutStrLn h $ case r of
                   Left e -> "error: " <> show e
-                  Right () -> "ok, queue unblocked"
+                  Right (Right info) -> "ok, queue unblocked, reason to block was: " <> show info
+                  Right (Left unblocked) -> if unblocked then "ok, queue was active" else "error, queue is inactive"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False
@@ -1014,6 +1018,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               CPQuit -> pure ()
               CPSkip -> pure ()
               where
+                getSenderQueue st qId =
+                  getQueueRec st SSender qId >>= \case
+                    Right r -> pure $ Right r
+                    Left AUTH -> getQueueRec st SSenderLink qId
+                    Left e ->  pure $ Left e
                 withUserRole action = readTVarIO role >>= \case
                   CPRAdmin -> action
                   CPRUser -> action
@@ -1508,8 +1517,8 @@ client
                         rcvId <- randId
                         ntf <- forM ntfKeys_ $ \(notifierKey, rcvNtfDhSecret, rcvPubDhKey) -> do
                           notifierId <- randId
-                          let ntfCreds = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
-                          pure (ntfCreds, ServerNtfCreds notifierId rcvPubDhKey)
+                          let ntfCreds' = NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId = Nothing}
+                          pure (ntfCreds', ServerNtfCreds notifierId rcvPubDhKey)
                         let queueMode = queueReqMode <$> queueReqData
                             qr =
                               QueueRec
