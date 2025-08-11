@@ -1129,7 +1129,7 @@ instance StrEncoding AConnectionRequestUri where
 
 connReqUriP :: Maybe ServiceScheme -> Parser AConnectionRequestUri
 connReqUriP overrideScheme = do
-  crScheme <- (`fromMaybe` overrideScheme) <$> strP
+  crScheme <- (`fromMaybe` overrideScheme) <$> strP -- always parse, but use the passed one if any
   crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
   query <- strP
   aVRange <- queryParam "v" query

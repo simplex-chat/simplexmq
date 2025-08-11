@@ -37,7 +37,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
 import Options.Applicative
-import Simplex.Messaging.Agent.Protocol (connReqUriP')
+import Simplex.Messaging.Agent.Protocol (ConnectionLink (..), connReqUriP')
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SMPWebPortServers (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
@@ -638,7 +638,8 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
         <$!> infoValue nameField
     countryValue field = (either error id . validCountryValue (T.unpack field) . T.unpack) <$!> infoValue field
     iniContacts simplexField emailField pgpKeyUriField pgpKeyFingerprintField =
-      let simplex = either error id . parseAll (connReqUriP' Nothing) . encodeUtf8 <$!> eitherToMaybe (lookupValue "INFORMATION" simplexField ini)
+      let simplex = either error id . parseAll linkP . encodeUtf8 <$!> eitherToMaybe (lookupValue "INFORMATION" simplexField ini)
+          linkP = CLFull <$> connReqUriP' Nothing <|> CLShort <$> strP
           email = infoValue emailField
           pkURI_ = infoValue pgpKeyUriField
           pkFingerprint_ = infoValue pgpKeyFingerprintField
