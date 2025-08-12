@@ -13,7 +13,7 @@ module Simplex.Messaging.Notifications.Server.Main where
 import Control.Logger.Simple (setLogLevel)
 import Control.Monad ((<$!>))
 import qualified Data.ByteString.Char8 as B
-import Data.Functor (($>))
+import Data.Functor ( ($>), void )
 import Data.Ini (lookupValue, readIniFile)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
@@ -38,7 +38,7 @@ import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres (exportNtfDbStore, importNtfSTMStore, newNtfDbStore)
 import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (supportedServerNTFVRange)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer, toExtras)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
@@ -55,6 +55,12 @@ import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
+import System.Process (readCreateProcess, shell)
+import GHC.Base (when)
+import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Crypto.PubKey.ECC.DH as ECDH
+import qualified Data.ByteString.Base64.URL as B64
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -145,10 +151,11 @@ ntfServerCLI cfgPath logPath =
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
       createDirectoryIfMissing True logPath
+      vapid <- genVapidKey $ combine cfgPath "vapid.privkey"
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
-          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp)) Nothing
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp) (toExtras [("vapid", vapid)])) Nothing
       T.writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
@@ -206,10 +213,11 @@ ntfServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
+      vapid <- getVapidKey $ combine cfgPath "vapid.privkey"
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@NtfServerConfig {transports} = serverConfig
-          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp) (toExtras [("vapid", vapid)])) Nothing
       printServiceInfo serverVersion srv
       printNtfServerConfig transports dbStoreConfig
       runNtfServer cfg
@@ -387,3 +395,19 @@ cliCommandP cfgPath logPath iniFile =
               <> metavar "FQDN"
           )
       pure InitOptions {enableStoreLog, dbOptions, signAlgorithm, ip, fqdn}
+
+genVapidKey :: FilePath -> IO B.ByteString
+genVapidKey file = do
+  cfgExists <- doesFileExist file
+  when (not cfgExists) $ run $ "openssl ecparam -name prime256v1 -genkey -noout -out " <> file
+  privk <- ECDSA.private_d <$> C.readECPrivateKey file
+  pure $ B64.encodeUnpadded . B.toStrict . C.uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ privk
+  where
+    run cmd = void $ readCreateProcess (shell cmd) ""
+
+getVapidKey :: FilePath -> IO B.ByteString
+getVapidKey file = do
+  cfgExists <- doesFileExist file
+  when (not cfgExists) $ error $ "VAPID key not found: " <> file
+  privk <- ECDSA.private_d <$> C.readECPrivateKey file
+  pure $ B64.encodeUnpadded . B.toStrict . C.uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ privk

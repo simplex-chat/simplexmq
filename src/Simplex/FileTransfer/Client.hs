@@ -105,7 +105,7 @@ defaultXFTPClientConfig =
 getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
 getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} proxySessTs disconnected = runExceptT $ do
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
-      ProtocolServer _ host port keyHash = srv
+      ProtocolServer _ host port keyHash _ = srv
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
   let tcConfig = (transportClientConfig xftpNetworkConfig useHost False) {alpn = clientALPN}
       http2Config = xftpHTTP2Config tcConfig config

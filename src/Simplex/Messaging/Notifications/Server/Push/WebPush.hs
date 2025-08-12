@@ -1,9 +1,6 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 {-# HLINT ignore "Use newtype instead of data" #-}
@@ -28,7 +25,6 @@ import qualified Network.HTTP.Types as N
 import qualified Data.Aeson as J
 import Data.Aeson ((.=))
 import qualified Data.Binary as Bin
-import qualified Data.Bits as Bits
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Lazy as BL
 import Data.List.NonEmpty (NonEmpty)
@@ -38,11 +34,9 @@ import Control.Monad.Trans.Except (throwE)
 import Crypto.Hash.Algorithms (SHA256)
 import Crypto.Random (MonadRandom(getRandomBytes))
 import qualified Crypto.Cipher.Types as CT
-import qualified Crypto.Error as CE
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
-import GHC.Base (when)
 
 wpPushProviderClient :: Manager -> PushProviderClient
 wpPushProviderClient mg tkn pn = do
@@ -81,7 +75,7 @@ wpEncrypt auth uaPubKS clearT = do
   salt :: B.ByteString <- liftIO $ getRandomBytes 16
   asPrivK <- liftIO $ ECDH.generatePrivate $ ECC.getCurveByName ECC.SEC_p256r1
   uaPubK <- point uaPubKS
-  let asPubK = BL.toStrict . uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
+  let asPubK = BL.toStrict . C.uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
       ecdhSecret = ECDH.getShared (ECC.getCurveByName ECC.SEC_p256r1) asPrivK uaPubK
       prkKey = hmac auth ecdhSecret
       keyInfo = "WebPush: info\0" <> uaPubKS <> asPubK
@@ -100,7 +94,7 @@ wpEncrypt auth uaPubKS clearT = do
   pure $ header <> cipherT <> BA.convert tag
   where
     point :: B.ByteString -> ExceptT C.CryptoError IO ECC.Point
-    point s = withExceptT C.CryptoInvalidECCKey $ uncompressDecode $ BL.fromStrict s
+    point s = withExceptT C.CryptoInvalidECCKey $ C.uncompressDecode $ BL.fromStrict s
     hmac k v = HMAC.hmac k v :: HMAC.HMAC SHA256
     takeHM :: Int -> HMAC.HMAC SHA256 -> B.ByteString
     takeHM n v = BL.toStrict $ BL.pack $ take n $ BA.unpack v
@@ -108,45 +102,6 @@ wpEncrypt auth uaPubKS clearT = do
     ivFrom s = case C.gcmIV s of
       Left e -> throwE e
       Right iv -> pure iv
-
--- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
--- | as required by RFC8291
--- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
-uncompressEncode :: ECC.Point -> BL.ByteString
-uncompressEncode (ECC.Point x y) = "\x04" <>
-                                     encodeBigInt x <>
-                                     encodeBigInt y
-uncompressEncode ECC.PointO = "\0"
-
-uncompressDecode :: BL.ByteString -> ExceptT CE.CryptoError IO ECC.Point
-uncompressDecode "\0" = pure ECC.PointO
-uncompressDecode s = do
-  when (BL.take 1 s /= prefix) $ throwError CE.CryptoError_PointFormatUnsupported
-  when (BL.length s /= 65) $ throwError CE.CryptoError_KeySizeInvalid
-  let s' = BL.drop 1 s
-  x <- decodeBigInt $ BL.take 32 s'
-  y <- decodeBigInt $ BL.drop 32 s'
-  pure $ ECC.Point x y
-  where
-    prefix = "\x04" :: BL.ByteString
-
-encodeBigInt :: Integer -> BL.ByteString
-encodeBigInt i = do
-  let s1 = Bits.shiftR i 64
-      s2 = Bits.shiftR s1 64
-      s3 = Bits.shiftR s2 64
-  Bin.encode ( w64 s3, w64 s2, w64 s1, w64 i )
-  where
-    w64 :: Integer -> Bin.Word64
-    w64 = fromIntegral
-
-decodeBigInt :: BL.ByteString -> ExceptT CE.CryptoError IO Integer
-decodeBigInt s = do
-  when (BL.length s /= 32) $ throwError CE.CryptoError_PointSizeInvalid
-  let (w3, w2, w1, w0) = Bin.decode s :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64 )
-  pure $ shift 3 w3 + shift 2 w2 + shift 1 w1 + shift 0 w0
-  where
-    shift i w = Bits.shiftL (fromIntegral w) (64*i)
 
 encodePN :: PushNotification -> BL.ByteString
 encodePN pn = J.encode $ case pn of

@@ -1398,15 +1398,15 @@ getSavedNtfToken db = do
     DB.query_
       db
       [sql|
-        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash, s.ntf_vapid,
           t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret,
           t.tkn_status, t.tkn_action, t.ntf_mode
         FROM ntf_tokens t
         JOIN ntf_servers s USING (ntf_host, ntf_port)
       |]
   where
-    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
-      let ntfServer = NtfServer host port keyHash
+    ntfToken ((host, port, keyHash, vapid) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
+      let ntfServer = NtfServer host port keyHash $ toExtras [("vapid", vapid)]
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
           ntfMode = fromMaybe NMPeriodic ntfMode_
           deviceToken = deviceToken' provider dt
@@ -1488,7 +1488,7 @@ deleteExpiredNtfTokensToDelete db ttl = do
 type NtfTokenToDelete = (Int64, C.APrivateAuthKey, NtfTokenId)
 
 getNextNtfTokenToDelete :: DB.Connection -> NtfServer -> IO (Either StoreError (Maybe NtfTokenToDelete))
-getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
+getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _ _) =
   getWorkItem "ntf tkn del" getNtfTknDbId getNtfTknToDelete (markNtfTokenToDeleteFailed_ db)
   where
     getNtfTknDbId :: IO (Maybe Int64)
@@ -1530,11 +1530,11 @@ getPendingDelTknServers db =
     <$> DB.query_
       db
       [sql|
-        SELECT DISTINCT ntf_host, ntf_port, ntf_key_hash
+        SELECT DISTINCT ntf_host, ntf_port, ntf_key_hash, ntf_vapid
         FROM ntf_tokens_to_delete
       |]
   where
-    toNtfServer (host, port, keyHash) = NtfServer host port keyHash
+    toNtfServer (host, port, keyHash, vapid) = NtfServer host port keyHash $ toExtras [("vapid", vapid)]
 
 deleteNtfTokenToDelete :: DB.Connection -> Int64 -> IO ()
 deleteNtfTokenToDelete db tknDbId =
@@ -1548,7 +1548,7 @@ getNtfSubscription db connId =
     DB.query
       db
       [sql|
-        SELECT c.user_id, s.host, s.port, COALESCE(nsb.smp_server_key_hash, s.key_hash), ns.ntf_host, ns.ntf_port, ns.ntf_key_hash,
+        SELECT c.user_id, s.host, s.port, COALESCE(nsb.smp_server_key_hash, s.key_hash), ns.ntf_host, ns.ntf_port, ns.ntf_key_hash, ns.ntf_vapid,
           nsb.smp_ntf_id, nsb.ntf_sub_id, nsb.ntf_sub_status, nsb.ntf_sub_action, nsb.ntf_sub_smp_action, nsb.ntf_sub_action_ts
         FROM ntf_subscriptions nsb
         JOIN connections c USING (conn_id)
@@ -1558,9 +1558,9 @@ getNtfSubscription db connId =
       |]
       (Only connId)
   where
-    ntfSubscription ((userId, smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash) :. (ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_)) =
+    ntfSubscription ((userId, smpHost, smpPort, smpKeyHash, ntfHost, ntfPort, ntfKeyHash, ntfVapid) :. (ntfQueueId, ntfSubId, ntfSubStatus, ntfAction_, smpAction_, actionTs_)) =
       let smpServer = SMPServer smpHost smpPort smpKeyHash
-          ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
+          ntfServer = NtfServer ntfHost ntfPort ntfKeyHash $ toExtras [("vapid", ntfVapid)]
           action = case (ntfAction_, smpAction_, actionTs_) of
             (Just ntfAction, Nothing, Just actionTs) -> Just (NSANtf ntfAction, actionTs)
             (Nothing, Just smpAction, Just actionTs) -> Just (NSASMP smpAction, actionTs)
@@ -1569,7 +1569,7 @@ getNtfSubscription db connId =
 
 createNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO (Either StoreError ())
 createNtfSubscription db ntfSubscription action = runExceptT $ do
-  let NtfSubscription {connId, smpServer = smpServer@(SMPServer host port _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} = ntfSubscription
+  let NtfSubscription {connId, smpServer = smpServer@(SMPServer host port _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _ _), ntfSubId, ntfSubStatus} = ntfSubscription
   smpServerKeyHash_ <- ExceptT $ getServerKeyHash_ db smpServer
   actionTs <- liftIO getCurrentTime
   liftIO $
@@ -1588,7 +1588,7 @@ createNtfSubscription db ntfSubscription action = runExceptT $ do
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 supervisorUpdateNtfSub :: DB.Connection -> NtfSubscription -> NtfSubAction -> IO ()
-supervisorUpdateNtfSub db NtfSubscription {connId, smpServer = (SMPServer smpHost smpPort _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action = do
+supervisorUpdateNtfSub db NtfSubscription {connId, smpServer = (SMPServer smpHost smpPort _), ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _ _), ntfSubId, ntfSubStatus} action = do
   ts <- getCurrentTime
   DB.execute
     db
@@ -1619,7 +1619,7 @@ supervisorUpdateNtfAction db connId action = do
     (ntfSubAction, ntfSubSMPAction) = ntfSubAndSMPAction action
 
 updateNtfSubscription :: DB.Connection -> NtfSubscription -> NtfSubAction -> NtfActionTs -> IO ()
-updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _), ntfSubId, ntfSubStatus} action actionTs = do
+updateNtfSubscription db NtfSubscription {connId, ntfQueueId, ntfServer = (NtfServer ntfHost ntfPort _ _), ntfSubId, ntfSubStatus} action actionTs = do
   r <- maybeFirstRow fromOnlyBI $ DB.query db "SELECT updated_by_supervisor FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
   forM_ r $ \updatedBySupervisor -> do
     updatedAt <- getCurrentTime
@@ -1682,7 +1682,7 @@ deleteNtfSubscription' db connId = do
   DB.execute db "DELETE FROM ntf_subscriptions WHERE conn_id = ?" (Only connId)
 
 getNextNtfSubNTFActions :: DB.Connection -> NtfServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs)])
-getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize =
+getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _ _) ntfBatchSize =
   getWorkItems "ntf NTF" getNtfConnIds getNtfSubAction (markNtfSubActionNtfFailed_ db)
   where
     getNtfConnIds :: IO [ConnId]
@@ -1750,7 +1750,7 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
         DB.query
           db
           [sql|
-            SELECT c.user_id, s.ntf_host, s.ntf_port, s.ntf_key_hash,
+            SELECT c.user_id, s.ntf_host, s.ntf_port, s.ntf_key_hash, s.ntf_vapid,
               ns.smp_ntf_id, ns.ntf_sub_id, ns.ntf_sub_status, ns.ntf_sub_smp_action
             FROM ntf_subscriptions ns
             JOIN connections c USING (conn_id)
@@ -1760,8 +1760,8 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
           (Only connId)
       where
         err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
-        ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, action) =
-          let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
+        ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfVapid, ntfQueueId, ntfSubId, ntfSubStatus, action) =
+          let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash $ toExtras [("vapid", ntfVapid)]
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
            in (action, ntfSubscription)
 
@@ -1779,7 +1779,7 @@ getActiveNtfToken db =
     DB.query
       db
       [sql|
-        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash,
+        SELECT s.ntf_host, s.ntf_port, s.ntf_key_hash, s.ntf_vapid,
           t.provider, t.device_token, t.tkn_id, t.tkn_pub_key, t.tkn_priv_key, t.tkn_pub_dh_key, t.tkn_priv_dh_key, t.tkn_dh_secret,
           t.tkn_status, t.tkn_action, t.ntf_mode
         FROM ntf_tokens t
@@ -1788,8 +1788,8 @@ getActiveNtfToken db =
       |]
       (Only NTActive)
   where
-    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
-      let ntfServer = NtfServer host port keyHash
+    ntfToken ((host, port, keyHash, vapid) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
+      let ntfServer = NtfServer host port keyHash $ toExtras [("vapid", vapid)]
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
           ntfMode = fromMaybe NMPeriodic ntfMode_
           deviceToken = deviceToken' provider dt
@@ -1960,17 +1960,18 @@ getServerKeyHash_ db ProtocolServer {host, port, keyHash} = do
     useKeyHash (Only keyHash') = if keyHash /= keyHash' then Just keyHash else Nothing
 
 upsertNtfServer_ :: DB.Connection -> NtfServer -> IO ()
-upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
+upsertNtfServer_ db ProtocolServer {host, port, keyHash, extras} = do
   DB.execute
     db
     [sql|
-      INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (?,?,?)
+      INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash, ntf_vapid) VALUES (?,?,?,?)
       ON CONFLICT (ntf_host, ntf_port) DO UPDATE SET
         ntf_host=excluded.ntf_host,
         ntf_port=excluded.ntf_port,
         ntf_key_hash=excluded.ntf_key_hash;
+        ntf_vapid=excluded.ntf_vapid;
     |]
-    (host, port, keyHash)
+    (host, port, keyHash, getExtra extras "vapid" "")
 
 -- * createRcvConn helpers
 

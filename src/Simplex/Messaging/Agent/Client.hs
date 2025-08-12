@@ -1162,7 +1162,7 @@ sendOrProxySMPCommand c userId destSrv@ProtocolServer {host = destHosts} connId 
           Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
-ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
+ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _ _) = do
   isJust socksProxy || (hostMode == HMOnion && any isOnionHost hosts)
   where
     isOnionHost = \case THOnionHost _ -> True; _ -> False

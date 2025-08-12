@@ -93,6 +93,8 @@ module Simplex.Messaging.Protocol
     AProtocolType (..),
     ProtocolTypeI (..),
     UserProtocol,
+    Extra,
+    Extras,
     ProtocolServer (..),
     ProtoServer,
     SMPServer,
@@ -175,6 +177,8 @@ module Simplex.Messaging.Protocol
     sameSrvAddr',
     noAuthSrv,
     toMsgInfo,
+    toExtras,
+    getExtra,
 
     -- * TCP transport functions
     TransportBatch (..),
@@ -213,7 +217,7 @@ import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (isJust, isNothing, mapMaybe)
 import Data.String
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -968,7 +972,7 @@ instance Encoding ClientMessage where
 type SMPServer = ProtocolServer 'PSMP
 
 pattern SMPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PSMP
-pattern SMPServer host port keyHash = ProtocolServer SPSMP host port keyHash
+pattern SMPServer host port keyHash = ProtocolServer SPSMP host port keyHash Nothing
 
 {-# COMPLETE SMPServer #-}
 
@@ -976,8 +980,8 @@ type SMPServerWithAuth = ProtoServerWithAuth 'PSMP
 
 type NtfServer = ProtocolServer 'PNTF
 
-pattern NtfServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PNTF
-pattern NtfServer host port keyHash = ProtocolServer SPNTF host port keyHash
+pattern NtfServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> Maybe Extras -> ProtocolServer 'PNTF
+pattern NtfServer host port keyHash extras = ProtocolServer SPNTF host port keyHash extras
 
 {-# COMPLETE NtfServer #-}
 
@@ -986,7 +990,7 @@ type NtfServerWithAuth = ProtoServerWithAuth 'PNTF
 type XFTPServer = ProtocolServer 'PXFTP
 
 pattern XFTPServer :: NonEmpty TransportHost -> ServiceName -> C.KeyHash -> ProtocolServer 'PXFTP
-pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash
+pattern XFTPServer host port keyHash = ProtocolServer SPXFTP host port keyHash Nothing
 
 {-# COMPLETE XFTPServer #-}
 
@@ -1101,12 +1105,67 @@ userProtocol = \case
   SPNTF -> Just Dict
   -- _ -> Nothing
 
+data Extra = Extra (ByteString, ByteString)
+  deriving (Eq, Ord, Show)
+
+instance Encoding Extra where
+  smpEncode (Extra v) = smpEncode v
+  smpP = do
+    (k, v) <- smpP
+    pure $ Extra (k, v)
+
+instance StrEncoding Extra where
+  strEncode (Extra (k, v)) = k <> "=" <> v
+  strP = do
+    k <- A.takeWhile (/= '=')
+    _ <- A.char '='
+    v <- A.takeByteString
+    pure $ Extra (k, v)
+
+data Extras = Extras [Extra]
+  deriving (Eq, Ord, Show)
+
+instance Encoding Extras where
+  smpEncode (Extras m) = smpEncodeList m
+  smpP = Extras <$> smpListP
+
+instance StrEncoding Extras where
+  strEncode (Extras m) =  B.intercalate "&". map strEncode $ m
+  strP = do
+    m <- listParam `A.sepBy` A.char '&'
+    pure $ Extras m
+    where
+      listParam = parseAll strP <$?> A.takeTill (== '&')
+
+toExtras :: [(ByteString, ByteString)] -> Maybe Extras
+toExtras a = do
+  let l = mapMaybe extra a
+  case length l of
+      0 -> Nothing
+      _ -> Just $ Extras l
+
+  where
+    extra (k, v) = case B.length v of
+        0 -> Nothing
+        _ -> Just $ Extra (k, v)
+
+-- | getExtra :: extras -> key -> default -> value
+getExtra :: Maybe Extras -> ByteString -> ByteString -> ByteString
+getExtra Nothing _ d = d
+getExtra (Just (Extras e)) k d =
+  case filter matchKey e of
+    [] -> d
+    (Extra (_, v)) : _ -> v
+  where
+    matchKey (Extra(k', _)) = k' == k
+
 -- | server location and transport key digest (hash).
 data ProtocolServer p = ProtocolServer
   { scheme :: SProtocolType p,
     host :: NonEmpty TransportHost,
     port :: ServiceName,
-    keyHash :: C.KeyHash
+    keyHash :: C.KeyHash,
+    extras :: Maybe Extras
   }
   deriving (Eq, Ord, Show)
 
@@ -1116,15 +1175,15 @@ instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
 
 instance ProtocolTypeI p => Encoding (ProtocolServer p) where
-  smpEncode ProtocolServer {host, port, keyHash} =
-    smpEncode (host, port, keyHash)
+  smpEncode ProtocolServer {host, port, keyHash, extras} =
+    smpEncode (host, port, keyHash, extras)
   smpP = do
-    (host, port, keyHash) <- smpP
-    pure ProtocolServer {scheme = protocolTypeI @p, host, port, keyHash}
+    (host, port, keyHash, extras) <- smpP
+    pure ProtocolServer {scheme = protocolTypeI @p, host, port, keyHash, extras}
 
 instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
-  strEncode ProtocolServer {scheme, host, port, keyHash} =
-    strEncodeServer scheme (strEncode host) port keyHash Nothing
+  strEncode ProtocolServer {scheme, host, port, keyHash, extras} =
+    strEncodeServer scheme (strEncode host) port keyHash extras Nothing
   strP =
     serverStrP >>= \case
       (AProtocolServer _ srv, Nothing) -> either fail pure $ checkProtocolType srv
@@ -1168,8 +1227,8 @@ data AProtoServerWithAuth = forall p. ProtocolTypeI p => AProtoServerWithAuth (S
 deriving instance Show AProtoServerWithAuth
 
 instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
-  strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
-    strEncodeServer scheme (strEncode host) port keyHash auth_
+  strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash, extras} auth_) =
+    strEncodeServer scheme (strEncode host) port keyHash extras auth_
   strP = (\(AProtoServerWithAuth _ srv) -> checkProtocolType srv) <$?> strP
 
 instance StrEncoding AProtoServerWithAuth where
@@ -1201,18 +1260,21 @@ legacyEncodeServer ProtocolServer {host, port, keyHash} =
 
 legacyServerP :: forall p. ProtocolTypeI p => Parser (ProtocolServer p)
 legacyServerP = do
-  (h, port, keyHash) <- smpP
-  pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash}
+  (h, port, keyHash, extras) <- smpP
+  pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash, extras}
 
 legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
-legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
-  strEncodeServer scheme (strEncode $ L.head host) port keyHash Nothing
+legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash, extras} =
+  strEncodeServer scheme (strEncode $ L.head host) port keyHash extras Nothing
 
-strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
-strEncodeServer scheme host port keyHash auth_ =
-  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr
+strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe Extras -> Maybe BasicAuth -> ByteString
+strEncodeServer scheme host port keyHash extras_ auth_ =
+  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr <> params
   where
     portStr = B.pack $ if null port then "" else ':' : port
+    params = case extras_ of
+      Nothing -> ""
+      Just extras -> "/?" <> strEncode extras
 
 serverStrP :: Parser (AProtocolServer, Maybe BasicAuth)
 serverStrP = do
@@ -1221,8 +1283,9 @@ serverStrP = do
   auth_ <- optional $ A.char ':' *> strP
   TransportHosts host <- A.char '@' *> strP
   port <- portP <|> pure ""
+  extras <- optional $ "/?" *> strP
   pure $ case scheme of
-    AProtocolType s -> (AProtocolServer s $ ProtocolServer {scheme = s, host, port, keyHash}, auth_)
+    AProtocolType s -> (AProtocolServer s $ ProtocolServer {scheme = s, host, port, keyHash, extras}, auth_)
   where
     portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
