@@ -39,14 +39,21 @@ import Control.Monad.Except (ExceptT)
 import GHC.Exception (SomeException)
 
 data JWTHeader = JWTHeader
-  { alg :: Text, -- key algorithm, ES256 for APNS
-    kid :: Text -- key ID
+  { typ :: Text, -- "JWT"
+    alg :: Text, -- key algorithm, ES256 for APNS
+    kid :: Maybe Text -- key ID
   }
   deriving (Show)
 
+mkJWTHeader :: Text -> Maybe Text -> JWTHeader
+mkJWTHeader alg kid = JWTHeader { typ = "JWT", alg, kid }
+
 data JWTClaims = JWTClaims
-  { iss :: Text, -- issuer, team ID for APNS
-    iat :: Int64 -- issue time, seconds from epoch
+  { iss :: Maybe Text, -- issuer, team ID for APNS
+    iat :: Maybe Int64, -- issue time, seconds from epoch for APNS
+    exp :: Maybe Int64, -- expired time, seconds from epoch for web push
+    aud :: Maybe Text, -- audience, for web push
+    sub :: Maybe Text -- subject, to be inform if there is an issue, for web push
   }
   deriving (Show)
 
@@ -56,7 +63,15 @@ data JWTToken = JWTToken JWTHeader JWTClaims
 mkJWTToken :: JWTHeader -> Text -> IO JWTToken
 mkJWTToken hdr iss = do
   iat <- systemSeconds <$> getSystemTime
-  pure $ JWTToken hdr JWTClaims {iss, iat}
+  pure $ JWTToken hdr $ jwtClaims iat
+  where
+    jwtClaims iat = JWTClaims
+      { iss = Just iss,
+        iat = Just iat,
+        exp = Nothing,
+        aud = Nothing,
+        sub = Nothing
+      }
 
 type SignedJWTToken = ByteString
 

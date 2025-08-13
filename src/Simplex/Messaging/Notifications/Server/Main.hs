@@ -57,10 +57,7 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 import System.Process (readCreateProcess, shell)
 import GHC.Base (when)
-import qualified Crypto.PubKey.ECC.Types as ECC
-import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
-import qualified Crypto.PubKey.ECC.DH as ECDH
-import qualified Data.ByteString.Base64.URL as B64
+import Simplex.Messaging.Notifications.Server.Push.WebPush (VapidKey (..), mkVapid, WebPushConfig (..))
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -151,11 +148,11 @@ ntfServerCLI cfgPath logPath =
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
       createDirectoryIfMissing True logPath
-      vapid <- genVapidKey $ combine cfgPath "vapid.privkey"
+      VapidKey {fp = vapidFP} <- genVapidKey $ combine cfgPath "vapid.privkey"
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
-          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp) (toExtras [("vapid", vapid)])) Nothing
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp) (toExtras [("vapid", vapidFP)])) Nothing
       T.writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
@@ -213,11 +210,11 @@ ntfServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
-      vapid <- getVapidKey $ combine cfgPath "vapid.privkey"
+      vapidKey@VapidKey { fp = vapidFP } <- getVapidKey $ combine cfgPath "vapid.privkey"
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@NtfServerConfig {transports} = serverConfig
-          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp) (toExtras [("vapid", vapid)])) Nothing
+          cfg@NtfServerConfig {transports} = serverConfig vapidKey
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp) (toExtras [("vapid", vapidFP)])) Nothing
       printServiceInfo serverVersion srv
       printNtfServerConfig transports dbStoreConfig
       runNtfServer cfg
@@ -232,7 +229,7 @@ ntfServerCLI cfgPath logPath =
               confirmMigrations = MCYesUp,
               deletedTTL = iniDeletedTTL ini
             }
-        serverConfig =
+        serverConfig vapidKey =
           NtfServerConfig
             { transports = iniTransports ini,
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
@@ -260,6 +257,7 @@ ntfServerCLI cfgPath logPath =
                     persistErrorInterval = 0 -- seconds
                   },
               apnsConfig = defaultAPNSPushClientConfig,
+              wpConfig = WebPushConfig {vapidKey},
               subsBatchSize = 900,
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
@@ -396,18 +394,18 @@ cliCommandP cfgPath logPath iniFile =
           )
       pure InitOptions {enableStoreLog, dbOptions, signAlgorithm, ip, fqdn}
 
-genVapidKey :: FilePath -> IO B.ByteString
+genVapidKey :: FilePath -> IO VapidKey
 genVapidKey file = do
   cfgExists <- doesFileExist file
   when (not cfgExists) $ run $ "openssl ecparam -name prime256v1 -genkey -noout -out " <> file
-  privk <- ECDSA.private_d <$> C.readECPrivateKey file
-  pure $ B64.encodeUnpadded . B.toStrict . C.uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ privk
+  key <- C.readECPrivateKey file
+  pure $ mkVapid key
   where
     run cmd = void $ readCreateProcess (shell cmd) ""
 
-getVapidKey :: FilePath -> IO B.ByteString
+getVapidKey :: FilePath -> IO VapidKey
 getVapidKey file = do
   cfgExists <- doesFileExist file
   when (not cfgExists) $ error $ "VAPID key not found: " <> file
-  privk <- ECDSA.private_d <$> C.readECPrivateKey file
-  pure $ B64.encodeUnpadded . B.toStrict . C.uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ privk
+  key <- C.readECPrivateKey file
+  pure $ mkVapid key

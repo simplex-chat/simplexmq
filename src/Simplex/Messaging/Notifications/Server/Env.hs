@@ -45,7 +45,7 @@ import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, Transport
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient, WebPushConfig)
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 
@@ -61,6 +61,7 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    wpConfig :: WebPushConfig,
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     dbStoreConfig :: PostgresStoreCfg,
@@ -98,12 +99,12 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, startOptions} = do
+newNtfServerEnv config@NtfServerConfig {subQSize, pushQSize, smpAgentCfg, apnsConfig, wpConfig, dbStoreConfig, ntfCredentials, startOptions} = do
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   subscriber <- newNtfSubscriber subQSize smpAgentCfg random
-  pushServer <- newNtfPushServer pushQSize apnsConfig
+  pushServer <- newNtfPushServer pushQSize apnsConfig wpConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   Fingerprint fp <- loadFingerprint ntfCredentials
   serverStats <- newNtfServerStats =<< getCurrentTime
@@ -141,14 +142,15 @@ data SMPSubscriber = SMPSubscriber
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (NtfTknRec, PushNotification),
     pushClients :: TMap PushProvider PushProviderClient,
-    apnsConfig :: APNSPushClientConfig
+    apnsConfig :: APNSPushClientConfig,
+    wpConfig :: WebPushConfig
   }
 
-newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
-newNtfPushServer qSize apnsConfig = do
+newNtfPushServer :: Natural -> APNSPushClientConfig -> WebPushConfig -> IO NtfPushServer
+newNtfPushServer qSize apnsConfig wpConfig = do
   pushQ <- newTBQueueIO qSize
   pushClients <- TM.emptyIO
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  pure NtfPushServer {pushQ, pushClients, apnsConfig, wpConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient s pp = do
@@ -165,10 +167,11 @@ newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
   pure c
 
 newWPPushClient :: NtfPushServer -> IO PushProviderClient
-newWPPushClient NtfPushServer {pushClients} = do
+newWPPushClient NtfPushServer {pushClients, wpConfig} = do
   logDebug "New WP Client requested"
   manager <- newManager tlsManagerSettings
-  let c = wpPushProviderClient manager
+  wpCache <- TM.emptyIO
+  let c = wpPushProviderClient wpConfig wpCache manager
   atomically $ TM.insert PPWebPush c pushClients
   pure c
 

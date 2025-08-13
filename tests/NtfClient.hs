@@ -60,6 +60,11 @@ import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushConfig(..), mkVapid)
+import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.PubKey.ECC.DH as ECDH
+import Control.Monad.IO.Unlift (unliftIO)
+import Simplex.Messaging.Notifications.Server.Main (getVapidKey)
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -142,6 +147,9 @@ ntfServerCfg =
           { apnsPort = apnsTestPort,
             caStoreFile = "tests/fixtures/ca.crt"
           },
+      wpConfig = WebPushConfig {
+        vapidKey = getVapidKey "tests/fixtures/vapid.privkey"
+      },
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       dbStoreConfig = ntfTestDBCfg,
@@ -298,7 +306,7 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
           sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 getMockNotification :: MonadIO m => APNSMockServer -> DeviceToken -> m APNSMockRequest
-getMockNotification APNSMockServer {notifications} (DeviceToken _ token) = do
+getMockNotification APNSMockServer {notifications} (APNSDeviceToken _ token) = do
   atomically $ TM.lookup token notifications >>= maybe retry readTBQueue
 
 getAnyMockNotification :: MonadIO m => APNSMockServer -> m APNSMockRequest

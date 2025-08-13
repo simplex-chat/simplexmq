@@ -163,7 +163,7 @@ createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, auth
   void $ connectHTTPS2 apnsHost apnsCfg https2Client
   privateKey <- C.readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
-  let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
+  let jwtHeader = mkJWTHeader authKeyAlg (Just authKeyId)
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
   nonceDrg <- C.newRandom
   pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsHost, apnsCfg}
@@ -179,7 +179,8 @@ getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, token
       atomically $ writeTVar jwtToken t
       pure signedJWT'
   where
-    jwtTokenAge (JWTToken _ JWTClaims {iat}) = subtract iat . systemSeconds <$> getSystemTime
+    jwtTokenAge (JWTToken _ JWTClaims {iat = Just iat}) = subtract iat . systemSeconds <$> getSystemTime
+    jwtTokenAge (JWTToken _ JWTClaims {iat = Nothing}) = pure maxBound :: IO Int64
 
 mkApnsJWTToken :: Text -> JWTHeader -> EC.PrivateKey -> IO (JWTToken, SignedJWTToken)
 mkApnsJWTToken appTeamId jwtHeader privateKey = do

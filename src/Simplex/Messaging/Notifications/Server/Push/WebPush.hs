@@ -37,10 +37,84 @@ import qualified Crypto.Cipher.Types as CT
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Data.ByteString.Base64.URL as B64
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
+import UnliftIO.STM (atomically)
+import Data.Time.Clock.System (getSystemTime, systemSeconds)
+import Data.Int (Int64)
+import Network.URI (URI (..), uriAuthToString)
 
-wpPushProviderClient :: Manager -> PushProviderClient
-wpPushProviderClient mg tkn pn = do
+-- | Vapid
+-- | fp: fingerprint, base64url encoded without padding
+-- | key: privkey
+data VapidKey = VapidKey
+  { key::ECDSA.PrivateKey,
+    fp::B.ByteString
+  }
+  deriving (Eq, Show)
+
+mkVapid :: ECDSA.PrivateKey -> VapidKey
+mkVapid key = VapidKey { key, fp }
+  where
+    fp = B64.encodeUnpadded . B.toStrict . C.uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) . ECDSA.private_d $ key
+
+data WebPushConfig = WebPushConfig
+  { vapidKey :: VapidKey
+  }
+
+data WPCacheEntry = WPCacheEntry
+  { vapidHeader :: B.ByteString,
+    expire :: Int64
+  }
+
+type WPCache = TMap WPEndpoint WPCacheEntry
+
+getVapidHeader :: VapidKey -> WPEndpoint -> WPCache -> IO B.ByteString
+getVapidHeader vapidK e cache = do
+  h <- TM.lookupIO e cache
+  now <- systemSeconds <$> getSystemTime
+  case h of
+    Nothing -> newCacheEntry now
+    Just entry -> if expire entry > now then pure $ vapidHeader entry
+      else newCacheEntry now
+  where
+    newCacheEntry :: Int64 -> IO B.ByteString
+    newCacheEntry now = do
+      -- The new entry expires in one hour
+      let expire = now + 3600
+      vapidHeader <- mkVapidHeader vapidK (endpoint e) expire
+      let entry = WPCacheEntry{ vapidHeader, expire }
+      atomically $ TM.insert e entry cache
+      pure vapidHeader
+
+-- | mkVapidHeader -> vapid -> endpoint -> expire -> vapid header
+mkVapidHeader :: VapidKey -> B.ByteString -> Int64 -> IO B.ByteString
+mkVapidHeader VapidKey {key, fp} endpoint expire = do
+  aud <- Just <$> audience
+  let jwtHeader = mkJWTHeader "ES256" Nothing
+      jwtClaims = JWTClaims
+        { iss = Nothing,
+          iat = Nothing,
+          exp = Just expire,
+          aud,
+          sub = Just "https://github.com/simplex-chat/simplexmq/"
+        }
+      jwt = JWTToken jwtHeader jwtClaims
+  signedToken <- signedJWTToken key jwt
+  pure $ "vapid t=" <> signedToken <> ",k=" <> fp
+  where
+    audience :: IO T.Text
+    audience = do
+      r <- parseUrlThrow . T.unpack . T.decodeUtf8 $ endpoint
+      let uri = getUri r
+      pure . T.pack $ uri.uriScheme <> uriAuthToString id uri.uriAuthority ""
+
+wpPushProviderClient :: WebPushConfig -> WPCache -> Manager -> PushProviderClient
+wpPushProviderClient conf cache mg tkn pn = do
       e <- endpoint tkn
+      vapidH <- liftPPWPError $ getVapidHeader (vapidKey conf) e cache
       r <- liftPPWPError $ parseUrlThrow $ B.unpack e.endpoint
       logDebug $ "Request to " <> tshow r.host
       encBody <- body e
@@ -48,6 +122,7 @@ wpPushProviderClient mg tkn pn = do
             ("TTL", "2592000") -- 30 days
             , ("Urgency", "High")
             , ("Content-Encoding", "aes128gcm")
+            , ("Authorization", vapidH)
         -- TODO: topic for pings and interval
             ]
           req = r {
