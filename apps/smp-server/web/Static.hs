@@ -103,6 +103,7 @@ generateSite si onionHost sitePath = do
   createLinkPage "a"
   createLinkPage "c"
   createLinkPage "g"
+  createLinkPage "r"
   createLinkPage "i"
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
