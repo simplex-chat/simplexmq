@@ -8,7 +8,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth, BlockingInfo, SenderId)
 
 data CPClientRole = CPRNone | CPRUser | CPRAdmin
-  deriving (Eq)
+  deriving (Eq, Show)
 
 data ControlProtocol
   = CPAuth BasicAuth

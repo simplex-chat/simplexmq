@@ -795,7 +795,7 @@ testRestoreMessages =
       pure ()
     rId <- readTVarIO recipientId
     logSize testStoreLogFile `shouldReturn` 2
-    logSize testServerStatsBackupFile `shouldReturn` 94
+    logSize testServerStatsBackupFile `shouldReturn` 95
     Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats1 [rId] 5 1
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
@@ -811,7 +811,7 @@ testRestoreMessages =
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     -- the last message is not removed because it was not ACK'd
     -- logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 94
+    logSize testServerStatsBackupFile `shouldReturn` 95
     Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats2 [rId] 5 3
 
@@ -829,7 +829,7 @@ testRestoreMessages =
       pure ()
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     removeFile testStoreLogFile
-    logSize testServerStatsBackupFile `shouldReturn` 94
+    logSize testServerStatsBackupFile `shouldReturn` 95
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
     removeFileIfExists testStoreMsgsFile

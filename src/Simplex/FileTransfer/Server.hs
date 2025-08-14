@@ -45,6 +45,7 @@ import Network.Socket
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Control
 import Simplex.FileTransfer.Server.Env
+import Simplex.FileTransfer.Server.Prometheus
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
@@ -54,7 +55,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
-import Simplex.Messaging.Server (dummyVerifyCmd, verifyCmdAuthorization)
+import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..), getRoundedSystemTime)
@@ -69,6 +70,7 @@ import Simplex.Messaging.Transport.HTTP2.Server
 import Simplex.Messaging.Transport.Server (runLocalTCPServer)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
+import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
@@ -105,7 +107,14 @@ xftpServer :: XFTPServerConfig -> TMVar Bool -> M ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
   mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
-  raceAny_ (runServer : expireFilesThread_ cfg <> serverStatsThread_ cfg <> controlPortThread_ cfg) `finally` stopServer
+  raceAny_
+    ( runServer
+        : expireFilesThread_ cfg
+          <> serverStatsThread_ cfg
+          <> prometheusMetricsThread_ cfg
+          <> controlPortThread_ cfg
+    )
+    `finally` stopServer
   where
     runServer :: M ()
     runServer = do
@@ -240,6 +249,30 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               ]
         liftIO $ threadDelay' interval
 
+    prometheusMetricsThread_ :: XFTPServerConfig -> [M ()]
+    prometheusMetricsThread_ XFTPServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
+      [savePrometheusMetrics interval prometheusMetricsFile]
+    prometheusMetricsThread_ _ = []
+
+    savePrometheusMetrics :: Int -> FilePath -> M ()
+    savePrometheusMetrics saveInterval metricsFile = do
+      labelMyThread "savePrometheusMetrics"
+      liftIO $ putStrLn $ "Prometheus metrics saved every " <> show saveInterval <> " seconds to " <> metricsFile
+      ss <- asks serverStats
+      rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
+      let interval = 1000000 * saveInterval
+      liftIO $ forever $ do
+        threadDelay interval
+        ts <- getCurrentTime
+        sm <- getFileServerMetrics ss rtsOpts
+        T.writeFile metricsFile $ xftpPrometheusMetrics sm ts
+
+    getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
+    getFileServerMetrics ss rtsOptions = do
+      d <- getFileServerStatsData ss
+      let fd = periodStatDataCounts $ _filesDownloaded d
+      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
+
     controlPortThread_ :: XFTPServerConfig -> [M ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]
     controlPortThread_ _ = []
@@ -277,12 +310,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                   CPSkip -> False
                   _ -> True
             processCP h role = \case
-              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+              CPAuth auth -> controlPortAuth h user admin role auth
                 where
-                  newRole XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
-                    | Just auth == admin = CPRAdmin
-                    | Just auth == user = CPRUser
-                    | otherwise = CPRNone
+                  XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin} = cfg
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
               CPDelete fileId -> withUserRole $ unliftIO u $ do
                 fs <- asks store

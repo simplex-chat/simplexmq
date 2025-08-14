@@ -1,7 +1,7 @@
 cabal-version: 1.12
 
 name:           simplexmq
-version:        6.4.0.12
+version:        6.4.3.0
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -224,6 +224,7 @@ library
           Simplex.FileTransfer.Server.Control
           Simplex.FileTransfer.Server.Env
           Simplex.FileTransfer.Server.Main
+          Simplex.FileTransfer.Server.Prometheus
           Simplex.FileTransfer.Server.Stats
           Simplex.FileTransfer.Server.Store
           Simplex.FileTransfer.Server.StoreLog

@@ -420,6 +420,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               newQueueBasicAuth = either error id <$!> strDecodeIni "AUTH" "create_password" ini,
               controlPortAdminAuth = either error id <$!> strDecodeIni "AUTH" "control_port_admin_password" ini,
               controlPortUserAuth = either error id <$!> strDecodeIni "AUTH" "control_port_user_password" ini,
+              dailyBlockQueueQuota = readIniDefault 20 "AUTH" "daily_block_queue_quota" ini,
               messageExpiration =
                 Just
                   defaultMessageExpiration

@@ -82,6 +82,7 @@ prometheusMetrics sm rtm ts =
         _qSubEnd,
         _qSubEndB,
         _ntfCreated,
+        _ntfNewCreated,
         _ntfDeleted,
         _ntfDeletedB,
         _ntfSub,
@@ -262,15 +263,19 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_messages_notify_get_errors{type=\"duplicate\"} " <> mshow _msgGetDuplicate <> "\n# msgGetDuplicate\n\
       \simplex_smp_messages_notify_get_errors{type=\"prohibited\"} " <> mshow _msgGetProhibited <> "\n# msgGetProhibited\n\
       \\n\
-      \# HELP simplex_smp_queues_notify_created Created queues with notification flag (client).\n\
+      \# HELP simplex_smp_queues_notify_created Created queue notification credentials.\n\
       \# TYPE simplex_smp_queues_notify_created counter\n\
       \simplex_smp_queues_notify_created " <> mshow _ntfCreated <> "\n# ntfCreated\n\
       \\n\
-      \# HELP simplex_smp_queues_notify_deleted Deleted queues with notification flag (client).\n\
+      \# HELP simplex_smp_queues_notify_new_created Created new queues with notification credentials.\n\
+      \# TYPE simplex_smp_queues_notify_new_created counter\n\
+      \simplex_smp_queues_notify_new_created " <> mshow _ntfNewCreated <> "\n# ntfNewCreated\n\
+      \\n\
+      \# HELP simplex_smp_queues_notify_deleted Deleted queue notification credentials.\n\
       \# TYPE simplex_smp_queues_notify_deleted counter\n\
       \simplex_smp_queues_notify_deleted " <> mshow _ntfDeleted <> "\n# ntfDeleted\n\
       \\n\
-      \# HELP simplex_smp_queues_notify_deleted_batch Deleted batched queues with notification flag (client).\n\
+      \# HELP simplex_smp_queues_notify_deleted_batch Deleted batched queue notification credentials.\n\
       \# TYPE simplex_smp_queues_notify_deleted_batch counter\n\
       \simplex_smp_queues_notify_deleted_batch " <> mshow _ntfDeletedB <> "\n# ntfDeletedB\n\
       \\n\

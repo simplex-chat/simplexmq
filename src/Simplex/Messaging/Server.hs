@@ -31,6 +31,7 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
+    controlPortAuth,
     importMessages,
     exportMessages,
     printMessageStats,
@@ -558,6 +559,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           msgNtfNoSub' <- atomicSwapIORef (msgNtfNoSub ss) 0
           msgNtfLost' <- atomicSwapIORef (msgNtfLost ss) 0
           msgNtfExpired' <- atomicSwapIORef (msgNtfExpired ss) 0
+          _qBlocked <- atomicSwapIORef (qBlocked ss) 0 -- not logged, only reset
           pRelays' <- getResetProxyStatsData pRelays
           pRelaysOwn' <- getResetProxyStatsData pRelaysOwn
           pMsgFwds' <- getResetProxyStatsData pMsgFwds
@@ -770,12 +772,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   CPSkip -> False
                   _ -> True
             processCP h role = \case
-              CPAuth auth -> atomically $ writeTVar role $! newRole cfg
+              CPAuth auth -> controlPortAuth h user admin role auth
                 where
-                  newRole ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin}
-                    | Just auth == admin = CPRAdmin
-                    | Just auth == user = CPRUser
-                    | otherwise = CPRNone
+                  ServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin} = cfg
               CPSuspend -> withAdminRole $ hPutStrLn h "suspend not implemented"
               CPResume -> withAdminRole $ hPutStrLn h "resume not implemented"
               CPClients -> withAdminRole $ do
@@ -964,41 +963,53 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                               SubPending -> (c1, c2 + 1, c3, c4)
                               SubThread _ -> (c1, c2, c3 + 1, c4)
                           ProhibitSub -> pure (c1, c2, c3, c4 + 1)
-              CPDelete sId -> withUserRole $ unliftIO u $ do
+              CPDelete qId -> withAdminRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
+                  (q, _) <- ExceptT $ getSenderQueue st qId
                   ExceptT $ deleteQueueSize st q
                 case r of
                   Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
                   Right (qr, numDeleted) -> do
                     updateDeletedStats qr
                     liftIO $ hPutStrLn h $ "ok, " <> show numDeleted <> " messages deleted"
-              CPStatus sId -> withUserRole $ unliftIO u $ do
+              CPStatus qId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
-                q <- liftIO $ getQueueRec st SSender sId
+                q <- liftIO $ getSenderQueue st qId
                 liftIO $ hPutStrLn h $ case q of
                   Left e -> "error: " <> show e
                   Right (_, QueueRec {queueMode, status, updatedAt}) ->
                     "status: " <> show status <> ", updatedAt: " <> show updatedAt <> ", queueMode: " <> show queueMode
-              CPBlock sId info -> withUserRole $ unliftIO u $ do
+              CPBlock qId info -> withUserRole $ unliftIO u $ do
+                st <- asks msgStore
+                stats <- asks serverStats
+                blocked <- liftIO $ readIORef $ qBlocked stats
+                let quota = dailyBlockQueueQuota cfg
+                if blocked >= quota && quota /= 0
+                  then liftIO $ hPutStrLn h $ "error: reached limit of " <> show quota <> " queues blocked daily"
+                  else do
+                    r <- liftIO $ runExceptT $ do
+                      (q, QueueRec {status}) <- ExceptT $ getSenderQueue st qId
+                      when (status == EntityActive) $ ExceptT $ blockQueue (queueStore st) q info
+                      pure status
+                    case r of
+                      Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
+                      Right EntityActive -> do
+                        incStat $ qBlocked stats
+                        liftIO $ hPutStrLn h "ok, queue blocked"
+                      Right status -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status
+              CPUnblock qId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
-                  ExceptT $ blockQueue (queueStore st) q info
-                case r of
-                  Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
-                  Right () -> do
-                    incStat . qBlocked =<< asks serverStats
-                    liftIO $ hPutStrLn h "ok"
-              CPUnblock sId -> withUserRole $ unliftIO u $ do
-                st <- asks msgStore
-                r <- liftIO $ runExceptT $ do
-                  q <- ExceptT $ getQueue st SSender sId
-                  ExceptT $ unblockQueue (queueStore st) q
+                  (q, QueueRec {status}) <- ExceptT $ getSenderQueue st qId
+                  case status of
+                    EntityBlocked info -> Right info <$ ExceptT (unblockQueue (queueStore st) q)
+                    EntityActive -> pure $ Left True
+                    EntityOff -> pure $ Left False
                 liftIO $ hPutStrLn h $ case r of
                   Left e -> "error: " <> show e
-                  Right () -> "ok"
+                  Right (Right info) -> "ok, queue unblocked, reason to block was: " <> show info
+                  Right (Left unblocked) -> if unblocked then "ok, queue was active" else "error, queue is inactive"
               CPSave -> withAdminRole $ withLock' (savingLock srv) "control" $ do
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False
@@ -1007,6 +1018,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               CPQuit -> pure ()
               CPSkip -> pure ()
               where
+                getSenderQueue st qId =
+                  getQueueRec st SSender qId >>= \case
+                    Right r -> pure $ Right r
+                    Left AUTH -> getQueueRec st SSenderLink qId
+                    Left e ->  pure $ Left e
                 withUserRole action = readTVarIO role >>= \case
                   CPRAdmin -> action
                   CPRUser -> action
@@ -1044,6 +1060,20 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
       not <$> anyM [hasSubs (subscribers s), hasSubs (ntfSubscribers s)]
       where
         hasSubs ServerSubscribers {subClients} = IS.member clientId <$> readTVarIO subClients
+
+controlPortAuth :: Handle -> Maybe BasicAuth -> Maybe BasicAuth -> TVar CPClientRole -> BasicAuth -> IO ()
+controlPortAuth h user admin role auth = do
+  readTVarIO role >>= \case
+    CPRNone -> do
+      atomically $ writeTVar role $! newRole
+      hPutStrLn h $ currentRole newRole
+    r -> hPutStrLn h $ currentRole r <> if r == newRole then "" else ", start new session to change."
+  where
+    currentRole r = "Current role is " <> show r
+    newRole
+      | Just auth == admin = CPRAdmin
+      | Just auth == user = CPRUser
+      | otherwise = CPRNone
 
 clientDisconnected :: forall s. Client s -> M s ()
 clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceSubsCount, ntfServiceSubsCount, connected, clientTHParams = THandleParams {sessionId, thAuth}, endThreads} = do
@@ -1514,7 +1544,7 @@ client
                             stats <- asks serverStats
                             incStat $ qCreated stats
                             incStat $ qCount stats
-                            when (isJust ntf) $ incStat $ ntfCreated stats
+                            when (isJust ntf) $ incStat $ ntfNewCreated stats
                             case subMode of
                               SMOnlyCreate -> pure ()
                               SMSubscribe -> subscribeNewQueue rcvId qr -- no need to check if message is available, it's a new queue

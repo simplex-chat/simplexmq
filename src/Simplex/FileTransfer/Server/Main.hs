@@ -30,7 +30,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
-import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
+import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
@@ -89,6 +89,9 @@ xftpServerCLI cfgPath logPath = do
             <> "# Expire files after the specified number of hours.\n"
             <> ("expire_files_hours: " <> tshow defFileExpirationHours <> "\n\n")
             <> "log_stats: off\n\
+               \\n\
+               \# Log interval for real-time Prometheus metrics\n\
+               \# prometheus_interval: 60\n\
                \\n\
                \[AUTH]\n\
                \# Set new_files option to off to completely prohibit uploading new files.\n\
@@ -188,6 +191,8 @@ xftpServerCLI cfgPath logPath = do
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "file-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "file-server-stats.log",
+              prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
+              prometheusMetricsFile = combine logPath "xftp-server-metrics.txt",
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
