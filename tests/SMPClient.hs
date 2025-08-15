@@ -183,6 +183,12 @@ testSMPClient_ host port vr serviceCreds_ client = do
       | authCmdsSMPVersion `isCompatible` vr = Just alpnSupportedSMPHandshakes
       | otherwise = Nothing
 
+runSMPClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+runSMPClient _ test' = testSMPClient test'
+
+runSMPServiceClient :: Transport c => TProxy c 'TServer -> (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
+runSMPServiceClient _ serviceCreds test' = testSMPServiceClient serviceCreds test'
+
 testNtfServiceClient :: Transport c => TProxy c 'TServer -> C.KeyPairEd25519 -> (THandleSMP c 'TClient -> IO a) -> IO a
 testNtfServiceClient _ keys client = do
   tlsNtfServerCreds <- loadServerCredential ntfTestServerCredentials

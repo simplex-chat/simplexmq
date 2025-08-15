@@ -28,14 +28,15 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Foldable (foldrM)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty)
+import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
-import qualified Network.TLS as TLS
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -82,6 +83,7 @@ serverTests = do
     describe "Concurrent sending and delivery" testConcurrentSendDelivery
   describe "Service message subscriptions" $ do
     testServiceDeliverSubscribe
+    testServiceUpgradeAndDowngrade
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -135,10 +137,15 @@ serviceSignSendRecv h pk serviceKey t = do
   [r] <- signSendRecv_ h pk (Just serviceKey) t
   pure r
 
+serviceSignSendRecv2 :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg), Transmission (Either ErrorType BrokerMsg))
+serviceSignSendRecv2 h pk serviceKey t = do
+  [r1, r2] <- signSendRecv_ h pk (Just serviceKey) t
+  pure (r1, r2)
+
 signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (NonEmpty (Transmission (Either ErrorType BrokerMsg)))
 signSendRecv_ h pk serviceKey_ t = do
   signSend_ h pk serviceKey_ t
-  liftIO $ tGetClient h
+  tGetClient h
 
 signSend_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO ()
 signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
@@ -667,18 +674,18 @@ testConcurrentSendDelivery =
 
 testServiceDeliverSubscribe :: SpecWith (ASrvTransport, AStoreType)
 testServiceDeliverSubscribe =
-  it "" $ \(at@(ATransport t), msType) -> do
+  it "should create queue as service and subscribe with SUBS after reconnect" $ \(at@(ATransport t), msType) -> do
     g <- C.newRandom
     creds <- genCredentials g Nothing (0, 2400) "localhost"
     let (_fp, tlsCred) = tlsCredentials [creds]
     serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
     let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
-    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runClient t $ \h -> do
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
 
-      (rId, sId, dec, serviceId) <- runServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
         Resp "1" NoEntity (ERR SERVICE) <- signSendRecv sh rKey ("1", NoEntity, New rPub dhPub)
         Resp "2" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
         let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
@@ -697,35 +704,149 @@ testServiceDeliverSubscribe =
         Resp "9" _ OK <- signSendRecv h sKey ("9", sId, _SEND "hello 3")
         pure (rId, sId, dec, serviceId)
 
-      runServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
         Resp "10" NoEntity (ERR (CMD NO_AUTH)) <- signSendRecv sh aServicePK ("10", NoEntity, SUBS)
-        mId3 <- signSendRecv sh aServicePK ("11", serviceId, SUBS) >>= \case -- possible race between SOKS response and MSG
-          Resp "11" serviceId' (SOKS n) -> do
-            n `shouldBe` 1
-            serviceId' `shouldBe` serviceId
-            Resp "" rId'' (Msg mId3 msg3) <- tGet1 sh
-            rId'' `shouldBe` rId
-            dec mId3 msg3 `shouldBe` Right "hello 3"
-            pure mId3
-          Resp "" rId'' (Msg mId3 msg3) -> do
-            rId'' `shouldBe` rId
-            dec mId3 msg3 `shouldBe` Right "hello 3"
-            Resp "11" serviceId' (SOKS n) <- tGet1 sh
-            n `shouldBe` 1
-            serviceId' `shouldBe` serviceId
-            pure mId3
-          r -> error $ "unexpected response " <> take 100 (show r)
+        signSend_ sh aServicePK Nothing ("11", serviceId, SUBS)
+        [mId3] <-
+          fmap catMaybes $
+            receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
+              sh
+              [ \case
+                  Resp "11" serviceId' (SOKS n) -> do
+                    n `shouldBe` 1
+                    serviceId' `shouldBe` serviceId
+                    pure $ Just Nothing
+                  _ -> pure Nothing,
+                \case
+                  Resp "" rId'' (Msg mId3 msg3) -> do
+                    rId'' `shouldBe` rId
+                    dec mId3 msg3 `shouldBe` Right "hello 3"
+                    pure $ Just $ Just mId3
+                  _ -> pure Nothing
+              ]
         Resp "12" _ OK <- signSendRecv sh rKey ("12", rId, ACK mId3)
         Resp "14" _ OK <- signSendRecv h sKey ("14", sId, _SEND "hello 4")
         Resp "" _ (Msg mId4 msg4) <- tGet1 sh
         dec mId4 msg4 `shouldBe` Right "hello 4"
         Resp "15" _ OK <- signSendRecv sh rKey ("15", rId, ACK mId4)
         pure ()
+
+testServiceUpgradeAndDowngrade :: SpecWith (ASrvTransport, AStoreType)
+testServiceUpgradeAndDowngrade =
+  it "should create queue as client and switch to service and back" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rPub2, rKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub2, dhPriv2 :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (sPub2, sKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+
+      (rId, sId, dec) <- runSMPClient t $ \sh -> do
+        Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv sh rKey ("1", NoEntity, New rPub dhPub)
+        let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+        Resp "2" sId' OK <- signSendRecv h sKey ("2", sId, SKEY sPub)
+        sId' `shouldBe` sId
+        Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello")
+        Resp "" rId' (Msg mId1 msg1) <- tGet1 sh
+        rId' `shouldBe` rId
+        dec mId1 msg1 `shouldBe` Right "hello"
+        Resp "4" _ OK <- signSendRecv sh rKey ("4", rId, ACK mId1)
+        Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND "hello 2")
+        pure (rId, sId, dec)
+
+      -- split to prevent message delivery
+      (rId2, sId2, dec2) <- runSMPClient t $ \sh -> do
+        Resp "6" NoEntity (Ids rId2 sId2 srvDh2) <- signSendRecv sh rKey2 ("6", NoEntity, New rPub2 dhPub2)
+        let dec2 = decryptMsgV3 $ C.dh' srvDh2 dhPriv2
+        Resp "7" sId2' OK <- signSendRecv h sKey2 ("7", sId2, SKEY sPub2)
+        sId2' `shouldBe` sId2
+        pure (rId2, sId2, dec2)
+
+      serviceId <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "8" _ (ERR SERVICE) <- signSendRecv sh rKey ("8", rId, SUB)
+        (Resp "9" rId' (SOK (Just serviceId)), Resp "" rId'' (Msg mId2 msg2)) <- serviceSignSendRecv2 sh rKey servicePK ("9", rId, SUB)
+        rId' `shouldBe` rId
+        rId'' `shouldBe` rId
+        dec mId2 msg2 `shouldBe` Right "hello 2"
+        (Resp "10" rId2' (SOK (Just serviceId'))) <- serviceSignSendRecv sh rKey2 servicePK ("10", rId2, SUB)
+        rId2' `shouldBe` rId2
+        serviceId' `shouldBe` serviceId
+        Resp "10.1" _ OK <- signSendRecv sh rKey ("10.1", rId, ACK mId2)
+        pure serviceId
+
+      Resp "11" _ OK <- signSendRecv h sKey ("11", sId, _SEND "hello 3.1")
+      Resp "12" _ OK <- signSendRecv h sKey2 ("12", sId2, _SEND "hello 3.2")
+
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        signSend_ sh aServicePK Nothing ("14", serviceId, SUBS)
+        [(rKey3_1, rId3_1, mId3_1), (rKey3_2, rId3_2, mId3_2)] <-
+          fmap catMaybes $
+            receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
+              sh
+              [ \case
+                  Resp "14" serviceId' (SOKS n) -> do
+                    n `shouldBe` 2
+                    serviceId' `shouldBe` serviceId
+                    pure $ Just Nothing
+                  _ -> pure Nothing,
+                \case
+                  Resp "" rId'' (Msg mId3 msg3) | rId'' == rId -> do
+                    dec mId3 msg3 `shouldBe` Right "hello 3.1"
+                    pure $ Just $ Just (rKey, rId, mId3)
+                  _ -> pure Nothing,
+                \case
+                  Resp "" rId'' (Msg mId3 msg3) | rId'' == rId2 -> do
+                    dec2 mId3 msg3 `shouldBe` Right "hello 3.2"
+                    pure $ Just $ Just (rKey2, rId2, mId3)
+                  _ -> pure Nothing
+              ]
+        Resp "15" _ OK <- signSendRecv sh rKey3_1 ("15", rId3_1, ACK mId3_1)
+        Resp "16" _ OK <- signSendRecv sh rKey3_2 ("16", rId3_2, ACK mId3_2)
+        pure ()
+
+      Resp "17" _ OK <- signSendRecv h sKey ("17", sId, _SEND "hello 4")
+
+      runSMPClient t $ \sh -> do
+        Resp "18" _ (ERR SERVICE) <- signSendRecv sh aServicePK ("18", serviceId, SUBS)
+        (Resp "19" rId' (SOK Nothing), Resp "" rId'' (Msg mId4 msg4)) <- signSendRecv2 sh rKey ("19", rId, SUB)
+        rId' `shouldBe` rId
+        rId'' `shouldBe` rId
+        dec mId4 msg4 `shouldBe` Right "hello 4"
+        Resp "20" _ OK <- signSendRecv sh rKey ("20", rId, ACK mId4)
+        Resp "21" _ OK <- signSendRecv h sKey ("21", sId, _SEND "hello 5")
+        Resp "" _ (Msg mId5 msg5) <- tGet1 sh
+        dec mId5 msg5 `shouldBe` Right "hello 5"
+        Resp "22" _ OK <- signSendRecv sh rKey ("22", rId, ACK mId5)
+
+        Resp "23" rId2' (SOK Nothing) <- signSendRecv sh rKey2 ("23", rId2, SUB)
+        rId2' `shouldBe` rId2
+        Resp "24" _ OK <- signSendRecv h sKey ("24", sId, _SEND "hello 6")
+        Resp "" _ (Msg mId6 msg6) <- tGet1 sh
+        dec mId6 msg6 `shouldBe` Right "hello 6"
+        Resp "25" _ OK <- signSendRecv sh rKey ("25", rId, ACK mId6)
+        pure ()
+
+receiveInAnyOrder :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> [(CorrId, EntityId, Either ErrorType BrokerMsg) -> IO (Maybe b)] -> IO [b]
+receiveInAnyOrder h = fmap reverse . go []
   where
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
-    runClient _ test' = testSMPClient test'
-    runServiceClient :: Transport c => TProxy c 'TServer -> (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
-    runServiceClient _ serviceCreds test' = testSMPServiceClient serviceCreds test'
+    go rs [] = pure rs
+    go rs ps = withFrozenCallStack $ do
+      r <- 5000000 `timeout` get >>= maybe (error "inAnyOrder timeout") pure
+      (r_, ps') <- foldrM (choose r) (Nothing, []) ps
+      case r_ of
+        Just r' -> go (r' : rs) ps'
+        Nothing -> error $ "unexpected event: " <> show r
+    get  = do
+      [r] <- tGetClient h
+      pure r
+    choose r p (Nothing, ps') = (maybe (Nothing, p : ps') ((,ps') . Just)) <$> p r
+    choose _ p (Just r, ps') = pure (Just r, p : ps')
 
 testWithStoreLog :: SpecWith (ASrvTransport, AStoreType)
 testWithStoreLog =
