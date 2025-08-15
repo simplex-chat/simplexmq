@@ -85,7 +85,7 @@ encInvitationSize = 900
 
 newRCHostPairing :: TVar ChaChaDRG -> IO RCHostPairing
 newRCHostPairing drg = do
-  ((_, caKey), caCert) <- genCredentials drg Nothing (-25, 24 * 999999) "ca"
+  ((_, caKey), caCert) <- genCredentials drg Nothing (25, 24 * 999999) "ca"
   (_, idPrivKey) <- atomically $ C.generateKeyPair drg
   pure RCHostPairing {caKey, caCert, idPrivKey, knownHost = Nothing}
 
@@ -193,7 +193,7 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
 genTLSCredentials :: TVar ChaChaDRG -> C.APrivateSignKey -> X.SignedCertificate -> IO TLS.Credential
 genTLSCredentials drg caKey caCert = do
   let caCreds = (C.signatureKeyPair caKey, caCert)
-  leaf <- genCredentials drg (Just caCreds) (0, 24 * 999999) "localhost" -- session-signing cert
+  leaf <- genCredentials drg (Just caCreds) (1, 24 * 999999) "localhost" -- session-signing cert
   pure . snd $ tlsCredentials (leaf :| [caCreds])
 
 certFingerprint :: X.SignedCertificate -> C.KeyHash
@@ -259,7 +259,7 @@ connectRCCtrl drg (RCVerifiedInvitation inv@RCInvitation {ca, idkey}) pairing_ h
   where
     newCtrlPairing :: IO RCCtrlPairing
     newCtrlPairing = do
-      ((_, caKey), caCert) <- genCredentials drg Nothing (0, 24 * 999999) "ca"
+      ((_, caKey), caCert) <- genCredentials drg Nothing (1, 24 * 999999) "ca"
       (_, dhPrivKey) <- atomically $ C.generateKeyPair drg
       pure RCCtrlPairing {caKey, caCert, ctrlFingerprint = ca, idPubKey = idkey, dhPrivKey, prevDhPrivKey = Nothing}
     updateCtrlPairing :: RCCtrlPairing -> ExceptT RCErrorType IO RCCtrlPairing

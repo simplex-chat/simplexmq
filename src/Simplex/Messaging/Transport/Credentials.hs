@@ -25,14 +25,6 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Time.System as Hourglass
 import qualified Time.Types as HT
 
--- | Generate a certificate chain to be used with TLS fingerprint-pinning
---
--- @
--- genTlsCredentials = do
---   ca <- genCredentials Nothing (-25, 365 * 24) "Root" -- long-lived root cert
---   leaf <- genCredentials (Just ca) (0, 1) "Entity" -- session-signing cert
---   pure $ tlsCredentials (leaf :| [ca])
--- @
 tlsCredentials :: NonEmpty Credentials -> (C.KeyHash, TLS.Credential)
 tlsCredentials credentials = (C.KeyHash rootFP, (X509.CertificateChain certs, privateToTls $ snd leafKey))
   where

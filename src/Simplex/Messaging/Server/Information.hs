@@ -14,7 +14,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import Simplex.Messaging.Agent.Protocol (ConnectionMode (..), ConnectionRequestUri)
+import Simplex.Messaging.Agent.Protocol (ConnectionLink, ConnectionMode (..), ConnectionRequestUri)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 
@@ -100,7 +100,7 @@ data Entity = Entity {name :: Text, country :: Maybe Text}
   deriving (Show)
 
 data ServerContactAddress = ServerContactAddress
-  { simplex :: Maybe (ConnectionRequestUri 'CMContact),
+  { simplex :: Maybe (ConnectionLink 'CMContact),
     email :: Maybe Text, -- it is recommended that it matches DNS email address, if either is present
     pgp :: Maybe PGPKey
   }
