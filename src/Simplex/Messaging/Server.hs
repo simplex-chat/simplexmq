@@ -1488,7 +1488,7 @@ client
           QUE -> withQueue $ \q qr -> (corrId,entId,) <$> getQueueInfo q qr
       Cmd SRecipientService SUBS -> response . (corrId,entId,) <$> case clntServiceId of
         Just serviceId -> subscribeServiceMessages serviceId
-        Nothing -> pure $ ERR INTERNAL
+        Nothing -> pure $ ERR INTERNAL -- it's "internal" because it should never get to this branch
       where
         createQueue :: NewQueueReq -> M s (Transmission BrokerMsg)
         createQueue NewQueueReq {rcvAuthKey, rcvDhKey, subMode, queueReqData, ntfCreds}

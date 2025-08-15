@@ -35,6 +35,7 @@ import Data.String (IsString (..))
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
+import qualified Network.TLS as TLS
 import SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -49,6 +50,7 @@ import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
@@ -78,6 +80,8 @@ serverTests = do
     describe "GET & SUB commands" testGetSubCommands
     describe "Exceeding queue quota" testExceedQueueQuota
     describe "Concurrent sending and delivery" testConcurrentSendDelivery
+  describe "Service message subscriptions" $ do
+    testServiceDeliverSubscribe
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -104,6 +108,9 @@ pattern New rPub dhPub = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (
 pattern Ids :: RecipientId -> SenderId -> RcvPublicDhKey -> BrokerMsg
 pattern Ids rId sId srvDh <- IDS (QIK rId sId srvDh _sndSecure _linkId Nothing Nothing)
 
+pattern Ids_ :: RecipientId -> SenderId -> RcvPublicDhKey -> ServiceId -> BrokerMsg
+pattern Ids_ rId sId srvDh serviceId <- IDS (QIK rId sId srvDh _sndSecure _linkId (Just serviceId) Nothing)
+
 pattern Msg :: MsgId -> MsgBody -> BrokerMsg
 pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
@@ -129,10 +136,15 @@ serviceSignSendRecv h pk serviceKey t = do
   pure r
 
 signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (NonEmpty (Transmission (Either ErrorType BrokerMsg)))
-signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
+signSendRecv_ h pk serviceKey_ t = do
+  signSend_ h pk serviceKey_ t
+  liftIO $ tGetClient h
+
+signSend_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO ()
+signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
-  liftIO $ tGetClient h
+  pure ()
   where
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
@@ -652,6 +664,68 @@ testConcurrentSendDelivery =
         isMsg1or2 mId2 msg2
         Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, ACK mId2)
         pure ()
+
+testServiceDeliverSubscribe :: SpecWith (ASrvTransport, AStoreType)
+testServiceDeliverSubscribe =
+  it "" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+
+      (rId, sId, dec, serviceId) <- runServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (ERR SERVICE) <- signSendRecv sh rKey ("1", NoEntity, New rPub dhPub)
+        Resp "2" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+        let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+        Resp "3" sId' OK <- signSendRecv h sKey ("3", sId, SKEY sPub)
+        sId' `shouldBe` sId
+        Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello")
+        Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND "hello 2")
+        Resp "" rId' (Msg mId1 msg1) <- tGet1 sh
+        rId' `shouldBe` rId
+        dec mId1 msg1 `shouldBe` Right "hello"
+        -- ACK doesn't need service signature
+        Resp "6" _ (Msg mId2 msg2) <- signSendRecv sh rKey ("6", rId, ACK mId1)
+        dec mId2 msg2 `shouldBe` Right "hello 2"
+        Resp "7" _ (ERR NO_MSG) <- signSendRecv sh rKey ("7", rId, ACK mId1)
+        Resp "8" _ OK <- signSendRecv sh rKey ("8", rId, ACK mId2)
+        Resp "9" _ OK <- signSendRecv h sKey ("9", sId, _SEND "hello 3")
+        pure (rId, sId, dec, serviceId)
+
+      runServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "10" NoEntity (ERR (CMD NO_AUTH)) <- signSendRecv sh aServicePK ("10", NoEntity, SUBS)
+        mId3 <- signSendRecv sh aServicePK ("11", serviceId, SUBS) >>= \case -- possible race between SOKS response and MSG
+          Resp "11" serviceId' (SOKS n) -> do
+            n `shouldBe` 1
+            serviceId' `shouldBe` serviceId
+            Resp "" rId'' (Msg mId3 msg3) <- tGet1 sh
+            rId'' `shouldBe` rId
+            dec mId3 msg3 `shouldBe` Right "hello 3"
+            pure mId3
+          Resp "" rId'' (Msg mId3 msg3) -> do
+            rId'' `shouldBe` rId
+            dec mId3 msg3 `shouldBe` Right "hello 3"
+            Resp "11" serviceId' (SOKS n) <- tGet1 sh
+            n `shouldBe` 1
+            serviceId' `shouldBe` serviceId
+            pure mId3
+          r -> error $ "unexpected response " <> take 100 (show r)
+        Resp "12" _ OK <- signSendRecv sh rKey ("12", rId, ACK mId3)
+        Resp "14" _ OK <- signSendRecv h sKey ("14", sId, _SEND "hello 4")
+        Resp "" _ (Msg mId4 msg4) <- tGet1 sh
+        dec mId4 msg4 `shouldBe` Right "hello 4"
+        Resp "15" _ OK <- signSendRecv sh rKey ("15", rId, ACK mId4)
+        pure ()
+  where
+    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+    runClient _ test' = testSMPClient test'
+    runServiceClient :: Transport c => TProxy c 'TServer -> (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
+    runServiceClient _ serviceCreds test' = testSMPServiceClient serviceCreds test'
 
 testWithStoreLog :: SpecWith (ASrvTransport, AStoreType)
 testWithStoreLog =

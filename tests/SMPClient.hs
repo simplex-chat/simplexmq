@@ -15,10 +15,14 @@
 
 module SMPClient where
 
+import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Network.Socket
+import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
@@ -33,6 +37,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Util (ifM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
@@ -151,13 +156,26 @@ testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
-  testSMPClient_ useHost testPort vr client
+  testSMPClient_ useHost testPort vr Nothing client
 
-testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
-testSMPClient_ host port vr client = do
-  let tcConfig = defaultTransportClientConfig {clientALPN} :: TransportClientConfig
+testSMPServiceClient :: Transport c => (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPServiceClient serviceCreds client = do
+  Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
+  testSMPClient_ useHost testPort supportedClientSMPRelayVRange (Just serviceCreds) client
+
+testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> Maybe (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClient_ host port vr serviceCreds_ client = do
+  serviceAndKeys_ <- forM serviceCreds_ $ \(serviceCreds@(cc, pk), keys) -> do
+    Right serviceSignKey <- pure $ C.x509ToPrivate' pk
+    let idCert' = case chainIdCaCerts cc of
+          CCSelf cert -> cert
+          CCValid {idCert} -> idCert
+          _ -> error "bad certificate"
+        serviceCertHash = XV.getFingerprint idCert' X.HashSHA256
+    pure (ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash, serviceSignKey}, keys)
+  let tcConfig = defaultTransportClientConfig {clientALPN, clientCredentials = fst <$> serviceCreds_} :: TransportClientConfig
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash vr False Nothing) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr False serviceAndKeys_) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
