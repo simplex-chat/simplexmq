@@ -1,13 +1,13 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250517_service_certs where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250815_service_certs where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
 -- TODO move date forward, create migration for postgres
-m20250517_service_certs :: Query
-m20250517_service_certs =
+m20250815_service_certs :: Query
+m20250815_service_certs =
   [sql|
 CREATE TABLE server_certs(
   server_cert_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,13 +24,13 @@ CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON server_certs(user_id, 
 
 CREATE INDEX idx_server_certs_host_port ON server_certs(host, port);
 
-ALTER TABLE rcv_queues ADD COLUMN rcv_service_id BLOB;
+ALTER TABLE rcv_queues ADD COLUMN rcv_service_assoc INTEGER NOT NULL DEFAULT 0;
   |]
 
-down_m20250517_service_certs :: Query
-down_m20250517_service_certs =
+down_m20250815_service_certs :: Query
+down_m20250815_service_certs =
   [sql|
-ALTER TABLE rcv_queues DROP COLUMN rcv_service_id;
+ALTER TABLE rcv_queues DROP COLUMN rcv_service_assoc;
 
 DROP INDEX idx_server_certs_host_port;
 

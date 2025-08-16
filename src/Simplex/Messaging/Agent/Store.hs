@@ -85,7 +85,7 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     -- | short link ID and credentials
     shortLink :: Maybe ShortLinkCreds,
     -- | associated client service
-    clientService :: Maybe (StoredClientService q),
+    rcvServiceAssoc :: ServiceAssoc,
     -- | queue status
     status :: QueueStatus,
     -- | database queue ID (within connection)
@@ -111,9 +111,7 @@ data ShortLinkCreds = ShortLinkCreds
   }
   deriving (Show)
 
-clientServiceId :: RcvQueue -> Maybe ClientServiceId
-clientServiceId = fmap dbServiceId . clientService
-{-# INLINE clientServiceId #-}
+type ServiceAssoc = Bool
 
 rcvQueueInfo :: RcvQueue -> RcvQueueInfo
 rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =

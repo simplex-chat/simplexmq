@@ -284,7 +284,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (SMPVersion, ServiceCredentials, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -321,6 +321,7 @@ data AgentClient = AgentClient
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
+    smpServiceCreds :: TMap UserId (Maybe (TMap SMPServer ServiceCredentials)), -- Nothing means not to use certificates for this user record
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
     -- SMPServerWithAuth defines client connected to SMP proxy (with the same userId and entityId in TransportSession)
@@ -493,6 +494,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
   msgQ <- newTBQueueIO qSize
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
+  smpServiceCreds <- TM.emptyIO
   smpProxiedRelays <- TM.emptyIO
   ntfServers <- newTVarIO ntf
   ntfClients <- TM.emptyIO
@@ -531,6 +533,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
         msgQ,
         smpServers,
         smpClients,
+        smpServiceCreds,
         smpProxiedRelays,
         ntfServers,
         ntfClients,
@@ -1352,7 +1355,7 @@ getSessionMode :: MonadIO m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
-newRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> Bool -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> Bool -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, Maybe ServiceId, SMPTransportSession, SessionId)
 newRcvQueue c nm userId connId srv vRange cMode enableNtfs subMode = do
   let qrd = case cMode of SCMInvitation -> CQRMessaging Nothing; SCMContact -> CQRContact Nothing
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
@@ -1373,7 +1376,7 @@ queueReqData = \case
   CQRMessaging d -> QRMessaging $ srvReq <$> d
   CQRContact d -> QRContact $ srvReq <$> d
 
-newRcvQueue_ :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> ClntQueueReqData -> Bool -> SubscriptionMode -> Maybe C.CbNonce -> C.KeyPairX25519 -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
+newRcvQueue_ :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> ClntQueueReqData -> Bool -> SubscriptionMode -> Maybe C.CbNonce -> C.KeyPairX25519 -> AM (NewRcvQueue, SMPQueueUri, Maybe ServiceId, SMPTransportSession, SessionId)
 newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enableNtfs subMode nonce_ (e2eDhKey, e2ePrivKey) = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
@@ -1401,7 +1404,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             sndId,
             queueMode,
             shortLink,
-            clientService = ClientService DBNewEntity <$> serviceId,
+            rcvServiceAssoc = isJust serviceId,
             status = New,
             dbQueueId = DBNewEntity,
             primary = True,
@@ -1412,7 +1415,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             deleteErrors = 0
           }
       qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey queueMode
-  pure (rq, qUri, tSess, sessionId thParams')
+  pure (rq, qUri, serviceId, tSess, sessionId thParams')
   where
     mkNtfCreds :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> TVar ChaChaDRG -> SMPClient -> IO (Maybe (C.AAuthKeyPair, C.PrivateKeyX25519), Maybe NewNtfCreds)
     mkNtfCreds a g smp

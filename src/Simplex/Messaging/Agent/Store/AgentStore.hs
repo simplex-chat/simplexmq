@@ -1979,7 +1979,7 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
         :. ntfCredsFields
     )
   -- TODO [certs rcv] save client service
-  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, clientService = Nothing}
+  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, rcvServiceAssoc = False}
   where
     ntfCredsFields = case clientNtfCreds of
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} ->
@@ -2179,7 +2179,7 @@ toRcvQueue
         (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
         _ -> Nothing
       -- TODO [certs rcv] read client service
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, rcvServiceAssoc = False, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
