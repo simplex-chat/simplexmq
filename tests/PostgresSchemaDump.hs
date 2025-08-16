@@ -65,6 +65,6 @@ postgresSchemaDumpTest migrations skipComparisonForDownMigrations testDBOpts@DBO
       void $ readCreateProcess (shell cmd) ""
       threadDelay 20000
       let sed = (if ci then "sed -i" else "sed -i ''")
-      void $ readCreateProcess (shell $ sed <> " '/^--/d' " <> schemaPath) ""
+      void $ readCreateProcess (shell $ sed <> " '/^--/d' " <> schemaPath <> " | sed '/^\\\\/d'") ""
       sch <- readFile schemaPath
       sch `deepseq` pure sch
