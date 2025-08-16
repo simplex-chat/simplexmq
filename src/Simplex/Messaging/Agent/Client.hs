@@ -484,7 +484,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains} currentTs agentEnv = do
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains} currentTs agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
@@ -494,7 +494,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
   msgQ <- newTBQueueIO qSize
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
-  smpServiceCreds <- TM.emptyIO
+  smpServiceCreds <- newTVarIO =<< mapM (\enable -> if enable then Just <$> TM.emptyIO else pure Nothing) useServices
   smpProxiedRelays <- TM.emptyIO
   ntfServers <- newTVarIO ntf
   ntfClients <- TM.emptyIO

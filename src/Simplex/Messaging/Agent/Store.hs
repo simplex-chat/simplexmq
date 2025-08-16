@@ -27,6 +27,8 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust)
 import Data.Time (UTCTime)
 import Data.Type.Equality
+import qualified Data.X509.Validation as XV
+import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import Simplex.Messaging.Agent.Store.Common
@@ -156,6 +158,25 @@ data InvShortLink = InvShortLink
     sndId :: Maybe SMP.SenderId
   }
   deriving (Show)
+
+data ClientService = ClientService
+  { clientServiceId :: Int64,
+    userId :: UserId,
+    server :: SMPServer,
+    credential :: TLS.Credential,
+    certHash :: XV.Fingerprint,
+    rcvServiceId :: Maybe SMP.ServiceId
+  }
+-- client_services(
+--   client_service_id INTEGER PRIMARY KEY AUTOINCREMENT,
+--   user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
+--   host TEXT NOT NULL,
+--   port TEXT NOT NULL,
+--   service_cert BLOB NOT NULL,
+--   service_priv_key BLOB NOT NULL,
+--   rcv_service_id BLOB,
+--   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT,
+-- );
 
 type SndQueue = StoredSndQueue 'DBStored
 
