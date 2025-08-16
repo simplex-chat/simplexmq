@@ -34,6 +34,11 @@ module Simplex.Messaging.Agent.Store.AgentStore
     deleteUsersWithoutConns,
     checkUser,
 
+    -- * Client services
+    getCreateClientService,
+    setClientServiceId,
+    deleteClientService,
+
     -- * Queues and connections
     createNewConn,
     updateNewConnRcv,
@@ -261,6 +266,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
 import Network.Socket (ServiceName)
+import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
@@ -367,6 +373,27 @@ deleteUsersWithoutConns db = do
         (Only (BI True))
   forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
   pure userIds
+
+-- TODO [certs rcv]
+getCreateClientService :: DB.Connection -> UserId -> SMPServer -> TLS.Credential -> IO (Either StoreError ClientService)
+getCreateClientService = undefined
+
+setClientServiceId :: DB.Connection -> ClientService -> ServiceId -> IO (Either StoreError ())
+setClientServiceId = undefined
+
+deleteClientService :: DB.Connection -> ClientService -> IO (Either StoreError ())
+deleteClientService = undefined
+
+-- client_services(
+--   client_service_id INTEGER PRIMARY KEY AUTOINCREMENT,
+--   user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
+--   host TEXT NOT NULL,
+--   port TEXT NOT NULL,
+--   service_cert BLOB NOT NULL,
+--   service_priv_key BLOB NOT NULL,
+--   rcv_service_id BLOB,
+--   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT,
+-- );
 
 createConn_ ::
   TVar ChaChaDRG ->
@@ -1979,7 +2006,7 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
         :. ntfCredsFields
     )
   -- TODO [certs rcv] save client service
-  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, clientService = Nothing}
+  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, rcvServiceAssoc = False}
   where
     ntfCredsFields = case clientNtfCreds of
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} ->
@@ -2179,7 +2206,7 @@ toRcvQueue
         (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
         _ -> Nothing
       -- TODO [certs rcv] read client service
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, rcvServiceAssoc = False, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =

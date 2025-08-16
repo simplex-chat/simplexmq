@@ -14,7 +14,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
-import Simplex.Messaging.Agent.Protocol (ConnectionLink, ConnectionMode (..), ConnectionRequestUri)
+import Simplex.Messaging.Agent.Protocol (ConnectionLink, ConnectionMode (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 
