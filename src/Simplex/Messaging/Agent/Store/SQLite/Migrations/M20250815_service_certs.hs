@@ -10,14 +10,14 @@ m20250815_service_certs :: Query
 m20250815_service_certs =
   [sql|
 CREATE TABLE client_services(
-  client_service_id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   service_cert BLOB NOT NULL,
+  service_cert_hash BLOB NOT NULL,
   service_priv_key BLOB NOT NULL,
   rcv_service_id BLOB,
-  FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT,
+  FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
 CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(user_id, host, port);

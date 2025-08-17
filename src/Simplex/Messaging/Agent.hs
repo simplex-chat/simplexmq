@@ -74,8 +74,7 @@ module Simplex.Messaging.Agent
     getNotificationConns,
     resubscribeConnection,
     resubscribeConnections,
-    -- TODO [certs rcv]
-    -- subscribeClientService,
+    subscribeClientServices,
     sendMessage,
     sendMessages,
     sendMessagesB,
@@ -228,6 +227,7 @@ import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Mem.Weak (deRefWeak)
+import UnliftIO (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -465,10 +465,9 @@ resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either Agen
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
--- TODO [certs rcv] how to communicate that service ID changed - as error or as result?
--- subscribeClientService :: AgentClient -> ClientServiceId -> AE Int
--- subscribeClientService c = withAgentEnv c . subscribeClientService' c
--- {-# INLINE subscribeClientService #-}
+subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType Int64))
+subscribeClientServices c = withAgentEnv c . subscribeClientServices' c
+{-# INLINE subscribeClientServices #-}
 
 -- | Send message to the connection (SEND command)
 sendMessage :: AgentClient -> ConnId -> PQEncryption -> MsgFlags -> MsgBody -> AE (AgentMsgId, PQEncryption)
@@ -717,6 +716,7 @@ createUser' c smp xftp = do
   userId <- withStore' c createUserRecord
   atomically $ TM.insert userId (mkUserServers smp) $ smpServers c
   atomically $ TM.insert userId (mkUserServers xftp) $ xftpServers c
+  atomically $ TM.insert userId False $ useClientServices c
   pure userId
 
 deleteUser' :: AgentClient -> UserId -> Bool -> AM ()
@@ -726,6 +726,7 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
     else withStore c (`deleteUserRecord` userId)
   atomically $ TM.delete userId $ smpServers c
   atomically $ TM.delete userId $ xftpServers c
+  atomically $ TM.delete userId $ useClientServices c
   atomically $ modifyTVar' smpServersStats $ M.filterWithKey (\(userId', _) _ -> userId' /= userId)
   atomically $ modifyTVar' xftpServersStats $ M.filterWithKey (\(userId', _) _ -> userId' /= userId)
   lift $ saveServersStats c
@@ -734,19 +735,12 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
       whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
 
--- TODO [certs rcv]
 setUserService' :: AgentClient -> UserId -> Bool -> AM ()
-setUserService' _c _userId enable
-  | enable = do
-      -- check if user already has credentials enabled
-      -- if not, generate credentials and save
-      -- update client agent
-      undefined
-  | otherwise = do
-      -- check if user already has credentials disabled
-      -- if not, disable
-      -- update client agent
-      undefined
+setUserService' c userId enable = do
+  wasEnabled <- liftIO $ fromMaybe False <$> TM.lookupIO userId (useClientServices c)
+  when (enable /= wasEnabled) $ do
+    atomically $ TM.insert userId enable $ useClientServices c
+    unless enable $ withStore' c (`deleteClientServices` userId)
 
 newConnAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
 newConnAsync c userId corrId enableNtfs cMode pqInitKeys subMode = do
@@ -982,8 +976,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
       ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
-      -- TODO [certs rcv] save queue association
-      (rq, qUri, _serviceId, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
+      (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAgentError` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
       lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
@@ -1234,8 +1227,7 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 createReplyQueue :: AgentClient -> NetworkRequestMode -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
-  -- TODO [certs rcv] save queue association
-  (rq, qUri, _serviceId, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
+  (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
@@ -1287,6 +1279,7 @@ type QSubResult = QCmdResult (Maybe SMP.ServiceId)
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
+  -- TODO [certs rcv] - it should exclude connections already associated, and then if some don't deliver any response they may be unassociated
   conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConns` connIds)
   let (errs, cs) = M.mapEither id conns
       errs' = M.map (Left . storeError) errs
@@ -1368,9 +1361,14 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
--- TODO [certs rcv]
--- subscribeClientService' :: AgentClient -> ClientServiceId -> AM Int
--- subscribeClientService' = undefined
+subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType Int64))
+subscribeClientServices' c userId =
+  ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"
+  where
+    useService = liftIO $ (Just True ==) <$> TM.lookupIO userId (useClientServices c)
+    subscribe = do
+      srvs <- withStore' c (`getClientServiceServers` userId)
+      lift $ M.fromList . zip srvs <$> mapConcurrently (tryAgentError' . subscribeClientService c userId) srvs
 
 -- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
@@ -2031,8 +2029,7 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
   -- TODO [notications] possible improvement would be to create ntf credentials here, to avoid creating them after rotation completes.
   -- The problem is that currently subscription already exists, and we do not support queues with credentials but without subscriptions.
-  -- TODO [certs rcv] save queue association
-  (q, qUri, _serviceId, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
+  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
   lift $ addNewQueueSubscription c rq'' tSess sessId

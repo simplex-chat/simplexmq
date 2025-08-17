@@ -723,10 +723,6 @@ instance ToField SMPServiceRole where toField = toField . decodeLatin1 . smpEnco
 
 instance FromField SMPServiceRole where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
-instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
-
-instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
-
 #if !defined(dbPostgres)
 instance ToField EntityId where toField (EntityId s) = toField $ Binary s
 
@@ -747,4 +743,8 @@ instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodeP
 instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s)
 
 deriving newtype instance FromField EncDataBytes
+
+instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
+
+instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
 #endif

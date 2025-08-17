@@ -63,6 +63,7 @@ initServers =
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig,
+      useServices = M.empty,
       presetDomains = []
     }
 

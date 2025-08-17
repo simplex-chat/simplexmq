@@ -48,6 +48,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue,
     newRcvQueue_,
     subscribeQueues,
+    subscribeClientService,
     getQueueMessage,
     decryptSMPMessage,
     addSubscription,
@@ -215,6 +216,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+import qualified Data.X509.Validation as XV
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -230,7 +232,8 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.AgentStore
+import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
@@ -284,8 +287,9 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, ServiceCredentials, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
@@ -321,7 +325,7 @@ data AgentClient = AgentClient
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
-    smpServiceCreds :: TMap UserId (Maybe (TMap SMPServer ServiceCredentials)), -- Nothing means not to use certificates for this user record
+    useClientServices :: TMap UserId Bool,
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
     -- SMPServerWithAuth defines client connected to SMP proxy (with the same userId and entityId in TransportSession)
@@ -494,7 +498,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
   msgQ <- newTBQueueIO qSize
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
-  smpServiceCreds <- newTVarIO =<< mapM (\enable -> if enable then Just <$> TM.emptyIO else pure Nothing) useServices
+  useClientServices <- newTVarIO useServices
   smpProxiedRelays <- TM.emptyIO
   ntfServers <- newTVarIO ntf
   ntfClients <- TM.emptyIO
@@ -533,7 +537,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
         msgQ,
         smpServers,
         smpClients,
-        smpServiceCreds,
+        useClientServices,
         smpProxiedRelays,
         ntfServers,
         ntfClients,
@@ -585,6 +589,28 @@ agentClientStore AgentClient {agentEnv = Env {store}} = store
 agentDRG :: AgentClient -> TVar ChaChaDRG
 agentDRG AgentClient {agentEnv = Env {random}} = random
 {-# INLINE agentDRG #-}
+
+getServiceCredentials :: AgentClient -> UserId -> SMPServer -> AM (Maybe (ServiceCredentials, Maybe ServiceId))
+getServiceCredentials c userId srv =
+  liftIO (TM.lookupIO userId $ useClientServices c)
+    $>>= \useService -> if useService then Just <$> getService else pure Nothing
+  where
+    getService :: AM (ServiceCredentials, Maybe ServiceId)
+    getService = do
+      let g = agentDRG c
+      ((C.KeyHash kh, serviceCreds), serviceId_) <-
+        withStore' c $ \db ->
+          getClientService db userId srv >>= \case
+            Just service -> pure service
+            Nothing -> do
+              cred <- genCredentials g Nothing (25, 24 * 999999) "simplex"
+              let tlsCreds = tlsCredentials [cred]
+              createClientService db userId srv tlsCreds
+              pure (tlsCreds, Nothing)
+      (_, pk) <- atomically $ C.generateKeyPair g
+      let serviceSignKey = C.APrivateSignKey C.SEd25519 pk
+          creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
+      pure (creds, serviceId_)
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg
@@ -689,7 +715,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} nm tSess@(_, srv, _) prs v =
+smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} nm tSess@(userId, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAgentError` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
@@ -697,11 +723,21 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs} nm tSess@(_, srv,
     connectClient v' = do
       cfg <- lift $ getClientConfig c smpCfg
       g <- asks random
+      service <- getServiceCredentials c userId srv
+      let cfg' = cfg {serviceCredentials = fst <$> service}
       env <- ask
-      liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
+      smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
-        smp <- ExceptT $ getProtocolClient g nm tSess cfg (presetSMPDomains c) (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
-        pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
+        ExceptT $ getProtocolClient g nm tSess cfg' (presetSMPDomains c) (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+      updateClientService service smp
+      pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
+    updateClientService service smp = case (service, smpClientService smp) of
+      (Just (_, serviceId_), Just THClientService {serviceId})
+        | serviceId_ /= Just serviceId -> withStore' c $ \db -> setClientServiceId db userId srv serviceId
+        | otherwise -> pure ()
+      (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
+      (Nothing, Just _) -> logError "server returned serviceId without service credentials in request"
+      (Nothing, Nothing) -> pure ()
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
 smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, qId) env v prs client = do
@@ -858,7 +894,6 @@ waitForProtocolClient c nm tSess@(_, srv, _) clients v = do
           (throwE e)
     Nothing -> throwE $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
--- clientConnected arg is only passed for SMP server
 newProtocolClient ::
   forall v err msg.
   (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) =>
@@ -1355,7 +1390,7 @@ getSessionMode :: MonadIO m => AgentClient -> m TransportSessionMode
 getSessionMode = fmap sessionMode . getNetworkConfig
 {-# INLINE getSessionMode #-}
 
-newRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> Bool -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, Maybe ServiceId, SMPTransportSession, SessionId)
+newRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> SConnectionMode c -> Bool -> SubscriptionMode -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
 newRcvQueue c nm userId connId srv vRange cMode enableNtfs subMode = do
   let qrd = case cMode of SCMInvitation -> CQRMessaging Nothing; SCMContact -> CQRContact Nothing
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
@@ -1376,7 +1411,7 @@ queueReqData = \case
   CQRMessaging d -> QRMessaging $ srvReq <$> d
   CQRContact d -> QRContact $ srvReq <$> d
 
-newRcvQueue_ :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> ClntQueueReqData -> Bool -> SubscriptionMode -> Maybe C.CbNonce -> C.KeyPairX25519 -> AM (NewRcvQueue, SMPQueueUri, Maybe ServiceId, SMPTransportSession, SessionId)
+newRcvQueue_ :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> VersionRangeSMPC -> ClntQueueReqData -> Bool -> SubscriptionMode -> Maybe C.CbNonce -> C.KeyPairX25519 -> AM (NewRcvQueue, SMPQueueUri, SMPTransportSession, SessionId)
 newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enableNtfs subMode nonce_ (e2eDhKey, e2ePrivKey) = do
   C.AuthAlg a <- asks (rcvAuthAlg . config)
   g <- asks random
@@ -1388,7 +1423,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
     withClient c nm tSess $ \(SMPConnectedClient smp _) -> do
       (ntfKeys, ntfCreds) <- liftIO $ mkNtfCreds a g smp
       (thParams smp,ntfKeys,) <$> createSMPQueue smp nm nonce_ rKeys dhKey auth subMode (queueReqData cqrd) ntfCreds
-  -- TODO [certs rcv] validate that serviceId is the same as in the client session
+  -- TODO [certs rcv] validate that serviceId is the same as in the client session, fail otherwise
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds thParams' qik
   let rq =
@@ -1415,7 +1450,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             deleteErrors = 0
           }
       qUri = SMPQueueUri vRange $ SMPQueueAddress srv sndId e2eDhKey queueMode
-  pure (rq, qUri, serviceId, tSess, sessionId thParams')
+  pure (rq, qUri, tSess, sessionId thParams')
   where
     mkNtfCreds :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> TVar ChaChaDRG -> SMPClient -> IO (Maybe (C.AAuthKeyPair, C.PrivateKeyX25519), Maybe NewNtfCreds)
     mkNtfCreds a g smp
@@ -1539,6 +1574,11 @@ subscribeQueues c qs = do
         processSubResults :: NonEmpty (RcvQueue, Either SMPClientError (Maybe ServiceId)) -> STM ()
         processSubResults = mapM_ $ uncurry $ processSubResult c sessId
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
+
+subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM Int64
+subscribeClientService c userId srv =
+  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $
+    (`subscribeService` SMP.SRecipientService) . connectedClient
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)

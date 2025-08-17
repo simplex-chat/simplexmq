@@ -35,9 +35,12 @@ module Simplex.Messaging.Agent.Store.AgentStore
     checkUser,
 
     -- * Client services
-    getCreateClientService,
+    createClientService,
+    getClientService,
+    getClientServiceServers,
     setClientServiceId,
     deleteClientService,
+    deleteClientServices,
 
     -- * Queues and connections
     createNewConn,
@@ -265,6 +268,7 @@ import Data.Ord (Down (..))
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
+import qualified Data.X509 as X
 import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
@@ -374,26 +378,74 @@ deleteUsersWithoutConns db = do
   forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
   pure userIds
 
--- TODO [certs rcv]
-getCreateClientService :: DB.Connection -> UserId -> SMPServer -> TLS.Credential -> IO (Either StoreError ClientService)
-getCreateClientService = undefined
+createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ()
+createClientService db userId srv (kh, (cert, pk)) =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO client_services
+        (user_id, host, port, service_cert_hash, service_cert, service_priv_key)
+      VALUES (?,?,?,?,?,?)
+      ON CONFLICT (user_id, host, port)
+      DO UPDATE SET
+        service_cert_hash = EXCLUDED.service_cert_hash,
+        service_cert = EXCLUDED.service_cert,
+        service_priv_key = EXCLUDED.service_priv_key,
+        rcv_service_id = NULL
+    |]
+    (userId, host srv, port srv, kh, cert, pk)
 
-setClientServiceId :: DB.Connection -> ClientService -> ServiceId -> IO (Either StoreError ())
-setClientServiceId = undefined
+getClientService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
+getClientService db userId srv =
+  maybeFirstRow toService $
+    DB.query
+      db
+      [sql|
+        SELECT service_cert_hash, service_cert, service_priv_key, rcv_service_id
+        FROM client_services
+        WHERE user_id = ? AND host = ? AND port = ?
+      |]
+      (userId, host srv, port srv)
+  where
+    toService (kh, cert, pk, serviceId_) = ((kh, (cert, pk)), serviceId_)
 
-deleteClientService :: DB.Connection -> ClientService -> IO (Either StoreError ())
-deleteClientService = undefined
+getClientServiceServers :: DB.Connection -> UserId -> IO [SMPServer]
+getClientServiceServers db userId =
+  map toServer
+    <$> DB.query
+      db
+      [sql|
+        SELECT c.host, c.port, s.key_hash
+        FROM client_services c
+        JOIN servers s ON s.host = c.host AND s.port = c.port
+      |]
+      (Only userId)
+  where
+    toServer (host, port, kh) = SMPServer host port kh
 
--- client_services(
---   client_service_id INTEGER PRIMARY KEY AUTOINCREMENT,
---   user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
---   host TEXT NOT NULL,
---   port TEXT NOT NULL,
---   service_cert BLOB NOT NULL,
---   service_priv_key BLOB NOT NULL,
---   rcv_service_id BLOB,
---   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT,
--- );
+setClientServiceId :: DB.Connection -> UserId -> SMPServer -> ServiceId -> IO ()
+setClientServiceId db userId srv serviceId =
+  DB.execute
+    db
+    [sql|
+      UPDATE client_services
+      SET rcv_service_id = ?
+      WHERE user_id = ? AND host = ? AND port = ?
+    |]
+    (serviceId, userId, host srv, port srv)
+
+deleteClientService :: DB.Connection -> UserId -> SMPServer -> IO ()
+deleteClientService db userId srv =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM client_services
+      WHERE user_id = ? AND host = ? AND port = ?
+    |]
+    (userId, host srv, port srv)
+
+deleteClientServices :: DB.Connection -> UserId -> IO ()
+deleteClientServices db userId = DB.execute db "DELETE FROM client_services WHERE user_id = ?" (Only userId)
 
 createConn_ ::
   TVar ChaChaDRG ->
@@ -408,7 +460,6 @@ createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode 
 createNewConn db gVar cData cMode = do
   fst <$$> createConn_ gVar cData (\connId -> createConnRecord db connId cData cMode)
 
--- TODO [certs rcv] store clientServiceId from NewRcvQueue
 updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 updateNewConnRcv db connId rq =
   getConn db connId $>>= \case
@@ -501,7 +552,6 @@ upgradeRcvConnToDuplex db connId sq =
     (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
     (SomeConn c _) -> pure . Left . SEBadConnType "upgradeRcvConnToDuplex" $ connType c
 
--- TODO [certs rcv] store clientServiceId from NewRcvQueue
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 upgradeSndConnToDuplex db connId rq =
   getConn db connId >>= \case
@@ -509,7 +559,6 @@ upgradeSndConnToDuplex db connId rq =
     Right (SomeConn c _) -> pure . Left . SEBadConnType "upgradeSndConnToDuplex" $ connType c
     _ -> pure $ Left SEConnNotFound
 
--- TODO [certs rcv] store clientServiceId from NewRcvQueue
 addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
 addConnRcvQueue db connId rq =
   getConn db connId >>= \case
@@ -1915,6 +1964,15 @@ deriving newtype instance ToField ChunkReplicaId
 
 deriving newtype instance FromField ChunkReplicaId
 
+instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
+
+instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
+
+instance ToField X.PrivKey where toField = toField . Binary . C.encodeASNObj
+
+instance FromField X.PrivKey where
+  fromField = blobFieldDecoder $ C.decodeASNKey >=> \case (pk, []) -> Right pk; r -> C.asnKeyError r
+
 fromOnlyBI :: Only BoolInt -> Bool
 fromOnlyBI (Only (BI b)) = b
 {-# INLINE fromOnlyBI #-}
@@ -1994,19 +2052,18 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
     db
     [sql|
       INSERT INTO rcv_queues
-        ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret,
+        ( host, port, rcv_id, rcv_service_assoc, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret,
           snd_id, queue_mode, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash,
           link_id, link_key, link_priv_sig_key, link_enc_fixed_data,
           ntf_public_key, ntf_private_key, ntf_id, rcv_ntf_dh_secret
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ( (host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
+    ( (host server, port server, rcvId, rcvServiceAssoc, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
         :. (sndId, queueMode, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
         :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
         :. ntfCredsFields
     )
-  -- TODO [certs rcv] save client service
-  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, rcvServiceAssoc = False}
+  pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
   where
     ntfCredsFields = case clientNtfCreds of
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} ->
@@ -2177,7 +2234,7 @@ rcvQueueQuery =
   [sql|
     SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
       q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.queue_mode, q.status,
-      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.switch_status, q.smp_client_version, q.delete_errors,
+      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.switch_status, q.smp_client_version, q.delete_errors, q.rcv_service_assoc,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
       q.link_id, q.link_key, q.link_priv_sig_key, q.link_enc_fixed_data
     FROM rcv_queues q
@@ -2187,13 +2244,13 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
-    :. (QueueStatus, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+    :. (QueueStatus, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int, ServiceAssoc)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
     :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
 toRcvQueue
   ( (userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode)
-      :. (status, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors)
+      :. (status, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors, rcvServiceAssoc)
       :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)
       :. (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_)
   ) =
@@ -2205,8 +2262,7 @@ toRcvQueue
       shortLink = case (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_) of
         (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
         _ -> Nothing
-      -- TODO [certs rcv] read client service
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, rcvServiceAssoc = False, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, rcvServiceAssoc, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
