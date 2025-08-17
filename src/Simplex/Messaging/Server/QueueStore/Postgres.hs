@@ -143,7 +143,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   getEntityCounts :: PostgresQueueStore q -> IO EntityCounts
   getEntityCounts st =
-    withConnection (dbStore st) $ \db -> do
+    withTransaction (dbStore st) $ \db -> do
       (queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount) : _ <-
         DB.query
           db
@@ -497,7 +497,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
 batchInsertServices :: [STMService] -> PostgresQueueStore q -> IO Int64
 batchInsertServices services' toStore =
-  withConnection (dbStore toStore) $ \db ->
+  withTransaction (dbStore toStore) $ \db ->
     DB.executeMany db insertServiceQuery $ map (serviceRecToRow . serviceRec) services'
 
 batchInsertQueues :: StoreQueueClass q => Bool -> M.Map RecipientId q -> PostgresQueueStore q' -> IO Int64
@@ -506,7 +506,7 @@ batchInsertQueues tty queues toStore = do
   putStrLn $ "Importing " <> show (length qs) <> " queues..."
   let st = dbStore toStore
   count <-
-    withConnection st $ \db -> do
+    withTransaction st $ \db -> do
       DB.copy_
         db
         [sql|
@@ -515,7 +515,7 @@ batchInsertQueues tty queues toStore = do
         |]
       mapM_ (putQueue db) (zip [1..] qs)
       DB.putCopyEnd db
-  Only qCnt : _ <- withConnection st (`DB.query_` "SELECT count(*) FROM msg_queues")
+  Only qCnt : _ <- withTransaction st (`DB.query_` "SELECT count(*) FROM msg_queues")
   putStrLn $ progress count
   pure qCnt
   where
@@ -542,7 +542,7 @@ insertServiceQuery =
 
 foldServiceRecs :: Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
 foldServiceRecs st f =
-  withConnection (dbStore st) $ \db ->
+  withTransaction (dbStore st) $ \db ->
     DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
       \ !acc -> fmap (acc <>) . f . rowToServiceRec
 
@@ -553,7 +553,7 @@ foldRcvServiceQueueRecs st serviceId f acc =
 
 foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs tty withData st skipOld_ f = do
-  (n, r) <- withConnection (dbStore st) $ \db ->
+  (n, r) <- withTransaction (dbStore st) $ \db ->
     foldRecs db (0 :: Int, mempty) $ \(i, acc) qr -> do
       r <- f qr
       let !i' = i + 1
@@ -692,7 +692,7 @@ withDB' op st action = withDB op st $ fmap Right . action
 
 withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
 withDB op st action =
-  ExceptT $ E.try (withConnection (dbStore st) action) >>= either logErr pure
+  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)

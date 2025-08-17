@@ -1149,7 +1149,7 @@ testTiming =
     forM_ timingTests $ \tst ->
       it (testName tst) $ \(ATransport t, msType) ->
         smpTest2Cfg (cfgMS msType) (mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion) t $ \rh sh ->
-          testSameTiming rh sh tst
+          testSameTiming rh sh tst msType
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
     testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
@@ -1166,11 +1166,16 @@ testTiming =
         (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
       ]
     timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
-    similarTime t1 t2
-      | t1 <= t2 = abs (1 - t1 / t2) < 0.3 -- normally the difference between "no queue" and "wrong key" is less than 5%
-      | otherwise = similarTime t2 t1
-    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> Expectation
-    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) = do
+    similarTime t1 t2 msType
+      | t1 <= t2 = abs (1 - t1 / t2) < diff
+      | otherwise = similarTime t2 t1 msType
+      where
+        -- normally the difference between "no queue" and "wrong key" is less than 5%, but it's higher on PostgreSQL and on CI
+        diff = case msType of
+          ASType SQSPostgres _ -> 0.45
+          _ -> 0.3
+    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> AStoreType -> Expectation
+    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) msType = do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -1205,7 +1210,7 @@ testTiming =
           timeNoQueue <- timeRepeat n $ do
             Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", EntityId "1234", cmd)
             return ()
-          let ok = similarTime timeNoQueue timeWrongKey
+          let ok = similarTime timeNoQueue timeWrongKey msType
           unless ok . putStrLn . unwords $
             [ show goodKeyAlg,
               show badKeyAlg,
