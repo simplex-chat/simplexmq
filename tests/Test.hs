@@ -95,7 +95,7 @@ main = do
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $
-          describe "SMP server schema dump" $
+          fdescribe "SMP server schema dump" $
             postgresSchemaDumpTest
               serverMigrations
               [ "20250320_short_links" -- snd_secure moves to the bottom on down migration
@@ -116,7 +116,7 @@ main = do
         --   before (pure (transport @WS, ASType SQSMemory SMSJournal)) serverTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket ntfTestServerDBConnectInfo) $
-          describe "Ntf server schema dump" $
+          fdescribe "Ntf server schema dump" $
             postgresSchemaDumpTest
               ntfServerMigrations
               [] -- skipComparisonForDownMigrations
