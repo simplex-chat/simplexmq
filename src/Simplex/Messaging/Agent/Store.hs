@@ -670,7 +670,7 @@ data StoreError
   | -- | Invitation not found
     SEInvitationNotFound String InvitationId
   | -- | Message not found
-    SEMsgNotFound
+    SEMsgNotFound String
   | -- | Command not found
     SECmdNotFound
   | -- | Currently not used. The intention was to pass current expected queue status in methods,

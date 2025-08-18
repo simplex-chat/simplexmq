@@ -967,7 +967,7 @@ createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
 
 getSndMsgViaRcpt :: DB.Connection -> ConnId -> InternalSndId -> IO (Either StoreError SndMsg)
 getSndMsgViaRcpt db connId sndMsgId =
-  firstRow toSndMsg SEMsgNotFound $
+  firstRow toSndMsg (SEMsgNotFound "getSndMsgViaRcpt") $
     DB.query
       db
       [sql|
@@ -1103,7 +1103,7 @@ getExpiredSndMessages db connId SndQueue {dbQueueId} expireTs = do
 setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError (RcvQueue, SMP.MsgId))
 setMsgUserAck db connId agentMsgId = runExceptT $ do
   (dbRcvId, srvMsgId) <-
-    ExceptT . firstRow id SEMsgNotFound $
+    ExceptT . firstRow id (SEMsgNotFound "setMsgUserAck") $
       DB.query db "SELECT rcv_queue_id, broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
   rq <- ExceptT $ getRcvQueueById db connId dbRcvId
   liftIO $ DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (BI True, connId, agentMsgId)
@@ -1111,7 +1111,7 @@ setMsgUserAck db connId agentMsgId = runExceptT $ do
 
 getRcvMsg :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError RcvMsg)
 getRcvMsg db connId agentMsgId =
-  firstRow toRcvMsg SEMsgNotFound $
+  firstRow toRcvMsg (SEMsgNotFound "getRcvMsg") $
     DB.query
       db
       [sql|
@@ -1161,7 +1161,7 @@ checkRcvMsgHashExists db connId hash = do
 
 getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
 getRcvMsgBrokerTs db connId msgId =
-  firstRow fromOnly SEMsgNotFound $
+  firstRow fromOnly (SEMsgNotFound "getRcvMsgBrokerTs") $
     DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, Binary msgId)
 
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
