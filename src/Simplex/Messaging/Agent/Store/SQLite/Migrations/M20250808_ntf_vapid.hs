@@ -8,8 +8,7 @@ import Database.SQLite.Simple.QQ (sql)
 m20250808_ntf_vapid :: Query
 m20250808_ntf_vapid =
   [sql|
-ALTER TABLE ntf_servers ADD COLUMN ntf_vapid TEXT NOT NULL DEFAULT '';
-UPDATE TABLE ntf_servers SET ntf_vapid = '';
+ALTER TABLE ntf_servers ADD COLUMN ntf_vapid TEXT;
   |]
 
 down_m20250808_ntf_vapid :: Query

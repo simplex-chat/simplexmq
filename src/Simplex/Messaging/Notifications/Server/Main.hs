@@ -152,7 +152,7 @@ ntfServerCLI cfgPath logPath =
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
-          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp) (toExtras [("vapid", vapidFP)])) Nothing
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] "" (C.KeyHash fp) (toExtras [("vapid", Just vapidFP)])) Nothing
       T.writeFile iniFile $ iniFileContent host
       putStrLn $ "Server initialized, you can modify configuration in " <> iniFile <> ".\nRun `" <> executableName <> " start` to start server."
       warnCAPrivateKeyFile cfgPath x509cfg
@@ -214,7 +214,7 @@ ntfServerCLI cfgPath logPath =
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@NtfServerConfig {transports} = serverConfig vapidKey
-          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp) (toExtras [("vapid", vapidFP)])) Nothing
+          srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp) (toExtras [("vapid", Just vapidFP)])) Nothing
       printServiceInfo serverVersion srv
       printNtfServerConfig transports dbStoreConfig
       runNtfServer cfg

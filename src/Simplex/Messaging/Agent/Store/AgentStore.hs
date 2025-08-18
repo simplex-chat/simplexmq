@@ -1971,7 +1971,7 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash, extras} = do
         ntf_key_hash=excluded.ntf_key_hash;
         ntf_vapid=excluded.ntf_vapid;
     |]
-    (host, port, keyHash, getExtra extras "vapid" "")
+    (host, port, keyHash, getExtra extras "vapid")
 
 -- * createRcvConn helpers
 

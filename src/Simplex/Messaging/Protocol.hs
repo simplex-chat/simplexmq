@@ -229,7 +229,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
-import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1137,7 +1137,10 @@ instance StrEncoding Extras where
     where
       listParam = parseAll strP <$?> A.takeTill (== '&')
 
-toExtras :: [(ByteString, ByteString)] -> Maybe Extras
+instance FromField Extras where fromField = blobFieldDecoder strDecode
+instance ToField Extras where toField = toField . Binary . strEncode
+
+toExtras :: [(ByteString, Maybe ByteString)] -> Maybe Extras
 toExtras a = do
   let l = mapMaybe extra a
   case length l of
@@ -1145,17 +1148,17 @@ toExtras a = do
       _ -> Just $ Extras l
 
   where
-    extra (k, v) = case B.length v of
-        0 -> Nothing
-        _ -> Just $ Extra (k, v)
+    extra (k, v) = case v of
+        Nothing -> Nothing
+        Just v' -> Just $ Extra (k, v')
 
--- | getExtra :: extras -> key -> default -> value
-getExtra :: Maybe Extras -> ByteString -> ByteString -> ByteString
-getExtra Nothing _ d = d
-getExtra (Just (Extras e)) k d =
+-- | getExtra :: extras -> key -> value
+getExtra :: Maybe Extras -> ByteString -> Maybe ByteString
+getExtra Nothing _ = Nothing
+getExtra (Just (Extras e)) k =
   case filter matchKey e of
-    [] -> d
-    (Extra (_, v)) : _ -> v
+    [] -> Nothing
+    (Extra (_, v)) : _ -> Just v
   where
     matchKey (Extra(k', _)) = k' == k
 
