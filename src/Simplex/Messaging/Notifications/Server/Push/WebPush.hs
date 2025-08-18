@@ -102,7 +102,7 @@ mkVapidHeader VapidKey {key, fp} endpoint expire = do
           sub = Just "https://github.com/simplex-chat/simplexmq/"
         }
       jwt = JWTToken jwtHeader jwtClaims
-  signedToken <- signedJWTToken key jwt
+  signedToken <- signedJWTTokenRawSign key jwt
   pure $ "vapid t=" <> signedToken <> ",k=" <> fp
   where
     audience :: IO T.Text

@@ -93,6 +93,7 @@ module Simplex.Messaging.Crypto
     pubKeyBytes,
     uncompressEncode,
     uncompressDecode,
+    encodeBigInt,
 
     -- * sign/verify
     Signature (..),
