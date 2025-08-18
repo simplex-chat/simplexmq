@@ -52,7 +52,7 @@ wpPushProviderClient mg tkn pn = do
       encBody <- body e
       let requestHeaders = [
             ("TTL", "2592000") -- 30 days
-            , ("Urgency", "High")
+            , ("Urgency", "high")
             , ("Content-Encoding", "aes128gcm")
         -- TODO: topic for pings and interval
             ]
