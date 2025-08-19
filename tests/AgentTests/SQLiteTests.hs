@@ -698,7 +698,7 @@ testGetPendingServerCommand st = do
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 
 xftpServer1 :: SMP.XFTPServer
-xftpServer1 = SMP.ProtocolServer SMP.SPXFTP "xftp.simplex.im" "5223" testKeyHash
+xftpServer1 = SMP.ProtocolServer SMP.SPXFTP "xftp.simplex.im" "5223" testKeyHash Nothing
 
 rcvFileDescr1 :: FileDescription 'FRecipient
 rcvFileDescr1 =

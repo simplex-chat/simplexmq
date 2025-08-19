@@ -190,6 +190,7 @@ CREATE TABLE ntf_servers(
   ntf_key_hash BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
+  ntf_vapid TEXT,
   PRIMARY KEY(ntf_host, ntf_port)
 ) WITHOUT ROWID;
 CREATE TABLE ntf_tokens(

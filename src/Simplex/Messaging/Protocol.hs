@@ -1178,11 +1178,12 @@ instance ProtocolTypeI p => IsString (ProtocolServer p) where
   fromString = parseString strDecode
 
 instance ProtocolTypeI p => Encoding (ProtocolServer p) where
-  smpEncode ProtocolServer {host, port, keyHash, extras} =
-    smpEncode (host, port, keyHash, extras)
+  -- extras isn't encoded yet
+  smpEncode ProtocolServer {host, port, keyHash} =
+    smpEncode (host, port, keyHash)
   smpP = do
-    (host, port, keyHash, extras) <- smpP
-    pure ProtocolServer {scheme = protocolTypeI @p, host, port, keyHash, extras}
+    (host, port, keyHash) <- smpP
+    pure ProtocolServer {scheme = protocolTypeI @p, host, port, keyHash, extras = Nothing}
 
 instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
   strEncode ProtocolServer {scheme, host, port, keyHash, extras} =
@@ -1263,12 +1264,12 @@ legacyEncodeServer ProtocolServer {host, port, keyHash} =
 
 legacyServerP :: forall p. ProtocolTypeI p => Parser (ProtocolServer p)
 legacyServerP = do
-  (h, port, keyHash, extras) <- smpP
-  pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash, extras}
+  (h, port, keyHash) <- smpP
+  pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash, extras = Nothing}
 
 legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
-legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash, extras} =
-  strEncodeServer scheme (strEncode $ L.head host) port keyHash extras Nothing
+legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
+  strEncodeServer scheme (strEncode $ L.head host) port keyHash Nothing Nothing
 
 strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe Extras -> Maybe BasicAuth -> ByteString
 strEncodeServer scheme host port keyHash extras_ auth_ =
