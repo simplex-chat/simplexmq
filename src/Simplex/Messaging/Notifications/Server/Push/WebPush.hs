@@ -77,7 +77,8 @@ getVapidHeader vapidK e cache = do
   now <- systemSeconds <$> getSystemTime
   case h of
     Nothing -> newCacheEntry now
-    Just entry -> if expire entry > now then pure $ vapidHeader entry
+    -- if it isn't expired, or expire within the next minute
+    Just entry -> if expire entry > now + 60 then pure $ vapidHeader entry
       else newCacheEntry now
   where
     newCacheEntry :: Int64 -> IO B.ByteString
