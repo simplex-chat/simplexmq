@@ -200,6 +200,7 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
+    IdsHash,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -465,7 +466,7 @@ resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either Agen
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
-subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType Int64))
+subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
 subscribeClientServices c = withAgentEnv c . subscribeClientServices' c
 {-# INLINE subscribeClientServices #-}
 
@@ -1361,7 +1362,8 @@ resubscribeConnections' c connIds = do
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections' c connIds'
 
-subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType Int64))
+-- TODO [serts rcv] compare hash with lock
+subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
 subscribeClientServices' c userId =
   ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"
   where

@@ -254,6 +254,7 @@ import Simplex.Messaging.Protocol
     ErrorType,
     MsgFlags (..),
     MsgId,
+    IdsHash,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -1424,6 +1425,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
       (ntfKeys, ntfCreds) <- liftIO $ mkNtfCreds a g smp
       (thParams smp,ntfKeys,) <$> createSMPQueue smp nm nonce_ rKeys dhKey auth subMode (queueReqData cqrd) ntfCreds
   -- TODO [certs rcv] validate that serviceId is the same as in the client session, fail otherwise
+  -- possibly, it should allow returning Nothing - it would indicate incorrect old version
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds thParams' qik
   let rq =
@@ -1575,7 +1577,7 @@ subscribeQueues c qs = do
         processSubResults = mapM_ $ uncurry $ processSubResult c sessId
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
-subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM Int64
+subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM (Int64, IdsHash)
 subscribeClientService c userId srv =
   withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $
     (`subscribeService` SMP.SRecipientService) . connectedClient

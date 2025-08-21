@@ -479,14 +479,14 @@ smpSubscribeService ca smp srv serviceSub@(serviceId, _) = case smpClientService
             (True <$ processSubscription r)
             (pure False)
       if ok
-        then case r of
-          Right n -> notify ca $ CAServiceSubscribed srv serviceSub n
+        then case r of -- TODO [certs rcv] compare hash
+          Right (n, _idsHash) -> notify ca $ CAServiceSubscribed srv serviceSub n
           Left e
             | smpClientServiceError e -> notifyUnavailable
             | temporaryClientError e -> reconnectClient ca srv
             | otherwise -> notify ca $ CAServiceSubError srv serviceSub e
         else reconnectClient ca srv
-    processSubscription = mapM_ $ \n -> do
+    processSubscription = mapM_ $ \(n, _idsHash) -> do -- TODO [certs rcv] validate hash here?
       setActiveServiceSub ca srv $ Just ((serviceId, n), sessId)
       setPendingServiceSub ca srv Nothing
     serviceAvailable THClientService {serviceRole, serviceId = serviceId'} =

@@ -712,7 +712,7 @@ testServiceDeliverSubscribe =
             receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
               sh
               [ \case
-                  Resp "11" serviceId' (SOKS n) -> do
+                  Resp "11" serviceId' (SOKS n _) -> do
                     n `shouldBe` 1
                     serviceId' `shouldBe` serviceId
                     pure $ Just Nothing
@@ -746,6 +746,9 @@ testServiceUpgradeAndDowngrade =
       (rPub2, rKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub2, dhPriv2 :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       (sPub2, sKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rPub3, rKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub3, dhPriv3 :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (sPub3, sKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
 
       (rId, sId, dec) <- runSMPClient t $ \sh -> do
         Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv sh rKey ("1", NoEntity, New rPub dhPub)
@@ -768,6 +771,13 @@ testServiceUpgradeAndDowngrade =
         sId2' `shouldBe` sId2
         pure (rId2, sId2, dec2)
 
+      (rId3, _sId3, _dec3) <- runSMPClient t $ \sh -> do
+        Resp "6" NoEntity (Ids rId3 sId3 srvDh3) <- signSendRecv sh rKey3 ("6", NoEntity, New rPub3 dhPub3)
+        let dec3 = decryptMsgV3 $ C.dh' srvDh3 dhPriv3
+        Resp "7" sId3' OK <- signSendRecv h sKey3 ("7", sId3, SKEY sPub3)
+        sId3' `shouldBe` sId3
+        pure (rId3, sId3, dec3)
+
       serviceId <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
         Resp "8" _ (ERR SERVICE) <- signSendRecv sh rKey ("8", rId, SUB)
         (Resp "9" rId' (SOK (Just serviceId)), Resp "" rId'' (Msg mId2 msg2)) <- serviceSignSendRecv2 sh rKey servicePK ("9", rId, SUB)
@@ -778,6 +788,9 @@ testServiceUpgradeAndDowngrade =
         rId2' `shouldBe` rId2
         serviceId' `shouldBe` serviceId
         Resp "10.1" _ OK <- signSendRecv sh rKey ("10.1", rId, ACK mId2)
+        (Resp "10.2" rId3' (SOK (Just serviceId''))) <- serviceSignSendRecv sh rKey3 servicePK ("10.2", rId3, SUB)
+        rId3' `shouldBe` rId3
+        serviceId'' `shouldBe` serviceId
         pure serviceId
 
       Resp "11" _ OK <- signSendRecv h sKey ("11", sId, _SEND "hello 3.1")
@@ -790,8 +803,8 @@ testServiceUpgradeAndDowngrade =
             receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
               sh
               [ \case
-                  Resp "14" serviceId' (SOKS n) -> do
-                    n `shouldBe` 2
+                  Resp "14" serviceId' (SOKS n _) -> do
+                    n `shouldBe` 3
                     serviceId' `shouldBe` serviceId
                     pure $ Just Nothing
                   _ -> pure Nothing,
@@ -806,6 +819,7 @@ testServiceUpgradeAndDowngrade =
                     pure $ Just $ Just (rKey2, rId2, mId3)
                   _ -> pure Nothing
               ]
+        Resp "" NoEntity SALL <- tGet1 sh
         Resp "15" _ OK <- signSendRecv sh rKey3_1 ("15", rId3_1, ACK mId3_1)
         Resp "16" _ OK <- signSendRecv sh rKey3_2 ("16", rId3_2, ACK mId3_2)
         pure ()
@@ -837,14 +851,11 @@ receiveInAnyOrder h = fmap reverse . go []
   where
     go rs [] = pure rs
     go rs ps = withFrozenCallStack $ do
-      r <- 5000000 `timeout` get >>= maybe (error "inAnyOrder timeout") pure
+      r <- 5000000 `timeout` tGet1 h >>= maybe (error "inAnyOrder timeout") pure
       (r_, ps') <- foldrM (choose r) (Nothing, []) ps
       case r_ of
         Just r' -> go (r' : rs) ps'
         Nothing -> error $ "unexpected event: " <> show r
-    get  = do
-      [r] <- tGetClient h
-      pure r
     choose r p (Nothing, ps') = (maybe (Nothing, p : ps') ((,ps') . Just)) <$> p r
     choose _ p (Just r, ps') = pure (Just r, p : ps')
 
@@ -1335,7 +1346,7 @@ testMessageServiceNotifications =
           deliverMessage rh rId rKey sh sId sKey nh2 "connection 1" dec
           deliverMessage rh rId'' rKey'' sh sId'' sKey'' nh2 "connection 2" dec''
           -- -- another client makes service subscription
-          Resp "12" serviceId5 (SOKS 2) <- signSendRecv nh1 (C.APrivateAuthKey C.SEd25519 servicePK) ("12", serviceId, NSUBS)
+          Resp "12" serviceId5 (SOKS 2 _) <- signSendRecv nh1 (C.APrivateAuthKey C.SEd25519 servicePK) ("12", serviceId, NSUBS)
           serviceId5 `shouldBe` serviceId
           Resp "" serviceId6 (ENDS 2) <- tGet1 nh2
           serviceId6 `shouldBe` serviceId

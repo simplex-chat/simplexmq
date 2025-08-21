@@ -1790,17 +1790,18 @@ client
         subscribeServiceMessages serviceId =
           sharedSubscribeService SRecipientService serviceId subscribers serviceSubscribed serviceSubsCount >>= \case
             Left e -> pure $ ERR e
-            Right (hasSub, count) -> do
+            Right (hasSub, (count, idsHash)) -> do
               unless hasSub $ forkClient clnt "deliverServiceMessages" $ liftIO $ deliverServiceMessages count
-              pure $ SOKS count
+              pure $ SOKS count idsHash
           where
             deliverServiceMessages expectedCnt = do
               (qCnt, _msgCnt, _dupCnt, _errCnt) <- foldRcvServiceMessages ms serviceId deliverQueueMsg (0, 0, 0, 0)
+              atomically $ writeTBQueue msgQ [(NoCorrId, NoEntity, SALL)]
               -- TODO [cert rcv] compare with expected
               logNote $ "Service subscriptions for " <> tshow serviceId <> " (" <> tshow qCnt <> " queues)"
             deliverQueueMsg :: (Int, Int, Int, Int) -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO (Int, Int, Int, Int)
             deliverQueueMsg (!qCnt, !msgCnt, !dupCnt, !errCnt) rId = \case
-              Left e -> pure (qCnt + 1, msgCnt, dupCnt, errCnt + 1) -- TODO deliver subscription error
+              Left e -> pure (qCnt + 1, msgCnt, dupCnt, errCnt + 1) -- TODO [certs rcv] deliver subscription error
               Right qMsg_ -> case qMsg_ of
                 Nothing -> pure (qCnt + 1, msgCnt, dupCnt, errCnt)
                 Just (qr, msg) ->
@@ -1823,15 +1824,15 @@ client
 
         subscribeServiceNotifications :: ServiceId -> M s BrokerMsg
         subscribeServiceNotifications serviceId =
-          either ERR (SOKS . snd) <$> sharedSubscribeService SNotifierService serviceId ntfSubscribers ntfServiceSubscribed ntfServiceSubsCount
+          either ERR (uncurry SOKS . snd) <$> sharedSubscribeService SNotifierService serviceId ntfSubscribers ntfServiceSubscribed ntfServiceSubsCount
 
-        sharedSubscribeService :: (PartyI p, ServiceParty p) => SParty p -> ServiceId -> ServerSubscribers s -> (Client s -> TVar Bool) -> (Client s -> TVar Int64) -> M s (Either ErrorType (Bool, Int64))
+        sharedSubscribeService :: (PartyI p, ServiceParty p) => SParty p -> ServiceId -> ServerSubscribers s -> (Client s -> TVar Bool) -> (Client s -> TVar Int64) -> M s (Either ErrorType (Bool, (Int64, IdsHash)))
         sharedSubscribeService party serviceId srvSubscribers clientServiceSubscribed clientServiceSubs = do
           subscribed <- readTVarIO $ clientServiceSubscribed clnt
           liftIO $ runExceptT $
             (subscribed,)
               <$> if subscribed
-                then readTVarIO (clientServiceSubs clnt)
+                then (,B.empty) <$> readTVarIO (clientServiceSubs clnt) -- TODO [certs rcv] get IDs hash
                 else do
                   count' <- ExceptT $ getServiceQueueCount @(StoreQueue s) (queueStore ms) party serviceId
                   incCount <- atomically $ do
@@ -1839,7 +1840,7 @@ client
                     count <- swapTVar (clientServiceSubs clnt) count'
                     pure $ count' - count
                   atomically $ writeTQueue (subQ srvSubscribers) (CSService serviceId incCount, clientId)
-                  pure count'
+                  pure (count', B.empty) -- TODO [certs rcv] get IDs hash
 
         acknowledgeMsg :: MsgId -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         acknowledgeMsg msgId q qr =
