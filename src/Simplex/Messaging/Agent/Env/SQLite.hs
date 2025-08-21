@@ -44,7 +44,6 @@ module Simplex.Messaging.Agent.Env.SQLite
   )
 where
 
-import Control.Concurrent (ThreadId)
 import Control.Exception (BlockedIndefinitelyOnSTM (..), SomeException, fromException)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -60,7 +59,6 @@ import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Time.Clock (NominalDiffTime, nominalDay)
-import Data.Time.Clock.System (SystemTime (..))
 import Data.Word (Word16)
 import Network.Socket
 import Numeric.Natural
@@ -84,7 +82,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
-import System.Mem.Weak (Weak)
+import Simplex.Messaging.Worker
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
 
@@ -338,23 +336,6 @@ mkInternal e = case fromException e of
   Just BlockedIndefinitelyOnSTM -> CRITICAL True "Thread blocked indefinitely in STM transaction"
   _ -> INTERNAL $ show e
 {-# INLINE mkInternal #-}
-
-data Worker = Worker
-  { workerId :: Int,
-    doWork :: TMVar (),
-    action :: TMVar (Maybe (Weak ThreadId)),
-    restarts :: TVar RestartCount
-  }
-
-data RestartCount = RestartCount
-  { restartMinute :: Int64,
-    restartCount :: Int
-  }
-
-updateRestartCount :: SystemTime -> RestartCount -> RestartCount
-updateRestartCount t (RestartCount minute count) = do
-  let min' = systemSeconds t `div` 60
-   in RestartCount min' $ if minute == min' then count + 1 else 1
 
 $(pure [])
 

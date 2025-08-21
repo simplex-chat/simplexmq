@@ -151,6 +151,7 @@ library
       Simplex.Messaging.Util
       Simplex.Messaging.Version
       Simplex.Messaging.Version.Internal
+      Simplex.Messaging.Worker
       Simplex.RemoteControl.Client
       Simplex.RemoteControl.Discovery
       Simplex.RemoteControl.Discovery.Multicast
