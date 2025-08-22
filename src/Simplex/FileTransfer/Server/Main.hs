@@ -60,7 +60,7 @@ xftpServerCLI cfgPath logPath = do
       putStrLn "Deleted configuration and log files"
   where
     iniFile = combine cfgPath "file-server.ini"
-    serverVersion = "SimpleX XFTP server v" <> simplexMQVersion
+    serverVersion = "SimpleX XFTP server v" <> simplexMQVersion <> " / " <> take 7 simplexmqCommit
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"

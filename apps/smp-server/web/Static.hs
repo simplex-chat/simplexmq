@@ -23,8 +23,9 @@ import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
+import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..))
+import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..), simplexmqSource)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util (tshow)
@@ -146,8 +147,11 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
       where
         basic =
           [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
-            ("noSourceCode", if T.null sc then Just "" else Nothing),
+            ("noSourceCode", if T.null sc then Just "none" else Nothing),
             ("version", Just $ B.pack simplexMQVersion),
+            ("commitSourceCode", Just $ encodeUtf8 $ maybe (T.pack simplexmqSource) sourceCode information),
+            ("shortCommit", Just $ B.pack $ take 7 simplexmqCommit),
+            ("commit", Just $ B.pack simplexmqCommit),
             ("website", encodeUtf8 <$> website spi)
           ]
         spi = fromMaybe (emptyServerInfo "") information
@@ -233,8 +237,8 @@ section_ label content' src =
         (inside, next') ->
           let next = B.drop (B.length endMarker) next'
            in case content' of
-                Nothing -> before <> next -- collapse section
-                Just content -> before <> item_ label content inside <> section_ label content' next
+                Just content | not (B.null content) -> before <> item_ label content inside <> section_ label content' next
+                _ -> before <> next -- collapse section
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"

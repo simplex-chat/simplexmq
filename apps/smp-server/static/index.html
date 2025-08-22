@@ -223,7 +223,7 @@
             <table id="public-info">
               <tr class="text-grey-black dark:text-white text-base">
                 <td>Server version:</td>
-                <td>${version}</td>
+                <td>${version}<x-commit> / <a href="${commitSourceCode}/commit/${commit}" target="_blank">${shortCommit}</a></x-commit></td>
               </tr>
               <tr class="text-grey-black dark:text-white text-base">
                 <td>Source code:</td>

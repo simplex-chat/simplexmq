@@ -136,7 +136,7 @@ ntfServerCLI cfgPath logPath =
             (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
         Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
     iniFile = combine cfgPath "ntf-server.ini"
-    serverVersion = "SMP notifications server v" <> simplexMQVersion
+    serverVersion = "SMP notifications server v" <> simplexMQVersion <> " / " <> take 7 simplexmqCommit
     defaultServerPort = "443"
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"

@@ -234,6 +234,7 @@ library
           Simplex.Messaging.Server.Env.STM
           Simplex.Messaging.Server.Information
           Simplex.Messaging.Server.Main
+          Simplex.Messaging.Server.Main.GitCommit
           Simplex.Messaging.Server.Main.Init
           Simplex.Messaging.Server.MsgStore
           Simplex.Messaging.Server.MsgStore.Journal
@@ -334,6 +335,7 @@ library
       , ini ==0.4.1
       , optparse-applicative >=0.15 && <0.17
       , process ==1.6.*
+      , template-haskell ==2.20.*
       , temporary ==1.3.*
       , websockets ==0.12.*
   if flag(client_postgres) || flag(server_postgres)

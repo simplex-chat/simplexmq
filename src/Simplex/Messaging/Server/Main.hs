@@ -234,7 +234,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
         Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
     iniFile = combine cfgPath "smp-server.ini"
-    serverVersion = "SMP server v" <> simplexMQVersion
+    serverVersion = "SMP server v" <> simplexMQVersion <> " / " <> take 7 simplexmqCommit
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
     storeMsgsFilePath = combine logPath "smp-server-messages.log"
