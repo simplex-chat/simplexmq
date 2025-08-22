@@ -808,7 +808,7 @@ cliCommandP cfgPath logPath iniFile =
             sourceCode = T.pack <$> sourceCode,
             serverInfo =
               ServerPublicInfo
-                { sourceCode = T.pack simplexmqSource,
+                { sourceCode = T.pack $ fromMaybe simplexmqSource sourceCode,
                   usageConditions = Nothing,
                   operator = fst operator_,
                   website,

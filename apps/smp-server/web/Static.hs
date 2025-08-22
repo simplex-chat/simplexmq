@@ -12,6 +12,7 @@ import Data.Char (toUpper)
 import Data.IORef (readIORef)
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (getPeerName)
 import Network.Wai (Application, Request (..))
@@ -117,7 +118,7 @@ generateSite si onionHost sitePath = do
 serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
 serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs
   where
-    substs = substConfig <> maybe [] substInfo information <> [("onionHost", strEncode <$> onionHost)]
+    substs = substConfig <> substInfo <> [("onionHost", strEncode <$> onionHost)]
     substConfig =
       [ ( "persistence",
           Just $ case persistence config of
@@ -132,7 +133,7 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
       ]
     yesNo True = "Yes"
     yesNo False = "No"
-    substInfo spi =
+    substInfo =
       concat
         [ basic,
           maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
@@ -144,10 +145,13 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
         ]
       where
         basic =
-          [ ("sourceCode", Just . encodeUtf8 $ sourceCode spi),
+          [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
+            ("noSourceCode", if T.null sc then Just "" else Nothing),
             ("version", Just $ B.pack simplexMQVersion),
             ("website", encodeUtf8 <$> website spi)
           ]
+        spi = fromMaybe (emptyServerInfo "") information
+        sc = sourceCode spi
         conds ServerConditions {conditions, amendments} =
           [ ("usageConditions", Just $ encodeUtf8 conditions),
             ("usageAmendments", encodeUtf8 <$> amendments)
