@@ -14,6 +14,7 @@ module Simplex.FileTransfer.Transport
     blockedFilesXFTPVersion,
     xftpClientHandshakeStub,
     alpnSupportedXFTPhandshakes,
+    xftpALPNv1,
     XFTPClientHandshake (..),
     -- xftpClientHandshake,
     XFTPServerHandshake (..),
@@ -105,7 +106,10 @@ xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> V
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys = throwE TEVersion
 
 alpnSupportedXFTPhandshakes :: [ALPN]
-alpnSupportedXFTPhandshakes = ["xftp/1"]
+alpnSupportedXFTPhandshakes = [xftpALPNv1]
+
+xftpALPNv1 :: ALPN
+xftpALPNv1 = "xftp/1"
 
 data XFTPServerHandshake = XFTPServerHandshake
   { xftpVersionRange :: VersionRangeXFTP,

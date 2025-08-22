@@ -29,6 +29,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
@@ -196,7 +197,7 @@ xftpServerCLI cfgPath logPath = do
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just alpnSupportedXFTPhandshakes)
+                  (Just $ alpnSupportedXFTPhandshakes <> httpALPN)
                   False,
               responseDelay = 0
             }

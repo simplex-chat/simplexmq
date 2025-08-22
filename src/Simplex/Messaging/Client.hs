@@ -38,6 +38,7 @@ module Simplex.Messaging.Client
     protocolClientServer',
     transportHost',
     transportSession',
+    useWebPort,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -160,6 +161,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTransportClient)
+import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -560,7 +562,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
     Left e -> pure $ Left e
   where
-    NetworkConfig {smpWebPortServers, tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
+    NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
     mkProtocolClient :: TransportHost -> UTCTime -> IO (PClient v err msg)
     mkProtocolClient transportHost ts = do
       connected <- newTVarIO False
@@ -591,7 +593,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
     runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
     runClient (port', ATransport t) useHost c = do
       cVar <- newEmptyTMVarIO
-      let tcConfig = (transportClientConfig networkConfig nm useHost useSNI clientALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
+      let tcConfig = (transportClientConfig networkConfig nm useHost useSNI useALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
@@ -605,16 +607,14 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
     useTransport :: (ServiceName, ATransport 'TClient)
     useTransport = case port srv of
       "" -> case protocolTypeI @(ProtoType msg) of
-        SPSMP | smpWebPort -> ("443", transport @TLS)
+        SPSMP | web -> ("443", transport @TLS)
         _ -> defaultTransport cfg
       p -> (p, transport @TLS)
-      where
-        smpWebPort = case smpWebPortServers of
-          SWPAll -> True
-          SWPPreset -> case srv of
-            ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
-            _ -> False
-          SWPOff -> False
+
+    useALPN :: Maybe [ALPN]
+    useALPN = if web then Just [httpALPN11] else clientALPN
+
+    web = useWebPort networkConfig presetDomains srv
 
     client :: forall c. Transport c => TProxy c 'TClient -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c 'TClient -> IO ()
     client _ c cVar h = do
@@ -708,6 +708,14 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             Nothing <$ case clientResp of
               Left e -> logError $ "SMP client error: " <> tshow e
               Right _ -> logWarn "SMP client unprocessed event"
+
+useWebPort :: NetworkConfig -> [HostName] -> ProtocolServer p -> Bool
+useWebPort cfg presetDomains srv = case smpWebPortServers cfg of
+  SWPAll -> True
+  SWPPreset -> case srv of
+    ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
+    _ -> False
+  SWPOff -> False
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
