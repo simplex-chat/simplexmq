@@ -223,7 +223,7 @@ testInactiveClientExpiration :: Expectation
 testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
   ts <- liftIO getCurrentTime
-  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig ts (\_ -> atomically $ putTMVar disconnected ())
+  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> atomically $ putTMVar disconnected ())
   pingXFTP c
   liftIO $ do
     threadDelay 100000

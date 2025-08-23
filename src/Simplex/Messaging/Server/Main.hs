@@ -56,8 +56,9 @@ import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCf
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
-import Simplex.Messaging.Transport (simplexMQVersion, supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
+import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
@@ -234,7 +235,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
         Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
     iniFile = combine cfgPath "smp-server.ini"
-    serverVersion = "SMP server v" <> simplexMQVersion
+    serverVersion = "SMP server v" <> simplexmqVersionCommit
     executableName = "smp-server"
     storeLogFilePath = combine logPath "smp-server-store.log"
     storeMsgsFilePath = combine logPath "smp-server-messages.log"
@@ -450,7 +451,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just alpnSupportedSMPHandshakes)
+                  (Just $ alpnSupportedSMPHandshakes <> httpALPN)
                   (fromMaybe True $ iniOnOff "TRANSPORT" "accept_service_credentials" ini), -- TODO [certs] remove this option
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               smpAgentCfg =
@@ -808,7 +809,7 @@ cliCommandP cfgPath logPath iniFile =
             sourceCode = T.pack <$> sourceCode,
             serverInfo =
               ServerPublicInfo
-                { sourceCode = T.pack simplexmqSource,
+                { sourceCode = T.pack $ fromMaybe simplexmqSource sourceCode,
                   usageConditions = Nothing,
                   operator = fst operator_,
                   website,

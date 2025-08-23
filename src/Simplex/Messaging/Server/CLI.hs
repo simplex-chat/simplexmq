@@ -7,6 +7,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -33,8 +34,9 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
 import Simplex.Messaging.Server.Env.STM (ServerStoreCfg (..), StartOptions (..), StorePaths (..))
+import Simplex.Messaging.Server.Main.GitCommit
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
-import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..))
+import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..), simplexMQVersion)
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (eitherToMaybe, whenM)
@@ -96,6 +98,12 @@ getCliCommand' cmdP version =
     )
   where
     versionOption = infoOption version (long "version" <> short 'v' <> help "Show version")
+
+simplexmqVersionCommit :: String
+simplexmqVersionCommit = simplexMQVersion <> " / " <> take 7 simplexmqCommit
+
+simplexmqCommit :: String
+simplexmqCommit = $(gitCommit)
 
 createServerX509 :: FilePath -> X509Config -> IO ByteString
 createServerX509 = createServerX509_ True

@@ -12,6 +12,7 @@ import Data.Char (toUpper)
 import Data.IORef (readIORef)
 import Data.Maybe (fromMaybe)
 import Data.String (fromString)
+import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (getPeerName)
 import Network.Wai (Application, Request (..))
@@ -22,8 +23,9 @@ import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
+import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..))
+import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..), simplexmqSource)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Util (tshow)
@@ -117,7 +119,7 @@ generateSite si onionHost sitePath = do
 serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
 serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs
   where
-    substs = substConfig <> maybe [] substInfo information <> [("onionHost", strEncode <$> onionHost)]
+    substs = substConfig <> substInfo <> [("onionHost", strEncode <$> onionHost)]
     substConfig =
       [ ( "persistence",
           Just $ case persistence config of
@@ -132,7 +134,7 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
       ]
     yesNo True = "Yes"
     yesNo False = "No"
-    substInfo spi =
+    substInfo =
       concat
         [ basic,
           maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
@@ -144,10 +146,16 @@ serverInformation ServerInformation {config, information} onionHost = render E.i
         ]
       where
         basic =
-          [ ("sourceCode", Just . encodeUtf8 $ sourceCode spi),
+          [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
+            ("noSourceCode", if T.null sc then Just "none" else Nothing),
             ("version", Just $ B.pack simplexMQVersion),
+            ("commitSourceCode", Just $ encodeUtf8 $ maybe (T.pack simplexmqSource) sourceCode information),
+            ("shortCommit", Just $ B.pack $ take 7 simplexmqCommit),
+            ("commit", Just $ B.pack simplexmqCommit),
             ("website", encodeUtf8 <$> website spi)
           ]
+        spi = fromMaybe (emptyServerInfo "") information
+        sc = sourceCode spi
         conds ServerConditions {conditions, amendments} =
           [ ("usageConditions", Just $ encodeUtf8 conditions),
             ("usageAmendments", encodeUtf8 <$> amendments)
@@ -229,8 +237,8 @@ section_ label content' src =
         (inside, next') ->
           let next = B.drop (B.length endMarker) next'
            in case content' of
-                Nothing -> before <> next -- collapse section
-                Just content -> before <> item_ label content inside <> section_ label content' next
+                Just content | not (B.null content) -> before <> item_ label content inside <> section_ label content' next
+                _ -> before <> next -- collapse section
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"

@@ -234,6 +234,7 @@ library
           Simplex.Messaging.Server.Env.STM
           Simplex.Messaging.Server.Information
           Simplex.Messaging.Server.Main
+          Simplex.Messaging.Server.Main.GitCommit
           Simplex.Messaging.Server.Main.Init
           Simplex.Messaging.Server.MsgStore
           Simplex.Messaging.Server.MsgStore.Journal
@@ -354,10 +355,12 @@ library
   if impl(ghc >= 9.6.2)
     build-depends:
         bytestring ==0.11.*
+      , template-haskell ==2.20.*
       , text >=2.0.1 && <2.2
   if impl(ghc < 9.6.2)
     build-depends:
         bytestring ==0.10.*
+      , template-haskell ==2.16.*
       , text >=1.2.3.0 && <1.3
 
 executable ntf-server

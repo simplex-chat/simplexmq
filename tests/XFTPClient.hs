@@ -145,6 +145,6 @@ testXFTPClient = testXFTPClientWith testXFTPClientConfig
 testXFTPClientWith :: HasCallStack => XFTPClientConfig -> (HasCallStack => XFTPClient -> IO a) -> IO a
 testXFTPClientWith cfg client = do
   ts <- getCurrentTime
-  getXFTPClient (1, testXFTPServer, Nothing) cfg ts (\_ -> pure ()) >>= \case
+  getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e
