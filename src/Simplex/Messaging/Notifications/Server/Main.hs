@@ -46,8 +46,9 @@ import Simplex.Messaging.Server.Main (strParse)
 import Simplex.Messaging.Server.Main.Init (iniDbOpts)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
-import Simplex.Messaging.Transport (ASrvTransport, simplexMQVersion)
+import Simplex.Messaging.Transport (ASrvTransport)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, ifM, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
@@ -136,7 +137,7 @@ ntfServerCLI cfgPath logPath =
             (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
         Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
     iniFile = combine cfgPath "ntf-server.ini"
-    serverVersion = "SMP notifications server v" <> simplexMQVersion
+    serverVersion = "SMP notifications server v" <> simplexmqVersionCommit
     defaultServerPort = "443"
     executableName = "ntf-server"
     storeLogFilePath = combine logPath "ntf-server-store.log"
@@ -283,7 +284,7 @@ ntfServerCLI cfgPath logPath =
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just alpnSupportedNTFHandshakes)
+                  (Just $ alpnSupportedNTFHandshakes <> httpALPN)
                   False,
               startOptions
             }

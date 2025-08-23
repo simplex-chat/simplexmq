@@ -133,7 +133,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
             req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
         flip runReaderT env $ case sessionALPN of
           Nothing -> processRequest req0
-          Just "xftp/1" ->
+          Just alpn | alpn == xftpALPNv1 || alpn == httpALPN11 ->
             xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
               Nothing -> pure () -- handshake response sent
               Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)

@@ -31,6 +31,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H
+import Network.Socket (HostName)
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport
@@ -45,6 +46,7 @@ import Simplex.Messaging.Client
     transportClientConfig,
     clientSocksCredentials,
     unexpectedResponse,
+    useWebPort,
   )
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -104,12 +106,13 @@ defaultXFTPClientConfig =
       clientALPN = Just alpnSupportedXFTPhandshakes
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} proxySessTs disconnected = runExceptT $ do
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> [HostName] -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} presetDomains proxySessTs disconnected = runExceptT $ do
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
+      useALPN = if useWebPort xftpNetworkConfig presetDomains srv then Just [httpALPN11] else clientALPN
   useHost <- liftEither $ chooseTransportHost xftpNetworkConfig host
-  let tcConfig = transportClientConfig xftpNetworkConfig NRMBackground useHost False clientALPN
+  let tcConfig = transportClientConfig xftpNetworkConfig NRMBackground useHost False useALPN
       http2Config = xftpHTTP2Config tcConfig config
   clientVar <- newTVarIO Nothing
   let usePort = if null port then "443" else port
@@ -121,7 +124,8 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
       thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
-    Just "xftp/1" -> xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
+    Just alpn | alpn == xftpALPNv1 || alpn == httpALPN11 ->
+      xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
     _ -> pure thParams0
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}

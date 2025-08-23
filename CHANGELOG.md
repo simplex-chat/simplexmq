@@ -1,3 +1,25 @@
+# 6.4.4
+
+Servers:
+- fix server pages when source code is not specified.
+- include commit SHA in printed version and in web page (#1608).
+
+SMP server:
+- support short SimpleX addresses in server information page (#1600).
+- wrap all queries in transactions (#1603).
+
+SMP agent:
+- chat relay address type for short links (#1602).
+- extend xrcp certificate validity 1 hour in the past, to allow out of sync clocks (#1601).
+
+# 6.4.3
+
+SMP agent:
+- fix some connection errors by updating contact request server hosts to match server in short link (#1597).
+
+SMP server:
+- support short link URI as queue identifier in control port commands (#1596).
+
 # 6.4.2
 
 SMP server:

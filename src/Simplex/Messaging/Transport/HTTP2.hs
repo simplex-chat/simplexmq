@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Transport.HTTP2 where
 
@@ -15,7 +16,7 @@ import qualified Network.HTTP2.Server as HS
 import Network.Socket (SockAddr (..))
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
-import Simplex.Messaging.Transport (TLS, Transport (cGet, cPut))
+import Simplex.Messaging.Transport (ALPN, TLS, Transport (cGet, cPut))
 import Simplex.Messaging.Transport.Buffer
 import qualified System.TimeManager as TI
 
@@ -81,3 +82,9 @@ getHTTP2Body r n = do
       -- TODO check bodySize once it is set
       bodyPart = if B.length bodyHead == n then Just getPart else Nothing
   pure HTTP2Body {bodyHead, bodySize, bodyPart, bodyBuffer}
+
+httpALPN :: [ALPN]
+httpALPN = ["h2", "http/1.1"]
+
+httpALPN11 :: ALPN
+httpALPN11 = "http/1.1"
