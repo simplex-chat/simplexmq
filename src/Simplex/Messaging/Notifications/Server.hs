@@ -629,7 +629,8 @@ showServer' = decodeLatin1 . strEncode . host
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
-  (srvHost_, tkn@NtfTknRec {ntfTknId, token = t@(APNSDeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  (srvHost_, tkn@NtfTknRec {ntfTknId, token = t, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  let (pp, _) = deviceTokenFields t
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
   case ntf of
