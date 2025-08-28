@@ -27,11 +27,6 @@ module Simplex.Messaging.Agent.Env.SQLite
     serverHosts,
     defaultAgentConfig,
     defaultReconnectInterval,
-    tryAgentError,
-    tryAgentError',
-    catchAgentError,
-    catchAgentError',
-    agentFinally,
     Env (..),
     newSMPAgentEnv,
     createAgentStore,
@@ -45,7 +40,6 @@ module Simplex.Messaging.Agent.Env.SQLite
 where
 
 import Control.Concurrent (ThreadId)
-import Control.Exception (BlockedIndefinitelyOnSTM (..), SomeException, fromException)
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
@@ -83,7 +77,6 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (allFinally, catchAllErrors, catchAllErrors', tryAllErrors, tryAllErrors')
 import System.Mem.Weak (Weak)
 import System.Random (StdGen, newStdGen)
 import UnliftIO.STM
@@ -311,33 +304,6 @@ newXFTPAgent = do
   xftpSndWorkers <- TM.emptyIO
   xftpDelWorkers <- TM.emptyIO
   pure XFTPAgent {xftpWorkDir, xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}
-
-tryAgentError :: AM a -> AM (Either AgentErrorType a)
-tryAgentError = tryAllErrors mkInternal
-{-# INLINE tryAgentError #-}
-
--- unlike runExceptT, this ensures we catch IO exceptions as well
-tryAgentError' :: AM a -> AM' (Either AgentErrorType a)
-tryAgentError' = tryAllErrors' mkInternal
-{-# INLINE tryAgentError' #-}
-
-catchAgentError :: AM a -> (AgentErrorType -> AM a) -> AM a
-catchAgentError = catchAllErrors mkInternal
-{-# INLINE catchAgentError #-}
-
-catchAgentError' :: AM a -> (AgentErrorType -> AM' a) -> AM' a
-catchAgentError' = catchAllErrors' mkInternal
-{-# INLINE catchAgentError' #-}
-
-agentFinally :: AM a -> AM b -> AM a
-agentFinally = allFinally mkInternal
-{-# INLINE agentFinally #-}
-
-mkInternal :: SomeException -> AgentErrorType
-mkInternal e = case fromException e of
-  Just BlockedIndefinitelyOnSTM -> CRITICAL True "Thread blocked indefinitely in STM transaction"
-  _ -> INTERNAL $ show e
-{-# INLINE mkInternal #-}
 
 data Worker = Worker
   { workerId :: Int,
