@@ -1051,12 +1051,9 @@ getWorkItems itemName getIds getItem markFailed =
   runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
 
 tryGetItem :: Show i => ByteString -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> i -> ExceptT StoreError IO a
-tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchStoreError` \e -> mark >> throwE e
+tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchAllErrors` \e -> mark >> throwE e
   where
     mark = handleWrkErr itemName ("markFailed ID " <> bshow itemId) $ markFailed itemId
-
-catchStoreError :: ExceptT StoreError IO a -> (StoreError -> ExceptT StoreError IO a) -> ExceptT StoreError IO a
-catchStoreError = catchAllErrors (SEInternal . bshow)
 
 -- Errors caught by this function will suspend worker as if there is no more work,
 handleWrkErr :: ByteString -> ByteString -> IO a -> ExceptT StoreError IO a
