@@ -15,6 +15,85 @@ SET row_security = off;
 CREATE SCHEMA ntf_server;
 
 
+
+CREATE FUNCTION ntf_server.on_subscription_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.ntf_service_assoc = true THEN
+    PERFORM update_ids_hash(OLD.smp_server_id, OLD.smp_notifier_id);
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.on_subscription_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.ntf_service_assoc = true THEN
+    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.on_subscription_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.ntf_service_assoc != NEW.ntf_service_assoc THEN
+    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.update_ids_hash(p_server_id bigint, p_notifier_id bytea) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  UPDATE smp_servers
+  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, digest(p_notifier_id, 'md5'))
+  WHERE smp_server_id = p_server_id;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.xor_combine(state bytea, value bytea) RETURNS bytea
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+  result BYTEA := state;
+  i INTEGER;
+  len INTEGER := octet_length(value);
+BEGIN
+  IF octet_length(state) != len THEN
+    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
+  END IF;
+  FOR i IN 0..len-1 LOOP
+    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
+  END LOOP;
+  RETURN result;
+END;
+$$;
+
+
+
+CREATE AGGREGATE ntf_server.xor_aggregate(bytea) (
+    SFUNC = ntf_server.xor_combine,
+    STYPE = bytea,
+    INITCOND = '\x00000000000000000000000000000000'
+);
+
+
 SET default_table_access_method = heap;
 
 
@@ -53,7 +132,8 @@ CREATE TABLE ntf_server.smp_servers (
     smp_host text NOT NULL,
     smp_port text NOT NULL,
     smp_keyhash bytea NOT NULL,
-    ntf_service_id bytea
+    ntf_service_id bytea,
+    smp_notifier_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL
 );
 
 
@@ -155,6 +235,18 @@ CREATE UNIQUE INDEX idx_tokens_push_provider_token ON ntf_server.tokens USING bt
 
 
 CREATE INDEX idx_tokens_status_cron_interval_sent_at ON ntf_server.tokens USING btree (status, cron_interval, ((cron_sent_at + (cron_interval * 60))));
+
+
+
+CREATE TRIGGER tr_subscriptions_delete AFTER DELETE ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_delete();
+
+
+
+CREATE TRIGGER tr_subscriptions_insert AFTER INSERT ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_insert();
+
+
+
+CREATE TRIGGER tr_subscriptions_update AFTER UPDATE ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_update();
 
 
 

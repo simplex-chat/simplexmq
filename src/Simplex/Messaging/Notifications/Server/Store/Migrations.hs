@@ -12,7 +12,8 @@ import Text.RawString.QQ (r)
 ntfServerSchemaMigrations :: [(String, Text, Maybe Text)]
 ntfServerSchemaMigrations =
   [ ("20250417_initial", m20250417_initial, Nothing),
-    ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert)
+    ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
+    ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -103,4 +104,130 @@ CREATE INDEX idx_subscriptions_smp_server_id_status ON subscriptions(smp_server_
 ALTER TABLE smp_servers DROP COLUMN ntf_service_id;
 
 ALTER TABLE subscriptions DROP COLUMN ntf_service_assoc;
+    |]
+
+m20250830_queue_ids_hash :: Text
+m20250830_queue_ids_hash =
+  T.pack
+    [r|
+ALTER TABLE smp_servers ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION xor_combine(state BYTEA, value BYTEA) RETURNS BYTEA
+LANGUAGE plpgsql IMMUTABLE STRICT
+AS $$
+DECLARE
+  result BYTEA := state;
+  i INTEGER;
+  len INTEGER := octet_length(value);
+BEGIN
+  IF octet_length(state) != len THEN
+    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
+  END IF;
+  FOR i IN 0..len-1 LOOP
+    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
+  END LOOP;
+  RETURN result;
+END;
+$$;
+
+CREATE OR REPLACE AGGREGATE xor_aggregate(BYTEA) (
+  SFUNC = xor_combine,
+  STYPE = BYTEA,
+  INITCOND = '\x00000000000000000000000000000000' -- 16 bytes
+);
+
+WITH hashes AS (
+  SELECT
+    s.smp_server_id,
+    xor_aggregate(digest(s.smp_notifier_id, 'md5')) AS notifier_hash
+  FROM subscriptions s
+  WHERE s.ntf_service_assoc = true
+  GROUP BY s.smp_server_id
+)
+UPDATE smp_servers srv
+SET smp_notifier_ids_hash = COALESCE(h.notifier_hash, '\x00000000000000000000000000000000')
+FROM hashes h
+WHERE srv.smp_server_id = h.smp_server_id;
+
+CREATE OR REPLACE FUNCTION update_ids_hash(p_server_id BIGINT, p_notifier_id BYTEA) RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE smp_servers
+  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, digest(p_notifier_id, 'md5'))
+  WHERE smp_server_id = p_server_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION on_subscription_insert() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.ntf_service_assoc = true THEN
+    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION on_subscription_delete() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.ntf_service_assoc = true THEN
+    PERFORM update_ids_hash(OLD.smp_server_id, OLD.smp_notifier_id);
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION on_subscription_update() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.ntf_service_assoc != NEW.ntf_service_assoc THEN
+    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS tr_subscriptions_insert ON subscriptions;
+DROP TRIGGER IF EXISTS tr_subscriptions_delete ON subscriptions;
+DROP TRIGGER IF EXISTS tr_subscriptions_update ON subscriptions;
+
+CREATE TRIGGER tr_subscriptions_insert
+AFTER INSERT ON subscriptions
+FOR EACH ROW EXECUTE PROCEDURE on_subscription_insert();
+
+CREATE TRIGGER tr_subscriptions_delete
+AFTER DELETE ON subscriptions
+FOR EACH ROW EXECUTE PROCEDURE on_subscription_delete();
+
+CREATE TRIGGER tr_subscriptions_update
+AFTER UPDATE ON subscriptions
+FOR EACH ROW EXECUTE PROCEDURE on_subscription_update();
+    |]
+
+down_m20250830_queue_ids_hash :: Text
+down_m20250830_queue_ids_hash =
+  T.pack
+    [r|
+DROP TRIGGER tr_subscriptions_insert ON subscriptions;
+DROP TRIGGER tr_subscriptions_delete ON subscriptions;
+DROP TRIGGER tr_subscriptions_update ON subscriptions;
+
+DROP FUNCTION on_subscription_insert;
+DROP FUNCTION on_subscription_delete;
+DROP FUNCTION on_subscription_update;
+
+DROP FUNCTION update_ids_hash;
+
+DROP AGGREGATE xor_aggregate(BYTEA);
+DROP FUNCTION xor_combine;
+DROP EXTENSION pgcrypto;
+
+ALTER TABLE smp_servers DROP COLUMN smp_notifier_ids_hash;
     |]
