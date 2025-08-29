@@ -45,56 +45,32 @@ utilTests = do
         runExceptT (throwTestException `catchError` handleCatch) `shouldThrow` (\(e :: IOError) -> show e == "user error (error)")
   describe "tryAllErrors" $ do
     it "should return ExceptT error as Left" $
-      runExceptT (tryAllErrors testErr throwTestError) `shouldReturn` Right (Left (TestError "error"))
+      runExceptT (tryAllErrors throwTestError) `shouldReturn` Right (Left (TestError "error"))
     it "should return SomeException as Left" $
-      runExceptT (tryAllErrors testErr throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
+      runExceptT (tryAllErrors throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
     it "should return no errors as Right" $
-      runExceptT (tryAllErrors testErr noErrors) `shouldReturn` Right (Right "no errors")
-  describe "tryAllErrors specialized as tryTestError" $ do
-    let tryTestError = tryAllErrors testErr
-    it "should return ExceptT error as Left" $
-      runExceptT (tryTestError throwTestError) `shouldReturn` Right (Left (TestError "error"))
-    it "should return SomeException as Left" $
-      runExceptT (tryTestError throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
-    it "should return no errors as Right" $
-      runExceptT (tryTestError noErrors) `shouldReturn` Right (Right "no errors")
+      runExceptT (tryAllErrors noErrors) `shouldReturn` Right (Right "no errors")
   describe "catchAllErrors" $ do
     it "should catch ExceptT error" $
-      runExceptT (catchAllErrors testErr throwTestError handleCatch) `shouldReturn` Right "caught TestError \"error\""
+      runExceptT (throwTestError `catchAllErrors` handleCatch) `shouldReturn` Right "caught TestError \"error\""
     it "should catch SomeException" $
-      runExceptT (catchAllErrors testErr throwTestException handleCatch) `shouldReturn` Right "caught TestException \"user error (error)\""
+      runExceptT (throwTestException `catchAllErrors` handleCatch) `shouldReturn` Right "caught TestException \"user error (error)\""
     it "should not throw if there are no errors" $
-      runExceptT (catchAllErrors testErr noErrors throwError) `shouldReturn` Right "no errors"
-  describe "catchAllErrors specialized as catchTestError" $ do
-    let catchTestError = catchAllErrors testErr
-    it "should catch ExceptT error" $
-      runExceptT (throwTestError `catchTestError` handleCatch) `shouldReturn` Right "caught TestError \"error\""
-    it "should catch SomeException" $
-      runExceptT (throwTestException `catchTestError` handleCatch) `shouldReturn` Right "caught TestException \"user error (error)\""
-    it "should not throw if there are no errors" $
-      runExceptT (noErrors `catchTestError` throwError) `shouldReturn` Right "no errors"
+      runExceptT (noErrors `catchAllErrors` throwError) `shouldReturn` Right "no errors"
   describe "catchThrow" $ do
     it "should re-throw ExceptT error" $
-      runExceptT (throwTestError `catchThrow` testErr) `shouldReturn` Left (TestError "error")
+      runExceptT (throwTestError `catchThrow` fromSomeException) `shouldReturn` Left (TestError "error")
     it "should catch SomeException and throw as ExceptT error" $
-      runExceptT (throwTestException `catchThrow` testErr) `shouldReturn` Left (TestException "user error (error)")
+      runExceptT (throwTestException `catchThrow` fromSomeException) `shouldReturn` Left (TestException "user error (error)")
     it "should not throw if there are no exceptions" $
-      runExceptT (noErrors `catchThrow` testErr) `shouldReturn` Right "no errors"
+      runExceptT (noErrors `catchThrow` fromSomeException) `shouldReturn` Right "no errors"
   describe "allFinally should run final action" $ do
     it "then throw ExceptT error" $ withFinal $ \final ->
-      runExceptT (allFinally testErr throwTestError final) `shouldReturn` Left (TestError "error")
+      runExceptT (throwTestError `allFinally` final) `shouldReturn` Left (TestError "error")
     it "then throw SomeException as ExceptT error" $ withFinal $ \final ->
-      runExceptT (allFinally testErr throwTestException final) `shouldReturn` Left (TestException "user error (error)")
+      runExceptT (throwTestException `allFinally` final) `shouldReturn` Left (TestException "user error (error)")
     it "and should not throw if there are no exceptions" $ withFinal $ \final ->
-      runExceptT (allFinally testErr noErrors final) `shouldReturn` Right "no errors"
-  describe "allFinally specialized as testFinally should run final action" $ do
-    let testFinally = allFinally testErr
-    it "then throw ExceptT error" $ withFinal $ \final ->
-      runExceptT (throwTestError `testFinally` final) `shouldReturn` Left (TestError "error")
-    it "then throw SomeException as ExceptT error" $ withFinal $ \final ->
-      runExceptT (throwTestException `testFinally` final) `shouldReturn` Left (TestException "user error (error)")
-    it "and should not throw if there are no exceptions" $ withFinal $ \final ->
-      runExceptT (noErrors `testFinally` final) `shouldReturn` Right "no errors"
+      runExceptT (noErrors `allFinally` final) `shouldReturn` Right "no errors"
   where
     throwTestError :: ExceptT TestError IO String
     throwTestError = throwError $ TestError "error"
@@ -102,8 +78,6 @@ utilTests = do
     throwTestException = liftIO $ throwIO $ userError "error"
     noErrors :: ExceptT TestError IO String
     noErrors = pure "no errors"
-    testErr :: SomeException -> TestError
-    testErr = TestException . show
     handleCatch :: TestError -> ExceptT TestError IO String
     handleCatch e = pure $ "caught " <> show e
     handleException :: SomeException -> ExceptT TestError IO String
@@ -119,3 +93,6 @@ data TestError = TestError String | TestException String
   deriving (Eq, Show)
 
 instance Exception TestError
+
+instance AnyError TestError where
+  fromSomeException = TestException . show

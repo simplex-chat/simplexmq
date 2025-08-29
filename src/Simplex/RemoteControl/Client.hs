@@ -306,14 +306,8 @@ connectRCCtrl_ drg pairing'@RCCtrlPairing {caKey, caCert} inv@RCInvitation {ca, 
             atomically $ takeTMVar endSession
             logDebug "Session ended"
 
-catchRCError :: ExceptT RCErrorType IO a -> (RCErrorType -> ExceptT RCErrorType IO a) -> ExceptT RCErrorType IO a
-catchRCError = catchAllErrors $ \e -> case fromException e of
-  Just (TLS.Terminated _ _ (TLS.Error_Protocol _ TLS.UnknownCa)) -> RCEIdentity
-  _ -> RCEException $ show e
-{-# INLINE catchRCError #-}
-
 putRCError :: ExceptT RCErrorType IO a -> TMVar (Either RCErrorType b) -> ExceptT RCErrorType IO a
-a `putRCError` r = a `catchRCError` \e -> atomically (tryPutTMVar r $ Left e) >> throwE e
+a `putRCError` r = a `catchAllErrors` \e -> atomically (tryPutTMVar r $ Left e) >> throwE e
 
 sendRCPacket :: Encoding a => TLS p -> a -> ExceptT RCErrorType IO ()
 sendRCPacket tls pkt = do
@@ -395,7 +389,7 @@ discoverRCCtrl subscribers pairings =
       pure r
   where
     loop :: ExceptT RCErrorType IO a -> ExceptT RCErrorType IO a
-    loop action = action `catchRCError` \e -> logError (tshow e) >> loop action
+    loop action = action `catchAllErrors` \e -> logError (tshow e) >> loop action
 
 findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErrorType IO (RCCtrlPairing, RCVerifiedInvitation)
 findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
