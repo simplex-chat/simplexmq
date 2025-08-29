@@ -7,6 +7,7 @@ import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Simplex.Messaging.Agent.Store.Shared
+import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (createXorHashFuncs, dropXorHashFuncs)
 import Text.RawString.QQ (r)
 
 ntfServerSchemaMigrations :: [(String, Text, Maybe Text)]
@@ -108,35 +109,10 @@ ALTER TABLE subscriptions DROP COLUMN ntf_service_assoc;
 
 m20250830_queue_ids_hash :: Text
 m20250830_queue_ids_hash =
-  T.pack
-    [r|
+  createXorHashFuncs
+    <> T.pack
+      [r|
 ALTER TABLE smp_servers ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
-
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
-CREATE OR REPLACE FUNCTION xor_combine(state BYTEA, value BYTEA) RETURNS BYTEA
-LANGUAGE plpgsql IMMUTABLE STRICT
-AS $$
-DECLARE
-  result BYTEA := state;
-  i INTEGER;
-  len INTEGER := octet_length(value);
-BEGIN
-  IF octet_length(state) != len THEN
-    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
-  END IF;
-  FOR i IN 0..len-1 LOOP
-    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
-  END LOOP;
-  RETURN result;
-END;
-$$;
-
-CREATE OR REPLACE AGGREGATE xor_aggregate(BYTEA) (
-  SFUNC = xor_combine,
-  STYPE = BYTEA,
-  INITCOND = '\x00000000000000000000000000000000' -- 16 bytes
-);
 
 WITH hashes AS (
   SELECT
@@ -209,7 +185,7 @@ FOR EACH ROW EXECUTE PROCEDURE on_subscription_delete();
 CREATE TRIGGER tr_subscriptions_update
 AFTER UPDATE ON subscriptions
 FOR EACH ROW EXECUTE PROCEDURE on_subscription_update();
-    |]
+      |]
 
 down_m20250830_queue_ids_hash :: Text
 down_m20250830_queue_ids_hash =
@@ -225,9 +201,6 @@ DROP FUNCTION on_subscription_update;
 
 DROP FUNCTION update_ids_hash;
 
-DROP AGGREGATE xor_aggregate(BYTEA);
-DROP FUNCTION xor_combine;
-DROP EXTENSION pgcrypto;
-
 ALTER TABLE smp_servers DROP COLUMN smp_notifier_ids_hash;
     |]
+    <> dropXorHashFuncs

@@ -724,6 +724,7 @@ testServiceDeliverSubscribe =
                     pure $ Just $ Just mId3
                   _ -> pure Nothing
               ]
+        Resp "" NoEntity SALL <- tGet1 sh
         Resp "12" _ OK <- signSendRecv sh rKey ("12", rId, ACK mId3)
         Resp "14" _ OK <- signSendRecv h sKey ("14", sId, _SEND "hello 4")
         Resp "" _ (Msg mId4 msg4) <- tGet1 sh

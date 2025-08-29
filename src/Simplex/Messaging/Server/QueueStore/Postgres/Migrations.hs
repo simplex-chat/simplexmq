@@ -14,7 +14,8 @@ serverSchemaMigrations =
   [ ("20250207_initial", m20250207_initial, Nothing),
     ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index),
     ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links),
-    ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs)
+    ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs),
+    ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -158,4 +159,161 @@ ALTER TABLE msg_queues
 DROP INDEX idx_services_service_role;
 
 DROP TABLE services;
+    |]
+
+m20250830_queue_ids_hash :: Text
+m20250830_queue_ids_hash =
+  createXorHashFuncs
+    <> T.pack
+      [r|
+ALTER TABLE services ADD COLUMN queue_ids_hash BYTEA;
+
+WITH hashes AS (
+  SELECT
+    s.service_id,
+    xor_aggregate(digest(CASE WHEN s.service_role = 'M' THEN q.recipient_id ELSE q.notifier_id END, 'md5')) AS computed_hash
+  FROM services s
+  JOIN msg_queues q ON (s.service_id = q.rcv_service_id AND s.service_role = 'M') OR (s.service_id = q.ntf_service_id AND s.service_role = 'N')
+  GROUP BY s.service_id
+)
+UPDATE services s
+SET queue_ids_hash = COALESCE(h.computed_hash, '\x00000000000000000000000000000000')
+FROM hashes h
+WHERE s.service_id = h.service_id;
+
+CREATE OR REPLACE FUNCTION update_ids_hash(p_service_id bytea, p_role text, p_queue_id bytea) RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE services
+  SET queue_ids_hash = xor_combine(queue_ids_hash, digest(p_queue_id, 'md5'))
+  WHERE service_id = p_service_id AND service_role = p_role;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION on_queue_insert() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.rcv_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id);
+  END IF;
+  IF NEW.ntf_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION on_queue_delete() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.rcv_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id);
+  END IF;
+  IF OLD.ntf_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id);
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION on_queue_update() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.rcv_service_id IS DISTINCT FROM NEW.rcv_service_id THEN
+    IF OLD.rcv_service_id IS NOT NULL THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id);
+    END IF;
+    IF NEW.rcv_service_id IS NOT NULL THEN
+      PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id);
+    END IF;
+  END IF;
+  IF OLD.ntf_service_id IS DISTINCT FROM NEW.ntf_service_id THEN
+    IF OLD.ntf_service_id IS NOT NULL THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id);
+    END IF;
+    IF NEW.ntf_service_id IS NOT NULL THEN
+      PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id);
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS tr_queue_insert ON msg_queues;
+DROP TRIGGER IF EXISTS tr_queue_delete ON msg_queues;
+DROP TRIGGER IF EXISTS tr_queue_update ON msg_queues;
+
+CREATE TRIGGER tr_queue_insert
+AFTER INSERT ON msg_queues
+FOR EACH ROW EXECUTE PROCEDURE on_queue_insert();
+
+CREATE TRIGGER tr_queue_delete
+AFTER DELETE ON msg_queues
+FOR EACH ROW EXECUTE PROCEDURE on_queue_delete();
+
+CREATE TRIGGER tr_queue_update
+AFTER UPDATE ON msg_queues
+FOR EACH ROW EXECUTE PROCEDURE on_queue_update();
+      |]
+
+down_m20250830_queue_ids_hash :: Text
+down_m20250830_queue_ids_hash =
+  T.pack
+    [r|
+DROP TRIGGER tr_queue_insert ON msg_queues;
+DROP TRIGGER tr_queue_delete ON msg_queues;
+DROP TRIGGER tr_queue_update ON msg_queues;
+
+DROP FUNCTION on_queue_insert;
+DROP FUNCTION on_queue_delete;
+DROP FUNCTION on_queue_update;
+
+DROP FUNCTION update_ids_hash;
+
+ALTER TABLE services DROP COLUMN queue_ids_hash;
+    |]
+    <> dropXorHashFuncs
+
+createXorHashFuncs :: Text
+createXorHashFuncs =
+  T.pack
+    [r|
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION xor_combine(state BYTEA, value BYTEA) RETURNS BYTEA
+LANGUAGE plpgsql IMMUTABLE STRICT
+AS $$
+DECLARE
+  result BYTEA := state;
+  i INTEGER;
+  len INTEGER := octet_length(value);
+BEGIN
+  IF octet_length(state) != len THEN
+    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
+  END IF;
+  FOR i IN 0..len-1 LOOP
+    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
+  END LOOP;
+  RETURN result;
+END;
+$$;
+
+CREATE OR REPLACE AGGREGATE xor_aggregate(BYTEA) (
+  SFUNC = xor_combine,
+  STYPE = BYTEA,
+  INITCOND = '\x00000000000000000000000000000000' -- 16 bytes
+);
+    |]
+
+dropXorHashFuncs :: Text
+dropXorHashFuncs =
+  T.pack
+    [r|
+DROP AGGREGATE xor_aggregate(BYTEA);
+DROP FUNCTION xor_combine;
+DROP EXTENSION pgcrypto;
     |]
