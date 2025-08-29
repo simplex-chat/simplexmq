@@ -93,6 +93,7 @@ data PushProviderError
   | PPTokenInvalid NTInvalidReason
   | PPRetryLater
   | PPPermanentError
+  | PPInvalidPusher
   deriving (Show, Exception)
 
 type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
