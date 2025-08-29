@@ -55,6 +55,7 @@ module Simplex.Messaging.Transport
     shortLinksSMPVersion,
     serviceCertsSMPVersion,
     newNtfCredsSMPVersion,
+    rcvServiceSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -168,6 +169,7 @@ smpBlockSize = 16384
 -- 15 - short links, with associated data passed in NEW of LSET command (3/30/2025)
 -- 16 - service certificates (5/31/2025)
 -- 17 - create notification credentials with NEW (7/12/2025)
+-- 18 - service subscriptions to messages (8/25/2025)
 
 data SMPVersion
 
@@ -213,6 +215,9 @@ serviceCertsSMPVersion = VersionSMP 16
 newNtfCredsSMPVersion :: VersionSMP
 newNtfCredsSMPVersion = VersionSMP 17
 
+rcvServiceSMPVersion :: VersionSMP
+rcvServiceSMPVersion = VersionSMP 18
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 6
 
@@ -220,13 +225,13 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 17
+currentClientSMPRelayVersion = VersionSMP 18
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 17
+currentServerSMPRelayVersion = VersionSMP 18
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -234,7 +239,7 @@ currentServerSMPRelayVersion = VersionSMP 17
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 16
+proxiedSMPRelayVersion = VersionSMP 17
 
 -- minimal supported protocol version is 6
 -- TODO remove code that supports sending commands without batching
@@ -818,7 +823,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
           serviceKeys = case serviceKeys_ of
             Just sks | v >= serviceCertsSMPVersion && certificateSent c -> Just sks
             _ -> Nothing
-          clientService = mkClientService <$> serviceKeys
+          clientService = mkClientService v =<< serviceKeys
           hs = SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService}
       sendHandshake th hs
       service <- mapM getClientService serviceKeys
@@ -826,10 +831,12 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
     Nothing -> throwE TEVersion
   where
     th@THandle {params = THandleParams {sessionId}} = smpTHandle c
-    mkClientService :: (ServiceCredentials, C.KeyPairEd25519) -> SMPClientHandshakeService
-    mkClientService (ServiceCredentials {serviceRole, serviceCreds, serviceSignKey}, (k, _)) =
-      let sk = C.signX509 serviceSignKey $ C.publicToX509 k
-       in SMPClientHandshakeService {serviceRole, serviceCertKey = CertChainPubKey (fst serviceCreds) sk}
+    mkClientService :: VersionSMP -> (ServiceCredentials, C.KeyPairEd25519) -> Maybe SMPClientHandshakeService
+    mkClientService v (ServiceCredentials {serviceRole, serviceCreds, serviceSignKey}, (k, _))
+      | serviceRole == SRMessaging && v < rcvServiceSMPVersion = Nothing
+      | otherwise =
+          let sk = C.signX509 serviceSignKey $ C.publicToX509 k
+           in Just SMPClientHandshakeService {serviceRole, serviceCertKey = CertChainPubKey (fst serviceCreds) sk}
     getClientService :: (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO THClientService
     getClientService (ServiceCredentials {serviceRole, serviceCertHash}, (_, pk)) =
       getHandshake th >>= \case
