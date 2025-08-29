@@ -1316,7 +1316,7 @@ runNTFServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
         (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          let deviceToken = DeviceToken PPApnsNull "test_ntf_token"
+          let deviceToken = APNSDeviceToken PPApnsNull "test_ntf_token"
           (tknId, _) <- liftError (testErr TSCreateNtfToken) $ ntfRegisterToken ntf nm npKey (NewNtfTkn deviceToken nKey dhKey)
           liftError (testErr TSDeleteNtfToken) $ ntfDeleteToken ntf nm npKey tknId
         ok <- netTimeoutInt (tcpTimeout $ networkConfig cfg) nm `timeout` closeProtocolClient ntf

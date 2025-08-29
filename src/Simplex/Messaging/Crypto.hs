@@ -127,6 +127,7 @@ module Simplex.Messaging.Crypto
     encryptAEAD,
     decryptAEAD,
     encryptAESNoPad,
+    encryptAES128NoPad,
     decryptAESNoPad,
     authTagSize,
     randomAesKey,
@@ -209,7 +210,7 @@ import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Crypto.Cipher.AES (AES256)
+import Crypto.Cipher.AES (AES256, AES128)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
@@ -895,6 +896,8 @@ data CryptoError
     CERatchetEarlierMessage Word32
   | -- | duplicate message number
     CERatchetDuplicateMessage
+  | -- | unable to decode ecc key
+    CryptoInvalidECCKey CE.CryptoError
   deriving (Eq, Show, Exception)
 
 aesKeySize :: Int
@@ -1021,9 +1024,20 @@ encryptAESNoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag
 encryptAESNoPad key iv = encryptAEADNoPad key iv ""
 {-# INLINE encryptAESNoPad #-}
 
+-- Used to encrypt WebPush notifications
+-- This function requires 12 bytes IV, it does not transform IV.
+encryptAES128NoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAES128NoPad key iv = encryptAEAD128NoPad key iv ""
+{-# INLINE encryptAES128NoPad #-}
+
 encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEADNoPad aesKey ivBytes ad msg = do
   aead <- initAEADGCM aesKey ivBytes
+  pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
+
+encryptAEAD128NoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAEAD128NoPad aesKey ivBytes ad msg = do
+  aead <- initAEAD128GCM aesKey ivBytes
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
 
 -- | AEAD-GCM decryption with associated data.
@@ -1122,6 +1136,12 @@ initAEAD (Key aesKey) (IV ivBytes) = do
 -- this function requires 12 bytes IV, it does not transforms IV.
 initAEADGCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES256)
 initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
+  cipher <- AES.cipherInit aesKey
+  AES.aeadInit AES.AEAD_GCM cipher ivBytes
+
+-- this function requires 12 bytes IV, it does not transforms IV.
+initAEAD128GCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES128)
+initAEAD128GCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
   cipher <- AES.cipherInit aesKey
   AES.aeadInit AES.AEAD_GCM cipher ivBytes
 

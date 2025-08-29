@@ -218,7 +218,7 @@ runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
 testNotificationToken :: APNSMockServer -> IO ()
 testNotificationToken apns = do
   withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
-    let tkn = DeviceToken PPApnsTest "abcd"
+    let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
@@ -242,7 +242,7 @@ v .-> key = do
 testNtfTokenRepeatRegistration :: APNSMockServer -> IO ()
 testNtfTokenRepeatRegistration apns = do
   withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
-    let tkn = DeviceToken PPApnsTest "abcd"
+    let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
@@ -261,7 +261,7 @@ testNtfTokenRepeatRegistration apns = do
 testNtfTokenSecondRegistration :: APNSMockServer -> IO ()
 testNtfTokenSecondRegistration apns =
   withAgentClients2 $ \a a' -> runRight_ $ do
-    let tkn = DeviceToken PPApnsTest "abcd"
+    let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
@@ -290,7 +290,7 @@ testNtfTokenSecondRegistration apns =
 
 testNtfTokenServerRestart :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestart t apns = do
-  let tkn = DeviceToken PPApnsTest "abcd"
+  let tkn = APNSDeviceToken PPApnsTest "abcd"
   ntfData <- withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -311,7 +311,7 @@ testNtfTokenServerRestart t apns = do
 
 testNtfTokenServerRestartReverify :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReverify t apns = do
-  let tkn = DeviceToken PPApnsTest "abcd"
+  let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a -> do
     ntfData <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -334,7 +334,7 @@ testNtfTokenServerRestartReverify t apns = do
 
 testNtfTokenServerRestartReverifyTimeout :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReverifyTimeout t apns = do
-  let tkn = DeviceToken PPApnsTest "abcd"
+  let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
     (nonce, verification) <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -369,7 +369,7 @@ testNtfTokenServerRestartReverifyTimeout t apns = do
 
 testNtfTokenServerRestartReregister :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReregister t apns = do
-  let tkn = DeviceToken PPApnsTest "abcd"
+  let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -393,7 +393,7 @@ testNtfTokenServerRestartReregister t apns = do
 
 testNtfTokenServerRestartReregisterTimeout :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReregisterTimeout t apns = do
-  let tkn = DeviceToken PPApnsTest "abcd"
+  let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
@@ -434,7 +434,7 @@ getTestNtfTokenPort a =
 
 testNtfTokenMultipleServers :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenMultipleServers t apns = do
-  let tkn = DeviceToken PPApnsTest "abcd"
+  let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers2 testDB $ \a ->
     withNtfServerThreadOn t ntfTestPort ntfTestDBCfg $ \ntf ->
       withNtfServerThreadOn t ntfTestPort2 ntfTestDBCfg2 $ \ntf2 -> runRight_ $ do
@@ -554,7 +554,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
     -- register notification token
-    let tkn = DeviceToken PPApnsTest "abcd"
+    let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
@@ -607,9 +607,9 @@ testNotificationSubscriptionNewConnection :: HasCallStack => APNSMockServer -> A
 testNotificationSubscriptionNewConnection apns baseId alice bob =
   runRight_ $ do
     -- alice registers notification token
-    DeviceToken {} <- registerTestToken alice "abcd" NMInstant apns
+    APNSDeviceToken {} <- registerTestToken alice "abcd" NMInstant apns
     -- bob registers notification token
-    DeviceToken {} <- registerTestToken bob "bcde" NMInstant apns
+    APNSDeviceToken {} <- registerTestToken bob "bcde" NMInstant apns
     -- establish connection
     liftIO $ threadDelay 50000
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
@@ -645,7 +645,7 @@ testNotificationSubscriptionNewConnection apns baseId alice bob =
 
 registerTestToken :: AgentClient -> ByteString -> NotificationsMode -> APNSMockServer -> ExceptT AgentErrorType IO DeviceToken
 registerTestToken a token mode apns = do
-  let tkn = DeviceToken PPApnsTest token
+  let tkn = APNSDeviceToken PPApnsTest token
   NTRegistered <- registerNtfToken a tkn mode
   Just APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
     timeout 1000000 $ getMockNotification apns tkn
