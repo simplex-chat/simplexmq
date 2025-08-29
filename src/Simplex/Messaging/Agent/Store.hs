@@ -29,6 +29,7 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Common
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
@@ -52,7 +53,7 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Agent.Store.Entity
+import Simplex.Messaging.Util (AnyError (..), bshow)
 
 createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore dbOpts = createDBStore dbOpts appMigrations
@@ -696,3 +697,6 @@ data StoreError
   | -- | Servers stats not found.
     SEServersStatsNotFound
   deriving (Eq, Show, Exception)
+
+instance AnyError StoreError where
+  fromSomeException = SEInternal . bshow

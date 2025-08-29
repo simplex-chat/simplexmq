@@ -52,7 +52,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (diffToMicroseconds, threadDelay', tshow, whenM)
+import Simplex.Messaging.Util (catchAllErrors, diffToMicroseconds, threadDelay', tryAllErrors, tshow, whenM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -217,7 +217,7 @@ runNtfWorker c srv Worker {doWork} =
     runNtfOperation :: AM ()
     runNtfOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (\db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems c doWork (withStore' c $ \db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
         currTs <- liftIO getCurrentTime
         let (creates, checks, deletes, rotates) = splitActions currTs nextSubs
@@ -357,7 +357,7 @@ runNtfWorker c srv Worker {doWork} =
     runCatching :: (NtfSubscription -> AM (Maybe NtfSubscription)) -> NtfSubscription -> AM' (Maybe NtfSubscription)
     runCatching action sub@NtfSubscription {connId} =
       fromRight Nothing
-        <$> runExceptT (action sub `catchAgentError` \e -> workerInternalError c connId (show e) $> Nothing)
+        <$> runExceptT (action sub `catchAllErrors` \e -> workerInternalError c connId (show e) $> Nothing)
     -- deleteNtfSub is only used in NSADelete and NSARotate, so also deprecated
     deleteNtfSub :: NtfSubscription -> AM () -> AM (Maybe NtfSubscription)
     deleteNtfSub sub@NtfSubscription {userId, ntfSubId} continue = case ntfSubId of
@@ -365,7 +365,7 @@ runNtfWorker c srv Worker {doWork} =
         lift getNtfToken >>= \case
           Just tkn@NtfToken {ntfServer} -> do
             atomically $ incNtfServerStat c userId ntfServer ntfDelAttempts
-            tryAgentError (agentNtfDeleteSubscription c nSubId tkn) >>= \case
+            tryAllErrors (agentNtfDeleteSubscription c nSubId tkn) >>= \case
               Right _ -> do
                 atomically $ incNtfServerStat c userId ntfServer ntfDeleted
                 continue'
@@ -385,7 +385,7 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (\db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems c doWork (withStore' c $ \db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
         let (creates, deletes) = splitActions nextSubs
         retrySubActions c creates createNotifierKeys
@@ -567,7 +567,7 @@ runNtfTknDelWorker c srv Worker {doWork} =
           withRetryInterval ri $ \_ loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
-            processTknToDelete nextTknToDelete `catchAgentError` retryTmpError loop nextTknToDelete
+            processTknToDelete nextTknToDelete `catchAllErrors` retryTmpError loop nextTknToDelete
     retryTmpError :: AM () -> NtfTokenToDelete -> AgentErrorType -> AM ()
     retryTmpError loop (tknDbId, _, _) e = do
       logError $ "ntf tkn del error: " <> tshow e

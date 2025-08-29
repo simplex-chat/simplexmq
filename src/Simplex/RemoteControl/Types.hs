@@ -19,6 +19,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word16)
 import qualified Data.X509 as X
+import qualified Network.TLS as TLS
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
@@ -26,7 +27,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
 import Simplex.Messaging.Transport (TLS, TSbChainKeys, TransportPeer (..))
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (safeDecodeUtf8)
+import Simplex.Messaging.Util (AnyError (..), safeDecodeUtf8)
 import Simplex.Messaging.Version (VersionRange, VersionScope, mkVersionRange)
 import Simplex.Messaging.Version.Internal
 import UnliftIO
@@ -49,6 +50,12 @@ data RCErrorType
   | RCEBlockSize
   | RCESyntax {syntaxErr :: String}
   deriving (Eq, Show, Exception)
+
+instance AnyError RCErrorType where
+  fromSomeException e = case fromException e of
+    Just (TLS.Terminated _ _ (TLS.Error_Protocol _ TLS.UnknownCa)) -> RCEIdentity
+    _ -> RCEException $ show e
+  {-# INLINE fromSomeException #-}
 
 instance StrEncoding RCErrorType where
   strEncode = \case

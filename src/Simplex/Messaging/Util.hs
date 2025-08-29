@@ -171,28 +171,30 @@ catchAll_ :: IO a -> IO a -> IO a
 catchAll_ a = catchAll a . const
 {-# INLINE catchAll_ #-}
 
-tryAllErrors :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> ExceptT e m (Either e a)
-tryAllErrors err action = ExceptT $ Right <$> runExceptT action `UE.catch` (pure . Left . err)
+class Show e => AnyError e where fromSomeException :: E.SomeException -> e
+
+tryAllErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m (Either e a)
+tryAllErrors action = ExceptT $ Right <$> runExceptT action `UE.catch` (pure . Left . fromSomeException)
 {-# INLINE tryAllErrors #-}
 
-tryAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> m (Either e a)
-tryAllErrors' err action = runExceptT action `UE.catch` (pure . Left . err)
+tryAllErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> m (Either e a)
+tryAllErrors' action = runExceptT action `UE.catch` (pure . Left . fromSomeException)
 {-# INLINE tryAllErrors' #-}
 
-catchAllErrors :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> (e -> ExceptT e m a) -> ExceptT e m a
-catchAllErrors err action handler = tryAllErrors err action >>= either handler pure
+catchAllErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> ExceptT e m a) -> ExceptT e m a
+catchAllErrors action handler = tryAllErrors action >>= either handler pure
 {-# INLINE catchAllErrors #-}
 
-catchAllErrors' :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> (e -> m a) -> m a
-catchAllErrors' err action handler = tryAllErrors' err action >>= either handler pure
+catchAllErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> m a) -> m a
+catchAllErrors' action handler = tryAllErrors' action >>= either handler pure
 {-# INLINE catchAllErrors' #-}
 
-catchThrow :: MonadUnliftIO m => ExceptT e m a -> (E.SomeException -> e) -> ExceptT e m a
-catchThrow action err = catchAllErrors err action throwE
+catchThrow :: MonadUnliftIO m => ExceptT e m a -> (SomeException -> e) -> ExceptT e m a
+action `catchThrow` err = ExceptT $ runExceptT action `UE.catch` (pure . Left . err)
 {-# INLINE catchThrow #-}
 
-allFinally :: MonadUnliftIO m => (E.SomeException -> e) -> ExceptT e m a -> ExceptT e m b -> ExceptT e m a
-allFinally err action final = tryAllErrors err action >>= \r -> final >> except r
+allFinally :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m b -> ExceptT e m a
+allFinally action final = tryAllErrors action >>= \r -> final >> except r
 {-# INLINE allFinally #-}
 
 eitherToMaybe :: Either a b -> Maybe b
