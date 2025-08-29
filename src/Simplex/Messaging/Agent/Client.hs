@@ -130,6 +130,7 @@ module Simplex.Messaging.Agent.Client
     hasWorkToDo,
     hasWorkToDo',
     withWork,
+    withWork_,
     withWorkItems,
     agentOperations,
     agentOperationBracket,
@@ -371,12 +372,12 @@ data SMPConnectedClient = SMPConnectedClient
 
 type ProxiedRelayVar = SessionVar (Either AgentErrorType ProxiedRelay)
 
-getAgentWorker :: (Ord k, Show k) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> AM ()) -> AM' Worker
+getAgentWorker :: (Ord k, Show k, AnyError e, MonadUnliftIO m) => String -> Bool -> AgentClient -> k -> TMap k Worker -> (Worker -> ExceptT e m ()) -> m Worker
 getAgentWorker = getAgentWorker' id pure
 {-# INLINE getAgentWorker #-}
 
-getAgentWorker' :: forall a k. (Ord k, Show k) => (a -> Worker) -> (Worker -> STM a) -> String -> Bool -> AgentClient -> k -> TMap k a -> (a -> AM ()) -> AM' a
-getAgentWorker' toW fromW name hasWork c key ws work = do
+getAgentWorker' :: forall a k e m. (Ord k, Show k, AnyError e, MonadUnliftIO m) => (a -> Worker) -> (Worker -> STM a) -> String -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT e m ()) -> m a
+getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
   atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
   where
     getWorker = TM.lookup key ws
@@ -389,12 +390,12 @@ getAgentWorker' toW fromW name hasWork c key ws work = do
       | otherwise = pure w
     runWorker w = runWorkerAsync (toW w) runWork
       where
-        runWork :: AM' ()
-        runWork = tryAgentError' (work w) >>= restartOrDelete
-        restartOrDelete :: Either AgentErrorType () -> AM' ()
+        runWork :: m ()
+        runWork = tryAllErrors' (work w) >>= restartOrDelete
+        restartOrDelete :: Either e () -> m ()
         restartOrDelete e_ = do
           t <- liftIO getSystemTime
-          maxRestarts <- asks $ maxWorkerRestartsPerMin . config
+          let maxRestarts = maxWorkerRestartsPerMin $ config agentEnv
           -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
           restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
           when restart runWork
@@ -431,7 +432,7 @@ newWorker c = do
   restarts <- newTVar $ RestartCount 0 0
   pure Worker {workerId, doWork, action, restarts}
 
-runWorkerAsync :: Worker -> AM' () -> AM' ()
+runWorkerAsync :: MonadUnliftIO m => Worker -> m () -> m ()
 runWorkerAsync Worker {action} work =
   E.bracket
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
@@ -665,7 +666,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     newProxiedRelay (SMPConnectedClient smp prs) proxyAuth rv =
-      tryAgentError (liftClient SMP (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
+      tryAllErrors (liftClient SMP (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
         Right sess -> do
           atomically $ putTMVar (sessionVar rv) (Right sess)
           pure $ Right sess
@@ -688,7 +689,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
 smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm tSess@(_, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
-    `catchAgentError` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
+    `catchAllErrors` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
     connectClient :: SMPClientVar -> AM SMPConnectedClient
     connectClient v' = do
@@ -866,7 +867,7 @@ newProtocolClient ::
   ClientVar msg ->
   AM (Client msg)
 newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
-  tryAgentError (connectClient v) >>= \case
+  tryAllErrors (connectClient v) >>= \case
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
@@ -1027,7 +1028,7 @@ getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do
   cl <- getProtocolServerClient c nm tSess
-  action cl `catchAgentError` logServerError
+  action cl `catchAllErrors` logServerError
   where
     logServerError :: AgentErrorType -> AM a
     logServerError e = do
@@ -1040,7 +1041,7 @@ withProxySession c nm proxySrv_ destSess@(_, destSrv, _) entId cmdStr action = d
   logServer ("--> " <> proxySrv cl <> " >") c destSrv entId cmdStr
   case sess_ of
     Right sess -> do
-      r <- action (cl, sess) `catchAgentError` logServerError cl
+      r <- action (cl, sess) `catchAllErrors` logServerError cl
       logServer ("<-- " <> proxySrv cl <> " <") c destSrv entId "OK"
       pure r
     Left e -> logServerError cl e
@@ -1117,7 +1118,7 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
     unknownServer = liftIO $ maybe True (\srvs -> all (`S.notMember` knownHosts srvs) destHosts) <$> TM.lookupIO userId (smpServers c)
     sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer, a)
     sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
-      r <- tryAgentError . withProxySession c nm proxySrv_ destSess entId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
+      r <- tryAllErrors . withProxySession c nm proxySrv_ destSess entId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
         r' <- liftClient SMP (clientServer smp) $ sendCmdViaProxy smp proxySess
         let proxySrv = protocolClientServer' smp
         case r' of
@@ -1164,7 +1165,7 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
           | otherwise -> throwE e
     sendDirectly tSess =
       withLogClient_ c nm tSess (unEntityId entId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
-        tryAgentError (liftClient SMP (clientServer smp) $ sendCmdDirectly smp) >>= \case
+        tryAllErrors (liftClient SMP (clientServer smp) $ sendCmdDirectly smp) >>= \case
           Right r -> r <$ atomically (incSMPServerStat c userId destSrv sentDirect)
           Left e -> throwE e
 
@@ -1562,7 +1563,7 @@ sendTSessionBatches statCmd toRQ action c nm qs =
            in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> AM' (BatchResponses q AgentErrorType r)
     sendClientBatch (tSess@(_, srv, _), qs') =
-      tryAgentError' (getSMPServerClient c nm tSess) >>= \case
+      tryAllErrors' (getSMPServerClient c nm tSess) >>= \case
         Left e -> pure $ L.map (,Left e) qs'
         Right (SMPConnectedClient smp _) -> liftIO $ do
           logServer' "-->" c srv (bshow (length qs') <> " queues") statCmd
@@ -1867,7 +1868,7 @@ withNtfBatch ::
   AM' (NonEmpty (Either AgentErrorType r))
 withNtfBatch cmdStr action c NtfToken {ntfServer, ntfPrivKey} subs = do
   let tSess = (0, ntfServer, Nothing)
-  tryAgentError' (getNtfServerClient c NRMBackground tSess) >>= \case
+  tryAllErrors' (getNtfServerClient c NRMBackground tSess) >>= \case
     Left e -> pure $ L.map (\_ -> Left e) subs
     Right ntf -> liftIO $ do
       logServer' "-->" c ntfServer (bshow (length subs) <> " subscriptions") cmdStr
@@ -1968,8 +1969,12 @@ waitForWork = void . atomically . readTMVar
 {-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
-withWork c doWork getWork action =
-  withStore' c getWork >>= \case
+withWork c doWork = withWork_ c doWork . withStore' c
+{-# INLINE withWork #-}
+
+withWork_ :: MonadIO m => AgentClient -> TMVar () -> ExceptT e m (Either StoreError (Maybe a)) -> (a -> ExceptT e m ()) -> ExceptT e m ()
+withWork_ c doWork getWork action =
+  getWork >>= \case
     Right (Just r) -> action r
     Right Nothing -> noWork
     -- worker is stopped here (noWork) because the next iteration is likely to produce the same result
@@ -1979,9 +1984,9 @@ withWork c doWork getWork action =
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
-withWorkItems :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError [Either StoreError a])) -> (NonEmpty a -> AM ()) -> AM ()
+withWorkItems :: MonadIO m => AgentClient -> TMVar () -> ExceptT e m (Either StoreError [Either StoreError a]) -> (NonEmpty a -> ExceptT e m ()) -> ExceptT e m ()
 withWorkItems c doWork getWork action = do
-  withStore' c getWork >>= \case
+  getWork >>= \case
     Right [] -> noWork
     Right rs -> do
       let (errs, items) = partitionEithers rs
