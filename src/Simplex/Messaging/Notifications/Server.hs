@@ -675,7 +675,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             void $ updateTknStatus st tkn $ NTInvalid $ Just r
             err e
           PPPermanentError -> err e
-          PPInvalidPusher -> err e
       where
         retryDeliver :: IO (Either PushProviderError ())
         retryDeliver = do
