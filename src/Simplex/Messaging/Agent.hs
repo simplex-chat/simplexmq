@@ -1370,7 +1370,7 @@ subscribeClientServices' c userId =
     useService = liftIO $ (Just True ==) <$> TM.lookupIO userId (useClientServices c)
     subscribe = do
       srvs <- withStore' c (`getClientServiceServers` userId)
-      lift $ M.fromList . zip srvs <$> mapConcurrently (tryAgentError' . subscribeClientService c userId) srvs
+      lift $ M.fromList . zip srvs <$> mapConcurrently (tryAllErrors' . subscribeClientService c userId) srvs
 
 -- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
