@@ -166,12 +166,12 @@ m20250830_queue_ids_hash =
   createXorHashFuncs
     <> T.pack
       [r|
-ALTER TABLE services ADD COLUMN queue_ids_hash BYTEA;
+ALTER TABLE services ADD COLUMN queue_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
 
 WITH hashes AS (
   SELECT
     s.service_id,
-    xor_aggregate(digest(CASE WHEN s.service_role = 'M' THEN q.recipient_id ELSE q.notifier_id END, 'md5')) AS computed_hash
+    xor_aggregate(public.digest(CASE WHEN s.service_role = 'M' THEN q.recipient_id ELSE COALESCE(q.notifier_id, '\x00000000000000000000000000000000') END, 'md5')) AS computed_hash
   FROM services s
   JOIN msg_queues q ON (s.service_id = q.rcv_service_id AND s.service_role = 'M') OR (s.service_id = q.ntf_service_id AND s.service_role = 'N')
   GROUP BY s.service_id
@@ -181,12 +181,12 @@ SET queue_ids_hash = COALESCE(h.computed_hash, '\x000000000000000000000000000000
 FROM hashes h
 WHERE s.service_id = h.service_id;
 
-CREATE OR REPLACE FUNCTION update_ids_hash(p_service_id bytea, p_role text, p_queue_id bytea) RETURNS void
+CREATE OR REPLACE FUNCTION update_ids_hash(p_service_id BYTEA, p_role text, p_queue_id BYTEA) RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
   UPDATE services
-  SET queue_ids_hash = xor_combine(queue_ids_hash, digest(p_queue_id, 'md5'))
+  SET queue_ids_hash = xor_combine(queue_ids_hash, public.digest(p_queue_id, 'md5'))
   WHERE service_id = p_service_id AND service_role = p_role;
 END;
 $$;
@@ -282,8 +282,6 @@ createXorHashFuncs :: Text
 createXorHashFuncs =
   T.pack
     [r|
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
 CREATE OR REPLACE FUNCTION xor_combine(state BYTEA, value BYTEA) RETURNS BYTEA
 LANGUAGE plpgsql IMMUTABLE STRICT
 AS $$
@@ -315,5 +313,4 @@ dropXorHashFuncs =
     [r|
 DROP AGGREGATE xor_aggregate(BYTEA);
 DROP FUNCTION xor_combine;
-DROP EXTENSION pgcrypto;
     |]

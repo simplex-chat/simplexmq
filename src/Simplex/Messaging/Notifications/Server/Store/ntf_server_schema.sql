@@ -60,7 +60,7 @@ CREATE FUNCTION ntf_server.update_ids_hash(p_server_id bigint, p_notifier_id byt
     AS $$
 BEGIN
   UPDATE smp_servers
-  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, digest(p_notifier_id, 'md5'))
+  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
   WHERE smp_server_id = p_server_id;
 END;
 $$;

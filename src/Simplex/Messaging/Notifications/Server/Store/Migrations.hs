@@ -117,7 +117,7 @@ ALTER TABLE smp_servers ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT 
 WITH hashes AS (
   SELECT
     s.smp_server_id,
-    xor_aggregate(digest(s.smp_notifier_id, 'md5')) AS notifier_hash
+    xor_aggregate(public.digest(s.smp_notifier_id, 'md5')) AS notifier_hash
   FROM subscriptions s
   WHERE s.ntf_service_assoc = true
   GROUP BY s.smp_server_id
@@ -132,7 +132,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   UPDATE smp_servers
-  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, digest(p_notifier_id, 'md5'))
+  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
   WHERE smp_server_id = p_server_id;
 END;
 $$;
