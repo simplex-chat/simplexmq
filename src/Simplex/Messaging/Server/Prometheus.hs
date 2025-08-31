@@ -21,6 +21,7 @@ import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Server (SocketStats (..))
 import Simplex.Messaging.Util (tshow)
 
+-- TODO [certs rcv] add service subscriptions and count/hash diffs
 data ServerMetrics = ServerMetrics
   { statsData :: ServerStatsData,
     activeQueueCounts :: PeriodStatCounts,

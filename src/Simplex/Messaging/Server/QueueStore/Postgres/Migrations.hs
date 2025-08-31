@@ -166,27 +166,33 @@ m20250830_queue_ids_hash =
   createXorHashFuncs
     <> T.pack
       [r|
-ALTER TABLE services ADD COLUMN queue_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
+ALTER TABLE services
+  ADD COLUMN queue_count BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN queue_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
 
-WITH hashes AS (
+WITH acc AS (
   SELECT
     s.service_id,
-    xor_aggregate(public.digest(CASE WHEN s.service_role = 'M' THEN q.recipient_id ELSE COALESCE(q.notifier_id, '\x00000000000000000000000000000000') END, 'md5')) AS computed_hash
+    count(1) as q_count,
+    xor_aggregate(public.digest(CASE WHEN s.service_role = 'M' THEN q.recipient_id ELSE COALESCE(q.notifier_id, '\x00000000000000000000000000000000') END, 'md5')) AS q_ids_hash
   FROM services s
   JOIN msg_queues q ON (s.service_id = q.rcv_service_id AND s.service_role = 'M') OR (s.service_id = q.ntf_service_id AND s.service_role = 'N')
+  WHERE q.deleted_at IS NULL
   GROUP BY s.service_id
 )
 UPDATE services s
-SET queue_ids_hash = COALESCE(h.computed_hash, '\x00000000000000000000000000000000')
-FROM hashes h
-WHERE s.service_id = h.service_id;
+SET queue_count = COALESCE(acc.q_count, 0),
+    queue_ids_hash = COALESCE(acc.q_ids_hash, '\x00000000000000000000000000000000')
+FROM acc
+WHERE s.service_id = acc.service_id;
 
-CREATE OR REPLACE FUNCTION update_ids_hash(p_service_id BYTEA, p_role text, p_queue_id BYTEA) RETURNS void
+CREATE OR REPLACE FUNCTION update_ids_hash(p_service_id BYTEA, p_role TEXT, p_queue_id BYTEA, p_change BIGINT) RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
   UPDATE services
-  SET queue_ids_hash = xor_combine(queue_ids_hash, public.digest(p_queue_id, 'md5'))
+  SET queue_count = queue_count + p_change,
+      queue_ids_hash = xor_combine(queue_ids_hash, public.digest(p_queue_id, 'md5'))
   WHERE service_id = p_service_id AND service_role = p_role;
 END;
 $$;
@@ -196,10 +202,10 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   IF NEW.rcv_service_id IS NOT NULL THEN
-    PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id);
+    PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
   END IF;
-  IF NEW.ntf_service_id IS NOT NULL THEN
-    PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id);
+  IF NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
   END IF;
   RETURN NEW;
 END;
@@ -209,11 +215,13 @@ CREATE OR REPLACE FUNCTION on_queue_delete() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF OLD.rcv_service_id IS NOT NULL THEN
-    PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id);
-  END IF;
-  IF OLD.ntf_service_id IS NOT NULL THEN
-    PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id);
+  IF OLD.deleted_at IS NULL THEN
+    IF OLD.rcv_service_id IS NOT NULL THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+    END IF;
+    IF OLD.ntf_service_id IS NOT NULL AND OLD.notifier_id IS NOT NULL THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+    END IF;
   END IF;
   RETURN OLD;
 END;
@@ -223,21 +231,26 @@ CREATE OR REPLACE FUNCTION on_queue_update() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF OLD.rcv_service_id IS DISTINCT FROM NEW.rcv_service_id THEN
-    IF OLD.rcv_service_id IS NOT NULL THEN
-      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id);
+  IF OLD.deleted_at IS NULL AND OLD.rcv_service_id IS NOT NULL THEN
+    IF NOT (NEW.deleted_at IS NULL AND NEW.rcv_service_id IS NOT NULL) THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+    ELSIF OLD.rcv_service_id IS DISTINCT FROM NEW.rcv_service_id THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+      PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
     END IF;
-    IF NEW.rcv_service_id IS NOT NULL THEN
-      PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id);
-    END IF;
+  ELSIF NEW.deleted_at IS NULL AND NEW.rcv_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
   END IF;
-  IF OLD.ntf_service_id IS DISTINCT FROM NEW.ntf_service_id THEN
-    IF OLD.ntf_service_id IS NOT NULL THEN
-      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id);
+
+  IF OLD.deleted_at IS NULL AND OLD.ntf_service_id IS NOT NULL AND OLD.notifier_id IS NOT NULL THEN
+    IF NOT (NEW.deleted_at IS NULL AND NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL) THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+    ELSIF OLD.ntf_service_id IS DISTINCT FROM NEW.ntf_service_id OR OLD.notifier_id IS DISTINCT FROM NEW.notifier_id THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+      PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
     END IF;
-    IF NEW.ntf_service_id IS NOT NULL THEN
-      PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id);
-    END IF;
+  ELSIF NEW.deleted_at IS NULL AND NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
   END IF;
   RETURN NEW;
 END;
@@ -274,7 +287,9 @@ DROP FUNCTION on_queue_update;
 
 DROP FUNCTION update_ids_hash;
 
-ALTER TABLE services DROP COLUMN queue_ids_hash;
+ALTER TABLE services
+  DROP COLUMN queue_count,
+  DROP COLUMN queue_ids_hash;
     |]
     <> dropXorHashFuncs
 

@@ -64,7 +64,7 @@ import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId, pattern SMPServer)
+import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), IdsHash (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId, ServiceSub (..), pattern SMPServer)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate, withLog_)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -237,7 +237,7 @@ updateTknCronInterval st tknId cronInt =
 
 -- Reads servers that have subscriptions that need subscribing.
 -- It is executed on server start, and it is supposed to crash on database error
-getUsedSMPServers :: NtfPostgresStore -> IO [(SMPServer, Int64, Maybe (ServiceId, Int64))]
+getUsedSMPServers :: NtfPostgresStore -> IO [(SMPServer, Int64, Maybe ServiceSub)]
 getUsedSMPServers st =
   withTransaction (dbStore st) $ \db ->
     map rowToSrvSubs <$>
@@ -245,25 +245,17 @@ getUsedSMPServers st =
         db
         [sql|
           SELECT
-            p.smp_host, p.smp_port, p.smp_keyhash, p.smp_server_id, p.ntf_service_id,
-            SUM(CASE WHEN s.ntf_service_assoc THEN s.subs_count ELSE 0 END) :: BIGINT as service_subs_count
-          FROM smp_servers p
-          JOIN (
-            SELECT
-              smp_server_id,
-              ntf_service_assoc,
-              COUNT(1) as subs_count
-            FROM subscriptions
-            WHERE status IN ?
-            GROUP BY smp_server_id, ntf_service_assoc
-          ) s ON s.smp_server_id = p.smp_server_id
-          GROUP BY p.smp_host, p.smp_port, p.smp_keyhash, p.smp_server_id, p.ntf_service_id
+            smp_host, smp_port, smp_keyhash, smp_server_id,
+            ntf_service_id, smp_notifier_count, smp_notifier_ids_hash
+          FROM smp_servers
+          WHERE EXISTS (SELECT 1 FROM subscriptions WHERE status IN ?)
         |]
-        (Only (In [NSNew, NSPending, NSActive, NSInactive]))
+        (Only (In subscribeNtfStatuses))
   where
-    rowToSrvSubs :: SMPServerRow :. (Int64, Maybe ServiceId, Int64) -> (SMPServer, Int64, Maybe (ServiceId, Int64))
-    rowToSrvSubs ((host, port, kh) :. (srvId, serviceId_, subsCount)) =
-      (SMPServer host port kh, srvId, (,subsCount) <$> serviceId_)
+    rowToSrvSubs :: SMPServerRow :. (Int64, Maybe ServiceId, Int64, IdsHash) -> (SMPServer, Int64, Maybe ServiceSub)
+    rowToSrvSubs ((host, port, kh) :. (srvId, serviceId_, n, idsHash)) =
+      let service_ = (\serviceId -> ServiceSub serviceId n idsHash) <$> serviceId_
+       in (SMPServer host port kh, srvId, service_)
 
 getServerNtfSubscriptions :: NtfPostgresStore -> Int64 -> Maybe NtfSubscriptionId -> Int -> IO (Either ErrorType [ServerNtfSub])
 getServerNtfSubscriptions st srvId afterSubId_ count =
@@ -271,9 +263,9 @@ getServerNtfSubscriptions st srvId afterSubId_ count =
     subs <-
       map toServerNtfSub <$> case afterSubId_ of
         Nothing ->
-          DB.query db (query <> orderLimit) (srvId, statusIn, count)
+          DB.query db (query <> orderLimit) (srvId, In subscribeNtfStatuses, count)
         Just afterSubId ->
-          DB.query db (query <> " AND subscription_id > ?" <> orderLimit) (srvId, statusIn, afterSubId, count)
+          DB.query db (query <> " AND subscription_id > ?" <> orderLimit) (srvId, In subscribeNtfStatuses, afterSubId, count)
     void $
       DB.executeMany
         db
@@ -294,7 +286,6 @@ getServerNtfSubscriptions st srvId afterSubId_ count =
         WHERE smp_server_id = ? AND NOT ntf_service_assoc AND status IN ?
       |]
     orderLimit = " ORDER BY subscription_id LIMIT ?"
-    statusIn = In [NSNew, NSPending, NSActive, NSInactive]
     toServerNtfSub (ntfSubId, notifierId, notifierKey) = (ntfSubId, (notifierId, notifierKey))
 
 -- Returns token and subscription.

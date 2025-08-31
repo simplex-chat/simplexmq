@@ -112,27 +112,48 @@ m20250830_queue_ids_hash =
   createXorHashFuncs
     <> T.pack
       [r|
-ALTER TABLE smp_servers ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
+ALTER TABLE smp_servers
+  ADD COLUMN smp_notifier_count BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
 
-WITH hashes AS (
-  SELECT
-    s.smp_server_id,
-    xor_aggregate(public.digest(s.smp_notifier_id, 'md5')) AS notifier_hash
-  FROM subscriptions s
-  WHERE s.ntf_service_assoc = true
-  GROUP BY s.smp_server_id
-)
-UPDATE smp_servers srv
-SET smp_notifier_ids_hash = COALESCE(h.notifier_hash, '\x00000000000000000000000000000000')
-FROM hashes h
-WHERE srv.smp_server_id = h.smp_server_id;
+CREATE OR REPLACE FUNCTION should_subscribe_status(p_status TEXT) RETURNS BOOLEAN
+LANGUAGE plpgsql IMMUTABLE STRICT
+AS $$
+BEGIN
+  RETURN p_status IN ('NEW', 'PENDING', 'ACTIVE', 'INACTIVE');
+END;
+$$;
 
-CREATE OR REPLACE FUNCTION update_ids_hash(p_server_id BIGINT, p_notifier_id BYTEA) RETURNS void
+CREATE OR REPLACE FUNCTION update_all_aggregates() RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  WITH acc AS (
+    SELECT
+      s.smp_server_id,
+      count(smp_notifier_id) as notifier_count,
+      xor_aggregate(public.digest(s.smp_notifier_id, 'md5')) AS notifier_hash
+    FROM subscriptions s
+    WHERE s.ntf_service_assoc = true AND should_subscribe_status(s.status)
+    GROUP BY s.smp_server_id
+  )
+  UPDATE smp_servers srv
+  SET smp_notifier_count = COALESCE(acc.notifier_count, 0),
+      smp_notifier_ids_hash = COALESCE(acc.notifier_hash, '\x00000000000000000000000000000000')
+  FROM acc
+  WHERE srv.smp_server_id = acc.smp_server_id;
+END;
+$$;
+
+SELECT update_all_aggregates();
+
+CREATE OR REPLACE FUNCTION update_aggregates(p_server_id BIGINT, p_change BIGINT, p_notifier_id BYTEA) RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
   UPDATE smp_servers
-  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
+  SET smp_notifier_count = smp_notifier_count + p_change,
+      smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
   WHERE smp_server_id = p_server_id;
 END;
 $$;
@@ -141,8 +162,8 @@ CREATE OR REPLACE FUNCTION on_subscription_insert() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF NEW.ntf_service_assoc = true THEN
-    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  IF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
   END IF;
   RETURN NEW;
 END;
@@ -152,8 +173,8 @@ CREATE OR REPLACE FUNCTION on_subscription_delete() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF OLD.ntf_service_assoc = true THEN
-    PERFORM update_ids_hash(OLD.smp_server_id, OLD.smp_notifier_id);
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
   END IF;
   RETURN OLD;
 END;
@@ -163,8 +184,12 @@ CREATE OR REPLACE FUNCTION on_subscription_update() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF OLD.ntf_service_assoc != NEW.ntf_service_assoc THEN
-    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    IF NOT (NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status)) THEN
+      PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
+    END IF;
+  ELSIF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
   END IF;
   RETURN NEW;
 END;
@@ -199,8 +224,13 @@ DROP FUNCTION on_subscription_insert;
 DROP FUNCTION on_subscription_delete;
 DROP FUNCTION on_subscription_update;
 
-DROP FUNCTION update_ids_hash;
+DROP FUNCTION update_aggregates;
+DROP FUNCTION update_all_aggregates;
 
-ALTER TABLE smp_servers DROP COLUMN smp_notifier_ids_hash;
+DROP FUNCTION should_subscribe_status;
+
+ALTER TABLE smp_servers
+  DROP COLUMN smp_notifier_count,
+  DROP COLUMN smp_notifier_ids_hash;
     |]
     <> dropXorHashFuncs

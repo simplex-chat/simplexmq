@@ -705,15 +705,17 @@ testServiceDeliverSubscribe =
         pure (rId, sId, dec, serviceId)
 
       runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
-        Resp "10" NoEntity (ERR (CMD NO_AUTH)) <- signSendRecv sh aServicePK ("10", NoEntity, SUBS)
-        signSend_ sh aServicePK Nothing ("11", serviceId, SUBS)
+        let idsHash = queueIdsHash [rId]
+        Resp "10" NoEntity (ERR (CMD NO_AUTH)) <- signSendRecv sh aServicePK ("10", NoEntity, SUBS 1 idsHash)
+        signSend_ sh aServicePK Nothing ("11", serviceId, SUBS 1 idsHash)  -- TODO [certs rcv] compute and compare hashes
         [mId3] <-
           fmap catMaybes $
             receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
               sh
               [ \case
-                  Resp "11" serviceId' (SOKS n _) -> do
+                  Resp "11" serviceId' (SOKS n idsHash') -> do
                     n `shouldBe` 1
+                    idsHash' `shouldBe` idsHash
                     serviceId' `shouldBe` serviceId
                     pure $ Just Nothing
                   _ -> pure Nothing,
@@ -798,14 +800,16 @@ testServiceUpgradeAndDowngrade =
       Resp "12" _ OK <- signSendRecv h sKey2 ("12", sId2, _SEND "hello 3.2")
 
       runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
-        signSend_ sh aServicePK Nothing ("14", serviceId, SUBS)
+        let idsHash = queueIdsHash [rId, rId2, rId3]
+        signSend_ sh aServicePK Nothing ("14", serviceId, SUBS 3 idsHash) -- TODO [certs rcv] compute hash
         [(rKey3_1, rId3_1, mId3_1), (rKey3_2, rId3_2, mId3_2)] <-
           fmap catMaybes $
             receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
               sh
               [ \case
-                  Resp "14" serviceId' (SOKS n _) -> do
+                  Resp "14" serviceId' (SOKS n idsHash') -> do
                     n `shouldBe` 3
+                    idsHash' `shouldBe` idsHash
                     serviceId' `shouldBe` serviceId
                     pure $ Just Nothing
                   _ -> pure Nothing,
@@ -828,7 +832,7 @@ testServiceUpgradeAndDowngrade =
       Resp "17" _ OK <- signSendRecv h sKey ("17", sId, _SEND "hello 4")
 
       runSMPClient t $ \sh -> do
-        Resp "18" _ (ERR SERVICE) <- signSendRecv sh aServicePK ("18", serviceId, SUBS)
+        Resp "18" _ (ERR SERVICE) <- signSendRecv sh aServicePK ("18", serviceId, SUBS 3 mempty)
         (Resp "19" rId' (SOK Nothing), Resp "" rId'' (Msg mId4 msg4)) <- signSendRecv2 sh rKey ("19", rId, SUB)
         rId' `shouldBe` rId
         rId'' `shouldBe` rId
@@ -1347,7 +1351,9 @@ testMessageServiceNotifications =
           deliverMessage rh rId rKey sh sId sKey nh2 "connection 1" dec
           deliverMessage rh rId'' rKey'' sh sId'' sKey'' nh2 "connection 2" dec''
           -- -- another client makes service subscription
-          Resp "12" serviceId5 (SOKS 2 _) <- signSendRecv nh1 (C.APrivateAuthKey C.SEd25519 servicePK) ("12", serviceId, NSUBS)
+          let idsHash = queueIdsHash [nId', nId'']
+          Resp "12" serviceId5 (SOKS 2 idsHash') <- signSendRecv nh1 (C.APrivateAuthKey C.SEd25519 servicePK) ("12", serviceId, NSUBS 2 idsHash) -- TODO [certs rcv] compute and compare hashes
+          idsHash' `shouldBe` idsHash
           serviceId5 `shouldBe` serviceId
           Resp "" serviceId6 (ENDS 2) <- tGet1 nh2
           serviceId6 `shouldBe` serviceId

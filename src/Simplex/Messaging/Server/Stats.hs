@@ -821,7 +821,15 @@ data ServiceStats = ServiceStats
     srvSubCount :: IORef Int,
     srvSubDuplicate :: IORef Int,
     srvSubQueues :: IORef Int,
-    srvSubEnd :: IORef Int
+    srvSubEnd :: IORef Int,
+    -- counts of subscriptions
+    srvSubOk :: IORef Int, -- server has the same queues as expected
+    srvSubMore :: IORef Int, -- server has more queues than expected
+    srvSubFewer :: IORef Int, -- server has fewer queues than expected
+    srvSubDiff :: IORef Int, -- server has the same count, but different queues than expected (based on xor-hash)
+    -- adds actual deviations
+    srvSubMoreTotal :: IORef Int, -- server has more queues than expected, adds diff
+    srvSubFewerTotal :: IORef Int
   }
 
 data ServiceStatsData = ServiceStatsData
@@ -832,7 +840,13 @@ data ServiceStatsData = ServiceStatsData
     _srvSubCount :: Int,
     _srvSubDuplicate :: Int,
     _srvSubQueues :: Int,
-    _srvSubEnd :: Int
+    _srvSubEnd :: Int,
+    _srvSubOk :: Int,
+    _srvSubMore :: Int,
+    _srvSubFewer :: Int,
+    _srvSubDiff :: Int,
+    _srvSubMoreTotal :: Int,
+    _srvSubFewerTotal :: Int
   }
   deriving (Show)
 
@@ -846,7 +860,13 @@ newServiceStatsData =
       _srvSubCount = 0,
       _srvSubDuplicate = 0,
       _srvSubQueues = 0,
-      _srvSubEnd = 0
+      _srvSubEnd = 0,
+      _srvSubOk = 0,
+      _srvSubMore = 0,
+      _srvSubFewer = 0,
+      _srvSubDiff = 0,
+      _srvSubMoreTotal = 0,
+      _srvSubFewerTotal = 0
     }
 
 newServiceStats :: IO ServiceStats
@@ -859,6 +879,12 @@ newServiceStats = do
   srvSubDuplicate <- newIORef 0
   srvSubQueues <- newIORef 0
   srvSubEnd <- newIORef 0
+  srvSubOk <- newIORef 0
+  srvSubMore <- newIORef 0
+  srvSubFewer <- newIORef 0
+  srvSubDiff <- newIORef 0
+  srvSubMoreTotal <- newIORef 0
+  srvSubFewerTotal <- newIORef 0
   pure
     ServiceStats
       { srvAssocNew,
@@ -868,7 +894,13 @@ newServiceStats = do
         srvSubCount,
         srvSubDuplicate,
         srvSubQueues,
-        srvSubEnd
+        srvSubEnd,
+        srvSubOk,
+        srvSubMore,
+        srvSubFewer,
+        srvSubDiff,
+        srvSubMoreTotal,
+        srvSubFewerTotal
       }
 
 getServiceStatsData :: ServiceStats -> IO ServiceStatsData
@@ -881,6 +913,12 @@ getServiceStatsData s = do
   _srvSubDuplicate <- readIORef $ srvSubDuplicate s
   _srvSubQueues <- readIORef $ srvSubQueues s
   _srvSubEnd <- readIORef $ srvSubEnd s
+  _srvSubOk <- readIORef $ srvSubOk s
+  _srvSubMore <- readIORef $ srvSubMore s
+  _srvSubFewer <- readIORef $ srvSubFewer s
+  _srvSubDiff <- readIORef $ srvSubDiff s
+  _srvSubMoreTotal <- readIORef $ srvSubMoreTotal s
+  _srvSubFewerTotal <- readIORef $ srvSubFewerTotal s
   pure
     ServiceStatsData
       { _srvAssocNew,
@@ -890,7 +928,13 @@ getServiceStatsData s = do
         _srvSubCount,
         _srvSubDuplicate,
         _srvSubQueues,
-        _srvSubEnd
+        _srvSubEnd,
+        _srvSubOk,
+        _srvSubMore,
+        _srvSubFewer,
+        _srvSubDiff,
+        _srvSubMoreTotal,
+        _srvSubFewerTotal
       }
 
 getResetServiceStatsData :: ServiceStats -> IO ServiceStatsData
@@ -903,6 +947,12 @@ getResetServiceStatsData s = do
   _srvSubDuplicate <- atomicSwapIORef (srvSubDuplicate s) 0
   _srvSubQueues <- atomicSwapIORef (srvSubQueues s) 0
   _srvSubEnd <- atomicSwapIORef (srvSubEnd s) 0
+  _srvSubOk <- atomicSwapIORef (srvSubOk s) 0
+  _srvSubMore <- atomicSwapIORef (srvSubMore s) 0
+  _srvSubFewer <- atomicSwapIORef (srvSubFewer s) 0
+  _srvSubDiff <- atomicSwapIORef (srvSubDiff s) 0
+  _srvSubMoreTotal <- atomicSwapIORef (srvSubMoreTotal s) 0
+  _srvSubFewerTotal <- atomicSwapIORef (srvSubFewerTotal s) 0
   pure
     ServiceStatsData
       { _srvAssocNew,
@@ -912,7 +962,13 @@ getResetServiceStatsData s = do
         _srvSubCount,
         _srvSubDuplicate,
         _srvSubQueues,
-        _srvSubEnd
+        _srvSubEnd,
+        _srvSubOk,
+        _srvSubMore,
+        _srvSubFewer,
+        _srvSubDiff,
+        _srvSubMoreTotal,
+        _srvSubFewerTotal
       }
 
 -- this function is not thread safe, it is used on server start only
@@ -926,6 +982,12 @@ setServiceStats s d = do
   writeIORef (srvSubDuplicate s) $! _srvSubDuplicate d
   writeIORef (srvSubQueues s) $! _srvSubQueues d
   writeIORef (srvSubEnd s) $! _srvSubEnd d
+  writeIORef (srvSubOk s) $! _srvSubOk d
+  writeIORef (srvSubMore s) $! _srvSubMore d
+  writeIORef (srvSubFewer s) $! _srvSubFewer d
+  writeIORef (srvSubDiff s) $! _srvSubDiff d
+  writeIORef (srvSubMoreTotal s) $! _srvSubMoreTotal d
+  writeIORef (srvSubFewerTotal s) $! _srvSubFewerTotal d
 
 instance StrEncoding ServiceStatsData where
   strEncode ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
@@ -963,7 +1025,13 @@ instance StrEncoding ServiceStatsData where
           _srvSubCount,
           _srvSubDuplicate,
           _srvSubQueues,
-          _srvSubEnd
+          _srvSubEnd,
+          _srvSubOk = 0,
+          _srvSubMore = 0,
+          _srvSubFewer = 0,
+          _srvSubDiff = 0,
+          _srvSubMoreTotal = 0,
+          _srvSubFewerTotal = 0
         }
 
 data TimeBuckets = TimeBuckets

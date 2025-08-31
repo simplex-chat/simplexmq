@@ -20,8 +20,8 @@ CREATE FUNCTION ntf_server.on_subscription_delete() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF OLD.ntf_service_assoc = true THEN
-    PERFORM update_ids_hash(OLD.smp_server_id, OLD.smp_notifier_id);
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
   END IF;
   RETURN OLD;
 END;
@@ -33,8 +33,8 @@ CREATE FUNCTION ntf_server.on_subscription_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF NEW.ntf_service_assoc = true THEN
-    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  IF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
   END IF;
   RETURN NEW;
 END;
@@ -46,8 +46,12 @@ CREATE FUNCTION ntf_server.on_subscription_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF OLD.ntf_service_assoc != NEW.ntf_service_assoc THEN
-    PERFORM update_ids_hash(NEW.smp_server_id, NEW.smp_notifier_id);
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    IF NOT (NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status)) THEN
+      PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
+    END IF;
+  ELSIF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
   END IF;
   RETURN NEW;
 END;
@@ -55,13 +59,47 @@ $$;
 
 
 
-CREATE FUNCTION ntf_server.update_ids_hash(p_server_id bigint, p_notifier_id bytea) RETURNS void
+CREATE FUNCTION ntf_server.should_subscribe_status(p_status text) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+BEGIN
+  RETURN p_status IN ('NEW', 'PENDING', 'ACTIVE', 'INACTIVE');
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.update_aggregates(p_server_id bigint, p_change bigint, p_notifier_id bytea) RETURNS void
     LANGUAGE plpgsql
     AS $$
 BEGIN
   UPDATE smp_servers
-  SET smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
+  SET smp_notifier_count = smp_notifier_count + p_change,
+      smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
   WHERE smp_server_id = p_server_id;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.update_all_aggregates() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  WITH acc AS (
+    SELECT
+      s.smp_server_id,
+      count(smp_notifier_id) as notifier_count,
+      xor_aggregate(public.digest(s.smp_notifier_id, 'md5')) AS notifier_hash
+    FROM subscriptions s
+    WHERE s.ntf_service_assoc = true AND should_subscribe_status(s.status)
+    GROUP BY s.smp_server_id
+  )
+  UPDATE smp_servers srv
+  SET smp_notifier_count = COALESCE(acc.notifier_count, 0),
+      smp_notifier_ids_hash = COALESCE(acc.notifier_hash, '\x00000000000000000000000000000000')
+  FROM acc
+  WHERE srv.smp_server_id = acc.smp_server_id;
 END;
 $$;
 
@@ -133,6 +171,7 @@ CREATE TABLE ntf_server.smp_servers (
     smp_port text NOT NULL,
     smp_keyhash bytea NOT NULL,
     ntf_service_id bytea,
+    smp_notifier_count bigint DEFAULT 0 NOT NULL,
     smp_notifier_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL
 );
 

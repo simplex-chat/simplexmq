@@ -139,7 +139,10 @@ module Simplex.Messaging.Protocol
     RcvMessage (..),
     MsgId,
     MsgBody,
-    IdsHash,
+    IdsHash (..),
+    ServiceSub (..),
+    queueIdsHash,
+    queueIdHash,
     MaxMessageLen,
     MaxRcvMessageLen,
     EncRcvMsgBody (..),
@@ -220,6 +223,8 @@ import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import Data.Bits (xor)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -228,6 +233,7 @@ import Data.Constraint (Dict (..))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
@@ -237,7 +243,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
-import Data.Word (Word16)
+import Data.Word (Word8, Word16)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
@@ -542,7 +548,8 @@ data Command (p :: Party) where
   NEW :: NewQueueReq -> Command Creator
   SUB :: Command Recipient
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  SUBS :: Command RecipientService
+  -- Parameters are expected queue count and hash of all subscribed queues, it allows to monitor "state drift" on the server
+  SUBS :: Int64 -> IdsHash -> Command RecipientService
   KEY :: SndPublicAuthKey -> Command Recipient
   RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
@@ -566,7 +573,7 @@ data Command (p :: Party) where
   -- SMP notification subscriber commands
   NSUB :: Command Notifier
   -- | subscribe all associated queues. Service ID must be used as entity ID, and service session key must sign the command.
-  NSUBS :: Command NotifierService
+  NSUBS :: Int64 -> IdsHash -> Command NotifierService
   PRXY :: SMPServer -> Maybe BasicAuth -> Command ProxiedClient -- request a relay server connection by URI
   -- Transmission to proxy:
   -- - entity ID: ID of the session with relay returned in PKEY (response to PRXY)
@@ -692,7 +699,7 @@ data BrokerMsg where
   LNK :: SenderId -> QueueLinkData -> BrokerMsg
   -- | Service subscription success - confirms when queue was associated with the service
   SOK :: Maybe ServiceId -> BrokerMsg
-  -- | The number of queues subscribed with SUBS command
+  -- | The number of queues and XOR-hash of their IDs subscribed with SUBS command
   SOKS :: Int64 -> IdsHash -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
@@ -1454,7 +1461,44 @@ type MsgId = ByteString
 -- | SMP message body.
 type MsgBody = ByteString
 
-type IdsHash = ByteString
+data ServiceSub = ServiceSub
+  { serviceId :: ServiceId,
+    smpQueueCount :: Int64,
+    smpQueueIdsHash :: IdsHash
+  }
+
+newtype IdsHash = IdsHash {unIdsHash :: BS.ByteString}
+  deriving (Eq, Show)
+  deriving newtype (Encoding, FromField)
+
+instance ToField IdsHash where
+  toField (IdsHash s) = toField (Binary s)
+  {-# INLINE toField #-}
+
+instance Semigroup IdsHash where
+  (IdsHash s1) <> (IdsHash s2) =
+    let !s' = BS.pack $ zipWith xor' (BS.unpack s1) (BS.unpack s2)
+     in IdsHash s'
+
+instance Monoid IdsHash where
+  mempty = IdsHash $ BS.replicate 16 0
+  mconcat ss =
+    let !s' = BS.pack $ foldl' (\ !r (IdsHash s) -> zipWith xor' r (BS.unpack s)) (replicate 16 0) ss -- to prevent packing/unpacking in <> on each step with default mappend
+     in IdsHash s'
+
+xor' :: Word8 -> Word8 -> Word8
+xor' x y = let !r = xor x y in r
+
+noIdsHash ::IdsHash
+noIdsHash = IdsHash B.empty
+{-# INLINE noIdsHash #-}
+
+queueIdsHash :: [QueueId] -> IdsHash
+queueIdsHash = mconcat . map queueIdHash
+
+queueIdHash :: QueueId -> IdsHash
+queueIdHash = IdsHash . C.md5Hash . unEntityId
+{-# INLINE queueIdHash #-}
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 
@@ -1668,7 +1712,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
         new = e (NEW_, ' ', rKey, dhKey)
         auth = maybe "" (e . ('A',)) auth_
     SUB -> e SUB_
-    SUBS -> e SUBS_
+    SUBS n idsHash
+      | v >= rcvServiceSMPVersion -> e (SUBS_, ' ', n, idsHash)
+      | otherwise -> e SUBS_
     KEY k -> e (KEY_, ' ', k)
     RKEY ks -> e (RKEY_, ' ', ks)
     LSET lnkId d -> e (LSET_, ' ', lnkId, d)
@@ -1684,7 +1730,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
     PING -> e PING_
     NSUB -> e NSUB_
-    NSUBS -> e NSUBS_
+    NSUBS n idsHash
+      | v >= rcvServiceSMPVersion -> e (NSUBS_, ' ', n, idsHash)
+      | otherwise -> e NSUBS_
     LKEY k -> e (LKEY_, ' ', k)
     LGET -> e LGET_
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
@@ -1775,7 +1823,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         OFF_ -> pure OFF
         DEL_ -> pure DEL
         QUE_ -> pure QUE
-    CT SRecipientService SUBS_ -> pure $ Cmd SRecipientService SUBS
+    CT SRecipientService SUBS_
+      | v >= rcvServiceSMPVersion -> Cmd SRecipientService <$> (SUBS <$> _smpP <*> smpP)
+      | otherwise -> pure $ Cmd SRecipientService $ SUBS (-1) noIdsHash
     CT SSender tag ->
       Cmd SSender <$> case tag of
         SKEY_ -> SKEY <$> _smpP
@@ -1792,7 +1842,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         PFWD_ -> PFWD <$> _smpP <*> smpP <*> (EncTransmission . unTail <$> smpP)
         PRXY_ -> PRXY <$> _smpP <*> smpP
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
-    CT SNotifierService NSUBS_ -> pure $ Cmd SNotifierService NSUBS
+    CT SNotifierService NSUBS_
+      | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
+      | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) noIdsHash
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1870,7 +1922,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SOK_ -> SOK <$> _smpP
     SOKS_
       | v >= rcvServiceSMPVersion -> SOKS <$> _smpP <*> smpP
-      | otherwise -> SOKS <$> _smpP <*> pure B.empty
+      | otherwise -> SOKS <$> _smpP <*> pure noIdsHash
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP

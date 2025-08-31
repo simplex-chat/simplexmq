@@ -892,18 +892,18 @@ nsubResponse_ = \case
 {-# INLINE nsubResponse_ #-}
 
 -- This command is always sent in background request mode
-subscribeService :: forall p. (PartyI p, ServiceParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO (Int64, IdsHash)
-subscribeService c party = case smpClientService c of
+subscribeService :: forall p. (PartyI p, ServiceParty p) => SMPClient -> SParty p -> Int64 -> IdsHash -> ExceptT SMPClientError IO ServiceSub
+subscribeService c party n idsHash = case smpClientService c of
   Just THClientService {serviceId, serviceKey} -> do
     liftIO $ enablePings c
     sendSMPCommand c NRMBackground (Just (C.APrivateAuthKey C.SEd25519 serviceKey)) serviceId subCmd >>= \case
-      SOKS n idsHash -> pure (n, idsHash)
+      SOKS n' idsHash' -> pure $ ServiceSub serviceId n' idsHash'
       r -> throwE $ unexpectedResponse r
     where
       subCmd :: Command p
       subCmd = case party of
-        SRecipientService -> SUBS
-        SNotifierService -> NSUBS
+        SRecipientService -> SUBS n idsHash
+        SNotifierService -> NSUBS n idsHash
   Nothing -> throwE PCEServiceUnavailable
 
 smpClientService :: SMPClient -> Maybe THClientService

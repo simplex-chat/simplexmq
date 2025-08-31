@@ -17,6 +17,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 
+-- TODO [certs rcv] track service subscriptions and count/hash diffs for own and other servers + prometheus
 data NtfServerStats = NtfServerStats
   { fromTime :: IORef UTCTime,
     tknCreated :: IORef Int,

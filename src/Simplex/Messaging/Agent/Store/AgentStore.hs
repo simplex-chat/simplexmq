@@ -409,19 +409,20 @@ getClientService db userId srv =
   where
     toService (kh, cert, pk, serviceId_) = ((kh, (cert, pk)), serviceId_)
 
-getClientServiceServers :: DB.Connection -> UserId -> IO [SMPServer]
+getClientServiceServers :: DB.Connection -> UserId -> IO [(SMPServer, ServiceSub)]
 getClientServiceServers db userId =
   map toServer
     <$> DB.query
       db
       [sql|
-        SELECT c.host, c.port, s.key_hash
+        SELECT c.host, c.port, s.key_hash, c.rcv_service_id, c.rcv_service_queue_count, c.rcv_service_queue_ids_hash
         FROM client_services c
         JOIN servers s ON s.host = c.host AND s.port = c.port
       |]
       (Only userId)
   where
-    toServer (host, port, kh) = SMPServer host port kh
+    toServer (host, port, kh, serviceId, n, Binary idsHash) =
+      (SMPServer host port kh, ServiceSub serviceId n (IdsHash idsHash))
 
 setClientServiceId :: DB.Connection -> UserId -> SMPServer -> ServiceId -> IO ()
 setClientServiceId db userId srv serviceId =

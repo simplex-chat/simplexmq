@@ -485,15 +485,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
          in ((serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  getServiceQueueCount :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
-  getServiceQueueCount st party serviceId =
-    E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCount" st $ \db ->
-      fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
-        DB.query db query (Only serviceId)
-    where
-      query = case party of
-        SRecipientService -> "SELECT count(1) FROM msg_queues WHERE rcv_service_id = ? AND deleted_at IS NULL"
-        SNotifierService -> "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL"
+  getServiceQueueCountHash :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
+  getServiceQueueCountHash st party serviceId =
+    E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCountHash" st $ \db ->
+      fmap (fromMaybe (0, mempty)) $ maybeFirstRow id $
+        DB.query db ("SELECT queue_count, queue_ids_hash FROM services WHERE service_id = ? AND service_role = ?") (serviceId, partyServiceRole party)
 
 batchInsertServices :: [STMService] -> PostgresQueueStore q -> IO Int64
 batchInsertServices services' toStore =
@@ -739,6 +735,10 @@ instance FromField (C.DhSecret 'C.X25519) where fromField = blobFieldDecoder str
 instance ToField C.APublicAuthKey where toField = toField . Binary . C.encodePubKey
 
 instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodePubKey
+
+instance ToField IdsHash where toField (IdsHash s) = toField (Binary s)
+
+deriving newtype instance FromField IdsHash
 
 instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s)
 
