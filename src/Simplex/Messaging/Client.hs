@@ -597,12 +597,14 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
-          `forkFinally` \_ -> void (atomically . tryPutTMVar cVar $ Left PCENetworkError)
+          `forkFinally` \_ -> atomically (tryPutTMVar cVar $ Left PCENetworkError) >> logInfo ("TCP connection failed " <> srv')
       c_ <- netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> mkWeakThreadId tId >>= \tId' -> pure $ Right c' {action = Just tId'}
         Just (Left e) -> pure $ Left e
-        Nothing -> killThread tId $> Left PCENetworkError
+        Nothing -> logInfo ("TCP connection timeout " <> srv') >> killThread tId $> Left PCENetworkError
+      where
+        srv' = safeDecodeUtf8 $ strEncode $ host srv
 
     useTransport :: (ServiceName, ATransport 'TClient)
     useTransport = case port srv of

@@ -29,7 +29,7 @@ module Simplex.Messaging.Transport.Client
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Logger.Simple (logError)
+import Control.Logger.Simple
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -58,7 +58,7 @@ import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, tshow, (<$?>))
+import Simplex.Messaging.Util (bshow, catchAll, safeDecodeUtf8, tshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -165,19 +165,20 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName
-  E.bracketOnError (connectTCP port) close $ \sock -> do
+  E.bracketOnError (connectTCP port) (\sock -> log "close" >> close sock) $ \sock -> do
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
-    E.bracketOnError (connectTLS (Just hostName) tCfg clientParams sock) closeTLS $ \tls -> do
+    E.bracketOnError (connectTLS (Just hostName) tCfg clientParams sock) (\tls -> log "closeTLS" >> closeTLS tls) $ \tls -> do
       chain <- takePeerCertChain serverCert `E.onException` closeTLS tls
       sent <- readIORef clientCredsSent
-      E.bracket (getTransportConnection tCfg sent chain tls) closeConnection client
+      E.bracket (getTransportConnection tCfg sent chain tls) (\c -> log "closeConnection" >> closeConnection c) client
   where
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
       THIPv6 addr -> SocksAddrIPV6 addr
       THOnionHost h -> SocksAddrDomainName h
       THDomainName h -> SocksAddrDomainName $ B.pack h
+    log s = logInfo $ "TCP connection " <> s <> ": " <> safeDecodeUtf8 (strEncode host)
 
 connectTCPClient :: HostName -> ServiceName -> IO Socket
 connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
