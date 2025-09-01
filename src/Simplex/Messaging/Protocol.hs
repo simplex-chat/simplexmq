@@ -81,6 +81,7 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     BrokerErrorType (..),
+    NetworkError (..),
     BlockingInfo (..),
     BlockingReason (..),
     RawTransmission,
@@ -168,6 +169,7 @@ module Simplex.Messaging.Protocol
     noMsgFlags,
     messageId,
     messageTs,
+    toNetworkError,
 
     -- * Parse and serialize
     ProtocolMsgTag (..),
@@ -212,7 +214,7 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Exception (Exception)
+import Control.Exception (Exception, SomeException, displayException, fromException)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
@@ -241,6 +243,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
+import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -1555,7 +1558,7 @@ data BrokerErrorType
   | -- | unexpected response
     UNEXPECTED {respErr :: String}
   | -- | network error
-    NETWORK
+    NETWORK {networkError :: NetworkError}
   | -- | no compatible server host (e.g. onion when public is required, or vice versa)
     HOST
   | -- | service unavailable client-side - used in agent errors
@@ -1565,6 +1568,24 @@ data BrokerErrorType
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Read, Show, Exception)
+
+data NetworkError
+  = NEConnectError {connectError :: String}
+  | NETLSError {tlsError :: String}
+  | NETLSCAError
+  | NEFailedError
+  | NETimeoutError
+  | NESubscribeError {subscribeError :: String}
+  deriving (Eq, Read, Show)
+
+toNetworkError :: SomeException -> NetworkError
+toNetworkError e = maybe (NEConnectError err) fromTLSError (fromException e)
+  where
+    err = displayException e
+    fromTLSError :: TLS.TLSException -> NetworkError
+    fromTLSError = \case
+      TLS.HandshakeFailed (TLS.Error_Protocol _ TLS.UnknownCa) -> NETLSCAError
+      _ -> NETLSError err
 
 data BlockingInfo = BlockingInfo
   { reason :: BlockingReason
@@ -2001,7 +2022,7 @@ instance Encoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> smpEncode e
     UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK -> "NETWORK"
+    NETWORK _ -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"
@@ -2010,7 +2031,7 @@ instance Encoding BrokerErrorType where
       "RESPONSE" -> RESPONSE <$> _smpP
       "UNEXPECTED" -> UNEXPECTED <$> _smpP
       "TRANSPORT" -> TRANSPORT <$> _smpP
-      "NETWORK" -> pure NETWORK
+      "NETWORK" -> pure (NETWORK NEFailedError)
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
       "NO_SERVICE" -> pure NO_SERVICE
@@ -2021,7 +2042,7 @@ instance StrEncoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> encodeUtf8 (T.pack e)
     UNEXPECTED e -> "UNEXPECTED " <> encodeUtf8 (T.pack e)
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK -> "NETWORK"
+    NETWORK _ -> "NETWORK"
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"
@@ -2030,7 +2051,7 @@ instance StrEncoding BrokerErrorType where
       "RESPONSE" -> RESPONSE <$> _textP
       "UNEXPECTED" -> UNEXPECTED <$> _textP
       "TRANSPORT" -> TRANSPORT <$> _smpP
-      "NETWORK" -> pure NETWORK
+      "NETWORK" -> pure (NETWORK NEFailedError)
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
       "NO_SERVICE" -> pure NO_SERVICE
@@ -2199,6 +2220,8 @@ tDecodeClient THandleParams {sessionId, thVersion = v, implySessId} = \case
 $(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "NE") ''NetworkError)
 
 $(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 

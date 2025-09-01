@@ -98,7 +98,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
@@ -177,7 +177,7 @@ pGet' c skipWarn = do
   case cmd of
     CONNECT {} -> pGet c
     DISCONNECT {} -> pGet c
-    ERR (BROKER _ NETWORK) -> pGet c
+    ERR (BROKER _ (NETWORK _)) -> pGet c
     MWARN {} | skipWarn -> pGet c
     RFWARN {} | skipWarn -> pGet c
     SFWARN {} | skipWarn -> pGet c
@@ -516,7 +516,7 @@ functionalAPITests ps = do
     it "should pass without basic auth" $ testSMPServerConnectionTest ps Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
     let srv1 = testSMPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testSMPServerConnectionTest ps Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+      testSMPServerConnectionTest ps Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NETLSCAError)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
@@ -1105,7 +1105,7 @@ testAsyncServerOffline ps = withAgentClients2 $ \alice bob -> do
   (bobId, cReq) <- withSmpServerStoreLogOn ps testPort $ \_ ->
     runRight $ createConnection alice 1 True SCMInvitation Nothing SMSubscribe
   -- connection fails
-  Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
+  Left (BROKER _ (NETWORK _)) <- runExceptT $ joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
   ("", "", DOWN srv conns) <- nGet alice
   srv `shouldBe` testSMPServer
   conns `shouldBe` [bobId]
@@ -1172,13 +1172,13 @@ testInvitationErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   aId <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
   -- fails to secure the queue on testPort
-  BROKER srv NETWORK <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+  BROKER srv (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
   (testPort `isSuffixOf` srv) `shouldBe` True
   withServer1 ps $ do
     ("", "", UP _ [_]) <- nGet a
     let loopSecure = do
           -- secures the queue on testPort, but fails to create reply queue on testPort2
-          BROKER srv2 NETWORK <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+          BROKER srv2 (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
           unless (testPort2 `isSuffixOf` srv2) $ putStrLn "retrying secure" >> threadDelay 200000 >> loopSecure
     loopSecure
   ("", "", DOWN _ [_]) <- nGet a
@@ -1186,7 +1186,7 @@ testInvitationErrors ps restart = do
     threadDelay 200000
     let loopCreate = do
           -- creates the reply queue on testPort2, but fails to send it to testPort
-          BROKER srv' NETWORK <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+          BROKER srv' (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
           unless (testPort `isSuffixOf` srv') $ putStrLn "retrying create" >> threadDelay 200000 >> loopCreate
     loopCreate
     restartAgentB restart b [aId]
@@ -1242,12 +1242,12 @@ testContactErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   aId <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
   -- fails to create queue on testPort2
-  BROKER srv2 NETWORK <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+  BROKER srv2 (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
   (testPort2 `isSuffixOf` srv2) `shouldBe` True
   b' <- restartAgentB restart b [aId]
   let loopCreate2 = do
         -- creates the reply queue on testPort2, but fails to send invitation to testPort
-        BROKER srv' NETWORK <- runLeft $ A.joinConnection b' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+        BROKER srv' (NETWORK _) <- runLeft $ A.joinConnection b' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
         unless (testPort `isSuffixOf` srv') $ putStrLn "retrying create 2" >> threadDelay 200000 >> loopCreate2
   b'' <- withServer2 ps $ do
     loopCreate2
@@ -1270,7 +1270,7 @@ testContactErrors ps restart = do
     ("", "", UP _ [_]) <- nGet b''
     let loopSecure = do
           -- secures the queue on testPort2, but fails to create reply queue on testPort
-          BROKER srv NETWORK <- runLeft $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+          BROKER srv (NETWORK _) <- runLeft $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
           unless (testPort `isSuffixOf` srv) $ putStrLn "retrying secure" >> threadDelay 200000 >> loopSecure
     loopSecure
   ("", "", DOWN _ [_]) <- nGet b''
@@ -1278,7 +1278,7 @@ testContactErrors ps restart = do
     ("", "", UP _ [_]) <- nGet a
     let loopCreate = do
           -- creates the reply queue on testPort, but fails to send confirmation to testPort2
-          BROKER srv2' NETWORK <- runLeft $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+          BROKER srv2' (NETWORK _) <- runLeft $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
           unless (testPort2 `isSuffixOf` srv2') $ putStrLn "retrying create" >> threadDelay 200000 >> loopCreate
     loopCreate
     restartAgentA restart a [contactId, bId]
@@ -1743,7 +1743,7 @@ testDuplicateMessage ps = do
   -- commenting two lines below and uncommenting further two lines would also runRight_,
   -- it is the scenario tested above, when the message was not acknowledged by the user
   threadDelay 200000
-  Left (BROKER _ NETWORK) <- runExceptT $ ackMessage bob1 aliceId 3 Nothing
+  Left (BROKER _ (NETWORK _)) <- runExceptT $ ackMessage bob1 aliceId 3 Nothing
 
   disposeAgentClient alice
   disposeAgentClient bob1
@@ -1827,8 +1827,8 @@ testDeliveryAfterSubscriptionError ps = do
     pure (aId, bId)
 
   withAgentClients2 $ \a b -> do
-    Left (BROKER _ NETWORK) <- runExceptT $ subscribeConnection a bId
-    Left (BROKER _ NETWORK) <- runExceptT $ subscribeConnection b aId
+    Left (BROKER _ (NETWORK _)) <- runExceptT $ subscribeConnection a bId
+    Left (BROKER _ (NETWORK _)) <- runExceptT $ subscribeConnection b aId
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       withUP a bId $ \case ("", c, SENT 2) -> c == bId; _ -> False
       withUP b aId $ \case ("", c, Msg "hello") -> c == aId; _ -> False
@@ -1872,7 +1872,7 @@ testExpireMessage ps =
       2 <- runRight $ sendMessage a bId SMP.noMsgFlags "1"
       threadDelay 1500000
       3 <- runRight $ sendMessage a bId SMP.noMsgFlags "2" -- this won't expire
-      get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
+      get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && networkOrTimeoutError e; _ -> False
       withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
         withUP a bId $ \case ("", _, SENT 3) -> True; _ -> False
         withUP b aId $ \case ("", _, MsgErr 2 (MsgSkipped 2 2) "2") -> True; _ -> False
@@ -1891,8 +1891,8 @@ testExpireManyMessages ps =
         4 <- sendMessage a bId SMP.noMsgFlags "3"
         liftIO $ threadDelay 2000000
         5 <- sendMessage a bId SMP.noMsgFlags "4" -- this won't expire
-        get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && (e == TIMEOUT || e == NETWORK); _ -> False
-        let expected c e = bId == c && (e == TIMEOUT || e == NETWORK)
+        get a =##> \case ("", c, MERR 2 (BROKER _ e)) -> bId == c && networkOrTimeoutError e; _ -> False
+        let expected c e = bId == c && networkOrTimeoutError e
         get a >>= \case
           ("", c, MERR 3 (BROKER _ e)) -> do
             liftIO $ expected c e `shouldBe` True
@@ -2633,7 +2633,7 @@ testDeleteConnectionAsync ps =
     runRight_ $ do
       deleteConnectionsAsync a False connIds
       nGet a =##> \case ("", "", DOWN {}) -> True; _ -> False
-      let delOk = \case (c, _, _, Just (BROKER _ e)) -> c `elem` connIds && (e == TIMEOUT || e == NETWORK); _ -> False
+      let delOk = \case (c, _, _, Just (BROKER _ e)) -> c `elem` connIds && networkOrTimeoutError e; _ -> False
       get a =##> \case ("", "", DEL_RCVQS rs) -> length rs == 3 && all delOk rs; _ -> False
       get a =##> \case ("", "", DEL_CONNS cs) -> length cs == 3 && all (`elem` connIds) cs; _ -> False
       liftIO $ noMessages a "nothing else should be delivered to alice"
@@ -2691,7 +2691,7 @@ testWaitDelivery ps =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && networkOrTimeoutError e; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
@@ -2748,7 +2748,7 @@ testWaitDeliveryAUTHErr ps =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && networkOrTimeoutError e; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
@@ -2788,7 +2788,7 @@ testWaitDeliveryTimeout ps =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && networkOrTimeoutError e; _ -> False
         get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -2828,7 +2828,7 @@ testWaitDeliveryTimeout2 ps =
         3 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "how are you?"
         4 <- msgId <$> sendMessage alice bobId SMP.noMsgFlags "message 1"
         deleteConnectionsAsync alice True [bobId]
-        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && (e == TIMEOUT || e == NETWORK); _ -> False
+        get alice =##> \case ("", "", DEL_RCVQS [(cId, _, _, Just (BROKER _ e))]) -> cId == bobId && networkOrTimeoutError e; _ -> False
         get alice =##> \case ("", "", DEL_CONNS [cId]) -> cId == bobId; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -2848,6 +2848,12 @@ testWaitDeliveryTimeout2 ps =
   where
     baseId = 1
     msgId = subtract baseId
+
+networkOrTimeoutError :: BrokerErrorType -> Bool
+networkOrTimeoutError = \case
+  TIMEOUT -> True
+  NETWORK _ -> True
+  _ -> False
 
 testJoinConnectionAsyncReplyErrorV8 :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
@@ -2975,7 +2981,7 @@ testUsersNoServer ps = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
   nGet b =##> \case ("", "", DOWN _ cs) -> length cs == 2; _ -> False
   runRight_ $ do
     deleteUser a auId True
-    get a =##> \case ("", "", DEL_RCVQS [(c, _, _, Just (BROKER _ e))]) -> c == bId' && (e == TIMEOUT || e == NETWORK); _ -> False
+    get a =##> \case ("", "", DEL_RCVQS [(c, _, _, Just (BROKER _ e))]) -> c == bId' && networkOrTimeoutError e;; _ -> False
     get a =##> \case ("", "", DEL_CONNS [c]) -> c == bId'; _ -> False
     nGet a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
     liftIO $ noMessages a "nothing else should be delivered to alice"
@@ -3639,7 +3645,7 @@ testServerMultipleIdentities =
     exchangeGreetings alice bobId bob aliceId
     -- this saves queue with second server identity
     bob' <- liftIO $ do
-      Left (BROKER _ NETWORK) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
+      Left (BROKER _ (NETWORK _)) <- runExceptT $ joinConnection bob 1 True secondIdentityCReq "bob's connInfo" SMSubscribe
       disposeAgentClient bob
       threadDelay 250000
       getSMPAgentClient' 3 agentCfg initAgentServers testDB2
