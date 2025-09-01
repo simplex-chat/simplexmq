@@ -173,7 +173,9 @@ catchAll_ a = catchAll a . const
 
 class Show e => AnyError e where fromSomeException :: E.SomeException -> e
 
-class Show e => AnyStoreError e where isWorkItemError :: e -> Bool
+class Show e => AnyStoreError e where
+  isWorkItemError :: e -> Bool
+  mkWorkItemError :: String -> e
 
 tryAllErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m (Either e a)
 tryAllErrors action = ExceptT $ Right <$> runExceptT action `UE.catch` (pure . Left . fromSomeException)
