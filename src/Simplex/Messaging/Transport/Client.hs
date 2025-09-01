@@ -165,16 +165,13 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName
-  c <- do
-    sock <- connectTCP port
+  E.bracketOnError (connectTCP port) close $ \sock -> do
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive" <> tshow e)
     let tCfg = clientTransportConfig cfg
-    -- No TLS timeout to avoid failing connections via SOCKS
-    tls <- connectTLS (Just hostName) tCfg clientParams sock
-    chain <- takePeerCertChain serverCert `E.onException` closeTLS tls
-    sent <- readIORef clientCredsSent
-    getTransportConnection tCfg sent chain tls
-  client c `E.finally` closeConnection c
+    E.bracketOnError (connectTLS (Just hostName) tCfg clientParams sock) closeTLS $ \tls -> do
+      chain <- takePeerCertChain serverCert `E.onException` closeTLS tls
+      sent <- readIORef clientCredsSent
+      E.bracket (getTransportConnection tCfg sent chain tls) closeConnection client
   where
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
@@ -199,10 +196,11 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       E.try (open addr) >>= either (`tryOpen` as) pure
 
     open :: AddrInfo -> IO Socket
-    open addr = do
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-      connect sock $ addrAddress addr
-      pure sock
+    open addr =
+      E.bracketOnError
+        (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr))
+        close
+        (\sock -> sock <$ connect sock (addrAddress addr))
 
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
