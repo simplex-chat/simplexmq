@@ -1157,7 +1157,7 @@ testMessageServiceNotifications =
 
 testServiceNotificationsTwoRestarts :: SpecWith (ASrvTransport, AStoreType)
 testServiceNotificationsTwoRestarts =
-  it "should create simplex connection, subscribe notifier as service and deliver notifications" $ \ps@(ATransport t, _) -> do
+  it "subscribe notifier as service and deliver notifications after two restarts" $ \ps@(ATransport t, _) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1174,7 +1174,8 @@ testServiceNotificationsTwoRestarts =
     threadDelay 250000
     withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
       testNtfServiceClient t serviceKeys $ \nh -> do
-        Resp "2.1" serviceId' (SOKS 1) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS)
+        Resp "2.1" serviceId' (SOKS n) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS)
+        n `shouldBe` 1
         Resp "2.2" _ (SOK Nothing) <- signSendRecv rh rKey ("2.2", rId, SUB)
         serviceId' `shouldBe` serviceId
         deliverMessage rh rId rKey sh sId sKey nh "hello 2" dec

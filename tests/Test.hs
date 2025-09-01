@@ -102,7 +102,7 @@ main = do
               ] -- skipComparisonForDownMigrations
               testStoreDBOpts
               "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"
-        aroundAll_ (postgressBracket testServerDBConnectInfo) $
+        around_ (postgressBracket testServerDBConnectInfo) $
           describe "SMP server via TLS, postgres+jornal message store" $
             before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
 #endif
@@ -122,13 +122,13 @@ main = do
               [] -- skipComparisonForDownMigrations
               ntfTestStoreDBOpts
               "src/Simplex/Messaging/Notifications/Server/Store/ntf_server_schema.sql"
-        aroundAll_ (postgressBracket ntfTestServerDBConnectInfo) $ do
+        around_ (postgressBracket ntfTestServerDBConnectInfo) $ do
           describe "Notifications server (SMP server: jornal store)" $
             ntfServerTests (transport @TLS, ASType SQSMemory SMSJournal)
-          aroundAll_ (postgressBracket testServerDBConnectInfo) $
+          around_ (postgressBracket testServerDBConnectInfo) $
             describe "Notifications server (SMP server: postgres+jornal store)" $
               ntfServerTests (transport @TLS, ASType SQSPostgres SMSJournal)
-        aroundAll_ (postgressBracket testServerDBConnectInfo) $ do
+        around_ (postgressBracket testServerDBConnectInfo) $ do
           describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP proxy, postgres+jornal message store" $
             before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
