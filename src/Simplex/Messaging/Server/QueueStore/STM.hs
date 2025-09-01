@@ -114,7 +114,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       serviceQueuesCount serviceSel = foldM (\n s -> (n +) . S.size <$> readTVarIO (serviceSel s)) 0
 
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData} = do
+  addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
     sq <- mkQ rId qr
     add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
     where
@@ -122,8 +122,11 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
         TM.insert rId q queues
         TM.insert sId rId senders
-        forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
+        forM_ notifier $ \NtfCreds {notifierId = nId, ntfServiceId} -> do
+          TM.insert nId rId notifiers
+          mapM_ (addServiceQueue st serviceNtfQueues nId) ntfServiceId
         forM_ queueData $ \(lnkId, _) -> TM.insert lnkId rId links
+        mapM_ (addServiceQueue st serviceRcvQueues rId) rcvServiceId
       hasId = anyM [TM.member rId queues, TM.member sId senders, hasNotifier, hasLink]
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
       hasLink = maybe (pure False) (\(lnkId, _) -> TM.member lnkId links) queueData
