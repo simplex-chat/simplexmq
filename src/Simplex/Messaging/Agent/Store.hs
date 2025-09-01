@@ -53,7 +53,7 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (AnyError (..), bshow)
+import Simplex.Messaging.Util (AnyError (..), AnyStoreError (..), bshow)
 
 createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore dbOpts = createDBStore dbOpts appMigrations
@@ -700,3 +700,8 @@ data StoreError
 
 instance AnyError StoreError where
   fromSomeException = SEInternal . bshow
+
+instance AnyStoreError StoreError where
+  isWorkItemError = \case
+    SEWorkItemError {} -> True
+    _ -> False
