@@ -54,7 +54,7 @@ import Network.Socket (ServiceName)
 import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
-import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
@@ -63,7 +63,6 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore (..), NtfSubDat
 import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog
-import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), IdsHash (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId, ServiceSub (..), pattern SMPServer)
 import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate, withLog_)
@@ -76,6 +75,8 @@ import System.IO (IOMode (..), hFlush, stdout, withFile)
 import Text.Hex (decodeHex)
 
 #if !defined(dbPostgres)
+import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (eitherToMaybe)
 #endif
 

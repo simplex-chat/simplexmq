@@ -163,11 +163,13 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250322_short_links
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250702_conn_invitations_remove_cascade_delete
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250815_service_certs
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
           Simplex.Messaging.Agent.Store.SQLite.Common
           Simplex.Messaging.Agent.Store.SQLite.DB
+          Simplex.Messaging.Agent.Store.SQLite.Functions
           Simplex.Messaging.Agent.Store.SQLite.Migrations
           Simplex.Messaging.Agent.Store.SQLite.Migrations.App
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20220101_initial
@@ -217,6 +219,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Common
           Simplex.Messaging.Agent.Store.Postgres.DB
           Simplex.Messaging.Agent.Store.Postgres.Migrations
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
           Simplex.Messaging.Agent.Store.Postgres.Util
   if !flag(client_library)
       exposed-modules:

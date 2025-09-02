@@ -6,8 +6,8 @@ module Simplex.Messaging.Notifications.Server.Store.Migrations where
 import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
 import Simplex.Messaging.Agent.Store.Shared
-import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (createXorHashFuncs, dropXorHashFuncs)
 import Text.RawString.QQ (r)
 
 ntfServerSchemaMigrations :: [(String, Text, Maybe Text)]
@@ -116,7 +116,7 @@ ALTER TABLE smp_servers
   ADD COLUMN smp_notifier_count BIGINT NOT NULL DEFAULT 0,
   ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
 
-CREATE OR REPLACE FUNCTION should_subscribe_status(p_status TEXT) RETURNS BOOLEAN
+CREATE FUNCTION should_subscribe_status(p_status TEXT) RETURNS BOOLEAN
 LANGUAGE plpgsql IMMUTABLE STRICT
 AS $$
 BEGIN
@@ -124,7 +124,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION update_all_aggregates() RETURNS void
+CREATE FUNCTION update_all_aggregates() RETURNS VOID
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -147,7 +147,7 @@ $$;
 
 SELECT update_all_aggregates();
 
-CREATE OR REPLACE FUNCTION update_aggregates(p_server_id BIGINT, p_change BIGINT, p_notifier_id BYTEA) RETURNS void
+CREATE FUNCTION update_aggregates(p_server_id BIGINT, p_change BIGINT, p_notifier_id BYTEA) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -158,7 +158,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION on_subscription_insert() RETURNS TRIGGER
+CREATE FUNCTION on_subscription_insert() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -169,7 +169,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION on_subscription_delete() RETURNS TRIGGER
+CREATE FUNCTION on_subscription_delete() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -180,7 +180,7 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION on_subscription_update() RETURNS TRIGGER
+CREATE FUNCTION on_subscription_update() RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
@@ -194,10 +194,6 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-
-DROP TRIGGER IF EXISTS tr_subscriptions_insert ON subscriptions;
-DROP TRIGGER IF EXISTS tr_subscriptions_delete ON subscriptions;
-DROP TRIGGER IF EXISTS tr_subscriptions_update ON subscriptions;
 
 CREATE TRIGGER tr_subscriptions_insert
 AFTER INSERT ON subscriptions

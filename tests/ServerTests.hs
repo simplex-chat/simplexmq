@@ -1376,18 +1376,19 @@ testServiceNotificationsTwoRestarts =
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
     (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
-    (rId, rKey, sId, dec, serviceId) <- withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh -> do
+    (rId, rKey, sId, dec, nId, serviceId) <- withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh -> do
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec = decryptMsgV3 dhShared
       Resp "0" _ (NID nId _) <- signSendRecv rh rKey ("0", rId, NKEY nPub rcvNtfPubDhKey)
       testNtfServiceClient t serviceKeys $ \nh -> do
         Resp "1" _ (SOK (Just serviceId)) <- serviceSignSendRecv nh nKey servicePK ("1", nId, NSUB)
         deliverMessage rh rId rKey sh sId sKey nh "hello" dec
-        pure (rId, rKey, sId, dec, serviceId)
+        pure (rId, rKey, sId, dec, nId, serviceId)
+    let idsHash = queueIdsHash [nId]
     threadDelay 250000
     withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
       testNtfServiceClient t serviceKeys $ \nh -> do
-        Resp "2.1" serviceId' (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS)
+        Resp "2.1" serviceId' (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS 1 idsHash)
         n `shouldBe` 1
         Resp "2.2" _ (SOK Nothing) <- signSendRecv rh rKey ("2.2", rId, SUB)
         serviceId' `shouldBe` serviceId
@@ -1395,7 +1396,7 @@ testServiceNotificationsTwoRestarts =
     threadDelay 250000
     withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
       testNtfServiceClient t serviceKeys $ \nh -> do
-        Resp "3.1" _ (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("3.1", serviceId, NSUBS)
+        Resp "3.1" _ (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("3.1", serviceId, NSUBS 1 idsHash)
         n `shouldBe` 1
         Resp "3.2" _ (SOK Nothing) <- signSendRecv rh rKey ("3.2", rId, SUB)
         deliverMessage rh rId rKey sh sId sKey nh "hello 3" dec

@@ -1479,9 +1479,7 @@ instance ToField IdsHash where
   {-# INLINE toField #-}
 
 instance Semigroup IdsHash where
-  (IdsHash s1) <> (IdsHash s2) =
-    let !s' = BS.pack $ zipWith xor' (BS.unpack s1) (BS.unpack s2)
-     in IdsHash s'
+  (IdsHash s1) <> (IdsHash s2) = IdsHash $! BS.pack $ BS.zipWith xor s1 s2
 
 instance Monoid IdsHash where
   mempty = IdsHash $ BS.replicate 16 0

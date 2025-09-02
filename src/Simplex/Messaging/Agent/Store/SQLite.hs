@@ -56,12 +56,13 @@ import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
+import Simplex.Messaging.Agent.Store.SQLite.Functions (registerFunctions)
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory)
-import UnliftIO.Exception (bracketOnError, onException)
+import UnliftIO.Exception (bracketOnError, onException, throwIO)
 import UnliftIO.MVar
 import UnliftIO.STM
 
@@ -113,6 +114,7 @@ connectDB path key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
+      registerFunctions db' >>= either (\e -> putStrLn ("functions: " <> show e) >> throwIO (userError $ show e)) pure
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =
