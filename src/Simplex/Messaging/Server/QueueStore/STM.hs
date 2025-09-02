@@ -124,7 +124,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
         TM.insert rId q queues
         TM.insert sId rId senders
-        forM_ notifier $ \NtfCreds {notifierId} -> TM.insert notifierId rId notifiers
+        forM_ notifier $ \NtfCreds {notifierId = nId, ntfServiceId} -> do
+          TM.insert nId rId notifiers
+          mapM_ (addServiceQueue st serviceNtfQueues nId) ntfServiceId
         forM_ queueData $ \(lnkId, _) -> TM.insert lnkId rId links
         mapM_ (addServiceQueue st serviceRcvQueues rId) rcvServiceId
       hasId = anyM [TM.member rId queues, TM.member sId senders, hasNotifier, hasLink]

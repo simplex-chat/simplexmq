@@ -92,6 +92,7 @@ serverTests = do
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
+    testServiceNotificationsTwoRestarts
   describe "Message expiration" $ do
     testMsgExpireOnSend
     testMsgExpireOnInterval
@@ -1302,7 +1303,6 @@ testMessageServiceNotifications =
       (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
       Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
       serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
-      -- TODO [certs] we need to get certificate fingerprint and include it into signed over for NSUB commands
       testNtfServiceClient t serviceKeys $ \nh1 -> do
         -- can't subscribe without service signature in service connection
         Resp "2a" _ (ERR SERVICE) <- signSendRecv nh1 nKey ("2a", nId, NSUB)
@@ -1360,6 +1360,51 @@ testMessageServiceNotifications =
           deliverMessage rh rId rKey sh sId sKey nh1 "connection 1 one more" dec
           deliverMessage rh rId'' rKey'' sh sId'' sKey'' nh1 "connection 2 one more" dec''
     where
+      deliverMessage rh rId rKey sh sId sKey nh msgText dec = do
+        Resp "msg-1" _ OK <- signSendRecv sh sKey ("msg-1", sId, _SEND' msgText)
+        Resp "" _ (Msg mId msg) <- tGet1 rh
+        Resp "msg-2" _ OK <- signSendRecv rh rKey ("msg-2", rId, ACK mId)
+        (dec mId msg, Right msgText) #== "delivered from queue"
+        Resp "" _ (NMSG _ _) <- tGet1 nh
+        pure ()
+
+testServiceNotificationsTwoRestarts :: SpecWith (ASrvTransport, AStoreType)
+testServiceNotificationsTwoRestarts =
+  it "subscribe notifier as service and deliver notifications after two restarts" $ \ps@(ATransport t, _) -> do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+    (rId, rKey, sId, dec, serviceId) <- withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh -> do
+      (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
+      let dec = decryptMsgV3 dhShared
+      Resp "0" _ (NID nId _) <- signSendRecv rh rKey ("0", rId, NKEY nPub rcvNtfPubDhKey)
+      testNtfServiceClient t serviceKeys $ \nh -> do
+        Resp "1" _ (SOK (Just serviceId)) <- serviceSignSendRecv nh nKey servicePK ("1", nId, NSUB)
+        deliverMessage rh rId rKey sh sId sKey nh "hello" dec
+        pure (rId, rKey, sId, dec, serviceId)
+    threadDelay 250000
+    withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
+      testNtfServiceClient t serviceKeys $ \nh -> do
+        Resp "2.1" serviceId' (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS)
+        n `shouldBe` 1
+        Resp "2.2" _ (SOK Nothing) <- signSendRecv rh rKey ("2.2", rId, SUB)
+        serviceId' `shouldBe` serviceId
+        deliverMessage rh rId rKey sh sId sKey nh "hello 2" dec
+    threadDelay 250000
+    withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
+      testNtfServiceClient t serviceKeys $ \nh -> do
+        Resp "3.1" _ (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("3.1", serviceId, NSUBS)
+        n `shouldBe` 1
+        Resp "3.2" _ (SOK Nothing) <- signSendRecv rh rKey ("3.2", rId, SUB)
+        deliverMessage rh rId rKey sh sId sKey nh "hello 3" dec
+    where
+      runTest2 :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+      runTest2 _ test' server = do
+        a <- testSMPClient $ \h1 -> testSMPClient $ \h2 -> test' h1 h2
+        killThread server
+        pure a
       deliverMessage rh rId rKey sh sId sKey nh msgText dec = do
         Resp "msg-1" _ OK <- signSendRecv sh sKey ("msg-1", sId, _SEND' msgText)
         Resp "" _ (Msg mId msg) <- tGet1 rh

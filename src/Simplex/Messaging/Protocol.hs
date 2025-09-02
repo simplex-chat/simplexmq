@@ -81,6 +81,7 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     BrokerErrorType (..),
+    NetworkError (..),
     BlockingInfo (..),
     BlockingReason (..),
     RawTransmission,
@@ -172,6 +173,7 @@ module Simplex.Messaging.Protocol
     noMsgFlags,
     messageId,
     messageTs,
+    toNetworkError,
 
     -- * Parse and serialize
     ProtocolMsgTag (..),
@@ -216,7 +218,7 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Exception (Exception)
+import Control.Exception (Exception, SomeException, displayException, fromException)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J
@@ -248,6 +250,7 @@ import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
+import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -1607,7 +1610,7 @@ data BrokerErrorType
   | -- | unexpected response
     UNEXPECTED {respErr :: String}
   | -- | network error
-    NETWORK
+    NETWORK {networkError :: NetworkError}
   | -- | no compatible server host (e.g. onion when public is required, or vice versa)
     HOST
   | -- | service unavailable client-side - used in agent errors
@@ -1617,6 +1620,24 @@ data BrokerErrorType
   | -- | command response timeout
     TIMEOUT
   deriving (Eq, Read, Show, Exception)
+
+data NetworkError
+  = NEConnectError {connectError :: String}
+  | NETLSError {tlsError :: String}
+  | NEUnknownCAError
+  | NEFailedError
+  | NETimeoutError
+  | NESubscribeError {subscribeError :: String}
+  deriving (Eq, Read, Show)
+
+toNetworkError :: SomeException -> NetworkError
+toNetworkError e = maybe (NEConnectError err) fromTLSError (fromException e)
+  where
+    err = displayException e
+    fromTLSError :: TLS.TLSException -> NetworkError
+    fromTLSError = \case
+      TLS.HandshakeFailed (TLS.Error_Protocol _ TLS.UnknownCa) -> NEUnknownCAError
+      _ -> NETLSError err
 
 data BlockingInfo = BlockingInfo
   { reason :: BlockingReason
@@ -2068,7 +2089,7 @@ instance Encoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> smpEncode e
     UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK -> "NETWORK"
+    NETWORK e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> smpEncode e
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"
@@ -2077,7 +2098,7 @@ instance Encoding BrokerErrorType where
       "RESPONSE" -> RESPONSE <$> _smpP
       "UNEXPECTED" -> UNEXPECTED <$> _smpP
       "TRANSPORT" -> TRANSPORT <$> _smpP
-      "NETWORK" -> pure NETWORK
+      "NETWORK" -> NETWORK <$> (_smpP <|> pure NEFailedError)
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
       "NO_SERVICE" -> pure NO_SERVICE
@@ -2088,7 +2109,7 @@ instance StrEncoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> encodeUtf8 (T.pack e)
     UNEXPECTED e -> "UNEXPECTED " <> encodeUtf8 (T.pack e)
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK -> "NETWORK"
+    NETWORK e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> strEncode e
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"
@@ -2097,13 +2118,50 @@ instance StrEncoding BrokerErrorType where
       "RESPONSE" -> RESPONSE <$> _textP
       "UNEXPECTED" -> UNEXPECTED <$> _textP
       "TRANSPORT" -> TRANSPORT <$> _smpP
-      "NETWORK" -> pure NETWORK
+      "NETWORK" -> NETWORK <$> (_strP <|> pure NEFailedError)
       "TIMEOUT" -> pure TIMEOUT
       "HOST" -> pure HOST
       "NO_SERVICE" -> pure NO_SERVICE
       _ -> fail "bad BrokerErrorType"
-    where
-      _textP = A.space *> (T.unpack . safeDecodeUtf8 <$> A.takeByteString)
+
+instance Encoding NetworkError where
+  smpEncode = \case
+    NEConnectError e -> "CONNECT " <> smpEncode e
+    NETLSError e -> "TLS " <> smpEncode e
+    NEUnknownCAError -> "UNKNOWNCA"
+    NEFailedError -> "FAILED"
+    NETimeoutError -> "TIMEOUT"
+    NESubscribeError e -> "SUBSCRIBE " <> smpEncode e
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "CONNECT" -> NEConnectError <$> _smpP
+      "TLS" -> NETLSError <$> _smpP
+      "UNKNOWNCA" -> pure NEUnknownCAError
+      "FAILED" -> pure NEFailedError
+      "TIMEOUT" -> pure NETimeoutError
+      "SUBSCRIBE" -> NESubscribeError <$> _smpP
+      _ -> fail "bad NetworkError"
+
+instance StrEncoding NetworkError where
+  strEncode = \case
+    NEConnectError e -> "CONNECT " <> encodeUtf8 (T.pack e)
+    NETLSError e -> "TLS " <> encodeUtf8 (T.pack e)
+    NEUnknownCAError -> "UNKNOWNCA"
+    NEFailedError -> "FAILED"
+    NETimeoutError -> "TIMEOUT"
+    NESubscribeError e -> "SUBSCRIBE " <> encodeUtf8 (T.pack e)
+  strP =
+    A.takeTill (== ' ') >>= \case
+      "CONNECT" -> NEConnectError <$> _textP
+      "TLS" -> NETLSError <$> _textP
+      "UNKNOWNCA" -> pure NEUnknownCAError
+      "FAILED" -> pure NEFailedError
+      "TIMEOUT" -> pure NETimeoutError
+      "SUBSCRIBE" -> NESubscribeError <$> _textP
+      _ -> fail "bad NetworkError"
+
+_textP :: Parser String
+_textP = A.space *> (T.unpack . safeDecodeUtf8 <$> A.takeByteString)
 
 -- | Send signed SMP transmission to TCP transport.
 tPut :: Transport c => THandle v c p -> NonEmpty (Either TransportError SentRawTransmission) -> IO [Either TransportError ()]
@@ -2266,6 +2324,8 @@ tDecodeClient THandleParams {sessionId, thVersion = v, implySessId} = \case
 $(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "NE") ''NetworkError)
 
 $(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 

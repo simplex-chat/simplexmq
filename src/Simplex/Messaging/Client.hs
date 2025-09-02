@@ -597,12 +597,14 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
-          `forkFinally` \_ -> void (atomically . tryPutTMVar cVar $ Left PCENetworkError)
+          `forkFinally` \r ->
+            let err = either toNetworkError (const NEFailedError) r
+             in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
       c_ <- netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> mkWeakThreadId tId >>= \tId' -> pure $ Right c' {action = Just tId'}
         Just (Left e) -> pure $ Left e
-        Nothing -> killThread tId $> Left PCENetworkError
+        Nothing -> killThread tId $> Left (PCENetworkError NETimeoutError)
 
     useTransport :: (ServiceName, ATransport 'TClient)
     useTransport = case port srv of
@@ -743,7 +745,7 @@ data ProtocolClientError err
     PCEResponseTimeout
   | -- | Failure to establish TCP connection.
     -- Forwarded to the agent client as `ERR BROKER NETWORK`.
-    PCENetworkError
+    PCENetworkError NetworkError
   | -- | No host compatible with network configuration
     PCEIncompatibleHost
   | -- | Service is unavailable for command that requires service connection
@@ -761,7 +763,7 @@ type SMPClientError = ProtocolClientError ErrorType
 
 temporaryClientError :: ProtocolClientError err -> Bool
 temporaryClientError = \case
-  PCENetworkError -> True
+  PCENetworkError _ -> True
   PCEResponseTimeout -> True
   PCEIOError _ -> True
   _ -> False
@@ -782,7 +784,7 @@ smpProxyError = \case
   PCEResponseError e -> PROXY $ BROKER $ RESPONSE $ B.unpack $ strEncode e
   PCEUnexpectedResponse e -> PROXY $ BROKER $ UNEXPECTED $ B.unpack e
   PCEResponseTimeout -> PROXY $ BROKER TIMEOUT
-  PCENetworkError -> PROXY $ BROKER NETWORK
+  PCENetworkError e -> PROXY $ BROKER $ NETWORK e
   PCEIncompatibleHost -> PROXY $ BROKER HOST
   PCEServiceUnavailable -> PROXY $ BROKER $ NO_SERVICE -- for completeness, it cannot happen.
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
