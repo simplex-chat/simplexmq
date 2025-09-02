@@ -84,7 +84,7 @@ xftpAgentTests =
         it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
         let srv1 = testXFTPServer2 {keyHash = "1234"}
         it "should fail with incorrect fingerprint" $ do
-          testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NETLSCAError)
+          testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
         describe "server with password" $ do
           let auth = Just "abcd"
               srv = ProtoServerWithAuth testXFTPServer2

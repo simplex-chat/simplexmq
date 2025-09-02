@@ -1572,7 +1572,7 @@ data BrokerErrorType
 data NetworkError
   = NEConnectError {connectError :: String}
   | NETLSError {tlsError :: String}
-  | NETLSCAError
+  | NEUnknownCAError
   | NEFailedError
   | NETimeoutError
   | NESubscribeError {subscribeError :: String}
@@ -1584,7 +1584,7 @@ toNetworkError e = maybe (NEConnectError err) fromTLSError (fromException e)
     err = displayException e
     fromTLSError :: TLS.TLSException -> NetworkError
     fromTLSError = \case
-      TLS.HandshakeFailed (TLS.Error_Protocol _ TLS.UnknownCa) -> NETLSCAError
+      TLS.HandshakeFailed (TLS.Error_Protocol _ TLS.UnknownCa) -> NEUnknownCAError
       _ -> NETLSError err
 
 data BlockingInfo = BlockingInfo

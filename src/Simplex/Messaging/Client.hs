@@ -598,9 +598,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       tId <-
         runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
           `forkFinally` \r ->
-            let err = case r of
-                  Left e -> toNetworkError e
-                  Right () -> NEFailedError
+            let err = either toNetworkError (const NEFailedError) r
              in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
       c_ <- netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)
       case c_ of

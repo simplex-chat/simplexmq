@@ -137,7 +137,7 @@ notificationTests ps@(t, _) = do
     it "should pass" $ testRunNTFServerTests t testNtfServer `shouldReturn` Nothing
     let srv1 = testNtfServer {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NETLSCAError)
+      testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
       testNtfMatrix ps testNotificationSubscriptionExistingConnection

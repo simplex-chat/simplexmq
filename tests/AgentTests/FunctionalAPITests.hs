@@ -516,7 +516,7 @@ functionalAPITests ps = do
     it "should pass without basic auth" $ testSMPServerConnectionTest ps Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
     let srv1 = testSMPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testSMPServerConnectionTest ps Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NETLSCAError)
+      testSMPServerConnectionTest ps Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
