@@ -177,6 +177,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
   E.bracket (set CHSocket $ connectTCP port) (\_ -> closeConn h) $ \sock -> do
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive " <> tshow e)
     let tCfg = clientTransportConfig cfg
+    -- No TLS timeout to avoid failing connections via SOCKS
     tls <- set CHContext $ connectTLS (Just hostName) tCfg clientParams sock
     chain <- takePeerCertChain serverCert
     sent <- readIORef clientCredsSent
