@@ -1381,7 +1381,7 @@ testServiceNotificationsTwoRestarts =
     threadDelay 250000
     withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
       testNtfServiceClient t serviceKeys $ \nh -> do
-        Resp "2.1" serviceId' (SOKS n) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS)
+        Resp "2.1" serviceId' (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("2.1", serviceId, NSUBS)
         n `shouldBe` 1
         Resp "2.2" _ (SOK Nothing) <- signSendRecv rh rKey ("2.2", rId, SUB)
         serviceId' `shouldBe` serviceId
@@ -1389,7 +1389,7 @@ testServiceNotificationsTwoRestarts =
     threadDelay 250000
     withSmpServerStoreLogOn ps testPort $ runTest2 t $ \sh rh ->
       testNtfServiceClient t serviceKeys $ \nh -> do
-        Resp "3.1" _ (SOKS n) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("3.1", serviceId, NSUBS)
+        Resp "3.1" _ (SOKS n _) <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) ("3.1", serviceId, NSUBS)
         n `shouldBe` 1
         Resp "3.2" _ (SOK Nothing) <- signSendRecv rh rKey ("3.2", rId, SUB)
         deliverMessage rh rId rKey sh sId sKey nh "hello 3" dec
