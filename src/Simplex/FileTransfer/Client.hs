@@ -59,6 +59,8 @@ import Simplex.Messaging.Protocol
     RecipientId,
     SenderId,
     pattern NoEntity,
+    NetworkError (..),
+    toNetworkError,
   )
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost)
@@ -191,7 +193,7 @@ xftpHTTP2Config transportConfig XFTPClientConfig {xftpNetworkConfig = NetworkCon
 xftpClientError :: HTTP2ClientError -> XFTPClientError
 xftpClientError = \case
   HCResponseTimeout -> PCEResponseTimeout
-  HCNetworkError -> PCENetworkError
+  HCNetworkError e -> PCENetworkError e
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
@@ -261,9 +263,9 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         ExceptT (sequence <$> (t `timeout` (download cbState `catches` errors))) >>= maybe (throwE PCEResponseTimeout) pure
         where
           errors =
-            [ Handler $ \(_e :: H.HTTP2Error) -> pure $ Left PCENetworkError,
-              Handler $ \(e :: IOException) -> pure $ Left (PCEIOError e),
-              Handler $ \(_e :: SomeException) -> pure $ Left PCENetworkError
+            [ Handler $ \(e :: H.HTTP2Error) -> pure $ Left $ PCENetworkError $ NEConnectError $ displayException e,
+              Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError e,
+              Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
             ]
           download cbState =
             runExceptT . withExceptT PCEResponseError $
