@@ -215,7 +215,7 @@ connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
       E.bracketOnError
         (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr))
         close
-        (\sock -> sock <$ connect sock (addrAddress addr))
+        (\sock -> connect sock (addrAddress addr) $> sock)
 
 defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
