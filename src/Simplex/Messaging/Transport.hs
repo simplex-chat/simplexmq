@@ -387,8 +387,8 @@ defaultSupportedParams =
   def
     { T.supportedVersions = [T.TLS13, T.TLS12],
       T.supportedCiphers =
-        [ TE.cipher13_CHACHA20_POLY1305_SHA256, -- for TLS13
-          TE.cipher_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 -- for TLS12
+        [ TE.cipher_TLS13_CHACHA20POLY1305_SHA256, -- for TLS13
+          TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
         ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
       T.supportedGroups = [T.X448, T.X25519],
