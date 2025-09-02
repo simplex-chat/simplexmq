@@ -613,7 +613,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       PCEIncompatibleHost -> Just $ NSErr "IncompatibleHost"
       PCEServiceUnavailable -> Just NSService -- this error should not happen on individual subscriptions
       PCEResponseTimeout -> Nothing
-      PCENetworkError -> Nothing
+      PCENetworkError _ -> Nothing
       PCEIOError _ -> Nothing
       where
         -- Note on moving to PostgreSQL: the idea of logging errors without e is removed here

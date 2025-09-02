@@ -79,7 +79,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
 import Simplex.Messaging.Notifications.Types (NtfTknAction (..), NtfToken (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ErrorType (AUTH), MsgFlags (MsgFlags), NMsgMeta (..), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
+import Simplex.Messaging.Protocol (ErrorType (AUTH), NetworkError (..), MsgFlags (MsgFlags), NMsgMeta (..), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Transport (ASrvTransport)
@@ -137,7 +137,7 @@ notificationTests ps@(t, _) = do
     it "should pass" $ testRunNTFServerTests t testNtfServer `shouldReturn` Nothing
     let srv1 = testNtfServer {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) NETWORK)
+      testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
       testNtfMatrix ps testNotificationSubscriptionExistingConnection
@@ -321,7 +321,7 @@ testNtfTokenServerRestartReverify t apns = do
     runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
-      Left (BROKER _ NETWORK) <- tryE $ verifyNtfToken a tkn nonce verification
+      Left (BROKER _ (NETWORK _)) <- tryE $ verifyNtfToken a tkn nonce verification
       pure ()
   threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
@@ -478,7 +478,7 @@ testNtfTokenChangeServers t apns =
         tkn2 <- registerTestToken a "xyzw" NMInstant apns
         getTestNtfTokenPort a >>= \port -> liftIO $ port `shouldBe` ntfTestPort -- not yet changed
         deleteNtfToken a tkn2 -- force server switch
-        Left BROKER {brokerErr = NETWORK} <- tryError $ registerTestToken a "qwer" NMInstant apns -- ok, it's down for now
+        Left BROKER {brokerErr = (NETWORK _)} <- tryError $ registerTestToken a "qwer" NMInstant apns -- ok, it's down for now
         getTestNtfTokenPort a >>= \port2 -> liftIO $ port2 `shouldBe` ntfTestPort2 -- but the token got updated
       killThread ntf
       withNtfServerOn t ntfTestPort2 ntfTestDBCfg2 $ runRight_ $ do

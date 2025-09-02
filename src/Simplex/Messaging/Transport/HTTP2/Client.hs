@@ -27,6 +27,7 @@ import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Protocol (NetworkError (..), toNetworkError)
 import Simplex.Messaging.Transport (ALPN, STransportPeer (..), SessionId, TLS (tlsALPN, tlsPeerCert, tlsUniq), TransportPeer (..), TransportPeerI (..), getServerVerifyKey)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
@@ -89,7 +90,7 @@ defaultHTTP2ClientConfig =
       suportedTLSParams = http2TLSParams
     }
 
-data HTTP2ClientError = HCResponseTimeout | HCNetworkError | HCIOError IOException
+data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError IOException
   deriving (Show)
 
 getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
@@ -121,12 +122,15 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
     runClient :: HClient -> IO (Either HTTP2ClientError HTTP2Client)
     runClient c = do
       cVar <- newEmptyTMVarIO
-      action <- async $ setup (client c cVar) `E.finally` atomically (putTMVar cVar $ Left HCNetworkError)
+      action <-
+        async $ setup (client c cVar) `E.catch` \e -> do
+          atomically $ putTMVar cVar $ Left $ HCNetworkError $ toNetworkError e
+          E.throwIO e
       c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e
-        Nothing -> cancel action $> Left HCNetworkError
+        Nothing -> cancel action $> Left (HCNetworkError NETimeoutError)
 
     client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS p -> H.Client HTTP2Response
     client c cVar tls sendReq = do
@@ -176,7 +180,7 @@ sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq
   reqTimeout `timeout` try (sendReq req process) >>= \case
     Just (Right r) -> pure $ Right r
     Just (Left e) -> disconnected $> Left (HCIOError e)
-    Nothing -> pure $ Left HCNetworkError
+    Nothing -> pure $ Left HCResponseTimeout
   where
     process r = do
       respBody <- getHTTP2Body r $ bodyHeadSize config
