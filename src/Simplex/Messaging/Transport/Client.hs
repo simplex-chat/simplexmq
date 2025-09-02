@@ -30,12 +30,14 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Logger.Simple (logError)
+import Control.Monad
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isAsciiLower, isDigit, isHexDigit)
 import Data.Default (def)
+import Data.Functor (($>))
 import Data.IORef
 import Data.IP
 import Data.List.NonEmpty (NonEmpty (..))
@@ -58,7 +60,7 @@ import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, tshow, (<$?>))
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, tshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -156,6 +158,11 @@ clientTransportConfig TransportClientConfig {logTLSErrors} =
 runTransportClient :: Transport c => TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTransportClient = runTLSTransportClient defaultSupportedParams Nothing
 
+data ConnectionHandle c
+  = CHSocket Socket
+  | CHContext T.Context
+  | CHTransport (c 'TClient)
+
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
 runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, clientALPN, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
@@ -165,14 +172,22 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
       connectTCP = case socksProxy of
         Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
         _ -> connectTCPClient hostName
-  E.bracketOnError (connectTCP port) close $ \sock -> do
+  h <- newIORef Nothing
+  let set hc = (>>= \c -> writeIORef h (Just $ hc c) $> c)
+  E.bracket (set CHSocket $ connectTCP port) (\_ -> closeConn h) $ \sock -> do
     mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive " <> tshow e)
     let tCfg = clientTransportConfig cfg
-    E.bracketOnError (connectTLS (Just hostName) tCfg clientParams sock) closeTLS $ \tls -> do
-      chain <- takePeerCertChain serverCert `E.onException` closeTLS tls
-      sent <- readIORef clientCredsSent
-      E.bracket (getTransportConnection tCfg sent chain tls) closeConnection client
+    tls <- set CHContext $ connectTLS (Just hostName) tCfg clientParams sock
+    chain <- takePeerCertChain serverCert
+    sent <- readIORef clientCredsSent
+    c <- set CHTransport $ getTransportConnection tCfg sent chain tls
+    client c
   where
+    closeConn = readIORef >=> mapM_ (\c -> E.uninterruptibleMask_ $ closeConn_ c `catchAll_` pure ())
+    closeConn_ = \case
+      CHSocket sock -> close sock
+      CHContext tls -> closeTLS tls
+      CHTransport c -> closeConnection c
     hostAddr = \case
       THIPv4 addr -> SocksAddrIPV4 $ tupleToHostAddress addr
       THIPv6 addr -> SocksAddrIPV6 addr
