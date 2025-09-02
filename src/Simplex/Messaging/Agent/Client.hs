@@ -250,6 +250,7 @@ import Simplex.Messaging.Protocol
     EntityId (..),
     ServiceId,
     ErrorType,
+    NetworkError (..),
     MsgFlags (..),
     MsgId,
     NtfServer,
@@ -1199,12 +1200,12 @@ protocolClientError protocolError_ host = \case
   PCEResponseError e -> BROKER host $ RESPONSE $ B.unpack $ smpEncode e
   PCEUnexpectedResponse e -> BROKER host $ UNEXPECTED $ B.unpack e
   PCEResponseTimeout -> BROKER host TIMEOUT
-  PCENetworkError -> BROKER host NETWORK
+  PCENetworkError e -> BROKER host $ NETWORK e
   PCEIncompatibleHost -> BROKER host HOST
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
   PCEServiceUnavailable {} -> BROKER host NO_SERVICE
-  PCEIOError {} -> BROKER host NETWORK
+  PCEIOError e -> BROKER host $ NETWORK $ NEConnectError $ E.displayException e
 
 data ProtocolTestStep
   = TSConnect
@@ -1478,7 +1479,7 @@ temporaryAgentError = \case
   _ -> False
   where
     tempBrokerError = \case
-      NETWORK -> True
+      NETWORK _ -> True
       TIMEOUT -> True
       _ -> False
 
@@ -1518,7 +1519,7 @@ subscribeQueues c qs = do
     subscribeQueues_ env session smp qs' = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
-      rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp')  smp NRMBackground qs'
+      rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
       active <-
         atomically $
           ifM
@@ -1529,7 +1530,8 @@ subscribeQueues c qs = do
         then when (hasTempErrors rs) resubscribe $> rs
         else do
           logWarn "subcription batch result for replaced SMP client, resubscribing"
-          resubscribe $> L.map (second $ \_ -> Left PCENetworkError) rs
+          -- TODO we probably use PCENetworkError here instead of the original error, so it becomes temporary.
+          resubscribe $> L.map (second $ Left . PCENetworkError . NESubscribeError . show) rs
       where
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
