@@ -53,7 +53,7 @@ import Simplex.Messaging.Protocol
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (AnyError (..), bshow)
+import Simplex.Messaging.Util (AnyError (..), AnyStoreError (..), bshow)
 
 createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
 createStore dbOpts = createDBStore dbOpts appMigrations
@@ -693,10 +693,16 @@ data StoreError
   | -- | XFTP Deleted snd chunk replica not found.
     SEDeletedSndChunkReplicaNotFound
   | -- | Error when reading work item that suspends worker - do not use!
-    SEWorkItemError ByteString
+    SEWorkItemError {errContext :: String}
   | -- | Servers stats not found.
     SEServersStatsNotFound
   deriving (Eq, Show, Exception)
 
 instance AnyError StoreError where
   fromSomeException = SEInternal . bshow
+
+instance AnyStoreError StoreError where
+  isWorkItemError = \case
+    SEWorkItemError {} -> True
+    _ -> False
+  mkWorkItemError errContext = SEWorkItemError {errContext}
