@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -38,11 +39,11 @@ import Simplex.Messaging.Server (exportMessages, importMessages, printMessageSta
 import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
+import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
@@ -50,25 +51,43 @@ import System.IO (IOMode (..), withFile)
 import Test.Hspec hiding (fit, it)
 import Util
 
+#if defined(dbServerPostgres)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Server.QueueStore.Postgres.Config
+import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
+#endif
+
 msgStoreTests :: Spec
 msgStoreTests = do
   around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
   around (withMsgStore $ testJournalStoreCfg MQStoreCfg) $ describe "Journal message store" $ do
     someMsgStoreTests
+    journalMsgStoreTests
     it "should export and import journal store" testExportImportStore
-    describe "queue state" $ do
-      it "should restore queue state from the last line" testQueueState
-      it "should recover when message is written and state is not" testMessageState
-      it "should remove journal files when queue is empty" testRemoveJournals
-    describe "missing files" $ do
-      it "should create read file when missing" testReadFileMissing
-      it "should switch to write file when read file missing" testReadFileMissingSwitch
-      it "should create write file when missing" testWriteFileMissing
-      it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
+#if defined(dbServerPostgres)
+  around_ (postgressBracket testServerDBConnectInfo) $ do
+    around (withMsgStore $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg) $
+      describe "Postgres+journal message store" $ do
+        someMsgStoreTests
+        journalMsgStoreTests
+    around (withMsgStore testPostgresStoreConfig) $
+      describe "Postgres-only message store" $ someMsgStoreTests
+#endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
     it "should expire messages in idle queues" testExpireIdleQueues
   where
+    journalMsgStoreTests :: SpecWith (JournalMsgStore s)
+    journalMsgStoreTests = do
+      describe "queue state" $ do
+        it "should restore queue state from the last line" testQueueState
+        it "should recover when message is written and state is not" testMessageState
+        it "should remove journal files when queue is empty" testRemoveJournals
+      describe "missing files" $ do
+        it "should create read file when missing" testReadFileMissing
+        it "should switch to write file when read file missing" testReadFileMissingSwitch
+        it "should create write file when missing" testWriteFileMissing
+        it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
@@ -94,6 +113,22 @@ testJournalStoreCfg queueStoreCfg =
       idleInterval = 21600,
       expireBackupsAfter = 0,
       keepMinBackups = 1
+    }
+
+testPostgresStoreConfig :: PostgresMsgStoreCfg
+testPostgresStoreConfig =
+  PostgresMsgStoreCfg
+    { queueStoreCfg = testPostgresStoreCfg,
+      quota = 3
+    }
+
+testPostgresStoreCfg :: PostgresStoreCfg
+testPostgresStoreCfg =
+  PostgresStoreCfg
+    { dbOpts = testStoreDBOpts,
+      dbStoreLogPath = Nothing,
+      confirmMigrations = MCYesUp,
+      deletedTTL = 86400
     }
 
 mkMessage :: MonadIO m => ByteString -> m Message
@@ -138,7 +173,6 @@ testNewQueueRecData g qm queueData = do
   where
     rndId = atomically $ EntityId <$> C.randomBytes 24 g
 
--- TODO constrain to STM stores
 testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
@@ -181,7 +215,6 @@ testGetQueue ms = do
     (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
     void $ ExceptT $ deleteQueue ms q
 
--- TODO constrain to STM stores
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
@@ -361,7 +394,7 @@ testRemoveJournals ms = do
     Nothing <- tryPeekMsg ms q
     -- still not removed, queue is empty and not opened
     liftIO $ journalFilesCount dir `shouldReturn` 1
-    _mq <- isolateQueue q "test" $ getMsgQueue ms q False
+    _mq <- isolateQueue ms q "test" $ getMsgQueue ms q False
     -- journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 0
     liftIO $ stateBackupCount dir `shouldReturn` 1
@@ -461,7 +494,7 @@ testExpireIdleQueues = do
   old <- expireBeforeEpoch ExpirationConfig {ttl = 1, checkInterval = 1} -- no old messages
   now <- systemSeconds <$> getSystemTime
 
-  (expired_, stored) <- runRight $ isolateQueue q "" $ withIdleMsgQueue now ms q $ deleteExpireMsgs_ old q
+  (expired_, stored) <- runRight $ isolateQueue ms q "" $ withIdleMsgQueue now ms q $ deleteExpireMsgs_ old q
   expired_ `shouldBe` Just 0
   stored `shouldBe` 0
   (Nothing, False) <- readQueueState ms statePath
@@ -478,7 +511,7 @@ testReadFileMissing ms = do
     Msg "message 1" <- tryPeekMsg ms q
     pure q
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
   closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
@@ -497,7 +530,7 @@ testReadFileMissingSwitch ms = do
   (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
   closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
@@ -515,7 +548,7 @@ testWriteFileMissing ms = do
   (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {writeState = ws} <- readTVarIO $ state mq
   closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId ws
@@ -538,7 +571,7 @@ testReadAndWriteFilesMissing ms = do
   (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {readState = rs, writeState = ws} <- readTVarIO $ state mq
   closeMsgQueue ms q
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId rs

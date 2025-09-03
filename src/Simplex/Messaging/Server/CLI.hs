@@ -417,9 +417,12 @@ printSMPServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> ServerStoreCf
 printSMPServerConfig transports = \case
   SSCMemory sp_ -> printServerConfig "SMP" transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
   SSCMemoryJournal {storeLogFile} -> printServerConfig "SMP" transports $ Just storeLogFile
-  SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}}} -> do
-    B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
-    printServerTransports "SMP" transports
+  SSCDatabaseJournal {storeCfg} -> printDBConfig storeCfg
+  SSCDatabase storeCfg -> printDBConfig storeCfg
+  where
+    printDBConfig PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}} = do
+      B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
+      printServerTransports "SMP" transports
 
 deleteDirIfExists :: FilePath -> IO ()
 deleteDirIfExists path = whenM (doesDirectoryExist path) $ removeDirectoryRecursive path

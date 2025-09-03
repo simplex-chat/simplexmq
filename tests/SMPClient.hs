@@ -273,9 +273,12 @@ serverStoreConfig_ useDbStoreLog = \case
   ASType SQSMemory SMSJournal ->
     ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
   ASType SQSPostgres SMSJournal ->
-    let dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
-        storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
-     in ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
+    ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
+  ASType SQSPostgres SMSPostgres ->
+    ASSCfg SQSPostgres SMSPostgres $ SSCDatabase storeCfg
+  where
+    dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
+    storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
 
 cfgV7 :: AServerConfig
 cfgV7 = updateCfg cfg $ \cfg' -> cfg' {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}

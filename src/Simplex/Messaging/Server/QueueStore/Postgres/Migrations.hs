@@ -14,7 +14,8 @@ serverSchemaMigrations =
   [ ("20250207_initial", m20250207_initial, Nothing),
     ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index),
     ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links),
-    ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs)
+    ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs),
+    ("20250903_store_messages", m20250903_store_messages, Just down_m20250903_store_messages)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -158,4 +159,79 @@ ALTER TABLE msg_queues
 DROP INDEX idx_services_service_role;
 
 DROP TABLE services;
+    |]
+
+m20250903_store_messages :: Text
+m20250903_store_messages =
+  T.pack
+    [r|
+CREATE TABLE messages(
+  message_id BIGINT NOT NULL PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  recipient_id BYTEA NOT NULL REFERENCES msg_queues ON DELETE CASCADE ON UPDATE RESTRICT,
+  msg_id BYTEA NOT NULL,
+  msg_ts BIGINT NOT NULL,
+  msg_quota BOOLEAN NOT NULL,
+  msg_ntf_flag BOOLEAN NOT NULL,
+  msg_body BYTEA NOT NULL
+);
+
+ALTER TABLE msg_queues
+  ADD COLUMN msg_can_write BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN msg_queue_size BIGINT NOT NULL DEFAULT 0;
+
+CREATE INDEX idx_messages_recipient_id_message_id ON messages (recipient_id, message_id); -- for FK and peek/del
+CREATE INDEX idx_messages_recipient_id_msg_ts on messages(recipient_id, msg_ts); -- for queue expiration
+CREATE INDEX idx_messages_msg_ts on messages(msg_ts); -- for global expiration
+
+CREATE FUNCTION on_message_insert() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE msg_queues
+  SET msg_can_write = NOT NEW.msg_quota,
+      msg_queue_size = msg_queue_size + 1
+  WHERE recipient_id = NEW.recipient_id;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION on_message_delete() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE msg_queues
+  SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
+      msg_queue_size = msg_queue_size - 1
+  WHERE recipient_id = OLD.recipient_id;
+  RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER tr_messages_insert
+AFTER INSERT ON messages
+FOR EACH ROW EXECUTE PROCEDURE on_message_insert();
+
+CREATE TRIGGER tr_messages_delete
+AFTER DELETE ON messages
+FOR EACH ROW EXECUTE PROCEDURE on_message_delete();
+    |]
+
+down_m20250903_store_messages :: Text
+down_m20250903_store_messages =
+  T.pack
+    [r|
+DROP TRIGGER tr_messages_insert ON messages;
+DROP TRIGGER tr_messages_delete ON messages;
+DROP FUNCTION on_message_insert;
+DROP FUNCTION on_message_delete;
+
+DROP INDEX idx_messages_recipient_id_message_id;
+DROP INDEX idx_messages_recipient_id_msg_ts;
+DROP INDEX idx_messages_msg_ts;
+
+ALTER TABLE msg_queues
+  DROP COLUMN msg_can_write,
+  DROP COLUMN msg_queue_size;
+
+DROP TABLE messages;
     |]

@@ -129,6 +129,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               printMessageStats "Messages" msgStats
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
+                Right (ASType SQSPostgres SMSPostgres) -> "store_messages set to `database`, update it to `journal` in INI file"
                 Right (ASType _ SMSJournal) -> "store_messages set to `journal`"
                 Left e -> e <> ", configure storage correctly"
         SCExport
@@ -148,9 +149,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> putStrLn "store_messages set to `memory`, start the server."
                 Right (ASType SQSMemory SMSJournal) -> putStrLn "store_messages set to `journal`, update it to `memory` in INI file"
-                Right (ASType SQSPostgres SMSJournal) ->
+                Right (ASType SQSPostgres _) ->
 #if defined(dbServerPostgres)
-                  putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
+                  putStrLn "store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
 #else
                   noPostgresExit
 #endif
@@ -188,7 +189,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> setToDbStr <> "\nstore_messages set to `memory`, import messages to journal to use PostgreSQL database for queues (`smp-server journal import`)"
                 Right (ASType SQSMemory SMSJournal) -> setToDbStr
-                Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, start the server."
+                Right (ASType SQSPostgres _) -> "store_queues set to `database`, start the server."
                 Left e -> e <> ", configure storage correctly"
           where
             setToDbStr :: String
@@ -208,7 +209,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               (sCnt, qCnt) <- exportDatabaseToStoreLog logPath dbOpts storeLogFilePath
               putStrLn $ "Export completed: " <> show sCnt <> " services, " <> show qCnt <> " queues"
               putStrLn $ case readStoreType ini of
-                Right (ASType SQSPostgres SMSJournal) -> "store_queues set to `database`, update it to `memory` in INI file."
+                Right (ASType SQSPostgres _) -> "store_queues or store_messages set to `database`, update it to `memory` in INI file."
                 Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
                 Left e -> e <> ", configure storage correctly"
         SCDelete
@@ -396,6 +397,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
               storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
            in SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir}
+        iniStoreCfg SQSPostgres SMSPostgres = undefined -- TODO [messages]
         serverConfig :: ServerStoreCfg s -> ServerConfig s
         serverConfig serverStoreCfg =
           ServerConfig
@@ -504,6 +506,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsFileExists <- doesFileExist storeMsgsFilePath
       storeLogExists <- doesFileExist storeLogFilePath
       case mode of
+        ASType qs SMSPostgres -> undefined -- TODO [messages]
         ASType qs SMSJournal
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
