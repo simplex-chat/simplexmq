@@ -489,17 +489,9 @@ data NtfSubStatus
     NSErr ByteString
   deriving (Eq, Ord, Show)
 
-ntfShouldSubscribe :: NtfSubStatus -> Bool
-ntfShouldSubscribe = \case
-  NSNew -> True
-  NSPending -> True
-  NSActive -> True
-  NSInactive -> True
-  NSEnd -> False
-  NSDeleted -> False
-  NSAuth -> False
-  NSService -> True
-  NSErr _ -> False
+-- if these statuses change, the queue ID hashes for services need to be updated in a new migration (see m20250830_queue_ids_hash)
+subscribeNtfStatuses :: [NtfSubStatus]
+subscribeNtfStatuses = [NSNew, NSPending, NSActive, NSInactive]
 
 instance Encoding NtfSubStatus where
   smpEncode = \case

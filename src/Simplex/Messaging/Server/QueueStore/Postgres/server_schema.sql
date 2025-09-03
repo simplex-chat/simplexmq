@@ -15,6 +15,112 @@ SET row_security = off;
 CREATE SCHEMA smp_server;
 
 
+
+CREATE FUNCTION smp_server.on_queue_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.deleted_at IS NULL THEN
+    IF OLD.rcv_service_id IS NOT NULL THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+    END IF;
+    IF OLD.ntf_service_id IS NOT NULL AND OLD.notifier_id IS NOT NULL THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+    END IF;
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+
+
+CREATE FUNCTION smp_server.on_queue_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.rcv_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
+  END IF;
+  IF NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+
+CREATE FUNCTION smp_server.on_queue_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.deleted_at IS NULL AND OLD.rcv_service_id IS NOT NULL THEN
+    IF NOT (NEW.deleted_at IS NULL AND NEW.rcv_service_id IS NOT NULL) THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+    ELSIF OLD.rcv_service_id IS DISTINCT FROM NEW.rcv_service_id THEN
+      PERFORM update_ids_hash(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+      PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
+    END IF;
+  ELSIF NEW.deleted_at IS NULL AND NEW.rcv_service_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
+  END IF;
+
+  IF OLD.deleted_at IS NULL AND OLD.ntf_service_id IS NOT NULL AND OLD.notifier_id IS NOT NULL THEN
+    IF NOT (NEW.deleted_at IS NULL AND NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL) THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+    ELSIF OLD.ntf_service_id IS DISTINCT FROM NEW.ntf_service_id OR OLD.notifier_id IS DISTINCT FROM NEW.notifier_id THEN
+      PERFORM update_ids_hash(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+      PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
+    END IF;
+  ELSIF NEW.deleted_at IS NULL AND NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL THEN
+    PERFORM update_ids_hash(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+
+CREATE FUNCTION smp_server.update_ids_hash(p_service_id bytea, p_role text, p_queue_id bytea, p_change bigint) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  UPDATE services
+  SET queue_count = queue_count + p_change,
+      queue_ids_hash = xor_combine(queue_ids_hash, public.digest(p_queue_id, 'md5'))
+  WHERE service_id = p_service_id AND service_role = p_role;
+END;
+$$;
+
+
+
+CREATE FUNCTION smp_server.xor_combine(state bytea, value bytea) RETURNS bytea
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+  result BYTEA := state;
+  i INTEGER;
+  len INTEGER := octet_length(value);
+BEGIN
+  IF octet_length(state) != len THEN
+    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
+  END IF;
+  FOR i IN 0..len-1 LOOP
+    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
+  END LOOP;
+  RETURN result;
+END;
+$$;
+
+
+
+CREATE AGGREGATE smp_server.xor_aggregate(bytea) (
+    SFUNC = smp_server.xor_combine,
+    STYPE = bytea,
+    INITCOND = '\x00000000000000000000000000000000'
+);
+
+
 SET default_table_access_method = heap;
 
 
@@ -53,7 +159,9 @@ CREATE TABLE smp_server.services (
     service_role text NOT NULL,
     service_cert bytea NOT NULL,
     service_cert_hash bytea NOT NULL,
-    created_at bigint NOT NULL
+    created_at bigint NOT NULL,
+    queue_count bigint DEFAULT 0 NOT NULL,
+    queue_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL
 );
 
 
@@ -103,6 +211,18 @@ CREATE INDEX idx_msg_queues_updated_at ON smp_server.msg_queues USING btree (del
 
 
 CREATE INDEX idx_services_service_role ON smp_server.services USING btree (service_role);
+
+
+
+CREATE TRIGGER tr_queue_delete AFTER DELETE ON smp_server.msg_queues FOR EACH ROW EXECUTE FUNCTION smp_server.on_queue_delete();
+
+
+
+CREATE TRIGGER tr_queue_insert AFTER INSERT ON smp_server.msg_queues FOR EACH ROW EXECUTE FUNCTION smp_server.on_queue_insert();
+
+
+
+CREATE TRIGGER tr_queue_update AFTER UPDATE ON smp_server.msg_queues FOR EACH ROW EXECUTE FUNCTION smp_server.on_queue_update();
 
 
 

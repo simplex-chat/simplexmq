@@ -271,6 +271,7 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SProtocolType (..),
+    ServiceSub (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     NewNtfCreds (..),
@@ -598,10 +599,9 @@ getServiceCredentials c userId srv =
   liftIO (TM.lookupIO userId $ useClientServices c)
     $>>= \useService -> if useService then Just <$> getService else pure Nothing
   where
-    getService :: AM (ServiceCredentials, Maybe ServiceId)
     getService = do
       let g = agentDRG c
-      ((C.KeyHash kh, serviceCreds), serviceId_) <-
+      ((C.KeyHash kh, serviceCreds), serviceSub_) <-
         withStore' c $ \db ->
           getClientService db userId srv >>= \case
             Just service -> pure service
@@ -613,7 +613,7 @@ getServiceCredentials c userId srv =
       (_, pk) <- atomically $ C.generateKeyPair g
       let serviceSignKey = C.APrivateSignKey C.SEd25519 pk
           creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
-      pure (creds, serviceId_)
+      pure (creds, smpServiceId <$> serviceSub_)
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg
@@ -1580,10 +1580,10 @@ subscribeQueues c qs = do
         processSubResults = mapM_ $ uncurry $ processSubResult c sessId
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
-subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM (Int64, IdsHash)
-subscribeClientService c userId srv =
-  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $
-    (`subscribeService` SMP.SRecipientService) . connectedClient
+subscribeClientService :: AgentClient -> UserId -> SMPServer -> Int64 -> IdsHash -> AM ServiceSub
+subscribeClientService c userId srv n idsHash =
+  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
+    subscribeService smp SMP.SRecipientService n idsHash
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)
