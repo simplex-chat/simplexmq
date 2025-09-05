@@ -26,11 +26,13 @@ import qualified Data.ByteString as B
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
 import Database.PostgreSQL.Simple (Binary (..), Only (..))
 import qualified Database.PostgreSQL.Simple as DB
 import Database.PostgreSQL.Simple.SqlQQ (sql)
+import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
@@ -99,9 +101,14 @@ instance MsgStoreClass PostgresMsgStore where
   unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> PostgresMsgStore -> (PostgresQueue -> IO a) -> IO a
   unsafeWithAllMsgQueues _ _ _ _ = error "TODO unsafeWithAllMsgQueues"
 
-  -- tty, store, now, ttl
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
-  expireOldMessages _ _ _ _ = error "TODO expireOldMessages"
+  expireOldMessages _tty ms now ttl =
+    fmap (fromMaybe newMessageStats) $ maybeFirstRow toMessageStats $ withConnection st $ \db ->
+      DB.query db "CALL expire_old_messages(?,?,0,0,0)" (now, ttl)
+    where
+      st = dbStore $ queueStore_ ms
+      toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
+        MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
   logQueueStates _ = pure ()
   {-# INLINE logQueueStates #-}
@@ -146,29 +153,20 @@ instance MsgStoreClass PostgresMsgStore where
   getQueueMessages_ _ _ _ = error "TODO getQueueMessages_"
 
   writeMsg :: PostgresMsgStore -> PostgresQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms q' _logState msg =
-    withDB "writeMsg" (queueStore_ ms) $ \db -> runExceptT $ do
-      (canWrt, size) :: (Bool, Int) <- ExceptT $ getMsgQueueState db
-      let empty = size == 0
-      -- can_write and size columns should be updated by triggers
-      if canWrt || empty
-        then case msg of
-          Message {msgFlags = MsgFlags ntf, msgBody = C.MaxLenBS body}
-            | size < quota ->
-                storeMessage db False ntf body $> Just (msg, empty)
-          _ -> storeMessage db True False B.empty $> Nothing
-        else pure Nothing
+  writeMsg ms q _ msg =
+    withDB' "writeMsg" (queueStore_ ms) $ \db -> do
+      let (msgQuota, ntf, body) = case msg of
+            Message {msgFlags = MsgFlags ntf', msgBody = C.MaxLenBS body'} -> (False, ntf', body')
+            MessageQuota {} -> (True, False, B.empty)
+      toResult <$>
+        DB.query
+          db
+          "SELECT quota_written, was_empty FROM write_message(?,?,?,?,?,?,?)"
+          (recipientId' q, Binary (messageId msg), systemSeconds (messageTs msg), msgQuota, ntf, Binary body, quota)
     where
-      rId = recipientId' q'
-      getMsgQueueState db =
-        liftIO $ firstRow id AUTH $
-          DB.query db "SELECT msg_can_write, msg_queue_size FROM msg_queues WHERE recipient_id = ?" (Only rId)
-      storeMessage db msgQuota ntf body =
-        liftIO $
-          DB.execute
-            db
-            "INSERT INTO messages(recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body) VALUES (?,?,?,?,?,?)"
-            (rId, Binary (messageId msg), systemSeconds (messageTs msg), msgQuota, ntf, Binary body)
+      toResult = \case
+        ((msgQuota, wasEmpty) : _) -> if msgQuota then Nothing else Just (msg, wasEmpty)
+        [] -> Nothing
       PostgresMsgStore {config = PostgresMsgStoreCfg {quota}} = ms
 
   setOverQuota_ :: PostgresQueue -> IO () -- can ONLY be used while restoring messages, not while server running

@@ -477,7 +477,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               atomicWriteIORef (msgCount stats) stored
               atomicModifyIORef'_ (msgExpired stats) (+ expired)
               printMessageStats "STORE: messages" msgStats
-            Left e -> logError $ "STORE: withAllMsgQueues, error expiring messages, " <> tshow e
+            Left e -> logError $ "STORE: expireOldMessages, error expiring messages, " <> tshow e
 
     expireNtfsThread :: ServerConfig s -> M s ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
