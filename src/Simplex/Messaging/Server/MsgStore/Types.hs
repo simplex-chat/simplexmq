@@ -165,13 +165,13 @@ withPeekMsgQueue :: MsgStoreClass s => s -> StoreQueue s -> Text -> (Maybe (MsgQ
 withPeekMsgQueue st q op a = isolateQueue st q op $ getPeekMsgQueue st q >>= a
 {-# INLINE withPeekMsgQueue #-}
 
--- TODO [messages]
+-- not used with PostgreSQL message store
 expireQueueMsgs :: MsgStoreClass s => s -> Int64 -> Int64 -> StoreQueue s -> StoreMonad s MessageStats
 expireQueueMsgs st now old q = do
   (expired_, stored) <- withIdleMsgQueue now st q $ deleteExpireMsgs_ old q
   pure MessageStats {storedMsgsCount = stored, expiredMsgsCount = fromMaybe 0 expired_, storedQueues = 1}
 
--- TODO [messages]
+-- not used with PostgreSQL message store
 deleteExpireMsgs_ :: MsgStoreClass s => Int64 -> StoreQueue s -> MsgQueue s -> StoreMonad s Int
 deleteExpireMsgs_ old q mq = do
   n <- loop 0

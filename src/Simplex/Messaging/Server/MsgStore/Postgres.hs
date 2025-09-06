@@ -103,10 +103,10 @@ instance MsgStoreClass PostgresMsgStore where
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
-  logQueueStates _ = pure ()
-  {-# INLINE logQueueStates #-}
-  logQueueState _ = pure ()
-  {-# INLINE logQueueState #-}
+  logQueueStates _ = error "logQueueStates not used"
+
+  logQueueState _ = error "logQueueState not used"
+
   queueStore = queueStore_
   {-# INLINE queueStore #-}
 
@@ -188,8 +188,6 @@ instance MsgStoreClass PostgresMsgStore where
         |]
         (Only (recipientId' q))
 
-  -- this function is unused, it is provided for testing with default implementations of tryDelMsg and tryDelPeekMsg
-  -- TODO [messages] avoid the use of trigger, lock/update/release queue count
   tryDeleteMsg_ :: PostgresQueue -> () -> Bool -> DBStoreIO ()
   tryDeleteMsg_ _q _ _ = error "tryDeleteMsg_ not used" -- do
     -- db <- asks dbConn
