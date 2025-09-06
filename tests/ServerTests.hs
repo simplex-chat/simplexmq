@@ -14,6 +14,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module ServerTests where
 
@@ -23,7 +24,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
-import CoreTests.MsgStoreTests (testJournalStoreCfg)
+import CoreTests.MsgStoreTests (testJournalStoreCfg, testPostgresStoreConfig)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -42,10 +43,11 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SMSType (..), SQSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
@@ -232,12 +234,12 @@ testCreateSecure =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -279,12 +281,12 @@ testCreateSndSecure =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -915,14 +917,23 @@ testRestoreExpireMessages =
     exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
       ASType _ SMSJournal -> export
+      ASType _ SMSPostgres -> exportDB
       ASType _ SMSMemory -> pure ()
       where
         export = do
-          ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
+          ms <- readWriteQueues
+          exportMessages False (StoreJournal ms) testStoreMsgsFile False
+          closeMsgStore ms
+        exportDB = do
+          readWriteQueues >>= closeMsgStore
+          ms' <- newMsgStore (testPostgresStoreConfig {quota = 4} :: PostgresMsgStoreCfg)
+          _n <- withFile testStoreMsgsFile WriteMode $ exportDbMessages False ms'
+          closeMsgStore ms'
+        readWriteQueues = do
+          ms <- newMsgStore ((testJournalStoreCfg MQStoreCfg) {quota = 4} :: JournalStoreConfig 'QSMemory)
           readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
-          exportMessages False ms testStoreMsgsFile False
-          closeMsgStore ms
+          pure ms
     runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()

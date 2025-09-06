@@ -292,18 +292,13 @@ currentSMPClientVersion = VersionSMPC 4
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
--- TODO v6.0 remove dependency on version
-maxMessageLength :: VersionSMP -> Int
-maxMessageLength v
-  | v >= encryptedBlockSMPVersion = 16048 -- max 16048
-  | v >= sendingProxySMPVersion = 16064 -- max 16067
-  | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
+maxMessageLength :: Int
+maxMessageLength = 16048
 
 paddedProxiedTLength :: Int
 paddedProxiedTLength = 16226 -- 16225 .. 16227
 
--- TODO v7.0 change to 16048
-type MaxMessageLen = 16088
+type MaxMessageLen = 16048
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
 type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
@@ -1477,7 +1472,7 @@ data ErrorType
     STORE {storeErr :: Text}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 16088 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16048 bytes)
     LARGE_MSG
   | -- | relay public key is expired
     EXPIRED
@@ -2022,7 +2017,7 @@ instance Encoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> smpEncode e
     UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> smpEncode e
+    NETWORK _ -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> smpEncode e
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"
@@ -2042,7 +2037,7 @@ instance StrEncoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> encodeUtf8 (T.pack e)
     UNEXPECTED e -> "UNEXPECTED " <> encodeUtf8 (T.pack e)
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> strEncode e
+    NETWORK _ -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> strEncode e
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"

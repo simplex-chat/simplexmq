@@ -27,7 +27,9 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     foldQueueRecs,
     handleDuplicate,
     withLog_,
+    withDB,
     withDB',
+    assertUpdated,
   )
 where
 
@@ -408,7 +410,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
 
   -- this method is called from JournalMsgStore deleteQueue that already locks the queue
-  deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
+  deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType QueueRec)
   deleteStoreQueue st sq = E.uninterruptibleMask_ $ runExceptT $ do
     q <- ExceptT $ readQueueRecIO qr
     RoundedSystemTime ts <- liftIO getSystemDate
@@ -419,9 +421,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     forM_ (notifier q) $ \NtfCreds {notifierId} -> do
       atomically $ TM.delete notifierId $ notifiers st
       atomically $ TM.delete notifierId $ notifierLocks st
-    mq_ <- atomically $ swapTVar (msgQueue sq) Nothing
     withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
-    pure (q, mq_)
+    pure q
     where
       rId = recipientId sq
       qr = queueRec sq

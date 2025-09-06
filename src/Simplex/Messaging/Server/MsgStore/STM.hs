@@ -57,18 +57,16 @@ data STMStoreConfig = STMStoreConfig
   }
 
 instance StoreQueueClass STMQueue where
-  type MsgQueue STMQueue = STMMsgQueue
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  msgQueue = msgQueue'
-  {-# INLINE msgQueue #-}
   withQueueLock _ _ = id
   {-# INLINE withQueueLock #-}
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
+  type MsgQueue STMMsgStore = STMMsgQueue
   type QueueStore STMMsgStore = STMQueueStore STMQueue
   type StoreQueue STMMsgStore = STMQueue
   type MsgStoreConfig STMMsgStore = STMStoreConfig
@@ -129,10 +127,10 @@ instance MsgStoreClass STMMsgStore where
     Nothing -> pure (Nothing, 0)
 
   deleteQueue :: STMMsgStore -> STMQueue -> IO (Either ErrorType QueueRec)
-  deleteQueue ms q = fst <$$> deleteStoreQueue (queueStore_ ms) q
+  deleteQueue ms q = fst <$$> deleteQueue_ ms q
 
   deleteQueueSize :: STMMsgStore -> STMQueue -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize ms q = deleteStoreQueue (queueStore_ ms) q >>= mapM (traverse getSize)
+  deleteQueueSize ms q = deleteQueue_ ms q >>= mapM (traverse getSize)
     -- traverse operates on the second tuple element
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
@@ -179,10 +177,15 @@ instance MsgStoreClass STMMsgStore where
       Just _ -> modifyTVar' size (subtract 1)
       _ -> pure ()
 
-  isolateQueue :: STMQueue -> Text -> STM a -> ExceptT ErrorType IO a
-  isolateQueue _ _ = liftIO . atomically
+  isolateQueue :: STMMsgStore -> STMQueue -> Text -> STM a -> ExceptT ErrorType IO a
+  isolateQueue _ _ _ = liftIO . atomically
   {-# INLINE isolateQueue #-}
 
   unsafeRunStore :: STMQueue -> Text -> STM a -> IO a
   unsafeRunStore _ _ = atomically
   {-# INLINE unsafeRunStore #-}
+
+deleteQueue_ :: STMMsgStore -> STMQueue -> IO (Either ErrorType (QueueRec, Maybe STMMsgQueue))
+deleteQueue_ ms q = deleteStoreQueue (queueStore_ ms) q >>= mapM remove
+  where
+    remove qr = (qr,) <$> atomically (swapTVar (msgQueue' q) Nothing)
