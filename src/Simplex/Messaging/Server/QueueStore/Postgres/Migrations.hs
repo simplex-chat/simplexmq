@@ -176,7 +176,7 @@ CREATE TABLE messages(
 );
 
 ALTER TABLE msg_queues
-  ADD COLUMN msg_can_write BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN msg_can_write BOOLEAN NOT NULL DEFAULT TRUE,
   ADD COLUMN msg_queue_size BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX idx_messages_recipient_id_message_id ON messages (recipient_id, message_id);
@@ -208,7 +208,7 @@ BEGIN
     was_empty := q_size = 0;
 
     INSERT INTO messages(recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body)
-    VALUES (p_recipient_id, p_msg_id, p_msg_ts, quota_written, NOT quota_written AND p_msg_ntf_flag, CASE WHEN quota_written THEN '' :: BYTEA ELSE p_msg_body END);
+    VALUES (p_recipient_id, p_msg_id, p_msg_ts, quota_written, p_msg_ntf_flag AND NOT quota_written, CASE WHEN quota_written THEN '' :: BYTEA ELSE p_msg_body END);
 
     UPDATE msg_queues
     SET msg_can_write = NOT quota_written,
@@ -222,6 +222,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- TODO [messages] update queue count without trigger
 CREATE PROCEDURE expire_old_messages(
   p_now_ts BIGINT,
   p_ttl BIGINT,
@@ -289,7 +290,7 @@ RETURNS TRIGGER AS $$
 BEGIN
   UPDATE msg_queues q
   SET msg_can_write = msg_can_write OR msg_queue_size <= d.del_count,
-      msg_queue_size = msg_queue_size - d.del_count
+      msg_queue_size = GREATEST(msg_queue_size - d.del_count, 0)
   FROM (
     SELECT recipient_id, COUNT(1) AS del_count
     FROM deleted_messages -- Transition table alias

@@ -91,6 +91,7 @@ msgStoreTests = do
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
+      it "should write/ack messages" testWriteAckMessages
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
 -- TODO constrain to STM stores?
@@ -214,6 +215,28 @@ testGetQueue ms = do
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId8
     (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
     void $ ExceptT $ deleteQueue ms q
+
+-- TODO [messages] test concurrent writing and reading
+testWriteAckMessages :: MsgStoreClass s => s -> IO ()
+testWriteAckMessages ms = do
+  g <- C.newRandom
+  (rId1, qr1) <- testNewQueueRec g QMMessaging
+  (rId2, qr2) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q1 <- ExceptT $ addQueue ms rId1 qr1
+    q2 <- ExceptT $ addQueue ms rId2 qr2
+    let write q s = writeMsg ms q True =<< mkMessage s
+    0 <- deleteExpiredMsgs ms q1 0 -- won't expire anything, used here to mimic message sending with expiration on SEND
+    Just (Message {msgId = mId1}, True) <- write q1 "message 1"
+    (Msg "message 1", Nothing) <- tryDelPeekMsg ms q1 mId1
+    0 <- deleteExpiredMsgs ms q2 0
+    Just (Message {msgId = mId2}, True) <- write q2 "message 2"
+    (Msg "message 2", Nothing) <- tryDelPeekMsg ms q2 mId2
+    0 <- deleteExpiredMsgs ms q2 0
+    Just (Message {msgId = mId3}, True) <- write q2 "message 3"
+    (Msg "message 3", Nothing) <- tryDelPeekMsg ms q2 mId3
+    void $ ExceptT $ deleteQueue ms q1
+    void $ ExceptT $ deleteQueue ms q2
 
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do

@@ -65,13 +65,10 @@ data PostgresQueue = PostgresQueue
   }
 
 instance StoreQueueClass PostgresQueue where
-  -- type MsgQueue PostgresQueue = ()
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  -- msgQueue = msgQueue'
-  -- {-# INLINE msgQueue #-}
   withQueueLock PostgresQueue {} _ = id -- TODO [messages] maybe it's just transaction?
   {-# INLINE withQueueLock #-}
 
@@ -185,6 +182,8 @@ instance MsgStoreClass PostgresMsgStore where
         |]
         (Only (recipientId' q))
 
+  -- this function is unused, it is provided for testing with default implementations of tryDelMsg and tryDelPeekMsg
+  -- TODO [messages] avoid the use of trigger, lock/update/release queue count
   tryDeleteMsg_ :: PostgresQueue -> () -> Bool -> DBStoreIO ()
   tryDeleteMsg_ q _ _ = do
     db <- asks dbConn
@@ -204,9 +203,11 @@ instance MsgStoreClass PostgresMsgStore where
   tryPeekMsg ms q = isolateQueue ms q "tryPeekMsg" $ tryPeekMsg_ q ()
   {-# INLINE tryPeekMsg #-}
 
+  -- TODO [messages] re-implement as stored procedure/function to avoid the need for a separate locking query and trigger
   tryDelMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message)
   tryDelMsg ms q msgId =
-    withDB' "tryDelMsg" (queueStore_ ms) $ \db ->
+    withDB' "tryDelMsg" (queueStore_ ms) $ \db -> do
+      liftIO $ lockQueueForUpdate db q
       maybeFirstRow toMessage $
         DB.query
           db
@@ -224,9 +225,11 @@ instance MsgStoreClass PostgresMsgStore where
           |]
           (recipientId' q, Binary msgId)
 
+  -- TODO [messages] re-implement as stored procedure/function to avoid the need for a separate locking query and trigger
   tryDelPeekMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
   tryDelPeekMsg ms q msgId =
-    withDB' "tryDelPeekMsg" (queueStore_ ms) $ \db ->
+    withDB' "tryDelPeekMsg" (queueStore_ ms) $ \db -> do
+      liftIO $ lockQueueForUpdate db q
       toResult . map toMessage
         <$> DB.query
           db
@@ -308,3 +311,8 @@ getDbMessageStats ms =
     st = dbStore $ queueStore_ ms
     toMessageStats (storedQueues, storedMsgsCount) =
       MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
+
+lockQueueForUpdate :: DB.Connection -> PostgresQueue -> IO ()
+lockQueueForUpdate db q = do
+  _ :: [Only Int] <- DB.query db "SELECT 1 FROM msg_queues WHERE recipient_id = ? FOR UPDATE" (Only (recipientId' q))
+  pure ()

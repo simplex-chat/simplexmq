@@ -1851,6 +1851,7 @@ client
                       ServerConfig {messageExpiration, msgIdBytes} <- asks config
                       msgId <- randomId' msgIdBytes
                       msg_ <- liftIO $ runExceptT $ do
+                        -- TODO [messages] add option to expire on SEND, don't expire by default
                         expireMessages messageExpiration stats
                         msg <- liftIO $ mkMessage msgId body
                         writeMsg ms q True msg
