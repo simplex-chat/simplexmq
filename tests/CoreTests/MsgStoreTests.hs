@@ -36,7 +36,7 @@ import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
-import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.Postgres
@@ -259,7 +259,7 @@ testExportImportStore ms = do
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
-  exportMessages False ms testStoreMsgsFile False
+  exportMessages False (StoreJournal ms) testStoreMsgsFile False
   closeMsgStore ms
   closeStoreLog sl
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
@@ -270,13 +270,13 @@ testExportImportStore ms = do
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- 2 message files
-  exportMessages False ms' testStoreMsgsFile2 False
+  exportMessages False (StoreJournal ms') testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   readWriteQueueStore True (mkQueue stmStore True) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing False
-  exportMessages False stmStore testStoreMsgsFile False
+  exportMessages False (StoreMemory stmStore) testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
 testQueueState :: JournalMsgStore s -> IO ()

@@ -138,8 +138,8 @@ main = do
           describe "SMP proxy, postgres-only message store" $
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
 #endif
-        xdescribe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
-        xdescribe "SMP proxy, jornal message store" $
+        describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
+        describe "SMP proxy, jornal message store" $
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests

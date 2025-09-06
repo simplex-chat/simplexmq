@@ -144,7 +144,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               ms <- newJournalMsgStore logPath MQStoreCfg
               -- TODO [postgres] in case postgres configured, queues must be read from database
               readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
-              exportMessages True ms storeMsgsFilePath False
+              exportMessages True (StoreJournal ms) storeMsgsFilePath False
               putStrLn "Export completed"
               case readStoreType ini of
                 Right (ASType SQSMemory SMSMemory) -> putStrLn "store_messages set to `memory`, start the server."

@@ -15,6 +15,8 @@
 module Simplex.Messaging.Server.MsgStore.Postgres
   ( PostgresMsgStore,
     PostgresMsgStoreCfg (..),
+    exportDbMessages,
+    getDbMessageStats,
   )
 where
 
@@ -23,23 +25,27 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import qualified Data.ByteString as B
-import Data.Functor (($>))
+import qualified Data.ByteString.Builder as BLD
+import Data.IORef
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
-import Database.PostgreSQL.Simple (Binary (..), Only (..))
+import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Util (firstRow, maybeFirstRow, (<$$>))
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Util (maybeFirstRow, (<$$>))
+import System.IO (Handle, hFlush, stdout)
 
 data PostgresMsgStore = PostgresMsgStore
   { config :: PostgresMsgStoreCfg,
@@ -56,11 +62,6 @@ type PostgresQueueStore' = PostgresQueueStore PostgresQueue
 data PostgresQueue = PostgresQueue
   { recipientId' :: RecipientId,
     queueRec' :: TVar (Maybe QueueRec)
-  }
-
-data MsgQueueState = MsgQueueState
-  { canWrt :: Bool,
-    size :: Int
   }
 
 instance StoreQueueClass PostgresQueue where
@@ -96,10 +97,7 @@ instance MsgStoreClass PostgresMsgStore where
   withActiveMsgQueues :: Monoid a => PostgresMsgStore -> (PostgresQueue -> IO a) -> IO a
   withActiveMsgQueues _ _ = error "TODO withActiveMsgQueues"
 
-  -- This function can only be used in server CLI commands or before server is started.
-  -- tty, withData, store
-  unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> PostgresMsgStore -> (PostgresQueue -> IO a) -> IO a
-  unsafeWithAllMsgQueues _ _ _ _ = error "TODO unsafeWithAllMsgQueues"
+  unsafeWithAllMsgQueues _ _ _ _ = error "unsafeWithAllMsgQueues not used"
 
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =
@@ -121,8 +119,6 @@ instance MsgStoreClass PostgresMsgStore where
   loadedQueueCounts ms = do
     loadedQueueCount <- M.size <$> readTVarIO queues
     loadedNotifierCount <- M.size <$> readTVarIO notifiers
-    -- openJournalCount <- readTVarIO (openedQueueCount ms)
-    -- queueLockCount <- M.size <$> readTVarIO (queueLocks ms)
     notifierLockCount <- M.size <$> readTVarIO notifierLocks
     pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount = 0, queueLockCount = 0, notifierLockCount}
     where
@@ -202,8 +198,7 @@ instance MsgStoreClass PostgresMsgStore where
   isolateQueue :: PostgresMsgStore -> PostgresQueue -> Text -> DBStoreIO a -> ExceptT ErrorType IO a
   isolateQueue ms _q op a = withDB' op (queueStore_ ms) $ runReaderT a . DBTransaction
 
-  unsafeRunStore :: PostgresQueue -> Text -> DBStoreIO a -> IO a
-  unsafeRunStore _ _ _ = error "TODO unsafeRunStore"
+  unsafeRunStore _ _ _ = error "unsafeRunStore not used"
 
   tryPeekMsg :: PostgresMsgStore -> PostgresQueue -> ExceptT ErrorType IO (Maybe Message)
   tryPeekMsg ms q = isolateQueue ms q "tryPeekMsg" $ tryPeekMsg_ q ()
@@ -271,3 +266,45 @@ toMessage (Binary msgId, ts, msgQuota, ntf, Binary body)
   | otherwise = Message {msgId, msgTs, msgFlags = MsgFlags ntf, msgBody = C.unsafeMaxLenBS body} -- TODO [messages] unsafeMaxLenBS?
   where
     msgTs = MkSystemTime ts 0
+
+exportDbMessages :: Bool -> PostgresMsgStore -> Handle -> IO Int
+exportDbMessages tty ms h = do
+  rows <- newIORef []
+  n <- withConnection st $ \db -> DB.foldWithOptions_ opts db query 0 $ \i r -> do
+    let i' = i + 1
+    if i' `mod` 1000 > 0
+      then modifyIORef rows (r :)
+      else do
+        readIORef rows >>= writeMessages
+        when tty $ putStr (progress i' <> "\r") >> hFlush stdout
+    pure i'
+  readIORef rows >>= \rs -> unless (null rs) $ writeMessages rs
+  when tty $ putStrLn $ progress n
+  pure n
+  where
+    st = dbStore $ queueStore_ ms
+    opts = DB.defaultFoldOptions {DB.fetchQuantity = DB.Fixed 1000}
+    query =
+      [sql|
+        SELECT recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+        FROM messages
+        ORDER BY recipient_id, message_id ASC
+      |]
+    writeMessages = BLD.hPutBuilder h . encodeMessages . reverse
+    encodeMessages = mconcat . map (\(Only rId :. msg) -> BLD.byteString (strEncode $ MLRv3 rId $ toMessage msg) <> BLD.char8 '\n')
+    progress i = "Processed: " <> show i <> " records"
+
+getDbMessageStats :: PostgresMsgStore -> IO MessageStats
+getDbMessageStats ms =
+  fmap (fromMaybe newMessageStats) $ maybeFirstRow toMessageStats $ withConnection st $ \db ->
+    DB.query_
+      db
+      [sql|
+        SELECT
+          (SELECT COUNT (1) FROM msg_queues WHERE deleted_at IS NULL),
+          (SELECT COUNT (1) FROM messages m JOIN msg_queues q USING recipient_id WHERE deleted_at IS NULL)
+      |]
+  where
+    st = dbStore $ queueStore_ ms
+    toMessageStats (storedQueues, storedMsgsCount) =
+      MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
