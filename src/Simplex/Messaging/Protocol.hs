@@ -2022,7 +2022,7 @@ instance Encoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> smpEncode e
     UNEXPECTED e -> "UNEXPECTED " <> smpEncode e
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> smpEncode e
+    NETWORK _e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> smpEncode e
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"
@@ -2042,7 +2042,7 @@ instance StrEncoding BrokerErrorType where
     RESPONSE e -> "RESPONSE " <> encodeUtf8 (T.pack e)
     UNEXPECTED e -> "UNEXPECTED " <> encodeUtf8 (T.pack e)
     TRANSPORT e -> "TRANSPORT " <> smpEncode e
-    NETWORK e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> strEncode e
+    NETWORK _e -> "NETWORK" -- TODO once all upgrade: "NETWORK " <> strEncode e
     TIMEOUT -> "TIMEOUT"
     HOST -> "HOST"
     NO_SERVICE -> "NO_SERVICE"

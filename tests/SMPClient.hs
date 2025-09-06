@@ -229,6 +229,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       dailyBlockQueueQuota = 20,
       messageExpiration = Just defaultMessageExpiration,
       expireMessagesOnStart = True,
+      expireMessagesOnSend = False,
       idleQueueInterval = defaultIdleQueueInterval,
       notificationExpiration = defaultNtfExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
