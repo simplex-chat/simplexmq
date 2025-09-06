@@ -176,7 +176,7 @@ CREATE TABLE messages(
 );
 
 ALTER TABLE msg_queues
-  ADD COLUMN msg_can_write BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN msg_can_write BOOLEAN NOT NULL DEFAULT TRUE,
   ADD COLUMN msg_queue_size BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX idx_messages_recipient_id_message_id ON messages (recipient_id, message_id);
@@ -193,10 +193,10 @@ CREATE FUNCTION write_message(
   p_quota INT
 )
 RETURNS TABLE (quota_written BOOLEAN, was_empty BOOLEAN)
-AS $$
+LANGUAGE plpgsql AS $$
 DECLARE
   q_can_write BOOLEAN;
-  q_size INT;
+  q_size BIGINT;
 BEGIN
   SELECT msg_can_write, msg_queue_size INTO q_can_write, q_size
   FROM msg_queues
@@ -208,19 +208,122 @@ BEGIN
     was_empty := q_size = 0;
 
     INSERT INTO messages(recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body)
-    VALUES (p_recipient_id, p_msg_id, p_msg_ts, quota_written, NOT quota_written AND p_msg_ntf_flag, CASE WHEN quota_written THEN '' :: BYTEA ELSE p_msg_body END);
+    VALUES (p_recipient_id, p_msg_id, p_msg_ts, quota_written, p_msg_ntf_flag AND NOT quota_written, CASE WHEN quota_written THEN '' :: BYTEA ELSE p_msg_body END);
 
     UPDATE msg_queues
     SET msg_can_write = NOT quota_written,
         msg_queue_size = msg_queue_size + 1
     WHERE recipient_id = p_recipient_id;
 
-    RETURN NEXT;
+    RETURN QUERY VALUES (quota_written, was_empty);
+  END IF;
+END;
+$$;
+
+CREATE FUNCTION try_del_msg(p_recipient_id BYTEA, p_msg_id BYTEA)
+RETURNS TABLE (r_msg_id BYTEA, r_msg_ts BIGINT, r_msg_quota BOOLEAN, r_msg_ntf_flag BOOLEAN, r_msg_body BYTEA)
+LANGUAGE plpgsql AS $$
+DECLARE
+  q_size BIGINT;
+  msg RECORD;
+BEGIN
+  SELECT msg_queue_size INTO q_size
+  FROM msg_queues
+  WHERE recipient_id = p_recipient_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF FOUND THEN
+    SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body INTO msg
+    FROM messages
+    WHERE recipient_id = p_recipient_id
+    ORDER BY message_id ASC LIMIT 1;
+
+    IF FOUND AND msg.msg_id = p_msg_id THEN
+      DELETE FROM messages WHERE message_id = msg.message_id;
+      IF FOUND THEN
+        CALL dec_msg_count(p_recipient_id, q_size, 1);
+        RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
+      END IF;
+    END IF;
+  END IF;
+END;
+$$;
+
+CREATE FUNCTION try_del_peek_msg(p_recipient_id BYTEA, p_msg_id BYTEA)
+RETURNS TABLE (r_msg_id BYTEA, r_msg_ts BIGINT, r_msg_quota BOOLEAN, r_msg_ntf_flag BOOLEAN, r_msg_body BYTEA)
+LANGUAGE plpgsql AS $$
+DECLARE
+  q_size BIGINT;
+  msg RECORD;
+BEGIN
+  SELECT msg_queue_size INTO q_size
+  FROM msg_queues
+  WHERE recipient_id = p_recipient_id AND deleted_at IS NULL
+  FOR UPDATE;
+
+  IF FOUND THEN
+    SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body INTO msg
+    FROM messages
+    WHERE recipient_id = p_recipient_id
+    ORDER BY message_id ASC LIMIT 1;
+
+    IF FOUND THEN
+      IF msg.msg_id = p_msg_id THEN
+        DELETE FROM messages WHERE message_id = msg.message_id;
+
+        IF FOUND THEN
+          CALL dec_msg_count(p_recipient_id, q_size, 1);
+          RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
+        END IF;
+
+        RETURN QUERY (
+          SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+          FROM messages
+          WHERE recipient_id = p_recipient_id
+          ORDER BY message_id ASC LIMIT 1
+        );
+      ELSE
+        RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
+      END IF;
+    END IF;
+  END IF;
+END;
+$$;
+
+CREATE FUNCTION delete_expired_msgs(p_recipient_id BYTEA, p_old_ts BIGINT) RETURNS BIGINT
+LANGUAGE plpgsql AS $$
+DECLARE
+  q_size BIGINT;
+  min_id BIGINT;
+  del_count BIGINT;
+BEGIN
+  SELECT msg_queue_size INTO q_size
+  FROM msg_queues
+  WHERE recipient_id = p_recipient_id AND deleted_at IS NULL
+  FOR UPDATE SKIP LOCKED;
+
+  IF NOT FOUND OR q_size = 0 THEN
+    RETURN 0;
   END IF;
 
-  RETURN;
+  SELECT LEAST( -- ignores NULLs
+    (SELECT MIN(message_id) FROM messages WHERE recipient_id = p_recipient_id AND msg_ts >= p_old_ts),
+    (SELECT MIN(message_id) FROM messages WHERE recipient_id = p_recipient_id AND msg_quota = TRUE)
+  ) INTO min_id;
+
+  IF min_id IS NULL THEN
+    DELETE FROM messages WHERE recipient_id = p_recipient_id;
+  ELSE
+    DELETE FROM messages WHERE recipient_id = p_recipient_id AND message_id < min_id;
+  END IF;
+
+  GET DIAGNOSTICS del_count = ROW_COUNT;
+  IF del_count > 0 THEN
+    CALL dec_msg_count(p_recipient_id, q_size, del_count);
+  END IF;
+  RETURN del_count;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 CREATE PROCEDURE expire_old_messages(
   p_now_ts BIGINT,
@@ -229,93 +332,59 @@ CREATE PROCEDURE expire_old_messages(
   OUT r_stored_msgs_count BIGINT,
   OUT r_stored_queues BIGINT
 )
-AS $$
-  DECLARE
-    old_ts BIGINT := p_now_ts - p_ttl;
-    very_old_ts BIGINT := p_now_ts - 2 * p_ttl - 86400;
-    rid BYTEA;
-    min_id BIGINT;
-    q_size BIGINT;
-    del_count BIGINT;
-    total_deleted BIGINT := 0;
-  BEGIN
-    FOR rid IN
-      SELECT recipient_id
-      FROM msg_queues
-      WHERE deleted_at IS NULL AND updated_at > very_old_ts
-    LOOP
-      BEGIN -- sub-transaction for each queue
-        SELECT msg_queue_size INTO q_size
-        FROM msg_queues
-        WHERE recipient_id = rid AND deleted_at IS NULL
-        FOR UPDATE SKIP LOCKED;
-
-        IF NOT FOUND THEN
-          RAISE WARNING 'STORE, expire_old_messages, skipping locked or deleted queue %', encode(rid, 'base64');
-          CONTINUE;
-        ELSIF q_size = 0 THEN
-          CONTINUE;
-        END IF;
-
-        SELECT LEAST( -- ignores NULLs
-          (SELECT MIN(message_id) FROM messages WHERE recipient_id = rid AND msg_ts >= old_ts),
-          (SELECT MIN(message_id) FROM messages WHERE recipient_id = rid AND msg_quota = TRUE)
-        ) INTO min_id;
-
-        IF min_id IS NULL THEN
-          DELETE FROM messages WHERE recipient_id = rid;
-        ELSE
-          DELETE FROM messages WHERE recipient_id = rid AND message_id < min_id;
-        END IF;
-
-        GET DIAGNOSTICS del_count = ROW_COUNT;
-        total_deleted := total_deleted + del_count;
-      EXCEPTION WHEN OTHERS THEN
-        ROLLBACK;
-        RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
-        CONTINUE;
-      END;
-      COMMIT;
-    END LOOP;
-
-    r_expired_msgs_count := total_deleted;
-    r_stored_msgs_count := (SELECT COUNT(1) FROM messages);
-    r_stored_queues := (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL);
-  END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION on_messages_delete()
-RETURNS TRIGGER AS $$
+LANGUAGE plpgsql AS $$
+DECLARE
+  old_ts BIGINT := p_now_ts - p_ttl;
+  very_old_ts BIGINT := p_now_ts - 2 * p_ttl - 86400;
+  rid BYTEA;
+  min_id BIGINT;
+  q_size BIGINT;
+  del_count BIGINT;
+  total_deleted BIGINT := 0;
 BEGIN
-  UPDATE msg_queues q
-  SET msg_can_write = msg_can_write OR msg_queue_size <= d.del_count,
-      msg_queue_size = msg_queue_size - d.del_count
-  FROM (
-    SELECT recipient_id, COUNT(1) AS del_count
-    FROM deleted_messages -- Transition table alias
-    GROUP BY recipient_id
-  ) d
-  WHERE q.recipient_id = d.recipient_id;
-  RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
+  FOR rid IN
+    SELECT recipient_id
+    FROM msg_queues
+    WHERE deleted_at IS NULL AND updated_at > very_old_ts
+  LOOP
+    BEGIN -- sub-transaction for each queue
+      del_count := delete_expired_msgs(rid, old_ts);
+      total_deleted := total_deleted + del_count;
+    EXCEPTION WHEN OTHERS THEN
+      ROLLBACK;
+      RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
+      CONTINUE;
+    END;
+    COMMIT;
+  END LOOP;
 
-CREATE TRIGGER tr_messages_delete
-AFTER DELETE ON messages
-REFERENCING OLD TABLE AS deleted_messages
-FOR EACH STATEMENT
-EXECUTE FUNCTION on_messages_delete();
+  r_expired_msgs_count := total_deleted;
+  r_stored_msgs_count := (SELECT COUNT(1) FROM messages);
+  r_stored_queues := (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL);
+END;
+$$;
+
+CREATE PROCEDURE dec_msg_count(p_recipient_id BYTEA, p_size BIGINT, p_change BIGINT)
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE msg_queues
+  SET msg_can_write = msg_can_write OR p_size <= p_change,
+      msg_queue_size = GREATEST(p_size - p_change, 0)
+  WHERE recipient_id = p_recipient_id;
+END;
+$$;
     |]
 
 down_m20250903_store_messages :: Text
 down_m20250903_store_messages =
   T.pack
     [r|
-DROP TRIGGER tr_messages_delete ON messages;
-DROP FUNCTION on_messages_delete;
-
 DROP FUNCTION write_message;
+DROP FUNCTION try_del_msg;
+DROP FUNCTION try_del_peek_msg;
+DROP FUNCTION delete_expired_msgs;
 DROP PROCEDURE expire_old_messages;
+DROP PROCEDURE dec_msg_count;
 
 DROP INDEX idx_messages_recipient_id_message_id;
 DROP INDEX idx_messages_recipient_id_msg_ts;

@@ -29,7 +29,6 @@ import qualified Data.ByteString.Builder as BLD
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
 import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
@@ -44,7 +43,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Util (maybeFirstRow, (<$$>))
+import Simplex.Messaging.Util (maybeFirstRow, maybeFirstRow', (<$$>))
 import System.IO (Handle, hFlush, stdout)
 
 data PostgresMsgStore = PostgresMsgStore
@@ -65,13 +64,10 @@ data PostgresQueue = PostgresQueue
   }
 
 instance StoreQueueClass PostgresQueue where
-  -- type MsgQueue PostgresQueue = ()
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  -- msgQueue = msgQueue'
-  -- {-# INLINE msgQueue #-}
   withQueueLock PostgresQueue {} _ = id -- TODO [messages] maybe it's just transaction?
   {-# INLINE withQueueLock #-}
 
@@ -94,14 +90,13 @@ instance MsgStoreClass PostgresMsgStore where
   closeMsgStore :: PostgresMsgStore -> IO ()
   closeMsgStore = closeQueueStore @PostgresQueue . queueStore_
 
-  withActiveMsgQueues :: Monoid a => PostgresMsgStore -> (PostgresQueue -> IO a) -> IO a
-  withActiveMsgQueues _ _ = error "TODO withActiveMsgQueues"
+  withActiveMsgQueues _ _ = error "withActiveMsgQueues not used"
 
   unsafeWithAllMsgQueues _ _ _ _ = error "unsafeWithAllMsgQueues not used"
 
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =
-    fmap (fromMaybe newMessageStats) $ maybeFirstRow toMessageStats $ withConnection st $ \db ->
+    maybeFirstRow' newMessageStats toMessageStats $ withConnection st $ \db ->
       DB.query db "CALL expire_old_messages(?,?,0,0,0)" (now, ttl)
     where
       st = dbStore $ queueStore_ ms
@@ -136,17 +131,19 @@ instance MsgStoreClass PostgresMsgStore where
 
   -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
   withIdleMsgQueue :: Int64 -> PostgresMsgStore -> PostgresQueue -> (() -> DBStoreIO a) -> DBStoreIO (Maybe a, Int)
-  withIdleMsgQueue _ _ _ _ = error "TODO withIdleMsgQueue"
+  withIdleMsgQueue _ _ _ _ = error "withIdleMsgQueue not used"
 
   deleteQueue :: PostgresMsgStore -> PostgresQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms q = deleteStoreQueue (queueStore_ ms) q
   {-# INLINE deleteQueue #-}
 
   deleteQueueSize :: PostgresMsgStore -> PostgresQueue -> IO (Either ErrorType (QueueRec, Int))
-  deleteQueueSize _ _ = error "TODO deleteQueueSize"
+  deleteQueueSize ms q = runExceptT $ do
+    size <- getQueueSize ms q
+    qr <- ExceptT $ deleteStoreQueue (queueStore_ ms) q
+    pure (qr, size)
 
-  getQueueMessages_ :: Bool -> PostgresQueue -> () -> DBStoreIO [Message]
-  getQueueMessages_ _ _ _ = error "TODO getQueueMessages_"
+  getQueueMessages_ _ _ _ = error "getQueueMessages_ not used"
 
   writeMsg :: PostgresMsgStore -> PostgresQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms q _ msg =
@@ -169,7 +166,13 @@ instance MsgStoreClass PostgresMsgStore where
   setOverQuota_ _ = error "TODO setOverQuota_"
 
   getQueueSize_ :: () -> DBStoreIO Int
-  getQueueSize_ _ = error "TODO getQueueSize_"
+  getQueueSize_ _ = error "getQueueSize_ not used"
+
+  getQueueSize :: PostgresMsgStore -> PostgresQueue -> ExceptT ErrorType IO Int
+  getQueueSize ms q =
+    withDB' "getQueueSize" (queueStore_ ms) $ \db ->
+      maybeFirstRow' 0 fromOnly $
+        DB.query db "SELECT msg_queue_size FROM msg_queues WHERE recipient_id = ? AND deleted_at IS NULL" (Only (recipientId' q))
 
   tryPeekMsg_ :: PostgresQueue -> () -> DBStoreIO (Maybe Message)
   tryPeekMsg_ q _ = do
@@ -185,15 +188,17 @@ instance MsgStoreClass PostgresMsgStore where
         |]
         (Only (recipientId' q))
 
+  -- this function is unused, it is provided for testing with default implementations of tryDelMsg and tryDelPeekMsg
+  -- TODO [messages] avoid the use of trigger, lock/update/release queue count
   tryDeleteMsg_ :: PostgresQueue -> () -> Bool -> DBStoreIO ()
-  tryDeleteMsg_ q _ _ = do
-    db <- asks dbConn
-    liftIO $ void $
-      DB.execute
-        db
-        -- "DELETE FROM messages WHERE recipient_id = ? ORDER BY message_id ASC LIMIT 1"
-        "DELETE FROM messages WHERE message_id = (SELECT MIN(message_id) FROM messages WHERE recipient_id = ?)"
-        (Only (recipientId' q))
+  tryDeleteMsg_ _q _ _ = error "tryDeleteMsg_ not used" -- do
+    -- db <- asks dbConn
+    -- liftIO $ void $
+    --   DB.execute
+    --     db
+    --     -- "DELETE FROM messages WHERE recipient_id = ? ORDER BY message_id ASC LIMIT 1"
+    --     "DELETE FROM messages WHERE message_id = (SELECT MIN(message_id) FROM messages WHERE recipient_id = ?)"
+    --     (Only (recipientId' q))
 
   isolateQueue :: PostgresMsgStore -> PostgresQueue -> Text -> DBStoreIO a -> ExceptT ErrorType IO a
   isolateQueue ms _q op a = withDB' op (queueStore_ ms) $ runReaderT a . DBTransaction
@@ -208,50 +213,13 @@ instance MsgStoreClass PostgresMsgStore where
   tryDelMsg ms q msgId =
     withDB' "tryDelMsg" (queueStore_ ms) $ \db ->
       maybeFirstRow toMessage $
-        DB.query
-          db
-          [sql|
-            WITH peek AS (
-              SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-              FROM messages
-              WHERE recipient_id = ?
-              ORDER BY message_id ASC
-              LIMIT 1
-            )
-            DELETE FROM messages
-            WHERE message_id = (SELECT message_id FROM peek WHERE msg_id = ?)
-            RETURNING msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body;
-          |]
-          (recipientId' q, Binary msgId)
+        DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_msg(?, ?)" (recipientId' q, Binary msgId)
 
   tryDelPeekMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
   tryDelPeekMsg ms q msgId =
     withDB' "tryDelPeekMsg" (queueStore_ ms) $ \db ->
       toResult . map toMessage
-        <$> DB.query
-          db
-          [sql|
-            WITH peek AS (
-              SELECT
-                row_number() OVER (ORDER BY message_id ASC) AS row_num,
-                message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-              FROM messages
-              WHERE recipient_id = ?
-              ORDER BY message_id ASC
-              LIMIT 2
-            ),
-            deleted AS (
-              DELETE FROM messages
-              WHERE message_id = (SELECT message_id FROM peek WHERE row_num = 1 AND msg_id = ?)
-              RETURNING msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-            )
-            SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body FROM deleted
-            UNION ALL
-            SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-            FROM peek
-            WHERE row_num = CASE WHEN EXISTS (SELECT 1 FROM deleted) THEN 2 ELSE 1 END;
-          |]
-          (recipientId' q, Binary msgId)
+        <$> DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_peek_msg(?, ?)" (recipientId' q, Binary msgId)
     where
       toResult = \case
         [] -> (Nothing, Nothing)
@@ -259,6 +227,11 @@ instance MsgStoreClass PostgresMsgStore where
           | messageId msg == msgId -> (Just msg, Nothing)
           | otherwise -> (Nothing, Just msg)
         deleted : next : _ -> (Just deleted, Just next)
+
+  deleteExpiredMsgs :: PostgresMsgStore -> PostgresQueue -> Int64 -> ExceptT ErrorType IO Int
+  deleteExpiredMsgs ms q old =
+    maybeFirstRow' 0 (fromIntegral @Int64 . fromOnly) $ withDB' "deleteExpiredMsgs" (queueStore_ ms) $ \db ->
+      DB.query db "SELECT delete_expired_msgs(?, ?)" (recipientId' q, old)
 
 toMessage :: (Binary MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
 toMessage (Binary msgId, ts, msgQuota, ntf, Binary body)
@@ -296,7 +269,7 @@ exportDbMessages tty ms h = do
 
 getDbMessageStats :: PostgresMsgStore -> IO MessageStats
 getDbMessageStats ms =
-  fmap (fromMaybe newMessageStats) $ maybeFirstRow toMessageStats $ withConnection st $ \db ->
+  maybeFirstRow' newMessageStats toMessageStats $ withConnection st $ \db ->
     DB.query_
       db
       [sql|

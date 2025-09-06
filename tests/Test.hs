@@ -127,9 +127,11 @@ main = do
         around_ (postgressBracket ntfTestServerDBConnectInfo) $ do
           describe "Notifications server (SMP server: jornal store)" $
             ntfServerTests (transport @TLS, ASType SQSMemory SMSJournal)
-          around_ (postgressBracket testServerDBConnectInfo) $
+          around_ (postgressBracket testServerDBConnectInfo) $ do
             describe "Notifications server (SMP server: postgres+jornal store)" $
               ntfServerTests (transport @TLS, ASType SQSPostgres SMSJournal)
+            describe "Notifications server (SMP server: postgres-only store)" $
+              ntfServerTests (transport @TLS, ASType SQSPostgres SMSPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $ do
           describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
           describe "SMP client agent, postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)

@@ -91,6 +91,14 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
           | messageId msg == msgId' -> (Just msg,) <$> (tryDeleteMsg_ q mq True >> tryPeekMsg_ q mq)
           | otherwise -> pure (Nothing, Just msg)
 
+  deleteExpiredMsgs :: s -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
+  deleteExpiredMsgs st q old =
+    isolateQueue st q "deleteExpiredMsgs" $
+      getMsgQueue st q False >>= deleteExpireMsgs_ old q
+
+  getQueueSize :: s -> StoreQueue s -> ExceptT ErrorType IO Int
+  getQueueSize st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure 0) (getQueueSize_ . fst)
+  {-# INLINE getQueueSize #-}
 
 data MSType = MSMemory | MSJournal | MSPostgres
 
@@ -152,20 +160,10 @@ readQueueRec :: StoreQueueClass q => q -> IO (Either ErrorType (q, QueueRec))
 readQueueRec q = maybe (Left AUTH) (Right . (q,)) <$> readTVarIO (queueRec q)
 {-# INLINE readQueueRec #-}
 
-getQueueSize :: MsgStoreClass s => s -> StoreQueue s -> ExceptT ErrorType IO Int
-getQueueSize st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure 0) (getQueueSize_ . fst)
-{-# INLINE getQueueSize #-}
-
 -- The action is called with Nothing when it is known that the queue is empty
 withPeekMsgQueue :: MsgStoreClass s => s -> StoreQueue s -> Text -> (Maybe (MsgQueue s, Message) -> StoreMonad s a) -> ExceptT ErrorType IO a
 withPeekMsgQueue st q op a = isolateQueue st q op $ getPeekMsgQueue st q >>= a
 {-# INLINE withPeekMsgQueue #-}
-
--- TODO [messages]
-deleteExpiredMsgs :: MsgStoreClass s => s -> StoreQueue s -> Int64 -> ExceptT ErrorType IO Int
-deleteExpiredMsgs st q old =
-  isolateQueue st q "deleteExpiredMsgs" $
-    getMsgQueue st q False >>= deleteExpireMsgs_ old q
 
 -- TODO [messages]
 expireQueueMsgs :: MsgStoreClass s => s -> Int64 -> Int64 -> StoreQueue s -> StoreMonad s MessageStats
