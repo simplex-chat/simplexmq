@@ -1205,7 +1205,7 @@ testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {expireMessagesOnSend = True, messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
