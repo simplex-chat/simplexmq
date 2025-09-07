@@ -2113,19 +2113,28 @@ saveServerMessages drainMsgs = \case
 exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
 exportMessages tty ms f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
+  mVar <- newIORef []
   liftIO $ withFile f WriteMode $ \h ->
-    tryAny (unsafeWithAllMsgQueues tty True ms $ saveQueueMsgs h) >>= \case
-      Right (Sum total) -> logNote $ "messages saved: " <> tshow total
+    tryAny (unsafeWithAllMsgQueues tty True ms $ saveQueueMsgs h mVar) >>= \case
+      Right (Sum total) -> do
+        qMsgs <- readIORef mVar
+        unless (null qMsgs) $ saveMessages h qMsgs
+        logNote $ "messages saved: " <> tshow total
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
   where
-    saveQueueMsgs h q = do
+    saveQueueMsgs h mVar q = do
       msgs <-
         unsafeRunStore q "saveQueueMsgs" $
           getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
-      unless (null msgs) $ BLD.hPutBuilder h $! encodeMessages (recipientId q) msgs
+      unless (null msgs) $ do
+        qMsgs <- ((recipientId q, msgs) :) <$> readIORef mVar
+        if length qMsgs `mod` 100 > 0
+          then writeIORef mVar qMsgs
+          else writeIORef mVar [] >> saveMessages h qMsgs
       pure $ Sum $ length msgs
+    saveMessages h = BLD.hPutBuilder h . mconcat . map (uncurry encodeMessages) . reverse
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
 processServerMessages :: forall s'. StartOptions -> M s' (Maybe MessageStats)
