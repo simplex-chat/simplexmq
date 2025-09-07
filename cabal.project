@@ -51,3 +51,9 @@ source-repository-package
     location: https://github.com/simplex-chat/wai.git
     tag: 2f6e5aa5f05ba9140ac99e195ee647b4f7d926b0
     subdir: warp
+
+source-repository-package
+    type: git
+    location: https://github.com/kazu-yamamoto/hs-tls.git
+    tag: b76cc18fbcc6edaec27c6727377b603fa9cf59ae
+    subdir: tls

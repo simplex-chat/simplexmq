@@ -293,7 +293,7 @@ library
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
-    , crypton ==0.34.*
+    , crypton ==1.0.*
     , crypton-x509 ==1.7.*
     , crypton-x509-store ==1.6.*
     , crypton-x509-validation ==1.6.*
@@ -319,7 +319,7 @@ library
     , stm ==2.5.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls ==2.1.6.*
+    , tls ==2.1.11.*
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
