@@ -87,7 +87,8 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("restore_messages: " <> onOff enableStoreLog <> "\n\n")
     <> "# Messages and notifications expiration periods.\n"
     <> ("expire_messages_days: " <> tshow defMsgExpirationDays <> "\n")
-    <> "expire_messages_on_start: on\n"
+    <> "expire_messages_on_start: on\n\
+        \expire_messages_on_send: off\n"
     <> ("expire_ntfs_hours: " <> tshow defNtfExpirationHours <> "\n\n")
     <> "# Log daily server statistics to CSV file\n"
     <> ("log_stats: " <> onOff logStats <> "\n\n")
