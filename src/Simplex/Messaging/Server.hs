@@ -2124,7 +2124,7 @@ exportMessages tty ms f drainMsgs = do
       msgs <-
         unsafeRunStore q "saveQueueMsgs" $
           getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
-      BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
+      unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
       pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
