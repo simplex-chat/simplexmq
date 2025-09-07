@@ -2258,7 +2258,11 @@ $(J.deriveJSON defaultJSON ''MsgFlags)
 
 $(J.deriveJSON (sumTypeJSON id) ''CommandError)
 
-$(J.deriveJSON (sumTypeJSON $ dropPrefix "NE") ''NetworkError)
+$(J.deriveToJSON (sumTypeJSON $ dropPrefix "NE") ''NetworkError)
+
+instance FromJSON NetworkError where
+  parseJSON = $(J.mkParseJSON (sumTypeJSON $ dropPrefix "NE") ''NetworkError)
+  omittedField = Just NEFailedError
 
 $(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 
