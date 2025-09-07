@@ -1848,10 +1848,10 @@ client
                     Right body -> do
                       when (isJust (queueData qr) && isSecuredMsgQueue qr) $ void $ liftIO $
                         deleteQueueLinkData (queueStore ms) q
-                      ServerConfig {messageExpiration, msgIdBytes} <- asks config
+                      ServerConfig {messageExpiration, expireMessagesOnSend, msgIdBytes} <- asks config
                       msgId <- randomId' msgIdBytes
                       msg_ <- liftIO $ runExceptT $ do
-                        expireMessages messageExpiration stats
+                        when expireMessagesOnSend $ mapM_ (expireMessages stats) messageExpiration
                         msg <- liftIO $ mkMessage msgId body
                         writeMsg ms q True msg
                       case msg_ of
@@ -1875,9 +1875,9 @@ client
               msgTs <- getSystemTime
               pure $! Message msgId msgTs msgFlags body
 
-            expireMessages :: Maybe ExpirationConfig -> ServerStats -> ExceptT ErrorType IO ()
-            expireMessages msgExp stats = do
-              deleted <- maybe (pure 0) (deleteExpiredMsgs ms q <=< liftIO . expireBeforeEpoch) msgExp
+            expireMessages :: ServerStats -> ExpirationConfig -> ExceptT ErrorType IO ()
+            expireMessages stats msgExp = do
+              deleted <- deleteExpiredMsgs ms q =<< liftIO (expireBeforeEpoch msgExp)
               liftIO $ when (deleted > 0) $ atomicModifyIORef'_ (msgExpired stats) (+ deleted)
 
             -- The condition for delivery of the message is:
