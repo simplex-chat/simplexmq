@@ -54,6 +54,8 @@ source-repository-package
 
 source-repository-package
     type: git
-    location: https://github.com/kazu-yamamoto/hs-tls.git
-    tag: b76cc18fbcc6edaec27c6727377b603fa9cf59ae
+    location: https://github.com/haskell-tls/hs-tls.git
+    tag: 7f060799ea762c5d7ff058d264dae5f0294fac79
+-- passes 7f060799ea762c5d7ff058d264dae5f0294fac79
+-- fails 1927590272ada1e0a32c29ca29ae9cc8d5ed3595
     subdir: tls

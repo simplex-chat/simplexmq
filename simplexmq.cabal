@@ -319,7 +319,7 @@ library
     , stm ==2.5.*
     , time ==1.12.*
     , time-manager ==0.0.*
-    , tls ==2.1.11.*
+    , tls ==2.1.6.*
     , transformers ==0.6.*
     , unliftio ==0.2.*
     , unliftio-core ==0.2.*
