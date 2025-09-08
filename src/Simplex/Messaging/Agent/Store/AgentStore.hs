@@ -287,7 +287,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (AnyError (..), AnyStoreError (..), bshow, catchAllErrors, eitherToMaybe, firstRow, firstRow', ifM, maybeFirstRow, tshow, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, firstRow, firstRow', ifM, maybeFirstRow, tshow, ($>>=), (<$$>))
 import Simplex.Messaging.Version.Internal
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -982,7 +982,7 @@ tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchA
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
-handleWrkErr :: forall e a. (AnyStoreError e) => String -> String -> IO a -> ExceptT e IO a
+handleWrkErr :: forall e a. AnyStoreError e => String -> String -> IO a -> ExceptT e IO a
 handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
   where
     mkError :: E.SomeException -> e
