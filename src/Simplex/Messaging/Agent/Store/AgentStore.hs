@@ -982,7 +982,7 @@ tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchA
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
-handleWrkErr :: forall e a. (AnyError e, AnyStoreError e) => String -> String -> IO a -> ExceptT e IO a
+handleWrkErr :: forall e a. (AnyStoreError e) => String -> String -> IO a -> ExceptT e IO a
 handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
   where
     mkError :: E.SomeException -> e
