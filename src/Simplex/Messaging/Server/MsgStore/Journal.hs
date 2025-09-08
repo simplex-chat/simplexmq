@@ -47,6 +47,8 @@ module Simplex.Messaging.Server.MsgStore.Journal
 #if defined(dbServerPostgres)
     postgresQueueStore,
 #endif
+    exportJournalMessages,
+    encodeMessages,
   )
 where
 
@@ -56,14 +58,16 @@ import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (fromRight)
+import Data.Char (ord)
+import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (sort)
+import Data.List (sort, sortBy)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
@@ -75,6 +79,7 @@ import Simplex.Messaging.Agent.Client (getMapLock)
 import Simplex.Messaging.Agent.Lock
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal.SharedLock
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -87,8 +92,9 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=), (<$$>))
 import System.Directory
+import System.Exit (exitFailure)
 import System.FilePath (takeFileName, (</>))
-import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..))
+import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..), stdout)
 import qualified System.IO as IO
 import System.Random (StdGen, genByteString, newStdGen)
 
@@ -1019,3 +1025,83 @@ hClose h =
 
 closeOnException :: Handle -> IO a -> IO a
 closeOnException h a = a `E.onException` hClose h
+
+exportJournalMessages :: Bool -> JournalMsgStore s -> Handle -> IO Int
+exportJournalMessages tty ms@JournalMsgStore {config} h = ifM (doesDirectoryExist storePath) exportStore (pure 0)
+  where
+    exportStore = do
+      (!qCount, !msgCount) <- foldQueues 0 exportQueueMessages (0, 0) ("", storePath)
+      putStrLn $ progress qCount
+      pure msgCount
+    JournalStoreConfig {storePath, pathParts} = config
+    exportQueueMessages :: (Int, Int) -> (String, FilePath) -> IO (Int, Int)
+    exportQueueMessages (!i, !count) (queueId, dir) = do
+      let i' = i + 1
+      when (tty && i' `mod` 100000 == 0) $ putStr (progress i' <> "\r") >> IO.hFlush stdout
+      case strDecode $ B.pack queueId of
+        Right rId -> do
+          let statePath = msgQueueStatePath dir queueId
+          msgs <-
+            readQueueState ms statePath >>= \case
+              (Just MsgQueueState {readState = rs, writeState = ws, size}, _)
+                | size == 0 -> pure []
+                | journalId rs == journalId ws -> do
+                    -- just one journal
+                    let f = journalFilePath dir $ journalId rs
+                    s <- B.readFile f
+                    let (errs, msgs) = parseMsgs $ B.take (bytePos' ws - bytePos' rs) $ B.drop (bytePos' rs) s
+                    unless (null errs) $ do
+                      when tty $ putStrLn $ progress i'
+                      logErr errs f
+                    pure msgs
+                | otherwise -> do
+                    let rf = journalFilePath dir $ journalId rs
+                        wf = journalFilePath dir $ journalId ws
+                    r <- B.readFile rf
+                    w <- B.readFile wf
+                    let (rErrs, rMsgs) = parseMsgs $ B.take (fromIntegral $ byteCount rs) $ B.drop (bytePos' rs) r
+                        (wErrs, wMsgs) = parseMsgs $ B.take (bytePos' ws) w
+                    unless (null rErrs && null wErrs) $ do
+                      when tty $ putStrLn $ progress i'
+                      unless (null rErrs) $ logErr rErrs rf
+                      unless (null wErrs) $ logErr wErrs wf
+                    pure $ rMsgs ++ wMsgs
+                where
+                  bytePos' = fromIntegral . bytePos
+                  parseMsgs = partitionEithers . map strDecode . B.lines
+                  logErr errs f = putStrLn $ "Error reading " <> show (length errs) <> " messages from " <> f
+              _ -> pure []
+          unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages rId msgs
+          pure (i', count + length msgs)
+        Left e -> do
+          logError $ "STORE: exportQueueMessages, message queue directory " <> T.pack dir <> " is invalid, " <> tshow e
+          exitFailure
+    progress i = "Processed: " <> show i <> " queues"
+    foldQueues depth f acc (queueId, path) = do
+      let f' = if depth == pathParts - 1 then f else foldQueues (depth + 1) f
+      listDirs >>= foldM f' acc
+      where
+        listDirs = fmap catMaybes . mapM queuePath . sortBy compareB64 =<< listDirectory path
+        compareB64 [] [] = EQ
+        compareB64 [] _ = LT
+        compareB64 _ [] = GT
+        compareB64 (c : cs) (c' : cs')
+          | c == c' = compareB64 cs cs'
+          | otherwise = compare (charValue c) (charValue c')
+        charValue '-' = 62
+        charValue '_' = 63
+        charValue c
+          | c >= 'A' && c <= 'Z' = ord c - ord 'A'
+          | c >= 'a' && c <= 'z' = 26 + ord c - ord 'a'
+          | c >= '0' && c <= '9' = 52 + ord c - ord '0'
+          | otherwise = -1
+        queuePath dir = do
+          let !path' = path </> dir
+              !queueId' = queueId <> dir
+          ifM
+            (doesDirectoryExist path')
+            (pure $ Just (queueId', path'))
+            (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
+
+encodeMessages :: RecipientId -> [Message] -> BLD.Builder
+encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')

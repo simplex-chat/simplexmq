@@ -227,6 +227,7 @@ testExportImportStore ms = do
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
   exportMessages False ms testStoreMsgsFile False
+  testFastExport ms testStoreMsgsFile
   closeMsgStore ms
   closeStoreLog sl
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
@@ -238,6 +239,7 @@ testExportImportStore ms = do
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- 2 message files
   exportMessages False ms' testStoreMsgsFile2 False
+  testFastExport ms' testStoreMsgsFile2
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   readWriteQueueStore True (mkQueue stmStore True) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
@@ -245,6 +247,11 @@ testExportImportStore ms = do
     importMessages False stmStore testStoreMsgsFile2 Nothing False
   exportMessages False stmStore testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
+  where
+    testFastExport ms' f = do
+      void $ withFile (f <> ".fast") WriteMode $ exportJournalMessages False ms'
+      s <- B.readFile f
+      B.readFile (f <> ".fast") `shouldReturn` s
 
 testQueueState :: JournalMsgStore s -> IO ()
 testQueueState ms = do
