@@ -52,7 +52,7 @@ import Simplex.Messaging.Util (diffToMicroseconds, tshow)
 newtype BoolInt = BI {unBI :: Bool}
   deriving newtype (FromField, ToField)
 
-newtype Binary = Binary {fromBinary :: ByteString}
+newtype Binary a = Binary {fromBinary :: a}
   deriving newtype (FromField, ToField)
 
 data Connection = Connection
