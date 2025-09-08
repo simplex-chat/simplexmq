@@ -154,6 +154,7 @@ data ServerConfig s = ServerConfig
     -- | time after which the messages can be removed from the queues and check interval, seconds
     messageExpiration :: Maybe ExpirationConfig,
     expireMessagesOnStart :: Bool,
+    expireMessagesOnSend :: Bool,
     -- | interval of inactivity after which journal queue is closed
     idleQueueInterval :: Int64,
     -- | notification expiration interval (seconds)
