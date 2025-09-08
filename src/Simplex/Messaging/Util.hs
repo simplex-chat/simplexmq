@@ -173,7 +173,7 @@ catchAll_ a = catchAll a . const
 
 class Show e => AnyError e where fromSomeException :: E.SomeException -> e
 
-class Show e => AnyStoreError e where
+class (Show e, AnyError e) => AnyStoreError e where
   isWorkItemError :: e -> Bool
   mkWorkItemError :: String -> e
 
