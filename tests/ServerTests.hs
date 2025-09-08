@@ -232,12 +232,12 @@ testCreateSecure =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -279,12 +279,12 @@ testCreateSndSecure =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
