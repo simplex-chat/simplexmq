@@ -55,6 +55,7 @@ module Simplex.Messaging.Agent
     switchConnectionAsync,
     deleteConnectionAsync,
     deleteConnectionsAsync,
+    deleteRcvQueuesAsync,
     createConnection,
     setConnShortLink,
     deleteConnShortLink,
@@ -366,6 +367,11 @@ deleteConnectionAsync c waitDelivery = withAgentEnv c . deleteConnectionAsync' c
 deleteConnectionsAsync :: AgentClient -> Bool -> [ConnId] -> AE ()
 deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync' c waitDelivery
 {-# INLINE deleteConnectionsAsync #-}
+
+-- | Delete receive queues for SMP agent connections using batch commands asynchronously, no synchronous response
+deleteRcvQueuesAsync :: AgentClient -> [ConnId] -> AE ()
+deleteRcvQueuesAsync c = withAgentEnv c . deleteRcvQueuesAsync' c
+{-# INLINE deleteRcvQueuesAsync #-}
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
@@ -813,6 +819,35 @@ deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
     void . lift . forkIO $
       withLock' (deleteLock c) "deleteConnectionsAsync" $
         deleteConnQueues c NRMBackground waitDelivery True rqs >> void (runExceptT onSuccess)
+
+deleteRcvQueuesAsync' :: AgentClient -> [ConnId] -> AM ()
+deleteRcvQueuesAsync' c connIds = do
+  -- TODO vvv reuse with prepareDeleteConnections_
+  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
+  let (errs, cs) = M.mapEither id conns
+      errs' = M.map (Left . storeError) errs
+      (delRs, rcvQs) = M.mapEither rcvQueues cs
+      rqs = concat $ M.elems rcvQs
+      connIds' = M.keys rcvQs
+  lift $ forM_ (L.nonEmpty connIds') unsubConnIds
+  -- TODO ^^^
+  void . lift . forkIO $
+    withLock' (deleteLock c) "deleteConnectionsAsync" $
+      deleteConnQueues c NRMBackground waitDelivery True rqs >> void (runExceptT onSuccess)
+  where
+    -- TODO vvv reuse with prepareDeleteConnections_
+    rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
+    rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
+      [] -> Left $ Right ()
+      rqs -> Right rqs
+    unsubConnIds :: NonEmpty ConnId -> AM' ()
+    unsubConnIds connIds' = do
+      forM_ connIds' $ \connId ->
+        atomically $ removeSubscription c connId
+      ns <- asks ntfSupervisor
+      atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
+    notify = atomically . writeTBQueue (subQ c)
+    -- TODO ^^^
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> AM ConnectionStats
