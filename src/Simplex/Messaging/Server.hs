@@ -2117,7 +2117,7 @@ exportMessages tty st f drainMsgs = do
     StoreMemory ms -> exportMessages_ ms $ getMsgs ms
     StoreJournal ms -> exportMessages_ ms $ getJournalMsgs ms
   where
-    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty True ms . saveQueueMsgs get
+    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
     run :: (Handle -> IO Int) -> IO ()
     run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
       Right n -> logNote $ "messages saved: " <> tshow n
@@ -2160,7 +2160,7 @@ processServerMessages StartOptions {skipWarnings} = do
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
-          run a = unsafeWithAllMsgQueues False False ms a `catchAny` \_ -> exitFailure
+          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
           processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
             mq <- getMsgQueue ms q False

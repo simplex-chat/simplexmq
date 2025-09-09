@@ -591,7 +591,7 @@ exportDatabaseToStoreLog logPath dbOpts storeLogFilePath = do
   ps <- newJournalMsgStore logPath $ PQStoreCfg storeCfg
   sl <- openWriteStoreLog False storeLogFilePath
   Sum sCnt <- foldServiceRecs (postgresQueueStore ps) $ \sr -> logNewService sl sr $> Sum (1 :: Int)
-  Sum qCnt <- foldQueueRecs True True (postgresQueueStore ps) Nothing $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
+  Sum qCnt <- foldQueueRecs True True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
   closeStoreLog sl
   pure (sCnt, qCnt)
 #endif

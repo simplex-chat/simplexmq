@@ -406,11 +406,11 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   -- This function can only be used in server CLI commands or before server is started.
   -- It does not cache queues and is NOT concurrency safe.
-  unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
-  unsafeWithAllMsgQueues tty withData ms action = case queueStore_ ms of
+  unsafeWithAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
+  unsafeWithAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st run
 #if defined(dbServerPostgres)
-    PQStore st -> foldQueueRecs tty withData st Nothing $ uncurry (mkQueue ms False) >=> run
+    PQStore st -> foldQueueRecs False tty st $ uncurry (mkQueue ms False) >=> run
 #endif
     where
       run q = do
@@ -430,7 +430,7 @@ instance MsgStoreClass (JournalMsgStore s) where
 #if defined(dbServerPostgres)
     PQStore st -> do
       let JournalMsgStore {queueLocks, sharedLock} = ms
-      foldQueueRecs tty False st (Just veryOld) $ \(rId, qr) -> do
+      foldRecentQueueRecs veryOld tty st $ \(rId, qr) -> do
         q <- mkQueue ms False rId qr
         withSharedWaitLock rId queueLocks sharedLock $ run $ tryStore' "deleteExpiredMsgs" rId $
           getLoadedQueue q >>= unStoreIO . expireQueueMsgs ms now old
