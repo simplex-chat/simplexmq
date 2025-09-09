@@ -54,7 +54,7 @@ msgStoreTests = do
   around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
   around (withMsgStore $ testJournalStoreCfg MQStoreCfg) $ describe "Journal message store" $ do
     someMsgStoreTests
-    fit "should export and import journal store" testExportImportStore
+    it "should export and import journal store" testExportImportStore
     describe "queue state" $ do
       it "should restore queue state from the last line" testQueueState
       it "should recover when message is written and state is not" testMessageState
