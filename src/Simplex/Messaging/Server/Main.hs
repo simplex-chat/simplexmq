@@ -145,12 +145,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               completedExport
           | otherwise -> do
               confirmExport
-              let msType = readStoreType ini
               case readStoreType ini of
                 Right (ASType SQSMemory _) -> do
                   ms <- newJournalMsgStore logPath MQStoreCfg
                   readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
-                  exportMessages True ms storeMsgsFilePath False
+                  exportMessages True (StoreJournal ms) storeMsgsFilePath False
                 Right (ASType SQSPostgres SMSJournal) -> do
 #if defined(dbServerPostgres)
                   let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
@@ -159,7 +158,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
                     exitFailure
                   ms <- newJournalMsgStore logPath $ PQStoreCfg PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
-                  exportMessages True ms storeMsgsFilePath False
+                  exportMessages True (StoreJournal ms) storeMsgsFilePath False
 #else
                   noPostgresExit
 #endif

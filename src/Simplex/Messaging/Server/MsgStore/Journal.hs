@@ -48,6 +48,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     postgresQueueStore,
 #endif
     exportJournalMessages,
+    getJournalQueueMessages,
     encodeMessages,
   )
 where
@@ -569,8 +570,9 @@ instance MsgStoreClass (JournalMsgStore s) where
     where
       getSize = maybe (pure (-1)) (fmap size . readTVarIO . state)
 
+   -- drainMsgs is never True with Journal storage
   getQueueMessages_ :: Bool -> JournalQueue s -> JournalMsgQueue s -> StoreIO s [Message]
-  getQueueMessages_ drainMsgs q' q = StoreIO (run [])
+  getQueueMessages_ drainMsgs q' q = StoreIO $ if drainMsgs then run [] else readTVarIO (state q) >>= runFast
     where
       run msgs = readTVarIO (handles q) >>= maybe (pure []) (getMsg msgs)
       getMsg msgs hs = chooseReadJournal q' q drainMsgs hs >>= maybe (pure msgs) readMsg
@@ -579,6 +581,23 @@ instance MsgStoreClass (JournalMsgStore s) where
             (msg, len) <- hGetMsgAt h $ bytePos rs
             updateReadPos q' q drainMsgs len hs
             (msg :) <$> run msgs
+      runFast MsgQueueState {writeState = ws, readState = rs, size}
+        | size > 0 =
+            readTVarIO (handles q) >>= \case
+              Just (MsgQueueHandles _ rh wh_) -> case wh_ of
+                Just wh -> (++) <$> getAllMsgs rh (bytePos rs) (byteCount rs - bytePos rs) <*> getAllMsgs wh 0 (bytePos ws)
+                _ -> getAllMsgs rh (bytePos rs) (bytePos ws - bytePos rs)
+              Nothing -> pure []
+        | otherwise = pure []
+      getAllMsgs h pos sz
+        | sz > 0 = do
+            IO.hSeek h AbsoluteSeek $ fromIntegral pos
+            parseMsgs =<< B.hGet h (fromIntegral sz)
+        | otherwise = pure []
+      parseMsgs s = do
+        let (errs, msgs) = partitionEithers $ map strDecode $ B.lines s
+        unless (null errs) $ putStrLn $ "Error reading " <> show (length errs) <> " messages from " <> B.unpack (strEncode $ recipientId' q')
+        pure msgs
 
   writeMsg :: JournalMsgStore s -> JournalQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms q' logState msg = isolateQueue q' "writeMsg" $ do
@@ -1102,6 +1121,34 @@ exportJournalMessages tty ms@JournalMsgStore {config} h = ifM (doesDirectoryExis
             (doesDirectoryExist path')
             (pure $ Just (queueId', path'))
             (Nothing <$ putStrLn ("Error: path " <> path' <> " is not a directory, skipping"))
+
+getJournalQueueMessages :: JournalMsgStore s -> JournalQueue s -> IO [Message]
+getJournalQueueMessages ms q = do
+  let rId = recipientId' q
+      dir = msgQueueDirectory ms rId
+      statePath = msgQueueStatePath dir $ B.unpack (strEncode rId)
+  readQueueState ms statePath >>= \case
+    (Just MsgQueueState {readState = rs, writeState = ws, size}, _)
+      | size == 0 -> pure []
+      | journalId rs == journalId ws -> do
+          let f = journalFilePath dir $ journalId rs
+          s <- B.readFile f
+          parseMsgs f $ B.take (bytePos' ws - bytePos' rs) $ B.drop (bytePos' rs) s
+      | otherwise -> do
+          let rf = journalFilePath dir $ journalId rs
+              wf = journalFilePath dir $ journalId ws
+          r <- B.readFile rf
+          w <- B.readFile wf
+          rMsgs <- parseMsgs rf $ B.take (fromIntegral $ byteCount rs) $ B.drop (bytePos' rs) r
+          wMsgs <- parseMsgs wf $ B.take (bytePos' ws) w
+          pure $ rMsgs ++ wMsgs
+    _ -> pure []
+  where
+    bytePos' = fromIntegral . bytePos
+    parseMsgs f s = do
+      let (errs, msgs) = partitionEithers $ map strDecode $ B.lines s
+      unless (null errs) $ putStrLn $ "Error reading " <> show (length errs) <> " messages from " <> f
+      pure msgs
 
 encodeMessages :: RecipientId -> [Message] -> BLD.Builder
 encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
