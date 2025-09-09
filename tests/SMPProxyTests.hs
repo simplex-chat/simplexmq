@@ -69,6 +69,7 @@ smpProxyTests = do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
     describe "client API" $ do
+      let maxLen = maxMessageLength encryptedBlockSMPVersion
       describe "one server" $ do
         it "deliver via proxy" . oneServer $ do
           deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"
@@ -77,7 +78,7 @@ smpProxyTests = do
             relayServ = srv2
         (msg1, msg2) <- runIO $ do
           g <- C.newRandom
-          atomically $ (,) <$> C.randomBytes maxMessageLength g <*> C.randomBytes maxMessageLength g
+          atomically $ (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
         it "deliver via proxy" . twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
         it "max message size, Ed448 keys" . twoServersFirstProxy $
