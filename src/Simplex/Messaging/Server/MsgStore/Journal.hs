@@ -1064,31 +1064,25 @@ exportJournalMessages tty ms@JournalMsgStore {config} h = ifM (doesDirectoryExis
             readQueueState ms statePath >>= \case
               (Just MsgQueueState {readState = rs, writeState = ws, size}, _)
                 | size == 0 -> pure []
-                | journalId rs == journalId ws -> do
-                    -- just one journal
-                    let f = journalFilePath dir $ journalId rs
-                    s <- B.readFile f
-                    let (errs, msgs) = parseMsgs $ B.take (bytePos' ws - bytePos' rs) $ B.drop (bytePos' rs) s
-                    unless (null errs) $ do
-                      when tty $ putStrLn $ progress i'
-                      logErr errs f
-                    pure msgs
-                | otherwise -> do
-                    let rf = journalFilePath dir $ journalId rs
-                        wf = journalFilePath dir $ journalId ws
-                    r <- B.readFile rf
-                    w <- B.readFile wf
-                    let (rErrs, rMsgs) = parseMsgs $ B.take (fromIntegral $ byteCount rs) $ B.drop (bytePos' rs) r
-                        (wErrs, wMsgs) = parseMsgs $ B.take (bytePos' ws) w
-                    unless (null rErrs && null wErrs) $ do
-                      when tty $ putStrLn $ progress i'
-                      unless (null rErrs) $ logErr rErrs rf
-                      unless (null wErrs) $ logErr wErrs wf
-                    pure $ rMsgs ++ wMsgs
+                | journalId rs == journalId ws ->
+                    getMsgs rs (bytePos rs) (bytePos ws - bytePos rs)
+                | otherwise ->
+                    (++)
+                      <$> getMsgs rs (byteCount rs - bytePos rs) (bytePos rs)
+                      <*> getMsgs ws (0 :: Int64) (bytePos ws)
                 where
-                  bytePos' = fromIntegral . bytePos
-                  parseMsgs = partitionEithers . map strDecode . B.lines
-                  logErr errs f = putStrLn $ "Error reading " <> show (length errs) <> " messages from " <> f
+                  getMsgs :: JournalState t -> Int64 -> Int64 -> IO [Message]
+                  getMsgs js pos sz
+                    | sz > 0 = IO.withFile f ReadWriteMode $ \h' -> do
+                        IO.hSeek h' AbsoluteSeek $ fromIntegral pos
+                        parseMsgs f =<< B.hGet h' (fromIntegral sz)
+                    | otherwise = pure []
+                    where
+                      f = journalFilePath dir $ journalId js
+                  parseMsgs f s = do
+                    let (errs, msgs) = partitionEithers $ map (strDecode @Message) $ B.lines s
+                    unless (null errs) $ putStrLn $ "Error reading " <> show (length errs) <> " messages from " <> f
+                    pure msgs
               _ -> pure []
           unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages rId msgs
           pure (i', count + length msgs)

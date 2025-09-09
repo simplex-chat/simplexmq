@@ -105,7 +105,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, getJournalQueueMessages)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, msgQueueDirectory)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -128,7 +128,7 @@ import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
-import UnliftIO.Directory (doesFileExist, renameFile)
+import UnliftIO.Directory (doesDirectoryExist, doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
@@ -2125,13 +2125,15 @@ exportMessages tty ms f drainMsgs = do
       StoreMemory s -> s
       StoreJournal s -> s
     getMessages q = case ms of
-      StoreMemory _ ->
-        unsafeRunStore q "saveQueueMsgs" $
-          getQueueMessages_ drainMsgs q =<< getMsgQueue ms' q False
+      StoreMemory _ -> getMsgs
       StoreJournal _ ->
-        unsafeRunStore q "saveQueueMsgs" $
-          getQueueMessages_ drainMsgs q =<< getMsgQueue ms' q False
+        ifM
+          (doesDirectoryExist $ msgQueueDirectory ms' $ recipientId q)
+          getMsgs
+          (pure [])
         -- getJournalQueueMessages ms' q
+      where
+        getMsgs = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms' q False
     saveQueueMsgs h q = do
       msgs <- getMessages q
       unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs

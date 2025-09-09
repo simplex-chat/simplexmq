@@ -559,11 +559,16 @@ foldQueueRecs tty withData st skipOld_ f = do
   where
     foldRecs db acc f' = case skipOld_ of
       Nothing
-        | withData -> DB.fold_ db (queueRecQueryWithData <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRec
+        | withData -> DB.fold_ db (queueRecQueryWithData <> cond) acc $ \acc' -> f' acc' . rowToQueueRecWithData
+        | otherwise -> DB.fold_ db (queueRecQuery <> cond) acc $ \acc' -> f' acc' . rowToQueueRec
+        where
+          cond = " WHERE deleted_at IS NULL ORDER BY recipient_id ASC"
       Just old
-        | withData -> DB.fold db (queueRecQueryWithData <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold db (queueRecQuery <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
+        | withData -> DB.fold db (queueRecQueryWithData <> cond) (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
+        | otherwise -> DB.fold db (queueRecQuery <> cond) (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
+        where
+          cond = " WHERE deleted_at IS NULL AND updated_at > ? ORDER BY recipient_id ASC"
+    orderBy = " ORDER BY recipient_id ASC"
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
