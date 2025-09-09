@@ -84,6 +84,7 @@ data MessageStats = MessageStats
     expiredMsgsCount :: Int,
     storedQueues :: Int
   }
+  deriving (Show)
 
 instance Monoid MessageStats where
   mempty = MessageStats 0 0 0

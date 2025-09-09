@@ -52,7 +52,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main.Init
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), exportJournalMessages, stmQueueStore)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
@@ -60,11 +60,11 @@ import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupp
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, tshow, unlessM)
+import Simplex.Messaging.Util (eitherToMaybe, ifM, unlessM)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (BufferMode (..), IOMode (..), hSetBuffering, stderr, stdout, withFile)
+import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 #if defined(dbServerPostgres)
@@ -131,25 +131,24 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, update it to `journal` in INI file"
                 Right (ASType _ SMSJournal) -> "store_messages set to `journal`"
                 Left e -> e <> ", configure storage correctly"
-        SCExport fast
+        SCExport
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
               putStrLn $ storeMsgsFilePath <> " file already exists."
               exitFailure
-          | fast -> do
-              confirmExport
-              logNote $ "saving messages to file " <> T.pack storeMsgsFilePath
-              ms <- newJournalMsgStore logPath MQStoreCfg
-              total <- withFile storeMsgsFilePath WriteMode $ exportJournalMessages True ms
-              logNote $ "messages saved: " <> tshow total
-              completedExport
           | otherwise -> do
-              confirmExport
+              confirmOrExit
+                ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
+                "Journal not exported"
               case readStoreType ini of
-                Right (ASType SQSMemory _) -> do
+                Right (ASType SQSMemory msType) -> do
                   ms <- newJournalMsgStore logPath MQStoreCfg
                   readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
                   exportMessages True (StoreJournal ms) storeMsgsFilePath False
+                  putStrLn "Export completed"
+                  putStrLn $ case msType of
+                    SMSMemory -> "store_messages set to `memory`, start the server."
+                    SMSJournal -> "store_messages set to `journal`, update it to `memory` in INI file"
                 Right (ASType SQSPostgres SMSJournal) -> do
 #if defined(dbServerPostgres)
                   let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
@@ -159,23 +158,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     exitFailure
                   ms <- newJournalMsgStore logPath $ PQStoreCfg PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
                   exportMessages True (StoreJournal ms) storeMsgsFilePath False
+                  putStrLn "Export completed"
+                  putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
 #else
                   noPostgresExit
 #endif
-                Left _ -> pure ()
-              completedExport
-          where
-            confirmExport =
-              confirmOrExit
-                ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
-                "Journal not exported"
-            completedExport = do
-              putStrLn "Export completed"
-              putStrLn $ case readStoreType ini of
-                Right (ASType SQSMemory SMSMemory) -> "store_messages set to `memory`, start the server."
-                Right (ASType SQSMemory SMSJournal) -> "store_messages set to `journal`, update it to `memory` in INI file"
-                Right (ASType SQSPostgres SMSJournal) -> "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
-                Left e -> e <> ", configure storage correctly"
+                Left e -> putStrLn $ e <> ", configure storage correctly"
         SCDelete
           | not msgsDirExists -> do
               putStrLn $ storeMsgsJournalDir <> " directory does not exists."
@@ -214,7 +202,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           where
             setToDbStr :: String
             setToDbStr = "store_queues set to `memory`, update it to `database` in INI file"
-        SCExport _
+        SCExport
           | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
           | not schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
@@ -691,7 +679,7 @@ data CliCommand
   | Journal StoreCmd
   | Database StoreCmd DBOpts
 
-data StoreCmd = SCImport | SCExport Bool | SCDelete
+data StoreCmd = SCImport | SCExport | SCDelete
 
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
 cliCommandP cfgPath logPath iniFile =
@@ -852,8 +840,7 @@ cliCommandP cfgPath logPath iniFile =
     storeCmdP src dest =
       hsubparser
         ( command "import" (info (pure SCImport) (progDesc $ "Import " <> src <> " into a new " <> dest))
-            <> command "export" (info (pure $ SCExport False) (progDesc $ "Export " <> dest <> " to " <> src))
-            <> command "fast-export" (info (pure $ SCExport True) (progDesc $ "Fast export of " <> dest <> " to " <> src))
+            <> command "export" (info (pure SCExport) (progDesc $ "Export " <> dest <> " to " <> src))
             <> command "delete" (info (pure SCDelete) (progDesc $ "Delete " <> dest))
         )
     parseBasicAuth :: ReadM ServerPassword

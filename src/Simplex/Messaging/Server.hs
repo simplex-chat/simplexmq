@@ -105,7 +105,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, msgQueueDirectory)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, getJournalQueueMessages)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -128,7 +128,7 @@ import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
-import UnliftIO.Directory (doesDirectoryExist, doesFileExist, renameFile)
+import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
@@ -2111,31 +2111,28 @@ saveServerMessages drainMsgs ms = case ms of
   StoreJournal _ -> logNote "closed journal message storage"
 
 exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath -> Bool -> IO ()
-exportMessages tty ms f drainMsgs = do
+exportMessages tty st f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
-  liftIO $ withFile f WriteMode $ \h ->
-    tryAny (unsafeWithAllMsgQueues tty False ms' $ saveQueueMsgs h) >>= \case
-      Right (Sum total) -> logNote $ "messages saved: " <> tshow total
+  run $ case st of
+    StoreMemory ms -> exportMessages_ ms $ getMsgs ms
+    StoreJournal ms -> exportMessages_ ms $ getJournalMsgs ms
+  where
+    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty True ms . saveQueueMsgs get
+    run :: (Handle -> IO Int) -> IO ()
+    run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
+      Right n -> logNote $ "messages saved: " <> tshow n
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
-  where
-    ms' :: s
-    ms' = case ms of
-      StoreMemory s -> s
-      StoreJournal s -> s
-    getMessages q = case ms of
-      StoreMemory _ -> getMsgs
-      StoreJournal _ ->
-        ifM
-          (doesDirectoryExist $ msgQueueDirectory ms' $ recipientId q)
-          getMsgs
-          (pure [])
-        -- getJournalQueueMessages ms' q
-      where
-        getMsgs = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms' q False
-    saveQueueMsgs h q = do
-      msgs <- getMessages q
+    getJournalMsgs ms q =
+      readTVarIO (msgQueue q) >>= \case
+        Just _ -> getMsgs ms q
+        Nothing -> getJournalQueueMessages ms q
+    getMsgs :: MsgStoreClass s' => s' -> StoreQueue s' -> IO [Message]
+    getMsgs ms q = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
+    saveQueueMsgs :: (StoreQueue s -> IO [Message]) -> Handle -> StoreQueue s -> IO (Sum Int)
+    saveQueueMsgs get h q = do
+      msgs <- get q
       unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
       pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
