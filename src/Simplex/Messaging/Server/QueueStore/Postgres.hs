@@ -568,7 +568,6 @@ foldQueueRecs tty withData st skipOld_ f = do
         | otherwise -> DB.fold db (queueRecQuery <> cond) (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
         where
           cond = " WHERE deleted_at IS NULL AND updated_at > ? ORDER BY recipient_id ASC"
-    orderBy = " ORDER BY recipient_id ASC"
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
