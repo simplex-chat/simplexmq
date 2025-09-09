@@ -389,7 +389,7 @@ randomMSG = do
   corrId <- atomically $ C.randomBytes 24 g
   rId <- atomically $ C.randomBytes 24 g
   msgId <- atomically $ C.randomBytes 24 g
-  msg <- atomically $ C.randomBytes maxMessageLength g
+  msg <- atomically $ C.randomBytes (maxMessageLength currentClientSMPRelayVersion) g
   pure (CorrId corrId, EntityId rId, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody msg})
 
 randomSENDv6 :: ByteString -> Int -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
