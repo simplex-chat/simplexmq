@@ -586,7 +586,7 @@ instance MsgStoreClass (JournalMsgStore s) where
             readTVarIO (handles q) >>= \case
               Just (MsgQueueHandles _ rh wh_) -> case wh_ of
                 Just wh -> (++) <$> getAllMsgs rh (bytePos rs) (byteCount rs - bytePos rs) <*> getAllMsgs wh 0 (bytePos ws)
-                _ -> getAllMsgs rh (bytePos rs) (bytePos ws - bytePos rs)
+                Nothing -> getAllMsgs rh (bytePos rs) (bytePos ws - bytePos rs)
               Nothing -> pure []
         | otherwise = pure []
       getAllMsgs h pos sz
