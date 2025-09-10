@@ -368,7 +368,6 @@ deleteConnectionsAsync :: AgentClient -> Bool -> [ConnId] -> AE ()
 deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync' c waitDelivery
 {-# INLINE deleteConnectionsAsync #-}
 
--- | Delete receive queues for SMP agent connections using batch commands asynchronously, no synchronous response
 deleteRcvQueuesAsync :: AgentClient -> [ConnId] -> AE ()
 deleteRcvQueuesAsync c = withAgentEnv c . deleteRcvQueuesAsync' c
 {-# INLINE deleteRcvQueuesAsync #-}
