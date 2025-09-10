@@ -822,32 +822,22 @@ deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
 
 deleteRcvQueuesAsync' :: AgentClient -> [ConnId] -> AM ()
 deleteRcvQueuesAsync' c connIds = do
-  -- TODO vvv reuse with prepareDeleteConnections_
-  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
-  let (errs, cs) = M.mapEither id conns
-      errs' = M.map (Left . storeError) errs
-      (delRs, rcvQs) = M.mapEither rcvQueues cs
-      rqs = concat $ M.elems rcvQs
-      connIds' = M.keys rcvQs
-  lift $ forM_ (L.nonEmpty connIds') unsubConnIds
-  -- TODO ^^^
+  -- errs are not reported in deleteConnectionAsync either
+  (_errs, conns) <- partitionEithers <$> withStore' c (`getConns` connIds)
+  let (rqs, connIds') = rcvQueues conns
+  lift $ forM_ (L.nonEmpty connIds') (unsubConnIds c)
   void . lift . forkIO $
-    withLock' (deleteLock c) "deleteConnectionsAsync" $
-      deleteConnQueues c NRMBackground waitDelivery True rqs >> void (runExceptT onSuccess)
+    withLock' (deleteLock c) "deleteRcvQueuesAsync" $
+      void $ deleteQueueRecs c True =<< deleteQueues c NRMBackground rqs
   where
-    -- TODO vvv reuse with prepareDeleteConnections_
-    rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
-    rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
-      [] -> Left $ Right ()
-      rqs -> Right rqs
-    unsubConnIds :: NonEmpty ConnId -> AM' ()
-    unsubConnIds connIds' = do
-      forM_ connIds' $ \connId ->
-        atomically $ removeSubscription c connId
-      ns <- asks ntfSupervisor
-      atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
-    notify = atomically . writeTBQueue (subQ c)
-    -- TODO ^^^
+    rcvQueues :: [SomeConn] -> ([RcvQueue], [ConnId])
+    rcvQueues = foldr addQueues ([], [])
+      where
+        addQueues (SomeConn _ conn) (rqs, cIds) = case connRcvQueues conn of
+          [] -> (rqs, cIds)
+          rqs' ->
+            let ConnData {connId} = toConnData conn
+             in (rqs' <> rqs, connId : cIds)
 
 -- | Add connection to the new receive queue
 switchConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> AM ConnectionStats
@@ -2166,7 +2156,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
       (delRs, rcvQs) = M.mapEither rcvQueues cs
       rqs = concat $ M.elems rcvQs
       connIds' = M.keys rcvQs
-  lift $ forM_ (L.nonEmpty connIds') unsubConnIds
+  lift $ forM_ (L.nonEmpty connIds') (unsubConnIds c)
   -- ! delRs is not used to notify about the result in any of the calling functions,
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
@@ -2180,46 +2170,24 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
     rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
       [] -> Left $ Right ()
       rqs -> Right rqs
-    unsubConnIds :: NonEmpty ConnId -> AM' ()
-    unsubConnIds connIds' = do
-      forM_ connIds' $ \connId ->
-        atomically $ removeSubscription c connId
-      ns <- asks ntfSupervisor
-      atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
     notify = atomically . writeTBQueue (subQ c)
+
+unsubConnIds :: AgentClient -> NonEmpty ConnId -> AM' ()
+unsubConnIds c connIds = do
+  forM_ connIds $ \connId ->
+    atomically $ removeSubscription c connId
+  ns <- asks ntfSupervisor
+  atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds)
 
 deleteConnQueues :: AgentClient -> NetworkRequestMode -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c nm waitDelivery ntf rqs = do
-  rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c nm rqs)
+  rs <- connResults <$> (deleteQueueRecs c ntf =<< deleteQueues c nm rqs)
   let connIds = M.keys $ M.filter isRight rs
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
   cIds_ <- L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
   forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
   pure rs
   where
-    deleteQueueRecs :: [(RcvQueue, Either AgentErrorType ())] -> AM' [(RcvQueue, Either AgentErrorType ())]
-    deleteQueueRecs rs = do
-      maxErrs <- asks $ deleteErrorCount . config
-      rs' <- rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
-      let delQ ((rq, _), err_) = (qConnId rq,qServer rq,queueId rq,) <$> err_
-          delQs_ = L.nonEmpty $ mapMaybe delQ rs'
-      forM_ delQs_ $ \delQs -> notify ("", "", AEvt SAEConn $ DEL_RCVQS delQs)
-      pure $ map fst rs'
-      where
-        deleteQueueRec ::
-          DB.Connection ->
-          Int ->
-          (RcvQueue, Either AgentErrorType ()) ->
-          IO ((RcvQueue, Either AgentErrorType ()), Maybe (Maybe AgentErrorType)) -- Nothing - no event, Just Nothing - no error
-        deleteQueueRec db maxErrs (rq@RcvQueue {userId, server}, r) = case r of
-          Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just Nothing)
-          Left e
-            | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
-            | otherwise -> do
-                deleteConnRcvQueue db rq
-                -- attempts and successes are counted in deleteQueues function
-                atomically $ incSMPServerStat c userId server connDeleted
-                pure ((rq, Right ()), Just (Just e))
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
     connResults = M.map snd . foldl' addResult M.empty
@@ -2235,6 +2203,31 @@ deleteConnQueues c nm waitDelivery ntf rqs = do
         order (Active, Left _) = 1
         order (_, Left _) = 2
         order _ = 3
+
+deleteQueueRecs :: AgentClient -> Bool -> [(RcvQueue, Either AgentErrorType ())] -> AM' [(RcvQueue, Either AgentErrorType ())]
+deleteQueueRecs c ntf rs = do
+  maxErrs <- asks $ deleteErrorCount . config
+  rs' <- rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+  let delQ ((rq, _), err_) = (qConnId rq,qServer rq,queueId rq,) <$> err_
+      delQs_ = L.nonEmpty $ mapMaybe delQ rs'
+  forM_ delQs_ $ \delQs -> notify ("", "", AEvt SAEConn $ DEL_RCVQS delQs)
+  pure $ map fst rs'
+  where
+    notify = when ntf . atomically . writeTBQueue (subQ c)
+    deleteQueueRec ::
+      DB.Connection ->
+      Int ->
+      (RcvQueue, Either AgentErrorType ()) ->
+      IO ((RcvQueue, Either AgentErrorType ()), Maybe (Maybe AgentErrorType)) -- Nothing - no event, Just Nothing - no error
+    deleteQueueRec db maxErrs (rq@RcvQueue {userId, server}, r) = case r of
+      Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just Nothing)
+      Left e
+        | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
+        | otherwise -> do
+            deleteConnRcvQueue db rq
+            -- attempts and successes are counted in deleteQueues function
+            atomically $ incSMPServerStat c userId server connDeleted
+            pure ((rq, Right ()), Just (Just e))
 
 deleteConnections_ ::
   (DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]) ->
