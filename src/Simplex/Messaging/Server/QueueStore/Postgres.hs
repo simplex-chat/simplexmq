@@ -31,6 +31,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     withDB,
     withDB',
     assertUpdated,
+    renderField,
   )
 where
 
@@ -642,13 +643,14 @@ queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, 
     (linkId_, queueData_) = queueDataColumns queueData
     nullable :: ToField a => Maybe a -> Builder
     nullable = maybe mempty (renderField . toField)
-    renderField :: Action -> Builder
-    renderField = \case
-      Plain bld -> bld
-      Escape s -> BB.byteString s
-      EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
-      EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
-      Many as -> mconcat (map renderField as)
+
+renderField :: Action -> Builder
+renderField = \case
+  Plain bld -> bld
+  Escape s -> BB.byteString s
+  EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
+  EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
+  Many as -> mconcat (map renderField as)
 
 queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe QueueLinkData)
 queueDataColumns = \case

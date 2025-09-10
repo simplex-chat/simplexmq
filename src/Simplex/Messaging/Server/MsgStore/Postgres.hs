@@ -17,6 +17,7 @@ module Simplex.Messaging.Server.MsgStore.Postgres
     PostgresMsgStoreCfg (..),
     exportDbMessages,
     getDbMessageStats,
+    batchInsertMessages,
   )
 where
 
@@ -25,15 +26,19 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Builder as BLD
+import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Lazy as LB
 import Data.IORef
 import Data.Int (Int64)
+import Data.List (intersperse)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
 import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
+import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.SqlQQ (sql)
+import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -261,8 +266,8 @@ exportDbMessages tty ms h = do
         FROM messages
         ORDER BY recipient_id, message_id ASC
       |]
-    writeMessages = BLD.hPutBuilder h . encodeMessages . reverse
-    encodeMessages = mconcat . map (\(Only rId :. msg) -> BLD.byteString (strEncode $ MLRv3 rId $ toMessage msg) <> BLD.char8 '\n')
+    writeMessages = BB.hPutBuilder h . encodeMessages . reverse
+    encodeMessages = mconcat . map (\(Only rId :. msg) -> BB.byteString (strEncode $ MLRv3 rId $ toMessage msg) <> BB.char8 '\n')
     progress i = "Processed: " <> show i <> " records"
 
 getDbMessageStats :: PostgresMsgStore -> IO MessageStats
@@ -279,3 +284,45 @@ getDbMessageStats ms =
     st = dbStore $ queueStore_ ms
     toMessageStats (storedQueues, storedMsgsCount) =
       MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
+
+batchInsertMessages :: StoreQueueClass q => Bool -> [Either String (RecipientId, Message)] -> PostgresQueueStore q -> IO Int64
+batchInsertMessages tty msgs toStore = do
+  putStrLn "Importing messages..."
+  let st = dbStore toStore
+  count <-
+    withTransaction st $ \db -> do
+      DB.copy_
+        db
+        [sql|
+          COPY messages (recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body)
+          FROM STDIN WITH (FORMAT CSV)
+        |]
+      mapM_ (putMessage db) (zip [1..] msgs)
+      DB.putCopyEnd db
+  Only mCnt : _ <- withTransaction st (`DB.query_` "SELECT count(*) FROM messages")
+  putStrLn $ progress count
+  pure mCnt
+  where
+    putMessage db (i :: Int, msg_) = do
+      case msg_ of
+        Right msg -> DB.putCopyData db $ messageRecToText msg
+        Left e -> putStrLn $ "Error parsing line " <> show i <> ": " <> e
+      when (tty && i `mod` 10000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
+    progress i = "Imported: " <> show i <> " messages"
+
+messageRecToText :: (RecipientId, Message) -> B.ByteString
+messageRecToText (rId, msg) =
+  LB.toStrict $ BB.toLazyByteString $ mconcat tabFields <> BB.char7 '\n'
+  where
+    tabFields = BB.char7 ',' `intersperse` fields
+    fields =
+      [ renderField (toField rId),
+        renderField (toField $ Binary (messageId msg)),
+        renderField (toField $ systemSeconds (messageTs msg)),
+        renderField (toField msgQuota),
+        renderField (toField ntf),
+        renderField (toField $ Binary body)
+      ]
+    (msgQuota, ntf, body) = case msg of
+      Message {msgFlags = MsgFlags ntf', msgBody = C.MaxLenBS body'} -> (False, ntf', body')
+      MessageQuota {} -> (True, False, B.empty)
