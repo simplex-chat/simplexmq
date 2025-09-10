@@ -18,7 +18,7 @@
 module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
-import Control.Exception (finally)
+import Control.Exception (SomeException, finally, try)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -74,7 +74,7 @@ import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.MsgStore.Journal (postgresQueueStore)
-import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), batchInsertMessages)
+import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), batchInsertMessages, exportDbMessages)
 import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, batchInsertServices, foldQueueRecs, foldServiceRecs)
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
@@ -218,7 +218,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: message log file " <> storeMsgsFilePath <> " will be imported to PostrgreSQL database " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
                 "Message records not imported"
-              mCnt <- importMessagesToDatabase logPath storeMsgsFilePath dbOpts
+              mCnt <- importMessagesToDatabase storeMsgsFilePath dbOpts
               putStrLn $ "Import completed: " <> show mCnt <> " messages"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSPostgres SMSPostgres) -> "store_queues and store_messages set to `database`, start the server."
@@ -234,7 +234,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               exitFailure
           | otherwise -> do
               confirmOrExit
-                ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
+                ("WARNING: PostrgreSQL schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
                 "Queue records not exported"
               (sCnt, qCnt) <- exportDatabaseToStoreLog logPath dbOpts storeLogFilePath
               putStrLn $ "Export completed: " <> show sCnt <> " services, " <> show qCnt <> " queues"
@@ -242,7 +242,24 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSPostgres _) -> "store_queues or store_messages set to `database`, update it to `memory` in INI file."
                 Right (ASType SQSMemory _) -> "store_queues set to `memory`, start the server"
                 Left e -> e <> ", configure storage correctly"
-        (SCExport, DTMessages) -> undefined
+        (SCExport, DTMessages)
+          | not schemaExists -> do
+              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              exitFailure
+          | msgsFileExists -> do
+              putStrLn $ storeMsgsFilePath <> " file already exists."
+              exitFailure
+          | otherwise -> do
+              confirmOrExit
+                ("WARNING: Messages from PostrgreSQL schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to message log file " <> storeMsgsFilePath)
+                "Message records not exported"
+              let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
+              ms <- newMsgStore $ PostgresMsgStoreCfg storeCfg defaultMsgQueueQuota
+              withFile storeMsgsFilePath WriteMode (try . exportDbMessages True ms) >>= \case
+                Right mCnt -> do
+                  putStrLn $ "Export completed: " <> show mCnt <> " messages"
+                  putStrLn "Export queues with `smp-server database export queues`"
+                Left (e :: SomeException) -> putStrLn $ "Error exporting messages: " <> show e
         (SCDelete, _)
           | not schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
@@ -615,8 +632,8 @@ importStoreLogToDatabase logPath storeLogFile dbOpts = do
   renameFile storeLogFile $ storeLogFile <> ".bak"
   pure (sCnt, qCnt)
 
-importMessagesToDatabase :: FilePath -> FilePath -> DBOpts -> IO Int64
-importMessagesToDatabase logPath msgsLogFile dbOpts = do
+importMessagesToDatabase :: FilePath -> DBOpts -> IO Int64
+importMessagesToDatabase msgsLogFile dbOpts = do
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
   ms <- newMsgStore $ PostgresMsgStoreCfg storeCfg defaultMsgQueueQuota
   mCnt <-

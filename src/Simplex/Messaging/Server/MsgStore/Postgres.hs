@@ -285,7 +285,7 @@ getDbMessageStats ms =
     toMessageStats (storedQueues, storedMsgsCount) =
       MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
 
-batchInsertMessages :: StoreQueueClass q => Bool -> [Either String (RecipientId, Message)] -> PostgresQueueStore q -> IO Int64
+batchInsertMessages :: StoreQueueClass q => Bool -> [Either String MsgLogRecord] -> PostgresQueueStore q -> IO Int64
 batchInsertMessages tty msgs toStore = do
   putStrLn "Importing messages..."
   let st = dbStore toStore
@@ -305,13 +305,13 @@ batchInsertMessages tty msgs toStore = do
   where
     putMessage db (i :: Int, msg_) = do
       case msg_ of
-        Right msg -> DB.putCopyData db $ messageRecToText msg
+        Right (MLRv3 rId msg) -> DB.putCopyData db $ messageRecToText rId msg
         Left e -> putStrLn $ "Error parsing line " <> show i <> ": " <> e
       when (tty && i `mod` 10000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
     progress i = "Imported: " <> show i <> " messages"
 
-messageRecToText :: (RecipientId, Message) -> B.ByteString
-messageRecToText (rId, msg) =
+messageRecToText :: RecipientId -> Message -> B.ByteString
+messageRecToText rId msg =
   LB.toStrict $ BB.toLazyByteString $ mconcat tabFields <> BB.char7 '\n'
   where
     tabFields = BB.char7 ',' `intersperse` fields
