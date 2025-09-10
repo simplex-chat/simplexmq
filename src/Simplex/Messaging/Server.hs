@@ -105,7 +105,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue, getJournalQueueMessages)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -2104,27 +2104,36 @@ randomId = fmap EntityId . randomId'
 {-# INLINE randomId #-}
 
 saveServerMessages :: Bool -> MsgStore s -> IO ()
-saveServerMessages drainMsgs = \case
-  StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+saveServerMessages drainMsgs ms = case ms of
+  StoreMemory STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
     Just f -> exportMessages False ms f drainMsgs
     Nothing -> logNote "undelivered messages are not saved"
   StoreJournal _ -> logNote "closed journal message storage"
 
-exportMessages :: MsgStoreClass s => Bool -> s -> FilePath -> Bool -> IO ()
-exportMessages tty ms f drainMsgs = do
+exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath -> Bool -> IO ()
+exportMessages tty st f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
-  liftIO $ withFile f WriteMode $ \h ->
-    tryAny (unsafeWithAllMsgQueues tty True ms $ saveQueueMsgs h) >>= \case
-      Right (Sum total) -> logNote $ "messages saved: " <> tshow total
+  run $ case st of
+    StoreMemory ms -> exportMessages_ ms $ getMsgs ms
+    StoreJournal ms -> exportMessages_ ms $ getJournalMsgs ms
+  where
+    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
+    run :: (Handle -> IO Int) -> IO ()
+    run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
+      Right n -> logNote $ "messages saved: " <> tshow n
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
-  where
-    saveQueueMsgs h q = do
-      msgs <-
-        unsafeRunStore q "saveQueueMsgs" $
-          getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
-      BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
+    getJournalMsgs ms q =
+      readTVarIO (msgQueue q) >>= \case
+        Just _ -> getMsgs ms q
+        Nothing -> getJournalQueueMessages ms q
+    getMsgs :: MsgStoreClass s' => s' -> StoreQueue s' -> IO [Message]
+    getMsgs ms q = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
+    saveQueueMsgs :: (StoreQueue s -> IO [Message]) -> Handle -> StoreQueue s -> IO (Sum Int)
+    saveQueueMsgs get h q = do
+      msgs <- get q
+      unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
       pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
@@ -2151,7 +2160,7 @@ processServerMessages StartOptions {skipWarnings} = do
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
-          run a = unsafeWithAllMsgQueues False False ms a `catchAny` \_ -> exitFailure
+          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
           processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
             mq <- getMsgQueue ms q False

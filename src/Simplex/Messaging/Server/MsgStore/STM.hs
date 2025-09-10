@@ -82,7 +82,7 @@ instance MsgStoreClass STMMsgStore where
   {-# INLINE closeMsgStore #-}
   withActiveMsgQueues = withLoadedQueues . queueStore_
   {-# INLINE withActiveMsgQueues #-}
-  unsafeWithAllMsgQueues _ _ = withLoadedQueues . queueStore_
+  unsafeWithAllMsgQueues _ = withLoadedQueues . queueStore_
   {-# INLINE unsafeWithAllMsgQueues #-}
 
   expireOldMessages :: Bool -> STMMsgStore -> Int64 -> Int64 -> IO MessageStats

@@ -42,7 +42,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..), newMsgStore)
@@ -921,7 +921,7 @@ testRestoreExpireMessages =
           ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
           readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
-          exportMessages False ms testStoreMsgsFile False
+          exportMessages False (StoreJournal ms) testStoreMsgsFile False
           closeMsgStore ms
     runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
