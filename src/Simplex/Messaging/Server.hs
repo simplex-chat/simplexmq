@@ -105,7 +105,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue)
+import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
 import Simplex.Messaging.Server.MsgStore.Postgres (exportDbMessages, getDbMessageStats)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -1350,10 +1350,11 @@ client
   ms
   clnt@Client {clientId, ntfSubscriptions, ntfServiceSubscribed, serviceSubsCount = _todo', ntfServiceSubsCount, rcvQ, sndQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
-    let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
+    let THandleParams {thVersion} = thParams'
+        clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
         process t acc@(rs, msgs) =
           (maybe acc (\(!r, !msg_) -> (r : rs, maybe msgs (: msgs) msg_)))
-            <$> processCommand clntServiceId t
+            <$> processCommand clntServiceId thVersion t
     forever $
       atomically (readTBQueue rcvQ)
         >>= foldrM process ([], [])
@@ -1439,8 +1440,8 @@ client
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    processCommand :: Maybe ServiceId -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
-    processCommand clntServiceId (q_, (corrId, entId, cmd)) = case cmd of
+    processCommand :: Maybe ServiceId -> VersionSMP -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
+    processCommand clntServiceId clntVersion (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> case command of
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
@@ -1829,7 +1830,7 @@ client
 
         sendMessage :: MsgFlags -> MsgBody -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         sendMessage msgFlags msgBody q qr
-          | B.length msgBody > maxMessageLength = do
+          | B.length msgBody > maxMessageLength clntVersion = do
               stats <- asks serverStats
               incStat $ msgSentLarge stats
               pure $ err LARGE_MSG
@@ -1982,7 +1983,7 @@ client
               -- rejectOrVerify filters allowed commands, no need to repeat it here.
               -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
               -- `fst` removes empty message that is only returned for `SUB` command
-              Right t''@(_, (corrId', entId', _)) -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing t'')
+              Right t''@(_, (corrId', entId', _)) -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion t'')
           -- encode response
           r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
@@ -2104,9 +2105,9 @@ randomId = fmap EntityId . randomId'
 {-# INLINE randomId #-}
 
 saveServerMessages :: Bool -> MsgStore s -> IO ()
-saveServerMessages drainMsgs = \case
-  StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-    Just f -> exportMessages False (StoreMemory ms) f drainMsgs
+saveServerMessages drainMsgs ms = case ms of
+  StoreMemory STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+    Just f -> exportMessages False ms f drainMsgs
     Nothing -> logNote "undelivered messages are not saved"
   StoreJournal _ -> logNote "closed journal message storage"
   StoreDatabase _ -> logNote "closed postgres message storage"
@@ -2115,23 +2116,27 @@ exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath ->
 exportMessages tty st f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
   run $ case st of
-    StoreMemory ms -> exportMessages_ ms
-    StoreJournal ms -> exportMessages_ ms
+    StoreMemory ms -> exportMessages_ ms $ getMsgs ms
+    StoreJournal ms -> exportMessages_ ms $ getJournalMsgs ms
     StoreDatabase ms -> exportDbMessages tty ms
   where
-    exportMessages_ :: s -> Handle -> IO Int
-    exportMessages_ ms = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty True ms . saveQueueMsgs ms
+    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
     run :: (Handle -> IO Int) -> IO ()
     run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
       Right n -> logNote $ "messages saved: " <> tshow n
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
-    saveQueueMsgs ms h q = do
-      msgs <-
-        unsafeRunStore q "saveQueueMsgs" $
-          getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
-      BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
+    getJournalMsgs ms q =
+      readTVarIO (msgQueue' q) >>= \case
+        Just _ -> getMsgs ms q
+        Nothing -> getJournalQueueMessages ms q
+    getMsgs :: MsgStoreClass s' => s' -> StoreQueue s' -> IO [Message]
+    getMsgs ms q = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
+    saveQueueMsgs :: (StoreQueue s -> IO [Message]) -> Handle -> StoreQueue s -> IO (Sum Int)
+    saveQueueMsgs get h q = do
+      msgs <- get q
+      unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
       pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
 
@@ -2159,7 +2164,7 @@ processServerMessages StartOptions {skipWarnings} = do
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
-          run a = unsafeWithAllMsgQueues False False ms a `catchAny` \_ -> exitFailure
+          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
           processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
             mq <- getMsgQueue ms q False

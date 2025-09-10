@@ -24,7 +24,6 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
-import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List (isPrefixOf, isSuffixOf)
@@ -285,6 +284,13 @@ testExportImportStore ms = do
   exportMessages False (StoreJournal ms) testStoreMsgsFile False
   closeMsgStore ms
   closeStoreLog sl
+  -- export with closed queues and compare
+  ms2 <- newMsgStore $ testJournalStoreCfg MQStoreCfg
+  readWriteQueueStore True (mkQueue ms2 True) testStoreLogFile (stmQueueStore ms2) >>= closeStoreLog
+  exportMessages False (StoreJournal ms2) (testStoreMsgsFile <> ".copy") False
+  s <- B.readFile testStoreMsgsFile
+  B.readFile (testStoreMsgsFile <> ".copy") `shouldReturn` s
+
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   readWriteQueueStore True (mkQueue ms' True) testStoreLogFile (stmQueueStore ms') >>= closeStoreLog
@@ -307,7 +313,7 @@ testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`appendState` state)
@@ -368,7 +374,7 @@ testMessageState ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   mId1 <- runRight $ do
@@ -393,7 +399,7 @@ testRemoveJournals ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   runRight $ do
@@ -498,7 +504,7 @@ testExpireIdleQueues = do
   ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {idleInterval = 0}
 
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   q <- runRight $ do

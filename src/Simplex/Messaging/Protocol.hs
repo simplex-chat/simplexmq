@@ -292,13 +292,18 @@ currentSMPClientVersion = VersionSMPC 4
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
-maxMessageLength :: Int
-maxMessageLength = 16048
+-- TODO v6.0 remove dependency on version
+maxMessageLength :: VersionSMP -> Int
+maxMessageLength v
+  | v >= encryptedBlockSMPVersion = 16048 -- max 16048
+  | v >= sendingProxySMPVersion = 16064 -- max 16067
+  | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
 
 paddedProxiedTLength :: Int
 paddedProxiedTLength = 16226 -- 16225 .. 16227
 
-type MaxMessageLen = 16048
+-- TODO v7.0 change to 16048
+type MaxMessageLen = 16088
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
 type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
@@ -1472,7 +1477,7 @@ data ErrorType
     STORE {storeErr :: Text}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 16048 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16088 bytes)
     LARGE_MSG
   | -- | relay public key is expired
     EXPIRED

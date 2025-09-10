@@ -60,7 +60,7 @@ import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupp
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM)
+import Simplex.Messaging.Util (eitherToMaybe, ifM, unlessM)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -141,20 +141,30 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               confirmOrExit
                 ("WARNING: journal directory " <> storeMsgsJournalDir <> " will be exported to message log file " <> storeMsgsFilePath)
                 "Journal not exported"
-              ms <- newJournalMsgStore logPath MQStoreCfg
-              -- TODO [postgres] in case postgres configured, queues must be read from database
-              readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
-              exportMessages True (StoreJournal ms) storeMsgsFilePath False
-              putStrLn "Export completed"
               case readStoreType ini of
-                Right (ASType SQSMemory SMSMemory) -> putStrLn "store_messages set to `memory`, start the server."
-                Right (ASType SQSMemory SMSJournal) -> putStrLn "store_messages set to `journal`, update it to `memory` in INI file"
-                Right (ASType SQSPostgres _) ->
+                Right (ASType SQSMemory msType) -> do
+                  ms <- newJournalMsgStore logPath MQStoreCfg
+                  readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
+                  exportMessages True (StoreJournal ms) storeMsgsFilePath False
+                  putStrLn "Export completed"
+                  putStrLn $ case msType of
+                    SMSMemory -> "store_messages set to `memory`, start the server."
+                    SMSJournal -> "store_messages set to `journal`, update it to `memory` in INI file"
+                Right (ASType SQSPostgres SMSJournal) -> do
 #if defined(dbServerPostgres)
-                  putStrLn "store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
+                  let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
+                      dbOpts@DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
+                  unlessM (checkSchemaExists connstr schema) $ do
+                    putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+                    exitFailure
+                  ms <- newJournalMsgStore logPath $ PQStoreCfg PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
+                  exportMessages True (StoreJournal ms) storeMsgsFilePath False
+                  putStrLn "Export completed"
+                  putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
 #else
                   noPostgresExit
 #endif
+                Right (ASType SQSPostgres SMSPostgres) -> undefined -- TODO [messages]
                 Left e -> putStrLn $ e <> ", configure storage correctly"
         SCDelete
           | not msgsDirExists -> do
@@ -585,7 +595,7 @@ exportDatabaseToStoreLog logPath dbOpts storeLogFilePath = do
   ps <- newJournalMsgStore logPath $ PQStoreCfg storeCfg
   sl <- openWriteStoreLog False storeLogFilePath
   Sum sCnt <- foldServiceRecs (postgresQueueStore ps) $ \sr -> logNewService sl sr $> Sum (1 :: Int)
-  Sum qCnt <- foldQueueRecs True True (postgresQueueStore ps) Nothing $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
+  Sum qCnt <- foldQueueRecs True True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
   closeStoreLog sl
   pure (sCnt, qCnt)
 #endif

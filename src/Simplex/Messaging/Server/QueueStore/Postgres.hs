@@ -25,6 +25,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     batchInsertQueues,
     foldServiceRecs,
     foldQueueRecs,
+    foldRecentQueueRecs,
     handleDuplicate,
     withLog_,
     withDB,
@@ -546,8 +547,28 @@ foldServiceRecs st f =
     DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
       \ !acc -> fmap (acc <>) . f . rowToServiceRec
 
-foldQueueRecs :: forall a q. Monoid a => Bool -> Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
-foldQueueRecs tty withData st skipOld_ f = do
+foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
+foldQueueRecs withData = foldQueueRecs_ foldRecs
+  where
+    foldRecs db acc f'
+      | withData = DB.fold_ db (queueRecQueryWithData <> cond) acc $ \acc' -> f' acc' . rowToQueueRecWithData
+      | otherwise = DB.fold_ db (queueRecQuery <> cond) acc $ \acc' -> f' acc' . rowToQueueRec
+    cond = " WHERE deleted_at IS NULL ORDER BY recipient_id ASC"
+
+foldRecentQueueRecs :: Monoid a => Int64 -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
+foldRecentQueueRecs old = foldQueueRecs_ foldRecs
+  where
+    foldRecs db acc f' = DB.fold db (queueRecQuery <> cond) (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
+    cond = " WHERE deleted_at IS NULL AND updated_at > ? ORDER BY recipient_id ASC"
+
+foldQueueRecs_ ::
+  Monoid a =>
+  (DB.Connection -> (Int, a) -> ((Int, a) -> (RecipientId, QueueRec) -> IO (Int, a)) -> IO (Int, a)) ->
+  Bool ->
+  PostgresQueueStore q ->
+  ((RecipientId, QueueRec) -> IO a) ->
+  IO a
+foldQueueRecs_ foldRecs tty st f = do
   (n, r) <- withTransaction (dbStore st) $ \db ->
     foldRecs db (0 :: Int, mempty) $ \(i, acc) qr -> do
       r <- f qr
@@ -558,13 +579,6 @@ foldQueueRecs tty withData st skipOld_ f = do
   when tty $ putStrLn $ progress n
   pure r
   where
-    foldRecs db acc f' = case skipOld_ of
-      Nothing
-        | withData -> DB.fold_ db (queueRecQueryWithData <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRec
-      Just old
-        | withData -> DB.fold db (queueRecQueryWithData <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold db (queueRecQuery <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query

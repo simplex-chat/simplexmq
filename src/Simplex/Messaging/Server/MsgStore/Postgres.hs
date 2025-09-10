@@ -92,7 +92,7 @@ instance MsgStoreClass PostgresMsgStore where
 
   withActiveMsgQueues _ _ = error "withActiveMsgQueues not used"
 
-  unsafeWithAllMsgQueues _ _ _ _ = error "unsafeWithAllMsgQueues not used"
+  unsafeWithAllMsgQueues _ _ _ = error "unsafeWithAllMsgQueues not used"
 
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =

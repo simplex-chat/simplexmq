@@ -693,10 +693,20 @@ data StoreError
   | -- | XFTP Deleted snd chunk replica not found.
     SEDeletedSndChunkReplicaNotFound
   | -- | Error when reading work item that suspends worker - do not use!
-    SEWorkItemError ByteString
+    SEWorkItemError {errContext :: String}
   | -- | Servers stats not found.
     SEServersStatsNotFound
   deriving (Eq, Show, Exception)
 
 instance AnyError StoreError where
   fromSomeException = SEInternal . bshow
+
+class (Show e, AnyError e) => AnyStoreError e where
+  isWorkItemError :: e -> Bool
+  mkWorkItemError :: String -> e
+
+instance AnyStoreError StoreError where
+  isWorkItemError = \case
+    SEWorkItemError {} -> True
+    _ -> False
+  mkWorkItemError errContext = SEWorkItemError {errContext}

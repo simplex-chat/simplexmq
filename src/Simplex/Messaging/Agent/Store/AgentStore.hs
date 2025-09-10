@@ -237,6 +237,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     firstRow',
     maybeFirstRow,
     fromOnlyBI,
+    getWorkItem,
+    getWorkItems,
   )
 where
 
@@ -963,25 +965,25 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
                 _ -> Left $ SEInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
-getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
+getWorkItem :: (Show i, AnyStoreError e) => String -> IO (Maybe i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e (Maybe a))
 getWorkItem itemName getId getItem markFailed =
   runExceptT $ handleWrkErr itemName "getId" getId >>= mapM (tryGetItem itemName getItem markFailed)
 
-getWorkItems :: Show i => ByteString -> IO [i] -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError [Either StoreError a])
+getWorkItems :: (Show i, AnyStoreError e) => String -> IO [i] -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e [Either e a])
 getWorkItems itemName getIds getItem markFailed =
   runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
 
-tryGetItem :: Show i => ByteString -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> i -> ExceptT StoreError IO a
+tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
 tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchAllErrors` \e -> mark >> throwE e
   where
-    mark = handleWrkErr itemName ("markFailed ID " <> bshow itemId) $ markFailed itemId
+    mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
-handleWrkErr :: ByteString -> ByteString -> IO a -> ExceptT StoreError IO a
+handleWrkErr :: forall e a. AnyStoreError e => String -> String -> IO a -> ExceptT e IO a
 handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
   where
-    mkError :: E.SomeException -> StoreError
-    mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
+    mkError :: E.SomeException -> e
+    mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
