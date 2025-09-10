@@ -251,7 +251,7 @@ exportDbMessages tty ms h = do
     if i' `mod` 1000 > 0
       then modifyIORef rows (r :)
       else do
-        readIORef rows >>= writeMessages
+        readIORef rows >>= writeMessages . (r :)
         writeIORef rows []
         when tty $ putStr (progress i' <> "\r") >> hFlush stdout
     pure i'
