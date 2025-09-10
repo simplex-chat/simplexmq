@@ -252,6 +252,7 @@ exportDbMessages tty ms h = do
       then modifyIORef rows (r :)
       else do
         readIORef rows >>= writeMessages
+        writeIORef rows []
         when tty $ putStr (progress i' <> "\r") >> hFlush stdout
     pure i'
   readIORef rows >>= \rs -> unless (null rs) $ writeMessages rs
