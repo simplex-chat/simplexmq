@@ -566,7 +566,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsFileExists <- doesFileExist storeMsgsFilePath
       storeLogExists <- doesFileExist storeLogFilePath
       case mode of
-        ASType qs SMSPostgres -> undefined -- TODO [messages]
+        ASType SQSPostgres SMSPostgres
+          | msgsFileExists || msgsDirExists -> do
+              putStrLn $ "Error: " <> storeMsgsFilePath <> " file or " <> storeMsgsJournalDir <> " directory are present."
+              putStrLn "Configure memory storage."
+              exitFailure
+          | otherwise -> checkDbStorage ini storeLogExists
         ASType qs SMSJournal
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
@@ -579,28 +584,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               SQSMemory ->
                 unless (storeLogExists) $ putStrLn $ "store_queues is `memory`, " <> storeLogFilePath <> " file will be created."
 #if defined(dbServerPostgres)
-              SQSPostgres -> do
-                let DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
-                schemaExists <- checkSchemaExists connstr schema
-                case enableDbStoreLog' ini of
-                  Just ()
-                    | not schemaExists -> noDatabaseSchema connstr schema
-                    | not storeLogExists -> do
-                        putStrLn $ "Error: db_store_log is `on`, " <> storeLogFilePath <> " does not exist"
-                        exitFailure
-                    | otherwise -> pure ()
-                  Nothing
-                    | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
-                    | storeLogExists -> do
-                        putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
-                        putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
-                        exitFailure
-                    | not schemaExists -> noDatabaseSchema connstr schema
-                    | otherwise -> pure ()
-                where
-                  noDatabaseSchema connstr schema = do
-                    putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
-                    exitFailure
+              SQSPostgres -> checkDbStorage ini storeLogExists
 #else
               SQSPostgres -> noPostgresExit
 #endif
@@ -611,6 +595,29 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn "Set store_messages to `journal` or use `smp-server journal import` to migrate."
               exitFailure
           | otherwise -> pure ()
+
+    checkDbStorage ini storeLogExists = do
+      let DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
+      schemaExists <- checkSchemaExists connstr schema
+      case enableDbStoreLog' ini of
+        Just ()
+          | not schemaExists -> noDatabaseSchema connstr schema
+          | not storeLogExists -> do
+              putStrLn $ "Error: db_store_log is `on`, " <> storeLogFilePath <> " does not exist"
+              exitFailure
+          | otherwise -> pure ()
+        Nothing
+          | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
+          | storeLogExists -> do
+              putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
+              putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
+              exitFailure
+          | not schemaExists -> noDatabaseSchema connstr schema
+          | otherwise -> pure ()
+      where
+        noDatabaseSchema connstr schema = do
+          putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
+          exitFailure
 
     exitConfigureMsgStorage = do
       putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
