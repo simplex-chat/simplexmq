@@ -24,7 +24,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (random, expireBackupsBefore),
     QStore (..),
     QStoreCfg (..),
-    JournalQueue,
+    JournalQueue (msgQueue'), -- msgQueue' is used in tests
     JournalMsgQueue (queue, state),
     JMQueue (queueDirectory, statePath),
     JournalStoreConfig (..),
@@ -291,13 +291,10 @@ newtype StoreIO (s :: QSType) a = StoreIO {unStoreIO :: IO a}
   deriving newtype (Functor, Applicative, Monad)
 
 instance StoreQueueClass (JournalQueue s) where
-  type MsgQueue (JournalQueue s) = JournalMsgQueue s
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  msgQueue = msgQueue'
-  {-# INLINE msgQueue #-}
   withQueueLock :: JournalQueue s -> Text -> IO a -> IO a
   withQueueLock JournalQueue {recipientId', queueLock, sharedLock} =
     withLockWaitShared recipientId' queueLock sharedLock
@@ -379,6 +376,7 @@ makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
 
 instance MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
+  type MsgQueue (JournalMsgStore s) = JournalMsgQueue s
   type QueueStore (JournalMsgStore s) = QStore s
   type StoreQueue (JournalMsgStore s) = JournalQueue s
   type MsgStoreConfig (JournalMsgStore s) = JournalStoreConfig s
@@ -422,7 +420,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   expireOldMessages :: Bool -> JournalMsgStore s -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages tty ms now ttl = case queueStore_ ms of
     MQStore st ->
-      withLoadedQueues st $ \q -> run $ isolateQueue q "deleteExpiredMsgs" $ do
+      withLoadedQueues st $ \q -> run $ isolateQueue ms q "deleteExpiredMsgs" $ do
         StoreIO (readTVarIO $ queueRec q) >>= \case
           Just QueueRec {updatedAt = Just (RoundedSystemTime t)} | t > veryOld ->
             expireQueueMsgs ms now old q
@@ -587,7 +585,7 @@ instance MsgStoreClass (JournalMsgStore s) where
         | otherwise = pure []
 
   writeMsg :: JournalMsgStore s -> JournalQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms q' logState msg = isolateQueue q' "writeMsg" $ do
+  writeMsg ms q' logState msg = isolateQueue ms q' "writeMsg" $ do
     q <- getMsgQueue ms q' True
     StoreIO $ (`E.finally` updateActiveAt q') $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
@@ -661,8 +659,8 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q mq logState len hs $> Just ()
 
-  isolateQueue :: JournalQueue s -> Text -> StoreIO s a -> ExceptT ErrorType IO a
-  isolateQueue sq op = tryStore' op (recipientId' sq) . withQueueLock sq op . unStoreIO
+  isolateQueue :: JournalMsgStore s -> JournalQueue s -> Text -> StoreIO s a -> ExceptT ErrorType IO a
+  isolateQueue _ sq op = tryStore' op (recipientId' sq) . withQueueLock sq op . unStoreIO
 
   unsafeRunStore :: JournalQueue s -> Text -> StoreIO s a -> IO a
   unsafeRunStore sq op a =
@@ -977,10 +975,11 @@ deleteQueue_ ms q =
     pure r
   where
     rId = recipientId q
-    remove r@(_, mq_) = do
+    remove qr = do
+      mq_ <- atomically $ swapTVar (msgQueue' q) Nothing
       mapM_ (closeMsgQueueHandles ms) mq_
       removeQueueDirectory ms rId
-      pure r
+      pure (qr, mq_)
 
 closeMsgQueue :: JournalMsgStore s -> JournalQueue s -> IO ()
 closeMsgQueue ms JournalQueue {msgQueue'} = atomically (swapTVar msgQueue' Nothing) >>= mapM_ (closeMsgQueueHandles ms)

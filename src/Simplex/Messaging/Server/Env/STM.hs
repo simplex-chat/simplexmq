@@ -72,7 +72,10 @@ module Simplex.Messaging.Server.Env.STM
     defaultIdleQueueInterval,
     journalMsgStoreDepth,
     readWriteQueueStore,
+    noPostgresExitStr,
     noPostgresExit,
+    dbStoreCfg,
+    storeLogFile',
   )
 where
 
@@ -130,6 +133,10 @@ import System.Exit (exitFailure)
 import System.IO (IOMode (..))
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
+
+#if defined(dbServerPostgres)
+import Simplex.Messaging.Server.MsgStore.Postgres
+#endif
 
 data ServerConfig s = ServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
@@ -275,14 +282,25 @@ fromMsgStore :: MsgStore s -> s
 fromMsgStore = \case
   StoreMemory s -> s
   StoreJournal s -> s
+#if defined(dbServerPostgres)
+  StoreDatabase s -> s
+#endif
 {-# INLINE fromMsgStore #-}
 
 type family SupportedStore (qs :: QSType) (ms :: MSType) :: Constraint where
   SupportedStore 'QSMemory 'MSMemory = ()
   SupportedStore 'QSMemory 'MSJournal = ()
-  SupportedStore 'QSPostgres 'MSJournal = ()
+  SupportedStore 'QSMemory 'MSPostgres =
+    (Int ~ Bool, TypeError ('TE.Text "Storing messages in Postgres DB with queues in memory is not supported"))
   SupportedStore 'QSPostgres 'MSMemory =
-    (Int ~ Bool, TypeError ('TE.Text "Storing messages in memory with Postgres DB is not supported"))
+    (Int ~ Bool, TypeError ('TE.Text "Storing messages in memory with queues in Postgres DB is not supported"))
+  SupportedStore 'QSPostgres 'MSJournal = ()
+#if defined(dbServerPostgres)
+  SupportedStore 'QSPostgres 'MSPostgres = ()
+#else
+  SupportedStore 'QSPostgres 'MSPostgres =
+    (Int ~ Bool, TypeError ('TE.Text "Server compiled without server_postgres flag"))
+#endif
 
 data AStoreType =
   forall qs ms. (SupportedStore qs ms, MsgStoreClass (MsgStoreType qs ms)) =>
@@ -292,16 +310,43 @@ data ServerStoreCfg s where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg STMMsgStore
   SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg (JournalMsgStore 'QSMemory)
   SSCDatabaseJournal :: {storeCfg :: PostgresStoreCfg, storeMsgsPath' :: FilePath} -> ServerStoreCfg (JournalMsgStore 'QSPostgres)
+#if defined(dbServerPostgres)
+  SSCDatabase :: PostgresStoreCfg -> ServerStoreCfg PostgresMsgStore
+#endif
+
+dbStoreCfg :: ServerStoreCfg s -> Maybe PostgresStoreCfg
+dbStoreCfg = \case
+  SSCMemory _ -> Nothing
+  SSCMemoryJournal {} -> Nothing
+  SSCDatabaseJournal {storeCfg} -> Just storeCfg
+#if defined(dbServerPostgres)
+  SSCDatabase cfg -> Just cfg
+#endif
+
+storeLogFile' :: ServerStoreCfg s -> Maybe FilePath
+storeLogFile' = \case
+  SSCMemory sp_ -> (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
+  SSCMemoryJournal {storeLogFile} -> Just storeLogFile
+  SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbStoreLogPath}} -> dbStoreLogPath
+#if defined(dbServerPostgres)
+  SSCDatabase (PostgresStoreCfg {dbStoreLogPath}) -> dbStoreLogPath
+#endif
 
 data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe FilePath}
 
 type family MsgStoreType (qs :: QSType) (ms :: MSType) where
   MsgStoreType 'QSMemory 'MSMemory = STMMsgStore
   MsgStoreType qs 'MSJournal = JournalMsgStore qs
+#if defined(dbServerPostgres)
+  MsgStoreType 'QSPostgres 'MSPostgres = PostgresMsgStore
+#endif
 
 data MsgStore s where
   StoreMemory :: STMMsgStore -> MsgStore STMMsgStore
   StoreJournal :: JournalMsgStore qs -> MsgStore (JournalMsgStore qs)
+#if defined(dbServerPostgres)
+  StoreDatabase :: PostgresMsgStore -> MsgStore PostgresMsgStore
+#endif
 
 data Server s = Server
   { clients :: ServerClients s,
@@ -533,8 +578,12 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
           qsCfg = PQStoreCfg (storeCfg {confirmMigrations} :: PostgresStoreCfg)
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
-      ms <- newMsgStore cfg
-      pure $ StoreJournal ms
+      StoreJournal <$> newMsgStore cfg
+    SSCDatabase storeCfg -> do
+      let StartOptions {compactLog, confirmMigrations} = startOptions config
+          cfg = PostgresMsgStoreCfg storeCfg {confirmMigrations} msgQueueQuota
+      when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
+      StoreDatabase <$> newMsgStore cfg
 #else
     SSCDatabaseJournal {} -> noPostgresExit
 #endif
@@ -628,10 +677,12 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
           _ -> SPMMessages
 
 noPostgresExit :: IO a
-noPostgresExit = do
-  putStrLn "Error: server binary is compiled without support for PostgreSQL database."
-  putStrLn "Please download `smp-server-postgres` or re-compile with `cabal build -fserver_postgres`."
-  exitFailure
+noPostgresExit = putStrLn noPostgresExitStr >> exitFailure
+
+noPostgresExitStr :: String
+noPostgresExitStr =
+  "Error: server binary is compiled without support for PostgreSQL database.\n"
+    <> "Please download `smp-server-postgres` or re-compile with `cabal build -fserver_postgres`."
 
 mkJournalStoreConfig :: QStoreCfg s -> FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig s
 mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =
