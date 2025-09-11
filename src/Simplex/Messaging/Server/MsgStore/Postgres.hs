@@ -138,7 +138,6 @@ instance MsgStoreClass PostgresMsgStore where
   getPeekMsgQueue :: PostgresMsgStore -> PostgresQueue -> DBStoreIO (Maybe ((), Message))
   getPeekMsgQueue _ q = ((),) <$$> tryPeekMsg_ q ()
 
-  -- the journal queue will be closed after action if it was initially closed or idle longer than interval in config
   withIdleMsgQueue :: Int64 -> PostgresMsgStore -> PostgresQueue -> (() -> DBStoreIO a) -> DBStoreIO (Maybe a, Int)
   withIdleMsgQueue _ _ _ _ = error "withIdleMsgQueue not used"
 
@@ -172,7 +171,7 @@ instance MsgStoreClass PostgresMsgStore where
       PostgresMsgStore {config = PostgresMsgStoreCfg {quota}} = ms
 
   setOverQuota_ :: PostgresQueue -> IO () -- can ONLY be used while restoring messages, not while server running
-  setOverQuota_ _ = error "TODO setOverQuota_"
+  setOverQuota_ _ = error "TODO setOverQuota_" -- TODO [messages]
 
   getQueueSize_ :: () -> DBStoreIO Int
   getQueueSize_ _ = error "getQueueSize_ not used"
@@ -199,13 +198,6 @@ instance MsgStoreClass PostgresMsgStore where
 
   tryDeleteMsg_ :: PostgresQueue -> () -> Bool -> DBStoreIO ()
   tryDeleteMsg_ _q _ _ = error "tryDeleteMsg_ not used" -- do
-    -- db <- asks dbConn
-    -- liftIO $ void $
-    --   DB.execute
-    --     db
-    --     -- "DELETE FROM messages WHERE recipient_id = ? ORDER BY message_id ASC LIMIT 1"
-    --     "DELETE FROM messages WHERE message_id = (SELECT MIN(message_id) FROM messages WHERE recipient_id = ?)"
-    --     (Only (recipientId' q))
 
   isolateQueue :: PostgresMsgStore -> PostgresQueue -> Text -> DBStoreIO a -> ExceptT ErrorType IO a
   isolateQueue ms _q op a = withDB' op (queueStore_ ms) $ runReaderT a . DBTransaction
@@ -290,6 +282,7 @@ getDbMessageStats ms =
     toMessageStats (storedQueues, storedMsgsCount) =
       MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
 
+-- TODO [messages] update counts
 batchInsertMessages :: StoreQueueClass q => Bool -> FilePath -> PostgresQueueStore q -> IO Int64
 batchInsertMessages tty f toStore = do
   putStrLn "Importing messages..."
