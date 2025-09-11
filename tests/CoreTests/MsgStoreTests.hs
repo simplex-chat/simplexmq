@@ -38,7 +38,6 @@ import Simplex.Messaging.Server (exportMessages, importMessages, printMessageSta
 import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
-import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -52,6 +51,7 @@ import Util
 
 #if defined(dbServerPostgres)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
 #endif
@@ -115,6 +115,7 @@ testJournalStoreCfg queueStoreCfg =
       keepMinBackups = 1
     }
 
+#if defined(dbServerPostgres)
 testPostgresStoreConfig :: PostgresMsgStoreCfg
 testPostgresStoreConfig =
   PostgresMsgStoreCfg
@@ -130,6 +131,7 @@ testPostgresStoreCfg =
       confirmMigrations = MCYesUp,
       deletedTTL = 86400
     }
+#endif
 
 mkMessage :: MonadIO m => ByteString -> m Message
 mkMessage body = liftIO $ do

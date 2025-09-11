@@ -15,6 +15,7 @@
 module Simplex.Messaging.Server.MsgStore.Postgres
   ( PostgresMsgStore,
     PostgresMsgStoreCfg (..),
+    PostgresQueue,
     exportDbMessages,
     getDbMessageStats,
     batchInsertMessages,

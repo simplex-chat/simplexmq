@@ -33,7 +33,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
-import Simplex.Messaging.Server.Env.STM (ServerStoreCfg (..), StartOptions (..), StorePaths (..))
+import Simplex.Messaging.Server.Env.STM (ServerStoreCfg (..), StartOptions (..), dbStoreCfg, storeLogFile')
 import Simplex.Messaging.Server.Main.GitCommit
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..), simplexMQVersion)
@@ -414,11 +414,9 @@ printServerTransports protocol ts = do
       \Set `port` in smp-server.ini section [TRANSPORT] to `5223,443`\n"
 
 printSMPServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> ServerStoreCfg s -> IO ()
-printSMPServerConfig transports = \case
-  SSCMemory sp_ -> printServerConfig "SMP" transports $ (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
-  SSCMemoryJournal {storeLogFile} -> printServerConfig "SMP" transports $ Just storeLogFile
-  SSCDatabaseJournal {storeCfg} -> printDBConfig storeCfg
-  SSCDatabase storeCfg -> printDBConfig storeCfg
+printSMPServerConfig transports st = case dbStoreCfg st of
+  Just cfg -> printDBConfig cfg
+  Nothing -> printServerConfig "SMP" transports $ storeLogFile' st
   where
     printDBConfig PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}} = do
       B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema

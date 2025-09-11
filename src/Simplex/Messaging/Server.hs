@@ -106,7 +106,6 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.MsgStore.Postgres (exportDbMessages, getDbMessageStats)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -133,10 +132,15 @@ import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
+
 #if MIN_VERSION_base(4,18,0)
 import Data.List (sort)
 import GHC.Conc (listThreads, threadStatus)
 import GHC.Conc.Sync (threadLabel)
+#endif
+
+#if defined(dbServerPostgres)
+import Simplex.Messaging.Server.MsgStore.Postgres (exportDbMessages, getDbMessageStats)
 #endif
 
 -- | Runs an SMP server using passed configuration.
@@ -2110,7 +2114,9 @@ saveServerMessages drainMsgs ms = case ms of
     Just f -> exportMessages False ms f drainMsgs
     Nothing -> logNote "undelivered messages are not saved"
   StoreJournal _ -> logNote "closed journal message storage"
+#if defined(dbServerPostgres)
   StoreDatabase _ -> logNote "closed postgres message storage"
+#endif
 
 exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath -> Bool -> IO ()
 exportMessages tty st f drainMsgs = do
@@ -2118,7 +2124,9 @@ exportMessages tty st f drainMsgs = do
   run $ case st of
     StoreMemory ms -> exportMessages_ ms $ getMsgs ms
     StoreJournal ms -> exportMessages_ ms $ getJournalMsgs ms
+#if defined(dbServerPostgres)
     StoreDatabase ms -> exportDbMessages tty ms
+#endif
   where
     exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
     run :: (Handle -> IO Int) -> IO ()
@@ -2152,7 +2160,9 @@ processServerMessages StartOptions {skipWarnings} = do
           Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)
           Nothing -> pure Nothing
         StoreJournal ms -> processJournalMessages old_ expire ms
+#if defined(dbServerPostgres)
         StoreDatabase ms -> processDbMessages old_ expire ms
+#endif
       processJournalMessages :: forall s. Maybe Int64 -> Bool -> JournalMsgStore s -> IO (Maybe MessageStats)
       processJournalMessages old_ expire ms
         | expire = Just <$> case old_ of
@@ -2175,6 +2185,7 @@ processServerMessages StartOptions {skipWarnings} = do
           processValidateQueue q = unsafeRunStore q "processValidateQueue" $ do
             storedMsgsCount <- getQueueSize_ =<< getMsgQueue ms q False
             pure newMessageStats {storedMsgsCount, storedQueues = 1}
+#if defined(dbServerPostgres)
       processDbMessages old_ expire ms
         | expire = Just <$> case old_ of
             Just old -> do
@@ -2184,6 +2195,7 @@ processServerMessages StartOptions {skipWarnings} = do
               expireOldMessages False ms now (now - old)
             Nothing -> getDbMessageStats ms
         | otherwise = logWarn "skipping message expiration" $> Nothing
+#endif
 
 importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
 importMessages tty ms f old_ skipWarnings  = do

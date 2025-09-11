@@ -275,8 +275,10 @@ serverStoreConfig_ useDbStoreLog = \case
     ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
   ASType SQSPostgres SMSJournal ->
     ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
+#if defined(dbServerPostgres)
   ASType SQSPostgres SMSPostgres ->
     ASSCfg SQSPostgres SMSPostgres $ SSCDatabase storeCfg
+#endif
   where
     dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
     storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}

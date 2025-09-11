@@ -297,7 +297,11 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       ("memory", "database") -> Left "Database and memory storage are not compatible."
       ("database", "memory") -> Left "Database and memory storage are not compatible."
       ("database", "journal") -> Right $ ASType SQSPostgres SMSJournal
+#if defined(dbServerPostgres)
       ("database", "database") -> Right $ ASType SQSPostgres SMSPostgres
+#else
+      ("database", "database") -> Left noPostgresExitStr
+#endif
       (q, m) -> Left $ T.unpack $ "Invalid storage settings: store_queues: " <> q <> ", store_messages: " <> m
       where
         iniStoreQueues = fromRight "memory" $ lookupValue "STORE_LOG" "store_queues" ini
@@ -447,10 +451,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
               storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
            in SSCDatabaseJournal {storeCfg, storeMsgsPath' = storeMsgsJournalDir}
+#if defined(dbServerPostgres)
         iniStoreCfg SQSPostgres SMSPostgres =
           let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
               storeCfg = PostgresStoreCfg {dbOpts = iniDBOptions ini defaultDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
            in SSCDatabase storeCfg
+#endif
         serverConfig :: ServerStoreCfg s -> ServerConfig s
         serverConfig serverStoreCfg =
           ServerConfig
