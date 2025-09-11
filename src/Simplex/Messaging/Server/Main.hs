@@ -152,8 +152,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   putStrLn $ case msType of
                     SMSMemory -> "store_messages set to `memory`, start the server."
                     SMSJournal -> "store_messages set to `journal`, update it to `memory` in INI file"
-                Right (ASType SQSPostgres SMSJournal) -> do
 #if defined(dbServerPostgres)
+                Right (ASType SQSPostgres SMSJournal) -> do
                   let dbStoreLogPath = enableDbStoreLog' ini $> storeLogFilePath
                       dbOpts@DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
                   unlessM (checkSchemaExists connstr schema) $ do
@@ -163,10 +163,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   exportMessages True (StoreJournal ms) storeMsgsFilePath False
                   putStrLn "Export completed"
                   putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
+                Right (ASType SQSPostgres SMSPostgres) -> do
+                  putStrLn $ "Messages can be exported with `dabatase export --table messages`."
+                  exitFailure
 #else
-                  noPostgresExit
+                Right (ASType SQSPostgres SMSJournal) -> noPostgresExit
 #endif
-                Right (ASType SQSPostgres SMSPostgres) -> undefined -- TODO [messages]
                 Left e -> putStrLn $ e <> ", configure storage correctly"
         SCDelete
           | not msgsDirExists -> do
@@ -566,12 +568,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       msgsFileExists <- doesFileExist storeMsgsFilePath
       storeLogExists <- doesFileExist storeLogFilePath
       case mode of
+#if defined(dbServerPostgres)
         ASType SQSPostgres SMSPostgres
           | msgsFileExists || msgsDirExists -> do
               putStrLn $ "Error: " <> storeMsgsFilePath <> " file or " <> storeMsgsJournalDir <> " directory are present."
               putStrLn "Configure memory storage."
               exitFailure
           | otherwise -> checkDbStorage ini storeLogExists
+#endif
         ASType qs SMSJournal
           | msgsFileExists && msgsDirExists -> exitConfigureMsgStorage
           | msgsFileExists -> do
@@ -596,6 +600,12 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               exitFailure
           | otherwise -> pure ()
 
+    exitConfigureMsgStorage = do
+      putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
+      putStrLn "Configure memory storage."
+      exitFailure
+
+#if defined(dbServerPostgres)
     checkDbStorage ini storeLogExists = do
       let DBOpts {connstr, schema} = iniDBOptions ini defaultDBOpts
       schemaExists <- checkSchemaExists connstr schema
@@ -619,12 +629,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
           exitFailure
 
-    exitConfigureMsgStorage = do
-      putStrLn $ "Error: both " <> storeMsgsFilePath <> " file and " <> storeMsgsJournalDir <> " directory are present."
-      putStrLn "Configure memory storage."
-      exitFailure
-
-#if defined(dbServerPostgres)
     exitConfigureQueueStore connstr schema = do
       putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
       putStrLn "Configure queue storage."
