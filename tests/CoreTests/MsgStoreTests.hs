@@ -26,6 +26,7 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Int (Int64)
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
 import Data.Time.Clock (addUTCTime)
@@ -33,7 +34,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType, LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
@@ -42,6 +43,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
@@ -50,9 +52,12 @@ import Test.Hspec hiding (fit, it)
 import Util
 
 #if defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (Only (..))
+import qualified Database.PostgreSQL.Simple as DB
+import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
-import Simplex.Messaging.Server.QueueStore.Postgres.Config
+import Simplex.Messaging.Server.QueueStore.Postgres
 import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
 #endif
 
@@ -70,7 +75,9 @@ msgStoreTests = do
         someMsgStoreTests
         journalMsgStoreTests
     around (withMsgStore testPostgresStoreConfig) $
-      describe "Postgres-only message store" $ someMsgStoreTests
+      describe "Postgres-only message store" $ do
+        someMsgStoreTests
+        it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
 #endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
@@ -309,6 +316,44 @@ testExportImportStore ms = do
     importMessages False stmStore testStoreMsgsFile2 Nothing False
   exportMessages False (StoreMemory stmStore) testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
+
+#if defined(dbServerPostgres)
+testUpdateMessageCounts :: PostgresMsgStore -> IO ()
+testUpdateMessageCounts ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    let write s = writeMsg ms q True =<< mkMessage s
+    q `hasCounts` (0, True)
+    Just (Message {msgId = mId1}, True) <- write "message 1"
+    q `hasCounts` (1, True)
+    Just (Message {msgId = mId2}, False) <- write "message 2"
+    q `hasCounts` (2, True)
+    Just (Message {msgId = mId3}, False) <- write "message 3"
+    q `hasCounts` (3, True)
+    Nothing <- write "message 3"
+    q `hasCounts` (4, False)
+    Msg "message 1" <- tryPeekMsg ms q
+    q `hasCounts` (4, False)
+    Msg "message 1" <- tryDelMsg ms q mId1
+    q `hasCounts` (3, False)
+    Msg "message 2" <- tryPeekMsg ms q
+    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
+    q `hasCounts` (2, False)
+    (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
+    q `hasCounts` (1, False)
+    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId4
+    q `hasCounts` (0, True)
+  where
+    hasCounts :: PostgresQueue -> (Int64, Bool) -> ExceptT ErrorType IO ()
+    hasCounts q (size, canWrt) = liftIO $ do
+      [(size', canWrt')] <-
+        withTransaction (dbStore $ queueStore ms) $ \db ->
+          DB.query db "SELECT msg_queue_size, msg_can_write FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
+      size `shouldBe` size'
+      canWrt `shouldBe` canWrt'
+#endif
 
 testQueueState :: JournalMsgStore s -> IO ()
 testQueueState ms = do
