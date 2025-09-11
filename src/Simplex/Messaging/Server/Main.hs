@@ -642,10 +642,7 @@ importMessagesToDatabase :: FilePath -> DBOpts -> IO Int64
 importMessagesToDatabase msgsLogFile dbOpts = do
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
   ms <- newMsgStore $ PostgresMsgStoreCfg storeCfg defaultMsgQueueQuota
-  mCnt <-
-    withFile msgsLogFile ReadMode $ \h -> do
-      msgs <- map strDecode . B.lines <$> B.hGetContents h
-      batchInsertMessages True msgs $ queueStore ms
+  mCnt <- batchInsertMessages True msgsLogFile $ queueStore ms
   renameFile msgsLogFile $ msgsLogFile <> ".bak"
   pure mCnt
 

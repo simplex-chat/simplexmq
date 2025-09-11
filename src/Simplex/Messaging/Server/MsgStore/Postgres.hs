@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -29,6 +30,7 @@ import Control.Monad.Trans.Except
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as LB
+import Data.Functor (($>))
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (intersperse)
@@ -48,6 +50,7 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (foldLogLines)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Util (maybeFirstRow, maybeFirstRow', (<$$>))
 import System.IO (Handle, hFlush, stdout)
@@ -287,11 +290,11 @@ getDbMessageStats ms =
     toMessageStats (storedQueues, storedMsgsCount) =
       MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
 
-batchInsertMessages :: StoreQueueClass q => Bool -> [Either String MsgLogRecord] -> PostgresQueueStore q -> IO Int64
-batchInsertMessages tty msgs toStore = do
+batchInsertMessages :: StoreQueueClass q => Bool -> FilePath -> PostgresQueueStore q -> IO Int64
+batchInsertMessages tty f toStore = do
   putStrLn "Importing messages..."
   let st = dbStore toStore
-  count <-
+  (_, inserted) <-
     withTransaction st $ \db -> do
       DB.copy_
         db
@@ -299,18 +302,17 @@ batchInsertMessages tty msgs toStore = do
           COPY messages (recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body)
           FROM STDIN WITH (FORMAT CSV)
         |]
-      mapM_ (putMessage db) (zip [1..] msgs)
-      DB.putCopyEnd db
+      foldLogLines tty f (putMessage db) (0 :: Int, 0) >>= (DB.putCopyEnd db $>)
   Only mCnt : _ <- withTransaction st (`DB.query_` "SELECT count(*) FROM messages")
-  putStrLn $ progress count
-  pure mCnt
+  unless (inserted == mCnt) $ putStrLn $ "WARNING: inserted " <> show inserted <> " rows, table has " <> show mCnt <> " messages."
+  pure inserted
   where
-    putMessage db (i :: Int, msg_) = do
-      case msg_ of
-        Right (MLRv3 rId msg) -> DB.putCopyData db $ messageRecToText rId msg
-        Left e -> putStrLn $ "Error parsing line " <> show i <> ": " <> e
-      when (tty && i `mod` 10000 == 0) $ putStr (progress i <> "\r") >> hFlush stdout
-    progress i = "Imported: " <> show i <> " messages"
+    putMessage db (!i, !cnt) _eof s  = do
+      let i' = i + 1
+      cnt' <- case strDecode s of
+        Right (MLRv3 rId msg) -> (cnt + 1) <$ DB.putCopyData db (messageRecToText rId msg)
+        Left e -> cnt <$ putStrLn ("Error parsing line " <> show i' <> ": " <> e)
+      pure (i', cnt')
 
 messageRecToText :: RecipientId -> Message -> B.ByteString
 messageRecToText rId msg =
