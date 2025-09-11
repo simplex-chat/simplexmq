@@ -28,7 +28,10 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     foldRecentQueueRecs,
     handleDuplicate,
     withLog_,
+    withDB,
     withDB',
+    assertUpdated,
+    renderField,
   )
 where
 
@@ -84,7 +87,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, tshow, (<$$>))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -409,7 +412,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
 
   -- this method is called from JournalMsgStore deleteQueue that already locks the queue
-  deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
+  deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType QueueRec)
   deleteStoreQueue st sq = E.uninterruptibleMask_ $ runExceptT $ do
     q <- ExceptT $ readQueueRecIO qr
     RoundedSystemTime ts <- liftIO getSystemDate
@@ -420,9 +423,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     forM_ (notifier q) $ \NtfCreds {notifierId} -> do
       atomically $ TM.delete notifierId $ notifiers st
       atomically $ TM.delete notifierId $ notifierLocks st
-    mq_ <- atomically $ swapTVar (msgQueue sq) Nothing
     withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
-    pure (q, mq_)
+    pure q
     where
       rId = recipientId sq
       qr = queueRec sq
@@ -488,7 +490,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getServiceQueueCount :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
   getServiceQueueCount st party serviceId =
     E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCount" st $ \db ->
-      fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
+      maybeFirstRow' 0 fromOnly $
         DB.query db query (Only serviceId)
     where
       query = case party of
@@ -641,13 +643,14 @@ queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, 
     (linkId_, queueData_) = queueDataColumns queueData
     nullable :: ToField a => Maybe a -> Builder
     nullable = maybe mempty (renderField . toField)
-    renderField :: Action -> Builder
-    renderField = \case
-      Plain bld -> bld
-      Escape s -> BB.byteString s
-      EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
-      EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
-      Many as -> mconcat (map renderField as)
+
+renderField :: Action -> Builder
+renderField = \case
+  Plain bld -> bld
+  Escape s -> BB.byteString s
+  EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
+  EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
+  Many as -> mconcat (map renderField as)
 
 queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe QueueLinkData)
 queueDataColumns = \case
