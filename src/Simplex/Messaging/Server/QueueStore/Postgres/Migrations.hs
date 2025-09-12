@@ -321,7 +321,7 @@ BEGIN
             msg_queue_size = GREATEST(msg_queue_size - 1, 0)
         WHERE recipient_id = p_recipient_id;
       END IF;
-    ELSE
+    ELSIF msg_deleted OR q_size != 0 THEN
       UPDATE msg_queues
       SET msg_can_write = TRUE, msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
@@ -391,15 +391,18 @@ BEGIN
   LOOP
     SELECT array_agg(recipient_id)
     INTO rids
-    FROM msg_queues
-    WHERE deleted_at IS NULL
-      AND updated_at > very_old_ts
-      AND msg_queue_size > 0
-      AND recipient_id > last_rid
-    ORDER BY recipient_id ASC
-    LIMIT batch_size;
+    FROM (
+      SELECT recipient_id
+      FROM msg_queues
+      WHERE deleted_at IS NULL
+        AND updated_at > very_old_ts
+        AND msg_queue_size > 0
+        AND recipient_id > last_rid
+      ORDER BY recipient_id ASC
+      LIMIT batch_size
+    ) qs;
 
-    EXIT WHEN cardinality(rids) = 0;
+    EXIT WHEN rids IS NULL OR cardinality(rids) = 0;
 
     FOREACH rid IN ARRAY rids
     LOOP
