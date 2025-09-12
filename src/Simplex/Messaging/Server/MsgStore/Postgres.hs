@@ -19,7 +19,10 @@ module Simplex.Messaging.Server.MsgStore.Postgres
     PostgresQueue,
     exportDbMessages,
     getDbMessageStats,
+    getDbMessageCount,
+    deleteAllMessages,
     batchInsertMessages,
+    updateQueueCounts,
   )
 where
 
@@ -282,7 +285,54 @@ getDbMessageStats ms =
     toMessageStats (storedQueues, storedMsgsCount) =
       MessageStats {storedQueues, storedMsgsCount, expiredMsgsCount = 0}
 
--- TODO [messages] update counts
+getDbMessageCount :: PostgresMsgStore -> IO Int64
+getDbMessageCount ms =
+  maybeFirstRow' 0 fromOnly $
+    withConnection (dbStore $ queueStore_ ms) (`DB.query_` "SELECT COUNT(*) FROM messages")
+
+deleteAllMessages :: PostgresMsgStore -> IO ()
+deleteAllMessages ms =
+  withConnection (dbStore $ queueStore_ ms) $ \db -> do
+    void $ DB.execute_ db "TRUNCATE messages"
+    void $ DB.execute_
+      db
+      [sql|
+        UPDATE msg_queues
+        SET msg_queue_size = 0, msg_can_write = TRUE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
+      |]
+
+updateQueueCounts :: PostgresMsgStore -> IO ()
+updateQueueCounts ms =
+  withConnection (dbStore $ queueStore_ ms) $ \db -> do
+    void $ DB.execute_
+      db
+      [sql|
+        CREATE TEMP TABLE queue_stats AS
+        SELECT recipient_id,
+          COUNT(*) AS size,
+          BOOL_OR(msg_quota) AS has_quota
+        FROM messages
+        GROUP BY recipient_id
+      |]
+    void $ DB.execute_
+      db
+      [sql|
+        UPDATE msg_queues
+        SET msg_queue_size = 0, msg_can_write = TRUE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
+      |]
+    void $ DB.execute_
+      db
+      [sql|
+        UPDATE msg_queues q
+        SET msg_queue_size = s.size,
+            msg_can_write = NOT s.has_quota
+        FROM queue_stats s
+        WHERE q.recipient_id = s.recipient_id
+      |]
+    void $ DB.execute_ db "DROP TABLE queue_stats"
+
 batchInsertMessages :: StoreQueueClass q => Bool -> FilePath -> PostgresQueueStore q -> IO Int64
 batchInsertMessages tty f toStore = do
   putStrLn "Importing messages..."
@@ -296,8 +346,6 @@ batchInsertMessages tty f toStore = do
           FROM STDIN WITH (FORMAT CSV)
         |]
       foldLogLines tty f (putMessage db) (0 :: Int, 0) >>= (DB.putCopyEnd db $>)
-  Only mCnt : _ <- withTransaction st (`DB.query_` "SELECT count(*) FROM messages")
-  unless (inserted == mCnt) $ putStrLn $ "WARNING: inserted " <> show inserted <> " rows, table has " <> show mCnt <> " messages."
   pure inserted
   where
     putMessage db (!i, !cnt) _eof s  = do
