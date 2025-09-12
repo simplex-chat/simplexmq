@@ -291,13 +291,13 @@ testExportImportStore ms = do
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
-  exportMessages False (StoreJournal ms) Nothing testStoreMsgsFile False
+  exportMessages False (StoreJournal ms) testStoreMsgsFile False
   closeMsgStore ms
   closeStoreLog sl
   -- export with closed queues and compare
   ms2 <- newMsgStore $ testJournalStoreCfg MQStoreCfg
   readWriteQueueStore True (mkQueue ms2 True) testStoreLogFile (stmQueueStore ms2) >>= closeStoreLog
-  exportMessages False (StoreJournal ms2) Nothing (testStoreMsgsFile <> ".copy") False
+  exportMessages False (StoreJournal ms2) (testStoreMsgsFile <> ".copy") False
   s <- B.readFile testStoreMsgsFile
   B.readFile (testStoreMsgsFile <> ".copy") `shouldReturn` s
 
@@ -309,13 +309,13 @@ testExportImportStore ms = do
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- 2 message files
-  exportMessages False (StoreJournal ms') Nothing testStoreMsgsFile2 False
+  exportMessages False (StoreJournal ms') testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   readWriteQueueStore True (mkQueue stmStore True) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing False
-  exportMessages False (StoreMemory stmStore) Nothing testStoreMsgsFile False
+  exportMessages False (StoreMemory stmStore) testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
 #if defined(dbServerPostgres)
