@@ -74,7 +74,7 @@ import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.MsgStore.Journal (postgresQueueStore)
-import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), batchInsertMessages, exportDbMessages)
+import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, batchInsertServices, foldQueueRecs, foldServiceRecs)
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
@@ -653,9 +653,16 @@ importMessagesToDatabase :: FilePath -> DBOpts -> IO Int64
 importMessagesToDatabase msgsLogFile dbOpts = do
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
   ms <- newMsgStore $ PostgresMsgStoreCfg storeCfg defaultMsgQueueQuota
-  mCnt <- batchInsertMessages True msgsLogFile $ queueStore ms
+  mCnt <- getDbMessageCount ms
+  when (mCnt > 0) $ do
+    confirmOrExit ("WARNING: the database contains messages, they will be deleted.") "Message records not imported"
+    deleteAllMessages ms
+  inserted <- batchInsertMessages True msgsLogFile $ queueStore ms
+  mCnt' <- getDbMessageCount ms
+  unless (inserted == mCnt') $ putStrLn $ "WARNING: inserted " <> show inserted <> " rows, table has " <> show mCnt' <> " messages."
+  updateQueueCounts ms
   renameFile msgsLogFile $ msgsLogFile <> ".bak"
-  pure mCnt
+  pure mCnt'
 
 exportDatabaseToStoreLog :: FilePath -> DBOpts -> FilePath -> IO (Int, Int)
 exportDatabaseToStoreLog logPath dbOpts storeLogFilePath = do
