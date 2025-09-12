@@ -120,7 +120,8 @@ BEGIN
     RETURN;
   END IF;
 
-  SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body INTO msg
+  SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+  INTO msg
   FROM messages
   WHERE recipient_id = p_recipient_id
   ORDER BY message_id ASC LIMIT 1;
@@ -155,6 +156,7 @@ CREATE FUNCTION smp_server.try_del_peek_msg(p_recipient_id bytea, p_msg_id bytea
 DECLARE
   q_size BIGINT;
   msg RECORD;
+  msg_deleted BOOLEAN;
 BEGIN
   SELECT msg_queue_size INTO q_size
   FROM msg_queues
@@ -165,7 +167,8 @@ BEGIN
     RETURN;
   END IF;
 
-  SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body INTO msg
+  SELECT message_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+  INTO msg
   FROM messages
   WHERE recipient_id = p_recipient_id
   ORDER BY message_id ASC LIMIT 1;
@@ -182,20 +185,30 @@ BEGIN
   IF msg.msg_id = p_msg_id THEN
     DELETE FROM messages WHERE message_id = msg.message_id;
 
-    IF FOUND THEN
-      UPDATE msg_queues
-      SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
-          msg_queue_size = GREATEST(msg_queue_size - 1, 0)
-      WHERE recipient_id = p_recipient_id;
+    msg_deleted := FOUND;
+    IF msg_deleted THEN
       RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
     END IF;
 
-    RETURN QUERY (
-      SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-      FROM messages
-      WHERE recipient_id = p_recipient_id
-      ORDER BY message_id ASC LIMIT 1
-    );
+    SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+    INTO msg
+    FROM messages
+    WHERE recipient_id = p_recipient_id
+    ORDER BY message_id ASC LIMIT 1;
+
+    IF FOUND THEN
+      RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
+      IF msg_deleted THEN
+        UPDATE msg_queues
+        SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
+            msg_queue_size = GREATEST(msg_queue_size - 1, 0)
+        WHERE recipient_id = p_recipient_id;
+      END IF;
+    ELSE
+      UPDATE msg_queues
+      SET msg_can_write = TRUE, msg_queue_size = 0
+      WHERE recipient_id = p_recipient_id;
+    END IF;
   ELSE
     RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
   END IF;

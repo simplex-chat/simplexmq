@@ -78,6 +78,7 @@ msgStoreTests = do
       describe "Postgres-only message store" $ do
         someMsgStoreTests
         it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
+        it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" testResetMessageCounts
 #endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
@@ -325,34 +326,67 @@ testUpdateMessageCounts ms = do
   runRight_ $ do
     q <- ExceptT $ addQueue ms rId qr
     let write s = writeMsg ms q True =<< mkMessage s
-    q `hasCounts` (0, True)
+        hasSize = checkQueueSize ms
+    q `hasSize` (0, True)
     Just (Message {msgId = mId1}, True) <- write "message 1"
-    q `hasCounts` (1, True)
+    q `hasSize` (1, True)
     Just (Message {msgId = mId2}, False) <- write "message 2"
-    q `hasCounts` (2, True)
+    q `hasSize` (2, True)
     Just (Message {msgId = mId3}, False) <- write "message 3"
-    q `hasCounts` (3, True)
-    Nothing <- write "message 3"
-    q `hasCounts` (4, False)
+    q `hasSize` (3, True)
+    Nothing <- write "message 4"
+    q `hasSize` (4, False)
     Msg "message 1" <- tryPeekMsg ms q
-    q `hasCounts` (4, False)
+    q `hasSize` (4, False)
     Msg "message 1" <- tryDelMsg ms q mId1
-    q `hasCounts` (3, False)
+    q `hasSize` (3, False)
     Msg "message 2" <- tryPeekMsg ms q
     (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
-    q `hasCounts` (2, False)
+    q `hasSize` (2, False)
     (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
-    q `hasCounts` (1, False)
+    q `hasSize` (1, False)
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId4
-    q `hasCounts` (0, True)
+    q `hasSize` (0, True)
+
+checkQueueSize :: PostgresMsgStore -> PostgresQueue -> (Int64, Bool) -> ExceptT ErrorType IO ()
+checkQueueSize ms q (size, canWrt) = liftIO $ do
+  [(size', canWrt')] <-
+    withTransaction (dbStore $ queueStore ms) $ \db ->
+      DB.query db "SELECT msg_queue_size, msg_can_write FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
+  size' `shouldBe` size
+  canWrt' `shouldBe` canWrt
+
+testResetMessageCounts :: PostgresMsgStore -> IO ()
+testResetMessageCounts ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    let write s = writeMsg ms q True =<< mkMessage s
+        hasSize = checkQueueSize ms
+    Just (Message {msgId = mId1}, True) <- write "message 1"
+    Just (Message {msgId = mId2}, False) <- write "message 2"
+    Just (Message {msgId = mId3}, False) <- write "message 3"
+    Nothing <- write "message 4"
+    q `hasSize` (4, False)
+    liftIO $ setIncorrectSize q (10, True)
+    Nothing <- write "message 5"
+    q `hasSize` (11, False)
+    (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
+    q `hasSize` (10, False)
+    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
+    q `hasSize` (9, False)
+    (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
+    q `hasSize` (8, False)
+    (Just MessageQuota {}, Just MessageQuota {msgId = mId5}) <- tryDelPeekMsg ms q mId4
+    q `hasSize` (7, False)
+    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId5
+    q `hasSize` (0, True) -- reset
   where
-    hasCounts :: PostgresQueue -> (Int64, Bool) -> ExceptT ErrorType IO ()
-    hasCounts q (size, canWrt) = liftIO $ do
-      [(size', canWrt')] <-
-        withTransaction (dbStore $ queueStore ms) $ \db ->
-          DB.query db "SELECT msg_queue_size, msg_can_write FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
-      size `shouldBe` size'
-      canWrt `shouldBe` canWrt'
+    setIncorrectSize :: PostgresQueue -> (Int64, Bool) -> IO ()
+    setIncorrectSize q (size, canWrt) =
+      void $ withTransaction (dbStore $ queueStore ms) $ \db ->
+        DB.execute db "UPDATE msg_queues SET msg_queue_size = ?, msg_can_write = ? WHERE recipient_id = ?" (size, canWrt, recipientId q)
 #endif
 
 testQueueState :: JournalMsgStore s -> IO ()

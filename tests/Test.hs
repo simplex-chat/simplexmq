@@ -81,7 +81,7 @@ main = do
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
           describe "Encrypted files tests" cryptoFileTests
-          fdescribe "Message store tests" msgStoreTests
+          describe "Message store tests" msgStoreTests
           describe "Retry interval tests" retryIntervalTests
           describe "SOCKS settings tests" socksSettingsTests
 #if defined(dbServerPostgres)
@@ -95,7 +95,7 @@ main = do
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $
-          fdescribe "SMP server schema dump" $
+          describe "SMP server schema dump" $
             postgresSchemaDumpTest
               serverMigrations
               [ "20250320_short_links" -- snd_secure moves to the bottom on down migration
