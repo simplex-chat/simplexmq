@@ -926,7 +926,7 @@ testRestoreExpireMessages =
       where
         export = do
           ms <- readWriteQueues
-          exportMessages False (StoreJournal ms) testStoreMsgsFile False
+          exportMessages False (StoreJournal ms) Nothing testStoreMsgsFile False
           closeMsgStore ms
 #if defined(dbServerPostgres)
         exportDB = do

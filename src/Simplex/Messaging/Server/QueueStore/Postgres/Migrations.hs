@@ -371,8 +371,8 @@ END;
 $$;
 
 CREATE PROCEDURE expire_old_messages(
-  p_now_ts BIGINT,
-  p_ttl BIGINT,
+  p_old_queue BIGINT,
+  p_old_ts BIGINT,
   batch_size INT,
   OUT r_expired_msgs_count BIGINT,
   OUT r_stored_msgs_count BIGINT,
@@ -380,8 +380,6 @@ CREATE PROCEDURE expire_old_messages(
 )
 LANGUAGE plpgsql AS $$
 DECLARE
-  old_ts BIGINT := p_now_ts - p_ttl;
-  very_old_ts BIGINT := p_now_ts - 2 * p_ttl - 86400;
   rids BYTEA[];
   rid BYTEA;
   last_rid BYTEA := '\x';
@@ -395,7 +393,7 @@ BEGIN
       SELECT recipient_id
       FROM msg_queues
       WHERE deleted_at IS NULL
-        AND updated_at > very_old_ts
+        AND updated_at > p_old_queue
         AND msg_queue_size > 0
         AND recipient_id > last_rid
       ORDER BY recipient_id ASC
@@ -407,7 +405,7 @@ BEGIN
     FOREACH rid IN ARRAY rids
     LOOP
       BEGIN
-        del_count := delete_expired_msgs(rid, old_ts);
+        del_count := delete_expired_msgs(rid, p_old_ts);
         total_deleted := total_deleted + del_count;
       EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
