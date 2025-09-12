@@ -107,7 +107,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    Journal cmd -> withIniFile $ \ini -> do
+    Journal cmd ttl_ -> withIniFile $ \ini -> do
       msgsDirExists <- doesDirectoryExist storeMsgsJournalDir
       msgsFileExists <- doesFileExist storeMsgsFilePath
       storeLogFile <- getRequiredStoreLogFile ini
@@ -147,7 +147,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                 Right (ASType SQSMemory msType) -> do
                   ms <- newJournalMsgStore logPath MQStoreCfg
                   readQueueStore True (mkQueue ms False) storeLogFile $ stmQueueStore ms
-                  exportMessages True (StoreJournal ms) storeMsgsFilePath False
+                  exportMessages True (StoreJournal ms) ttl_ storeMsgsFilePath False
                   putStrLn "Export completed"
                   putStrLn $ case msType of
                     SMSMemory -> "store_messages set to `memory`, start the server."
@@ -160,7 +160,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                     putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
                     exitFailure
                   ms <- newJournalMsgStore logPath $ PQStoreCfg PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = iniDeletedTTL ini}
-                  exportMessages True (StoreJournal ms) storeMsgsFilePath False
+                  exportMessages True (StoreJournal ms) ttl_ storeMsgsFilePath False
                   putStrLn "Export completed"
                   putStrLn "store_messages set to `journal`, store_queues is set to `database`.\nExport queues to store log to use memory storage for messages (`smp-server database export`)."
                 Right (ASType SQSPostgres SMSPostgres) -> do
@@ -755,7 +755,7 @@ data CliCommand
   | OnlineCert CertOptions
   | Start StartOptions
   | Delete
-  | Journal StoreCmd
+  | Journal StoreCmd (Maybe Int64)
   | Database StoreCmd DatabaseTable DBOpts
 
 data StoreCmd = SCImport | SCExport | SCDelete
@@ -779,7 +779,7 @@ cliCommandP cfgPath logPath iniFile =
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
-        <> command "journal" (info (Journal <$> journalCmdP) (progDesc "Import/export messages to/from journal storage"))
+        <> command "journal" (info (Journal <$> journalCmdP <*> msgTtlP) (progDesc "Import/export messages to/from journal storage"))
         <> command "database" (info (Database <$> databaseCmdP <*> dbTableP <*> dbOptsP defaultDBOpts) (progDesc "Import/export queues to/from PostgreSQL database storage"))
     )
   where
@@ -940,6 +940,13 @@ cliCommandP cfgPath logPath iniFile =
         ( long "table"
             <> help "Database tables: queues/messages"
             <> metavar "TABLE"
+        )
+    msgTtlP =
+      optional $ option
+        auto
+        ( long "ttl"
+            <> help "Limit queues to export messages from by TTL seconds"
+            <> metavar "TTL"
         )
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack

@@ -2111,15 +2111,15 @@ randomId = fmap EntityId . randomId'
 saveServerMessages :: Bool -> MsgStore s -> IO ()
 saveServerMessages drainMsgs ms = case ms of
   StoreMemory STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-    Just f -> exportMessages False ms f drainMsgs
+    Just f -> exportMessages False ms Nothing f drainMsgs
     Nothing -> logNote "undelivered messages are not saved"
   StoreJournal _ -> logNote "closed journal message storage"
 #if defined(dbServerPostgres)
   StoreDatabase _ -> logNote "closed postgres message storage"
 #endif
 
-exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath -> Bool -> IO ()
-exportMessages tty st f drainMsgs = do
+exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> Maybe Int64 -> FilePath -> Bool -> IO ()
+exportMessages tty st ttl_ f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
   run $ case st of
     StoreMemory ms -> exportMessages_ ms $ getMsgs ms
@@ -2128,7 +2128,7 @@ exportMessages tty st f drainMsgs = do
     StoreDatabase ms -> exportDbMessages tty ms
 #endif
   where
-    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
+    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms ttl_ . saveQueueMsgs get
     run :: (Handle -> IO Int) -> IO ()
     run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
       Right n -> logNote $ "messages saved: " <> tshow n
@@ -2174,7 +2174,7 @@ processServerMessages StartOptions {skipWarnings} = do
               run processValidateQueue
         | otherwise = logWarn "skipping message expiration" $> Nothing
         where
-          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
+          run a = unsafeWithAllMsgQueues False ms Nothing a `catchAny` \_ -> exitFailure
           processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
           processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
             mq <- getMsgQueue ms q False
