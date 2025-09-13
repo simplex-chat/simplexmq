@@ -56,7 +56,8 @@ connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
   dbPriorityPool <- newDBStorePool poolSize
   dbPool <- newDBStorePool poolSize
   dbClosed <- newTVarIO True
-  let st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPriorityPool, dbPool, dbNew = False, dbClosed}
+  let dbConnect = fst <$> connectDB connstr schema False
+      st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPriorityPool, dbPool, dbConnect, dbNew = False, dbClosed}
   dbNew <- connectStore st createSchema
   pure st {dbNew}
 
