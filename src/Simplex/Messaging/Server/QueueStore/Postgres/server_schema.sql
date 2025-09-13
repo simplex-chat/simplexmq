@@ -21,7 +21,7 @@ CREATE FUNCTION smp_server.delete_expired_msgs(p_recipient_id bytea, p_old_ts bi
     AS $$
 DECLARE
   q_size BIGINT;
-  min_id BIGINT;
+  keep_min_id BIGINT;
   del_count BIGINT;
 BEGIN
   SELECT msg_queue_size INTO q_size
@@ -33,21 +33,20 @@ BEGIN
     RETURN 0;
   END IF;
 
-  SELECT LEAST( -- ignores NULLs
-    (SELECT MIN(message_id) FROM messages WHERE recipient_id = p_recipient_id AND msg_ts >= p_old_ts),
-    (SELECT MIN(message_id) FROM messages WHERE recipient_id = p_recipient_id AND msg_quota = TRUE)
-  ) INTO min_id;
+  SELECT MIN(message_id) INTO keep_min_id
+  FROM messages WHERE recipient_id = p_recipient_id AND msg_ts >= p_old_ts AND msg_quota = FALSE;
 
-  IF min_id IS NULL THEN
-    DELETE FROM messages WHERE recipient_id = p_recipient_id;
+  IF keep_min_id IS NULL THEN
+    DELETE FROM messages WHERE recipient_id = p_recipient_id AND msg_quota = FALSE;
   ELSE
-    DELETE FROM messages WHERE recipient_id = p_recipient_id AND message_id < min_id;
+    DELETE FROM messages WHERE recipient_id = p_recipient_id AND message_id < keep_min_id AND msg_quota = FALSE;
   END IF;
 
   GET DIAGNOSTICS del_count = ROW_COUNT;
   IF del_count > 0 THEN
     UPDATE msg_queues
     SET msg_can_write = msg_can_write OR msg_queue_size <= del_count,
+        msg_queue_expire = msg_queue_size > del_count AND keep_min_id IS NOT NULL,
         msg_queue_size = GREATEST(msg_queue_size - del_count, 0)
     WHERE recipient_id = p_recipient_id;
   END IF;
@@ -57,12 +56,10 @@ $$;
 
 
 
-CREATE PROCEDURE smp_server.expire_old_messages(IN p_now_ts bigint, IN p_ttl bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
+CREATE PROCEDURE smp_server.expire_old_messages(IN p_old_queue bigint, IN p_old_ts bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  old_ts BIGINT := p_now_ts - p_ttl;
-  very_old_ts BIGINT := p_now_ts - 2 * p_ttl - 86400;
   rids BYTEA[];
   rid BYTEA;
   last_rid BYTEA := '\x';
@@ -76,8 +73,8 @@ BEGIN
       SELECT recipient_id
       FROM msg_queues
       WHERE deleted_at IS NULL
-        AND updated_at > very_old_ts
-        AND msg_queue_size > 0
+        AND updated_at > p_old_queue
+        AND msg_queue_expire = TRUE
         AND recipient_id > last_rid
       ORDER BY recipient_id ASC
       LIMIT batch_size
@@ -88,7 +85,7 @@ BEGIN
     FOREACH rid IN ARRAY rids
     LOOP
       BEGIN
-        del_count := delete_expired_msgs(rid, old_ts);
+        del_count := delete_expired_msgs(rid, p_old_ts);
         total_deleted := total_deleted + del_count;
       EXCEPTION WHEN OTHERS THEN
         RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
@@ -132,7 +129,9 @@ BEGIN
   IF NOT FOUND THEN
     IF q_size != 0 THEN
       UPDATE msg_queues
-      SET msg_can_write = TRUE, msg_queue_size = 0
+      SET msg_can_write = TRUE,
+          msg_queue_expire = FALSE,
+          msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
     RETURN;
@@ -143,6 +142,7 @@ BEGIN
     IF FOUND THEN
       UPDATE msg_queues
       SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
+          msg_queue_expire = msg_queue_size > 1,
           msg_queue_size = GREATEST(msg_queue_size - 1, 0)
       WHERE recipient_id = p_recipient_id;
       RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
@@ -179,7 +179,9 @@ BEGIN
   IF NOT FOUND THEN
     IF q_size != 0 THEN
       UPDATE msg_queues
-      SET msg_can_write = TRUE, msg_queue_size = 0
+      SET msg_can_write = TRUE,
+          msg_queue_expire = FALSE,
+          msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
     RETURN;
@@ -204,12 +206,15 @@ BEGIN
       IF msg_deleted THEN
         UPDATE msg_queues
         SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
+            msg_queue_expire = msg_queue_size > 1,
             msg_queue_size = GREATEST(msg_queue_size - 1, 0)
         WHERE recipient_id = p_recipient_id;
       END IF;
     ELSIF msg_deleted OR q_size != 0 THEN
       UPDATE msg_queues
-      SET msg_can_write = TRUE, msg_queue_size = 0
+      SET msg_can_write = TRUE,
+          msg_queue_expire = FALSE,
+          msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
   ELSE
@@ -241,6 +246,7 @@ BEGIN
 
     UPDATE msg_queues
     SET msg_can_write = NOT quota_written,
+        msg_queue_expire = TRUE,
         msg_queue_size = msg_queue_size + 1
     WHERE recipient_id = p_recipient_id;
 
@@ -303,6 +309,7 @@ CREATE TABLE smp_server.msg_queues (
     rcv_service_id bytea,
     ntf_service_id bytea,
     msg_can_write boolean DEFAULT true NOT NULL,
+    msg_queue_expire boolean DEFAULT false NOT NULL,
     msg_queue_size bigint DEFAULT 0 NOT NULL
 );
 
@@ -375,7 +382,7 @@ CREATE UNIQUE INDEX idx_msg_queues_sender_id ON smp_server.msg_queues USING btre
 
 
 
-CREATE INDEX idx_msg_queues_updated_at_recipient_id ON smp_server.msg_queues USING btree (deleted_at, updated_at, msg_queue_size, recipient_id);
+CREATE INDEX idx_msg_queues_updated_at_recipient_id ON smp_server.msg_queues USING btree (deleted_at, updated_at, msg_queue_expire, recipient_id);
 
 
 
