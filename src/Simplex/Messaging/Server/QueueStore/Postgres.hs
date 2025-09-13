@@ -28,6 +28,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     foldQueueRecs,
     foldRecentQueueRecs,
     handleDuplicate,
+    rowToQueueRec,
     withLog_,
     withDB,
     withDB',
@@ -551,7 +552,7 @@ foldServiceRecs st f =
 
 foldRcvServiceQueueRecs :: PostgresQueueStore q -> ServiceId -> (a -> (RecipientId, QueueRec) -> IO a) -> a -> IO a
 foldRcvServiceQueueRecs st serviceId f acc =
-  withConnection (dbStore st) $ \db ->
+  withTransaction (dbStore st) $ \db ->
     DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \a -> f a . rowToQueueRec
 
 foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
