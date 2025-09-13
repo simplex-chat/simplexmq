@@ -211,6 +211,9 @@ firstRow f e a = second f . listToEither e <$> a
 maybeFirstRow :: Functor f => (a -> b) -> f [a] -> f (Maybe b)
 maybeFirstRow f q = fmap f . listToMaybe <$> q
 
+maybeFirstRow' :: Functor f => b -> (a -> b) -> f [a] -> f b
+maybeFirstRow' def f q = maybe def f . listToMaybe <$> q
+
 firstRow' :: (a -> Either e b) -> e -> IO [a] -> IO (Either e b)
 firstRow' f e a = (f <=< listToEither e) <$> a
 

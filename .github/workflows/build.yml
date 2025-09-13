@@ -58,11 +58,11 @@ jobs:
 # =============================
 
   build:
-    name: "ubuntu-${{ matrix.os }}, GHC: ${{ matrix.ghc }}"
+    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
     needs: maybe-release
     env:
       apps: "smp-server xftp-server ntf-server xftp"
-    runs-on: ubuntu-${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     services:
       postgres:
         image: postgres:15
@@ -81,16 +81,34 @@ jobs:
       matrix:
         include:
           - os: 22.04
+            os_underscore: 22_04
+            arch: x86-64
+            runner: "ubuntu-22.04"
             ghc: "8.10.7"
-            platform_name: 22_04-8.10.7
             should_run: ${{ !(github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }}
           - os: 22.04
+            os_underscore: 22_04
+            arch: x86-64
+            runner: "ubuntu-22.04"
             ghc: "9.6.3"
-            platform_name: 22_04-x86-64
             should_run: true
           - os: 24.04
+            os_underscore: 24_04
+            arch: x86-64
+            runner: "ubuntu-24.04"
             ghc: "9.6.3"
-            platform_name: 24_04-x86-64
+            should_run: true
+          - os: 22.04
+            os_underscore: 22_04
+            arch: aarch64
+            runner: "ubuntu-22.04-arm"
+            ghc: "9.6.3"
+            should_run: true
+          - os: 24.04
+            os_underscore: 24_04
+            arch: aarch64
+            runner: "ubuntu-24.04-arm"
+            ghc: "9.6.3"
             should_run: true
     steps:
       - name: Clone project
@@ -127,11 +145,7 @@ jobs:
           context: .
           load: true
           file: Dockerfile.build
-          tags: build/${{ matrix.platform_name }}:latest
-          cache-from: |
-            type=gha
-            type=gha,scope=master
-          cache-to: type=gha,mode=max
+          tags: build/${{ matrix.os }}:latest
           build-args: |
             TAG=${{ matrix.os }}
             GHC=${{ matrix.ghc }}
@@ -143,23 +157,28 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ matrix.os }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
+          key: ubuntu-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
 
       - name: Start container
         if: matrix.should_run == true
         shell: bash
         run: |
           docker run -t -d \
+            --device /dev/fuse \
+            --cap-add SYS_ADMIN \
+            --security-opt apparmor:unconfined \
             --name builder \
             -v ~/.cabal:/root/.cabal \
             -v /home/runner/work/_temp:/home/runner/work/_temp \
             -v ${{ github.workspace }}:/project \
-            build/${{ matrix.platform_name }}:latest
+            build/${{ matrix.os }}:latest
 
       - name: Build smp-server (postgresql) and tests
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
+          chmod -R 777 dist-newstyle ~/.cabal && git config --global --add safe.directory '*'
+          cabal clean
           cabal update
           cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
           mkdir -p /out
@@ -181,7 +200,7 @@ jobs:
         id: prepare-postgres
         shell: bash
         run: |
-          name="smp-server-postgres-ubuntu-${{ matrix.platform_name }}"
+          name="smp-server-postgres-ubuntu-${{ matrix.os_underscore }}-${{ matrix.arch }}"
           docker cp builder:/out/smp-server $name
 
           path="${{ github.workspace }}/$name"
@@ -213,9 +232,9 @@ jobs:
           printf 'bins<<EOF\n' > bins.output
           printf 'hashes<<EOF\n' > hashes.output
           for i in ${{ env.apps }}; do
-            mv ./out/$i ./$i-ubuntu-${{ matrix.platform_name }}
+            name="$i-ubuntu-${{ matrix.os_underscore }}-${{ matrix.arch }}"
 
-            name="$i-ubuntu-${{ matrix.platform_name }}"
+            mv ./out/$i ./$name
 
             path="${{ github.workspace }}/$name"
             hash="SHA2-256($name)= $(openssl sha256 $path | cut -d' ' -f 2)"

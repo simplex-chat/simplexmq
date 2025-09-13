@@ -26,9 +26,13 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     foldServiceRecs,
     foldRcvServiceQueueRecs,
     foldQueueRecs,
+    foldRecentQueueRecs,
     handleDuplicate,
     withLog_,
+    withDB,
     withDB',
+    assertUpdated,
+    renderField,
   )
 where
 
@@ -84,7 +88,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, tshow, (<$$>))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -409,7 +413,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
 
   -- this method is called from JournalMsgStore deleteQueue that already locks the queue
-  deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
+  deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType QueueRec)
   deleteStoreQueue st sq = E.uninterruptibleMask_ $ runExceptT $ do
     q <- ExceptT $ readQueueRecIO qr
     RoundedSystemTime ts <- liftIO getSystemDate
@@ -420,9 +424,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     forM_ (notifier q) $ \NtfCreds {notifierId} -> do
       atomically $ TM.delete notifierId $ notifiers st
       atomically $ TM.delete notifierId $ notifierLocks st
-    mq_ <- atomically $ swapTVar (msgQueue sq) Nothing
     withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
-    pure (q, mq_)
+    pure q
     where
       rId = recipientId sq
       qr = queueRec sq
@@ -488,7 +491,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getServiceQueueCount :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
   getServiceQueueCount st party serviceId =
     E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCount" st $ \db ->
-      fmap (fromMaybe 0) $ maybeFirstRow fromOnly $
+      maybeFirstRow' 0 fromOnly $
         DB.query db query (Only serviceId)
     where
       query = case party of
@@ -551,8 +554,28 @@ foldRcvServiceQueueRecs st serviceId f acc =
   withConnection (dbStore st) $ \db ->
     DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \a -> f a . rowToQueueRec
 
-foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> Maybe Int64 -> ((RecipientId, QueueRec) -> IO a) -> IO a
-foldQueueRecs tty withData st skipOld_ f = do
+foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
+foldQueueRecs withData = foldQueueRecs_ foldRecs
+  where
+    foldRecs db acc f'
+      | withData = DB.fold_ db (queueRecQueryWithData <> cond) acc $ \acc' -> f' acc' . rowToQueueRecWithData
+      | otherwise = DB.fold_ db (queueRecQuery <> cond) acc $ \acc' -> f' acc' . rowToQueueRec
+    cond = " WHERE deleted_at IS NULL ORDER BY recipient_id ASC"
+
+foldRecentQueueRecs :: Monoid a => Int64 -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
+foldRecentQueueRecs old = foldQueueRecs_ foldRecs
+  where
+    foldRecs db acc f' = DB.fold db (queueRecQuery <> cond) (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
+    cond = " WHERE deleted_at IS NULL AND updated_at > ? ORDER BY recipient_id ASC"
+
+foldQueueRecs_ ::
+  Monoid a =>
+  (DB.Connection -> (Int, a) -> ((Int, a) -> (RecipientId, QueueRec) -> IO (Int, a)) -> IO (Int, a)) ->
+  Bool ->
+  PostgresQueueStore q ->
+  ((RecipientId, QueueRec) -> IO a) ->
+  IO a
+foldQueueRecs_ foldRecs tty st f = do
   (n, r) <- withTransaction (dbStore st) $ \db ->
     foldRecs db (0 :: Int, mempty) $ \(i, acc) qr -> do
       r <- f qr
@@ -563,13 +586,6 @@ foldQueueRecs tty withData st skipOld_ f = do
   when tty $ putStrLn $ progress n
   pure r
   where
-    foldRecs db acc f' = case skipOld_ of
-      Nothing
-        | withData -> DB.fold_ db (queueRecQueryWithData <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold_ db (queueRecQuery <> " WHERE deleted_at IS NULL") acc $ \acc' -> f' acc' . rowToQueueRec
-      Just old
-        | withData -> DB.fold db (queueRecQueryWithData <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRecWithData
-        | otherwise -> DB.fold db (queueRecQuery <> " WHERE deleted_at IS NULL AND updated_at > ?") (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
     progress i = "Processed: " <> show i <> " records"
 
 queueRecQuery :: Query
@@ -633,13 +649,14 @@ queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, 
     (linkId_, queueData_) = queueDataColumns queueData
     nullable :: ToField a => Maybe a -> Builder
     nullable = maybe mempty (renderField . toField)
-    renderField :: Action -> Builder
-    renderField = \case
-      Plain bld -> bld
-      Escape s -> BB.byteString s
-      EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
-      EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
-      Many as -> mconcat (map renderField as)
+
+renderField :: Action -> Builder
+renderField = \case
+  Plain bld -> bld
+  Escape s -> BB.byteString s
+  EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
+  EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
+  Many as -> mconcat (map renderField as)
 
 queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe QueueLinkData)
 queueDataColumns = \case

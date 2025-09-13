@@ -114,6 +114,7 @@ import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
 import XFTPClient (testXFTPServer)
+
 #if defined(dbPostgres)
 import Fixtures
 #endif
@@ -122,6 +123,7 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import Simplex.Messaging.Agent.Store (Connection (..), StoredRcvQueue (..), SomeConn (..))
 import Simplex.Messaging.Agent.Store.AgentStore (getConn)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
+import Simplex.Messaging.Server.MsgStore.Postgres (PostgresQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Types (QueueStoreClass (..))
@@ -1518,20 +1520,29 @@ testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
     A.createConnection a NRMInteractive 1 True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
   -- make it an "old" queue
   let updateStoreLog f = replaceSubstringInFile f " queue_mode=C" ""
-  () <- case testServerStoreConfig msType of
-    ASSCfg _ _ (SSCMemory (Just StorePaths {storeLogFile})) -> updateStoreLog storeLogFile
-    ASSCfg _ _ (SSCMemoryJournal {storeLogFile}) -> updateStoreLog storeLogFile
-    ASSCfg _ _ (SSCDatabaseJournal {storeCfg}) -> do
 #if defined(dbServerPostgres)
-      let AgentClient {agentEnv = Env {store}} = a
-      Right (SomeConn _ (ContactConnection _ RcvQueue {rcvId})) <- withTransaction store (`getConn` contactId)
-      st :: PostgresQueueStore (JournalQueue 'QSPostgres) <- newQueueStore @(JournalQueue 'QSPostgres) storeCfg
-      Right 1 <- runExceptT $ withDB' "test" st $ \db -> PSQL.execute db "UPDATE msg_queues SET queue_mode = ? WHERE recipient_id = ?" (Nothing :: Maybe QueueMode, rcvId)
-      closeQueueStore @(JournalQueue 'QSPostgres) st
-#else
-      error "no dbServerPostgres flag"
+      updateDbStore :: PostgresQueueStore s -> IO ()
+      updateDbStore st = do
+        let AgentClient {agentEnv = Env {store}} = a
+        Right (SomeConn _ (ContactConnection _ RcvQueue {rcvId})) <- withTransaction store (`getConn` contactId)
+        Right 1 <- runExceptT $ withDB' "test" st $ \db -> PSQL.execute db "UPDATE msg_queues SET queue_mode = ? WHERE recipient_id = ?" (Nothing :: Maybe QueueMode, rcvId)
+        pure ()
 #endif
-    _ -> pure ()
+  () <- case testServerStoreConfig msType of
+    ASSCfg _ _ (SSCMemory sp_) -> mapM_ (\StorePaths {storeLogFile} -> updateStoreLog storeLogFile) sp_
+    ASSCfg _ _ SSCMemoryJournal {storeLogFile} -> updateStoreLog storeLogFile
+#if defined(dbServerPostgres)
+    ASSCfg _ _ SSCDatabaseJournal {storeCfg} -> do
+      st :: PostgresQueueStore (JournalQueue 'QSPostgres) <- newQueueStore @(JournalQueue 'QSPostgres) storeCfg
+      updateDbStore st
+      closeQueueStore @(JournalQueue 'QSPostgres) st
+    ASSCfg _ _ (SSCDatabase storeCfg) -> do
+      st :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
+      updateDbStore st
+      closeQueueStore @PostgresQueue st
+#else
+    ASSCfg _ _ SSCDatabaseJournal {} -> error "no dbServerPostgres flag"
+#endif
 
   withSmpServer ps $ do
     let userData = UserLinkData "some user data"
