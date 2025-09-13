@@ -177,6 +177,7 @@ CREATE TABLE messages(
 
 ALTER TABLE msg_queues
   ADD COLUMN msg_can_write BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN msg_queue_expire BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN msg_queue_size BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX idx_messages_recipient_id_message_id ON messages (recipient_id, message_id);
@@ -184,7 +185,7 @@ CREATE INDEX idx_messages_recipient_id_msg_ts on messages(recipient_id, msg_ts);
 CREATE INDEX idx_messages_recipient_id_msg_quota on messages(recipient_id, msg_quota);
 
 DROP INDEX idx_msg_queues_updated_at;
-CREATE INDEX idx_msg_queues_updated_at_recipient_id ON msg_queues (deleted_at, updated_at, msg_queue_size, recipient_id);
+CREATE INDEX idx_msg_queues_updated_at_recipient_id ON msg_queues (deleted_at, updated_at, msg_queue_expire, recipient_id);
 
 CREATE FUNCTION write_message(
   p_recipient_id BYTEA,
@@ -215,6 +216,7 @@ BEGIN
 
     UPDATE msg_queues
     SET msg_can_write = NOT quota_written,
+        msg_queue_expire = TRUE,
         msg_queue_size = msg_queue_size + 1
     WHERE recipient_id = p_recipient_id;
 
@@ -248,7 +250,9 @@ BEGIN
   IF NOT FOUND THEN
     IF q_size != 0 THEN
       UPDATE msg_queues
-      SET msg_can_write = TRUE, msg_queue_size = 0
+      SET msg_can_write = TRUE,
+          msg_queue_expire = FALSE,
+          msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
     RETURN;
@@ -259,6 +263,7 @@ BEGIN
     IF FOUND THEN
       UPDATE msg_queues
       SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
+          msg_queue_expire = msg_queue_size > 1,
           msg_queue_size = GREATEST(msg_queue_size - 1, 0)
       WHERE recipient_id = p_recipient_id;
       RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
@@ -293,7 +298,9 @@ BEGIN
   IF NOT FOUND THEN
     IF q_size != 0 THEN
       UPDATE msg_queues
-      SET msg_can_write = TRUE, msg_queue_size = 0
+      SET msg_can_write = TRUE,
+          msg_queue_expire = FALSE,
+          msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
     RETURN;
@@ -318,12 +325,15 @@ BEGIN
       IF msg_deleted THEN
         UPDATE msg_queues
         SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
+            msg_queue_expire = msg_queue_size > 1,
             msg_queue_size = GREATEST(msg_queue_size - 1, 0)
         WHERE recipient_id = p_recipient_id;
       END IF;
     ELSIF msg_deleted OR q_size != 0 THEN
       UPDATE msg_queues
-      SET msg_can_write = TRUE, msg_queue_size = 0
+      SET msg_can_write = TRUE,
+          msg_queue_expire = FALSE,
+          msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
   ELSE
@@ -336,7 +346,8 @@ CREATE FUNCTION delete_expired_msgs(p_recipient_id BYTEA, p_old_ts BIGINT) RETUR
 LANGUAGE plpgsql AS $$
 DECLARE
   q_size BIGINT;
-  min_id BIGINT;
+  min_keep_id BIGINT;
+  min_quota_id BIGINT;
   del_count BIGINT;
 BEGIN
   SELECT msg_queue_size INTO q_size
@@ -348,21 +359,23 @@ BEGIN
     RETURN 0;
   END IF;
 
-  SELECT LEAST( -- ignores NULLs
-    (SELECT MIN(message_id) FROM messages WHERE recipient_id = p_recipient_id AND msg_ts >= p_old_ts),
-    (SELECT MIN(message_id) FROM messages WHERE recipient_id = p_recipient_id AND msg_quota = TRUE)
-  ) INTO min_id;
+  SELECT MIN(message_id) INTO min_keep_id
+  FROM messages WHERE recipient_id = p_recipient_id AND msg_ts >= p_old_ts;
 
-  IF min_id IS NULL THEN
+  SELECT MIN(message_id) INTO min_quota_id
+  FROM messages WHERE recipient_id = p_recipient_id AND msg_quota = TRUE;
+
+  IF min_keep_id IS NULL AND min_quota_id IS NULL THEN
     DELETE FROM messages WHERE recipient_id = p_recipient_id;
   ELSE
-    DELETE FROM messages WHERE recipient_id = p_recipient_id AND message_id < min_id;
+    DELETE FROM messages WHERE recipient_id = p_recipient_id AND message_id < LEAST(min_keep_id, min_quota_id);
   END IF;
 
   GET DIAGNOSTICS del_count = ROW_COUNT;
   IF del_count > 0 THEN
     UPDATE msg_queues
     SET msg_can_write = msg_can_write OR msg_queue_size <= del_count,
+        msg_queue_expire = msg_queue_size > del_count AND min_keep_id IS NOT NULL,
         msg_queue_size = GREATEST(msg_queue_size - del_count, 0)
     WHERE recipient_id = p_recipient_id;
   END IF;
@@ -394,7 +407,7 @@ BEGIN
       FROM msg_queues
       WHERE deleted_at IS NULL
         AND updated_at > p_old_queue
-        AND msg_queue_size > 0
+        AND msg_queue_expire = TRUE
         AND recipient_id > last_rid
       ORDER BY recipient_id ASC
       LIMIT batch_size
@@ -442,6 +455,7 @@ DROP INDEX idx_messages_recipient_id_msg_quota;
 
 ALTER TABLE msg_queues
   DROP COLUMN msg_can_write,
+  DROP COLUMN msg_queue_expire,
   DROP COLUMN msg_queue_size;
 
 DROP TABLE messages;

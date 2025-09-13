@@ -109,11 +109,12 @@ instance MsgStoreClass PostgresMsgStore where
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =
     maybeFirstRow' newMessageStats toMessageStats $ withConnection st $ \db ->
-      DB.query db "CALL expire_old_messages(?,?,?,0,0,0)" (oldQueue, oldMsg, 10000 :: Int)
+      DB.query db "CALL expire_old_messages(?,?,?,0,0,0)" (oldQueue, oldMsg, batchSize)
     where
       st = dbStore $ queueStore_ ms
-      oldQueue = now - 2 * ttl - 86400
+      oldQueue = 0 :: Int64 -- expire all queues
       oldMsg = now - ttl
+      batchSize = 10000 :: Int
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
@@ -300,8 +301,8 @@ deleteAllMessages ms =
       db
       [sql|
         UPDATE msg_queues
-        SET msg_queue_size = 0, msg_can_write = TRUE
-        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
+        SET msg_queue_size = 0, msg_can_write = TRUE, msg_queue_expire = FALSE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE OR msg_queue_expire = TRUE
       |]
 
 updateQueueCounts :: PostgresMsgStore -> IO ()
@@ -313,7 +314,7 @@ updateQueueCounts ms =
         CREATE TEMP TABLE queue_stats AS
         SELECT recipient_id,
           COUNT(*) AS size,
-          BOOL_OR(msg_quota) AS has_quota
+          SUM(CASE WHEN msg_quota THEN 1 ELSE 0 END) AS quota_count
         FROM messages
         GROUP BY recipient_id
       |]
@@ -321,15 +322,16 @@ updateQueueCounts ms =
       db
       [sql|
         UPDATE msg_queues
-        SET msg_queue_size = 0, msg_can_write = TRUE
-        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
+        SET msg_queue_size = 0, msg_can_write = TRUE, msg_queue_expire = FALSE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE OR msg_queue_expire = TRUE
       |]
     void $ DB.execute_
       db
       [sql|
         UPDATE msg_queues q
         SET msg_queue_size = s.size,
-            msg_can_write = NOT s.has_quota
+            msg_can_write = s.quota_count = 0,
+            msg_queue_expire = s.size > s.quota_count
         FROM queue_stats s
         WHERE q.recipient_id = s.recipient_id
       |]
