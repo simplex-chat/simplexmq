@@ -257,9 +257,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           E.uninterruptibleMask_ $ loadQueues qs' " WHERE notifier_id IN ?" $ \(rId, qRec) ->
             forM (notifier qRec) $ \NtfCreds {notifierId = nId} -> -- it is always Just with this query
               (nId,) <$> maybe (mkQ False rId qRec) pure (M.lookup rId qs)
-    | otherwise = case party of
-        SRecipient -> loadQueuesNoCache " WHERE recipient_id IN ?"
-        SNotifier -> loadQueuesNoCache " WHERE notifier_id IN ?"
+    | otherwise = E.uninterruptibleMask_ $ case party of
+        SRecipient -> loadQueuesNoCache " WHERE recipient_id IN ?" $ \(rId, qRec) ->
+          Just . (rId,) <$> mkQ False rId qRec
+        SNotifier -> loadQueuesNoCache " WHERE notifier_id IN ?" $ \(rId, qRec) ->
+          forM (notifier qRec) $ \NtfCreds {notifierId = nId} -> (nId,) <$> mkQ False rId qRec
     where
       PostgresQueueStore {queues, notifiers, useCache} = st
       get :: M.Map QueueId a -> QueueId -> QueueId -> Either QueueId a
@@ -270,15 +272,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         if null qIds'
           then pure $ map (first (const INTERNAL)) qs'
           else do
-            qs_ <-
-              runExceptT $ fmap M.fromList $
-                withDB' "getQueues_" st (\db -> DB.query db (queueRecQuery <> cond <> " AND deleted_at IS NULL") (Only (In qIds')))
-                  >>= liftIO . fmap catMaybes . mapM (mkCacheQueue . rowToQueueRec)
+            qs_ <- dbLoadQueues qIds' cond mkCacheQueue
             pure $ map (result qs_) qs'
         where
           result :: Either ErrorType (M.Map QueueId q) -> Either QueueId q -> Either ErrorType q
           result _ (Right q) = Right q
           result qs_ (Left qId) = maybe (Left AUTH) Right . M.lookup qId =<< qs_
+      dbLoadQueues qIds' cond mkQueue' =
+        runExceptT $ fmap M.fromList $
+          withDB' "getQueues_" st (\db -> DB.query db (queueRecQuery <> cond <> " AND deleted_at IS NULL") (Only (In qIds')))
+            >>= liftIO . fmap catMaybes . mapM (mkQueue' . rowToQueueRec)
       cacheRcvQueue (rId, qRec) = do
         sq <- mkQ True rId qRec
         sq' <- withQueueLock sq "getQueue_" $ atomically $
@@ -287,14 +290,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
             Just sq' -> pure sq'
             Nothing -> sq <$ TM.insert rId sq queues
         pure $ Just (rId, sq')
-      loadQueuesNoCache cond = do
-        qs_ <-
-          runExceptT $ fmap M.fromList $
-            withDB' "getQueues_" st (\db -> DB.query db (queueRecQuery <> cond <> " AND deleted_at IS NULL") (Only (In qIds)))
-              >>= liftIO . mapM (mkQ' . rowToQueueRec)
+      loadQueuesNoCache cond mkQueue' = do
+        qs_ <- dbLoadQueues qIds cond mkQueue'
         pure $ map (result qs_) qIds
         where
-          mkQ' (rId, qr) = (rId,) <$> mkQ True rId qr
           result :: Either ErrorType (M.Map QueueId q) -> QueueId -> Either ErrorType q
           result qs_ qId = maybe (Left AUTH) Right . M.lookup qId =<< qs_
 
