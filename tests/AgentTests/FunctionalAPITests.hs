@@ -1539,11 +1539,11 @@ testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
     ASSCfg _ _ SSCMemoryJournal {storeLogFile} -> updateStoreLog storeLogFile
 #if defined(dbServerPostgres)
     ASSCfg _ _ SSCDatabaseJournal {storeCfg} -> do
-      st :: PostgresQueueStore (JournalQueue 'QSPostgres) <- newQueueStore @(JournalQueue 'QSPostgres) storeCfg
+      st :: PostgresQueueStore (JournalQueue 'QSPostgres) <- newQueueStore @(JournalQueue 'QSPostgres) (storeCfg, True)
       updateDbStore st
       closeQueueStore @(JournalQueue 'QSPostgres) st
     ASSCfg _ _ (SSCDatabase storeCfg) -> do
-      st :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
+      st :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue (storeCfg, False)
       updateDbStore st
       closeQueueStore @PostgresQueue st
 #else
