@@ -14,7 +14,7 @@ import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Common (withTransaction')
 import Simplex.Messaging.Agent.Store.SQLite.DB (TrackQueries (..))
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
-import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
 import Simplex.Messaging.Util (ifM)
 import System.Directory (doesFileExist, removeFile)
 import System.Process (readCreateProcess, shell)
@@ -51,7 +51,7 @@ testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
   savedSchema <- ifM (doesFileExist appSchema) (readFile appSchema) (pure "")
   savedSchema `deepseq` pure ()
-  void $ createDBStore (DBOpts testDB "" False True TQOff) appMigrations MCConsole
+  void $ createDBStore (DBOpts testDB "" False True TQOff) appMigrations (MigrationConfig MCConsole Nothing)
   getSchema testDB appSchema `shouldReturn` savedSchema
   removeFile testDB
 
@@ -59,14 +59,14 @@ testVerifyLintFKeyIndexes :: IO ()
 testVerifyLintFKeyIndexes = do
   savedLint <- ifM (doesFileExist appLint) (readFile appLint) (pure "")
   savedLint `deepseq` pure ()
-  void $ createDBStore (DBOpts testDB "" False True TQOff) appMigrations MCConsole
+  void $ createDBStore (DBOpts testDB "" False True TQOff) appMigrations (MigrationConfig MCConsole Nothing)
   getLintFKeyIndexes testDB "tests/tmp/agent_lint.sql" `shouldReturn` savedLint
   removeFile testDB
 
 testSchemaMigrations :: IO ()
 testSchemaMigrations = do
   let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) appMigrations
-  Right st <- createDBStore (DBOpts testDB "" False True TQOff) noDownMigrations MCError
+  Right st <- createDBStore (DBOpts testDB "" False True TQOff) noDownMigrations (MigrationConfig MCError Nothing)
   mapM_ (testDownMigration st) $ drop (length noDownMigrations) appMigrations
   closeDBStore st
   removeFile testDB
@@ -89,7 +89,7 @@ testSchemaMigrations = do
 
 testUsersMigrationNew :: IO ()
 testUsersMigrationNew = do
-  Right st <- createDBStore (DBOpts testDB "" False True TQOff) appMigrations MCError
+  Right st <- createDBStore (DBOpts testDB "" False True TQOff) appMigrations (MigrationConfig MCError Nothing)
   withTransaction' st (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([] :: [Only Int])
   closeDBStore st
@@ -97,11 +97,11 @@ testUsersMigrationNew = do
 testUsersMigrationOld :: IO ()
 testUsersMigrationOld = do
   let beforeUsers = takeWhile (("m20230110_users" /=) . name) appMigrations
-  Right st <- createDBStore (DBOpts testDB "" False True TQOff) beforeUsers MCError
+  Right st <- createDBStore (DBOpts testDB "" False True TQOff) beforeUsers (MigrationConfig MCError Nothing)
   withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users';")
     `shouldReturn` ([] :: [Only String])
   closeDBStore st
-  Right st' <- createDBStore (DBOpts testDB "" False True TQOff) appMigrations MCYesUp
+  Right st' <- createDBStore (DBOpts testDB "" False True TQOff) appMigrations (MigrationConfig MCYesUp Nothing)
   withTransaction' st' (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([Only (1 :: Int)])
   closeDBStore st'

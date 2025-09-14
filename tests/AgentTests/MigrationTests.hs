@@ -235,7 +235,7 @@ createStore randSuffix migrations confirmMigrations = do
           vacuum = True,
           track = DB.TQOff
         }
-  createDBStore dbOpts migrations confirmMigrations
+  createDBStore dbOpts migrations (MigrationConfig confirmMigrations Nothing)
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = removeFile (testDB randSuffix)
