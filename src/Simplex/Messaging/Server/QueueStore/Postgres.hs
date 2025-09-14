@@ -70,6 +70,7 @@ import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (createDBStore, closeDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
@@ -112,7 +113,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   newQueueStore :: PostgresStoreCfg  -> IO (PostgresQueueStore q)
   newQueueStore PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations, deletedTTL} = do
-    dbStore <- either err pure =<< createDBStore dbOpts serverMigrations confirmMigrations
+    dbStore <- either err pure =<< createDBStore dbOpts serverMigrations (MigrationConfig confirmMigrations Nothing)
     dbStoreLog <- mapM (openWriteStoreLog True) dbStoreLogPath
     queues <- TM.emptyIO
     senders <- TM.emptyIO

@@ -57,18 +57,18 @@ import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSc
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
-import System.FilePath (takeDirectory)
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import UnliftIO.Exception (bracketOnError, onException)
 import UnliftIO.MVar
 import UnliftIO.STM
 
 -- * SQLite Store implementation
 
-createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createDBStore DBOpts {dbFilePath, dbKey, keepKey, track, vacuum} migrations confirmMigrations = do
+createDBStore :: DBOpts -> [Migration] -> MigrationConfig -> IO (Either MigrationError DBStore)
+createDBStore DBOpts {dbFilePath, dbKey, keepKey, track, vacuum} migrations MigrationConfig {confirm, backupPath} = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey track
@@ -81,9 +81,12 @@ createDBStore DBOpts {dbFilePath, dbKey, keepKey, track, vacuum} migrations conf
       let initialize = Migrations.initialize st
           getCurrent = withTransaction st Migrations.getCurrentMigrations
           run = Migrations.run st vacuum
-          backup = copyFile dbFilePath (dbFilePath <> ".bak")
+          backup = mkBackup <$> backupPath
+          mkBackup bp =
+            let f = if null bp then dbFilePath else bp </> takeFileName dbFilePath
+             in copyFile dbFilePath $ f <> ".bak"
           dbm = DBMigrate {initialize, getCurrent, run, backup}
-       in sharedMigrateSchema dbm (dbNew st) migrations confirmMigrations
+       in sharedMigrateSchema dbm (dbNew st) migrations confirm
 
 connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> DB.TrackQueries -> IO DBStore
 connectSQLiteStore dbFilePath key keepKey track = do

@@ -64,7 +64,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Store (createStore)
 import Simplex.Messaging.Agent.Store.Common (DBStore)
 import Simplex.Messaging.Agent.Store.Interface (DBOpts)
-import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
@@ -266,7 +266,7 @@ newSMPAgentEnv config store = do
   multicastSubscribers <- newTMVarIO 0
   pure Env {config, store, random, randomServer, ntfSupervisor, xftpAgent, multicastSubscribers}
 
-createAgentStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createAgentStore :: DBOpts -> MigrationConfig -> IO (Either MigrationError DBStore)
 createAgentStore = createStore
 
 data NtfSupervisor = NtfSupervisor
