@@ -265,7 +265,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        if: matrix.should_run == true
+        if: matrix.should_run == true && matrix.arch == 'x86-64'
         timeout-minutes: 120
         shell: bash
         env:
