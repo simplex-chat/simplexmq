@@ -97,7 +97,7 @@ instance MsgStoreClass PostgresMsgStore where
 
   newMsgStore :: PostgresMsgStoreCfg -> IO PostgresMsgStore
   newMsgStore config = do
-    queueStore_ <- newQueueStore @PostgresQueue $ queueStoreCfg config
+    queueStore_ <- newQueueStore @PostgresQueue (queueStoreCfg config, False)
     pure PostgresMsgStore {config, queueStore_}
 
   closeMsgStore :: PostgresMsgStore -> IO ()
