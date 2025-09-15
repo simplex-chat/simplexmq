@@ -43,7 +43,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getDeletedConn,
     getConns,
     getDeletedConns,
-    getConnData,
+    getConnsData,
     setConnDeleted,
     setConnUserId,
     setConnAgentVersion,
@@ -2032,20 +2032,18 @@ getDeletedConn = getAnyConn True
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getAnyConn deleted' dbConn connId =
-  getConnData dbConn connId >>= \case
+  getConnData dbConn connId deleted' >>= \case
+    Just (cData, cMode) -> do
+      rQ <- getRcvQueuesByConnId_ dbConn connId
+      sQ <- getSndQueuesByConnId_ dbConn connId
+      pure $ case (rQ, sQ, cMode) of
+        (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
+        (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
+        (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
+        (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
+        (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
+        _ -> Left SEConnNotFound
     Nothing -> pure $ Left SEConnNotFound
-    Just (cData@ConnData {deleted}, cMode)
-      | deleted /= deleted' -> pure $ Left SEConnNotFound
-      | otherwise -> do
-          rQ <- getRcvQueuesByConnId_ dbConn connId
-          sQ <- getSndQueuesByConnId_ dbConn connId
-          pure $ case (rQ, sQ, cMode) of
-            (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
-            (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
-            (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
-            (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
-            (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
-            _ -> Left SEConnNotFound
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
@@ -2058,25 +2056,12 @@ getDeletedConns = getAnyConns_ True
 #if defined(dbPostgres)
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getAnyConns_ deleted' db connIds = do
-  cs :: Map ConnId (Maybe (ConnData, ConnectionMode)) <- getConnsData
-  let connIds' = M.keys $ M.mapMaybe id cs
+  cs <- getConnsData_ db connIds deleted'
+  let connIds' = M.keys cs
   rQs :: Map ConnId (NonEmpty RcvQueue) <- getRcvQueuesByConnIds_ connIds'
   sQs :: Map ConnId (NonEmpty SndQueue) <- getSndQueuesByConnIds_ connIds'
   pure $ map (result cs rQs sQs) connIds
   where
-    getConnsData =
-      M.fromList . map (toMapTuple . rowToConnData) <$>
-        DB.query
-          db
-          [sql|
-            SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-              last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
-            FROM connections
-            WHERE conn_id IN ?
-          |]
-          (Only (In connIds))
-    toMapTuple c@(ConnData {connId, deleted}, _) =
-      (connId, if deleted == deleted' then Just c else Nothing)
     getRcvQueuesByConnIds_ connIds' =
       toQueueMap primaryFirst toRcvQueue
         <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id IN ? AND q.deleted = 0") (Only (In connIds'))
@@ -2092,14 +2077,32 @@ getAnyConns_ deleted' db connIds = do
     toQueueMap primaryFst toQueue =
       M.fromList . map (\qs@(q :| _) -> (qConnId q, L.sortBy primaryFst qs)) . groupOn' qConnId . sortOn qConnId . map toQueue
     result cs rQs sQs connId = case M.lookup connId cs of
-      Just (Just (cData, cMode)) -> case (M.lookup connId rQs, M.lookup connId sQs, cMode) of
+      Just (cData, cMode) -> case (M.lookup connId rQs, M.lookup connId sQs, cMode) of
         (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
         (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
         (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
         (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
         (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
         _ -> Left SEConnNotFound
-      _ -> Left SEConnNotFound
+      Nothing -> Left SEConnNotFound
+
+getConnsData :: DB.Connection -> [ConnId] -> IO [Maybe (ConnData, ConnectionMode)]
+getConnsData db connIds = do
+  cs <- getConnsData_ db connIds False
+  pure $ map (`M.lookup` cs) connIds
+
+getConnsData_ :: DB.Connection -> [ConnId] -> Bool -> IO (Map ConnId (ConnData, ConnectionMode))
+getConnsData_ db connIds deleted' =
+  M.fromList . map ((\c@(ConnData {connId}, _) -> (connId, c)) . rowToConnData) <$>
+    DB.query
+      db
+      [sql|
+        SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
+          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
+        FROM connections
+        WHERE conn_id IN ? AND deleted = ?
+      |]
+      (In connIds, BI deleted')
 
 #else
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
@@ -2109,8 +2112,8 @@ getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAn
     handleDBError = pure . Left . SEInternal . bshow
 #endif
 
-getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
-getConnData db connId' =
+getConnData :: DB.Connection -> ConnId -> Bool -> IO (Maybe (ConnData, ConnectionMode))
+getConnData db connId' deleted' =
   maybeFirstRow rowToConnData $
     DB.query
       db
@@ -2118,9 +2121,9 @@ getConnData db connId' =
         SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
           last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
         FROM connections
-        WHERE conn_id = ?
+        WHERE conn_id = ? AND deleted = ?
       |]
-      (Only connId')
+      (connId', BI deleted')
 
 rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport) -> (ConnData, ConnectionMode)
 rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport) =

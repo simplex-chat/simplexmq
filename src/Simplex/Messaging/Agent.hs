@@ -2451,23 +2451,22 @@ sendNtfConnCommands :: AgentClient -> NtfSupervisorCommand -> AM ()
 sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ S.toList <$> getSubscriptions c
-  rs <- lift $ withStoreBatch' c (\db -> map (getConnData db) connIds)
+  rs <- withStore' c (`getConnsData` connIds)
   let (connIds', cErrs) = enabledNtfConns (zip connIds rs)
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
   unless (null cErrs) $ atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS cErrs)
   where
-    enabledNtfConns :: [(ConnId, Either AgentErrorType (Maybe (ConnData, ConnectionMode)))] -> ([ConnId], [(ConnId, AgentErrorType)])
+    enabledNtfConns :: [(ConnId, Maybe (ConnData, ConnectionMode))] -> ([ConnId], [(ConnId, AgentErrorType)])
     enabledNtfConns = foldr addEnabledConn ([], [])
       where
         addEnabledConn ::
-          (ConnId, Either AgentErrorType (Maybe (ConnData, ConnectionMode))) ->
+          (ConnId, Maybe (ConnData, ConnectionMode)) ->
           ([ConnId], [(ConnId, AgentErrorType)]) ->
           ([ConnId], [(ConnId, AgentErrorType)])
         addEnabledConn cData_ (cIds, errs) = case cData_ of
-          (_, Right (Just (ConnData {connId, enableNtfs}, _))) -> if enableNtfs then (connId : cIds, errs) else (cIds, errs)
-          (connId, Right Nothing) -> (cIds, (connId, INTERNAL "no connection data") : errs)
-          (connId, Left e) -> (cIds, (connId, e) : errs)
+          (_, Just (ConnData {connId, enableNtfs}, _)) -> if enableNtfs then (connId : cIds, errs) else (cIds, errs)
+          (connId, Nothing) -> (cIds, (connId, INTERNAL "no connection data") : errs)
 
 setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
