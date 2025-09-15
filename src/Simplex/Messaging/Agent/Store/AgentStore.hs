@@ -245,6 +245,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     firstRow',
     maybeFirstRow,
     fromOnlyBI,
+    getWorkItem,
+    getWorkItems,
   )
 where
 
@@ -295,7 +297,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Transport.Client (TransportHost)
-import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, firstRow, firstRow', ifM, maybeFirstRow, tshow, ($>>=), (<$$>))
+import Simplex.Messaging.Util (bshow, catchAllErrors, eitherToMaybe, firstRow, firstRow', ifM, maybeFirstRow, maybeFirstRow', tshow, ($>>=), (<$$>))
 import Simplex.Messaging.Version.Internal
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -503,15 +505,12 @@ deleteConnRecord :: DB.Connection -> ConnId -> IO ()
 deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
-checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
-  fromMaybe False
-    <$> maybeFirstRow
-      fromOnly
-      ( DB.query
-          db
-          "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
-          (host server, port server, sndId, New)
-      )
+checkConfirmedSndQueueExists_ db SndQueue {server, sndId} =
+  maybeFirstRow' False fromOnly $
+    DB.query
+      db
+      "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
+      (host server, port server, sndId, New)
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))
 getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
@@ -1043,25 +1042,25 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
                 _ -> Left $ SEInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
-getWorkItem :: Show i => ByteString -> IO (Maybe i) -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError (Maybe a))
+getWorkItem :: (Show i, AnyStoreError e) => String -> IO (Maybe i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e (Maybe a))
 getWorkItem itemName getId getItem markFailed =
   runExceptT $ handleWrkErr itemName "getId" getId >>= mapM (tryGetItem itemName getItem markFailed)
 
-getWorkItems :: Show i => ByteString -> IO [i] -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> IO (Either StoreError [Either StoreError a])
+getWorkItems :: (Show i, AnyStoreError e) => String -> IO [i] -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e [Either e a])
 getWorkItems itemName getIds getItem markFailed =
   runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
 
-tryGetItem :: Show i => ByteString -> (i -> IO (Either StoreError a)) -> (i -> IO ()) -> i -> ExceptT StoreError IO a
+tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
 tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchAllErrors` \e -> mark >> throwE e
   where
-    mark = handleWrkErr itemName ("markFailed ID " <> bshow itemId) $ markFailed itemId
+    mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
-handleWrkErr :: ByteString -> ByteString -> IO a -> ExceptT StoreError IO a
+handleWrkErr :: forall e a. AnyStoreError e => String -> String -> IO a -> ExceptT e IO a
 handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
   where
-    mkError :: E.SomeException -> StoreError
-    mkError e = SEWorkItemError $ itemName <> " " <> opName <> " error: " <> bshow e
+    mkError :: E.SomeException -> e
+    mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
@@ -1147,15 +1146,12 @@ toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, 
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
-checkRcvMsgHashExists db connId hash = do
-  fromMaybe False
-    <$> maybeFirstRow
-      fromOnly
-      ( DB.query
-          db
-          "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
-          (connId, Binary hash)
-      )
+checkRcvMsgHashExists db connId hash =
+  maybeFirstRow' False fromOnly $
+    DB.query
+      db
+      "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
+      (connId, Binary hash)
 
 getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
 getRcvMsgBrokerTs db connId msgId =
@@ -2202,15 +2198,12 @@ addProcessedRatchetKeyHash db connId hash =
   DB.execute db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?)" (connId, Binary hash)
 
 checkRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
-checkRatchetKeyHashExists db connId hash = do
-  fromMaybe False
-    <$> maybeFirstRow
-      fromOnly
-      ( DB.query
-          db
-          "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
-          (connId, Binary hash)
-      )
+checkRatchetKeyHashExists db connId hash =
+  maybeFirstRow' False fromOnly $
+    DB.query
+      db
+      "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
+      (connId, Binary hash)
 
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
 deleteRatchetKeyHashesExpired db ttl = do
@@ -2987,8 +2980,8 @@ deleteSndFile' db sndFileId =
 
 getSndFileDeleted :: DB.Connection -> DBSndFileId -> IO Bool
 getSndFileDeleted db sndFileId =
-  fromMaybe True
-    <$> maybeFirstRow fromOnlyBI (DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId))
+  maybeFirstRow' True fromOnlyBI $
+    DB.query db "SELECT deleted FROM snd_files WHERE snd_file_id = ?" (Only sndFileId)
 
 createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> IO ()
 createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica_ db sndChunkId

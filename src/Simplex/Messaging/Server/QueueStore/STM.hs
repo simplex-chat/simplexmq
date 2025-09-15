@@ -230,7 +230,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   deleteQueueNotifier :: STMQueueStore q -> q -> IO (Either ErrorType (Maybe NtfCreds))
   deleteQueueNotifier st sq =
     withQueueRec qr delete
-      $>>= \nc_ -> nc_ <$$ withLog "deleteQueueNotifier" st (`logDeleteNotifier` recipientId sq)
+      $>>= (<$$ withLog "deleteQueueNotifier" st (`logDeleteNotifier` recipientId sq))
     where
       qr = queueRec sq
       delete q = forM (notifier q) $ \nc -> do
@@ -266,11 +266,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         | changed = q <$$ withLog "updateQueueTime" st (\sl -> logUpdateQueueTime sl (recipientId sq) t)
         | otherwise = pure $ Right q
 
-  deleteStoreQueue :: STMQueueStore q -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
+  deleteStoreQueue :: STMQueueStore q -> q -> IO (Either ErrorType QueueRec)
   deleteStoreQueue st sq =
     withQueueRec qr delete
-      $>>= \q -> withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
-      >>= mapM (\_ -> (q,) <$> atomically (swapTVar (msgQueue sq) Nothing))
+      $>>= (<$$ withLog "deleteStoreQueue" st (`logDeleteQueue` rId))
     where
       rId = recipientId sq
       qr = queueRec sq

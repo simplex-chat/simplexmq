@@ -2020,19 +2020,20 @@ withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (
 withWork c doWork = withWork_ c doWork . withStore' c
 {-# INLINE withWork #-}
 
-withWork_ :: MonadIO m => AgentClient -> TMVar () -> ExceptT e m (Either StoreError (Maybe a)) -> (a -> ExceptT e m ()) -> ExceptT e m ()
+withWork_ :: (AnyStoreError e', MonadIO m) => AgentClient -> TMVar () -> ExceptT e m (Either e' (Maybe a)) -> (a -> ExceptT e m ()) -> ExceptT e m ()
 withWork_ c doWork getWork action =
   getWork >>= \case
     Right (Just r) -> action r
     Right Nothing -> noWork
     -- worker is stopped here (noWork) because the next iteration is likely to produce the same result
-    Left e@SEWorkItemError {} -> noWork >> notifyErr (CRITICAL False) e
-    Left e -> notifyErr INTERNAL e
+    Left e
+      | isWorkItemError e -> noWork >> notifyErr (CRITICAL False) e
+      | otherwise -> notifyErr INTERNAL e
   where
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
-withWorkItems :: MonadIO m => AgentClient -> TMVar () -> ExceptT e m (Either StoreError [Either StoreError a]) -> (NonEmpty a -> ExceptT e m ()) -> ExceptT e m ()
+withWorkItems :: (AnyStoreError e', MonadIO m) => AgentClient -> TMVar () -> ExceptT e m (Either e' [Either e' a]) -> (NonEmpty a -> ExceptT e m ()) -> ExceptT e m ()
 withWorkItems c doWork getWork action = do
   getWork >>= \case
     Right [] -> noWork
@@ -2041,20 +2042,17 @@ withWorkItems c doWork getWork action = do
       case L.nonEmpty items of
         Just items' -> action items'
         Nothing -> do
-          let criticalErr = find workItemError errs
+          let criticalErr = find isWorkItemError errs
           forM_ criticalErr $ \err -> do
             notifyErr (CRITICAL False) err
-            when (all workItemError errs) noWork
+            when (all isWorkItemError errs) noWork
       unless (null errs) $
         atomically $
           writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS $ map (\e -> ("", INTERNAL $ show e)) errs)
     Left e
-      | workItemError e -> noWork >> notifyErr (CRITICAL False) e
+      | isWorkItemError e -> noWork >> notifyErr (CRITICAL False) e
       | otherwise -> notifyErr INTERNAL e
   where
-    workItemError = \case
-      SEWorkItemError {} -> True
-      _ -> False
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 

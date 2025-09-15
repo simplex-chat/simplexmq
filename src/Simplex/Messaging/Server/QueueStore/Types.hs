@@ -17,10 +17,8 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.TMap (TMap)
 
 class StoreQueueClass q where
-  type MsgQueue q = mq | mq -> q
   recipientId :: q -> RecipientId
   queueRec :: q -> TVar (Maybe QueueRec)
-  msgQueue :: q -> TVar (Maybe (MsgQueue q))
   withQueueLock :: q -> Text -> IO a -> IO a
 
 class StoreQueueClass q => QueueStoreClass q s where
@@ -44,7 +42,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   blockQueue :: s -> q -> BlockingInfo -> IO (Either ErrorType ())
   unblockQueue :: s -> q -> IO (Either ErrorType ())
   updateQueueTime :: s -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
-  deleteStoreQueue :: s -> q -> IO (Either ErrorType (QueueRec, Maybe (MsgQueue q)))
+  deleteStoreQueue :: s -> q -> IO (Either ErrorType QueueRec)
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
   setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))

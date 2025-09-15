@@ -55,6 +55,7 @@ import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..))
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
@@ -99,7 +100,7 @@ data NtfEntityRec (e :: NtfEntity) where
 
 newNtfDbStore :: PostgresStoreCfg -> IO NtfPostgresStore
 newNtfDbStore PostgresStoreCfg {dbOpts, dbStoreLogPath, confirmMigrations, deletedTTL} = do
-  dbStore <- either err pure =<< createDBStore dbOpts ntfServerMigrations confirmMigrations
+  dbStore <- either err pure =<< createDBStore dbOpts ntfServerMigrations (MigrationConfig confirmMigrations Nothing)
   dbStoreLog <- mapM (openWriteStoreLog True) dbStoreLogPath
   pure NtfPostgresStore {dbStore, dbStoreLog, deletedTTL}
   where

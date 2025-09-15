@@ -14,6 +14,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module ServerTests where
 
@@ -44,10 +45,10 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SMSType (..), SQSType (..), newMsgStore)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
@@ -61,6 +62,11 @@ import System.Timeout
 import Test.HUnit
 import Test.Hspec hiding (fit, it)
 import Util
+
+#if defined(dbServerPostgres)
+import CoreTests.MsgStoreTests (testPostgresStoreConfig)
+import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
+#endif
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
 serverTests = do
@@ -1126,14 +1132,27 @@ testRestoreExpireMessages =
     exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
       ASType _ SMSJournal -> export
+      ASType _ SMSPostgres -> exportDB
       ASType _ SMSMemory -> pure ()
       where
         export = do
-          ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {quota = 4}
+          ms <- readWriteQueues
+          exportMessages False (StoreJournal ms) testStoreMsgsFile False
+          closeMsgStore ms
+#if defined(dbServerPostgres)
+        exportDB = do
+          readWriteQueues >>= closeMsgStore
+          ms' <- newMsgStore (testPostgresStoreConfig {quota = 4} :: PostgresMsgStoreCfg)
+          _n <- withFile testStoreMsgsFile WriteMode $ exportDbMessages False ms'
+          closeMsgStore ms'
+#else
+        exportDB = error "compiled without server_postgres flag"
+#endif
+        readWriteQueues = do
+          ms <- newMsgStore ((testJournalStoreCfg MQStoreCfg) {quota = 4} :: JournalStoreConfig 'QSMemory)
           readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
-          exportMessages False ms testStoreMsgsFile False
-          closeMsgStore ms
+          pure ms
     runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
@@ -1419,7 +1438,7 @@ testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {expireMessagesOnSend = True, messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 10000}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, dhShared) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub

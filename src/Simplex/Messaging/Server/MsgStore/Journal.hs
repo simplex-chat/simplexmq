@@ -24,7 +24,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
   ( JournalMsgStore (random, expireBackupsBefore),
     QStore (..),
     QStoreCfg (..),
-    JournalQueue,
+    JournalQueue (msgQueue'), -- msgQueue' is used in tests
     JournalMsgQueue (queue, state),
     JMQueue (queueDirectory, statePath),
     JournalStoreConfig (..),
@@ -38,6 +38,7 @@ module Simplex.Messaging.Server.MsgStore.Journal
     msgQueueStatePath,
     readQueueState,
     newMsgQueueState,
+    getJournalQueueMessages,
     newJournalId,
     appendState,
     queueLogFileName,
@@ -58,7 +59,7 @@ import Control.Monad.Trans.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (fromRight)
+import Data.Either (fromRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (sort)
@@ -290,13 +291,10 @@ newtype StoreIO (s :: QSType) a = StoreIO {unStoreIO :: IO a}
   deriving newtype (Functor, Applicative, Monad)
 
 instance StoreQueueClass (JournalQueue s) where
-  type MsgQueue (JournalQueue s) = JournalMsgQueue s
   recipientId = recipientId'
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  msgQueue = msgQueue'
-  {-# INLINE msgQueue #-}
   withQueueLock :: JournalQueue s -> Text -> IO a -> IO a
   withQueueLock JournalQueue {recipientId', queueLock, sharedLock} =
     withLockWaitShared recipientId' queueLock sharedLock
@@ -309,7 +307,7 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   newQueueStore = \case
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
 #if defined(dbServerPostgres)
-    PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) cfg
+    PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) (cfg, True)
 #endif
 
   closeQueueStore = withQS (closeQueueStore @(JournalQueue s))
@@ -378,6 +376,7 @@ makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
 
 instance MsgStoreClass (JournalMsgStore s) where
   type StoreMonad (JournalMsgStore s) = StoreIO s
+  type MsgQueue (JournalMsgStore s) = JournalMsgQueue s
   type QueueStore (JournalMsgStore s) = QStore s
   type StoreQueue (JournalMsgStore s) = JournalQueue s
   type MsgStoreConfig (JournalMsgStore s) = JournalStoreConfig s
@@ -405,11 +404,11 @@ instance MsgStoreClass (JournalMsgStore s) where
 
   -- This function can only be used in server CLI commands or before server is started.
   -- It does not cache queues and is NOT concurrency safe.
-  unsafeWithAllMsgQueues :: Monoid a => Bool -> Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
-  unsafeWithAllMsgQueues tty withData ms action = case queueStore_ ms of
+  unsafeWithAllMsgQueues :: Monoid a => Bool -> JournalMsgStore s -> (JournalQueue s -> IO a) -> IO a
+  unsafeWithAllMsgQueues tty ms action = case queueStore_ ms of
     MQStore st -> withLoadedQueues st run
 #if defined(dbServerPostgres)
-    PQStore st -> foldQueueRecs tty withData st Nothing $ uncurry (mkQueue ms False) >=> run
+    PQStore st -> foldQueueRecs False tty st $ uncurry (mkQueue ms False) >=> run
 #endif
     where
       run q = do
@@ -421,7 +420,7 @@ instance MsgStoreClass (JournalMsgStore s) where
   expireOldMessages :: Bool -> JournalMsgStore s -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages tty ms now ttl = case queueStore_ ms of
     MQStore st ->
-      withLoadedQueues st $ \q -> run $ isolateQueue q "deleteExpiredMsgs" $ do
+      withLoadedQueues st $ \q -> run $ isolateQueue ms q "deleteExpiredMsgs" $ do
         StoreIO (readTVarIO $ queueRec q) >>= \case
           Just QueueRec {updatedAt = Just (RoundedSystemTime t)} | t > veryOld ->
             expireQueueMsgs ms now old q
@@ -429,7 +428,7 @@ instance MsgStoreClass (JournalMsgStore s) where
 #if defined(dbServerPostgres)
     PQStore st -> do
       let JournalMsgStore {queueLocks, sharedLock} = ms
-      foldQueueRecs tty False st (Just veryOld) $ \(rId, qr) -> do
+      foldRecentQueueRecs veryOld tty st $ \(rId, qr) -> do
         q <- mkQueue ms False rId qr
         withSharedWaitLock rId queueLocks sharedLock $ run $ tryStore' "deleteExpiredMsgs" rId $
           getLoadedQueue q >>= unStoreIO . expireQueueMsgs ms now old
@@ -505,7 +504,7 @@ instance MsgStoreClass (JournalMsgStore s) where
     where
       newQ = do
         let dir = msgQueueDirectory ms rId
-            statePath = msgQueueStatePath dir $ B.unpack (strEncode rId)
+            statePath = msgQueueStatePath dir rId
             queue = JMQueue {queueDirectory = dir, statePath}
         q <- ifM (doesDirectoryExist dir) (openMsgQueue ms queue forWrite) (createQ queue)
         atomically $ writeTVar msgQueue' $ Just q
@@ -583,8 +582,9 @@ instance MsgStoreClass (JournalMsgStore s) where
     where
       getSize = maybe (pure (-1)) (fmap size . readTVarIO . state)
 
+   -- drainMsgs is never True with Journal storage
   getQueueMessages_ :: Bool -> JournalQueue s -> JournalMsgQueue s -> StoreIO s [Message]
-  getQueueMessages_ drainMsgs q' q = StoreIO (run [])
+  getQueueMessages_ drainMsgs q' q = StoreIO $ if drainMsgs then run [] else readTVarIO (state q) >>= runFast
     where
       run msgs = readTVarIO (handles q) >>= maybe (pure []) (getMsg msgs)
       getMsg msgs hs = chooseReadJournal q' q drainMsgs hs >>= maybe (pure msgs) readMsg
@@ -593,9 +593,19 @@ instance MsgStoreClass (JournalMsgStore s) where
             (msg, len) <- hGetMsgAt h $ bytePos rs
             updateReadPos q' q drainMsgs len hs
             (msg :) <$> run msgs
+      runFast MsgQueueState {writeState = ws, readState = rs, size}
+        | size > 0 =
+            readTVarIO (handles q) >>= \case
+              Just (MsgQueueHandles _ rh wh_) -> do
+                msgs <- getJournalRange rh (bytePos rs) (byteCount rs)
+                case wh_ of
+                  Just wh -> (msgs ++) <$> getJournalRange wh 0 (bytePos ws)
+                  Nothing -> pure msgs
+              Nothing -> pure []
+        | otherwise = pure []
 
   writeMsg :: JournalMsgStore s -> JournalQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
-  writeMsg ms q' logState msg = isolateQueue q' "writeMsg" $ do
+  writeMsg ms q' logState msg = isolateQueue ms q' "writeMsg" $ do
     q <- getMsgQueue ms q' True
     StoreIO $ (`E.finally` updateActiveAt q') $ do
       st@MsgQueueState {canWrite, size} <- readTVarIO (state q)
@@ -669,8 +679,8 @@ instance MsgStoreClass (JournalMsgStore s) where
         $>>= \len -> readTVarIO handles
         $>>= \hs -> updateReadPos q mq logState len hs $> Just ()
 
-  isolateQueue :: JournalQueue s -> Text -> StoreIO s a -> ExceptT ErrorType IO a
-  isolateQueue sq op = tryStore' op (recipientId' sq) . withQueueLock sq op . unStoreIO
+  isolateQueue :: JournalMsgStore s -> JournalQueue s -> Text -> StoreIO s a -> ExceptT ErrorType IO a
+  isolateQueue _ sq op = tryStore' op (recipientId' sq) . withQueueLock sq op . unStoreIO
 
   unsafeRunStore :: JournalQueue s -> Text -> StoreIO s a -> IO a
   unsafeRunStore sq op a =
@@ -815,8 +825,8 @@ msgQueueDirectory JournalMsgStore {config = JournalStoreConfig {storePath, pathP
       let (seg, s') = B.splitAt 2 s
        in seg : splitSegments (n - 1) s'
 
-msgQueueStatePath :: FilePath -> String -> FilePath
-msgQueueStatePath dir queueId = dir </> (queueLogFileName <> "." <> queueId <> logFileExt)
+msgQueueStatePath :: FilePath -> RecipientId -> FilePath
+msgQueueStatePath dir rId = dir </> (queueLogFileName <> "." <> B.unpack (strEncode rId) <> logFileExt)
 
 createNewJournal :: FilePath -> ByteString -> IO Handle
 createNewJournal dir journalId = do
@@ -985,10 +995,11 @@ deleteQueue_ ms q =
     pure r
   where
     rId = recipientId q
-    remove r@(_, mq_) = do
+    remove qr = do
+      mq_ <- atomically $ swapTVar (msgQueue' q) Nothing
       mapM_ (closeMsgQueueHandles ms) mq_
       removeQueueDirectory ms rId
-      pure r
+      pure (qr, mq_)
 
 closeMsgQueue :: JournalMsgStore s -> JournalQueue s -> IO ()
 closeMsgQueue ms JournalQueue {msgQueue'} = atomically (swapTVar msgQueue' Nothing) >>= mapM_ (closeMsgQueueHandles ms)
@@ -1039,3 +1050,33 @@ hClose h =
 
 closeOnException :: Handle -> IO a -> IO a
 closeOnException h a = a `E.onException` hClose h
+
+getJournalQueueMessages :: JournalMsgStore s -> JournalQueue s -> IO [Message]
+getJournalQueueMessages ms q =
+  readQueueState ms (msgQueueStatePath dir rId) >>= \case
+    (Just MsgQueueState {readState = rs, writeState = ws, size}, _) | size > 0 -> do
+      msgs <- getMsgs (journalId rs) (bytePos rs) (byteCount rs)
+      if journalId rs == journalId ws
+        then pure msgs
+        else (msgs ++) <$> getMsgs (journalId ws) 0 (bytePos ws)
+    _ -> pure []
+  where
+    rId = recipientId' q
+    dir = msgQueueDirectory ms rId
+    getMsgs jId from to =
+      IO.withFile (journalFilePath dir jId) ReadWriteMode $ \h' ->
+        getJournalRange h' from to
+
+getJournalRange :: Handle -> Int64 -> Int64 -> IO [Message]
+getJournalRange h from to
+  | to > from = do
+      IO.hSeek h AbsoluteSeek $ fromIntegral from
+      parseMsgs =<< B.hGet h (fromIntegral $ to - from)
+  | otherwise = pure []
+  where
+    parseMsgs s = do
+      let (errs, msgs) = partitionEithers $ map strDecode $ B.lines s
+      unless (null errs) $ do
+        f <- IO.hShow h
+        putStrLn $ "Error reading " <> show (length errs) <> " messages from " <> f
+      pure msgs

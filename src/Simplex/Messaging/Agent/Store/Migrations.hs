@@ -15,7 +15,7 @@ where
 import Control.Monad
 import Data.Char (toLower)
 import Data.Functor (($>))
-import Data.Maybe (isNothing, mapMaybe)
+import Data.Maybe (isJust, isNothing, mapMaybe)
 import Simplex.Messaging.Agent.Store.Shared
 import System.Exit (exitFailure)
 import System.IO (hFlush, stdout)
@@ -37,7 +37,7 @@ data DBMigrate = DBMigrate
   { initialize :: IO (),
     getCurrent :: IO [Migration],
     run :: MigrationsToRun -> IO (),
-    backup :: IO ()
+    backup :: Maybe (IO ())
   }
 
 sharedMigrateSchema :: DBMigrate -> Bool -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError ())
@@ -54,20 +54,20 @@ sharedMigrateSchema dbm dbNew' migrations confirmMigrations = do
       | otherwise -> case confirmMigrations of
           MCYesUp -> runWithBackup ms
           MCYesUpDown -> runWithBackup ms
-          MCConsole -> confirm err >> runWithBackup ms
+          MCConsole -> confirm' err >> runWithBackup ms
           MCError -> pure $ Left err
       where
         err = MEUpgrade $ map upMigration ums -- "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map name ums)
     Right ms@(MTRDown dms) -> case confirmMigrations of
       MCYesUpDown -> runWithBackup ms
-      MCConsole -> confirm err >> runWithBackup ms
+      MCConsole -> confirm' err >> runWithBackup ms
       MCYesUp -> pure $ Left err
       MCError -> pure $ Left err
       where
         err = MEDowngrade $ map downName dms
   where
-    runWithBackup ms = backup dbm >> run dbm ms $> Right ()
-    confirm err = confirmOrExit $ migrationErrorDescription err
+    runWithBackup ms = sequence (backup dbm) >> run dbm ms $> Right ()
+    confirm' err = confirmOrExit $ migrationErrorDescription (isJust $ backup dbm) err
 
 confirmOrExit :: String -> IO ()
 confirmOrExit s = do

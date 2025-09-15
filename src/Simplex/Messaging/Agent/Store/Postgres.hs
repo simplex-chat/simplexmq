@@ -30,15 +30,15 @@ import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSc
 import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Agent.Store.Postgres.DB as DB
-import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationError (..))
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Exit (exitFailure)
 
 -- | Create a new Postgres DBStore with the given connection string, schema name and migrations.
 -- If passed schema does not exist in connectInfo database, it will be created.
 -- Applies necessary migrations to schema.
-createDBStore :: DBOpts -> [Migration] -> MigrationConfirmation -> IO (Either MigrationError DBStore)
-createDBStore opts migrations confirmMigrations = do
+createDBStore :: DBOpts -> [Migration] -> MigrationConfig -> IO (Either MigrationError DBStore)
+createDBStore opts migrations MigrationConfig {confirm} = do
   st <- connectPostgresStore opts
   r <- migrateSchema st `onException` closeDBStore st
   case r of
@@ -48,15 +48,16 @@ createDBStore opts migrations confirmMigrations = do
     migrateSchema st =
       let initialize = Migrations.initialize st
           getCurrent = withTransaction st Migrations.getCurrentMigrations
-          dbm = DBMigrate {initialize, getCurrent, run = Migrations.run st, backup = pure ()}
-       in sharedMigrateSchema dbm (dbNew st) migrations confirmMigrations
+          dbm = DBMigrate {initialize, getCurrent, run = Migrations.run st, backup = Nothing}
+       in sharedMigrateSchema dbm (dbNew st) migrations confirm
 
 connectPostgresStore :: DBOpts -> IO DBStore
 connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
   dbPriorityPool <- newDBStorePool poolSize
   dbPool <- newDBStorePool poolSize
   dbClosed <- newTVarIO True
-  let st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPriorityPool, dbPool, dbNew = False, dbClosed}
+  let dbConnect = fst <$> connectDB connstr schema False
+      st = DBStore {dbConnstr = connstr, dbSchema = schema, dbPoolSize = fromIntegral poolSize, dbPriorityPool, dbPool, dbConnect, dbNew = False, dbClosed}
   dbNew <- connectStore st createSchema
   pure st {dbNew}
 

@@ -12,7 +12,7 @@ import Data.Maybe (fromJust, isJust)
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBOpts (..))
 import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
-import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
 import Simplex.Messaging.Util (ifM, whenM)
 import System.Directory (doesFileExist, removeFile)
 import System.Process (readCreateProcess, shell)
@@ -30,12 +30,12 @@ postgresSchemaDumpTest migrations skipComparisonForDownMigrations testDBOpts@DBO
     testVerifySchemaDump = do
       savedSchema <- ifM (doesFileExist srcSchemaPath) (readFile srcSchemaPath) (pure "")
       savedSchema `deepseq` pure ()
-      void $ createDBStore testDBOpts migrations MCConsole
+      void $ createDBStore testDBOpts migrations (MigrationConfig MCConsole Nothing)
       getSchema srcSchemaPath `shouldReturn` savedSchema
 
     testSchemaMigrations = do
       let noDownMigrations = dropWhileEnd (\Migration {down} -> isJust down) migrations
-      Right st <- createDBStore testDBOpts noDownMigrations MCError
+      Right st <- createDBStore testDBOpts noDownMigrations (MigrationConfig MCError Nothing)
       mapM_ (testDownMigration st) $ drop (length noDownMigrations) migrations
       closeDBStore st
       whenM (doesFileExist testSchemaPath) $ removeFile testSchemaPath
