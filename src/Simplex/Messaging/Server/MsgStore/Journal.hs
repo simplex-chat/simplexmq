@@ -307,7 +307,7 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   newQueueStore = \case
     MQStoreCfg -> MQStore <$> newQueueStore @(JournalQueue s) ()
 #if defined(dbServerPostgres)
-    PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) cfg
+    PQStoreCfg cfg -> PQStore <$> newQueueStore @(JournalQueue s) (cfg, True)
 #endif
 
   closeQueueStore = withQS (closeQueueStore @(JournalQueue s))
