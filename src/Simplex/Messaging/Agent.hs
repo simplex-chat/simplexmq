@@ -850,7 +850,7 @@ newConn c nm userId enableNtfs cMode userData_ clientData pqInitKeys subMode = d
   srv <- getSMPServer c userId
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   (connId,) <$> newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
-    `catchE` \e -> withStore' c (\db -> deleteConnRecord db userId connId) >> throwE e
+    `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =
@@ -2160,8 +2160,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   -- ! if it was used to notify about the result, it might be necessary to differentiate
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  let delConns = map (\(connId, RcvQueue {userId}) -> (userId, connId)) $ M.toList delRs
-  cIds_ <- lift $ L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (uncurry $ deleteConn db deliveryTimeout) delConns)
+  cIds_ <- lift $ L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
   forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
   pure (errs' <> delRs, rqs, connIds')
   where
@@ -2180,9 +2179,9 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
 deleteConnQueues :: AgentClient -> NetworkRequestMode -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c nm waitDelivery ntf rqs = do
   rs <- connResults <$> (deleteQueueRecs =<< deleteQueues c nm rqs)
-  let conns = map (\(connId, RcvQueue {userId}) -> (userId, connId)) $ M.toList $ M.filter isRight rs
+  let connIds = M.keys $ M.filter isRight rs
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
-  cIds_ <- L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (uncurry $ deleteConn db deliveryTimeout) conns)
+  cIds_ <- L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) connIds)
   forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
   pure rs
   where
@@ -2475,7 +2474,7 @@ sendNtfConnCommands :: AgentClient -> NtfSupervisorCommand -> AM ()
 sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ S.toList <$> getSubscriptions c
-  rs <- lift $ withStoreBatch' c (\db -> map (getConnData False db) connIds)
+  rs <- lift $ withStoreBatch' c (\db -> map (getConnData db) connIds)
   let (connIds', cErrs) = enabledNtfConns (zip connIds rs)
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')

@@ -271,7 +271,7 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SProtocolType (..),
-    ServiceSub (..),
+    ServiceSub,
     SndPublicAuthKey,
     SubscriptionMode (..),
     NewNtfCreds (..),
@@ -599,9 +599,10 @@ getServiceCredentials c userId srv =
   liftIO (TM.lookupIO userId $ useClientServices c)
     $>>= \useService -> if useService then Just <$> getService else pure Nothing
   where
+    getService :: AM (ServiceCredentials, Maybe ServiceId)
     getService = do
       let g = agentDRG c
-      ((C.KeyHash kh, serviceCreds), serviceSub_) <-
+      ((C.KeyHash kh, serviceCreds), serviceId_) <-
         withStore' c $ \db ->
           getClientService db userId srv >>= \case
             Just service -> pure service
@@ -613,7 +614,7 @@ getServiceCredentials c userId srv =
       (_, pk) <- atomically $ C.generateKeyPair g
       let serviceSignKey = C.APrivateSignKey C.SEd25519 pk
           creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
-      pure (creds, smpServiceId <$> serviceSub_)
+      pure (creds, serviceId_)
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg

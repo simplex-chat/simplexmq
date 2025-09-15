@@ -395,36 +395,19 @@ createClientService db userId srv (kh, (cert, pk)) =
     |]
     (userId, host srv, port srv, kh, cert, pk)
 
-getClientService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceSub))
+getClientService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
 getClientService db userId srv =
   maybeFirstRow toService $
     DB.query
       db
       [sql|
-        SELECT service_cert_hash, service_cert, service_priv_key, rcv_service_id,
+        SELECT service_cert_hash, service_cert, service_priv_key, rcv_service_id
         FROM client_services
         WHERE user_id = ? AND host = ? AND port = ?
       |]
       (userId, host srv, port srv)
   where
-    toService (kh, cert, pk, serviceId_, n, idsHash) =
-      let service_ = (\serviceId -> ServiceSub serviceId n idsHash) <$> serviceId_
-       in ((kh, (cert, pk)), service_)
-
-updateServiceAggregates :: DB.Connection -> UserId -> SMPServer -> Int64 -> [RecipientId] -> IO ()
-updateServiceAggregates db userId server change rcvIds =
-  getClientService db userId server >>= \case
-    Just (_, Just (ServiceSub serviceId n idsHash)) ->
-      DB.execute
-        db
-        [sql|
-          UPDATE client_services
-          SET service_queue_count = ?,
-              service_queue_ids_hash = ?
-          WHERE user_id = ? AND rcv_service_id = ?
-        |]
-        (n + change, idsHash <> queueIdsHash rcvIds, userId, serviceId)
-    _ -> pure ()
+    toService (kh, cert, pk, serviceId_) = ((kh, (cert, pk)), serviceId_)
 
 getClientServiceServers :: DB.Connection -> UserId -> IO [(SMPServer, ServiceSub)]
 getClientServiceServers db userId =
@@ -516,13 +499,8 @@ createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSup
     |]
     (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True)
 
-deleteConnRecord :: DB.Connection -> UserId -> ConnId -> IO ()
-deleteConnRecord db userId connId = do
-  -- TODO [certs rcv] it needs to be grouped per server here
-  rIds :: [RecipientId] <-
-    map fromOnly <$> DB.query db "SELECT rcv_id FROM rcv_queues WHERE conn_id = ? AND deleted = 0 AND rcv_service_assoc = 1" (Only connId)
-  unless (null rIds) $ updateServiceAggregates db userId server (- length rIds') rIds'
-  DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
+deleteConnRecord :: DB.Connection -> ConnId -> IO ()
+deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} = do
@@ -543,8 +521,8 @@ getRcvConn db ProtocolServer {host, port} rcvId = runExceptT $ do
   (rq,) <$> ExceptT (getConn db connId)
 
 -- | Deletes connection, optionally checking for pending snd message deliveries; returns connection id if it was deleted
-deleteConn :: DB.Connection -> Maybe NominalDiffTime -> UserId -> ConnId -> IO (Maybe ConnId)
-deleteConn db waitDeliveryTimeout_ userId connId = case waitDeliveryTimeout_ of
+deleteConn :: DB.Connection -> Maybe NominalDiffTime -> ConnId -> IO (Maybe ConnId)
+deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
   Nothing -> delete
   Just timeout ->
     ifM
@@ -556,7 +534,7 @@ deleteConn db waitDeliveryTimeout_ userId connId = case waitDeliveryTimeout_ of
           (pure Nothing)
       )
   where
-    delete = deleteConnRecord db userId connId $> Just connId
+    delete = deleteConnRecord db connId $> Just connId
     checkNoPendingDeliveries_ = do
       r :: (Maybe Int64) <-
         maybeFirstRow fromOnly $
@@ -631,13 +609,15 @@ setRcvSwitchStatus db rq@RcvQueue {rcvId, server = ProtocolServer {host, port}} 
   pure rq {rcvSwchStatus}
 
 setRcvQueueDeleted :: DB.Connection -> RcvQueue -> IO ()
-setRcvQueueDeleted db RcvQueue {connId, dbQueueId, rcvId} = do
-  q_ :: Maybe BoolInt <-
-    maybeFirstRow fromOnly $
-      DB.query db "SELECT rcv_service_assoc FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ? AND deleted = 0" (connId, dbQueueId)
-  forM_ q_ $ \(BI rcvServiceAssoc) -> do
-    DB.execute db "UPDATE rcv_queues SET deleted = 1 WHERE host = ? AND port = ? AND rcv_id = ?" (host, port, rcvId)
-    when rcvServiceAssoc $ updateServiceAggregates db userId server (-1) [rcvId]
+setRcvQueueDeleted db RcvQueue {rcvId, server = ProtocolServer {host, port}} = do
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET deleted = 1
+      WHERE host = ? AND port = ? AND rcv_id = ?
+    |]
+    (host, port, rcvId)
 
 setRcvQueueConfirmedE2E :: DB.Connection -> RcvQueue -> C.DhSecretX25519 -> VersionSMPC -> IO ()
 setRcvQueueConfirmedE2E db RcvQueue {rcvId, server = ProtocolServer {host, port}} e2eDhSecret smpClientVersion =
@@ -697,13 +677,8 @@ incRcvDeleteErrors db RcvQueue {connId, dbQueueId} =
   DB.execute db "UPDATE rcv_queues SET delete_errors = delete_errors + 1 WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
 
 deleteConnRcvQueue :: DB.Connection -> RcvQueue -> IO ()
-deleteConnRcvQueue db RcvQueue {connId, dbQueueId, server} = do
-  q_ :: Maybe (BoolInt, BoolInt) <-
-    maybeFirstRow id $
-      DB.query db "SELECT deleted, rcv_service_assoc FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
-  forM_ q_ $ \(BI deleted, BI rcvServiceAssoc) -> do
-    DB.execute db "DELETE FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
-    when (not deleted && rcvServiceAssoc) $ updateServiceAggregates db userId server (-1) [rcvId]
+deleteConnRcvQueue db RcvQueue {connId, dbQueueId} =
+  DB.execute db "DELETE FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
 
 deleteConnSndQueue :: DB.Connection -> ConnId -> SndQueue -> IO ()
 deleteConnSndQueue db connId SndQueue {dbQueueId} = do
@@ -712,7 +687,7 @@ deleteConnSndQueue db connId SndQueue {dbQueueId} = do
 
 getPrimaryRcvQueue :: DB.Connection -> ConnId -> IO (Either StoreError RcvQueue)
 getPrimaryRcvQueue db connId =
-  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId_ db connId False
+  maybe (Left SEConnNotFound) (Right . L.head) <$> getRcvQueuesByConnId_ db connId
 
 getRcvQueue :: DB.Connection -> ConnId -> SMPServer -> SMP.RecipientId -> IO (Either StoreError RcvQueue)
 getRcvQueue db connId (SMPServer host port _) rcvId =
@@ -1040,7 +1015,7 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
     getMsgData :: InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
     getMsgData msgId = runExceptT $ do
       msg <- ExceptT $ firstRow' pendingMsgData err getMsgData_
-      rq_ <- liftIO $ L.head <$$> getRcvQueuesByConnId_ db connId False
+      rq_ <- liftIO $ L.head <$$> getRcvQueuesByConnId_ db connId
       pure (rq_, msg)
       where
         getMsgData_ =
@@ -2086,7 +2061,6 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
         :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
         :. ntfCredsFields
     )
-  when rcvServiceAssoc $ updateServiceAggregates db userId server 1 [rcvId]
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId}
   where
     ntfCredsFields = case clientNtfCreds of
@@ -2145,19 +2119,21 @@ getDeletedConn = getAnyConn True
 {-# INLINE getDeletedConn #-}
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getAnyConn deleted dbConn connId =
-  getConnData deleted dbConn connId >>= \case
+getAnyConn deleted' dbConn connId =
+  getConnData dbConn connId >>= \case
     Nothing -> pure $ Left SEConnNotFound
-    Just (cData, cMode) -> do
-      rQ <- getRcvQueuesByConnId_ dbConn connId deleted
-      sQ <- getSndQueuesByConnId_ dbConn connId
-      pure $ case (rQ, sQ, cMode) of
-        (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
-        (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
-        (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
-        (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
-        (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
-        _ -> Left SEConnNotFound
+    Just (cData@ConnData {deleted}, cMode)
+      | deleted /= deleted' -> pure $ Left SEConnNotFound
+      | otherwise -> do
+          rQ <- getRcvQueuesByConnId_ dbConn connId
+          sQ <- getSndQueuesByConnId_ dbConn connId
+          pure $ case (rQ, sQ, cMode) of
+            (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
+            (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
+            (Nothing, Just (sq :| _), CMInvitation) -> Right $ SomeConn SCSnd (SndConnection cData sq)
+            (Just (rq :| _), Nothing, CMContact) -> Right $ SomeConn SCContact (ContactConnection cData rq)
+            (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
+            _ -> Left SEConnNotFound
 
 getConns :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getConns = getAnyConns_ False
@@ -2173,8 +2149,8 @@ getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAn
     handleDBError :: E.SomeException -> IO (Either StoreError SomeConn)
     handleDBError = pure . Left . SEInternal . bshow
 
-getConnData :: Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
-getConnData deleted db connId' =
+getConnData :: DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
+getConnData db connId' =
   maybeFirstRow cData $
     DB.query
       db
@@ -2183,9 +2159,9 @@ getConnData deleted db connId' =
           user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
           last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
         FROM connections
-        WHERE conn_id = ? AND deleted = ?
+        WHERE conn_id = ?
       |]
-      (connId', BI deleted)
+      (Only connId')
   where
     cData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport) =
       (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
@@ -2195,21 +2171,8 @@ setConnDeleted db waitDelivery connId
   | waitDelivery = do
       currentTs <- getCurrentTime
       DB.execute db "UPDATE connections SET deleted_at_wait_delivery = ? WHERE conn_id = ?" (currentTs, connId)
-  | otherwise = do
+  | otherwise =
       DB.execute db "UPDATE connections SET deleted = ? WHERE conn_id = ?" (BI True, connId)
-      -- TODO [certs rcv] it needs to be grouped per server
-      qs :: [(Int64, RecipientId, BoolInt)] <-
-        DB.query db "SELECT rcv_queue_id, rcv_id, rcv_service_assoc FROM rcv_queues WHERE conn_id = ? AND deleted = 0" (Only connId)
-      unless (null qs) $ do
-#if defined(dbPostgres)
-        let dbQIds = In (map (\(dbQId, _, _) -> dbQId) qs)
-        DB.execute db "UPDATE rcv_queues SET deleted = 1 WHERE conn_id = ? AND rcv_queue_id IN ?" (connId, dbQIds)
-#else
-        let ids = map (\(dbQId, _, _) -> (connId, dbQId)) qs
-        DB.executeMany db "UPDATE rcv_queues SET deleted = 1 WHERE conn_id = ? AND rcv_queue_id = ?" ids
-#endif
-        let rIds' = mapMaybe (\case (_, rId, BI True) -> Just rId; _ -> Nothing) qs
-        unless (null rIds') $ updateServiceAggregates db userId server (- length rIds') rIds'
 
 setConnUserId :: DB.Connection -> UserId -> ConnId -> UserId -> IO ()
 setConnUserId db oldUserId connId newUserId =
@@ -2255,10 +2218,10 @@ deleteRatchetKeyHashesExpired db ttl = do
   DB.execute db "DELETE FROM processed_ratchet_key_hashes WHERE created_at < ?" (Only cutoffTs)
 
 -- | returns all connection queues, the first queue is the primary one
-getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> Bool -> IO (Maybe (NonEmpty RcvQueue))
-getRcvQueuesByConnId_ db connId deleted =
+getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
+getRcvQueuesByConnId_ db connId =
   L.nonEmpty . sortBy primaryFirst . map toRcvQueue
-    <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.deleted = ?") (connId, deleted)
+    <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.deleted = 0") (Only connId)
   where
     primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
       -- the current primary queue is ordered first, the next primary - second

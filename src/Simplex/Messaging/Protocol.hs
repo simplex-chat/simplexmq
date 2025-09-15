@@ -1465,7 +1465,7 @@ type MsgId = ByteString
 type MsgBody = ByteString
 
 data ServiceSub = ServiceSub
-  { smpServiceId :: ServiceId,
+  { serviceId :: ServiceId,
     smpQueueCount :: Int64,
     smpQueueIdsHash :: IdsHash
   }

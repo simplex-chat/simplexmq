@@ -17,7 +17,7 @@ CREATE TABLE client_services(
   service_cert BYTEA NOT NULL,
   service_cert_hash BYTEA NOT NULL,
   service_priv_key BYTEA NOT NULL,
-  rcv_service_id BYTEA,
+  service_id BYTEA,
   service_queue_count BIGINT NOT NULL DEFAULT 0,
   service_queue_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000',
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
