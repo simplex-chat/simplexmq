@@ -75,7 +75,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (ProtocolServer, ProtocolType (..), XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (catchAll_, liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -198,10 +198,10 @@ runXFTPRcvWorker c srv Worker {doWork} = do
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv downloadAttempts
             downloadFileChunk fc replica approvedRelays
-              `catchAgentError` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAllErrors` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              flip catchAgentError (\_ -> pure ()) $ do
+              flip catchAllErrors (\_ -> pure ()) $ do
                 when (serverHostError e) $ notify c (fromMaybe rcvFileEntityId redirectEntityId_) (RFWARN e)
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
@@ -280,7 +280,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
     runXFTPOperation AgentConfig {rcvFilesTTL} =
       withWork c doWork (`getNextRcvFileToDecrypt` rcvFilesTTL) $
         \f@RcvFile {rcvFileId, rcvFileEntityId, tmpPath, redirect} ->
-          decryptFile f `catchAgentError` rcvWorkerInternalError c rcvFileId rcvFileEntityId (redirectEntityId <$> redirect) tmpPath
+          decryptFile f `catchAllErrors` rcvWorkerInternalError c rcvFileId rcvFileEntityId (redirectEntityId <$> redirect) tmpPath
     decryptFile :: RcvFile -> AM ()
     decryptFile RcvFile {rcvFileId, rcvFileEntityId, size, digest, key, nonce, tmpPath, saveFile, status, chunks, redirect} = do
       let CryptoFile savePath cfArgs = saveFile
@@ -307,7 +307,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           liftIO $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
           -- proceed with redirect
-          yaml <- liftError (FILE . FILE_IO . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `agentFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
+          yaml <- liftError (FILE . FILE_IO . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `allFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
             -- TODO switch to another error constructor
             Left _ -> throwE . FILE $ REDIRECT "decode error"
@@ -399,7 +399,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
     runXFTPOperation cfg@AgentConfig {sndFilesTTL} =
       withWork c doWork (`getNextSndFileToPrepare` sndFilesTTL) $
         \f@SndFile {sndFileId, sndFileEntityId, prefixPath} ->
-          prepareFile cfg f `catchAgentError` sndWorkerInternalError c sndFileId sndFileEntityId prefixPath
+          prepareFile cfg f `catchAllErrors` sndWorkerInternalError c sndFileId sndFileEntityId prefixPath
     prepareFile :: AgentConfig -> SndFile -> AM ()
     prepareFile _ SndFile {prefixPath = Nothing} =
       throwE $ INTERNAL "no prefix path"
@@ -468,11 +468,11 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
                 liftIO $ waitForUserNetwork c
                 let triedAllSrvs = n > userSrvCount
                 createWithNextSrv triedHosts
-                  `catchAgentError` \e -> retryOnError "XFTP prepare worker" (retryLoop loop triedAllSrvs e) (throwE e) e
+                  `catchAllErrors` \e -> retryOnError "XFTP prepare worker" (retryLoop loop triedAllSrvs e) (throwE e) e
               where
                 -- we don't do closeXFTPServerClient here to not risk closing connection for concurrent chunk upload
                 retryLoop loop triedAllSrvs e = do
-                  flip catchAgentError (\_ -> pure ()) $ do
+                  flip catchAllErrors (\_ -> pure ()) $ do
                     when (triedAllSrvs && serverHostError e) $ notify c sndFileEntityId $ SFWARN e
                   liftIO $ assertAgentForeground c
                   loop
@@ -508,10 +508,10 @@ runXFTPSndWorker c srv Worker {doWork} = do
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv uploadAttempts
             uploadFileChunk cfg fc replica
-              `catchAgentError` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAllErrors` \e -> retryOnError "XFTP snd worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              flip catchAgentError (\_ -> pure ()) $ do
+              flip catchAllErrors (\_ -> pure ()) $ do
                 when (serverHostError e) $ notify c sndFileEntityId $ SFWARN e
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateSndChunkReplicaDelay db sndChunkReplicaId replicaDelay
@@ -681,10 +681,10 @@ runXFTPDelWorker c srv Worker {doWork} = do
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv deleteAttempts
             deleteChunkReplica
-              `catchAgentError` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
+              `catchAllErrors` \e -> retryOnError "XFTP del worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
-              flip catchAgentError (\_ -> pure ()) $ do
+              flip catchAllErrors (\_ -> pure ()) $ do
                 when (serverHostError e) $ notify c "" $ SFWARN e
                 liftIO $ closeXFTPServerClient c userId server chunkDigest
                 withStore' c $ \db -> updateDeletedSndChunkReplicaDelay db deletedSndChunkReplicaId replicaDelay

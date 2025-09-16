@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -23,9 +24,9 @@ import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
-import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Int (Int64)
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
 import Data.Time.Clock (addUTCTime)
@@ -33,9 +34,9 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType, LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
-import Simplex.Messaging.Server.Env.STM (journalMsgStoreDepth, readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
@@ -50,28 +51,54 @@ import System.IO (IOMode (..), withFile)
 import Test.Hspec hiding (fit, it)
 import Util
 
+#if defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (Only (..))
+import qualified Database.PostgreSQL.Simple as DB
+import Simplex.Messaging.Agent.Store.Postgres.Common
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Server.MsgStore.Postgres
+import Simplex.Messaging.Server.QueueStore.Postgres
+import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
+#endif
+
 msgStoreTests :: Spec
 msgStoreTests = do
   around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
   around (withMsgStore $ testJournalStoreCfg MQStoreCfg) $ describe "Journal message store" $ do
     someMsgStoreTests
+    journalMsgStoreTests
     it "should export and import journal store" testExportImportStore
-    describe "queue state" $ do
-      it "should restore queue state from the last line" testQueueState
-      it "should recover when message is written and state is not" testMessageState
-      it "should remove journal files when queue is empty" testRemoveJournals
-    describe "missing files" $ do
-      it "should create read file when missing" testReadFileMissing
-      it "should switch to write file when read file missing" testReadFileMissingSwitch
-      it "should create write file when missing" testWriteFileMissing
-      it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
+#if defined(dbServerPostgres)
+  around_ (postgressBracket testServerDBConnectInfo) $ do
+    around (withMsgStore $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg) $
+      describe "Postgres+journal message store" $ do
+        someMsgStoreTests
+        journalMsgStoreTests
+    around (withMsgStore testPostgresStoreConfig) $
+      describe "Postgres-only message store" $ do
+        someMsgStoreTests
+        it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
+        it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" testResetMessageCounts
+#endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
     it "should expire messages in idle queues" testExpireIdleQueues
   where
+    journalMsgStoreTests :: SpecWith (JournalMsgStore s)
+    journalMsgStoreTests = do
+      describe "queue state" $ do
+        it "should restore queue state from the last line" testQueueState
+        it "should recover when message is written and state is not" testMessageState
+        it "should remove journal files when queue is empty" testRemoveJournals
+      describe "missing files" $ do
+        it "should create read file when missing" testReadFileMissing
+        it "should switch to write file when read file missing" testReadFileMissingSwitch
+        it "should create write file when missing" testWriteFileMissing
+        it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
     someMsgStoreTests :: MsgStoreClass s => SpecWith s
     someMsgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
+      it "should write/ack messages" testWriteAckMessages
       it "should not fail on EOF when changing read journal" testChangeReadJournal
 
 -- TODO constrain to STM stores?
@@ -95,6 +122,24 @@ testJournalStoreCfg queueStoreCfg =
       expireBackupsAfter = 0,
       keepMinBackups = 1
     }
+
+#if defined(dbServerPostgres)
+testPostgresStoreConfig :: PostgresMsgStoreCfg
+testPostgresStoreConfig =
+  PostgresMsgStoreCfg
+    { queueStoreCfg = testPostgresStoreCfg,
+      quota = 3
+    }
+
+testPostgresStoreCfg :: PostgresStoreCfg
+testPostgresStoreCfg =
+  PostgresStoreCfg
+    { dbOpts = testStoreDBOpts,
+      dbStoreLogPath = Nothing,
+      confirmMigrations = MCYesUp,
+      deletedTTL = 86400
+    }
+#endif
 
 mkMessage :: MonadIO m => ByteString -> m Message
 mkMessage body = liftIO $ do
@@ -138,7 +183,6 @@ testNewQueueRecData g qm queueData = do
   where
     rndId = atomically $ EntityId <$> C.randomBytes 24 g
 
--- TODO constrain to STM stores
 testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
   g <- C.newRandom
@@ -181,7 +225,28 @@ testGetQueue ms = do
     (Nothing, Nothing) <- tryDelPeekMsg ms q mId8
     void $ ExceptT $ deleteQueue ms q
 
--- TODO constrain to STM stores
+-- TODO [messages] test concurrent writing and reading
+testWriteAckMessages :: MsgStoreClass s => s -> IO ()
+testWriteAckMessages ms = do
+  g <- C.newRandom
+  (rId1, qr1) <- testNewQueueRec g QMMessaging
+  (rId2, qr2) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q1 <- ExceptT $ addQueue ms rId1 qr1
+    q2 <- ExceptT $ addQueue ms rId2 qr2
+    let write q s = writeMsg ms q True =<< mkMessage s
+    0 <- deleteExpiredMsgs ms q1 0 -- won't expire anything, used here to mimic message sending with expiration on SEND
+    Just (Message {msgId = mId1}, True) <- write q1 "message 1"
+    (Msg "message 1", Nothing) <- tryDelPeekMsg ms q1 mId1
+    0 <- deleteExpiredMsgs ms q2 0
+    Just (Message {msgId = mId2}, True) <- write q2 "message 2"
+    (Msg "message 2", Nothing) <- tryDelPeekMsg ms q2 mId2
+    0 <- deleteExpiredMsgs ms q2 0
+    Just (Message {msgId = mId3}, True) <- write q2 "message 3"
+    (Msg "message 3", Nothing) <- tryDelPeekMsg ms q2 mId3
+    void $ ExceptT $ deleteQueue ms q1
+    void $ ExceptT $ deleteQueue ms q2
+
 testChangeReadJournal :: MsgStoreClass s => s -> IO ()
 testChangeReadJournal ms = do
   g <- C.newRandom
@@ -226,9 +291,16 @@ testExportImportStore ms = do
     pure ()
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3
-  exportMessages False ms testStoreMsgsFile False
+  exportMessages False (StoreJournal ms) testStoreMsgsFile False
   closeMsgStore ms
   closeStoreLog sl
+  -- export with closed queues and compare
+  ms2 <- newMsgStore $ testJournalStoreCfg MQStoreCfg
+  readWriteQueueStore True (mkQueue ms2 True) testStoreLogFile (stmQueueStore ms2) >>= closeStoreLog
+  exportMessages False (StoreJournal ms2) (testStoreMsgsFile <> ".copy") False
+  s <- B.readFile testStoreMsgsFile
+  B.readFile (testStoreMsgsFile <> ".copy") `shouldReturn` s
+
   let cfg = (testJournalStoreCfg MQStoreCfg :: JournalStoreConfig 'QSMemory) {storePath = testStoreMsgsDir2}
   ms' <- newMsgStore cfg
   readWriteQueueStore True (mkQueue ms' True) testStoreLogFile (stmQueueStore ms') >>= closeStoreLog
@@ -237,21 +309,93 @@ testExportImportStore ms = do
   printMessageStats "Messages" stats
   length <$> listDirectory (msgQueueDirectory ms rId1) `shouldReturn` 2
   length <$> listDirectory (msgQueueDirectory ms rId2) `shouldReturn` 3 -- 2 message files
-  exportMessages False ms' testStoreMsgsFile2 False
+  exportMessages False (StoreJournal ms') testStoreMsgsFile2 False
   (B.readFile testStoreMsgsFile2 `shouldReturn`) =<< B.readFile (testStoreMsgsFile <> ".bak")
   stmStore <- newMsgStore testSMTStoreConfig
   readWriteQueueStore True (mkQueue stmStore True) testStoreLogFile (queueStore stmStore) >>= closeStoreLog
   MessageStats {storedMsgsCount = 5, expiredMsgsCount = 0, storedQueues = 2} <-
     importMessages False stmStore testStoreMsgsFile2 Nothing False
-  exportMessages False stmStore testStoreMsgsFile False
+  exportMessages False (StoreMemory stmStore) testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
+
+#if defined(dbServerPostgres)
+testUpdateMessageCounts :: PostgresMsgStore -> IO ()
+testUpdateMessageCounts ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    let write s = writeMsg ms q True =<< mkMessage s
+        hasSize = checkQueueSize ms
+    q `hasSize` (0, True, False)
+    Just (Message {msgId = mId1}, True) <- write "message 1"
+    q `hasSize` (1, True, True)
+    Just (Message {msgId = mId2}, False) <- write "message 2"
+    q `hasSize` (2, True, True)
+    Just (Message {msgId = mId3}, False) <- write "message 3"
+    q `hasSize` (3, True, True)
+    Nothing <- write "message 4"
+    q `hasSize` (4, False, True)
+    Msg "message 1" <- tryPeekMsg ms q
+    q `hasSize` (4, False, True)
+    Msg "message 1" <- tryDelMsg ms q mId1
+    q `hasSize` (3, False, True)
+    Msg "message 2" <- tryPeekMsg ms q
+    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
+    q `hasSize` (2, False, True)
+    (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
+    q `hasSize` (1, False, True)
+    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId4
+    q `hasSize` (0, True, False)
+
+checkQueueSize :: PostgresMsgStore -> PostgresQueue -> (Int64, Bool, Bool) -> ExceptT ErrorType IO ()
+checkQueueSize ms q (size, canWrt, expire) = liftIO $ do
+  [(size', canWrt', expire')] <-
+    withTransaction (dbStore $ queueStore ms) $ \db ->
+      DB.query db "SELECT msg_queue_size, msg_can_write, msg_queue_expire FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
+  size' `shouldBe` size
+  canWrt' `shouldBe` canWrt
+  expire' `shouldBe` expire
+
+testResetMessageCounts :: PostgresMsgStore -> IO ()
+testResetMessageCounts ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    let write s = writeMsg ms q True =<< mkMessage s
+        hasSize = checkQueueSize ms
+    Just (Message {msgId = mId1}, True) <- write "message 1"
+    Just (Message {msgId = mId2}, False) <- write "message 2"
+    Just (Message {msgId = mId3}, False) <- write "message 3"
+    Nothing <- write "message 4"
+    q `hasSize` (4, False, True)
+    liftIO $ setIncorrectSize q (10, True)
+    Nothing <- write "message 5"
+    q `hasSize` (11, False, True)
+    (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
+    q `hasSize` (10, False, True)
+    (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
+    q `hasSize` (9, False, True)
+    (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
+    q `hasSize` (8, False, True)
+    (Just MessageQuota {}, Just MessageQuota {msgId = mId5}) <- tryDelPeekMsg ms q mId4
+    q `hasSize` (7, False, True)
+    (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId5
+    q `hasSize` (0, True, False) -- reset
+  where
+    setIncorrectSize :: PostgresQueue -> (Int64, Bool) -> IO ()
+    setIncorrectSize q (size, canWrt) =
+      void $ withTransaction (dbStore $ queueStore ms) $ \db ->
+        DB.execute db "UPDATE msg_queues SET msg_queue_size = ?, msg_can_write = ? WHERE recipient_id = ?" (size, canWrt, recipientId q)
+#endif
 
 testQueueState :: JournalMsgStore s -> IO ()
 testQueueState ms = do
   g <- C.newRandom
   rId <- EntityId <$> atomically (C.randomBytes 24 g)
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
   createDirectoryIfMissing True dir
   state <- newMsgQueueState <$> newJournalId (random ms)
   withFile statePath WriteMode (`appendState` state)
@@ -312,7 +456,7 @@ testMessageState ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   mId1 <- runRight $ do
@@ -337,7 +481,7 @@ testRemoveJournals ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   runRight $ do
@@ -361,7 +505,7 @@ testRemoveJournals ms = do
     Nothing <- tryPeekMsg ms q
     -- still not removed, queue is empty and not opened
     liftIO $ journalFilesCount dir `shouldReturn` 1
-    _mq <- isolateQueue q "test" $ getMsgQueue ms q False
+    _mq <- isolateQueue ms q "test" $ getMsgQueue ms q False
     -- journal is removed
     liftIO $ journalFilesCount dir `shouldReturn` 0
     liftIO $ stateBackupCount dir `shouldReturn` 1
@@ -442,7 +586,7 @@ testExpireIdleQueues = do
   ms <- newMsgStore (testJournalStoreCfg MQStoreCfg) {idleInterval = 0}
 
   let dir = msgQueueDirectory ms rId
-      statePath = msgQueueStatePath dir $ B.unpack (B64.encode $ unEntityId rId)
+      statePath = msgQueueStatePath dir rId
       write q s = writeMsg ms q True =<< mkMessage s
 
   q <- runRight $ do
@@ -461,7 +605,7 @@ testExpireIdleQueues = do
   old <- expireBeforeEpoch ExpirationConfig {ttl = 1, checkInterval = 1} -- no old messages
   now <- systemSeconds <$> getSystemTime
 
-  (expired_, stored) <- runRight $ isolateQueue q "" $ withIdleMsgQueue now ms q $ deleteExpireMsgs_ old q
+  (expired_, stored) <- runRight $ isolateQueue ms q "" $ withIdleMsgQueue now ms q $ deleteExpireMsgs_ old q
   expired_ `shouldBe` Just 0
   stored `shouldBe` 0
   (Nothing, False) <- readQueueState ms statePath
@@ -478,7 +622,7 @@ testReadFileMissing ms = do
     Msg "message 1" <- tryPeekMsg ms q
     pure q
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
   closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
@@ -497,7 +641,7 @@ testReadFileMissingSwitch ms = do
   (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {readState = rs} <- readTVarIO $ state mq
   closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId rs
@@ -515,7 +659,7 @@ testWriteFileMissing ms = do
   (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {writeState = ws} <- readTVarIO $ state mq
   closeMsgQueue ms q
   let path = journalFilePath (queueDirectory $ queue mq) $ journalId ws
@@ -538,7 +682,7 @@ testReadAndWriteFilesMissing ms = do
   (rId, qr) <- testNewQueueRec g QMMessaging
   q <- writeMessages ms rId qr
 
-  mq <- fromJust <$> readTVarIO (msgQueue q)
+  mq <- fromJust <$> readTVarIO (msgQueue' q)
   MsgQueueState {readState = rs, writeState = ws} <- readTVarIO $ state mq
   closeMsgQueue ms q
   removeFile $ journalFilePath (queueDirectory $ queue mq) $ journalId rs

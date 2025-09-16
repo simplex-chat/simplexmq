@@ -212,7 +212,7 @@ createStore randSuffix migrations confirmMigrations = do
           poolSize = 1,
           createSchema = True
         }
-  createDBStore dbOpts migrations confirmMigrations
+  createDBStore dbOpts migrations (MigrationConfig confirmMigrations Nothing)
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = dropSchema testDBConnectInfo (testSchema randSuffix)
@@ -235,7 +235,7 @@ createStore randSuffix migrations confirmMigrations = do
           vacuum = True,
           track = DB.TQOff
         }
-  createDBStore dbOpts migrations confirmMigrations
+  createDBStore dbOpts migrations (MigrationConfig confirmMigrations Nothing)
 
 cleanup :: Word32 -> IO ()
 cleanup randSuffix = removeFile (testDB randSuffix)

@@ -173,6 +173,7 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Exception (BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
 import qualified Data.Aeson.Encoding as JE
@@ -1865,6 +1866,12 @@ data AgentErrorType
   | -- | agent inactive
     INACTIVE
   deriving (Eq, Show, Exception)
+
+instance AnyError AgentErrorType where
+  fromSomeException e = case fromException e of
+    Just BlockedIndefinitelyOnSTM -> CRITICAL True "Thread blocked indefinitely in STM transaction"
+    _ -> INTERNAL $ show e
+  {-# INLINE fromSomeException #-}
 
 -- | SMP agent protocol command or response error.
 data CommandErrorType

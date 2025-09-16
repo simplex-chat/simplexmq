@@ -1,7 +1,7 @@
 cabal-version: 1.12
 
 name:           simplexmq
-version:        6.4.4.1
+version:        6.5.0.0.1
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -267,6 +267,7 @@ library
               Simplex.Messaging.Notifications.Server.Store.Postgres
               Simplex.Messaging.Notifications.Server.Store.Types
               Simplex.Messaging.Notifications.Server.StoreLog
+              Simplex.Messaging.Server.MsgStore.Postgres
               Simplex.Messaging.Server.QueueStore.Postgres
               Simplex.Messaging.Server.QueueStore.Postgres.Migrations
   other-modules:
