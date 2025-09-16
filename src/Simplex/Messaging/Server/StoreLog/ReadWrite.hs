@@ -61,7 +61,7 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
             Left e -> logError $ errPfx <> tshow e
             where
               errPfx = "STORE: getCreateService, stored service " <> decodeLatin1 (strEncode serviceId) <> ", "
-          QueueService rId (ASP party) serviceId -> withQueue rId "QueueService" $ \q -> setQueueService st q party serviceId
+          QueueService qId (ASP party) serviceId -> withQueue qId "QueueService" $ \q -> setQueueService st q party serviceId
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
         withQueue :: forall a. RecipientId -> T.Text -> (q -> IO (Either ErrorType a)) -> IO ()
