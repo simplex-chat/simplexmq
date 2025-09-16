@@ -293,7 +293,7 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
           sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 getMockNotification :: MonadIO m => APNSMockServer -> DeviceToken -> m APNSMockRequest
-getMockNotification APNSMockServer {notifications} (DeviceToken _ token) = do
+getMockNotification APNSMockServer {notifications} (APNSDeviceToken _ token) = do
   atomically $ TM.lookup token notifications >>= maybe retry readTBQueue
 
 getAnyMockNotification :: MonadIO m => APNSMockServer -> m APNSMockRequest
