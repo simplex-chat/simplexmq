@@ -432,7 +432,7 @@ functionalAPITests ps = do
       testSuspendingAgentCompleteSending ps
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout ps
-  fdescribe "Batching SMP commands" $ do
+  describe "Batching SMP commands" $ do
     -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
       testBatchedSubscriptions 200 10 ps
@@ -442,10 +442,10 @@ functionalAPITests ps = do
     it "should subscribe to multiple connections with pending messages" $
       withSmpServer ps $
         testBatchedPendingMessages 10 5
-  fdescribe "Batch send messages" $ do
+  describe "Batch send messages" $ do
     it "should send multiple messages to the same connection" $ withSmpServer ps testSendMessagesB
     it "should send messages to the 2 connections" $ withSmpServer ps testSendMessagesB2
-  fdescribe "Async agent commands" $ do
+  describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
     it "should restore and complete async commands on restart" $
