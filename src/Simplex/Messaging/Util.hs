@@ -219,12 +219,17 @@ firstRow' f e a = (f <=< listToEither e) <$> a
 
 groupOn :: Eq k => (a -> k) -> [a] -> [[a]]
 groupOn = groupBy . eqOn
-  where
-    -- it is equivalent to groupBy ((==) `on` f),
-    -- but it redefines `on` to avoid duplicate computation for most values.
-    -- source: https://hackage.haskell.org/package/extra-1.7.13/docs/src/Data.List.Extra.html#groupOn
-    -- the on2 in this package is specialized to only use `==` as the function, `eqOn f` is equivalent to `(==) `on` f`
-    eqOn f x = let fx = f x in \y -> fx == f y
+
+groupOn' :: Eq k => (a -> k) -> [a] -> [NonEmpty a]
+groupOn' = L.groupBy . eqOn
+
+-- it is equivalent to groupBy ((==) `on` f),
+-- but it redefines `on` to avoid duplicate computation for most values.
+-- source: https://hackage.haskell.org/package/extra-1.7.13/docs/src/Data.List.Extra.html#groupOn
+-- the on2 in this package is specialized to only use `==` as the function, `eqOn f` is equivalent to `(==) `on` f`
+eqOn :: Eq k => (a -> k) -> a -> a -> Bool
+eqOn f x = let fx = f x in \y -> fx == f y
+{-# INLINE eqOn #-}
 
 groupAllOn :: Ord k => (a -> k) -> [a] -> [[a]]
 groupAllOn f = groupOn f . sortOn f
