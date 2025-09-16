@@ -9,6 +9,7 @@ module Simplex.Messaging.Agent.Store.Shared
     DownMigration (..),
     MTRError (..),
     mtrErrorDescription,
+    MigrationConfig (..),
     MigrationConfirmation (..),
     MigrationError (..),
     UpMigration (..),
@@ -55,19 +56,26 @@ data MigrationError
   | MigrationError {mtrError :: MTRError}
   deriving (Eq, Show)
 
-migrationErrorDescription :: MigrationError -> String
-migrationErrorDescription = \case
+migrationErrorDescription :: Bool -> MigrationError -> String
+migrationErrorDescription withBackup = \case
   MEUpgrade ums ->
-    "The app has a newer version than the database.\nConfirm to back up and upgrade using these migrations: " <> intercalate ", " (map upName ums)
+    "The app has a newer version than the database.\nConfirm to " <> backupStr <> "upgrade using these migrations: " <> intercalate ", " (map upName ums)
   MEDowngrade dms ->
-    "Database version is newer than the app.\nConfirm to back up and downgrade using these migrations: " <> intercalate ", " dms
+    "Database version is newer than the app.\nConfirm to " <> backupStr <> "downgrade using these migrations: " <> intercalate ", " dms
   MigrationError err -> mtrErrorDescription err
+  where
+    backupStr = if withBackup then "back up and " else ""
 
 data UpMigration = UpMigration {upName :: String, withDown :: Bool}
   deriving (Eq, Show)
 
 upMigration :: Migration -> UpMigration
 upMigration Migration {name, down} = UpMigration name $ isJust down
+
+data MigrationConfig = MigrationConfig
+  { confirm :: MigrationConfirmation,
+    backupPath :: Maybe FilePath -- Nothing - no backup, empty string - the same folder
+  }
 
 data MigrationConfirmation = MCYesUp | MCYesUpDown | MCConsole | MCError
   deriving (Eq, Show)

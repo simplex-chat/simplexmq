@@ -33,7 +33,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Common
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
-import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..), MigrationError (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
@@ -55,7 +55,7 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Util (AnyError (..), bshow)
 
-createStore :: DBOpts -> MigrationConfirmation -> IO (Either MigrationError DBStore)
+createStore :: DBOpts -> MigrationConfig -> IO (Either MigrationError DBStore)
 createStore dbOpts = createDBStore dbOpts appMigrations
 
 -- * Queue types
@@ -693,10 +693,20 @@ data StoreError
   | -- | XFTP Deleted snd chunk replica not found.
     SEDeletedSndChunkReplicaNotFound
   | -- | Error when reading work item that suspends worker - do not use!
-    SEWorkItemError ByteString
+    SEWorkItemError {errContext :: String}
   | -- | Servers stats not found.
     SEServersStatsNotFound
   deriving (Eq, Show, Exception)
 
 instance AnyError StoreError where
   fromSomeException = SEInternal . bshow
+
+class (Show e, AnyError e) => AnyStoreError e where
+  isWorkItemError :: e -> Bool
+  mkWorkItemError :: String -> e
+
+instance AnyStoreError StoreError where
+  isWorkItemError = \case
+    SEWorkItemError {} -> True
+    _ -> False
+  mkWorkItemError errContext = SEWorkItemError {errContext}

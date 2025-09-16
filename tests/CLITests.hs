@@ -10,7 +10,6 @@ import AgentTests.FunctionalAPITests (runRight_)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
-import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
@@ -46,6 +45,7 @@ import UnliftIO.Exception (bracket)
 import Util
 
 #if defined(dbServerPostgres)
+import qualified Data.ByteString.Char8 as B
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Types (Query (..))
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBConnstr, ntfTestStoreDBOpts)

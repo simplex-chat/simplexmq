@@ -46,7 +46,7 @@ import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.SQLite
 import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (pattern IKPQOn)
@@ -83,7 +83,7 @@ createEncryptedStore key keepKey = do
   -- Randomize DB file name to avoid SQLite IO errors supposedly caused by asynchronous
   -- IO operations on multiple similarly named files; error seems to be environment specific
   r <- randomIO :: IO Word32
-  Right st <- createDBStore (DBOpts (testDB <> show r) key keepKey True DB.TQOff) appMigrations MCError
+  Right st <- createDBStore (DBOpts (testDB <> show r) key keepKey True DB.TQOff) appMigrations (MigrationConfig MCError Nothing)
   withTransaction' st (`SQL.execute_` "INSERT INTO users (user_id) VALUES (1);")
   pure st
 
