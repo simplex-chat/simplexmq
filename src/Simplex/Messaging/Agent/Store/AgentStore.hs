@@ -430,7 +430,7 @@ deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_i
 
 checkConfirmedSndQueueExists_ :: DB.Connection -> NewSndQueue -> IO Bool
 checkConfirmedSndQueueExists_ db SndQueue {server, sndId} =
-  maybeFirstRow' False fromOnly $
+  maybeFirstRow' False fromOnlyBI $
     DB.query
       db
       "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
@@ -1073,7 +1073,7 @@ toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, 
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash =
-  maybeFirstRow' False fromOnly $
+  maybeFirstRow' False fromOnlyBI $
     DB.query
       db
       "SELECT 1 FROM encrypted_rcv_message_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
@@ -2176,7 +2176,7 @@ addProcessedRatchetKeyHash db connId hash =
 
 checkRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRatchetKeyHashExists db connId hash =
-  maybeFirstRow' False fromOnly $
+  maybeFirstRow' False fromOnlyBI $
     DB.query
       db
       "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
