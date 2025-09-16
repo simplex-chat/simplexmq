@@ -124,13 +124,12 @@ data APNSPushClientConfig = APNSPushClientConfig
     caStoreFile :: FilePath
   }
 
-apnsProviderHost :: PushProvider -> Maybe HostName
+apnsProviderHost :: APNSProvider -> Maybe HostName
 apnsProviderHost = \case
   PPApnsNull -> Nothing
   PPApnsTest -> Just "localhost"
   PPApnsDev -> Just "api.sandbox.push.apple.com"
   PPApnsProd -> Just "api.push.apple.com"
-  _ -> Nothing
 
 defaultAPNSPushClientConfig :: APNSPushClientConfig
 defaultAPNSPushClientConfig =
@@ -256,6 +255,7 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
+-- TODO [webpush] change type accept token components so it only allows APNS token
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
 apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token} pn = do
   tknStr <- deviceToken token

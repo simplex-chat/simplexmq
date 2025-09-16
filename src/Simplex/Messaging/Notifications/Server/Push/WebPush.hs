@@ -3,13 +3,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-
-{-# HLINT ignore "Use newtype instead of data" #-}
-{-# LANGUAGE OverloadedRecordDot #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use newtype instead of data" #-}
 
 module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
@@ -46,33 +44,36 @@ import GHC.Base (when)
 
 wpPushProviderClient :: Manager -> PushProviderClient
 wpPushProviderClient mg tkn pn = do
-      e <- endpoint tkn
-      r <- liftPPWPError $ parseUrlThrow $ B.unpack e.endpoint
-      logDebug $ "Request to " <> tshow r.host
-      encBody <- body e
-      let requestHeaders = [
-            ("TTL", "2592000") -- 30 days
-            , ("Urgency", "high")
-            , ("Content-Encoding", "aes128gcm")
-        -- TODO: topic for pings and interval
-            ]
-          req = r {
-        method = "POST"
-        , requestHeaders
-        , requestBody = RequestBodyBS encBody
-        , redirectCount = 0
-      }
-      _ <- liftPPWPError $ httpNoBody req mg
-      pure ()
+  -- TODO [webpush] parsing will happen in DeviceToken parser, so it won't fail here
+  -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
+  wpe@WPEndpoint {endpoint} <- tokenEndpoint tkn
+  r <- liftPPWPError $ parseUrlThrow $ B.unpack endpoint
+  logDebug $ "Request to " <> tshow (host r)
+  encBody <- body wpe
+  let requestHeaders =
+        [ ("TTL", "2592000"), -- 30 days
+          ("Urgency", "high"),
+          ("Content-Encoding", "aes128gcm")
+    -- TODO: topic for pings and interval
+        ]
+      req =
+        r
+          { method = "POST",
+            requestHeaders,
+            requestBody = RequestBodyBS encBody,
+            redirectCount = 0
+          }
+  _ <- liftPPWPError $ httpNoBody req mg
+  pure ()
   where
-    endpoint :: NtfTknRec -> ExceptT PushProviderError IO WPEndpoint
-    endpoint NtfTknRec {token} = do
+    tokenEndpoint :: NtfTknRec -> ExceptT PushProviderError IO WPEndpoint
+    tokenEndpoint NtfTknRec {token} = do
       case token of
-        WPDeviceToken e -> pure e
+        WPDeviceToken _p e -> pure e
         _ -> fail "Wrong device token"
     -- TODO: move to PPIndalidPusher ? WPEndpoint should be invalidated and removed if the key is invalid, but the validation key is never sent
     body :: WPEndpoint -> ExceptT PushProviderError IO B.ByteString
-    body e = withExceptT PPCryptoError $ wpEncrypt e.auth e.p256dh (BL.toStrict $ encodePN pn)
+    body WPEndpoint {auth, p256dh} = withExceptT PPCryptoError $ wpEncrypt auth p256dh (BL.toStrict $ encodePN pn)
 
 -- | encrypt :: auth -> key -> clear -> cipher
 -- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
@@ -80,6 +81,7 @@ wpEncrypt :: B.ByteString -> B.ByteString -> B.ByteString -> ExceptT C.CryptoErr
 wpEncrypt auth uaPubKS clearT = do
   salt :: B.ByteString <- liftIO $ getRandomBytes 16
   asPrivK <- liftIO $ ECDH.generatePrivate $ ECC.getCurveByName ECC.SEC_p256r1
+  -- TODO [webpush] key parsing will happen in DeviceToken parser, so it won't fail here
   uaPubK <- point uaPubKS
   let asPubK = BL.toStrict . uncompressEncode . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
       ecdhSecret = ECDH.getShared (ECC.getCurveByName ECC.SEC_p256r1) asPrivK uaPubK
@@ -112,12 +114,12 @@ wpEncrypt auth uaPubKS clearT = do
 -- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
 -- | as required by RFC8291
 -- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
+-- TODO [webpush] add them to the encoding of WPKey
 uncompressEncode :: ECC.Point -> BL.ByteString
-uncompressEncode (ECC.Point x y) = "\x04" <>
-                                     encodeBigInt x <>
-                                     encodeBigInt y
+uncompressEncode (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
 uncompressEncode ECC.PointO = "\0"
 
+-- TODO [webpush] should be -> Either ... (which it would be in StrEncoding)
 uncompressDecode :: BL.ByteString -> ExceptT CE.CryptoError IO ECC.Point
 uncompressDecode "\0" = pure ECC.PointO
 uncompressDecode s = do
@@ -135,24 +137,26 @@ encodeBigInt i = do
   let s1 = Bits.shiftR i 64
       s2 = Bits.shiftR s1 64
       s3 = Bits.shiftR s2 64
-  Bin.encode ( w64 s3, w64 s2, w64 s1, w64 i )
+  Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
   where
     w64 :: Integer -> Bin.Word64
     w64 = fromIntegral
 
+-- TODO [webpush] should be -> Either ... (which it would be in StrEncoding)
 decodeBigInt :: BL.ByteString -> ExceptT CE.CryptoError IO Integer
 decodeBigInt s = do
   when (BL.length s /= 32) $ throwError CE.CryptoError_PointSizeInvalid
   let (w3, w2, w1, w0) = Bin.decode s :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64 )
   pure $ shift 3 w3 + shift 2 w2 + shift 1 w1 + shift 0 w0
   where
-    shift i w = Bits.shiftL (fromIntegral w) (64*i)
+    shift i w = Bits.shiftL (fromIntegral w) (64 * i)
 
+-- TODO [webpush] use ToJSON
 encodePN :: PushNotification -> BL.ByteString
 encodePN pn = J.encode $ case pn of
-    PNVerification code -> J.object [ "verification" .= code ]
-    PNMessage d -> J.object [ "message" .= encodeData d ]
-    PNCheckMessages -> J.object [ "checkMessages" .= True ]
+  PNVerification code -> J.object ["verification" .= code]
+  PNMessage d -> J.object ["message" .= encodeData d]
+  PNCheckMessages -> J.object ["checkMessages" .= True]
   where
     encodeData :: NonEmpty PNMessageData -> String
     encodeData a = T.unpack . T.decodeUtf8 $ encodePNMessages a

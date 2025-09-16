@@ -46,7 +46,6 @@ import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, Transport
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import Simplex.Messaging.Notifications.Server.Push (PushNotification, PushProviderClient)
 import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient)
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
