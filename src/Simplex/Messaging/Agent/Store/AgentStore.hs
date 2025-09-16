@@ -253,13 +253,13 @@ import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (foldl', sortBy, sortOn)
+import Data.List (foldl', sortBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Ord (Down (..))
+import qualified Data.Set as S
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
@@ -293,6 +293,8 @@ import Simplex.Messaging.Version.Internal
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
+import Data.List (sortOn)
+import Data.Map.Strict (Map)
 import Database.PostgreSQL.Simple (In (..), Only (..), Query, SqlError, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
@@ -1299,21 +1301,26 @@ insertedRowId db = fromOnly . head <$> DB.query_ db q
     q = "SELECT last_insert_rowid()"
 #endif
 
-getPendingCommandServers :: DB.Connection -> ConnId -> IO [Maybe SMPServer]
-getPendingCommandServers db connId = do
+getPendingCommandServers :: DB.Connection -> [ConnId] -> IO [(ConnId, NonEmpty (Maybe SMPServer))]
+getPendingCommandServers db connIds =
   -- TODO review whether this can break if, e.g., the server has another key hash.
-  map smpServer
-    <$> DB.query
+  mapMaybe connServers . groupOn' rowConnId
+    <$> DB.query_
       db
       [sql|
-        SELECT DISTINCT c.host, c.port, COALESCE(c.server_key_hash, s.key_hash)
+        SELECT DISTINCT c.conn_id, c.host, c.port, COALESCE(c.server_key_hash, s.key_hash)
         FROM commands c
         LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
-        WHERE conn_id = ?
+        ORDER BY c.conn_id
       |]
-      (Only connId)
   where
+    rowConnId (Only connId :. _) = connId
+    connServers rs =
+      let connId = rowConnId $ L.head rs
+          srvs = L.map (\(_ :. r) -> smpServer r) rs
+       in if connId `S.member` conns then Just (connId, srvs) else Nothing
     smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
+    conns = S.fromList connIds
 
 getPendingServerCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
 getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
@@ -2031,11 +2038,11 @@ getDeletedConn = getAnyConn True
 {-# INLINE getDeletedConn #-}
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getAnyConn deleted' dbConn connId =
-  getConnData dbConn connId deleted' >>= \case
+getAnyConn deleted' db connId =
+  getConnData deleted' db connId >>= \case
     Just (cData, cMode) -> do
-      rQ <- getRcvQueuesByConnId_ dbConn connId
-      sQ <- getSndQueuesByConnId_ dbConn connId
+      rQ <- getRcvQueuesByConnId_ db connId
+      sQ <- getSndQueuesByConnId_ db connId
       pure $ case (rQ, sQ, cMode) of
         (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
         (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
@@ -2056,7 +2063,7 @@ getDeletedConns = getAnyConns_ True
 #if defined(dbPostgres)
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getAnyConns_ deleted' db connIds = do
-  cs <- getConnsData_ db connIds deleted'
+  cs <- getConnsData_ deleted' db connIds
   let connIds' = M.keys cs
   rQs :: Map ConnId (NonEmpty RcvQueue) <- getRcvQueuesByConnIds_ connIds'
   sQs :: Map ConnId (NonEmpty SndQueue) <- getSndQueuesByConnIds_ connIds'
@@ -2086,13 +2093,13 @@ getAnyConns_ deleted' db connIds = do
         _ -> Left SEConnNotFound
       Nothing -> Left SEConnNotFound
 
-getConnsData :: DB.Connection -> [ConnId] -> IO [Maybe (ConnData, ConnectionMode)]
+getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnData, ConnectionMode))]
 getConnsData db connIds = do
-  cs <- getConnsData_ db connIds False
-  pure $ map (`M.lookup` cs) connIds
+  cs <- getConnsData_ False db connIds
+  pure $ map (Right . (`M.lookup` cs)) connIds
 
-getConnsData_ :: DB.Connection -> [ConnId] -> Bool -> IO (Map ConnId (ConnData, ConnectionMode))
-getConnsData_ db connIds deleted' =
+getConnsData_ :: Bool -> DB.Connection -> [ConnId] -> IO (Map ConnId (ConnData, ConnectionMode))
+getConnsData_ deleted' db connIds =
   M.fromList . map ((\c@(ConnData {connId}, _) -> (connId, c)) . rowToConnData) <$>
     DB.query
       db
@@ -2107,13 +2114,16 @@ getConnsData_ db connIds deleted' =
 #else
 getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
 getAnyConns_ deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn deleted' db
-  where
-    handleDBError :: E.SomeException -> IO (Either StoreError SomeConn)
-    handleDBError = pure . Left . SEInternal . bshow
+
+getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnData, ConnectionMode))]
+getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . getConnData False db
+
+handleDBError :: E.SomeException -> IO (Either StoreError a)
+handleDBError = pure . Left . SEInternal . bshow
 #endif
 
-getConnData :: DB.Connection -> ConnId -> Bool -> IO (Maybe (ConnData, ConnectionMode))
-getConnData db connId' deleted' =
+getConnData :: Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
+getConnData deleted' db connId' =
   maybeFirstRow rowToConnData $
     DB.query
       db

@@ -139,7 +139,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
-import Data.Bifunctor (bimap, first, second)
+import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
@@ -1269,7 +1269,7 @@ subscribeConnections' c connIds = do
       errs' = M.map (Left . storeError) errs
       (subRs, rcvQs) = M.mapEither rcvQueueOrResult cs
   resumeDelivery cs
-  lift $ resumeConnCmds c $ M.keys cs
+  resumeConnCmds c $ M.keys cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concat $ M.elems rcvQs)
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
@@ -1473,10 +1473,10 @@ resumeSrvCmds :: AgentClient -> ConnId -> Maybe SMPServer -> AM' ()
 resumeSrvCmds = void .:. getAsyncCmdWorker False
 {-# INLINE resumeSrvCmds #-}
 
-resumeConnCmds :: AgentClient -> [ConnId] -> AM' ()
+resumeConnCmds :: AgentClient -> [ConnId] -> AM ()
 resumeConnCmds c connIds = do
-  connSrvs <- rights . zipWith (second . (,)) connIds <$> withStoreBatch' c (\db -> fmap (getPendingCommandServers db) connIds)
-  mapM_ (\(connId, srvs) -> mapM_ (resumeSrvCmds c connId) srvs) connSrvs
+  connSrvs <- withStore' c (`getPendingCommandServers` connIds)
+  lift $ mapM_ (\(connId, srvs) -> mapM_ (resumeSrvCmds c connId) srvs) connSrvs
 
 getAsyncCmdWorker :: Bool -> AgentClient -> ConnId -> Maybe SMPServer -> AM' Worker
 getAsyncCmdWorker hasWork c connId server =
@@ -2457,16 +2457,17 @@ sendNtfConnCommands c cmd = do
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
   unless (null cErrs) $ atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS cErrs)
   where
-    enabledNtfConns :: [(ConnId, Maybe (ConnData, ConnectionMode))] -> ([ConnId], [(ConnId, AgentErrorType)])
+    enabledNtfConns :: [(ConnId, Either StoreError (Maybe (ConnData, ConnectionMode)))] -> ([ConnId], [(ConnId, AgentErrorType)])
     enabledNtfConns = foldr addEnabledConn ([], [])
       where
         addEnabledConn ::
-          (ConnId, Maybe (ConnData, ConnectionMode)) ->
+          (ConnId, Either StoreError (Maybe (ConnData, ConnectionMode))) ->
           ([ConnId], [(ConnId, AgentErrorType)]) ->
           ([ConnId], [(ConnId, AgentErrorType)])
         addEnabledConn cData_ (cIds, errs) = case cData_ of
-          (_, Just (ConnData {connId, enableNtfs}, _)) -> if enableNtfs then (connId : cIds, errs) else (cIds, errs)
-          (connId, Nothing) -> (cIds, (connId, INTERNAL "no connection data") : errs)
+          (_, Right (Just (ConnData {connId, enableNtfs}, _))) -> if enableNtfs then (connId : cIds, errs) else (cIds, errs)
+          (connId, Right Nothing) -> (cIds, (connId, INTERNAL "no connection data") : errs)
+          (connId, Left e) -> (cIds, (connId, INTERNAL (show e)) : errs)
 
 setNtfServers :: AgentClient -> [NtfServer] -> IO ()
 setNtfServers c = atomically . writeTVar (ntfServers c)
