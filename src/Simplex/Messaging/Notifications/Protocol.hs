@@ -411,32 +411,33 @@ instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe
 
 instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
-data DeviceToken = DeviceToken PushProvider ByteString
+data DeviceToken
+  = APNSDeviceToken PushProvider ByteString
   deriving (Eq, Ord, Show)
 
 instance Encoding DeviceToken where
-  smpEncode (DeviceToken p t) = smpEncode (p, t)
-  smpP = DeviceToken <$> smpP <*> smpP
+  smpEncode (APNSDeviceToken p t) = smpEncode (p, t)
+  smpP = APNSDeviceToken <$> smpP <*> smpP
 
 instance StrEncoding DeviceToken where
-  strEncode (DeviceToken p t) = strEncode p <> " " <> t
+  strEncode (APNSDeviceToken p t) = strEncode p <> " " <> t
   strP = nullToken <|> hexToken
     where
-      nullToken = "apns_null test_ntf_token" $> DeviceToken PPApnsNull "test_ntf_token"
-      hexToken = DeviceToken <$> strP <* A.space <*> hexStringP
+      nullToken = "apns_null test_ntf_token" $> APNSDeviceToken PPApnsNull "test_ntf_token"
+      hexToken = APNSDeviceToken <$> strP <* A.space <*> hexStringP
       hexStringP =
         A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where
-  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
-  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
+  toEncoding (APNSDeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
+  toJSON (APNSDeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
 
 instance FromJSON DeviceToken where
   parseJSON = J.withObject "DeviceToken" $ \o -> do
     pp <- strDecode . encodeUtf8 <$?> o .: "pushProvider"
     t <- encodeUtf8 <$> o .: "token"
-    pure $ DeviceToken pp t
+    pure $ APNSDeviceToken pp t
 
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,

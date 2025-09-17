@@ -629,7 +629,7 @@ showServer' = decodeLatin1 . strEncode . host
 
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
-  (srvHost_, tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
+  (srvHost_, tkn@NtfTknRec {ntfTknId, token = t@(APNSDeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
   case ntf of
@@ -675,6 +675,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             void $ updateTknStatus st tkn $ NTInvalid $ Just r
             err e
           PPPermanentError -> err e
+          PPInvalidPusher -> err e
       where
         retryDeliver :: IO (Either PushProviderError ())
         retryDeliver = do
@@ -905,7 +906,7 @@ withNtfStore stAction continue = do
     Right a -> continue a
 
 incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
-incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
+incNtfStatT (APNSDeviceToken PPApnsNull _) _ = pure ()
 incNtfStatT _ statSel = incNtfStat statSel
 {-# INLINE incNtfStatT #-}
 
