@@ -61,6 +61,7 @@ CREATE TABLE rcv_queues(
   link_priv_sig_key BLOB,
   link_enc_fixed_data BLOB,
   queue_mode TEXT,
+  rcv_service_assoc INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -437,6 +438,16 @@ CREATE TABLE inv_short_links(
   snd_id BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
+CREATE TABLE client_services(
+  user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
+  host TEXT NOT NULL,
+  port TEXT NOT NULL,
+  service_cert BLOB NOT NULL,
+  service_cert_hash BLOB NOT NULL,
+  service_priv_key BLOB NOT NULL,
+  rcv_service_id BLOB,
+  FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
+);
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -572,3 +583,9 @@ CREATE UNIQUE INDEX idx_inv_short_links_link_id ON inv_short_links(
   port,
   link_id
 );
+CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(
+  user_id,
+  host,
+  port
+);
+CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
