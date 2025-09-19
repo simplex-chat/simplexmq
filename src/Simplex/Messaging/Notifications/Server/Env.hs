@@ -45,6 +45,7 @@ import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, Transport
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
+import Simplex.Messaging.Notifications.Server.Push (PushNotification, PushProviderClient)
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
