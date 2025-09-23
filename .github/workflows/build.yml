@@ -177,7 +177,7 @@ jobs:
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
-          chmod -R 777 dist-newstyle ~/.cabal && git config --global --add safe.directory '*'
+          chmod -fR 777 ~/.cabal ./dist-newstyle || :; git config --global --add safe.directory '*'
           cabal clean
           cabal update
           cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
