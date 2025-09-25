@@ -2516,7 +2516,7 @@ execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)
 
 getAgentMigrations :: AgentClient -> AE [UpMigration]
-getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c getCurrentMigrations
+getAgentMigrations c = withAgentEnv c $ map upMigration <$> withStore' c (getCurrentMigrations Nothing)
 
 debugAgentLocks :: AgentClient -> IO AgentLocks
 debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do

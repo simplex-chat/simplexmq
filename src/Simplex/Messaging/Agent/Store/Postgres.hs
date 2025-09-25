@@ -8,6 +8,7 @@ module Simplex.Messaging.Agent.Store.Postgres
   ( DBOpts (..),
     Migrations.getCurrentMigrations,
     checkSchemaExists,
+    migrateDBSchema,
     createDBStore,
     closeDBStore,
     reopenDBStore,
@@ -38,18 +39,20 @@ import System.Exit (exitFailure)
 -- If passed schema does not exist in connectInfo database, it will be created.
 -- Applies necessary migrations to schema.
 createDBStore :: DBOpts -> [Migration] -> MigrationConfig -> IO (Either MigrationError DBStore)
-createDBStore opts migrations MigrationConfig {confirm} = do
+createDBStore opts migrations migrationConfig = do
   st <- connectPostgresStore opts
-  r <- migrateSchema st `onException` closeDBStore st
+  r <- migrateDBSchema st opts Nothing migrations migrationConfig `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e
-  where
-    migrateSchema st =
-      let initialize = Migrations.initialize st
-          getCurrent = withTransaction st Migrations.getCurrentMigrations
-          dbm = DBMigrate {initialize, getCurrent, run = Migrations.run st, backup = Nothing}
-       in sharedMigrateSchema dbm (dbNew st) migrations confirm
+
+migrateDBSchema :: DBStore -> DBOpts -> Maybe Query -> [Migration] -> MigrationConfig -> IO (Either MigrationError ())
+migrateDBSchema st _opts migrationsTable migrations MigrationConfig {confirm} =
+  let initialize = Migrations.initialize st migrationsTable
+      getCurrent = withTransaction st $ Migrations.getCurrentMigrations migrationsTable
+      run = Migrations.run st migrationsTable
+      dbm = DBMigrate {initialize, getCurrent, run, backup = Nothing}
+   in sharedMigrateSchema dbm (dbNew st) migrations confirm
 
 connectPostgresStore :: DBOpts -> IO DBStore
 connectPostgresStore DBOpts {connstr, schema, poolSize, createSchema} = do
