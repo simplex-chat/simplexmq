@@ -27,6 +27,7 @@
 module Simplex.Messaging.Agent.Store.SQLite
   ( DBOpts (..),
     Migrations.getCurrentMigrations,
+    migrateDBSchema,
     createDBStore,
     closeDBStore,
     reopenDBStore,
@@ -68,25 +69,27 @@ import UnliftIO.STM
 -- * SQLite Store implementation
 
 createDBStore :: DBOpts -> [Migration] -> MigrationConfig -> IO (Either MigrationError DBStore)
-createDBStore DBOpts {dbFilePath, dbKey, keepKey, track, vacuum} migrations MigrationConfig {confirm, backupPath} = do
+createDBStore opts@DBOpts {dbFilePath, dbKey, keepKey, track} migrations migrationConfig = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
   st <- connectSQLiteStore dbFilePath dbKey keepKey track
-  r <- migrateSchema st `onException` closeDBStore st
+  r <- migrateDBSchema st opts Nothing migrations migrationConfig `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
     Left e -> closeDBStore st $> Left e
   where
-    migrateSchema st =
-      let initialize = Migrations.initialize st
-          getCurrent = withTransaction st Migrations.getCurrentMigrations
-          run = Migrations.run st vacuum
-          backup = mkBackup <$> backupPath
-          mkBackup bp =
-            let f = if null bp then dbFilePath else bp </> takeFileName dbFilePath
-             in copyFile dbFilePath $ f <> ".bak"
-          dbm = DBMigrate {initialize, getCurrent, run, backup}
-       in sharedMigrateSchema dbm (dbNew st) migrations confirm
+
+migrateDBSchema :: DBStore -> DBOpts -> Maybe Query -> [Migration] -> MigrationConfig -> IO (Either MigrationError ())
+migrateDBSchema st DBOpts {dbFilePath, vacuum} migrationsTable migrations MigrationConfig {confirm, backupPath} =
+  let initialize = Migrations.initialize st migrationsTable
+      getCurrent = withTransaction st $ Migrations.getCurrentMigrations migrationsTable
+      run = Migrations.run st migrationsTable vacuum
+      backup = mkBackup <$> backupPath
+      mkBackup bp =
+        let f = if null bp then dbFilePath else bp </> takeFileName dbFilePath
+          in copyFile dbFilePath $ f <> ".bak"
+      dbm = DBMigrate {initialize, getCurrent, run, backup}
+   in sharedMigrateSchema dbm (dbNew st) migrations confirm
 
 connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> DB.TrackQueries -> IO DBStore
 connectSQLiteStore dbFilePath key keepKey track = do
