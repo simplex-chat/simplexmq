@@ -99,10 +99,10 @@ runTestFileChunkDelivery s r = do
   uploadXFTPChunk s spKey sId chunkSpec
   (sId', _) <- createXFTPChunk s spKey file {digest = digest <> "_wrong"} [rcvKey] Nothing
   uploadXFTPChunk s spKey sId' chunkSpec
-    `catchError` (liftIO . (`shouldBe` PCEProtocolError DIGEST))
+    `catchError` (liftIO . (`shouldBe` PCEProtocolError (DIGEST "")))
   liftIO $ readChunk sId `shouldReturn` bytes
   downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize (digest <> "_wrong"))
-    `catchError` (liftIO . (`shouldBe` PCEResponseError DIGEST))
+    `catchError` (liftIO . (`shouldBe` PCEResponseError (DIGEST "")))
   downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 

@@ -201,7 +201,7 @@ receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChu
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
-  when (digest' /= chunkDigest) $ throwE DIGEST
+  when (digest' /= chunkDigest) $ throwE (DIGEST "receiveFile_, chunk digest mismatch")
 
 data XFTPErrorType
   = -- | incorrect block format, encoding or signature size
@@ -221,7 +221,7 @@ data XFTPErrorType
   | -- | storage quota exceeded
     QUOTA
   | -- | incorrent file digest
-    DIGEST
+    DIGEST {errContext :: String}
   | -- | file encryption/decryption failed
     CRYPTO
   | -- | no expected file body in request/response or no file on the server
@@ -248,7 +248,7 @@ instance StrEncoding XFTPErrorType where
     BLOCKED info -> "BLOCKED " <> strEncode info
     SIZE -> "SIZE"
     QUOTA -> "QUOTA"
-    DIGEST -> "DIGEST"
+    DIGEST errContext -> "DIGEST " <> strEncode errContext
     CRYPTO -> "CRYPTO"
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
@@ -267,7 +267,7 @@ instance StrEncoding XFTPErrorType where
       "BLOCKED" -> BLOCKED <$> _strP
       "SIZE" -> pure SIZE
       "QUOTA" -> pure QUOTA
-      "DIGEST" -> pure DIGEST
+      "DIGEST" -> DIGEST <$> _strP
       "CRYPTO" -> pure CRYPTO
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
@@ -287,7 +287,7 @@ instance Encoding XFTPErrorType where
     BLOCKED info -> "BLOCKED " <> smpEncode info
     SIZE -> "SIZE"
     QUOTA -> "QUOTA"
-    DIGEST -> "DIGEST"
+    DIGEST errContext -> "DIGEST " <> smpEncode errContext
     CRYPTO -> "CRYPTO"
     NO_FILE -> "NO_FILE"
     HAS_FILE -> "HAS_FILE"
@@ -306,7 +306,7 @@ instance Encoding XFTPErrorType where
       "BLOCKED" -> BLOCKED <$> _smpP
       "SIZE" -> pure SIZE
       "QUOTA" -> pure QUOTA
-      "DIGEST" -> pure DIGEST
+      "DIGEST" -> DIGEST <$> _smpP
       "CRYPTO" -> pure CRYPTO
       "NO_FILE" -> pure NO_FILE
       "HAS_FILE" -> pure HAS_FILE
