@@ -253,7 +253,7 @@ import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (foldl', sortBy)
+import Data.List (foldl', sortBy, sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -293,7 +293,6 @@ import Simplex.Messaging.Version.Internal
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
-import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Database.PostgreSQL.Simple (In (..), Only (..), Query, SqlError, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
@@ -2547,7 +2546,8 @@ getRcvFile :: DB.Connection -> DBRcvFileId -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
   f@RcvFile {rcvFileEntityId, userId, tmpPath} <- ExceptT getFile
   chunks <- maybe (pure []) (liftIO . getChunks rcvFileEntityId userId) tmpPath
-  pure (f {chunks} :: RcvFile)
+  let sortedChunks = sortOn (\RcvFileChunk {chunkNo} -> chunkNo) chunks
+  pure (f {chunks = sortedChunks} :: RcvFile)
   where
     getFile :: IO (Either StoreError RcvFile)
     getFile = do
