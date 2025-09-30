@@ -2664,6 +2664,7 @@ getRcvFile db rcvFileId = runExceptT $ do
               SELECT rcv_file_chunk_id, chunk_no, chunk_size, digest, tmp_path
               FROM rcv_file_chunks
               WHERE rcv_file_id = ?
+              ORDER BY chunk_no ASC
             |]
             (Only rcvFileId)
       forM chunks $ \chunk@RcvFileChunk {rcvChunkId} -> do
