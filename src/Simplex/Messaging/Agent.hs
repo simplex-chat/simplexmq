@@ -1264,12 +1264,11 @@ type QSubResult = QCmdResult (Maybe SMP.ServiceId)
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections' _ [] = pure M.empty
 subscribeConnections' c connIds = do
-  conns :: [(ConnId, Either StoreError SomeConn)] <- zip connIds <$> withStore' c (`getConns` connIds)
-  deliverTo <- S.fromList <$> withStore' c getConnectionsForDelivery
-  let (subRs, deliverConns, connIds', cs, rcvQs) = foldr (partitionConns deliverTo) ([], [], [], [], []) conns
-  lift $ resumeDelivery deliverConns
-  resumeConnCmds c connIds'
-  rcvRs <- lift $ connResults . fst <$> subscribeQueues c rcvQs
+  conns <- withStore' c (`getConns` connIds)
+  let (subRs, cs) = foldr partitionResultsConns ([], []) $ zip connIds conns
+  resumeDelivery cs
+  resumeConnCmds c $ map fst cs
+  rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
   lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
@@ -1277,36 +1276,31 @@ subscribeConnections' c connIds = do
   notifyResultError rs
   pure rs
   where
-    partitionConns ::
-      Set ConnId ->
-      (ConnId, Either StoreError SomeConn) ->
-      ([(ConnId, Either AgentErrorType (Maybe ClientServiceId))], [(ConnData, NonEmpty SndQueue)], [ConnId], [ConnData], [RcvQueue]) ->
-      ([(ConnId, Either AgentErrorType (Maybe ClientServiceId))], [(ConnData, NonEmpty SndQueue)], [ConnId], [ConnData], [RcvQueue])
-    partitionConns deliverTo (connId, conn_) (rs, dcs, cIds, rCs, rqs) = case conn_ of
-      Left e ->
-        let rs' = (connId, Left (storeError e)) : rs
-         in (rs', dcs, cIds, rCs, rqs)
-      Right (SomeConn _ conn) -> case conn of
-        DuplexConnection cData cRqs cSqs ->
-          let rqs' = L.toList cRqs ++ rqs
-              dcs' = if connId `S.member` deliverTo then (cData, cSqs) : dcs else dcs
-           in (rs, dcs', cIds', cData : rCs, rqs')
-        SndConnection cData sq ->
-          let rs' = (connId, sndSubResult sq) : rs
-              dcs' = if connId `S.member` deliverTo then (cData, [sq]) : dcs else dcs
-           in (rs', dcs', cIds', rCs, rqs)
-        RcvConnection cData rq -> (rs, dcs, cIds', cData : rCs, rq : rqs)
-        ContactConnection cData rq -> (rs, dcs, cIds', cData : rCs, rq : rqs)
-        NewConnection _ ->
-          let rs' = (connId, Right Nothing) : rs
-           in (rs', dcs, cIds', rCs, rqs)
+    partitionResultsConns :: (ConnId, Either StoreError SomeConn) ->
+      ([(ConnId, Either AgentErrorType (Maybe ClientServiceId))], [(ConnId, SomeConn)]) ->
+      ([(ConnId, Either AgentErrorType (Maybe ClientServiceId))], [(ConnId, SomeConn)])
+    partitionResultsConns (connId, conn_) (rs, cs) = case conn_ of
+      Left e -> ((connId, Left (storeError e)) : rs, cs)
+      Right c'@(SomeConn _ conn) -> case conn of
+        DuplexConnection {} -> (rs, cs')
+        SndConnection _ sq -> ((connId, sndSubResult sq) : rs, cs')
+        RcvConnection _ _ -> (rs, cs')
+        ContactConnection _ _ -> (rs, cs')
+        NewConnection _ -> ((connId, Right Nothing) : rs, cs')
         where
-          cIds' = connId : cIds
+          cs' = (connId, c') : cs
     sndSubResult :: SndQueue -> Either AgentErrorType (Maybe ClientServiceId)
     sndSubResult SndQueue {status} = case status of
       Confirmed -> Right Nothing
       Active -> Left $ CONN SIMPLEX "subscribeConnections"
       _ -> Left $ INTERNAL "unexpected queue status"
+    rcvQueues :: (ConnId, SomeConn) -> [RcvQueue]
+    rcvQueues (_, SomeConn _ conn) = case conn of
+      DuplexConnection _ rqs _ -> L.toList rqs
+      SndConnection {} -> []
+      RcvConnection _ rq -> [rq]
+      ContactConnection _ rq -> [rq]
+      NewConnection _ -> []
     connResults :: [(RcvQueue, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))
     connResults = M.map snd . foldl' addResult M.empty
       where
@@ -1325,20 +1319,28 @@ subscribeConnections' c connIds = do
     -- TODO [certs rcv] store associations of queues with client service ID
     storeClientServiceAssocs :: Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
     storeClientServiceAssocs = pure . M.map (Nothing <$)
-    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> [ConnData] -> AM' ()
+    sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> [(ConnId, SomeConn)] -> AM' ()
     sendNtfCreate ns rcvRs cs = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
           (csCreate, csDelete) = foldr (groupConnIds oks) ([], []) cs
       sendNtfCmd NSCCreate csCreate
       sendNtfCmd NSCSmpDelete csDelete
       where
-        groupConnIds oks ConnData {connId, enableNtfs} acc@(csCreate, csDelete)
+        groupConnIds oks (connId, SomeConn _ conn) acc@(csCreate, csDelete)
           | connId `S.notMember` oks = acc
-          | enableNtfs = (connId : csCreate, csDelete)
+          | enableNtfs (toConnData conn) = (connId : csCreate, csDelete)
           | otherwise = (csCreate, connId : csDelete)
         sendNtfCmd cmd = mapM_ (\cids -> atomically $ writeTBQueue (ntfSubQ ns) (cmd, cids)) . L.nonEmpty
-    resumeDelivery :: [(ConnData, NonEmpty SndQueue)] -> AM' ()
-    resumeDelivery = mapM_ $ \(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs
+    resumeDelivery :: [(ConnId, SomeConn)] -> AM ()
+    resumeDelivery conns = do
+      deliverTo <- S.fromList <$> withStore' c getConnectionsForDelivery
+      let conns' = filter ((`S.member` deliverTo) . fst) conns
+      lift $ mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns'
+    sndQueue :: (ConnId, SomeConn) -> Maybe (ConnData, NonEmpty SndQueue)
+    sndQueue (_, SomeConn _ conn) = case conn of
+      DuplexConnection cData _ sqs -> Just (cData, sqs)
+      SndConnection cData sq -> Just (cData, [sq])
+      _ -> Nothing
     notifyResultError :: Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> AM ()
     notifyResultError rs = do
       let actual = M.size rs
