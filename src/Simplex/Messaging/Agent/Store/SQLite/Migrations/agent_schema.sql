@@ -1,8 +1,7 @@
 CREATE TABLE migrations(
-  name TEXT NOT NULL,
+  name TEXT NOT NULL PRIMARY KEY,
   ts TEXT NOT NULL,
-  down TEXT,
-  PRIMARY KEY(name)
+  down TEXT
 );
 CREATE TABLE servers(
   host TEXT NOT NULL,

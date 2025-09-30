@@ -642,7 +642,7 @@ testReopenEncryptedStoreKeepKey = do
   hasMigrations st
 
 getMigrations :: DBStore -> IO Bool
-getMigrations st = not . null <$> withTransaction st getCurrentMigrations
+getMigrations st = not . null <$> withTransaction st (getCurrentMigrations Nothing)
 
 hasMigrations :: DBStore -> Expectation
 hasMigrations st = getMigrations st `shouldReturn` True
