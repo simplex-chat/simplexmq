@@ -1272,7 +1272,7 @@ subscribeConnections' c connIds = do
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
   lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
-  let rs = M.unions ([M.fromList subRs, rcvRs'] :: [Map ConnId (Either AgentErrorType (Maybe ClientServiceId))])
+  let rs = M.fromList subRs `M.union` rcvRs'
   notifyResultError rs
   pure rs
   where
