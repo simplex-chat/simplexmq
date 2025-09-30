@@ -68,6 +68,7 @@ data ServiceRec = ServiceRec
     serviceCert :: X.CertificateChain,
     serviceCertHash :: XV.Fingerprint, -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
     serviceCreatedAt :: RoundedSystemTime
+    -- entitiesHash :: IdsHash -- a xor-hash of all associated entities
   }
   deriving (Show)
 
