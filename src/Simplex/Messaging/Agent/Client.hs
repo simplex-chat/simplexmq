@@ -203,6 +203,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
+import qualified Data.IntMap.Strict as IM
 import Data.List (find, foldl', partition)
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
@@ -233,7 +234,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues), RcvQueueCreds)
+import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getServerKeys, getRcvQueues), RcvQueueCreds)
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -718,7 +719,7 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
         sessId = sessionId $ thParams client
         removeSubs = do
           (qs, cs) <- RQ.getDelSessQueues tSess sessId $ activeSubs c
-          RQ.batchAddQueues (pendingSubs c) qs
+          RQ.batchAddQueues (userId, srv) (pendingSubs c) qs
           -- this removes proxied relays that this client created sessions to
           destSrvs <- M.keys <$> readTVar prs
           forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, qId) smpProxiedRelays
@@ -751,7 +752,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
-        pending <- liftIO $ RQ.getSessQueues tSess $ pendingSubs c
+        pending <- atomically $ RQ.getSessQueues tSess $ pendingSubs c
         forM_ (L.nonEmpty pending) $ \qs -> do
           liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
@@ -1503,9 +1504,6 @@ serverHostError = \case
 subscribeQueues :: AgentClient -> [RcvQueueSub] -> AM' ([(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))], Maybe SessionId)
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
-  atomically $ do
-    modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
-    RQ.batchAddQueues (pendingSubs c) qs'
   env <- ask
   -- only "checked" queues are subscribed
   session <- newTVarIO Nothing
@@ -1517,7 +1515,11 @@ subscribeQueues c qs = do
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
     subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueueSub -> IO (BatchResponses RcvQueueSub SMPClientError (Maybe ServiceId))
     subscribeQueues_ env session smp qs' = do
-      let (userId, srv, _) = transportSession' smp
+      let (userId, srv, _) = tSess
+          qs'' = L.toList qs'
+      atomically $ do
+        modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs''))
+        RQ.batchAddQueues (userId, srv) (pendingSubs c) qs''
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
       rs <- sendBatch' (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
       active <-
@@ -2328,15 +2330,20 @@ data ServerSessions = ServerSessions
 
 getAgentSubsTotal :: AgentClient -> [UserId] -> IO (SMPServerSubs, Bool)
 getAgentSubsTotal c userIds = do
-  ssActive <- getSubsCount activeSubs
-  ssPending <- getSubsCount pendingSubs
+  ssActive <- getSubsCount $ activeSubs c
+  ssPending <- getSubsCount $ pendingSubs c
   sess <- hasSession . M.toList =<< readTVarIO (smpClients c)
   pure (SMPServerSubs {ssActive, ssPending}, sess)
   where
-    getSubsCount :: (AgentClient -> TRcvQueues q) -> IO Int
-    getSubsCount subs = M.foldrWithKey' addSub 0 <$> readTVarIO (getRcvQueues $ subs c)
-    addSub :: (UserId, SMPServer, SMP.RecipientId) -> q -> Int -> Int
-    addSub (userId, _, _) _ cnt = if userId `elem` userIds then cnt + 1 else cnt
+    getSubsCount :: TRcvQueues q -> IO Int
+    getSubsCount trq = do
+      srvKeys <- M.assocs <$> readTVarIO (getServerKeys trq)
+      let srvIds = mapMaybe (\((userId, _), srvId) -> if userId `elem` userIds then Just srvId else Nothing) srvKeys
+      foldM (addSub srvIds) 0 . IM.assocs =<< readTVarIO (getRcvQueues trq)
+      where
+        addSub srvIds n (srvId, srvQs)
+          | srvId `elem` srvIds = (n +) . M.size <$> readTVarIO srvQs
+          | otherwise = pure n
     hasSession :: [(SMPTransportSession, SMPClientVar)] -> IO Bool
     hasSession = \case
       [] -> pure False
@@ -2374,12 +2381,21 @@ getAgentServersSummary c@AgentClient {smpServersStats, xftpServersStats, ntfServ
       }
   where
     getServerSubs = do
-      subs <- M.foldrWithKey' (addSub incActive) M.empty <$> readTVarIO (getRcvQueues $ activeSubs c)
-      M.foldrWithKey' (addSub incPending) subs <$> readTVarIO (getRcvQueues $ pendingSubs c)
+      subs <- countSubs incActive M.empty $ activeSubs c
+      countSubs incPending subs $ pendingSubs c
       where
-        addSub f (userId, srv, _) _ = M.alter (Just . f . fromMaybe SMPServerSubs {ssActive = 0, ssPending = 0}) (userId, srv)
-        incActive ss = ss {ssActive = ssActive ss + 1}
-        incPending ss = ss {ssPending = ssPending ss + 1}
+        incActive n ss = ss {ssActive = ssActive ss + n}
+        incPending n ss = ss {ssPending = ssPending ss + n}
+        countSubs inc subs trq = do
+          qs <- readTVarIO $ getRcvQueues trq
+          srvKeys <- readTVarIO $ getServerKeys trq
+          foldM (countSrvSubs qs) subs $ M.assocs srvKeys
+          where
+            countSrvSubs qs subs' ((uId, srv), srvId) = case IM.lookup srvId qs of
+              Nothing -> pure subs'
+              Just srvQs -> addSubs . M.size <$> readTVarIO srvQs
+              where
+                addSubs n = M.alter (Just . inc n . fromMaybe SMPServerSubs {ssActive = 0, ssPending = 0}) (uId, srv) subs'
     Env {xftpAgent = XFTPAgent {xftpRcvWorkers, xftpSndWorkers, xftpDelWorkers}} = agentEnv
     getXFTPWorkerSrvs workers = foldM addSrv [] . M.toList =<< readTVarIO workers
       where
@@ -2411,13 +2427,20 @@ data SubscriptionsInfo = SubscriptionsInfo
 
 getAgentSubscriptions :: AgentClient -> IO SubscriptionsInfo
 getAgentSubscriptions c = do
-  activeSubscriptions <- getSubs activeSubs
-  pendingSubscriptions <- getSubs pendingSubs
+  activeSubscriptions <- getSubs $ activeSubs c
+  pendingSubscriptions <- getSubs $ pendingSubs c
   removedSubscriptions <- getRemovedSubs
   pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions, removedSubscriptions}
   where
-    getSubs :: (AgentClient -> TRcvQueues q) -> IO [SubInfo]
-    getSubs sel = map (`subInfo` Nothing) . M.keys <$> readTVarIO (getRcvQueues $ sel c)
+    getSubs :: forall q. TRcvQueues q -> IO [SubInfo]
+    getSubs trq = do
+      qs <- readTVarIO $ getRcvQueues trq
+      srvKeys <- readTVarIO $ getServerKeys trq
+      fmap concat $ mapM (getSrvSubs qs) $ M.assocs srvKeys
+      where
+        getSrvSubs qs ((uId, srv), srvId) = case IM.lookup srvId qs of
+          Nothing -> pure []
+          Just srvQs -> map (\rId -> subInfo (uId, srv, rId) Nothing) . M.keys <$> readTVarIO srvQs
     getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
     subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
