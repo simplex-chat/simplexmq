@@ -104,6 +104,32 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
   }
   deriving (Show)
 
+data RcvQueueSub = RcvQueueSub
+  { userId :: UserId,
+    connId :: ConnId,
+    server :: SMPServer,
+    rcvId :: SMP.RecipientId,
+    rcvPrivateKey :: RcvPrivateAuthKey,
+    status :: QueueStatus
+  }
+  deriving (Show)
+
+rqSub :: RcvQueue -> RcvQueueSub
+rqSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status} =
+  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status}
+
+instance SMPQueue RcvQueueSub where
+  qServer RcvQueueSub {server} = server
+  {-# INLINE qServer #-}
+  queueId RcvQueueSub {rcvId} = rcvId
+  {-# INLINE queueId #-}
+
+instance SMPQueueSession RcvQueueSub where
+  qUserId RcvQueueSub {userId} = userId
+  {-# INLINE qUserId #-}
+  qConnId RcvQueueSub {connId} = connId
+  {-# INLINE qConnId #-}
+
 data ShortLinkCreds = ShortLinkCreds
   { shortLinkId :: SMP.LinkId,
     shortLinkKey :: LinkKey,
@@ -246,27 +272,33 @@ updatedQs :: SMPQueueRec q => q -> NonEmpty q -> NonEmpty q
 updatedQs q = L.map $ \q' -> if dbQId q == dbQId q' then q else q'
 {-# INLINE updatedQs #-}
 
-class SMPQueue q => SMPQueueRec q where
+class SMPQueue q => SMPQueueSession q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
+
+class SMPQueueSession q => SMPQueueRec q where
   dbQId :: q -> Int64
   dbReplaceQId :: q -> Maybe Int64
 
-instance SMPQueueRec RcvQueue where
+instance SMPQueueSession RcvQueue where
   qUserId RcvQueue {userId} = userId
   {-# INLINE qUserId #-}
   qConnId RcvQueue {connId} = connId
   {-# INLINE qConnId #-}
+
+instance SMPQueueRec RcvQueue where
   dbQId RcvQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
-instance SMPQueueRec SndQueue where
+instance SMPQueueSession SndQueue where
   qUserId SndQueue {userId} = userId
   {-# INLINE qUserId #-}
   qConnId SndQueue {connId} = connId
   {-# INLINE qConnId #-}
+
+instance SMPQueueRec SndQueue where
   dbQId SndQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
   dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId

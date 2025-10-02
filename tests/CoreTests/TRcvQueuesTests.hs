@@ -14,11 +14,11 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.String (IsString (..))
 import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
-import Simplex.Messaging.Agent.Store (RcvQueue, StoredRcvQueue (..))
-import Simplex.Messaging.Agent.Store.Entity
+import Simplex.Messaging.Agent.Store (RcvQueueSub (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), RecipientId, SMPServer, pattern NoEntity, pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer)
+import Simplex.Messaging.Transport (SessionId)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
@@ -38,14 +38,20 @@ tRcvQueuesTests = do
 
 instance IsString EntityId where fromString = EntityId . B.pack
 
-checkDataInvariant :: RQ.Queue q => RQ.TRcvQueues q -> IO Bool
-checkDataInvariant trq = atomically $ do
+checkDataInvariant' :: RQ.TRcvQueues (SessionId, RcvQueueSub) -> IO Bool
+checkDataInvariant' = checkDataInvariant_ (connId . snd) (RQ.qKey . snd)
+
+checkDataInvariant :: RQ.TRcvQueues RcvQueueSub -> IO Bool
+checkDataInvariant = checkDataInvariant_ connId RQ.qKey
+
+checkDataInvariant_ :: (q -> ConnId) -> (q -> (UserId, SMPServer, RecipientId)) -> RQ.TRcvQueues q -> IO Bool
+checkDataInvariant_ connId' qKey' trq = atomically $ do
   conns <- readTVar $ RQ.getConnections trq
   qs <- readTVar $ RQ.getRcvQueues trq
   -- three invariant checks
-  let inv1 = all (\cId -> (S.fromList . L.toList <$> M.lookup cId conns) == Just (M.keysSet (M.filter (\q -> RQ.connId' q == cId) qs))) (M.keys conns)
-      inv2 = all (\(k, q) -> maybe False ((k `elem`) . L.toList) (M.lookup (RQ.connId' q) conns)) (M.assocs qs)
-      inv3 = all (\(k, q) -> RQ.qKey q == k) (M.assocs qs)
+  let inv1 = all (\cId -> (S.fromList . L.toList <$> M.lookup cId conns) == Just (M.keysSet (M.filter (\q -> connId' q == cId) qs))) (M.keys conns)
+      inv2 = all (\(k, q) -> maybe False ((k `elem`) . L.toList) (M.lookup (connId' q) conns)) (M.assocs qs)
+      inv3 = all (\(k, q) -> qKey' q == k) (M.assocs qs)
   pure $ inv1 && inv2 && inv3
 
 hasConnTest :: IO ()
@@ -133,19 +139,19 @@ getDelSessQueuesTest = do
           ("1", dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"),
           ("1", dummyRQ 1 "smp://1234-w==@beta" "c4" "r4")
         ]
-  atomically $ RQ.batchAddQueues trq qs
-  checkDataInvariant trq `shouldReturn` True
+  mapM_ (\q -> atomically $ RQ.addSessQueue q trq) qs
+  checkDataInvariant' trq `shouldReturn` True
   -- no user
   atomically (RQ.getDelSessQueues (2, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([], [])
-  checkDataInvariant trq `shouldReturn` True
+  checkDataInvariant' trq `shouldReturn` True
   -- wrong user
   atomically (RQ.getDelSessQueues (1, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([], [])
-  checkDataInvariant trq `shouldReturn` True
+  checkDataInvariant' trq `shouldReturn` True
   -- connections intact
   atomically (RQ.hasConn "c1" trq) `shouldReturn` True
   atomically (RQ.hasConn "c2" trq) `shouldReturn` True
   atomically (RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2", dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"], ["c1", "c2"])
-  checkDataInvariant trq `shouldReturn` True
+  checkDataInvariant' trq `shouldReturn` True
   -- connections gone
   atomically (RQ.hasConn "c1" trq) `shouldReturn` False
   atomically (RQ.hasConn "c2" trq) `shouldReturn` False
@@ -162,24 +168,24 @@ removeSubsTest = do
           ("1", dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"),
           ("1", dummyRQ 1 "smp://1234-w==@beta" "c4" "r4")
         ]
-  atomically $ RQ.batchAddQueues aq qs
+  mapM_ (\q -> atomically $ RQ.addSessQueue q aq) qs
 
   pq <- RQ.empty
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "non-existent") "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "non-existent") "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@localhost", Nothing) "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@localhost", Nothing) "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` (4, 4)
 
-totalSize :: RQ.TRcvQueues q -> RQ.TRcvQueues q -> STM (Int, Int)
+totalSize :: RQ.TRcvQueues q -> RQ.TRcvQueues q' -> STM (Int, Int)
 totalSize a b = do
   qsizeA <- M.size <$> readTVar (RQ.getRcvQueues a)
   qsizeB <- M.size <$> readTVar (RQ.getRcvQueues b)
@@ -187,27 +193,13 @@ totalSize a b = do
   csizeB <- M.size <$> readTVar (RQ.getConnections b)
   pure (qsizeA + qsizeB, csizeA + csizeB)
 
-dummyRQ :: UserId -> SMPServer -> ConnId -> RecipientId -> RcvQueue
+dummyRQ :: UserId -> SMPServer -> ConnId -> RecipientId -> RcvQueueSub
 dummyRQ userId server connId rcvId =
-  RcvQueue
+  RcvQueueSub
     { userId,
       connId,
       server,
       rcvId,
       rcvPrivateKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe",
-      rcvDhSecret = "01234567890123456789012345678901",
-      e2ePrivKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk",
-      e2eDhSecret = Nothing,
-      sndId = NoEntity,
-      queueMode = Just QMMessaging,
-      shortLink = Nothing,
-      clientService = Nothing,
-      status = New,
-      dbQueueId = DBEntityId 0,
-      primary = True,
-      dbReplaceQueueId = Nothing,
-      rcvSwchStatus = Nothing,
-      smpClientVersion = VersionSMPC 123,
-      clientNtfCreds = Nothing,
-      deleteErrors = 0
+      status = New
     }

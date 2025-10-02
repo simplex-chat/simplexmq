@@ -22,6 +22,8 @@ deriving instance Eq (StoredRcvQueue s)
 
 deriving instance Eq (StoredSndQueue q)
 
+deriving instance Eq RcvQueueSub
+
 deriving instance Eq ClientNtfCreds
 
 deriving instance Eq ShortLinkCreds

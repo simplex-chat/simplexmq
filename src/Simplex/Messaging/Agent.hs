@@ -964,7 +964,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
       (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAllErrors` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
-      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c (rqSub rq') tSess sessId
       mapM_ (newQueueNtfSubscription c rq') ntfServer_
       pure (rq', qUri)
     createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
@@ -1216,7 +1216,7 @@ createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientV
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
-  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c (rqSub rq') tSess sessId
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure (qInfo, clientServiceId rq')
 
@@ -1294,19 +1294,19 @@ subscribeConnections' c connIds = do
       Confirmed -> Right Nothing
       Active -> Left $ CONN SIMPLEX "subscribeConnections"
       _ -> Left $ INTERNAL "unexpected queue status"
-    rcvQueues :: (ConnId, SomeConn) -> [RcvQueue]
+    rcvQueues :: (ConnId, SomeConn) -> [RcvQueueSub]
     rcvQueues (_, SomeConn _ conn) = case conn of
-      DuplexConnection _ rqs _ -> L.toList rqs
+      DuplexConnection _ rqs _ -> map rqSub $ L.toList rqs
       SndConnection {} -> []
-      RcvConnection _ rq -> [rq]
-      ContactConnection _ rq -> [rq]
+      RcvConnection _ rq -> [rqSub rq]
+      ContactConnection _ rq -> [rqSub rq]
       NewConnection _ -> []
-    connResults :: [(RcvQueue, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))
+    connResults :: [(RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QSubResult -> (RcvQueue, Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId QSubResult
-        addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        addResult :: Map ConnId QSubResult -> (RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId QSubResult
+        addResult rs (RcvQueueSub {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
         combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
@@ -2026,7 +2026,7 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
-  lift $ addNewQueueSubscription c rq'' tSess sessId
+  lift $ addNewQueueSubscription c (rqSub rq'') tSess sessId
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
   let rqs' = updatedQs rq1 rqs <> [rq'']
@@ -2676,12 +2676,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
     processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub connId) $ do
-        addSubscription c sessId rq
+        addSubscription c sessId $ rqSub rq
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub connId) $
-        failSubscription c rq e >> incSMPServerStat c userId srv connSubErrs
+        failSubscription c (rqSub rq) e >> incSMPServerStat c userId srv connSubErrs
       lift $ notifyErr connId e
     isPendingSub connId = do
       pending <- (&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId
