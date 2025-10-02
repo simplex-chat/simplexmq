@@ -233,7 +233,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues))
+import Simplex.Messaging.Agent.TRcvQueues (TRcvQueues (getRcvQueues), RcvQueueCreds)
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -336,8 +336,8 @@ data AgentClient = AgentClient
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
-    activeSubs :: TRcvQueues (SessionId, RcvQueueSub),
-    pendingSubs :: TRcvQueues RcvQueueSub,
+    activeSubs :: TRcvQueues (SessionId, RcvQueueCreds),
+    pendingSubs :: TRcvQueues RcvQueueCreds,
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),

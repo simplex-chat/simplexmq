@@ -8,6 +8,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol (ConnLinkData (..), OwnerAuth (..), UserLinkData (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client (ProxiedRelay (..))
+import Simplex.Messaging.Agent.TRcvQueues (RcvQueueCreds (..))
 
 instance Eq SomeConn where
   SomeConn d c == SomeConn d' c' = case testEquality d d' of
@@ -23,6 +24,8 @@ deriving instance Eq (StoredRcvQueue s)
 deriving instance Eq (StoredSndQueue q)
 
 deriving instance Eq RcvQueueSub
+
+deriving instance Eq RcvQueueCreds
 
 deriving instance Eq ClientNtfCreds
 

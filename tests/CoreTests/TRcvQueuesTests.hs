@@ -38,21 +38,20 @@ tRcvQueuesTests = do
 
 instance IsString EntityId where fromString = EntityId . B.pack
 
-checkDataInvariant' :: RQ.TRcvQueues (SessionId, RcvQueueSub) -> IO Bool
-checkDataInvariant' = checkDataInvariant_ (connId . snd) (RQ.qKey . snd)
+checkDataInvariant' :: RQ.TRcvQueues (SessionId, RQ.RcvQueueCreds) -> IO Bool
+checkDataInvariant' = checkDataInvariant_ (RQ.connId_ . snd)
 
-checkDataInvariant :: RQ.TRcvQueues RcvQueueSub -> IO Bool
-checkDataInvariant = checkDataInvariant_ connId RQ.qKey
+checkDataInvariant :: RQ.TRcvQueues RQ.RcvQueueCreds -> IO Bool
+checkDataInvariant = checkDataInvariant_ RQ.connId_
 
-checkDataInvariant_ :: (q -> ConnId) -> (q -> (UserId, SMPServer, RecipientId)) -> RQ.TRcvQueues q -> IO Bool
-checkDataInvariant_ connId' qKey' trq = atomically $ do
+checkDataInvariant_ :: (q -> ConnId) -> RQ.TRcvQueues q -> IO Bool
+checkDataInvariant_ connId' trq = atomically $ do
   conns <- readTVar $ RQ.getConnections trq
   qs <- readTVar $ RQ.getRcvQueues trq
   -- three invariant checks
   let inv1 = all (\cId -> (S.fromList . L.toList <$> M.lookup cId conns) == Just (M.keysSet (M.filter (\q -> connId' q == cId) qs))) (M.keys conns)
       inv2 = all (\(k, q) -> maybe False ((k `elem`) . L.toList) (M.lookup (connId' q) conns)) (M.assocs qs)
-      inv3 = all (\(k, q) -> qKey' q == k) (M.assocs qs)
-  pure $ inv1 && inv2 && inv3
+  pure $ inv1 && inv2
 
 hasConnTest :: IO ()
 hasConnTest = do
