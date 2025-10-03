@@ -1263,9 +1263,11 @@ type QSubResult = QCmdResult (Maybe SMP.ServiceId)
 
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections' _ [] = pure M.empty
-subscribeConnections' c connIds = do
-  conns <- withStore' c (`getConns` connIds)
-  let (subRs, cs) = foldr partitionResultsConns ([], []) $ zip connIds conns
+subscribeConnections' c connIds = subscribeConnections_ c . zip connIds =<< withStore' c (`getConns` connIds)
+
+subscribeConnections_ :: AgentClient -> [(ConnId, Either StoreError SomeConn)] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
+subscribeConnections_ c conns = do
+  let (subRs, cs) = foldr partitionResultsConns ([], []) conns
   resumeDelivery cs
   resumeConnCmds c $ map fst cs
   rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
@@ -1295,12 +1297,7 @@ subscribeConnections' c connIds = do
       Active -> Left $ CONN SIMPLEX "subscribeConnections"
       _ -> Left $ INTERNAL "unexpected queue status"
     rcvQueues :: (ConnId, SomeConn) -> [RcvQueue]
-    rcvQueues (_, SomeConn _ conn) = case conn of
-      DuplexConnection _ rqs _ -> L.toList rqs
-      SndConnection {} -> []
-      RcvConnection _ rq -> [rq]
-      ContactConnection _ rq -> [rq]
-      NewConnection _ -> []
+    rcvQueues (_, SomeConn _ conn) = connRcvQueues conn
     connResults :: [(RcvQueue, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))
     connResults = M.map snd . foldl' addResult M.empty
       where
@@ -1332,10 +1329,10 @@ subscribeConnections' c connIds = do
           | otherwise = (csCreate, connId : csDelete)
         sendNtfCmd cmd = mapM_ (\cids -> atomically $ writeTBQueue (ntfSubQ ns) (cmd, cids)) . L.nonEmpty
     resumeDelivery :: [(ConnId, SomeConn)] -> AM ()
-    resumeDelivery conns = do
+    resumeDelivery conns' = do
       deliverTo <- S.fromList <$> withStore' c getConnectionsForDelivery
-      let conns' = filter ((`S.member` deliverTo) . fst) conns
-      lift $ mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns'
+      let conns'' = filter ((`S.member` deliverTo) . fst) conns'
+      lift $ mapM_ (mapM_ (\(cData, sqs) -> mapM_ (resumeMsgDelivery c cData) sqs) . sndQueue) conns''
     sndQueue :: (ConnId, SomeConn) -> Maybe (ConnData, NonEmpty SndQueue)
     sndQueue (_, SomeConn _ conn) = case conn of
       DuplexConnection cData _ sqs -> Just (cData, sqs)
@@ -1344,7 +1341,7 @@ subscribeConnections' c connIds = do
     notifyResultError :: Map ConnId (Either AgentErrorType (Maybe ClientServiceId)) -> AM ()
     notifyResultError rs = do
       let actual = M.size rs
-          expected = length connIds
+          expected = length conns
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
@@ -1355,10 +1352,17 @@ resubscribeConnection' c connId = toConnResult connId =<< resubscribeConnections
 resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 resubscribeConnections' _ [] = pure M.empty
 resubscribeConnections' c connIds = do
-  let r = M.fromList . zip connIds . repeat $ Right Nothing
-  connIds' <- filterM (fmap not . atomically . hasActiveSubscription c) connIds
+  conns <- zip connIds <$> withStore' c (`getConns` connIds)
+  let r = M.fromList . zip connIds . repeat $ Right Nothing -- TODO [certs rcv]
+  conns' <- filterM (fmap not . isActiveConn . snd) conns
   -- union is left-biased, so results returned by subscribeConnections' take precedence
-  (`M.union` r) <$> subscribeConnections' c connIds'
+  (`M.union` r) <$> subscribeConnections_ c conns'
+  where
+    isActiveConn :: Either StoreError SomeConn -> AM Bool
+    isActiveConn (Left _) = pure True -- to have results processed by subscribeConnections_
+    isActiveConn (Right (SomeConn _ conn)) = case connRcvQueues conn of
+      [] -> pure True
+      rqs' -> anyM $ map (atomically . hasActiveSubscription c) rqs'
 
 -- TODO [certs rcv]
 subscribeClientService' :: AgentClient -> ClientServiceId -> AM Int
@@ -1370,7 +1374,6 @@ getConnectionMessages' c = mapM $ tryAllErrors' . getConnectionMessage
   where
     getConnectionMessage :: ConnMsgReq -> AM (Maybe SMPMsgMeta)
     getConnectionMessage (ConnMsgReq connId dbQueueId msgTs_) = do
-      whenM (atomically $ hasActiveSubscription c connId) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
       SomeConn _ conn <- withStore c (`getConn` connId)
       rq <- case conn of
         DuplexConnection _ (rq :| _) _ -> pure rq
@@ -1378,6 +1381,7 @@ getConnectionMessages' c = mapM $ tryAllErrors' . getConnectionMessage
         ContactConnection _ rq -> pure rq
         SndConnection _ _ -> throwE $ CONN SIMPLEX "getConnectionMessage"
         NewConnection _ -> throwE $ CMD PROHIBITED "getConnectionMessage: NewConnection"
+      whenM (atomically $ hasActiveSubscription c rq) . throwE $ CMD PROHIBITED "getConnectionMessage: subscribed"
       msg_ <- getQueueMessage c rq `catchAllErrors` \e -> atomically (releaseGetLock c rq) >> throwError e
       when (isNothing msg_) $ do
         atomically $ releaseGetLock c rq
@@ -2140,13 +2144,10 @@ prepareDeleteConnections_ ::
   [ConnId] ->
   AM (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId])
 prepareDeleteConnections_ getConnections c waitDelivery connIds = do
-  conns :: Map ConnId (Either StoreError SomeConn) <- M.fromList . zip connIds <$> withStore' c (`getConnections` connIds)
-  let (errs, cs) = M.mapEither id conns
-      errs' = M.map (Left . storeError) errs
-      (delRs, rcvQs) = M.mapEither rcvQueues cs
-      rqs = concat $ M.elems rcvQs
-      connIds' = M.keys rcvQs
-  lift $ forM_ (L.nonEmpty connIds') unsubConnIds
+  conns <- withStore' c (`getConnections` connIds)
+  let res@(delRs, rqs, connIds') = foldr partitionResultsConns (M.empty, [], []) $ zip connIds conns
+  atomically $ removeSubscriptions c connIds' rqs
+  lift $ forM_ (L.nonEmpty connIds') unsubNtfConnIds
   -- ! delRs is not used to notify about the result in any of the calling functions,
   -- ! it is only used to check results count in deleteConnections_;
   -- ! if it was used to notify about the result, it might be necessary to differentiate
@@ -2154,16 +2155,18 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
   cIds_ <- lift $ L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
   forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
-  pure (errs' <> delRs, rqs, connIds')
+  pure res
   where
-    rcvQueues :: SomeConn -> Either (Either AgentErrorType ()) [RcvQueue]
-    rcvQueues (SomeConn _ conn) = case connRcvQueues conn of
-      [] -> Left $ Right ()
-      rqs -> Right rqs
-    unsubConnIds :: NonEmpty ConnId -> AM' ()
-    unsubConnIds connIds' = do
-      forM_ connIds' $ \connId ->
-        atomically $ removeSubscription c connId
+    partitionResultsConns :: (ConnId, Either StoreError SomeConn) ->
+      (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId]) ->
+      (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId])
+    partitionResultsConns (connId, conn_) (rs, rqs, cIds) = case conn_ of
+      Left e -> (M.insert connId (Left $ storeError e) rs, rqs, cIds)
+      Right (SomeConn _ conn) -> case connRcvQueues conn of
+        [] -> (M.insert connId (Right ()) rs, rqs, cIds)
+        rqs' -> (rs, rqs' ++ rqs, connId : cIds)
+    unsubNtfConnIds :: NonEmpty ConnId ->  AM' ()
+    unsubNtfConnIds connIds' = do
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
     notify = atomically . writeTBQueue (subQ c)
@@ -2675,16 +2678,16 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
             Right () -> pure ()
     processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
     processSubOk rq@RcvQueue {connId} upConnIds =
-      atomically . whenM (isPendingSub connId) $ do
+      atomically . whenM (isPendingSub rq) $ do
         addSubscription c sessId rq
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
-      atomically . whenM (isPendingSub connId) $
+      atomically . whenM (isPendingSub rq) $
         failSubscription c rq e >> incSMPServerStat c userId srv connSubErrs
       lift $ notifyErr connId e
-    isPendingSub connId = do
-      pending <- (&&) <$> hasPendingSubscription c connId <*> activeClientSession c tSess sessId
+    isPendingSub rq = do
+      pending <- (&&) <$> hasPendingSubscription c rq <*> activeClientSession c tSess sessId
       unless pending $ incSMPServerStat c userId srv connSubIgnored
       pure pending
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
@@ -2865,14 +2868,14 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               handleNotifyAck :: AM ACKd -> AM ACKd
               handleNotifyAck m = m `catchAllErrors` \e -> notify (ERR e) >> ack
           SMP.END ->
-            atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c connId $> True) (pure False))
+            atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c connId rq $> True) (pure False))
               >>= notifyEnd
             where
               notifyEnd removed
                 | removed = notify END >> logServer "<--" c srv rId "END"
                 | otherwise = logServer "<--" c srv rId "END from disconnected client - ignored"
           -- Possibly, we need to add some flag to connection that it was deleted
-          SMP.DELD -> atomically (removeSubscription c connId) >> notify DELD
+          SMP.DELD -> atomically (removeSubscription c connId rq) >> notify DELD
           SMP.ERR e -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
           r -> unexpected r
         where

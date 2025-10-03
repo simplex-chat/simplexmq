@@ -99,6 +99,7 @@ module Simplex.Messaging.Agent.Client
     logSecret,
     logSecret',
     removeSubscription,
+    removeSubscriptions,
     hasActiveSubscription,
     hasPendingSubscription,
     hasGetLock,
@@ -767,15 +768,15 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
 
 reconnectSMPClient :: AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM' ()
 reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
-  cs <- readTVarIO $ RQ.getConnections $ activeSubs c
+  cs <- liftIO $ RQ.getSessConns tSess $ activeSubs c
   (rs, sessId_) <- subscribeQueues c $ L.toList qs
   let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
-      conns = filter (`M.notMember` cs) okConns
+      conns = filter (`S.notMember` cs) okConns
   unless (null conns) $ notifySub "" $ UP srv conns
   let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
   mapM_ (\(connId, e) -> notifySub connId $ ERR e) finalErrs
   forM_ (listToMaybe tempErrs) $ \(connId, e) -> do
-    when (null okConns && M.null cs && null finalErrs) . liftIO $
+    when (null okConns && S.null cs && null finalErrs) . liftIO $
       forM_ sessId_ $ \sessId -> do
         -- We only close the client session that was used to subscribe.
         v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
@@ -1456,14 +1457,14 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
 processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError (Maybe ServiceId) -> STM ()
-processSubResult c sessId rq@RcvQueue {userId, server, connId} = \case
+processSubResult c sessId rq@RcvQueue {userId, server} = \case
   Left e ->
     unless (temporaryClientError e) $ do
       incSMPServerStat c userId server connSubErrs
       failSubscription c rq e
   Right _serviceId -> -- TODO [certs rcv] store association with the service
     ifM
-      (hasPendingSubscription c connId)
+      (hasPendingSubscription c rq) -- connSubscribed stat will now count queues, not connections
       (incSMPServerStat c userId server connSubscribed >> addSubscription c sessId rq)
       (incSMPServerStat c userId server connSubIgnored)
 
@@ -1604,19 +1605,27 @@ addNewQueueSubscription c rq tSess sessId = do
         (False <$ addPendingSubscription c rq)
   unless same $ resubscribeSMPSession c tSess
 
-hasActiveSubscription :: AgentClient -> ConnId -> STM Bool
-hasActiveSubscription c connId = RQ.hasConn connId $ activeSubs c
+hasActiveSubscription :: AgentClient -> RcvQueue -> STM Bool
+hasActiveSubscription c rq = RQ.hasQueue rq $ activeSubs c
 {-# INLINE hasActiveSubscription #-}
 
-hasPendingSubscription :: AgentClient -> ConnId -> STM Bool
-hasPendingSubscription c connId = RQ.hasConn connId $ pendingSubs c
+hasPendingSubscription :: AgentClient -> RcvQueue -> STM Bool
+hasPendingSubscription c rq = RQ.hasQueue rq $ pendingSubs c
 {-# INLINE hasPendingSubscription #-}
 
-removeSubscription :: AgentClient -> ConnId -> STM ()
-removeSubscription c connId = do
+removeSubscription :: AgentClient -> ConnId -> RcvQueue -> STM ()
+removeSubscription c connId rq = do
   modifyTVar' (subscrConns c) $ S.delete connId
-  RQ.deleteConn connId $ activeSubs c
-  RQ.deleteConn connId $ pendingSubs c
+  RQ.deleteQueue rq $ activeSubs c
+  RQ.deleteQueue rq $ pendingSubs c
+
+removeSubscriptions :: AgentClient -> [ConnId] -> [RcvQueue] -> STM ()
+removeSubscriptions c connIds rqs = do
+  unless (null connIds) $ modifyTVar' (subscrConns c) (`S.difference` (S.fromList connIds))
+  -- TODO batch
+  forM_ rqs $ \rq -> do
+    RQ.deleteQueue rq $ activeSubs c
+    RQ.deleteQueue rq $ pendingSubs c
 
 getSubscriptions :: AgentClient -> IO (Set ConnId)
 getSubscriptions = readTVarIO . subscrConns
