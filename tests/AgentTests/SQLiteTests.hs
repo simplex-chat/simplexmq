@@ -470,7 +470,7 @@ testSetRcvQueueStatus =
     setRcvQueueStatus db rq Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 (rq {status = Confirmed} :: RcvQueue)))
 
 testSetSndQueueStatus :: SpecWith DBStore
 testSetSndQueueStatus =
@@ -482,7 +482,7 @@ testSetSndQueueStatus =
     setSndQueueStatus db sq Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 (sq {status = Confirmed} :: SndQueue)))
 
 testSetQueueStatusDuplex :: SpecWith DBStore
 testSetQueueStatusDuplex =

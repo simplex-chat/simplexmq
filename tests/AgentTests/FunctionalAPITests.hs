@@ -120,7 +120,7 @@ import Fixtures
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
-import Simplex.Messaging.Agent.Store (Connection (..), StoredRcvQueue (..), SomeConn (..))
+import Simplex.Messaging.Agent.Store (Connection' (..), StoredRcvQueue (..), SomeConn' (..))
 import Simplex.Messaging.Agent.Store.AgentStore (getConn)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresQueue)

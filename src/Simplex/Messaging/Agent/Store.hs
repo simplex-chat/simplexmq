@@ -104,6 +104,23 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
   }
   deriving (Show)
 
+data RcvQueueCred = RcvQueueCred
+  { userId :: UserId,
+    connId :: ConnId,
+    server :: SMPServer,
+    rcvId :: SMP.RecipientId,
+    rcvPrivateKey :: RcvPrivateAuthKey,
+    status :: QueueStatus,
+    dbQueueId :: Int64,
+    primary :: Bool,
+    dbReplaceQueueId :: Maybe Int64
+  }
+  deriving (Show)
+
+rcvQueueCred :: RcvQueue -> RcvQueueCred
+rcvQueueCred RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
+  RcvQueueCred {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId, primary, dbReplaceQueueId}
+
 data ShortLinkCreds = ShortLinkCreds
   { shortLinkId :: SMP.LinkId,
     shortLinkKey :: LinkKey,
@@ -195,6 +212,20 @@ data StoredSndQueue (q :: DBStored) = SndQueue
   }
   deriving (Show)
 
+data SndQueueCred = SndQueueCred
+  { userId :: UserId,
+    connId :: ConnId,
+    server :: SMPServer,
+    sndId :: SMP.RecipientId,
+    sndPrivateKey :: SndPrivateAuthKey,
+    queueMode :: Maybe QueueMode,
+    status :: QueueStatus,
+    dbQueueId :: Int64,
+    primary :: Bool,
+    dbReplaceQueueId :: Maybe Int64
+  }
+  deriving (Show)
+
 sndQueueInfo :: SndQueue -> SndQueueInfo
 sndQueueInfo SndQueue {server, sndSwchStatus} =
   SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
@@ -209,6 +240,12 @@ instance SMPQueue NewRcvQueue where
   qServer RcvQueue {server} = server
   {-# INLINE qServer #-}
   queueId RcvQueue {rcvId} = rcvId
+  {-# INLINE queueId #-}
+
+instance SMPQueue RcvQueueCred where
+  qServer RcvQueueCred {server} = server
+  {-# INLINE qServer #-}
+  queueId RcvQueueCred {rcvId} = rcvId
   {-# INLINE queueId #-}
 
 instance SMPQueue SndQueue where
@@ -262,6 +299,16 @@ instance SMPQueueRec RcvQueue where
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
+instance SMPQueueRec RcvQueueCred where
+  qUserId RcvQueueCred {userId} = userId
+  {-# INLINE qUserId #-}
+  qConnId RcvQueueCred {connId} = connId
+  {-# INLINE qConnId #-}
+  dbQId RcvQueueCred {dbQueueId} = dbQueueId
+  {-# INLINE dbQId #-}
+  dbReplaceQId RcvQueueCred {dbReplaceQueueId} = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
+
 instance SMPQueueRec SndQueue where
   qUserId SndQueue {userId} = userId
   {-# INLINE qUserId #-}
@@ -271,6 +318,17 @@ instance SMPQueueRec SndQueue where
   {-# INLINE dbQId #-}
   dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
+
+class SMPQueueRec q => SomeRcvQueue q where
+  rcvAuthKey :: q -> RcvPrivateAuthKey
+
+instance SomeRcvQueue RcvQueue where
+  rcvAuthKey RcvQueue {rcvPrivateKey} = rcvPrivateKey
+  {-# INLINE rcvAuthKey #-}
+
+instance SomeRcvQueue RcvQueueCred where
+  rcvAuthKey RcvQueueCred {rcvPrivateKey} = rcvPrivateKey
+  {-# INLINE rcvAuthKey #-}
 
 -- * Connection types
 
@@ -287,16 +345,18 @@ data ConnType = CNew | CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 --
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
-data Connection (d :: ConnType) where
-  NewConnection :: ConnData -> Connection CNew
-  RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
-  SndConnection :: ConnData -> SndQueue -> Connection CSnd
-  DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
-  ContactConnection :: ConnData -> RcvQueue -> Connection CContact
+data Connection' (d :: ConnType) rq sq where
+  NewConnection :: ConnData -> Connection' CNew rq sq
+  RcvConnection :: ConnData -> rq -> Connection' CRcv rq sq
+  SndConnection :: ConnData -> sq -> Connection' CSnd rq sq
+  DuplexConnection :: ConnData -> NonEmpty rq -> NonEmpty sq -> Connection' CDuplex rq sq
+  ContactConnection :: ConnData -> rq -> Connection' CContact rq sq
 
-deriving instance Show (Connection d)
+deriving instance (Show rq, Show sq) => Show (Connection' d rq sq)
 
-toConnData :: Connection d -> ConnData
+type Connection d = Connection' d RcvQueue SndQueue
+
+toConnData :: Connection' d rq sq -> ConnData
 toConnData = \case
   NewConnection cData -> cData
   RcvConnection cData _ -> cData
@@ -304,7 +364,7 @@ toConnData = \case
   DuplexConnection cData _ _ -> cData
   ContactConnection cData _ -> cData
 
-updateConnection :: ConnData -> Connection d -> Connection d
+updateConnection :: ConnData -> Connection' d rq sq -> Connection' d rq sq
 updateConnection cData = \case
   NewConnection _ -> NewConnection cData
   RcvConnection _ rq -> RcvConnection cData rq
@@ -337,9 +397,13 @@ instance TestEquality SConnType where
 
 -- | Connection of an unknown type.
 -- Used to refer to an arbitrary connection when retrieving from store.
-data SomeConn = forall d. SomeConn (SConnType d) (Connection d)
+data SomeConn' rq sq = forall d. SomeConn (SConnType d) (Connection' d rq sq)
 
-deriving instance Show SomeConn
+deriving instance (Show rq, Show sq) => Show (SomeConn' rq sq)
+
+type SomeConn = SomeConn' RcvQueue SndQueue
+
+type SomeConnCred = SomeConn' RcvQueueCred SndQueue
 
 data ConnData = ConnData
   { connId :: ConnId,

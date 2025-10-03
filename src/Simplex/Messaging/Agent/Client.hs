@@ -337,8 +337,8 @@ data AgentClient = AgentClient
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
-    activeSubs :: TRcvQueues (SessionId, RcvQueue),
-    pendingSubs :: TRcvQueues RcvQueue,
+    activeSubs :: TRcvQueues (SessionId, RcvQueueCred),
+    pendingSubs :: TRcvQueues RcvQueueCred,
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
@@ -711,7 +711,7 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
     -- we make active subscriptions pending only if the client for tSess was current (in the map) and active,
     -- because we can have a race condition when a new current client could have already
     -- made subscriptions active, and the old client would be processing diconnection later.
-    removeClientAndSubs :: IO ([RcvQueue], [ConnId])
+    removeClientAndSubs :: IO ([RcvQueueCred], [ConnId])
     removeClientAndSubs = atomically $ do
       removeSessVar v tSess smpClients
       ifM (readTVar active) removeSubs (pure ([], []))
@@ -719,13 +719,13 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
         sessId = sessionId $ thParams client
         removeSubs = do
           (qs, cs) <- RQ.getDelSessQueues tSess sessId $ activeSubs c
-          RQ.batchAddQueues (pendingSubs c) qs
+          RQ.batchAddQueues qs $ pendingSubs c
           -- this removes proxied relays that this client created sessions to
           destSrvs <- M.keys <$> readTVar prs
           forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, qId) smpProxiedRelays
           pure (qs, cs)
 
-    serverDown :: ([RcvQueue], [ConnId]) -> IO ()
+    serverDown :: ([RcvQueueCred], [ConnId]) -> IO ()
     serverDown (qs, conns) = whenM (readTVarIO active) $ do
       notifySub "" $ hostEvent' DISCONNECT client
       unless (null conns) $ notifySub "" $ DOWN srv conns
@@ -766,11 +766,11 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v tSess smpSubWorkers
 
-reconnectSMPClient :: AgentClient -> SMPTransportSession -> NonEmpty RcvQueue -> AM' ()
+reconnectSMPClient :: AgentClient -> SMPTransportSession -> NonEmpty RcvQueueCred -> AM' ()
 reconnectSMPClient c tSess@(_, srv, _) qs = handleNotify $ do
   cs <- liftIO $ RQ.getSessConns tSess $ activeSubs c
   (rs, sessId_) <- subscribeQueues c $ L.toList qs
-  let (errs, okConns) = partitionEithers $ map (\(RcvQueue {connId}, r) -> bimap (connId,) (const connId) r) rs
+  let (errs, okConns) = partitionEithers $ map (\(RcvQueueCred {connId}, r) -> bimap (connId,) (const connId) r) rs
       conns = filter (`S.notMember` cs) okConns
   unless (null conns) $ notifySub "" $ UP srv conns
   let (tempErrs, finalErrs) = partition (temporaryAgentError . snd) errs
@@ -1456,8 +1456,8 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
         newErr :: String -> AM (Maybe ShortLinkCreds)
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
-processSubResult :: AgentClient -> SessionId -> RcvQueue -> Either SMPClientError (Maybe ServiceId) -> STM ()
-processSubResult c sessId rq@RcvQueue {userId, server} = \case
+processSubResult :: AgentClient -> SessionId -> RcvQueueCred -> Either SMPClientError (Maybe ServiceId) -> STM ()
+processSubResult c sessId rq@RcvQueueCred {userId, server} = \case
   Left e ->
     unless (temporaryClientError e) $ do
       incSMPServerStat c userId server connSubErrs
@@ -1501,22 +1501,22 @@ serverHostError = \case
       _ -> False
 
 -- | Subscribe to queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueue] -> AM' ([(RcvQueue, Either AgentErrorType (Maybe ServiceId))], Maybe SessionId)
+subscribeQueues :: AgentClient -> [RcvQueueCred] -> AM' ([(RcvQueueCred, Either AgentErrorType (Maybe ServiceId))], Maybe SessionId)
 subscribeQueues c qs = do
   (errs, qs') <- partitionEithers <$> mapM checkQueue qs
   atomically $ do
     modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
-    RQ.batchAddQueues (pendingSubs c) qs'
+    RQ.batchAddQueues qs' $ pendingSubs c
   env <- ask
   -- only "checked" queues are subscribed
   session <- newTVarIO Nothing
-  rs <- sendTSessionBatches "SUB" id (subscribeQueues_ env session) c NRMBackground qs'
+  rs <- sendTSessionBatches "SUB" mkSMPTSession (subscribeQueues_ env session) c NRMBackground qs'
   (errs <> rs,) <$> readTVarIO session
   where
     checkQueue rq = do
       prohibited <- liftIO $ hasGetLock c rq
       pure $ if prohibited then Left (rq, Left $ CMD PROHIBITED "subscribeQueues") else Right rq
-    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError (Maybe ServiceId))
+    subscribeQueues_ :: Env -> TVar (Maybe SessionId) -> SMPClient -> NonEmpty RcvQueueCred -> IO (BatchResponses RcvQueueCred SMPClientError (Maybe ServiceId))
     subscribeQueues_ env session smp qs' = do
       let (userId, srv, _) = transportSession' smp
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
@@ -1537,7 +1537,7 @@ subscribeQueues c qs = do
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
         hasTempErrors = any (either temporaryClientError (const False) . snd)
-        processSubResults :: NonEmpty (RcvQueue, Either SMPClientError (Maybe ServiceId)) -> STM ()
+        processSubResults :: NonEmpty (RcvQueueCred, Either SMPClientError (Maybe ServiceId)) -> STM ()
         processSubResults = mapM_ $ uncurry $ processSubResult c sessId
         resubscribe = resubscribeSMPSession c tSess `runReaderT` env
 
@@ -1552,8 +1552,8 @@ type BatchResponses q e r = NonEmpty (q, Either e r)
 
 -- Please note: this function does not preserve order of results to be the same as the order of arguments,
 -- it includes arguments in the results instead.
-sendTSessionBatches :: forall q r. ByteString -> (q -> RcvQueue) -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> [q] -> AM' [(q, Either AgentErrorType r)]
-sendTSessionBatches statCmd toRQ action c nm qs =
+sendTSessionBatches :: forall q r. ByteString -> (q -> TransportSessionMode -> SMPTransportSession) -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> [q] -> AM' [(q, Either AgentErrorType r)]
+sendTSessionBatches statCmd mkSession action c nm qs =
   concatMap L.toList <$> (mapConcurrently sendClientBatch =<< batchQueues)
   where
     batchQueues :: AM' [(SMPTransportSession, NonEmpty q)]
@@ -1562,7 +1562,7 @@ sendTSessionBatches statCmd toRQ action c nm qs =
       pure . M.assocs $ foldr (batch mode) M.empty qs
       where
         batch mode q m =
-          let tSess = mkSMPTSession (toRQ q) mode
+          let tSess = mkSession q mode
            in M.alter (Just . maybe [q] (q <|)) tSess m
     sendClientBatch :: (SMPTransportSession, NonEmpty q) -> AM' (BatchResponses q AgentErrorType r)
     sendClientBatch (tSess@(_, srv, _), qs') =
@@ -1574,28 +1574,28 @@ sendTSessionBatches statCmd toRQ action c nm qs =
           where
             agentError = second . first $ protocolClientError SMP $ clientServer smp
 
-sendBatch :: (SMPClient -> NetworkRequestMode -> NonEmpty (SMP.RecipientId, SMP.RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError a))) -> SMPClient -> NetworkRequestMode -> NonEmpty RcvQueue -> IO (BatchResponses RcvQueue SMPClientError a)
+sendBatch :: SomeRcvQueue q => (SMPClient -> NetworkRequestMode -> NonEmpty (SMP.RecipientId, SMP.RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError a))) -> SMPClient -> NetworkRequestMode -> NonEmpty q -> IO (BatchResponses q SMPClientError a)
 sendBatch smpCmdFunc smp nm qs = L.zip qs <$> smpCmdFunc smp nm (L.map queueCreds qs)
   where
-    queueCreds RcvQueue {rcvPrivateKey, rcvId} = (rcvId, rcvPrivateKey)
+    queueCreds q = (queueId q, rcvAuthKey q)
 
-addSubscription :: AgentClient -> SessionId -> RcvQueue -> STM ()
-addSubscription c sessId rq@RcvQueue {connId} = do
+addSubscription :: AgentClient -> SessionId -> RcvQueueCred -> STM ()
+addSubscription c sessId rq@RcvQueueCred {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addSessQueue (sessId, rq) $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
-failSubscription :: AgentClient -> RcvQueue -> SMPClientError -> STM ()
+failSubscription :: SomeRcvQueue q => AgentClient -> q -> SMPClientError -> STM ()
 failSubscription c rq e = do
   RQ.deleteQueue rq (pendingSubs c)
   TM.insert (RQ.qKey rq) e (removedSubs c)
 
-addPendingSubscription :: AgentClient -> RcvQueue -> STM ()
-addPendingSubscription c rq@RcvQueue {connId} = do
+addPendingSubscription :: AgentClient -> RcvQueueCred -> STM ()
+addPendingSubscription c rq@RcvQueueCred {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ pendingSubs c
 
-addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
+addNewQueueSubscription :: AgentClient -> RcvQueueCred -> SMPTransportSession -> SessionId -> AM' ()
 addNewQueueSubscription c rq tSess sessId = do
   same <-
     atomically $
@@ -1605,27 +1605,25 @@ addNewQueueSubscription c rq tSess sessId = do
         (False <$ addPendingSubscription c rq)
   unless same $ resubscribeSMPSession c tSess
 
-hasActiveSubscription :: AgentClient -> RcvQueue -> STM Bool
+hasActiveSubscription :: SomeRcvQueue q => AgentClient -> q -> STM Bool
 hasActiveSubscription c rq = RQ.hasQueue rq $ activeSubs c
 {-# INLINE hasActiveSubscription #-}
 
-hasPendingSubscription :: AgentClient -> RcvQueue -> STM Bool
+hasPendingSubscription :: SomeRcvQueue q => AgentClient -> q -> STM Bool
 hasPendingSubscription c rq = RQ.hasQueue rq $ pendingSubs c
 {-# INLINE hasPendingSubscription #-}
 
-removeSubscription :: AgentClient -> ConnId -> RcvQueue -> STM ()
+removeSubscription :: SomeRcvQueue q => AgentClient -> ConnId -> q -> STM ()
 removeSubscription c connId rq = do
   modifyTVar' (subscrConns c) $ S.delete connId
   RQ.deleteQueue rq $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
-removeSubscriptions :: AgentClient -> [ConnId] -> [RcvQueue] -> STM ()
+removeSubscriptions :: SomeRcvQueue q => AgentClient -> [ConnId] -> [q] -> STM ()
 removeSubscriptions c connIds rqs = do
   unless (null connIds) $ modifyTVar' (subscrConns c) (`S.difference` (S.fromList connIds))
-  -- TODO batch
-  forM_ rqs $ \rq -> do
-    RQ.deleteQueue rq $ activeSubs c
-    RQ.deleteQueue rq $ pendingSubs c
+  RQ.batchDeleteQueues rqs $ activeSubs c
+  RQ.batchDeleteQueues rqs $ pendingSubs c
 
 getSubscriptions :: AgentClient -> IO (Set ConnId)
 getSubscriptions = readTVarIO . subscrConns
@@ -1742,7 +1740,7 @@ data EnableQueueNtfReq = EnableQueueNtfReq
   }
 
 enableQueuesNtfs :: AgentClient -> [EnableQueueNtfReq] -> AM' [(EnableQueueNtfReq, Either AgentErrorType (SMP.NotifierId, SMP.RcvNtfPublicDhKey))]
-enableQueuesNtfs c = sendTSessionBatches "NKEY" eqnrRq enableQueues_ c NRMBackground
+enableQueuesNtfs c = sendTSessionBatches "NKEY" (mkSMPTSession . eqnrRq) enableQueues_ c NRMBackground
   where
     enableQueues_ :: SMPClient -> NonEmpty EnableQueueNtfReq -> IO (NonEmpty (EnableQueueNtfReq, Either (ProtocolClientError ErrorType) (SMP.NotifierId, RcvNtfPublicDhKey)))
     enableQueues_ smp qs' = L.zip qs' <$> enableSMPQueuesNtfs smp (L.map queueCreds qs')
@@ -1761,7 +1759,7 @@ disableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} =
 type DisableQueueNtfReq = (NtfSubscription, RcvQueue)
 
 disableQueuesNtfs :: AgentClient -> [DisableQueueNtfReq] -> AM' [(DisableQueueNtfReq, Either AgentErrorType ())]
-disableQueuesNtfs c = sendTSessionBatches "NDEL" snd disableQueues_ c NRMBackground
+disableQueuesNtfs c = sendTSessionBatches "NDEL" (mkSMPTSession . snd) disableQueues_ c NRMBackground
   where
     disableQueues_ :: SMPClient -> NonEmpty DisableQueueNtfReq -> IO (NonEmpty (DisableQueueNtfReq, Either (ProtocolClientError ErrorType) ()))
     disableQueues_ smp qs' = L.zip qs' <$> disableSMPQueuesNtfs smp (L.map queueCreds qs')
@@ -1773,14 +1771,14 @@ sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
   withSMPClient c NRMBackground rq ("ACK:" <> logSecret' msgId) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
 
-hasGetLock :: AgentClient -> RcvQueue -> IO Bool
-hasGetLock c RcvQueue {server, rcvId} =
-  TM.memberIO (server, rcvId) $ getMsgLocks c
+hasGetLock :: SomeRcvQueue q => AgentClient -> q -> IO Bool
+hasGetLock c rq =
+  TM.memberIO (qServer rq, queueId rq) $ getMsgLocks c
 {-# INLINE hasGetLock #-}
 
-releaseGetLock :: AgentClient -> RcvQueue -> STM ()
-releaseGetLock c RcvQueue {server, rcvId} =
-  TM.lookup (server, rcvId) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
+releaseGetLock :: SomeRcvQueue q => AgentClient -> q -> STM ()
+releaseGetLock c rq =
+  TM.lookup (qServer rq, queueId rq) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
 {-# INLINE releaseGetLock #-}
 
 suspendQueue :: AgentClient -> NetworkRequestMode -> RcvQueue -> AM ()
@@ -1794,7 +1792,7 @@ deleteQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} = do
     deleteSMPQueue smp nm rcvPrivateKey rcvId
 
 deleteQueues :: AgentClient -> NetworkRequestMode -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
-deleteQueues c nm = sendTSessionBatches "DEL" id deleteQueues_ c nm
+deleteQueues c nm = sendTSessionBatches "DEL" mkSMPTSession deleteQueues_ c nm
   where
     deleteQueues_ smp rqs = do
       let (userId, srv, _) = transportSession' smp
