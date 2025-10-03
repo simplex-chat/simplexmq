@@ -1263,34 +1263,33 @@ type QSubResult = QCmdResult (Maybe SMP.ServiceId)
 
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections' _ [] = pure M.empty
-subscribeConnections' c connIds = pure M.empty -- subscribeConnections_ c . zip connIds =<< withStore' c (`getConns` connIds)
+subscribeConnections' c connIds = subscribeConnections_ c . zip connIds =<< withStore' c (`getConns` connIds)
 
 subscribeConnections_ :: AgentClient -> [(ConnId, Either StoreError SomeConn)] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections_ c conns = do
   let (subRs, cs) = foldr partitionResultsConns ([], []) conns
-  -- resumeDelivery cs
-  -- resumeConnCmds c $ map fst cs
-  let rcvRs = M.fromList $ map ((,Right Nothing) . fst) conns
-  -- rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
+  resumeDelivery cs
+  resumeConnCmds c $ map fst cs
+  rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
   lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
   -- union is left-biased
-  let rs = rcvRs' `M.union` M.fromList subRs
+  let rs = rcvRs' `M.union` subRs
   notifyResultError rs
   pure rs
   where
     partitionResultsConns :: (ConnId, Either StoreError SomeConn) ->
-      ([(ConnId, Either AgentErrorType (Maybe ClientServiceId))], [(ConnId, SomeConn)]) ->
-      ([(ConnId, Either AgentErrorType (Maybe ClientServiceId))], [(ConnId, SomeConn)])
+      (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)), [(ConnId, SomeConn)]) ->
+      (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)), [(ConnId, SomeConn)])
     partitionResultsConns (connId, conn_) (rs, cs) = case conn_ of
-      Left e -> ((connId, Left (storeError e)) : rs, cs)
+      Left e -> (M.insert connId (Left $ storeError e) rs, cs)
       Right c'@(SomeConn _ conn) -> case conn of
         DuplexConnection {} -> (rs, cs')
-        SndConnection _ sq -> ((connId, sndSubResult sq) : rs, cs')
+        SndConnection _ sq -> (M.insert connId (sndSubResult sq) rs, cs')
         RcvConnection _ _ -> (rs, cs')
         ContactConnection _ _ -> (rs, cs')
-        NewConnection _ -> ((connId, Right Nothing) : rs, cs')
+        NewConnection _ -> (M.insert connId (Right Nothing) rs, cs')
         where
           cs' = (connId, c') : cs
     sndSubResult :: SndQueue -> Either AgentErrorType (Maybe ClientServiceId)
