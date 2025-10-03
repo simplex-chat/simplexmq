@@ -1263,7 +1263,7 @@ type QSubResult = QCmdResult (Maybe SMP.ServiceId)
 
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections' _ [] = pure M.empty
-subscribeConnections' c connIds = subscribeConnections_ c . zip connIds =<< withStore' c (`getConns` connIds)
+subscribeConnections' c connIds = pure M.empty -- subscribeConnections_ c . zip connIds =<< withStore' c (`getConns` connIds)
 
 subscribeConnections_ :: AgentClient -> [(ConnId, Either StoreError SomeConn)] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections_ c conns = do
