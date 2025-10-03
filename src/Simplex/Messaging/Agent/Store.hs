@@ -287,6 +287,7 @@ class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
   dbQId :: q -> Int64
+  qPrimary :: q -> Bool
   dbReplaceQId :: q -> Maybe Int64
 
 instance SMPQueueRec RcvQueue where
@@ -296,6 +297,8 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE qConnId #-}
   dbQId RcvQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
+  qPrimary RcvQueue {primary} = primary
+  {-# INLINE qPrimary #-}
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
@@ -306,6 +309,8 @@ instance SMPQueueRec RcvQueueCred where
   {-# INLINE qConnId #-}
   dbQId RcvQueueCred {dbQueueId} = dbQueueId
   {-# INLINE dbQId #-}
+  qPrimary RcvQueueCred {primary} = primary
+  {-# INLINE qPrimary #-}
   dbReplaceQId RcvQueueCred {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
@@ -316,6 +321,8 @@ instance SMPQueueRec SndQueue where
   {-# INLINE qConnId #-}
   dbQId SndQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
+  qPrimary SndQueue {primary} = primary
+  {-# INLINE qPrimary #-}
   dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 

@@ -2069,28 +2069,26 @@ getDeletedConns = getAnyConns True
 {-# INLINE getDeletedConns #-}
 
 #if defined(dbPostgres)
-getAnyConns_ :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
-getAnyConns_ deleted' db connIds = do
+getAnyConns :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError (SomeConn)]
+getAnyConns = getAnyConns_ getRcvQueuesByConnIds_ getSndQueuesByConnIds_
+{-# INLINE getAnyConns #-}
+
+getConnCreds :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConnCred]
+getConnCreds = getAnyConns_ getRcvQueueCredsByConnIds_ getSndQueuesByConnIds_ False
+{-# INLINE getConnCreds #-}
+
+getAnyConns_ ::
+  forall rq sq.
+  (DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty rq))) ->
+  (DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty sq))) ->
+  (Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError (SomeConn' rq sq)])
+getAnyConns_ getRQs getSQs deleted' db connIds = do
   cs <- getConnsData_ deleted' db connIds
   let connIds' = M.keys cs
-  rQs :: Map ConnId (NonEmpty RcvQueue) <- getRcvQueuesByConnIds_ connIds'
-  sQs :: Map ConnId (NonEmpty SndQueue) <- getSndQueuesByConnIds_ connIds'
+  rQs :: Map ConnId (NonEmpty rq) <- getRQs db connIds'
+  sQs :: Map ConnId (NonEmpty sq) <- getSQs db connIds'
   pure $ map (result cs rQs sQs) connIds
   where
-    getRcvQueuesByConnIds_ connIds' =
-      toQueueMap primaryFirst toRcvQueue
-        <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id IN ? AND q.deleted = 0") (Only (In connIds'))
-      where
-        primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
-          compare (Down p) (Down p') <> compare i i'
-    getSndQueuesByConnIds_ connIds' =
-      toQueueMap primaryFirst toSndQueue
-        <$> DB.query db (sndQueueQuery <> " WHERE q.conn_id IN ?") (Only (In connIds'))
-      where
-        primaryFirst SndQueue {primary = p, dbReplaceQueueId = i} SndQueue {primary = p', dbReplaceQueueId = i'} =
-          compare (Down p) (Down p') <> compare i i'
-    toQueueMap primaryFst toQueue =
-      M.fromList . map (\qs@(q :| _) -> (qConnId q, L.sortBy primaryFst qs)) . groupOn' qConnId . sortOn qConnId . map toQueue
     result cs rQs sQs connId = case M.lookup connId cs of
       Just (cData, cMode) -> case (M.lookup connId rQs, M.lookup connId sQs, cMode) of
         (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
@@ -2100,6 +2098,26 @@ getAnyConns_ deleted' db connIds = do
         (Nothing, Nothing, _) -> Right $ SomeConn SCNew (NewConnection cData)
         _ -> Left SEConnNotFound
       Nothing -> Left SEConnNotFound
+
+getRcvQueuesByConnIds_ :: DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty RcvQueue))
+getRcvQueuesByConnIds_ db connIds' =
+  toQueueMap toRcvQueue <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id IN ? AND q.deleted = 0") (Only (In connIds'))
+
+getSndQueuesByConnIds_ :: DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty SndQueue))
+getSndQueuesByConnIds_ db connIds' =
+  toQueueMap toSndQueue <$> DB.query db (sndQueueQuery <> " WHERE q.conn_id IN ?") (Only (In connIds'))
+
+getRcvQueueCredsByConnIds_ :: DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty RcvQueueCred))
+getRcvQueueCredsByConnIds_ db connIds' =
+  toQueueMap toRcvQueueCred <$> DB.query db (rcvQueueCredQuery <> " WHERE q.conn_id IN ? AND q.deleted = 0") (Only (In connIds'))
+
+-- getSndQueueCredsByConnIds_ :: DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty SndQueueCred))
+-- getSndQueueCredsByConnIds_ db userId connIds' =
+--   toQueueMap toSndQueueCred <$> DB.query db (sndQueueCredQuery <> " WHERE q.conn_id IN ?") (Only (In connIds'))
+
+toQueueMap :: SMPQueueRec q => (a -> q) -> [a] -> Map ConnId (NonEmpty q)
+toQueueMap toQueue =
+  M.fromList . map (\qs@(q :| _) -> (qConnId q, L.sortBy primaryFirst qs)) . groupOn' qConnId . sortOn qConnId . map toQueue
 
 getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnData, ConnectionMode))]
 getConnsData db connIds = do
@@ -2121,18 +2139,18 @@ getConnsData_ deleted' db connIds =
 
 #else
 getAnyConns :: Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError SomeConn]
-getAnyConns = getAnyConns_ (\db _userId -> getRcvQueuesByConnId_ db) (\db _userId -> getSndQueuesByConnId_ db)
+getAnyConns = getAnyConns_ getRcvQueuesByConnId_ getSndQueuesByConnId_
 {-# INLINE getAnyConns #-}
 
 getConnCreds :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConnCred]
-getConnCreds = getAnyConns_ getRcvQueueCredsByConnId_ (\db _userId -> getSndQueuesByConnId_ db) False
+getConnCreds = getAnyConns_ getRcvQueueCredsByConnId_ getSndQueuesByConnId_ False
 {-# INLINE getConnCreds #-}
 
 getAnyConns_ ::
-  (DB.Connection -> UserId -> ConnId -> IO (Maybe (NonEmpty rq))) ->
-  (DB.Connection -> UserId -> ConnId -> IO (Maybe (NonEmpty sq))) ->
+  (DB.Connection -> ConnId -> IO (Maybe (NonEmpty rq))) ->
+  (DB.Connection -> ConnId -> IO (Maybe (NonEmpty sq))) ->
   (Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError (SomeConn' rq sq)])
-getAnyConns_ getRQs getSQs deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn_ getRQs getSQs deleted' db
+getAnyConns_ getRQs getSQs deleted' db _ connIds = forM connIds $ E.handle handleDBError . getAnyConn_ getRQs getSQs deleted' db
 
 getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnData, ConnectionMode))]
 getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . getConnData False db
@@ -2211,10 +2229,10 @@ getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue
 getRcvQueuesByConnId_ db connId =
   L.nonEmpty . sortBy primaryFirst . map toRcvQueue
     <$> DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.deleted = 0") (Only connId)
-  where
-    primaryFirst RcvQueue {primary = p, dbReplaceQueueId = i} RcvQueue {primary = p', dbReplaceQueueId = i'} =
-      -- the current primary queue is ordered first, the next primary - second
-      compare (Down p) (Down p') <> compare i i'
+
+-- the current primary queue is ordered first, the next primary - second
+primaryFirst :: SMPQueueRec q => q -> q -> Ordering
+primaryFirst q q' = compare (Down (qPrimary q)) (Down (qPrimary q')) <> compare (dbReplaceQId q) (dbReplaceQId q')
 
 rcvQueueQuery :: Query
 rcvQueueQuery =
@@ -2253,26 +2271,23 @@ toRcvQueue
    in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 -- | returns all connection queue credentials, the first queue is the primary one
-getRcvQueueCredsByConnId_ :: DB.Connection -> UserId -> ConnId -> IO (Maybe (NonEmpty RcvQueueCred))
-getRcvQueueCredsByConnId_ db userId connId =
-  L.nonEmpty . sortBy primaryFirst . map (toRcvQueueCred userId connId)
+getRcvQueueCredsByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueueCred))
+getRcvQueueCredsByConnId_ db connId =
+  L.nonEmpty . sortBy primaryFirst . map toRcvQueueCred
     <$> DB.query db (rcvQueueCredQuery <> " WHERE q.conn_id = ? AND q.deleted = 0") (Only connId)
-  where
-    primaryFirst RcvQueueCred {primary = p, dbReplaceQueueId = i} RcvQueueCred {primary = p', dbReplaceQueueId = i'} =
-      -- the current primary queue is ordered first, the next primary - second
-      compare (Down p) (Down p') <> compare i i'
 
 rcvQueueCredQuery :: Query
 rcvQueueCredQuery =
   [sql|
-    SELECT q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.rcv_id, q.rcv_private_key, q.status,
+    SELECT c.user_id, q.conn_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.rcv_id, q.rcv_private_key, q.status,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
+    JOIN connections c ON q.conn_id = c.conn_id
   |]
 
-toRcvQueueCred :: UserId -> ConnId -> (NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Int64, BoolInt, Maybe Int64) -> RcvQueueCred
-toRcvQueueCred userId connId (host, port, keyHash, rcvId, rcvPrivateKey, status, dbQueueId, BI primary, dbReplaceQueueId) =
+toRcvQueueCred :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Int64, BoolInt, Maybe Int64) -> RcvQueueCred
+toRcvQueueCred (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, dbQueueId, BI primary, dbReplaceQueueId) =
   RcvQueueCred {userId, connId, server = SMPServer host port keyHash, rcvId, dbQueueId, primary, dbReplaceQueueId, rcvPrivateKey, status}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
@@ -2285,10 +2300,6 @@ getSndQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueue
 getSndQueuesByConnId_ dbConn connId =
   L.nonEmpty . sortBy primaryFirst . map toSndQueue
     <$> DB.query dbConn (sndQueueQuery <> " WHERE q.conn_id = ?") (Only connId)
-  where
-    primaryFirst SndQueue {primary = p, dbReplaceQueueId = i} SndQueue {primary = p', dbReplaceQueueId = i'} =
-      -- the current primary queue is ordered first, the next primary - second
-      compare (Down p) (Down p') <> compare i i'
 
 sndQueueQuery :: Query
 sndQueueQuery =
@@ -2317,27 +2328,24 @@ toSndQueue
      in SndQueue {userId, connId, server, sndId, queueMode, sndPublicKey, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
 
 -- | returns all connection queue credentials, the first queue is the primary one
-getSndQueueCredsByConnId_ :: DB.Connection -> UserId -> ConnId -> IO (Maybe (NonEmpty SndQueueCred))
-getSndQueueCredsByConnId_ db userId connId =
-  L.nonEmpty . sortBy primaryFirst . map (toSndQueueCred userId connId)
-    <$> DB.query db (sndQueueCredQuery <> " WHERE q.conn_id = ?") (Only connId)
-  where
-    primaryFirst SndQueueCred {primary = p, dbReplaceQueueId = i} SndQueueCred {primary = p', dbReplaceQueueId = i'} =
-      -- the current primary queue is ordered first, the next primary - second
-      compare (Down p) (Down p') <> compare i i'
+-- getSndQueueCredsByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueueCred))
+-- getSndQueueCredsByConnId_ db userId connId =
+--   L.nonEmpty . sortBy primaryFirst . map toSndQueueCred
+--     <$> DB.query db (sndQueueCredQuery <> " WHERE q.conn_id = ?") (Only connId)
 
 sndQueueCredQuery :: Query
 sndQueueCredQuery =
   [sql|
     SELECT
-      q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.snd_id, q.snd_private_key, q.queue_mode, q.status,
+      c.user_id, q.conn_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.snd_id, q.snd_private_key, q.queue_mode, q.status,
       q.snd_queue_id, q.snd_primary, q.replace_snd_queue_id
     FROM snd_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
+    JOIN connections c ON q.conn_id = c.conn_id
   |]
 
-toSndQueueCred :: UserId -> ConnId -> (NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.SenderId, SMP.SndPrivateAuthKey, Maybe QueueMode, QueueStatus, Int64, BoolInt, Maybe Int64) -> SndQueueCred
-toSndQueueCred userId connId (host, port, keyHash, sndId, sndPrivateKey, queueMode, status, dbQueueId, BI primary, dbReplaceQueueId) =
+toSndQueueCred :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.SenderId, SMP.SndPrivateAuthKey, Maybe QueueMode, QueueStatus, Int64, BoolInt, Maybe Int64) -> SndQueueCred
+toSndQueueCred (userId, connId, host, port, keyHash, sndId, sndPrivateKey, queueMode, status, dbQueueId, BI primary, dbReplaceQueueId) =
   SndQueueCred {userId, connId, server = SMPServer host port keyHash, sndId, sndPrivateKey, queueMode, status, dbQueueId, primary, dbReplaceQueueId}
 
 getSndQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError SndQueue)
