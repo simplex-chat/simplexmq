@@ -2039,18 +2039,18 @@ getDeletedConn = getAnyConn True
 {-# INLINE getDeletedConn #-}
 
 getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getAnyConn = getAnyConn_ (\db _userId -> getRcvQueuesByConnId_ db) (\db _userId -> getSndQueuesByConnId_ db)
+getAnyConn = getAnyConn_ getRcvQueuesByConnId_ getSndQueuesByConnId_
 {-# INLINE getAnyConn #-}
 
 getAnyConn_ ::
-  (DB.Connection -> UserId -> ConnId -> IO (Maybe (NonEmpty rq))) ->
-  (DB.Connection -> UserId -> ConnId -> IO (Maybe (NonEmpty sq))) ->
+  (DB.Connection -> ConnId -> IO (Maybe (NonEmpty rq))) ->
+  (DB.Connection -> ConnId -> IO (Maybe (NonEmpty sq))) ->
   (Bool -> DB.Connection -> ConnId -> IO (Either StoreError (SomeConn' rq sq)))
 getAnyConn_ getRQs getSQs deleted' db connId =
   getConnData deleted' db connId >>= \case
-    Just (cData@ConnData {userId}, cMode) -> do
-      rQ <- getRQs db userId connId
-      sQ <- getSQs db userId connId
+    Just (cData, cMode) -> do
+      rQ <- getRQs db connId
+      sQ <- getSQs db connId
       pure $ case (rQ, sQ, cMode) of
         (Just rqs, Just sqs, CMInvitation) -> Right $ SomeConn SCDuplex (DuplexConnection cData rqs sqs)
         (Just (rq :| _), Nothing, CMInvitation) -> Right $ SomeConn SCRcv (RcvConnection cData rq)
@@ -2150,7 +2150,7 @@ getAnyConns_ ::
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty rq))) ->
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty sq))) ->
   (Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError (SomeConn' rq sq)])
-getAnyConns_ getRQs getSQs deleted' db _ connIds = forM connIds $ E.handle handleDBError . getAnyConn_ getRQs getSQs deleted' db
+getAnyConns_ getRQs getSQs deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn_ getRQs getSQs deleted' db
 
 getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnData, ConnectionMode))]
 getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . getConnData False db
