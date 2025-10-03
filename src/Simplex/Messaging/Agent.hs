@@ -1270,11 +1270,13 @@ subscribeConnections_ c conns = do
   let (subRs, cs) = foldr partitionResultsConns ([], []) conns
   resumeDelivery cs
   resumeConnCmds c $ map fst cs
-  rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
+  let rcvRs = M.fromList $ map ((,Right Nothing) . fst) conns
+  -- rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
   lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
-  let rs = M.fromList subRs `M.union` rcvRs'
+  -- union is left-biased
+  let rs = rcvRs' `M.union` M.fromList subRs
   notifyResultError rs
   pure rs
   where
@@ -1353,7 +1355,7 @@ resubscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either Age
 resubscribeConnections' _ [] = pure M.empty
 resubscribeConnections' c connIds = do
   conns <- zip connIds <$> withStore' c (`getConns` connIds)
-  let r = M.fromList . zip connIds . repeat $ Right Nothing -- TODO [certs rcv]
+  let r = M.fromList $ map (,Right Nothing) connIds -- TODO [certs rcv]
   conns' <- filterM (fmap not . isActiveConn . snd) conns
   -- union is left-biased, so results returned by subscribeConnections' take precedence
   (`M.union` r) <$> subscribeConnections_ c conns'
