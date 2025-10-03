@@ -3,17 +3,18 @@
 
 module Simplex.Messaging.Agent.TRcvQueues
   ( TRcvQueues (getRcvQueues),
-    Queue (..),
     empty,
     clear,
     hasQueue,
     addQueue,
+    addSessQueue,
     batchAddQueues,
     deleteQueue,
     hasSessQueues,
     getSessQueues,
     getSessConns,
     getDelSessQueues,
+    qKey,
   )
 where
 
@@ -27,10 +28,6 @@ import Simplex.Messaging.Protocol (RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-
-class Queue q where
-  connId' :: q -> ConnId
-  qKey :: q -> (UserId, SMPServer, RecipientId)
 
 -- the fields in this record have the same data with swapped keys for lookup efficiency,
 -- and all methods must maintain this invariant.
@@ -47,11 +44,19 @@ clear (TRcvQueues qs) = TM.clear qs
 hasQueue :: RcvQueue -> TRcvQueues q -> STM Bool
 hasQueue rq (TRcvQueues qs) = TM.member (qKey rq) qs
 
-addQueue :: Queue q => q -> TRcvQueues q -> STM ()
-addQueue rq (TRcvQueues qs) = TM.insert (qKey rq) rq qs
+addQueue :: RcvQueue -> TRcvQueues RcvQueue -> STM ()
+addQueue rq = addQueue_ rq rq
+{-# INLINE addQueue #-}
+
+addSessQueue :: (SessionId, RcvQueue) -> TRcvQueues (SessionId, RcvQueue) -> STM ()
+addSessQueue q@(_, rq) = addQueue_ rq q
+{-# INLINE addSessQueue #-}
+
+addQueue_ :: RcvQueue -> q -> TRcvQueues q -> STM ()
+addQueue_ rq q (TRcvQueues qs) = TM.insert (qKey rq) q qs
 
 -- Save time by aggregating modifyTVar'
-batchAddQueues :: (Foldable t, Queue q) => TRcvQueues q -> t q -> STM ()
+batchAddQueues :: TRcvQueues RcvQueue -> [RcvQueue] -> STM ()
 batchAddQueues (TRcvQueues qs) rqs =
   modifyTVar' qs $ \now -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') now rqs
 
@@ -87,10 +92,5 @@ isSession :: RcvQueue -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
   userId rq == uId && server rq == srv && maybe True (connId rq ==) connId_
 
-instance Queue RcvQueue where
-  connId' = connId
-  qKey rq = (userId rq, server rq, rcvId rq)
-
-instance Queue (SessionId, RcvQueue) where
-  connId' = connId . snd
-  qKey = qKey . snd
+qKey :: RcvQueue -> (UserId, SMPServer, RecipientId)
+qKey rq = (userId rq, server rq, rcvId rq)

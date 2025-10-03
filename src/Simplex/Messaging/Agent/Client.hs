@@ -1582,7 +1582,7 @@ sendBatch smpCmdFunc smp nm qs = L.zip qs <$> smpCmdFunc smp nm (L.map queueCred
 addSubscription :: AgentClient -> SessionId -> RcvQueue -> STM ()
 addSubscription c sessId rq@RcvQueue {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
-  RQ.addQueue (sessId, rq) $ activeSubs c
+  RQ.addSessQueue (sessId, rq) $ activeSubs c
   RQ.deleteQueue rq $ pendingSubs c
 
 failSubscription :: AgentClient -> RcvQueue -> SMPClientError -> STM ()

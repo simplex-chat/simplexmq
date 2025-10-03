@@ -18,6 +18,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), RecipientId, SMPServer, pattern NoEntity, pattern VersionSMPC)
+import Simplex.Messaging.Transport (SessionId)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
@@ -37,10 +38,16 @@ tRcvQueuesTests = do
 
 instance IsString EntityId where fromString = EntityId . B.pack
 
-checkDataInvariant :: RQ.Queue q => RQ.TRcvQueues q -> IO Bool
-checkDataInvariant trq = atomically $ do
+checkDataInvariant' :: RQ.TRcvQueues (SessionId, RcvQueue) -> IO Bool
+checkDataInvariant' = checkDataInvariant_ snd
+
+checkDataInvariant :: RQ.TRcvQueues RcvQueue -> IO Bool
+checkDataInvariant = checkDataInvariant_ id
+
+checkDataInvariant_ :: (q -> RcvQueue) -> RQ.TRcvQueues q -> IO Bool
+checkDataInvariant_ toRQ trq = atomically $ do
   qs <- readTVar $ RQ.getRcvQueues trq
-  let inv3 = all (\(k, q) -> RQ.qKey q == k) (M.assocs qs)
+  let inv3 = all (\(k, q) -> RQ.qKey (toRQ q) == k) (M.assocs qs)
   pure inv3
 
 hasConnTest :: IO ()
@@ -136,19 +143,19 @@ getDelSessQueuesTest = do
           ("1", q3),
           ("1", q4)
         ]
-  atomically $ RQ.batchAddQueues trq qs
-  checkDataInvariant trq `shouldReturn` True
+  mapM_ (\q -> atomically $ RQ.addSessQueue q trq) qs
+  checkDataInvariant' trq `shouldReturn` True
   -- no user
   atomically (RQ.getDelSessQueues (2, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([], [])
-  checkDataInvariant trq `shouldReturn` True
+  checkDataInvariant' trq `shouldReturn` True
   -- wrong user
   atomically (RQ.getDelSessQueues (1, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([], [])
-  checkDataInvariant trq `shouldReturn` True
+  checkDataInvariant' trq `shouldReturn` True
   -- connections intact
   atomically (RQ.hasQueue q1 trq) `shouldReturn` True
   atomically (RQ.hasQueue q2 trq) `shouldReturn` True
   atomically (RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2", dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"], ["c1", "c2"])
-  checkDataInvariant trq `shouldReturn` True
+  checkDataInvariant' trq `shouldReturn` True
   -- connections gone
   atomically (RQ.hasQueue q1 trq) `shouldReturn` False
   atomically (RQ.hasQueue q2 trq) `shouldReturn` False
@@ -168,24 +175,24 @@ removeSubsTest = do
           ("1", dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"),
           ("1", dummyRQ 1 "smp://1234-w==@beta" "c4" "r4")
         ]
-  atomically $ RQ.batchAddQueues aq qs
+  mapM_ (\q -> atomically $ RQ.addSessQueue q aq) qs
 
   pq <- RQ.empty
   atomically (totalSize aq pq) `shouldReturn` 4
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` 4
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "non-existent") "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "non-existent") "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` 4
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@localhost", Nothing) "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@localhost", Nothing) "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` 4
 
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") "1" aq >>= RQ.batchAddQueues pq . map ("1",) . fst
+  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") "1" aq >>= RQ.batchAddQueues pq . fst
   atomically (totalSize aq pq) `shouldReturn` 4
 
-totalSize :: RQ.TRcvQueues q -> RQ.TRcvQueues q -> STM Int
+totalSize :: RQ.TRcvQueues q -> RQ.TRcvQueues q' -> STM Int
 totalSize a b = do
   qsizeA <- M.size <$> readTVar (RQ.getRcvQueues a)
   qsizeB <- M.size <$> readTVar (RQ.getRcvQueues b)
