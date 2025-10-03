@@ -1268,8 +1268,8 @@ subscribeConnections' c connIds = subscribeConnections_ c . zip connIds =<< with
 subscribeConnections_ :: AgentClient -> [(ConnId, Either StoreError SomeConn)] -> AM (Map ConnId (Either AgentErrorType (Maybe ClientServiceId)))
 subscribeConnections_ c conns = do
   let (subRs, cs) = foldr partitionResultsConns ([], []) conns
-  resumeDelivery cs
-  resumeConnCmds c $ map fst cs
+  -- resumeDelivery cs
+  -- resumeConnCmds c $ map fst cs
   let rcvRs = M.fromList $ map ((,Right Nothing) . fst) conns
   -- rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
   rcvRs' <- storeClientServiceAssocs rcvRs
