@@ -24,7 +24,7 @@ import Data.Foldable (foldl')
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (ConnId, SMPQueue (..), UserId)
-import Simplex.Messaging.Agent.Store (RcvQueueCred (..), SMPQueueRec (..), SomeRcvQueue)
+import Simplex.Messaging.Agent.Store (RcvQueueSub (..), SMPQueueRec (..), SomeRcvQueue)
 import Simplex.Messaging.Protocol (QueueId, RecipientId, SMPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -45,20 +45,20 @@ clear (TRcvQueues qs) = TM.clear qs
 hasQueue :: SomeRcvQueue q => q -> TRcvQueues q' -> STM Bool
 hasQueue rq (TRcvQueues qs) = TM.member (qKey rq) qs
 
-addQueue :: RcvQueueCred -> TRcvQueues RcvQueueCred -> STM ()
+addQueue :: RcvQueueSub -> TRcvQueues RcvQueueSub -> STM ()
 addQueue rq = addQueue_ rq rq
 {-# INLINE addQueue #-}
 
-addSessQueue :: (SessionId, RcvQueueCred) -> TRcvQueues (SessionId, RcvQueueCred) -> STM ()
+addSessQueue :: (SessionId, RcvQueueSub) -> TRcvQueues (SessionId, RcvQueueSub) -> STM ()
 addSessQueue q@(_, rq) = addQueue_ rq q
 {-# INLINE addSessQueue #-}
 
-addQueue_ :: RcvQueueCred -> q -> TRcvQueues q -> STM ()
+addQueue_ :: RcvQueueSub -> q -> TRcvQueues q -> STM ()
 addQueue_ rq q (TRcvQueues qs) = TM.insert (qKey rq) q qs
 {-# INLINE addQueue_ #-}
 
 -- Save time by aggregating modifyTVar'
-batchAddQueues :: [RcvQueueCred] -> TRcvQueues RcvQueueCred -> STM ()
+batchAddQueues :: [RcvQueueSub] -> TRcvQueues RcvQueueSub -> STM ()
 batchAddQueues rqs (TRcvQueues qs) =
   modifyTVar' qs $ \m -> foldl' (\rqs' rq -> M.insert (qKey rq) rq rqs') m rqs
 
@@ -70,20 +70,20 @@ batchDeleteQueues :: SomeRcvQueue q => [q] -> TRcvQueues q' -> STM ()
 batchDeleteQueues rqs (TRcvQueues qs) =
   modifyTVar' qs $ \m ->  foldl' (\rqs' rq -> M.delete (qKey rq) rqs') m rqs
 
-hasSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueueCred -> STM Bool
+hasSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueueSub -> STM Bool
 hasSessQueues tSess (TRcvQueues qs) = any (`isSession` tSess) <$> readTVar qs
 
-getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueueCred -> IO [RcvQueueCred]
+getSessQueues :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues RcvQueueSub -> IO [RcvQueueSub]
 getSessQueues tSess (TRcvQueues qs) = M.foldl' addQ [] <$> readTVarIO qs
   where
     addQ qs' rq = if rq `isSession` tSess then rq : qs' else qs'
 
-getSessConns :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues (SessionId, RcvQueueCred) -> IO (S.Set ConnId)
+getSessConns :: (UserId, SMPServer, Maybe ConnId) -> TRcvQueues (SessionId, RcvQueueSub) -> IO (S.Set ConnId)
 getSessConns tSess (TRcvQueues qs) = M.foldl' addConn S.empty <$> readTVarIO qs
   where
     addConn cIds (_, rq) = if rq `isSession` tSess then S.insert (connId rq) cIds else cIds
 
-getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> SessionId -> TRcvQueues (SessionId, RcvQueueCred) -> STM ([RcvQueueCred], [ConnId])
+getDelSessQueues :: (UserId, SMPServer, Maybe ConnId) -> SessionId -> TRcvQueues (SessionId, RcvQueueSub) -> STM ([RcvQueueSub], [ConnId])
 getDelSessQueues tSess sessId' (TRcvQueues qs) = do
   (removedQs, removedConns, qs'') <- (\qs' -> M.foldl' delQ ([], S.empty, qs') qs') <$> readTVar qs
   writeTVar qs $! qs''
@@ -95,7 +95,7 @@ getDelSessQueues tSess sessId' (TRcvQueues qs) = do
       | otherwise = acc
     queueConns = M.foldl' (\cIds (_, rq) -> S.insert (connId rq) cIds) S.empty
 
-isSession :: RcvQueueCred -> (UserId, SMPServer, Maybe ConnId) -> Bool
+isSession :: RcvQueueSub -> (UserId, SMPServer, Maybe ConnId) -> Bool
 isSession rq (uId, srv, connId_) =
   userId rq == uId && server rq == srv && maybe True (connId rq ==) connId_
 

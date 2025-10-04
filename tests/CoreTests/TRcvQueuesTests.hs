@@ -13,7 +13,7 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Data.String (IsString (..))
 import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
-import Simplex.Messaging.Agent.Store (RcvQueueCred (..))
+import Simplex.Messaging.Agent.Store (RcvQueueSub (..))
 import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer)
@@ -37,13 +37,13 @@ tRcvQueuesTests = do
 
 instance IsString EntityId where fromString = EntityId . B.pack
 
-checkDataInvariant' :: RQ.TRcvQueues (SessionId, RcvQueueCred) -> IO Bool
+checkDataInvariant' :: RQ.TRcvQueues (SessionId, RcvQueueSub) -> IO Bool
 checkDataInvariant' = checkDataInvariant_ snd
 
-checkDataInvariant :: RQ.TRcvQueues RcvQueueCred -> IO Bool
+checkDataInvariant :: RQ.TRcvQueues RcvQueueSub -> IO Bool
 checkDataInvariant = checkDataInvariant_ id
 
-checkDataInvariant_ :: (q -> RcvQueueCred) -> RQ.TRcvQueues q -> IO Bool
+checkDataInvariant_ :: (q -> RcvQueueSub) -> RQ.TRcvQueues q -> IO Bool
 checkDataInvariant_ toRQ trq = atomically $ do
   qs <- readTVar $ RQ.getRcvQueues trq
   let inv3 = all (\(k, q) -> RQ.qKey (toRQ q) == k) (M.assocs qs)
@@ -197,9 +197,9 @@ totalSize a b = do
   qsizeB <- M.size <$> readTVar (RQ.getRcvQueues b)
   pure $ qsizeA + qsizeB
 
-dummyRQ :: UserId -> SMPServer -> ConnId -> RecipientId -> RcvQueueCred
+dummyRQ :: UserId -> SMPServer -> ConnId -> RecipientId -> RcvQueueSub
 dummyRQ userId server connId rcvId =
-  RcvQueueCred
+  RcvQueueSub
     { userId,
       connId,
       server,

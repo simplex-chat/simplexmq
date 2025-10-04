@@ -924,12 +924,12 @@ secureSMPQueue c nm rpKey rId senderKey = okSMPCommand (KEY senderKey) c nm rpKe
 {-# INLINE secureSMPQueue #-}
 
 -- | Secure the SMP queue via sender queue ID.
-secureSndSMPQueue :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
-secureSndSMPQueue c nm spKey sId senderKey = okSMPCommand (SKEY senderKey) c nm spKey sId
+secureSndSMPQueue :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> SenderId -> ExceptT SMPClientError IO ()
+secureSndSMPQueue c nm spKey sId = okSMPCommand (SKEY $ C.toPublic spKey) c nm spKey sId
 {-# INLINE secureSndSMPQueue #-}
 
-proxySecureSndSMPQueue :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c nm proxiedRelay spKey sId senderKey = proxyOKSMPCommand c nm proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> ExceptT SMPClientError IO (Either ProxyClientError ())
+proxySecureSndSMPQueue c nm proxiedRelay spKey sId = proxyOKSMPCommand c nm proxiedRelay (Just spKey) sId (SKEY $ C.toPublic spKey)
 {-# INLINE proxySecureSndSMPQueue #-}
 
 -- | Add or update date for queue link
@@ -943,15 +943,15 @@ deleteSMPQueueLink = okSMPCommand LDEL
 {-# INLINE deleteSMPQueueLink #-}
 
 -- | Get 1-time inviation SMP queue link data and secure the queue via queue link ID.
-secureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
-secureGetSMPQueueLink c nm spKey lnkId senderKey =
-  sendSMPCommand c nm (Just spKey) lnkId (LKEY senderKey) >>= \case
+secureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> LinkId -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+secureGetSMPQueueLink c nm spKey lnkId =
+  sendSMPCommand c nm (Just spKey) lnkId (LKEY $ C.toPublic spKey) >>= \case
     LNK sId d -> pure (sId, d)
     r -> throwE $ unexpectedResponse r
 
-proxySecureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
-proxySecureGetSMPQueueLink c nm proxiedRelay spKey lnkId senderKey =
-  proxySMPCommand  c nm proxiedRelay (Just spKey) lnkId (LKEY senderKey) >>= \case
+proxySecureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxySecureGetSMPQueueLink c nm proxiedRelay spKey lnkId =
+  proxySMPCommand  c nm proxiedRelay (Just spKey) lnkId (LKEY $ C.toPublic spKey) >>= \case
     Right (LNK sId d) -> pure $ Right (sId, d)
     Right r -> throwE $ unexpectedResponse r
     Left e -> pure $ Left e

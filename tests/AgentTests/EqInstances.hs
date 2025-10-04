@@ -22,7 +22,7 @@ deriving instance Eq (StoredRcvQueue s)
 
 deriving instance Eq (StoredSndQueue q)
 
-deriving instance Eq RcvQueueCred
+deriving instance Eq RcvQueueSub
 
 deriving instance Eq ClientNtfCreds
 

@@ -49,7 +49,6 @@ import Simplex.Messaging.Protocol
     RcvNtfDhSecret,
     RcvPrivateAuthKey,
     SndPrivateAuthKey,
-    SndPublicAuthKey,
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -104,7 +103,7 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
   }
   deriving (Show)
 
-data RcvQueueCred = RcvQueueCred
+data RcvQueueSub = RcvQueueSub
   { userId :: UserId,
     connId :: ConnId,
     server :: SMPServer,
@@ -117,9 +116,9 @@ data RcvQueueCred = RcvQueueCred
   }
   deriving (Show)
 
-rcvQueueCred :: RcvQueue -> RcvQueueCred
+rcvQueueCred :: RcvQueue -> RcvQueueSub
 rcvQueueCred RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
-  RcvQueueCred {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId, primary, dbReplaceQueueId}
+  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId, primary, dbReplaceQueueId}
 
 data ShortLinkCreds = ShortLinkCreds
   { shortLinkId :: SMP.LinkId,
@@ -172,7 +171,6 @@ data InvShortLink = InvShortLink
     linkId :: SMP.LinkId,
     linkKey :: LinkKey,
     sndPrivateKey :: SndPrivateAuthKey, -- stored to allow retries
-    sndPublicKey :: SndPublicAuthKey,
     sndId :: Maybe SMP.SenderId
   }
   deriving (Show)
@@ -190,9 +188,7 @@ data StoredSndQueue (q :: DBStored) = SndQueue
     sndId :: SMP.SenderId,
     -- | sender can secure the queue
     queueMode :: Maybe QueueMode,
-    -- | key pair used by the sender to authorize transmissions
-    -- TODO combine keys to key pair so that types match
-    sndPublicKey :: SndPublicAuthKey,
+    -- | sender key used to authorize transmissions
     sndPrivateKey :: SndPrivateAuthKey,
     -- | DH public key used to negotiate per-queue e2e encryption
     e2ePubKey :: Maybe C.PublicKeyX25519,
@@ -212,20 +208,6 @@ data StoredSndQueue (q :: DBStored) = SndQueue
   }
   deriving (Show)
 
-data SndQueueCred = SndQueueCred
-  { userId :: UserId,
-    connId :: ConnId,
-    server :: SMPServer,
-    sndId :: SMP.RecipientId,
-    sndPrivateKey :: SndPrivateAuthKey,
-    queueMode :: Maybe QueueMode,
-    status :: QueueStatus,
-    dbQueueId :: Int64,
-    primary :: Bool,
-    dbReplaceQueueId :: Maybe Int64
-  }
-  deriving (Show)
-
 sndQueueInfo :: SndQueue -> SndQueueInfo
 sndQueueInfo SndQueue {server, sndSwchStatus} =
   SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
@@ -242,10 +224,10 @@ instance SMPQueue NewRcvQueue where
   queueId RcvQueue {rcvId} = rcvId
   {-# INLINE queueId #-}
 
-instance SMPQueue RcvQueueCred where
-  qServer RcvQueueCred {server} = server
+instance SMPQueue RcvQueueSub where
+  qServer RcvQueueSub {server} = server
   {-# INLINE qServer #-}
-  queueId RcvQueueCred {rcvId} = rcvId
+  queueId RcvQueueSub {rcvId} = rcvId
   {-# INLINE queueId #-}
 
 instance SMPQueue SndQueue where
@@ -302,16 +284,16 @@ instance SMPQueueRec RcvQueue where
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
-instance SMPQueueRec RcvQueueCred where
-  qUserId RcvQueueCred {userId} = userId
+instance SMPQueueRec RcvQueueSub where
+  qUserId RcvQueueSub {userId} = userId
   {-# INLINE qUserId #-}
-  qConnId RcvQueueCred {connId} = connId
+  qConnId RcvQueueSub {connId} = connId
   {-# INLINE qConnId #-}
-  dbQId RcvQueueCred {dbQueueId} = dbQueueId
+  dbQId RcvQueueSub {dbQueueId} = dbQueueId
   {-# INLINE dbQId #-}
-  qPrimary RcvQueueCred {primary} = primary
+  qPrimary RcvQueueSub {primary} = primary
   {-# INLINE qPrimary #-}
-  dbReplaceQId RcvQueueCred {dbReplaceQueueId} = dbReplaceQueueId
+  dbReplaceQId RcvQueueSub {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
 instance SMPQueueRec SndQueue where
@@ -333,8 +315,8 @@ instance SomeRcvQueue RcvQueue where
   rcvAuthKey RcvQueue {rcvPrivateKey} = rcvPrivateKey
   {-# INLINE rcvAuthKey #-}
 
-instance SomeRcvQueue RcvQueueCred where
-  rcvAuthKey RcvQueueCred {rcvPrivateKey} = rcvPrivateKey
+instance SomeRcvQueue RcvQueueSub where
+  rcvAuthKey RcvQueueSub {rcvPrivateKey} = rcvPrivateKey
   {-# INLINE rcvAuthKey #-}
 
 -- * Connection types
@@ -410,7 +392,7 @@ deriving instance (Show rq, Show sq) => Show (SomeConn' rq sq)
 
 type SomeConn = SomeConn' RcvQueue SndQueue
 
-type SomeConnCred = SomeConn' RcvQueueCred SndQueue
+type SomeConnSub = SomeConn' RcvQueueSub SndQueue
 
 data ConnData = ConnData
   { connId :: ConnId,
