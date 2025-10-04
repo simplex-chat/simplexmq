@@ -2106,13 +2106,6 @@ getRcvQueueSubsByConnIds_ :: DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmp
 getRcvQueueSubsByConnIds_ db connIds' =
   toQueueMap toRcvQueueSub <$> DB.query db (rcvQueueSubQuery <> " WHERE q.conn_id IN ? AND q.deleted = 0") (Only (In connIds'))
 
--- getSndQueueSubsByConnIds_ :: DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty SndQueueSub))
--- getSndQueueSubsByConnIds_ db userId connIds' =
---   toQueueMap_ primaryFst toSndQueueSub <$> DB.query db (sndQueueSubQuery <> " WHERE q.conn_id IN ?") (Only (In connIds'))
---   where
---     primaryFst SndQueueSub {primary = p, dbReplaceQururId = i} SndQueueSub {primary = p', dbReplaceQururId = i'} =
---       compare (Down p) (Down p') <> compare i i'
-
 toQueueMap :: SMPQueueRec q => (a -> q) -> [a] -> Map ConnId (NonEmpty q)
 toQueueMap toQueue =
   M.fromList . map (\qs@(q :| _) -> (qConnId q, L.sortBy primaryFirst qs)) . groupOn' qConnId . sortOn qConnId . map toQueue
@@ -2323,26 +2316,6 @@ toSndQueue
     ) =
     let server = SMPServer host port keyHash
      in SndQueue {userId, connId, server, sndId, queueMode, sndPrivateKey, e2ePubKey, e2eDhSecret, status, dbQueueId, primary, dbReplaceQueueId, sndSwchStatus, smpClientVersion}
-
--- | returns all connection queue credentials, the first queue is the primary one
--- getSndQueueCredsByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty SndQueueSub))
--- getSndQueueCredsByConnId_ db connId =
---   L.nonEmpty . sortBy primaryFst . map toSndQueueSub
---     <$> DB.query db (sndQueueSubQuery <> " WHERE q.conn_id = ?") (Only connId)
---   where
---     primaryFst SndQueueSub {primary = p, dbReplaceQueueId = i} SndQueueSub {primary = p', dbReplaceQueueId = i'} =
---       compare (Down p) (Down p') <> compare i i'
-
--- sndQueueSubQuery :: Query
--- sndQueueSubQuery =
---   [sql|
---     SELECT q.conn_id, q.status, q.snd_primary, q.replace_snd_queue_id
---     FROM snd_queues q
---   |]
-
--- toSndQueueSub :: (ConnId, QueueStatus, BoolInt, Maybe Int64) -> SndQueueSub
--- toSndQueueSub (connId, status, BI primary, dbReplaceQueueId) =
---   SndQueueSub {connId, status, primary, dbReplaceQueueId}
 
 getSndQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError SndQueue)
 getSndQueueById db connId dbSndId =
