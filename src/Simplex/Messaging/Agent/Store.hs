@@ -116,8 +116,8 @@ data RcvQueueSub = RcvQueueSub
   }
   deriving (Show)
 
-rcvQueueCred :: RcvQueue -> RcvQueueSub
-rcvQueueCred RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
+rcvQueueSub :: RcvQueue -> RcvQueueSub
+rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
   RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId, primary, dbReplaceQueueId}
 
 data ShortLinkCreds = ShortLinkCreds

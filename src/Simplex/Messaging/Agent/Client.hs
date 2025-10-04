@@ -1595,8 +1595,9 @@ addPendingSubscription c rq@RcvQueueSub {connId} = do
   modifyTVar' (subscrConns c) $ S.insert connId
   RQ.addQueue rq $ pendingSubs c
 
-addNewQueueSubscription :: AgentClient -> RcvQueueSub -> SMPTransportSession -> SessionId -> AM' ()
-addNewQueueSubscription c rq tSess sessId = do
+addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
+addNewQueueSubscription c rq' tSess sessId = do
+  let rq = rcvQueueSub rq'
   same <-
     atomically $
       ifM

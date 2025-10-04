@@ -964,7 +964,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
       (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAllErrors` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
-      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c (rcvQueueCred rq') tSess sessId
+      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
       mapM_ (newQueueNtfSubscription c rq') ntfServer_
       pure (rq', qUri)
     createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
@@ -1216,7 +1216,7 @@ createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientV
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
-  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c (rcvQueueCred rq') tSess sessId
+  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure (qInfo, clientServiceId rq')
 
@@ -2031,7 +2031,7 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
-  lift $ addNewQueueSubscription c (rcvQueueCred rq'') tSess sessId
+  lift $ addNewQueueSubscription c rq'' tSess sessId
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
   let rqs' = updatedQs rq1 rqs <> [rq'']
@@ -2680,7 +2680,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
     processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub rq) $ do
-        addSubscription c sessId $ rcvQueueCred rq
+        addSubscription c sessId $ rcvQueueSub rq
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
