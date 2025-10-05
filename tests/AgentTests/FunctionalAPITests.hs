@@ -3569,6 +3569,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     a `hasClients` 2
 
     exchangeGreetingsMsgId 4 a bId1 b aId1
@@ -3593,6 +3594,8 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
+    ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
     a `hasClients` 4

@@ -555,13 +555,14 @@ testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
 setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()
 setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
-  (spChanged, changed) <- atomically $ do
+  ts <- getCurrentTime
+  changed <- atomically $ do
     (_, cfg) <- readTVar useNetworkConfig
     let changed = cfg /= cfg'
         !cfgSlow = slowNetworkConfig cfg'
     when changed $ writeTVar useNetworkConfig (cfgSlow, cfg')
-    pure (socksProxy cfg /= socksProxy cfg', changed)
-  when spChanged $ getCurrentTime >>= atomically . writeTVar proxySessTs
+    when (socksProxy cfg /= socksProxy cfg') $ writeTVar proxySessTs ts
+    pure changed
   when changed $ reconnectAllServers c
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
@@ -1270,7 +1271,7 @@ subscribeConnections_ c conns = do
   let (subRs, cs) = foldr partitionResultsConns ([], []) conns
   resumeDelivery cs
   resumeConnCmds c $ map fst cs
-  rcvRs <- lift $ connResults . fst <$> subscribeQueues c (concatMap rcvQueues cs)
+  rcvRs <- lift $ connResults <$> subscribeQueues c (concatMap rcvQueues cs) False
   rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
   lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs

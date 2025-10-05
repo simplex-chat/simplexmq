@@ -29,6 +29,7 @@
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
+    SMPTransportSession,
     ProtocolClient (thParams, sessionTs),
     SMPClient,
     ProxiedRelay (..),
@@ -548,6 +549,8 @@ type UserId = Int64
 -- | Transport session key - includes entity ID if `sessionMode = TSMEntity`.
 -- Please note that for SMP connection ID is used as entity ID, not queue ID.
 type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
+
+type SMPTransportSession = TransportSession BrokerMsg
 
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.

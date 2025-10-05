@@ -109,6 +109,7 @@ library
       Simplex.Messaging.Agent.Store.Postgres.Options
       Simplex.Messaging.Agent.Store.Shared
       Simplex.Messaging.Agent.TRcvQueues
+      Simplex.Messaging.Agent.TSessionSubs
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Compression
