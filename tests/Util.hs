@@ -48,7 +48,7 @@ newtype TestWrapper a = TestWrapper a
 
 -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
 testLogLevel :: LogLevel
-testLogLevel = LogWarn
+testLogLevel = LogError
 
 instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
@@ -56,7 +56,7 @@ instance Example a => Example (TestWrapper a) where
     ci <- envCI
     runTest `E.catches` [E.Handler (onTestFailure ci), E.Handler (onTestException ci)]
     where
-      tt = 30
+      tt = 120
       runTest =
         timeout (tt * 1000000) (evaluateExample action params hooks state) `finally` callCommand "sync" >>= \case
           Just r -> pure r

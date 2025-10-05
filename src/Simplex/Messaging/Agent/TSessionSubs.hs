@@ -4,6 +4,7 @@
 
 module Simplex.Messaging.Agent.TSessionSubs
   ( TSessionSubs (sessionSubs),
+    SessSubs (..),
     emptyIO,
     clear,
     hasActiveSub,
@@ -19,6 +20,8 @@ module Simplex.Messaging.Agent.TSessionSubs
     getPendingSubs,
     getActiveSubs,
     setSubsPending,
+    foldSessionSubs,
+    mapSubs,
   )
 where
 
@@ -162,3 +165,12 @@ setSubsPending_ s sessId_ = do
     writeTVar as M.empty
     modifyTVar' (pendingSubs s) $ M.union subs
   pure subs
+
+foldSessionSubs :: (a -> (SMPTransportSession, SessSubs) -> IO a) -> a -> TSessionSubs -> IO a
+foldSessionSubs f a = foldM f a . M.assocs <=< readTVarIO . sessionSubs
+
+mapSubs :: (Map RecipientId RcvQueueSub -> a) -> SessSubs -> IO (a, a)
+mapSubs f s = do
+  active <- readTVarIO $ activeSubs s
+  pending <- readTVarIO $ pendingSubs s
+  pure (f active, f pending)

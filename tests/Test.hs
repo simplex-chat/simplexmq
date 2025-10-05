@@ -134,13 +134,13 @@ main = do
               ntfServerTests (transport @TLS, ASType SQSPostgres SMSPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $ do
           xdescribe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
-          fdescribe "SMP client agent, postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
+          describe "SMP client agent, postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
           xdescribe "SMP proxy, postgres+jornal message store" $
             before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
           describe "SMP proxy, postgres-only message store" $
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
 #endif
-        xdescribe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
+        describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
         describe "SMP proxy, jornal message store" $
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
