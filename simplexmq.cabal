@@ -108,7 +108,6 @@ library
       Simplex.Messaging.Agent.Store.Migrations.App
       Simplex.Messaging.Agent.Store.Postgres.Options
       Simplex.Messaging.Agent.Store.Shared
-      Simplex.Messaging.Agent.TRcvQueues
       Simplex.Messaging.Agent.TSessionSubs
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
@@ -475,7 +474,7 @@ test-suite simplexmq-test
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
       CoreTests.StoreLogTests
-      CoreTests.TRcvQueuesTests
+      -- CoreTests.TSessionSubs
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests

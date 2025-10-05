@@ -5,7 +5,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module CoreTests.TRcvQueuesTests where
+module CoreTests.TSessionSubs where
 
 import AgentTests.EqInstances ()
 import qualified Data.ByteString.Char8 as B
@@ -14,7 +14,7 @@ import qualified Data.Set as S
 import Data.String (IsString (..))
 import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (RcvQueueSub (..))
-import qualified Simplex.Messaging.Agent.TRcvQueues as RQ
+import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer)
 import Simplex.Messaging.Transport (SessionId)
@@ -22,8 +22,8 @@ import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
 
-tRcvQueuesTests :: Spec
-tRcvQueuesTests = do
+tSessionSubsTests :: Spec
+tSessionSubsTests = do
   describe "connection API" $ do
     it "hasConn" hasConnTest
     it "hasConn, batch add" hasConnTestBatch
