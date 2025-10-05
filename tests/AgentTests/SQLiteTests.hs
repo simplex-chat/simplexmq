@@ -204,9 +204,6 @@ cData1 =
 testPrivateAuthKey :: C.APrivateAuthKey
 testPrivateAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
-testPublicAuthKey :: C.APublicAuthKey
-testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
-
 testPrivDhKey :: C.PrivateKeyX25519
 testPrivDhKey = "MC4CAQAwBQYDK2VuBCIEINCzbVFaCiYHoYncxNY8tSIfn0pXcIAhLBfFc0m+gOpk"
 
@@ -249,7 +246,6 @@ sndQueue1 =
       server = smpServer1,
       sndId = EntityId "3456",
       queueMode = Just QMMessaging,
-      sndPublicKey = testPublicAuthKey,
       sndPrivateKey = testPrivateAuthKey,
       e2ePubKey = Nothing,
       e2eDhSecret = testDhSecret,
@@ -409,7 +405,6 @@ testUpgradeRcvConnToDuplex =
               server = SMPServer "smp.simplex.im" "5223" testKeyHash,
               sndId = EntityId "2345",
               queueMode = Just QMMessaging,
-              sndPublicKey = testPublicAuthKey,
               sndPrivateKey = testPrivateAuthKey,
               e2ePubKey = Nothing,
               e2eDhSecret = testDhSecret,
@@ -470,7 +465,7 @@ testSetRcvQueueStatus =
     setRcvQueueStatus db rq Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 rq {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCRcv (RcvConnection cData1 (rq {status = Confirmed} :: RcvQueue)))
 
 testSetSndQueueStatus :: SpecWith DBStore
 testSetSndQueueStatus =
@@ -482,7 +477,7 @@ testSetSndQueueStatus =
     setSndQueueStatus db sq Confirmed
       `shouldReturn` ()
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq {status = Confirmed}))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 (sq {status = Confirmed} :: SndQueue)))
 
 testSetQueueStatusDuplex :: SpecWith DBStore
 testSetQueueStatusDuplex =
