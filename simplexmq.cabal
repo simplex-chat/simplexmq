@@ -474,7 +474,7 @@ test-suite simplexmq-test
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
       CoreTests.StoreLogTests
-      -- CoreTests.TSessionSubs
+      CoreTests.TSessionSubs
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests

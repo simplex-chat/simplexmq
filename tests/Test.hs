@@ -15,7 +15,7 @@ import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
 import CoreTests.StoreLogTests
--- import CoreTests.TSessionSubs
+import CoreTests.TSessionSubs
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
@@ -90,7 +90,7 @@ main = do
 #else
           describe "Store log tests" storeLogTests
 #endif
-          -- describe "TSessionSubs tests" tSessionSubsTests
+          describe "TSessionSubs tests" tSessionSubsTests
           describe "Util tests" utilTests
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)

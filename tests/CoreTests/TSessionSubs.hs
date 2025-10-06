@@ -8,13 +8,15 @@
 module CoreTests.TSessionSubs where
 
 import AgentTests.EqInstances ()
+import Control.Monad
 import qualified Data.ByteString.Char8 as B
+import Data.List (foldl')
 import qualified Data.Map as M
-import qualified Data.Set as S
 import Data.String (IsString (..))
 import Simplex.Messaging.Agent.Protocol (ConnId, QueueStatus (..), UserId)
 import Simplex.Messaging.Agent.Store (RcvQueueSub (..))
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
+import Simplex.Messaging.Client (SMPTransportSession, TransportSessionMode (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer)
 import Simplex.Messaging.Transport (SessionId)
@@ -23,179 +25,96 @@ import UnliftIO
 import Util
 
 tSessionSubsTests :: Spec
-tSessionSubsTests = do
-  describe "connection API" $ do
-    it "hasConn" hasConnTest
-    it "hasConn, batch add" hasConnTestBatch
-    it "hasConn, batch idempotent" batchIdempotentTest
-    it "deleteQueue" deleteQueueTest
-  describe "session API" $ do
-    it "getSessQueues" getSessQueuesTest
-    it "getDelSessQueues" getDelSessQueuesTest
-  describe "queue transfer" $ do
-    it "getDelSessQueues-batchAddQueues preserves total length" removeSubsTest
+tSessionSubsTests = it "subscription lifecycle" $ testSessionSubs
 
 instance IsString EntityId where fromString = EntityId . B.pack
 
-checkDataInvariant' :: RQ.TRcvQueues (SessionId, RcvQueueSub) -> IO Bool
-checkDataInvariant' = checkDataInvariant_ snd
+dumpSessionSubs :: SS.TSessionSubs -> IO (M.Map SMPTransportSession (Maybe SessionId, (M.Map RecipientId RcvQueueSub, M.Map RecipientId RcvQueueSub)))
+dumpSessionSubs =
+  readTVarIO . SS.sessionSubs
+    >=> mapM (\s -> (,) <$> readTVarIO (SS.subsSessId s) <*> SS.mapSubs id s)
 
-checkDataInvariant :: RQ.TRcvQueues RcvQueueSub -> IO Bool
-checkDataInvariant = checkDataInvariant_ id
+srv1 :: SMPServer
+srv1 = "smp://1234-w==@alpha"
 
-checkDataInvariant_ :: (q -> RcvQueueSub) -> RQ.TRcvQueues q -> IO Bool
-checkDataInvariant_ toRQ trq = atomically $ do
-  qs <- readTVar $ RQ.getRcvQueues trq
-  let inv3 = all (\(k, q) -> RQ.qKey (toRQ q) == k) (M.assocs qs)
-  pure inv3
+srv2 :: SMPServer
+srv2 = "smp://1234-w==@beta"
 
-hasConnTest :: IO ()
-hasConnTest = do
-  trq <- RQ.empty
-  let q1 = dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"
-      q2 = dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2"
-      q3 = dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"
-  atomically $ RQ.addQueue q1 trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.addQueue q2 trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.addQueue q3 trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically (RQ.hasQueue q1 trq) `shouldReturn` True
-  atomically (RQ.hasQueue q2 trq) `shouldReturn` True
-  atomically (RQ.hasQueue q3 trq) `shouldReturn` True
-  atomically (RQ.hasQueue (dummyRQ 0 "smp://1234-w==@alpha" "c4" "nope") trq) `shouldReturn` False
+testSessionSubs :: IO ()
+testSessionSubs = do
+  ss <- SS.emptyIO
+  ss' <- SS.emptyIO
+  let q1 = dummyRQ 1 srv1 "c1" "r1"
+      q2 = dummyRQ 1 srv1 "c2" "r2"
+      q3 = dummyRQ 1 srv2 "c3" "r3"
+      q4 = dummyRQ 1 srv2 "c4" "r4"
+      tSess1 = (1, srv1, Nothing)
+      tSess2 = (1, srv2, Nothing)
+  atomically (SS.addPendingSub q1 tSess1 ss)
+  atomically (SS.addPendingSub q2 tSess1 ss)
+  atomically (SS.hasPendingSubs tSess1 ss) `shouldReturn` True
+  atomically (SS.hasPendingSubs tSess2 ss) `shouldReturn` False
+  atomically (SS.addPendingSub q3 tSess2 ss)
+  atomically (SS.hasPendingSubs tSess2 ss) `shouldReturn` True
+  atomically (SS.batchAddPendingSubs [q1, q2] tSess1 ss')
+  atomically (SS.batchAddPendingSubs [q3] tSess2 ss')
+  atomically (SS.getPendingSubs tSess1 ss) `shouldReturn` M.fromList [("r1", q1), ("r2", q2)]
+  atomically (SS.getActiveSubs tSess1 ss) `shouldReturn` M.fromList []
+  atomically (SS.getPendingSubs tSess2 ss) `shouldReturn` M.fromList [("r3", q3)]
+  st <- dumpSessionSubs ss
+  dumpSessionSubs ss' `shouldReturn` st
+  countSubs ss `shouldReturn` (0, 3)
+  atomically (SS.hasPendingSub (rcvId q1) tSess1 ss) `shouldReturn` True
+  atomically (SS.hasActiveSub (rcvId q1) tSess1 ss) `shouldReturn` False
+  atomically (SS.hasPendingSub (rcvId q4) tSess1 ss) `shouldReturn` False
+  atomically (SS.hasActiveSub (rcvId q4) tSess1 ss) `shouldReturn` False
+  -- setting active queue without setting session ID would keep it as pending
+  atomically $ SS.addActiveSub "123" q1 tSess1 ss
+  atomically (SS.hasPendingSub (rcvId q1) tSess1 ss) `shouldReturn` True
+  atomically (SS.hasActiveSub (rcvId q1) tSess1 ss) `shouldReturn` False
+  dumpSessionSubs ss `shouldReturn` st
+  countSubs ss `shouldReturn` (0, 3)
+  -- setting active queues
+  atomically $ SS.setSessionId "123" tSess1 ss
+  atomically $ SS.addActiveSub "123" q1 tSess1 ss
+  atomically (SS.hasPendingSub (rcvId q1) tSess1 ss) `shouldReturn` False
+  atomically (SS.hasActiveSub (rcvId q1) tSess1 ss) `shouldReturn` True
+  atomically (SS.getActiveSubs tSess1 ss) `shouldReturn` M.fromList [("r1", q1)]
+  atomically (SS.getPendingSubs tSess1 ss) `shouldReturn` M.fromList [("r2", q2)]
+  countSubs ss `shouldReturn` (1, 2)
+  atomically $ SS.setSessionId "456" tSess2 ss
+  atomically $ SS.addActiveSub "456" q4 tSess2 ss
+  atomically (SS.hasPendingSub (rcvId q4) tSess2 ss) `shouldReturn` False
+  atomically (SS.hasActiveSub (rcvId q4) tSess2 ss) `shouldReturn` True
+  atomically (SS.hasActiveSub (rcvId q4) tSess1 ss) `shouldReturn` False -- wrong transport session
+  atomically (SS.getActiveSubs tSess2 ss) `shouldReturn` M.fromList [("r4", q4)]
+  atomically (SS.getPendingSubs tSess2 ss) `shouldReturn` M.fromList [("r3", q3)]
+  countSubs ss `shouldReturn` (2, 2)
+  -- setting pending queues
+  st' <- dumpSessionSubs ss
+  atomically (SS.setSubsPending TSMUser tSess1 "abc" ss) `shouldReturn` M.empty -- wrong session
+  dumpSessionSubs ss `shouldReturn` st'
+  atomically (SS.setSubsPending TSMUser tSess1 "123" ss) `shouldReturn` M.fromList [("r1", q1)]
+  atomically (SS.getActiveSubs tSess1 ss) `shouldReturn` M.fromList []
+  atomically (SS.getPendingSubs tSess1 ss) `shouldReturn` M.fromList [("r1", q1), ("r2", q2)]
+  countSubs ss `shouldReturn` (1, 3)
+  -- delete subs
+  atomically $ SS.deletePendingSub (rcvId q1) tSess1 ss
+  atomically (SS.getPendingSubs tSess1 ss) `shouldReturn` M.fromList [("r2", q2)]
+  countSubs ss `shouldReturn` (1, 2)
+  atomically $ SS.deleteSub (rcvId q2) tSess1 ss
+  atomically (SS.getPendingSubs tSess1 ss) `shouldReturn` M.fromList []
+  countSubs ss `shouldReturn` (1, 1)
+  atomically (SS.getActiveSubs tSess2 ss) `shouldReturn` M.fromList [("r4", q4)]
+  atomically $ SS.deleteSub (rcvId q4) tSess2 ss
+  atomically (SS.getActiveSubs tSess2 ss) `shouldReturn` M.fromList []
+  countSubs ss `shouldReturn` (0, 1)
+  countSubs ss' `shouldReturn` (0, 3)
+  atomically $ SS.batchDeleteSubs [q1, q2] tSess1 ss'
+  countSubs ss' `shouldReturn` (0, 1)
 
-hasConnTestBatch :: IO ()
-hasConnTestBatch = do
-  trq <- RQ.empty
-  let q1 = dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"
-      q2 = dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2"
-      q3 = dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"
-  let qs = [q1, q2, q3]
-  atomically $ RQ.batchAddQueues qs trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically (RQ.hasQueue q1 trq) `shouldReturn` True
-  atomically (RQ.hasQueue q2 trq) `shouldReturn` True
-  atomically (RQ.hasQueue q3 trq) `shouldReturn` True
-  atomically (RQ.hasQueue (dummyRQ 0 "smp://1234-w==@alpha" "c4" "nope") trq) `shouldReturn` False
-
-batchIdempotentTest :: IO ()
-batchIdempotentTest = do
-  trq <- RQ.empty
-  let qs = [dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1", dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2", dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"]
-  atomically $ RQ.batchAddQueues qs trq
-  checkDataInvariant trq `shouldReturn` True
-  qs' <- readTVarIO $ RQ.getRcvQueues trq
-  atomically $ RQ.batchAddQueues qs trq
-  checkDataInvariant trq `shouldReturn` True
-  readTVarIO (RQ.getRcvQueues trq) `shouldReturn` qs'
-
-deleteQueueTest :: IO ()
-deleteQueueTest = do
-  trq <- RQ.empty
-  let q1 = dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"
-  atomically $ do
-    RQ.addQueue q1 trq
-    RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2") trq
-    RQ.addQueue (dummyRQ 0 "smp://1234-w==@beta" "c3" "r3") trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.deleteQueue q1 trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.deleteQueue (dummyRQ 0 "smp://1234-w==@alpha" "c4" "nope") trq
-  checkDataInvariant trq `shouldReturn` True
-
-getSessQueuesTest :: IO ()
-getSessQueuesTest = do
-  trq <- RQ.empty
-  atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1") trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2") trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.addQueue (dummyRQ 0 "smp://1234-w==@beta" "c3" "r3") trq
-  checkDataInvariant trq `shouldReturn` True
-  atomically $ RQ.addQueue (dummyRQ 1 "smp://1234-w==@beta" "c4" "r4") trq
-  checkDataInvariant trq `shouldReturn` True
-  let tSess1 = (0, "smp://1234-w==@alpha", Just "c1")
-  RQ.getSessQueues tSess1 trq `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"]
-  atomically (RQ.hasSessQueues tSess1 trq) `shouldReturn` True
-  let tSess2 = (1, "smp://1234-w==@alpha", Just "c1")
-  RQ.getSessQueues tSess2 trq `shouldReturn` []
-  atomically (RQ.hasSessQueues tSess2 trq) `shouldReturn` False
-  let tSess3 = (0, "smp://1234-w==@alpha", Just "nope")
-  RQ.getSessQueues tSess3 trq `shouldReturn` []
-  atomically (RQ.hasSessQueues tSess3 trq) `shouldReturn` False
-  let tSess4 = (0, "smp://1234-w==@alpha", Nothing)
-  RQ.getSessQueues tSess4 trq `shouldReturn` [dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2", dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"]
-  atomically (RQ.hasSessQueues tSess4 trq) `shouldReturn` True
-
-getDelSessQueuesTest :: IO ()
-getDelSessQueuesTest = do
-  trq <- RQ.empty
-  let q1 = dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"
-      q2 = dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2"
-      q3 = dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"
-      q4 = dummyRQ 1 "smp://1234-w==@beta" "c4" "r4"
-      qs =
-        [ ("1", q1),
-          ("1", q2),
-          ("1", q3),
-          ("1", q4)
-        ]
-  mapM_ (\q -> atomically $ RQ.addSessQueue q trq) qs
-  checkDataInvariant' trq `shouldReturn` True
-  -- no user
-  atomically (RQ.getDelSessQueues (2, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([], [])
-  checkDataInvariant' trq `shouldReturn` True
-  -- wrong user
-  atomically (RQ.getDelSessQueues (1, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([], [])
-  checkDataInvariant' trq `shouldReturn` True
-  -- connections intact
-  atomically (RQ.hasQueue q1 trq) `shouldReturn` True
-  atomically (RQ.hasQueue q2 trq) `shouldReturn` True
-  atomically (RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" trq) `shouldReturn` ([dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2", dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"], ["c1", "c2"])
-  checkDataInvariant' trq `shouldReturn` True
-  -- connections gone
-  atomically (RQ.hasQueue q1 trq) `shouldReturn` False
-  atomically (RQ.hasQueue q2 trq) `shouldReturn` False
-  -- non-matched connections intact
-  atomically (RQ.hasQueue q3 trq) `shouldReturn` True
-  atomically (RQ.hasQueue q4 trq) `shouldReturn` True
-  RQ.getSessConns (0, "smp://1234-w==@alpha", Nothing) trq `shouldReturn` S.fromList []
-  RQ.getSessConns (0, "smp://1234-w==@beta", Nothing) trq `shouldReturn` S.fromList ["c3"]
-  RQ.getSessConns (1, "smp://1234-w==@beta", Nothing) trq `shouldReturn` S.fromList ["c4"]
-
-removeSubsTest :: IO ()
-removeSubsTest = do
-  aq <- RQ.empty
-  let qs =
-        [ ("1", dummyRQ 0 "smp://1234-w==@alpha" "c1" "r1"),
-          ("1", dummyRQ 0 "smp://1234-w==@alpha" "c2" "r2"),
-          ("1", dummyRQ 0 "smp://1234-w==@beta" "c3" "r3"),
-          ("1", dummyRQ 1 "smp://1234-w==@beta" "c4" "r4")
-        ]
-  mapM_ (\q -> atomically $ RQ.addSessQueue q aq) qs
-
-  pq <- RQ.empty
-  atomically (totalSize aq pq) `shouldReturn` 4
-
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@alpha", Nothing) "1" aq >>= (`RQ.batchAddQueues` pq) . fst
-  atomically (totalSize aq pq) `shouldReturn` 4
-
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "non-existent") "1" aq >>= (`RQ.batchAddQueues` pq) . fst
-  atomically (totalSize aq pq) `shouldReturn` 4
-
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@localhost", Nothing) "1" aq >>= (`RQ.batchAddQueues` pq) . fst
-  atomically (totalSize aq pq) `shouldReturn` 4
-
-  atomically $ RQ.getDelSessQueues (0, "smp://1234-w==@beta", Just "c3") "1" aq >>= (`RQ.batchAddQueues` pq) . fst
-  atomically (totalSize aq pq) `shouldReturn` 4
-
-totalSize :: RQ.TRcvQueues q -> RQ.TRcvQueues q' -> STM Int
-totalSize a b = do
-  qsizeA <- M.size <$> readTVar (RQ.getRcvQueues a)
-  qsizeB <- M.size <$> readTVar (RQ.getRcvQueues b)
-  pure $ qsizeA + qsizeB
+countSubs :: SS.TSessionSubs -> IO (Int, Int)
+countSubs = fmap (foldl' (\(n1, n2) (_, (m1, m2)) -> (n1 + M.size m1, n2 + M.size m2)) (0, 0)) . dumpSessionSubs
 
 dummyRQ :: UserId -> SMPServer -> ConnId -> RecipientId -> RcvQueueSub
 dummyRQ userId server connId rcvId =
