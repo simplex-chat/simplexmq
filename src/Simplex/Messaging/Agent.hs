@@ -182,6 +182,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
+import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, nonBlockingWriteTBQueue, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
@@ -2681,16 +2682,16 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
     processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub rq) $ do
-        addSubscription c sessId $ rcvQueueSub rq
+        SS.addActiveSub tSess sessId (rcvQueueSub rq) $ currentSubs c
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM ()
     processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub rq) $
-        failSubscription c rq e >> incSMPServerStat c userId srv connSubErrs
+        failSubscription c tSess rq e >> incSMPServerStat c userId srv connSubErrs
       lift $ notifyErr connId e
     isPendingSub :: RcvQueue -> STM Bool
     isPendingSub rq = do
-      pending <- (&&) <$> hasPendingSubscription c rq <*> activeClientSession c tSess sessId
+      pending <- (&&) <$> SS.hasPendingSub tSess (queueId rq) (currentSubs c) <*> activeClientSession c tSess sessId
       unless pending $ incSMPServerStat c userId srv connSubIgnored
       pure pending
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
@@ -2871,14 +2872,14 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               handleNotifyAck :: AM ACKd -> AM ACKd
               handleNotifyAck m = m `catchAllErrors` \e -> notify (ERR e) >> ack
           SMP.END ->
-            atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c connId rq $> True) (pure False))
+            atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c tSess connId rq $> True) (pure False))
               >>= notifyEnd
             where
               notifyEnd removed
                 | removed = notify END >> logServer "<--" c srv rId "END"
                 | otherwise = logServer "<--" c srv rId "END from disconnected client - ignored"
           -- Possibly, we need to add some flag to connection that it was deleted
-          SMP.DELD -> atomically (removeSubscription c connId rq) >> notify DELD
+          SMP.DELD -> atomically (removeSubscription c tSess connId rq) >> notify DELD
           SMP.ERR e -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
           r -> unexpected r
         where
