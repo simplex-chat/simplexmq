@@ -201,7 +201,7 @@ import Data.Bifunctor (bimap, first, second)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:))
+import Data.Composition ((.:), (.:.))
 import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
@@ -337,8 +337,6 @@ data AgentClient = AgentClient
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
-    -- activeSubs :: TRcvQueues (SessionId, RcvQueueSub),
-    -- pendingSubs :: TRcvQueues RcvQueueSub,
     currentSubs :: TSessionSubs,
     removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
     workerSeq :: TVar Int,
@@ -544,8 +542,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
         userNetworkInfo,
         userNetworkUpdated,
         subscrConns,
-        -- activeSubs,
-        -- pendingSubs,
         currentSubs,
         removedSubs,
         workerSeq,
@@ -1500,7 +1496,7 @@ subscribeQueues :: AgentClient -> [RcvQueueSub] -> Bool -> AM' [(RcvQueueSub, Ei
 subscribeQueues c qs withEvents = do
   (errs, qs') <- checkQueues c qs
   atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
-  qss <- batchQueues mkSMPTSession c qs'
+  qss <- batchQueues mkSMPTSession c qs' <$> getSessionModeIO c
   mapM_ addPendingSubs qss
   rs <- mapConcurrently subscribeQueues_ qss
   when (withEvents && not (null errs)) $ notifySub c "" $ ERRS $ map (first qConnId) errs
@@ -1586,20 +1582,19 @@ type BatchResponses q e r = NonEmpty (q, Either e r)
 -- Please note: this function does not preserve order of results to be the same as the order of arguments,
 -- it includes arguments in the results instead.
 sendTSessionBatches :: forall q r. ByteString -> (q -> TransportSessionMode -> SMPTransportSession) -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> [q] -> AM' [(q, Either AgentErrorType r)]
-sendTSessionBatches statCmd mkSession action c nm qs =
-  concatMap L.toList <$> (mapConcurrently (sendClientBatch statCmd action c nm) =<< batchQueues mkSession c qs)
+sendTSessionBatches statCmd mkSession action c nm qs = do
+  qs' <- batchQueues mkSession c qs <$> getSessionModeIO c
+  concatMap L.toList <$> mapConcurrently (sendClientBatch statCmd action c nm) qs'
 
-batchQueues :: (q -> TransportSessionMode -> SMPTransportSession) -> AgentClient -> [q] -> AM' [(SMPTransportSession, NonEmpty q)]
-batchQueues mkSession c qs = do
-  mode <- getSessionModeIO c
-  pure . M.assocs $ foldr (batch mode) M.empty qs
+batchQueues :: (q -> TransportSessionMode -> SMPTransportSession) -> AgentClient -> [q] -> TransportSessionMode -> [(SMPTransportSession, NonEmpty q)]
+batchQueues mkSession c qs mode = M.assocs $ foldr batch M.empty qs
   where
-    batch mode q m =
+    batch q m =
       let tSess = mkSession q mode
        in M.alter (Just . maybe [q] (q <|)) tSess m
 
 sendClientBatch :: ByteString -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> (SMPTransportSession, NonEmpty q) -> AM' (BatchResponses q AgentErrorType r)
-sendClientBatch statCmd action c nm qs = fmap fst $ sendClientBatch_ statCmd () (fmap (,()) .: action) c nm qs
+sendClientBatch statCmd action = fmap fst .:. sendClientBatch_ statCmd () (fmap (,()) .: action)
 {-# INLINE sendClientBatch #-}
 
 sendClientBatch_ :: ByteString -> res -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r, res)) -> AgentClient -> NetworkRequestMode -> (SMPTransportSession, NonEmpty q) -> AM' (BatchResponses q AgentErrorType r, res)
@@ -1665,11 +1660,10 @@ removeSubscription c connId rq = do
   SS.deleteSub (queueId rq) tSess $ currentSubs c
 
 removeSubscriptions :: SomeRcvQueue q => AgentClient -> [ConnId] -> [q] -> STM ()
-removeSubscriptions c connIds rqs = do
+removeSubscriptions c connIds qs = do
   unless (null connIds) $ modifyTVar' (subscrConns c) (`S.difference` (S.fromList connIds))
-  forM_ rqs $ \rq -> do
-    tSess <- mkSMPTransportSession c rq
-    SS.deleteSub (queueId rq) tSess $ currentSubs c
+  qss <- batchQueues mkSMPTSession c qs <$> getSessionMode c
+  forM_ qss $ \(tSess, qs') -> SS.batchDeleteSubs (L.toList qs') tSess $ currentSubs c
 
 getSubscriptions :: AgentClient -> IO (Set ConnId)
 getSubscriptions = readTVarIO . subscrConns
