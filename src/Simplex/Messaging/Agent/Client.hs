@@ -202,7 +202,6 @@ import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:))
-import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -301,8 +300,11 @@ import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
-#if !defined(dbPostgres)
+#if defined(dbPostgres)
+import Simplex.Messaging.Agent.Store.AgentStore (getExistingRcvQueueSubs)
+#else
 import qualified Database.SQLite.Simple as SQL
+import Simplex.Messaging.Agent.Store.AgentStore (getRcvQueueSubs)
 #endif
 
 type ClientVar msg = SessionVar (Either (AgentErrorType, Maybe UTCTime) (Client msg))
@@ -713,32 +715,31 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
     -- we make active subscriptions pending only if the client for tSess was current (in the map) and active,
     -- because we can have a race condition when a new current client could have already
     -- made subscriptions active, and the old client would be processing diconnection later.
-    removeClientAndSubs :: IO ([RcvQueueSub], [ConnId])
+    removeClientAndSubs :: IO [(SMP.RecipientId, ConnId)]
     removeClientAndSubs = atomically $ do
       removeSessVar v tSess smpClients
-      ifM (readTVar active) removeSubs (pure ([], []))
+      ifM (readTVar active) removeSubs (pure [])
       where
         sessId = sessionId $ thParams client
         removeSubs = do
           mode <- getSessionMode c
           subs <- SS.setSubsPending mode tSess sessId $ currentSubs c
-          let qs = M.elems subs
-              cs = nubOrd $ map qConnId qs
           -- this removes proxied relays that this client created sessions to
           destSrvs <- M.keys <$> readTVar prs
           forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, cId) smpProxiedRelays
-          pure (qs, cs)
+          pure subs
 
-    serverDown :: ([RcvQueueSub], [ConnId]) -> IO ()
-    serverDown (qs, conns) = whenM (readTVarIO active) $ do
+    serverDown :: [(SMP.RecipientId, ConnId)] -> IO ()
+    serverDown subs = whenM (readTVarIO active) $ do
       notifySub c "" $ hostEvent' DISCONNECT client
-      unless (null conns) $ notifySub c "" $ DOWN srv conns
-      unless (null qs) $ do
-        releaseGetLocksIO c qs
+      unless (null subs) $ do
+        let (rIds, cIds) = unzip subs
+        notifySub c "" $ DOWN srv cIds
+        releaseGetLocksIO c srv rIds
         mode <- getSessionModeIO c
         let resubscribe
               | (mode == TSMEntity) == isJust cId = resubscribeSMPSession c tSess
-              | otherwise = void $ subscribeQueues c qs True
+              | otherwise = resubscribeQueues c tSess subs `catchAllErrors'` (notifySub c "" . ERR . INTERNAL . show)
         runReaderT resubscribe env
 
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
@@ -758,10 +759,10 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       ri <- asks $ reconnectInterval . config
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
         pending <- atomically $ SS.getPendingSubs tSess $ currentSubs c
-        unless (M.null pending) $ do
+        unless (null pending) $ do
           liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
-          handleNotify $ resubscribeSessQueues c tSess $ M.elems pending
+          resubscribeSessQueues c tSess pending `catchAllErrors'` (notifySub c "" . ERR . INTERNAL . show)
           loop
     isForeground = (ASForeground ==) <$> readTVar (agentState c)
     cleanup :: SessionVar (Async ()) -> STM ()
@@ -770,8 +771,6 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       -- Not waiting may result in terminated worker remaining in the map.
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v tSess smpSubWorkers
-    handleNotify :: AM' () -> AM' ()
-    handleNotify = E.handleAny $ notifySub c "" . ERR . INTERNAL . show
 
 notifySub :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
 notifySub c connId cmd = liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt (sAEntity @e) cmd)
@@ -1529,13 +1528,42 @@ checkQueues c = fmap partitionEithers . mapM checkQueue
       prohibited <- liftIO $ hasGetLock c rq
       pure $ if prohibited then Left (rq, CMD PROHIBITED "checkQueues") else Right rq
 
+checkQueues_ :: AgentClient -> SMPTransportSession -> [(SMP.RecipientId, ConnId)] -> AM' ([(ConnId, AgentErrorType)], [(SMP.RecipientId, ConnId)])
+checkQueues_ c (_, srv, _) = fmap partitionEithers . mapM checkQueue
+  where
+    checkQueue q@(rId, cId) = do
+      prohibited <- liftIO $ hasGetLock_ c srv rId
+      pure $ if prohibited then Left (cId, CMD PROHIBITED "checkQueues") else Right q
+
+resubscribeQueues :: AgentClient -> SMPTransportSession -> [(SMP.RecipientId, ConnId)] -> AM ()
+resubscribeQueues c tSess subs = do
+  qs <- getQueues c tSess subs
+  void $ lift $ subscribeQueues c qs True
+
 -- This function expects that all queues belong to one transport session,
 -- and that they are already added to pending subscriptions.
-resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> AM' ()
-resubscribeSessQueues c tSess qs = do
-  (errs, qs_) <- checkQueues c qs
-  forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c (tSess, qs') True
-  unless (null errs) $ notifySub c "" $ ERRS $ map (first qConnId) errs
+resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [(SMP.RecipientId, ConnId)] -> AM ()
+resubscribeSessQueues c tSess subs = do
+  (errs, subs') <- lift $ checkQueues_ c tSess subs
+  qs_ <- getQueues c tSess subs'
+  forM_ (L.nonEmpty qs_) $ \qs' -> void $ lift $ subscribeSessQueues_ c (tSess, qs') True
+  unless (null errs) $ notifySub c "" $ ERRS errs
+
+getQueues :: AgentClient -> SMPTransportSession -> [(SMP.RecipientId, ConnId)] -> AM [RcvQueueSub]
+getQueues c (_, srv, _) subs = do
+#if defined(dbPostgres)
+  let rIds = map fst subs
+  qs <- M.fromList . map (\rq -> (queueId rq, rq)) <$> withStore' c (\db -> getExistingRcvQueueSubs db srv rIds)
+  let addQueue (rId, cId) (es, rqs) = maybe (((cId, CONN NOT_FOUND "") : es, rqs)) (\rq -> (es, rq : rqs)) $ M.lookup rId qs
+      (errs, qs') = foldr addQueue ([], []) subs
+#else
+  let (rIds, connIds) = unzip subs
+  qs <- withStore' c $ \db -> getRcvQueueSubs db srv rIds
+  let (errs, qs') = partitionEithers $ zipWith (\cId -> first ((cId,) . storeError)) connIds qs
+#endif
+  -- TODO [subs] remove missing from pending, add to removed
+  unless (null errs) $ notifySub c "" $ ERRS errs
+  pure qs'
 
 subscribeSessQueues_ :: AgentClient -> (SMPTransportSession, NonEmpty RcvQueueSub) -> Bool -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
 subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQueues_ c NRMBackground qs
@@ -1547,7 +1575,7 @@ subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQue
       rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
       cs_ <-
         if withEvents
-          then Just . S.fromList . map qConnId . M.elems <$> atomically (SS.getActiveSubs tSess $ currentSubs c)
+          then Just <$> atomically (SS.getActiveConns tSess $ currentSubs c)
           else pure Nothing
       active <-
         atomically $
@@ -1818,20 +1846,23 @@ sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
     ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 hasGetLock :: SomeRcvQueue q => AgentClient -> q -> IO Bool
-hasGetLock c rq =
-  TM.memberIO (qServer rq, queueId rq) $ getMsgLocks c
+hasGetLock c rq = TM.memberIO (qServer rq, queueId rq) $ getMsgLocks c
 {-# INLINE hasGetLock #-}
 
-releaseGetLock :: SomeRcvQueue q => AgentClient -> q -> STM ()
-releaseGetLock c rq =
-  TM.lookup (qServer rq, queueId rq) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
+hasGetLock_ :: AgentClient -> SMPServer -> SMP.RecipientId -> IO Bool
+hasGetLock_ c srv rId = TM.memberIO (srv, rId) $ getMsgLocks c
+{-# INLINE hasGetLock_ #-}
+
+releaseGetLock :: AgentClient -> RcvQueue -> STM ()
+releaseGetLock c RcvQueue {server, rcvId} =
+  TM.lookup (server, rcvId) (getMsgLocks c) >>= mapM_ (`tryPutTMVar` ())
 {-# INLINE releaseGetLock #-}
 
-releaseGetLocksIO :: SomeRcvQueue q => AgentClient -> [q] -> IO ()
-releaseGetLocksIO c rqs = do
+releaseGetLocksIO :: AgentClient -> SMPServer -> [SMP.RecipientId] -> IO ()
+releaseGetLocksIO c srv rIds = do
   locks <- readTVarIO $ getMsgLocks c
-  forM_ rqs $ \rq ->
-    forM_ (M.lookup ((qServer rq, queueId rq)) locks) $ \lock ->
+  forM_ rIds $ \rId ->
+    forM_ (M.lookup (srv, rId) locks) $ \lock ->
       atomically $ tryPutTMVar lock ()
 
 suspendQueue :: AgentClient -> NetworkRequestMode -> RcvQueue -> AM ()

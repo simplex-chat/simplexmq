@@ -45,6 +45,11 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getConnSubs,
     getDeletedConns,
     getConnsData,
+#if defined(dbPostgres)
+    getExistingRcvQueueSubs,
+#else
+    getRcvQueueSubs,
+#endif
     setConnDeleted,
     setConnUserId,
     setConnAgentVersion,
@@ -2072,6 +2077,11 @@ getConnSubs :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConnSub]
 getConnSubs = getAnyConns_ getRcvQueueSubsByConnIds_ getSndQueuesByConnIds_ False
 {-# INLINE getConnSubs #-}
 
+getExistingRcvQueueSubs :: DB.Connection -> SMPServer -> [RecipientId] -> IO [RcvQueueSub]
+getExistingRcvQueueSubs db srv rIds =
+  map toRcvQueueSub <$>
+    DB.query db (rcvQueueSubQuery <> " WHERE q.host = ? AND q.port  = ? AND q.rcv_id IN ?") (host srv, port srv, In rIds)
+
 getAnyConns_ ::
   forall rq sq.
   (DB.Connection -> [ConnId] -> IO (Map ConnId (NonEmpty rq))) ->
@@ -2136,6 +2146,11 @@ getAnyConns = getAnyConns_ getRcvQueuesByConnId_ getSndQueuesByConnId_
 getConnSubs :: DB.Connection -> [ConnId] -> IO [Either StoreError SomeConnSub]
 getConnSubs = getAnyConns_ getRcvQueueSubsByConnId_ getSndQueuesByConnId_ False
 {-# INLINE getConnSubs #-}
+
+getRcvQueueSubs :: DB.Connection -> SMPServer -> [RecipientId] -> IO [Either StoreError RcvQueueSub]
+getRcvQueueSubs db srv =
+  mapM $ \rId -> firstRow toRcvQueueSub SEConnNotFound $
+    DB.query db (rcvQueueSubQuery <> " WHERE q.host = ? AND q.port  = ? AND q.rcv_id = ?") (host srv, port srv, rId)
 
 getAnyConns_ ::
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty rq))) ->
