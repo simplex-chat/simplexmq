@@ -40,8 +40,6 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (($>>=))
 
--- the fields in this record have the same data with swapped keys for lookup efficiency,
--- and all methods must maintain this invariant.
 data TSessionSubs = TSessionSubs
   { sessionSubs :: TMap SMPTransportSession SessSubs
   }
