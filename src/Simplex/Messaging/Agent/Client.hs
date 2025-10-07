@@ -156,6 +156,7 @@ module Simplex.Messaging.Agent.Client
     withStoreBatch',
     unsafeWithStore,
     storeError,
+    notifySub,
     userServers,
     pickServer,
     getNextServer,
@@ -725,8 +726,8 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
 
     serverDown :: ([RcvQueueSub], [ConnId]) -> IO ()
     serverDown (qs, conns) = whenM (readTVarIO active) $ do
-      notifySub c "" $ hostEvent' DISCONNECT client
-      unless (null conns) $ notifySub c "" $ DOWN srv conns
+      notifySub c $ hostEvent' DISCONNECT client
+      unless (null conns) $ notifySub c $ DOWN srv conns
       unless (null qs) $ do
         releaseGetLocksIO c qs
         mode <- getSessionModeIO c
@@ -765,10 +766,15 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v tSess smpSubWorkers
     handleNotify :: AM' () -> AM' ()
-    handleNotify = E.handleAny $ notifySub c "" . ERR . INTERNAL . show
+    handleNotify = E.handleAny $ notifySub' c "" . ERR . INTERNAL . show
 
-notifySub :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
-notifySub c connId cmd = liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt (sAEntity @e) cmd)
+notifySub' :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
+notifySub' c connId cmd = liftIO $ nonBlockingWriteTBQueue (subQ c) (B.empty, connId, AEvt (sAEntity @e) cmd)
+{-# INLINE notifySub' #-}
+
+notifySub :: MonadIO m => AgentClient -> AEvent 'AENone -> m ()
+notifySub c = notifySub' c ""
+{-# INLINE notifySub #-}
 
 getNtfServerClient :: AgentClient -> NetworkRequestMode -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, presetDomains} nm tSess@(_, srv, _) = do
@@ -1510,7 +1516,7 @@ subscribeQueues c qs withEvents = do
   qss <- batchQueues mkSMPTSession qs' <$> getSessionModeIO c
   mapM_ addPendingSubs qss
   rs <- mapConcurrently subscribeQueues_ qss
-  when (withEvents && not (null errs)) $ notifySub c "" $ ERRS $ map (first qConnId) errs
+  when withEvents $ forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
   pure $ map (second Left) errs <> concatMap L.toList rs
   where
     addPendingSubs (tSess, qs') = atomically $ SS.batchAddPendingSubs tSess (L.toList qs') $ currentSubs c
@@ -1542,7 +1548,7 @@ resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> 
 resubscribeSessQueues c tSess qs = do
   (errs, qs_) <- checkQueues c qs
   forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c (tSess, qs') True
-  unless (null errs) $ notifySub c "" $ ERRS $ map (first qConnId) errs
+  forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
 
 subscribeSessQueues_ :: AgentClient -> (SMPTransportSession, NonEmpty RcvQueueSub) -> Bool -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
 subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQueues_ c NRMBackground qs
@@ -1565,11 +1571,11 @@ subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQue
       forM_ cs_ $ \cs -> do
         let (errs, okConns) = partitionEithers $ map (\(RcvQueueSub {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
             conns = filter (`S.notMember` cs) okConns
-        unless (null conns) $ notifySub c "" $ UP srv conns
-        unless (null errs) $ do
-          let noFinalErrs = all (temporaryClientError . snd) errs
+        unless (null conns) $ notifySub c $ UP srv conns
+        forM_ (L.nonEmpty errs) $ \errs' -> do
+          let noFinalErrs = all (temporaryClientError . snd) errs'
               addr = B.unpack $ strEncode srv
-          notifySub c "" $ ERRS $ map (second $ protocolClientError SMP addr) errs
+          notifySub c $ ERRS $ L.map (second $ protocolClientError SMP addr) errs'
           when (null okConns && S.null cs && noFinalErrs && active) $ liftIO $ do
             -- We only close the client session that was used to subscribe.
             v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
@@ -2064,9 +2070,7 @@ withWorkItems c doWork getWork action = do
           forM_ criticalErr $ \err -> do
             notifyErr (CRITICAL False) err
             when (all isWorkItemError errs) noWork
-      unless (null errs) $
-        atomically $
-          writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS $ map (\e -> ("", INTERNAL $ show e)) errs)
+      forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (\e -> ("", INTERNAL $ show e))
     Left e
       | isWorkItemError e -> noWork >> notifyErr (CRITICAL False) e
       | otherwise -> notifyErr INTERNAL e

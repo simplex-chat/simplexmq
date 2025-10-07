@@ -2473,10 +2473,10 @@ sendNtfConnCommands c cmd = do
   ns <- asks ntfSupervisor
   connIds <- liftIO $ S.toList <$> getSubscriptions c
   rs <- withStore' c (`getConnsData` connIds)
-  let (connIds', cErrs) = enabledNtfConns (zip connIds rs)
+  let (connIds', errs) = enabledNtfConns (zip connIds rs)
   forM_ (L.nonEmpty connIds') $ \connIds'' ->
     atomically $ writeTBQueue (ntfSubQ ns) (cmd, connIds'')
-  unless (null cErrs) $ atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS cErrs)
+  forM_ (L.nonEmpty errs) $ notifySub c . ERRS
   where
     enabledNtfConns :: [(ConnId, Either StoreError (Maybe (ConnData, ConnectionMode)))] -> ([ConnId], [(ConnId, AgentErrorType)])
     enabledNtfConns = foldr addEnabledConn ([], [])

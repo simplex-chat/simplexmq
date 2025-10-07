@@ -513,7 +513,7 @@ notifyInternalError' AgentClient {subQ} internalErrStr = atomically $ writeTBQue
 {-# INLINE notifyInternalError' #-}
 
 notifyErrs :: MonadIO m => AgentClient -> [(ConnId, AgentErrorType)] -> m ()
-notifyErrs AgentClient {subQ} connErrs = unless (null connErrs) $ atomically $ writeTBQueue subQ ("", "", AEvt SAENone $ ERRS connErrs)
+notifyErrs c = mapM_ (notifySub c . ERRS) . L.nonEmpty
 {-# INLINE notifyErrs #-}
 
 getNtfToken :: AM' (Maybe NtfToken)

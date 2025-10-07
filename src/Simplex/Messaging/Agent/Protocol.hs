@@ -405,7 +405,7 @@ data AEvent (e :: AEntity) where
   OK :: AEvent AEConn
   JOINED :: SndQueueSecured -> Maybe ClientServiceId -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
-  ERRS :: [(ConnId, AgentErrorType)] -> AEvent AENone
+  ERRS :: NonEmpty (ConnId, AgentErrorType) -> AEvent AENone
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
