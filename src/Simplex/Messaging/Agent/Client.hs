@@ -50,7 +50,6 @@ module Simplex.Messaging.Agent.Client
     subscribeQueues,
     getQueueMessage,
     decryptSMPMessage,
-    addSubscription,
     failSubscription,
     addNewQueueSubscription,
     getSubscriptions,
@@ -101,7 +100,6 @@ module Simplex.Messaging.Agent.Client
     removeSubscription,
     removeSubscriptions,
     hasActiveSubscription,
-    hasPendingSubscription,
     hasGetLock,
     releaseGetLock,
     activeClientSession,
@@ -158,6 +156,7 @@ module Simplex.Messaging.Agent.Client
     withStoreBatch',
     unsafeWithStore,
     storeError,
+    notifySub,
     userServers,
     pickServer,
     getNextServer,
@@ -206,12 +205,12 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (find, foldl', partition)
+import Data.List (find, foldl')
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -338,7 +337,7 @@ data AgentClient = AgentClient
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
     currentSubs :: TSessionSubs,
-    removedSubs :: TMap (UserId, SMPServer, SMP.RecipientId) SMPClientError,
+    removedSubs :: TMap (UserId, SMPServer) (TMap SMP.RecipientId SMPClientError),
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
     asyncCmdWorkers :: TMap (ConnId, Maybe SMPServer) Worker,
@@ -698,7 +697,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
         smp <- ExceptT $ getProtocolClient g nm tSess cfg presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
-        atomically $ SS.setSessionId (sessionId $ thParams smp) tSess $ currentSubs c
+        atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
         pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
@@ -727,8 +726,8 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
 
     serverDown :: ([RcvQueueSub], [ConnId]) -> IO ()
     serverDown (qs, conns) = whenM (readTVarIO active) $ do
-      notifySub c "" $ hostEvent' DISCONNECT client
-      unless (null conns) $ notifySub c "" $ DOWN srv conns
+      notifySub c $ hostEvent' DISCONNECT client
+      unless (null conns) $ notifySub c $ DOWN srv conns
       unless (null qs) $ do
         releaseGetLocksIO c qs
         mode <- getSessionModeIO c
@@ -767,10 +766,15 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
       whenM (isEmptyTMVar $ sessionVar v) retry
       removeSessVar v tSess smpSubWorkers
     handleNotify :: AM' () -> AM' ()
-    handleNotify = E.handleAny $ notifySub c "" . ERR . INTERNAL . show
+    handleNotify = E.handleAny $ notifySub' c "" . ERR . INTERNAL . show
 
-notifySub :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
-notifySub c connId cmd = liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt (sAEntity @e) cmd)
+notifySub' :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
+notifySub' c connId cmd = liftIO $ nonBlockingWriteTBQueue (subQ c) (B.empty, connId, AEvt (sAEntity @e) cmd)
+{-# INLINE notifySub' #-}
+
+notifySub :: MonadIO m => AgentClient -> AEvent 'AENone -> m ()
+notifySub c = notifySub' c ""
+{-# INLINE notifySub #-}
 
 getNtfServerClient :: AgentClient -> NetworkRequestMode -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, presetDomains} nm tSess@(_, srv, _) = do
@@ -1447,17 +1451,30 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
         newErr :: String -> AM (Maybe ShortLinkCreds)
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
-processSubResult :: AgentClient -> SessionId -> RcvQueueSub -> Either SMPClientError (Maybe ServiceId) -> STM ()
-processSubResult c sessId rq@RcvQueueSub {userId, server} = \case
-  Left e ->
-    unless (temporaryClientError e) $ do
-      incSMPServerStat c userId server connSubErrs
-      failSubscription c rq e
-  Right _serviceId -> -- TODO [certs rcv] store association with the service
-    ifM
-      (hasPendingSubscription c rq) -- connSubscribed stat will now count queues, not connections
-      (incSMPServerStat c userId server connSubscribed >> addSubscription c sessId rq)
-      (incSMPServerStat c userId server connSubIgnored)
+processSubResults :: AgentClient -> SMPTransportSession -> SessionId -> NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM ()
+processSubResults c tSess@(userId, srv, _) sessId rs = do
+  pendingSubs <- SS.getPendingSubs tSess $ currentSubs c
+  let (failed, subscribed, ignored) = foldr (partitionResults pendingSubs) (M.empty, [], 0) rs
+  unless (M.null failed) $ do
+    incSMPServerStat' c userId srv connSubErrs $ M.size failed
+    failSubscriptions c tSess failed
+  unless (null subscribed) $ do
+    incSMPServerStat' c userId srv connSubscribed $ length subscribed
+    SS.batchAddActiveSubs tSess sessId subscribed $ currentSubs c
+  unless (ignored == 0) $ incSMPServerStat' c userId srv connSubIgnored ignored
+  where
+    partitionResults ::
+      Map SMP.RecipientId RcvQueueSub ->
+      (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) ->
+      (Map SMP.RecipientId SMPClientError, [RcvQueueSub], Int) ->
+      (Map SMP.RecipientId SMPClientError, [RcvQueueSub], Int)
+    partitionResults pendingSubs (rq, r) acc@(failed, subscribed, ignored) = case r of
+      Left e
+        | temporaryClientError e -> acc
+        | otherwise -> (M.insert (queueId rq) e failed, subscribed, ignored)
+      Right _serviceId -- TODO [certs rcv] store association with the service
+        | queueId rq `M.member` pendingSubs -> (failed, rq : subscribed, ignored)
+        | otherwise -> (failed, subscribed, ignored + 1)
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
@@ -1496,13 +1513,13 @@ subscribeQueues :: AgentClient -> [RcvQueueSub] -> Bool -> AM' [(RcvQueueSub, Ei
 subscribeQueues c qs withEvents = do
   (errs, qs') <- checkQueues c qs
   atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
-  qss <- batchQueues mkSMPTSession c qs' <$> getSessionModeIO c
+  qss <- batchQueues mkSMPTSession qs' <$> getSessionModeIO c
   mapM_ addPendingSubs qss
   rs <- mapConcurrently subscribeQueues_ qss
-  when (withEvents && not (null errs)) $ notifySub c "" $ ERRS $ map (first qConnId) errs
+  when withEvents $ forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
   pure $ map (second Left) errs <> concatMap L.toList rs
   where
-    addPendingSubs (tSess, qs') = atomically $ SS.batchAddPendingSubs (L.toList qs') tSess $ currentSubs c
+    addPendingSubs (tSess, qs') = atomically $ SS.batchAddPendingSubs tSess (L.toList qs') $ currentSubs c
     subscribeQueues_ qs'@(tSess@(_, srv, _), _) = do
       (rs, active) <- subscribeSessQueues_ c qs' withEvents
       if active
@@ -1531,7 +1548,7 @@ resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> 
 resubscribeSessQueues c tSess qs = do
   (errs, qs_) <- checkQueues c qs
   forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c (tSess, qs') True
-  unless (null errs) $ notifySub c "" $ ERRS $ map (first qConnId) errs
+  forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
 
 subscribeSessQueues_ :: AgentClient -> (SMPTransportSession, NonEmpty RcvQueueSub) -> Bool -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
 subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQueues_ c NRMBackground qs
@@ -1549,26 +1566,24 @@ subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQue
         atomically $
           ifM
             (activeClientSession c tSess sessId)
-            (processSubResults rs $> True)
+            (processSubResults c tSess sessId rs $> True)
             (incSMPServerStat' c userId srv connSubIgnored (length rs) $> False)
       forM_ cs_ $ \cs -> do
         let (errs, okConns) = partitionEithers $ map (\(RcvQueueSub {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
             conns = filter (`S.notMember` cs) okConns
-        unless (null conns) $ notifySub c "" $ UP srv conns
-        let (tempErrs, finalErrs) = partition (temporaryClientError . snd) errs
-        mapM_ (\(connId, e) -> notifySub c connId $ ERR $ protocolClientError SMP (clientServer smp) e) finalErrs
-        forM_ (listToMaybe tempErrs) $ \(connId, e) -> do
-          when (null okConns && S.null cs && null finalErrs && active) $ liftIO $ do
+        unless (null conns) $ notifySub c $ UP srv conns
+        forM_ (L.nonEmpty errs) $ \errs' -> do
+          let noFinalErrs = all (temporaryClientError . snd) errs'
+              addr = B.unpack $ strEncode srv
+          notifySub c $ ERRS $ L.map (second $ protocolClientError SMP addr) errs'
+          when (null okConns && S.null cs && noFinalErrs && active) $ liftIO $ do
             -- We only close the client session that was used to subscribe.
             v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
             mapM_ (closeClient_ c) v_
-          notifySub c connId $ ERR $ protocolClientError SMP (clientServer smp) e
       pure (rs, active)
       where
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
-        processSubResults :: NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM ()
-        processSubResults = mapM_ $ uncurry $ processSubResult c sessId
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)
@@ -1583,11 +1598,11 @@ type BatchResponses q e r = NonEmpty (q, Either e r)
 -- it includes arguments in the results instead.
 sendTSessionBatches :: forall q r. ByteString -> (q -> TransportSessionMode -> SMPTransportSession) -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> [q] -> AM' [(q, Either AgentErrorType r)]
 sendTSessionBatches statCmd mkSession action c nm qs = do
-  qs' <- batchQueues mkSession c qs <$> getSessionModeIO c
+  qs' <- batchQueues mkSession qs <$> getSessionModeIO c
   concatMap L.toList <$> mapConcurrently (sendClientBatch statCmd action c nm) qs'
 
-batchQueues :: (q -> TransportSessionMode -> SMPTransportSession) -> AgentClient -> [q] -> TransportSessionMode -> [(SMPTransportSession, NonEmpty q)]
-batchQueues mkSession c qs mode = M.assocs $ foldr batch M.empty qs
+batchQueues :: (q -> TransportSessionMode -> SMPTransportSession) -> [q] -> TransportSessionMode -> [(SMPTransportSession, NonEmpty q)]
+batchQueues mkSession qs mode = M.assocs $ foldr batch M.empty qs
   where
     batch q m =
       let tSess = mkSession q mode
@@ -1605,65 +1620,66 @@ sendClientBatch_ statCmd errRes action c nm (tSess@(_, srv, _), qs') =
       logServer' "-->" c srv (bshow (length qs') <> " queues") statCmd
       first (L.map agentError) <$> action smp qs'
       where
-        agentError = second . first $ protocolClientError SMP $ clientServer smp
+        agentError = second . first $ protocolClientError SMP $ B.unpack (strEncode srv)
 
 sendBatch :: SomeRcvQueue q => (SMPClient -> NetworkRequestMode -> NonEmpty (SMP.RecipientId, SMP.RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError a))) -> SMPClient -> NetworkRequestMode -> NonEmpty q -> IO (BatchResponses q SMPClientError a)
 sendBatch smpCmdFunc smp nm qs = L.zip qs <$> smpCmdFunc smp nm (L.map queueCreds qs)
   where
     queueCreds q = (queueId q, rcvAuthKey q)
 
-addSubscription :: AgentClient -> SessionId -> RcvQueueSub -> STM ()
-addSubscription c sessId rq = do
-  modifyTVar' (subscrConns c) $ S.insert $ qConnId rq
-  tSess <- mkSMPTransportSession c rq
-  SS.addActiveSub sessId rq tSess $ currentSubs c
+failSubscription :: SomeRcvQueue q => AgentClient -> SMPTransportSession -> q -> SMPClientError -> STM ()
+failSubscription c tSess rq e = do
+  let rId = queueId rq
+  TM.insert rId e =<< getRemovedSubs c (qUserId rq, qServer rq)
+  SS.deletePendingSub tSess rId $ currentSubs c
 
-failSubscription :: SomeRcvQueue q => AgentClient -> q -> SMPClientError -> STM ()
-failSubscription c rq e = do
-  TM.insert (qUserId rq, qServer rq, queueId rq) e (removedSubs c)
-  tSess <- mkSMPTransportSession c rq
-  SS.deletePendingSub (queueId rq) tSess $ currentSubs c
+failSubscriptions :: AgentClient -> SMPTransportSession -> Map SMP.RecipientId SMPClientError -> STM ()
+failSubscriptions c tSess@(uId, srv, _) qs = do
+  TM.union qs =<< getRemovedSubs c (uId, srv)
+  SS.batchDeletePendingSubs tSess (M.keysSet qs) $ currentSubs c
+
+getRemovedSubs :: AgentClient -> (UserId, SMPServer) -> STM (TMap SMP.RecipientId SMPClientError)
+getRemovedSubs AgentClient {removedSubs} k = TM.lookup k removedSubs >>= maybe new pure
+  where
+    new = do
+      s <- newTVar M.empty
+      TM.insert k s removedSubs
+      pure s
 
 addPendingSubscription :: AgentClient -> RcvQueueSub -> STM ()
 addPendingSubscription c rq = do
   modifyTVar' (subscrConns c) $ S.insert $ qConnId rq
   tSess <- mkSMPTransportSession c rq
-  SS.addPendingSub rq tSess $ currentSubs c
+  SS.addPendingSub tSess rq $ currentSubs c
 
 addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
 addNewQueueSubscription c rq' tSess sessId = do
   let rq = rcvQueueSub rq'
-  same <-
-    atomically $
-      ifM
-        (activeClientSession c tSess sessId)
-        (True <$ addSubscription c sessId rq)
-        (False <$ addPendingSubscription c rq)
+  same <- atomically $ do
+    modifyTVar' (subscrConns c) $ S.insert $ qConnId rq
+    active <- activeClientSession c tSess sessId
+    if active
+      then SS.addActiveSub tSess sessId rq $ currentSubs c
+      else SS.addPendingSub tSess rq $ currentSubs c
+    pure active
   unless same $ resubscribeSMPSession c tSess
 
 hasActiveSubscription :: SomeRcvQueue q => AgentClient -> q -> STM Bool
 hasActiveSubscription c rq = do
   tSess <- mkSMPTransportSession c rq
-  SS.hasActiveSub (queueId rq) tSess $ currentSubs c
+  SS.hasActiveSub tSess (queueId rq) $ currentSubs c
 {-# INLINE hasActiveSubscription #-}
 
-hasPendingSubscription :: SomeRcvQueue q => AgentClient -> q -> STM Bool
-hasPendingSubscription c rq = do
-  tSess <- mkSMPTransportSession c rq
-  SS.hasPendingSub (queueId rq) tSess $ currentSubs c
-{-# INLINE hasPendingSubscription #-}
-
-removeSubscription :: SomeRcvQueue q => AgentClient -> ConnId -> q -> STM ()
-removeSubscription c connId rq = do
+removeSubscription :: SomeRcvQueue q => AgentClient -> SMPTransportSession -> ConnId -> q -> STM ()
+removeSubscription c tSess connId rq = do
   modifyTVar' (subscrConns c) $ S.delete connId
-  tSess <- mkSMPTransportSession c rq
-  SS.deleteSub (queueId rq) tSess $ currentSubs c
+  SS.deleteSub tSess (queueId rq) $ currentSubs c
 
 removeSubscriptions :: SomeRcvQueue q => AgentClient -> [ConnId] -> [q] -> STM ()
 removeSubscriptions c connIds qs = do
   unless (null connIds) $ modifyTVar' (subscrConns c) (`S.difference` (S.fromList connIds))
-  qss <- batchQueues mkSMPTSession c qs <$> getSessionMode c
-  forM_ qss $ \(tSess, qs') -> SS.batchDeleteSubs (L.toList qs') tSess $ currentSubs c
+  qss <- batchQueues mkSMPTSession qs <$> getSessionMode c
+  forM_ qss $ \(tSess, qs') -> SS.batchDeleteSubs tSess (L.toList qs') $ currentSubs c
 
 getSubscriptions :: AgentClient -> IO (Set ConnId)
 getSubscriptions = readTVarIO . subscrConns
@@ -1930,7 +1946,7 @@ withNtfBatch cmdStr action c NtfToken {ntfServer, ntfPrivKey} subs = do
       logServer' "-->" c ntfServer (bshow (length subs) <> " subscriptions") cmdStr
       L.map agentError <$> action ntf ntfPrivKey subs
       where
-        agentError = first $ protocolClientError NTF $ clientServer ntf
+        agentError = first $ protocolClientError NTF $ B.unpack (strEncode ntfServer)
 
 agentNtfDeleteSubscription :: AgentClient -> NtfSubscriptionId -> NtfToken -> AM ()
 agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
@@ -2054,9 +2070,7 @@ withWorkItems c doWork getWork action = do
           forM_ criticalErr $ \err -> do
             notifyErr (CRITICAL False) err
             when (all isWorkItemError errs) noWork
-      unless (null errs) $
-        atomically $
-          writeTBQueue (subQ c) ("", "", AEvt SAENone $ ERRS $ map (\e -> ("", INTERNAL $ show e)) errs)
+      forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (\e -> ("", INTERNAL $ show e))
     Left e
       | isWorkItemError e -> noWork >> notifyErr (CRITICAL False) e
       | otherwise -> notifyErr INTERNAL e
@@ -2451,14 +2465,20 @@ data SubscriptionsInfo = SubscriptionsInfo
 getAgentSubscriptions :: AgentClient -> IO SubscriptionsInfo
 getAgentSubscriptions c = do
   (activeSubscriptions, pendingSubscriptions) <- SS.foldSessionSubs addSubs ([], []) $ currentSubs c
-  removedSubscriptions <- getRemovedSubs
+  removedSubscriptions <- getRemoved
   pure $ SubscriptionsInfo {activeSubscriptions, pendingSubscriptions, removedSubscriptions}
   where
     addSubs :: ([SubInfo], [SubInfo]) -> (SMPTransportSession, SS.SessSubs) -> IO ([SubInfo], [SubInfo])
     addSubs (active, pending) ((userId, srv, _), s) = do
       (active', pending') <- SS.mapSubs (map (\rId -> subInfo (userId, srv, rId) Nothing) . M.keys) s
       pure (active' ++ active, pending' ++ pending)
-    getRemovedSubs = map (uncurry subInfo . second Just) . M.assocs <$> readTVarIO (removedSubs c)
+    getRemoved :: IO [SubInfo]
+    getRemoved = foldM addSubInfo [] . M.assocs =<< readTVarIO (removedSubs c)
+      where
+        addSubInfo :: [SubInfo] -> ((UserId, SMPServer), TMap SMP.RecipientId SMPClientError) -> IO [SubInfo]
+        addSubInfo ss ((uId, srv), errs) = do
+          ss' <- map (\(rId, e) -> subInfo (uId, srv, rId) (Just e)) . M.assocs <$> readTVarIO errs
+          pure $ ss' ++ ss
     subInfo :: (UserId, SMPServer, SMP.RecipientId) -> Maybe SMPClientError -> SubInfo
     subInfo (uId, srv, rId) err = SubInfo {userId = uId, server = enc srv, rcvId = enc rId, subError = show <$> err}
     enc :: StrEncoding a => a -> Text

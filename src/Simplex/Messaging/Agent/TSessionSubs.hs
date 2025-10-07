@@ -12,8 +12,10 @@ module Simplex.Messaging.Agent.TSessionSubs
     addPendingSub,
     setSessionId,
     addActiveSub,
+    batchAddActiveSubs,
     batchAddPendingSubs,
     deletePendingSub,
+    batchDeletePendingSubs,
     deleteSub,
     batchDeleteSubs,
     hasPendingSubs,
@@ -70,30 +72,30 @@ getSessSubs tSess ss = lookupSubs tSess ss >>= maybe new pure
       TM.insert tSess s $ sessionSubs ss
       pure s
 
-hasActiveSub :: RecipientId -> SMPTransportSession -> TSessionSubs -> STM Bool
+hasActiveSub :: SMPTransportSession -> RecipientId -> TSessionSubs -> STM Bool
 hasActiveSub = hasQueue_ activeSubs
 {-# INLINE hasActiveSub #-}
 
-hasPendingSub :: RecipientId -> SMPTransportSession -> TSessionSubs -> STM Bool
+hasPendingSub :: SMPTransportSession -> RecipientId -> TSessionSubs -> STM Bool
 hasPendingSub = hasQueue_ pendingSubs
 {-# INLINE hasPendingSub #-}
 
-hasQueue_ :: (SessSubs -> TMap RecipientId RcvQueueSub) -> RecipientId -> SMPTransportSession -> TSessionSubs -> STM Bool
-hasQueue_ subs rId tSess ss = isJust <$> (lookupSubs tSess ss $>>= TM.lookup rId . subs)
+hasQueue_ :: (SessSubs -> TMap RecipientId RcvQueueSub) -> SMPTransportSession -> RecipientId -> TSessionSubs -> STM Bool
+hasQueue_ subs tSess rId ss = isJust <$> (lookupSubs tSess ss $>>= TM.lookup rId . subs)
 {-# INLINE hasQueue_ #-}
 
-addPendingSub :: RcvQueueSub -> SMPTransportSession -> TSessionSubs -> STM ()
-addPendingSub rq tSess ss = getSessSubs tSess ss >>= TM.insert (rcvId rq) rq . pendingSubs
+addPendingSub :: SMPTransportSession -> RcvQueueSub -> TSessionSubs -> STM ()
+addPendingSub tSess rq ss = getSessSubs tSess ss >>= TM.insert (rcvId rq) rq . pendingSubs
 
-setSessionId :: SessionId -> SMPTransportSession -> TSessionSubs -> STM ()
-setSessionId sessId tSess ss = do
+setSessionId :: SMPTransportSession -> SessionId -> TSessionSubs -> STM ()
+setSessionId tSess sessId ss = do
   s <- getSessSubs tSess ss
   readTVar (subsSessId s) >>= \case
     Nothing -> writeTVar (subsSessId s) (Just sessId)
     Just sessId' -> unless (sessId == sessId') $ void $ setSubsPending_ s $ Just sessId
 
-addActiveSub :: SessionId -> RcvQueueSub -> SMPTransportSession -> TSessionSubs -> STM ()
-addActiveSub sessId rq tSess ss = do
+addActiveSub :: SMPTransportSession -> SessionId -> RcvQueueSub -> TSessionSubs -> STM ()
+addActiveSub tSess sessId rq ss = do
   s <- getSessSubs tSess ss
   sessId' <- readTVar $ subsSessId s
   let rId = rcvId rq
@@ -103,19 +105,35 @@ addActiveSub sessId rq tSess ss = do
       TM.delete rId $ pendingSubs s
     else TM.insert rId rq $ pendingSubs s
 
-batchAddPendingSubs :: [RcvQueueSub] -> SMPTransportSession -> TSessionSubs -> STM ()
-batchAddPendingSubs rqs tSess ss = do
+batchAddActiveSubs :: SMPTransportSession -> SessionId -> [RcvQueueSub] -> TSessionSubs -> STM ()
+batchAddActiveSubs tSess sessId rqs ss = do
+  s <- getSessSubs tSess ss
+  sessId' <- readTVar $ subsSessId s
+  let qs = M.fromList $ map (\rq -> (rcvId rq, rq)) rqs
+  if Just sessId == sessId'
+    then do
+      TM.union qs $ activeSubs s
+      modifyTVar' (pendingSubs s) (`M.difference` qs)
+    else TM.union qs $ pendingSubs s
+
+batchAddPendingSubs :: SMPTransportSession -> [RcvQueueSub] -> TSessionSubs -> STM ()
+batchAddPendingSubs tSess rqs ss = do
   s <- getSessSubs tSess ss
   modifyTVar' (pendingSubs s) $ M.union $ M.fromList $ map (\rq -> (rcvId rq, rq)) rqs
 
-deletePendingSub :: RecipientId -> SMPTransportSession -> TSessionSubs -> STM ()
-deletePendingSub rId tSess = lookupSubs tSess >=> mapM_ (TM.delete rId . pendingSubs)
+deletePendingSub :: SMPTransportSession -> RecipientId -> TSessionSubs -> STM ()
+deletePendingSub tSess rId = lookupSubs tSess >=> mapM_ (TM.delete rId . pendingSubs)
 
-deleteSub :: RecipientId -> SMPTransportSession -> TSessionSubs -> STM ()
-deleteSub rId tSess = lookupSubs tSess >=> mapM_ (\s -> TM.delete rId (activeSubs s) >> TM.delete rId (pendingSubs s))
+batchDeletePendingSubs :: SMPTransportSession -> S.Set RecipientId -> TSessionSubs -> STM ()
+batchDeletePendingSubs tSess rIds = lookupSubs tSess >=> mapM_ (delete . pendingSubs)
+  where
+    delete = (`modifyTVar'` (`M.withoutKeys` rIds))
 
-batchDeleteSubs :: SomeRcvQueue q => [q] -> SMPTransportSession -> TSessionSubs -> STM ()
-batchDeleteSubs rqs tSess = lookupSubs tSess >=> mapM_ (\s -> delete (activeSubs s) >> delete (pendingSubs s))
+deleteSub :: SMPTransportSession -> RecipientId -> TSessionSubs -> STM ()
+deleteSub tSess rId = lookupSubs tSess >=> mapM_ (\s -> TM.delete rId (activeSubs s) >> TM.delete rId (pendingSubs s))
+
+batchDeleteSubs :: SomeRcvQueue q => SMPTransportSession -> [q] -> TSessionSubs -> STM ()
+batchDeleteSubs tSess rqs = lookupSubs tSess >=> mapM_ (\s -> delete (activeSubs s) >> delete (pendingSubs s))
   where
     rIds = S.fromList $ map queueId rqs
     delete = (`modifyTVar'` (`M.withoutKeys` rIds))
@@ -151,7 +169,7 @@ setSubsPending mode tSess@(uId, srv, connId_) sessId tss@(TSessionSubs ss)
     setPendingChangeMode s = do
       subs <- M.union <$> readTVar (activeSubs s) <*> readTVar (pendingSubs s)
       unless (null subs) $
-        forM_ subs $ \rq -> addPendingSub rq (uId, srv, sessEntId (connId rq)) tss
+        forM_ subs $ \rq -> addPendingSub (uId, srv, sessEntId (connId rq)) rq tss
       pure subs
 
 setSubsPending_ :: SessSubs -> Maybe SessionId -> STM (Map RecipientId RcvQueueSub)
