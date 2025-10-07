@@ -1456,7 +1456,7 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
   pendingSubs <- SS.getPendingSubs tSess $ currentSubs c
   let (failed, subscribed, ignored) = foldr (partitionResults pendingSubs) (M.empty, [], 0) rs
   unless (M.null failed) $ do
-    incSMPServerStat' c userId srv connSubErrs $ length failed
+    incSMPServerStat' c userId srv connSubErrs $ M.size failed
     failSubscriptions c tSess failed
   unless (null subscribed) $ do
     incSMPServerStat' c userId srv connSubscribed $ length subscribed
