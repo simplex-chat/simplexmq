@@ -436,7 +436,7 @@ rejectContact c = withAgentEnv c . rejectContact' c
 data SubscriptionSyncResult = SubscriptionSyncResult
   { missingUserIds :: [UserId],
     extraUserIds :: [UserId],
-    missingConnIds :: [ConnId], -- differentiate not found and deleted?
+    missingConnIds :: [ConnId],
     extraConnIds :: [ConnId]
   }
   deriving (Show, Eq)
