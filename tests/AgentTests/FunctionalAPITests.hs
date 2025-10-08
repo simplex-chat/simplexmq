@@ -67,7 +67,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf, nub)
-import qualified Data.List.NonEmpty as L
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -2438,7 +2437,7 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
       liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
-      subcribeAllConnections c
+      subscribeAllConnections c
       liftIO $ up c cs
     delete :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     delete c cs = do

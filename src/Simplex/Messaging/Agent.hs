@@ -69,7 +69,7 @@ module Simplex.Messaging.Agent
     rejectContact,
     subscribeConnection,
     subscribeConnections,
-    subcribeAllConnections,
+    subscribeAllConnections,
     getConnectionMessages,
     getNotificationConns,
     resubscribeConnection,
@@ -444,8 +444,8 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Subscribe to all connections
-subcribeAllConnections :: AgentClient -> AE ()
-subcribeAllConnections c = withAgentEnv c $ subcribeAllConnections' c
+subscribeAllConnections :: AgentClient -> AE ()
+subscribeAllConnections c = withAgentEnv c $ subscribeAllConnections' c
 
 -- | Get messages for connections (GET commands)
 getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
@@ -1356,10 +1356,9 @@ subscribeConnections_ c conns = do
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
-subcribeAllConnections' :: AgentClient -> AM ()
-subcribeAllConnections' c = do
+subscribeAllConnections' :: AgentClient -> AM ()
+subscribeAllConnections' c = do
   userSrvs <- withStore' c getSubscriptionServers
-  liftIO $ print userSrvs
   lift $ pooledMapConcurrentlyN_ 4 subscribeUserServer userSrvs
   resumeAllDelivery
   resumeAllCommands c

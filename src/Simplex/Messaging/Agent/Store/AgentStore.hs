@@ -922,9 +922,13 @@ getConnectionsForDelivery db =
   map fromOnly <$> DB.query_ db "SELECT DISTINCT conn_id FROM snd_message_deliveries WHERE failed = 0"
 
 getAllSndQueuesForDelivery :: DB.Connection -> IO [SndQueue]
-getAllSndQueuesForDelivery db = map toSndQueue <$> DB.query_ db (sndQueueQuery <> condition)
+getAllSndQueuesForDelivery db = map toSndQueue <$> DB.query_ db (sndQueueQuery <> " " <> delivery)
   where
-    condition = " WHERE c.deleted = 0 AND c.conn_id IN (SELECT DISTINCT conn_id FROM snd_message_deliveries WHERE failed = 0)"
+    delivery = [sql|
+      JOIN (SELECT DISTINCT conn_id, snd_queue_id FROM snd_message_deliveries WHERE failed = 0) d
+      ON d.conn_id = q.conn_id AND d.snd_queue_id = q.snd_queue_id
+      WHERE c.deleted = 0
+    |]
 
 getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError (Maybe (Maybe RcvQueue, PendingMsgData)))
 getPendingQueueMsg db connId SndQueue {dbQueueId} =
