@@ -2292,13 +2292,13 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
-    :. (QueueStatus, Bool, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+    :. (QueueStatus, BoolInt, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
     :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
 toRcvQueue
   ( (userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode)
-      :. (status, enableNtfs, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors)
+      :. (status, BI enableNtfs, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors)
       :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)
       :. (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_)
   ) =
@@ -2329,8 +2329,8 @@ rcvQueueSubQuery =
     JOIN connections c ON q.conn_id = c.conn_id
   |]
 
-toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Bool, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
-toRcvQueueSub (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, BI primary, dbReplaceQueueId) =
+toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, BoolInt, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
+toRcvQueueSub (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, BI enableNtfs, dbQueueId, BI primary, dbReplaceQueueId) =
   RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
