@@ -48,6 +48,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue,
     newRcvQueue_,
     subscribeQueues,
+    subscribeUserServerQueues,
     getQueueMessage,
     decryptSMPMessage,
     failSubscription,
@@ -427,7 +428,7 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
   workerId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
-  doWork <- newTMVar ()
+  doWork <- newTMVar () -- new worker is created  with "some work to do" (indicated by () in TMVar)
   action <- newTMVar Nothing
   restarts <- newTVar $ RestartCount 0 0
   pure Worker {workerId, doWork, action, restarts}
@@ -733,7 +734,7 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
         mode <- getSessionModeIO c
         let resubscribe
               | (mode == TSMEntity) == isJust cId = resubscribeSMPSession c tSess
-              | otherwise = void $ subscribeQueues c qs True
+              | otherwise = void $ subscribeQueues c True qs
         runReaderT resubscribe env
 
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
@@ -1401,6 +1402,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             shortLink,
             clientService = ClientService DBNewEntity <$> serviceId,
             status = New,
+            enableNtfs,
             dbQueueId = DBNewEntity,
             primary = True,
             dbReplaceQueueId = Nothing,
@@ -1509,30 +1511,51 @@ serverHostError = \case
       _ -> False
 
 -- | Batch by transport session and subscribe queues. The list of results can have a different order.
-subscribeQueues :: AgentClient -> [RcvQueueSub] -> Bool -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
-subscribeQueues c qs withEvents = do
+subscribeQueues :: AgentClient -> Bool -> [RcvQueueSub] -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
+subscribeQueues c withEvents qs = do
   (errs, qs') <- checkQueues c qs
   atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
   qss <- batchQueues mkSMPTSession qs' <$> getSessionModeIO c
-  mapM_ addPendingSubs qss
-  rs <- mapConcurrently subscribeQueues_ qss
+  mapM_ (addPendingSubs c) qss
+  rs <- mapConcurrently (subscribeQueues_ c withEvents) qss
   when withEvents $ forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
   pure $ map (second Left) errs <> concatMap L.toList rs
+
+addPendingSubs :: AgentClient -> (SMPTransportSession, NonEmpty RcvQueueSub) -> AM' ()
+addPendingSubs c (tSess, qs') = atomically $ SS.batchAddPendingSubs tSess (L.toList qs') $ currentSubs c
+
+subscribeQueues_ :: AgentClient -> Bool -> (SMPTransportSession, NonEmpty RcvQueueSub) -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId))
+subscribeQueues_ c withEvents qs'@(tSess@(_, srv, _), _) = do
+  (rs, active) <- subscribeSessQueues_ c withEvents qs'
+  if active
+    then when (hasTempErrors rs) resubscribe $> rs
+    else do
+      logWarn "subcription batch result for replaced SMP client, resubscribing"
+      -- we use BROKER NETWORK error here instead of the original error, so it becomes temporary.
+      resubscribe $> L.map (second $ Left . toNESubscribeError) rs
   where
-    addPendingSubs (tSess, qs') = atomically $ SS.batchAddPendingSubs tSess (L.toList qs') $ currentSubs c
-    subscribeQueues_ qs'@(tSess@(_, srv, _), _) = do
-      (rs, active) <- subscribeSessQueues_ c qs' withEvents
-      if active
-        then when (hasTempErrors rs) resubscribe $> rs
-        else do
-          logWarn "subcription batch result for replaced SMP client, resubscribing"
-          -- we use BROKER NETWORK error here instead of the original error, so it becomes temporary.
-          resubscribe $> L.map (second $ Left . toNESubscribeError) rs
-      where
-        -- treating host errors as temporary here as well
-        hasTempErrors = any (either temporaryOrHostError (const False) . snd)
-        toNESubscribeError = BROKER (B.unpack $ strEncode srv) . NETWORK . NESubscribeError . show
-        resubscribe = resubscribeSMPSession c tSess
+    -- treating host errors as temporary here as well
+    hasTempErrors = any (either temporaryOrHostError (const False) . snd)
+    toNESubscribeError = BROKER (B.unpack $ strEncode srv) . NETWORK . NESubscribeError . show
+    resubscribe = resubscribeSMPSession c tSess
+
+subscribeUserServerQueues :: AgentClient -> UserId -> SMPServer -> [RcvQueueSub] -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
+subscribeUserServerQueues c userId srv qs = do
+  mode <- getSessionModeIO c
+  if mode == TSMEntity
+    then subscribeQueues c True qs
+    else do
+      let tSess = (userId, srv, Nothing)
+      (errs, qs_) <- checkQueues c qs
+      forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
+      let errs' = map (second Left) errs
+      case L.nonEmpty qs_ of
+        Just qs' -> do
+          atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId $ L.toList qs'))
+          addPendingSubs c (tSess, qs')
+          rs <- subscribeQueues_ c True (tSess, qs')
+          pure $ errs' <> L.toList rs
+        Nothing -> pure errs'
 
 -- only "checked" queues are subscribed
 checkQueues :: AgentClient -> [RcvQueueSub] -> AM' ([(RcvQueueSub, AgentErrorType)], [RcvQueueSub])
@@ -1547,14 +1570,14 @@ checkQueues c = fmap partitionEithers . mapM checkQueue
 resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> AM' ()
 resubscribeSessQueues c tSess qs = do
   (errs, qs_) <- checkQueues c qs
-  forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c (tSess, qs') True
+  forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c True (tSess, qs')
   forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
 
-subscribeSessQueues_ :: AgentClient -> (SMPTransportSession, NonEmpty RcvQueueSub) -> Bool -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
-subscribeSessQueues_ c qs withEvents = sendClientBatch_ "SUB" False subscribeQueues_ c NRMBackground qs
+subscribeSessQueues_ :: AgentClient -> Bool -> (SMPTransportSession, NonEmpty RcvQueueSub) -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
+subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c NRMBackground qs
   where
-    subscribeQueues_ :: SMPClient -> NonEmpty RcvQueueSub -> IO (BatchResponses RcvQueueSub SMPClientError (Maybe ServiceId), Bool)
-    subscribeQueues_ smp qs' = do
+    subscribe_ :: SMPClient -> NonEmpty RcvQueueSub -> IO (BatchResponses RcvQueueSub SMPClientError (Maybe ServiceId), Bool)
+    subscribe_ smp qs' = do
       let (userId, srv, _) = tSess
       atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
       rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
@@ -1645,12 +1668,6 @@ getRemovedSubs AgentClient {removedSubs} k = TM.lookup k removedSubs >>= maybe n
       s <- newTVar M.empty
       TM.insert k s removedSubs
       pure s
-
-addPendingSubscription :: AgentClient -> RcvQueueSub -> STM ()
-addPendingSubscription c rq = do
-  modifyTVar' (subscrConns c) $ S.insert $ qConnId rq
-  tSess <- mkSMPTransportSession c rq
-  SS.addPendingSub tSess rq $ currentSubs c
 
 addNewQueueSubscription :: AgentClient -> RcvQueue -> SMPTransportSession -> SessionId -> AM' ()
 addNewQueueSubscription c rq' tSess sessId = do

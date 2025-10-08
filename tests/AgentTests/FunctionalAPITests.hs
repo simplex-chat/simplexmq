@@ -67,6 +67,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf, nub)
+import qualified Data.List.NonEmpty as L
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -435,7 +436,7 @@ functionalAPITests ps = do
   describe "Batching SMP commands" $ do
     -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
-      testBatchedSubscriptions 200 10 ps
+      testBatchedSubscriptions 200 20 ps
     skip "faster version of the previous test (200 subscriptions gets very slow with test coverage)" $
       it "should subscribe to multiple (6) subscriptions with batching" $
         testBatchedSubscriptions 6 3 ps
@@ -2391,8 +2392,8 @@ testSuspendingAgentTimeout ps = withAgentClients2 $ \a b -> do
     pure ()
 
 testBatchedSubscriptions :: Int -> Int -> (ASrvTransport, AStoreType) -> IO ()
-testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) =
-  withAgentClientsCfgServers2 agentCfg agentCfg initAgentServers2 $ \a b -> do
+testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
+  (conns, conns') <- withAgentClientsCfgServers2 agentCfg agentCfg initAgentServers2 $ \a b -> do
     conns <- runServers $ do
       conns <- replicateM nCreate $ makeConnection_ PQSupportOff True a b
       forM_ conns $ \(aId, bId) -> exchangeGreetings_ PQEncOff a bId b aId
@@ -2401,21 +2402,23 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) =
       delete b aIds'
       liftIO $ threadDelay 1000000
       pure conns
-    ("", "", DOWN {}) <- nGet a
-    ("", "", DOWN {}) <- nGet a
-    ("", "", DOWN {}) <- nGet b
-    ("", "", DOWN {}) <- nGet b
+    let conns' = drop nDel conns
+        (aIds', bIds') = unzip conns'
+    down a bIds'
+    down b aIds'
     runServers $ do
-      ("", "", UP {}) <- nGet a
-      ("", "", UP {}) <- nGet a
-      ("", "", UP {}) <- nGet b
-      ("", "", UP {}) <- nGet b
+      up a bIds'
+      up b aIds'
+    down a bIds'
+    down b aIds'
+    pure (conns, conns')
+  withAgentClientsCfgServers2 agentCfg agentCfg initAgentServers2 $ \a b -> do
+    runServers $ do
       liftIO $ threadDelay 1000000
       let (aIds, bIds) = unzip conns
-          conns' = drop nDel conns
           (aIds', bIds') = unzip conns'
-      subscribe a bIds
-      subscribe b aIds
+      subscribe a bIds'
+      subscribe b aIds'
       forM_ conns' $ \(aId, bId) -> exchangeGreetingsMsgId_ PQEncOff 4 a bId b aId
       void $ resubscribeConnections a bIds
       void $ resubscribeConnections b aIds
@@ -2425,14 +2428,18 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) =
       deleteFail a bIds'
       deleteFail b aIds'
   where
+    down c cs = do
+      ("", "", DOWN _ cs1) <- nGet c
+      ("", "", DOWN _ cs2) <- nGet c
+      liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
+    up c cs = do
+      ("", "", UP _ cs1) <- nGet c
+      ("", "", UP _ cs2) <- nGet c
+      liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
-      r <- subscribeConnections c cs
-      liftIO $ do
-        let dc = S.fromList $ take nDel cs
-        all isRight (M.withoutKeys r dc) `shouldBe` True
-        all (== Left (CONN NOT_FOUND "")) (M.restrictKeys r dc) `shouldBe` True
-        M.keys r `shouldMatchList` cs
+      subcribeAllConnections c
+      liftIO $ up c cs
     delete :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     delete c cs = do
       r <- deleteConnections c cs
@@ -2462,8 +2469,10 @@ testBatchedPendingMessages nCreate nMsgs =
     runRight_ $ forM_ msgConns $ \(_, bId) -> sendMessage a bId SMP.noMsgFlags "hello"
     replicateM_ nMsgs $ get a =##> \case ("", cId, SENT _) -> isJust $ find ((cId ==) . snd) msgConns; _ -> False
     withB $ \b -> runRight_ $ do
-      r <- subscribeConnections b $ map fst conns
-      liftIO $ all isRight r `shouldBe` True
+      let aIds = map fst conns
+      subscribeAllConnections b
+      ("", "", UP _ aIds') <- nGet b
+      liftIO $ S.fromList aIds' `shouldBe` S.fromList aIds
       replicateM_ nMsgs $ do
         ("", cId, Msg' msgId _ "hello") <- get b
         liftIO $ isJust (find ((cId ==) . fst) msgConns) `shouldBe` True

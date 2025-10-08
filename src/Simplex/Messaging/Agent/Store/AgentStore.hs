@@ -39,6 +39,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateNewConnRcv,
     updateNewConnSnd,
     createSndConn,
+    getSubscriptionServers,
+    getUserServerRcvQueueSubs,
     getConn,
     getDeletedConn,
     getConns,
@@ -110,6 +112,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateSndMsgRcpt,
     getPendingQueueMsg,
     getConnectionsForDelivery,
+    getAllSndQueuesForDelivery,
     updatePendingMsgRIState,
     deletePendingMsgs,
     getExpiredSndMessages,
@@ -137,6 +140,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- Async commands
     createCommand,
     getPendingCommandServers,
+    getAllPendingCommandConns,
     getPendingServerCommand,
     updateCommandServer,
     deleteCommand,
@@ -884,8 +888,8 @@ createSndMsg db connId sndMsgData@SndMsgData {internalSndId, internalHash} = do
   insertSndMsgDetails_ db connId sndMsgData
   updateSndMsgHash db connId internalSndId internalHash
 
-createSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> IO ()
-createSndMsgDelivery db connId SndQueue {dbQueueId} msgId =
+createSndMsgDelivery :: DB.Connection -> SndQueue -> InternalId -> IO ()
+createSndMsgDelivery db SndQueue {connId, dbQueueId} msgId =
   DB.execute db "INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id) VALUES (?, ?, ?)" (connId, dbQueueId, msgId)
 
 getSndMsgViaRcpt :: DB.Connection -> ConnId -> InternalSndId -> IO (Either StoreError SndMsg)
@@ -916,6 +920,11 @@ updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId, msgRcptStatus} =
 getConnectionsForDelivery :: DB.Connection -> IO [ConnId]
 getConnectionsForDelivery db =
   map fromOnly <$> DB.query_ db "SELECT DISTINCT conn_id FROM snd_message_deliveries WHERE failed = 0"
+
+getAllSndQueuesForDelivery :: DB.Connection -> IO [SndQueue]
+getAllSndQueuesForDelivery db = map toSndQueue <$> DB.query_ db (sndQueueQuery <> condition)
+  where
+    condition = " WHERE c.deleted = 0 AND c.conn_id IN (SELECT DISTINCT conn_id FROM snd_message_deliveries WHERE failed = 0)"
 
 getPendingQueueMsg :: DB.Connection -> ConnId -> SndQueue -> IO (Either StoreError (Maybe (Maybe RcvQueue, PendingMsgData)))
 getPendingQueueMsg db connId SndQueue {dbQueueId} =
@@ -1318,6 +1327,21 @@ getPendingCommandServers db connIds =
        in if connId `S.member` conns then Just (connId, srvs) else Nothing
     smpServer (host, port, keyHash) = SMPServer <$> host <*> port <*> keyHash
     conns = S.fromList connIds
+
+getAllPendingCommandConns :: DB.Connection -> IO [(ConnId, Maybe SMPServer)]
+getAllPendingCommandConns db =
+  map toResult
+    <$> DB.query_
+      db
+      [sql|
+        SELECT DISTINCT c.conn_id, c.host, c.port, COALESCE(c.server_key_hash, s.key_hash)
+        FROM commands c
+        JOIN connections cs ON c.conn_id = cs.conn_id
+        LEFT JOIN servers s ON s.host = c.host AND s.port = c.port
+        WHERE cs.deleted = 0
+      |]
+  where
+    toResult (connId, host, port, keyHash) = (connId, SMPServer <$> host <*> port <*> keyHash)
 
 getPendingServerCommand :: DB.Connection -> ConnId -> Maybe SMPServer -> IO (Either StoreError (Maybe PendingCommand))
 getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getCommand markCommandFailed
@@ -2023,6 +2047,30 @@ newQueueId_ :: [Only Int64] -> DBEntityId
 newQueueId_ [] = DBEntityId 1
 newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
+-- * subscribe all connections
+
+getSubscriptionServers :: DB.Connection -> IO [(UserId, SMPServer)]
+getSubscriptionServers db =
+  map toUserServer
+    <$> DB.query_
+      db
+      [sql|
+        SELECT DISTINCT c.user_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash)
+        FROM rcv_queues q
+        JOIN servers s ON q.host = s.host AND q.port = s.port
+        JOIN connections c ON q.conn_id = c.conn_id
+        WHERE c.deleted = 0 AND q.deleted = 0
+      |]
+  where
+    toUserServer :: (UserId, NonEmpty TransportHost, ServiceName, C.KeyHash) -> (UserId, SMPServer)
+    toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
+
+getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [RcvQueueSub]
+getUserServerRcvQueueSubs db userId srv =
+  map toRcvQueueSub <$> DB.query db (rcvQueueSubQuery <> condition) (userId, host srv, port srv)
+  where
+    condition = " WHERE c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?"
+
 -- * getConn helpers
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
@@ -2229,7 +2277,7 @@ rcvQueueQuery :: Query
 rcvQueueQuery =
   [sql|
     SELECT c.user_id, COALESCE(q.server_key_hash, s.key_hash), q.conn_id, q.host, q.port, q.rcv_id, q.rcv_private_key, q.rcv_dh_secret,
-      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.queue_mode, q.status,
+      q.e2e_priv_key, q.e2e_dh_secret, q.snd_id, q.queue_mode, q.status, c.enable_ntfs,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id, q.switch_status, q.smp_client_version, q.delete_errors,
       q.ntf_public_key, q.ntf_private_key, q.ntf_id, q.rcv_ntf_dh_secret,
       q.link_id, q.link_key, q.link_priv_sig_key, q.link_enc_fixed_data
@@ -2240,13 +2288,13 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
-    :. (QueueStatus, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
+    :. (QueueStatus, Bool, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
     :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
 toRcvQueue
   ( (userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode)
-      :. (status, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors)
+      :. (status, enableNtfs, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors)
       :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)
       :. (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_)
   ) =
@@ -2259,7 +2307,7 @@ toRcvQueue
         (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
         _ -> Nothing
       -- TODO [certs rcv] read client service
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 -- | returns all connection queue credentials, the first queue is the primary one
 getRcvQueueSubsByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueueSub))
@@ -2270,16 +2318,16 @@ getRcvQueueSubsByConnId_ db connId =
 rcvQueueSubQuery :: Query
 rcvQueueSubQuery =
   [sql|
-    SELECT c.user_id, q.conn_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.rcv_id, q.rcv_private_key, q.status,
+    SELECT c.user_id, q.conn_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
     JOIN connections c ON q.conn_id = c.conn_id
   |]
 
-toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
-toRcvQueueSub (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, dbQueueId, BI primary, dbReplaceQueueId) =
-  RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, dbQueueId, primary, dbReplaceQueueId, rcvPrivateKey, status}
+toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Bool, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
+toRcvQueueSub (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, BI primary, dbReplaceQueueId) =
+  RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
