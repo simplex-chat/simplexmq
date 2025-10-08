@@ -440,7 +440,7 @@ data ConnectionsDriftInfo = ConnectionsDriftInfo
     missingConnIds :: [ConnId],
     extraConnIds :: [ConnId]
   }
-  deriving (Show, Eq)
+  deriving (Show)
 
 compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDriftInfo
 compareConnections c = withAgentEnv c .: compareConnections' c
