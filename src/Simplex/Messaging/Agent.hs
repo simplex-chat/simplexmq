@@ -67,8 +67,9 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
-    SubscriptionSyncResult (..),
-    syncSubscriptions,
+    ConnectionsDriftInfo (..),
+    compareConnections,
+    syncConnections,
     subscribeConnection,
     subscribeConnections,
     getConnectionMessages,
@@ -433,7 +434,7 @@ rejectContact :: AgentClient -> ConfirmationId -> AE ()
 rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
 
-data SubscriptionSyncResult = SubscriptionSyncResult
+data ConnectionsDriftInfo = ConnectionsDriftInfo
   { missingUserIds :: [UserId],
     extraUserIds :: [UserId],
     missingConnIds :: [ConnId],
@@ -441,9 +442,13 @@ data SubscriptionSyncResult = SubscriptionSyncResult
   }
   deriving (Show, Eq)
 
-syncSubscriptions :: AgentClient -> Bool -> [UserId] -> [ConnId] -> AE SubscriptionSyncResult
-syncSubscriptions c = withAgentEnv c .:. syncSubscriptions' c
-{-# INLINE syncSubscriptions #-}
+compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDriftInfo
+compareConnections c = withAgentEnv c .: compareConnections' c
+{-# INLINE compareConnections #-}
+
+syncConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDriftInfo
+syncConnections c = withAgentEnv c .: syncConnections' c
+{-# INLINE syncConnections #-}
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentClient -> ConnId -> AE (Maybe ClientServiceId)
@@ -1260,25 +1265,31 @@ rejectContact' c invId =
   withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
 
-syncSubscriptions' :: AgentClient -> Bool -> [UserId] -> [ConnId] -> AM SubscriptionSyncResult
-syncSubscriptions' c shouldDelete userIds connIds = do
+syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDriftInfo
+syncConnections' c userIds connIds = do
   knownUserIds <- withStore' c $ \db -> getUserIds db
   let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
-  when shouldDelete $
-    forM_ extraUserIds $ \uid -> deleteUser' c uid False
+  forM_ extraUserIds $ \uid -> deleteUser' c uid False
   knownConnIds <- withStore' c $ \db -> getConnIds db
   let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
-  when shouldDelete $
-    deleteConnectionsAsync' c False extraConnIds
-  pure SubscriptionSyncResult {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
-  where
-    syncDiff :: (Ord a) => [a] -> [a] -> ([a], [a])
-    syncDiff passed known =
-      let passedSet = S.fromList passed
-          knownSet = S.fromList known
-          missing = S.toList (passedSet `S.difference` knownSet)
-          extra = S.toList (knownSet  `S.difference` passedSet)
-       in (missing, extra)
+  deleteConnectionsAsync' c False extraConnIds
+  pure ConnectionsDriftInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+
+compareConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDriftInfo
+compareConnections' c userIds connIds = do
+  knownUserIds <- withStore' c $ \db -> getUserIds db
+  let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
+  knownConnIds <- withStore' c $ \db -> getConnIds db
+  let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
+  pure ConnectionsDriftInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+
+syncDiff :: (Ord a) => [a] -> [a] -> ([a], [a])
+syncDiff passed known =
+  let passedSet = S.fromList passed
+      knownSet = S.fromList known
+      missing = S.toList (passedSet `S.difference` knownSet)
+      extra = S.toList (knownSet  `S.difference` passedSet)
+    in (missing, extra)
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe ClientServiceId)
