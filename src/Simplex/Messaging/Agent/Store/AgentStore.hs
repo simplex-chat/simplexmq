@@ -28,6 +28,7 @@
 module Simplex.Messaging.Agent.Store.AgentStore
   ( -- * Users
     createUserRecord,
+    getUserIds,
     deleteUserRecord,
     setUserDeleted,
     deleteUserWithoutConns,
@@ -39,6 +40,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateNewConnRcv,
     updateNewConnSnd,
     createSndConn,
+    getConnIds,
     getConn,
     getDeletedConn,
     getConns,
@@ -324,6 +326,10 @@ createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
   DB.execute_ db "INSERT INTO users DEFAULT VALUES"
   insertedRowId db
+
+getUserIds :: DB.Connection -> IO [UserId]
+getUserIds db =
+  map fromOnly <$> DB.query db "SELECT user_id FROM users WHERE deleted = ?" (Only (BI False))
 
 checkUser :: DB.Connection -> UserId -> IO (Either StoreError ())
 checkUser db userId =
@@ -2022,6 +2028,9 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
 newQueueId_ :: [Only Int64] -> DBEntityId
 newQueueId_ [] = DBEntityId 1
 newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
+
+getConnIds :: DB.Connection -> IO [ConnId]
+getConnIds db = map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted = 0"
 
 -- * getConn helpers
 

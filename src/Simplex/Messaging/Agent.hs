@@ -67,6 +67,8 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
+    SubscriptionSyncResult (..),
+    syncSubscriptions,
     subscribeConnection,
     subscribeConnections,
     getConnectionMessages,
@@ -430,6 +432,18 @@ acceptContact c userId connId enableNtfs = withAgentEnv c .::. acceptContact' c 
 rejectContact :: AgentClient -> ConfirmationId -> AE ()
 rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
+
+data SubscriptionSyncResult = SubscriptionSyncResult
+  { missingUserIds :: [UserId],
+    extraUserIds :: [UserId],
+    missingConnIds :: [ConnId], -- differentiate not found and deleted?
+    extraConnIds :: [ConnId]
+  }
+  deriving (Show, Eq)
+
+syncSubscriptions :: AgentClient -> [UserId] -> [ConnId] -> AE SubscriptionSyncResult
+syncSubscriptions c = withAgentEnv c .: syncSubscriptions' c
+{-# INLINE syncSubscriptions #-}
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentClient -> ConnId -> AE (Maybe ClientServiceId)
@@ -1245,6 +1259,24 @@ rejectContact' :: AgentClient -> InvitationId -> AM ()
 rejectContact' c invId =
   withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
+
+syncSubscriptions' :: AgentClient -> [UserId] -> [ConnId] -> AM SubscriptionSyncResult
+syncSubscriptions' c userIds connIds = do
+  knownUserIds <- withStore' c $ \db -> getUserIds db
+  let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
+  forM_ extraUserIds $ \uid -> deleteUser' c uid False
+  knownConnIds <- withStore' c $ \db -> getConnIds db
+  let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
+  deleteConnectionsAsync' c False extraConnIds
+  pure SubscriptionSyncResult {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+  where
+    syncDiff :: (Ord a) => [a] -> [a] -> ([a], [a])
+    syncDiff passed known =
+      let passedSet = S.fromList passed
+          knownSet = S.fromList known
+          missing = S.toList (passedSet `S.difference` knownSet)
+          extra = S.toList (knownSet  `S.difference` passedSet)
+       in (missing, extra)
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe ClientServiceId)
