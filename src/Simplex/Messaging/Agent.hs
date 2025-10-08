@@ -441,8 +441,8 @@ data SubscriptionSyncResult = SubscriptionSyncResult
   }
   deriving (Show, Eq)
 
-syncSubscriptions :: AgentClient -> [UserId] -> [ConnId] -> AE SubscriptionSyncResult
-syncSubscriptions c = withAgentEnv c .: syncSubscriptions' c
+syncSubscriptions :: AgentClient -> Bool -> [UserId] -> [ConnId] -> AE SubscriptionSyncResult
+syncSubscriptions c = withAgentEnv c .:. syncSubscriptions' c
 {-# INLINE syncSubscriptions #-}
 
 -- | Subscribe to receive connection messages (SUB command)
@@ -1260,14 +1260,16 @@ rejectContact' c invId =
   withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
 
-syncSubscriptions' :: AgentClient -> [UserId] -> [ConnId] -> AM SubscriptionSyncResult
-syncSubscriptions' c userIds connIds = do
+syncSubscriptions' :: AgentClient -> Bool -> [UserId] -> [ConnId] -> AM SubscriptionSyncResult
+syncSubscriptions' c shouldDelete userIds connIds = do
   knownUserIds <- withStore' c $ \db -> getUserIds db
   let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
-  forM_ extraUserIds $ \uid -> deleteUser' c uid False
+  when shouldDelete $
+    forM_ extraUserIds $ \uid -> deleteUser' c uid False
   knownConnIds <- withStore' c $ \db -> getConnIds db
   let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
-  deleteConnectionsAsync' c False extraConnIds
+  when shouldDelete $
+    deleteConnectionsAsync' c False extraConnIds
   pure SubscriptionSyncResult {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
   where
     syncDiff :: (Ord a) => [a] -> [a] -> ([a], [a])
