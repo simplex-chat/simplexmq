@@ -261,7 +261,7 @@ sndQueue1 =
 createRcvConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewRcvQueue -> SConnectionMode c -> IO (Either StoreError (ConnId, RcvQueue))
 createRcvConn db g cData rq cMode = runExceptT $ do
   connId <- ExceptT $ createNewConn db g cData cMode
-  rq' <- ExceptT $ updateNewConnRcv db connId rq
+  rq' <- ExceptT $ updateNewConnRcv db connId rq SMSubscribe
   pure (connId, rq')
 
 testCreateRcvConn :: SpecWith DBStore
@@ -307,7 +307,7 @@ testCreateSndConn =
     dbQueueId `shouldBe` DBEntityId 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
-    Right rq@RcvQueue {dbQueueId = dbQueueId'} <- upgradeSndConnToDuplex db "conn1" rcvQueue1
+    Right rq@RcvQueue {dbQueueId = dbQueueId'} <- upgradeSndConnToDuplex db "conn1" rcvQueue1 SMSubscribe
     dbQueueId' `shouldBe` DBEntityId 1
     getConn db "conn1"
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 [rq] [sq]))
@@ -319,7 +319,7 @@ testCreateSndConnRandomID =
     Right (connId, sq) <- createSndConn db g cData1 {connId = ""} sndQueue1
     getConn db connId
       `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 {connId} sq))
-    Right (rq@RcvQueue {dbQueueId = dbQueueId'}) <- upgradeSndConnToDuplex db connId rcvQueue1
+    Right (rq@RcvQueue {dbQueueId = dbQueueId'}) <- upgradeSndConnToDuplex db connId rcvQueue1 SMSubscribe
     dbQueueId' `shouldBe` DBEntityId 1
     getConn db connId
       `shouldReturn` Right (SomeConn SCDuplex (DuplexConnection cData1 {connId} [rq] [sq]))
@@ -418,7 +418,7 @@ testUpgradeRcvConnToDuplex =
             }
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType "upgradeRcvConnToDuplex" CSnd)
-    _ <- upgradeSndConnToDuplex db "conn1" rcvQueue1
+    _ <- upgradeSndConnToDuplex db "conn1" rcvQueue1 SMSubscribe
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType "upgradeRcvConnToDuplex" CDuplex)
 
@@ -451,10 +451,10 @@ testUpgradeSndConnToDuplex =
               clientNtfCreds = Nothing,
               deleteErrors = 0
             }
-    upgradeSndConnToDuplex db "conn1" anotherRcvQueue
+    upgradeSndConnToDuplex db "conn1" anotherRcvQueue SMSubscribe
       `shouldReturn` Left (SEBadConnType "upgradeSndConnToDuplex" CRcv)
     _ <- upgradeRcvConnToDuplex db "conn1" sndQueue1
-    upgradeSndConnToDuplex db "conn1" anotherRcvQueue
+    upgradeSndConnToDuplex db "conn1" anotherRcvQueue SMSubscribe
       `shouldReturn` Left (SEBadConnType "upgradeSndConnToDuplex" CDuplex)
 
 testSetRcvQueueStatus :: SpecWith DBStore
@@ -681,7 +681,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId}) <- getPendingServerCommand db connId Nothing
     corrId `shouldBe` "2"
 
-    Right _ <- updateNewConnRcv db connId rcvQueue1
+    Right _ <- updateNewConnRcv db connId rcvQueue1 SMSubscribe
     Right Nothing <- getPendingServerCommand db connId $ Just smpServer1
     Right () <- createCommand db "3" connId (Just smpServer1) command
     corruptCmd db "3" connId

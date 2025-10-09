@@ -2437,7 +2437,7 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
       liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
-      subscribeAllConnections c
+      subscribeAllConnections c False Nothing
       liftIO $ up c cs
     delete :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     delete c cs = do
@@ -2469,7 +2469,7 @@ testBatchedPendingMessages nCreate nMsgs =
     replicateM_ nMsgs $ get a =##> \case ("", cId, SENT _) -> isJust $ find ((cId ==) . snd) msgConns; _ -> False
     withB $ \b -> runRight_ $ do
       let aIds = map fst conns
-      subscribeAllConnections b
+      subscribeAllConnections b False Nothing
       ("", "", UP _ aIds') <- nGet b
       liftIO $ S.fromList aIds' `shouldBe` S.fromList aIds
       replicateM_ nMsgs $ do

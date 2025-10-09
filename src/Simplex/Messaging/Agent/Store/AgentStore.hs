@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createSndConn,
     getSubscriptionServers,
     getUserServerRcvQueueSubs,
+    unsetQueuesToSubscribe,
     getConn,
     getDeletedConn,
     getConns,
@@ -392,15 +393,15 @@ createNewConn db gVar cData cMode = do
   fst <$$> createConn_ gVar cData (\connId -> createConnRecord db connId cData cMode)
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
-updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
-updateNewConnRcv db connId rq =
+updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
+updateNewConnRcv db connId rq subMode =
   getConn db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn _ RcvConnection {}) -> updateConn -- to allow retries
     (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnRcv" $ connType c
   where
     updateConn :: IO (Either StoreError RcvQueue)
-    updateConn = Right <$> addConnRcvQueue_ db connId rq
+    updateConn = Right <$> addConnRcvQueue_ db connId rq subMode
 
 updateNewConnSnd :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 updateNewConnSnd db connId sq =
@@ -482,25 +483,25 @@ upgradeRcvConnToDuplex db connId sq =
     (SomeConn c _) -> pure . Left . SEBadConnType "upgradeRcvConnToDuplex" $ connType c
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
-upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
-upgradeSndConnToDuplex db connId rq =
+upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
+upgradeSndConnToDuplex db connId rq subMode =
   getConn db connId >>= \case
-    Right (SomeConn _ SndConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
+    Right (SomeConn _ SndConnection {}) -> Right <$> addConnRcvQueue_ db connId rq subMode
     Right (SomeConn c _) -> pure . Left . SEBadConnType "upgradeSndConnToDuplex" $ connType c
     _ -> pure $ Left SEConnNotFound
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
-addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> IO (Either StoreError RcvQueue)
-addConnRcvQueue db connId rq =
+addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
+addConnRcvQueue db connId rq subMode =
   getConn db connId >>= \case
-    Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnRcvQueue_ db connId rq
+    Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnRcvQueue_ db connId rq subMode
     Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnRcvQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
 
-addConnRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> IO RcvQueue
-addConnRcvQueue_ db connId rq@RcvQueue {server} = do
+addConnRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO RcvQueue
+addConnRcvQueue_ db connId rq@RcvQueue {server} subMode = do
   serverKeyHash_ <- createServer_ db server
-  insertRcvQueue_ db connId rq serverKeyHash_
+  insertRcvQueue_ db connId rq subMode serverKeyHash_
 
 addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 addConnSndQueue db connId sq =
@@ -1983,8 +1984,8 @@ upsertNtfServer_ db ProtocolServer {host, port, keyHash} = do
 
 -- * createRcvConn helpers
 
-insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> Maybe C.KeyHash -> IO RcvQueue
-insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
+insertRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> Maybe C.KeyHash -> IO RcvQueue
+insertRcvQueue_ db connId' rq@RcvQueue {..} subMode serverKeyHash_ = do
   -- to preserve ID if the queue already exists.
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
@@ -1994,19 +1995,20 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} serverKeyHash_ = do
     [sql|
       INSERT INTO rcv_queues
         ( host, port, rcv_id, conn_id, rcv_private_key, rcv_dh_secret, e2e_priv_key, e2e_dh_secret,
-          snd_id, queue_mode, status, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash,
+          snd_id, queue_mode, status, to_subscribe, rcv_queue_id, rcv_primary, replace_rcv_queue_id, smp_client_version, server_key_hash,
           link_id, link_key, link_priv_sig_key, link_enc_fixed_data,
           ntf_public_key, ntf_private_key, ntf_id, rcv_ntf_dh_secret
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
     ( (host server, port server, rcvId, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
-        :. (sndId, queueMode, status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
+        :. (sndId, queueMode, status, BI toSubscribe, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
         :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
         :. ntfCredsFields
     )
   -- TODO [certs rcv] save client service
   pure (rq :: NewRcvQueue) {connId = connId', dbQueueId = qId, clientService = Nothing}
   where
+    toSubscribe = subMode == SMOnlyCreate
     ntfCredsFields = case clientNtfCreds of
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} ->
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)
@@ -2053,27 +2055,37 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 -- * subscribe all connections
 
-getSubscriptionServers :: DB.Connection -> IO [(UserId, SMPServer)]
-getSubscriptionServers db =
-  map toUserServer
-    <$> DB.query_
-      db
+getSubscriptionServers :: DB.Connection -> Bool -> IO [(UserId, SMPServer)]
+getSubscriptionServers db onlyNeeded =
+  map toUserServer <$> DB.query_ db (select <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0")
+  where
+    select =
       [sql|
         SELECT DISTINCT c.user_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash)
         FROM rcv_queues q
         JOIN servers s ON q.host = s.host AND q.port = s.port
         JOIN connections c ON q.conn_id = c.conn_id
-        WHERE c.deleted = 0 AND q.deleted = 0
       |]
-  where
+    toSubscribe
+      | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
+      | otherwise = " WHERE "
     toUserServer :: (UserId, NonEmpty TransportHost, ServiceName, C.KeyHash) -> (UserId, SMPServer)
     toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
 
-getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId srv =
-  map toRcvQueueSub <$> DB.query db (rcvQueueSubQuery <> condition) (userId, host srv, port srv)
+getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> IO [RcvQueueSub]
+getUserServerRcvQueueSubs db userId srv onlyNeeded =
+  map toRcvQueueSub
+    <$> DB.query
+      db
+      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?")
+      (userId, host srv, port srv)
   where
-    condition = " WHERE c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?"
+    toSubscribe
+      | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
+      | otherwise = " WHERE "
+
+unsetQueuesToSubscribe :: DB.Connection -> IO ()
+unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
 -- * getConn helpers
 
