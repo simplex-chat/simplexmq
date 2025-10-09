@@ -443,6 +443,10 @@ data DatabaseDiff a = DatabaseDiff
   }
   deriving (Show)
 
+instance Functor DatabaseDiff where
+  fmap f DatabaseDiff {missingIds, extraIds} =
+    DatabaseDiff {missingIds = map f missingIds, extraIds = map f extraIds}
+
 compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE (DatabaseDiff UserId, DatabaseDiff ConnId)
 compareConnections c = withAgentEnv c .: compareConnections' c
 {-# INLINE compareConnections #-}
