@@ -228,7 +228,7 @@ import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Mem.Weak (deRefWeak)
-import UnliftIO.Async (pooledMapConcurrentlyN_)
+import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -1359,19 +1359,23 @@ subscribeConnections_ c conns = do
 subscribeAllConnections' :: AgentClient -> AM ()
 subscribeAllConnections' c = do
   userSrvs <- withStore' c getSubscriptionServers
-  lift $ pooledMapConcurrentlyN_ 4 subscribeUserServer userSrvs
+  unless (null userSrvs) $ do
+    rs <- lift $ mapConcurrently subscribeUserServer userSrvs
+    let (errs, oks) = partitionEithers rs
+    logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
+    forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
   resumeAllDelivery
   resumeAllCommands c
   where
-    subscribeUserServer :: (UserId, SMPServer) -> AM' ()
-    subscribeUserServer (userId, srv) =
-      tryAllErrors' (withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv) >>= \case
-        Right qs -> do
-          rs <- subscribeUserServerQueues c userId srv qs
-          -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
-          ns <- asks ntfSupervisor
-          whenM (liftIO $ hasInstantNotifications ns) $ sendNtfCreate ns rs
-        Left e -> logError $ "Error reading queues: userId " <> tshow userId <> ", server: " <> safeDecodeUtf8 (strEncode srv) <> ": " <> tshow e
+    subscribeUserServer :: (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer (userId, srv) = tryAllErrors' $ do
+      qs <- withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv
+      lift $ do
+        rs <- subscribeUserServerQueues c userId srv qs
+        -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
+        ns <- asks ntfSupervisor
+        whenM (liftIO $ hasInstantNotifications ns) $ sendNtfCreate ns rs
+        pure $ length qs
     sendNtfCreate :: NtfSupervisor -> [(RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId))] -> AM' ()
     sendNtfCreate ns rs = do
       let (csCreate, csDelete) = foldl' groupConnIds (S.empty, S.empty) rs
