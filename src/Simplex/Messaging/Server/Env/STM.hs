@@ -567,6 +567,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms True) f $ queueStore ms
       pure $ StoreMemory ms
     SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
+      logWarn $
+        "Journal message store is deprecated and will be removed soon.\n"
+          <> "Please migrate to in-memory storage using `journal export` command.\n"
+          <> "After that you can migrate to PostgreSQL using `database import` command."
       let qsCfg = MQStoreCfg
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg

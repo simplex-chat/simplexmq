@@ -47,6 +47,7 @@ CREATE TABLE rcv_queues(
   ntf_private_key BLOB,
   ntf_id BLOB,
   rcv_ntf_dh_secret BLOB,
+  to_subscribe INTEGER NOT NULL DEFAULT 0,
   rcv_queue_id INTEGER CHECK(rcv_queue_id NOT NULL),
   rcv_primary INTEGER CHECK(rcv_primary NOT NULL),
   replace_rcv_queue_id INTEGER NULL,
@@ -437,6 +438,7 @@ CREATE TABLE inv_short_links(
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
+CREATE INDEX idx_rcv_queues_to_subscribe ON rcv_queues(to_subscribe);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
 CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries(
