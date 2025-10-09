@@ -158,6 +158,7 @@ module Simplex.Messaging.Agent.Client
     unsafeWithStore,
     storeError,
     notifySub,
+    notifySub',
     userServers,
     pickServer,
     getNextServer,

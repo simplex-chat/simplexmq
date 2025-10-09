@@ -152,7 +152,7 @@ import Data.Functor.Identity
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
-import Data.List (find)
+import Data.List (find, sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -445,8 +445,8 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Subscribe to all connections
-subscribeAllConnections :: AgentClient -> AE ()
-subscribeAllConnections c = withAgentEnv c $ subscribeAllConnections' c
+subscribeAllConnections :: AgentClient -> UserId -> Bool -> AE ()
+subscribeAllConnections c = withAgentEnv c .: subscribeAllConnections' c
 
 -- | Get messages for connections (GET commands)
 getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
@@ -972,7 +972,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
       ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
       (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAllErrors` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
-      rq' <- withStore c $ \db -> updateNewConnRcv db connId rq
+      rq' <- withStore c $ \db -> updateNewConnRcv db connId rq subMode
       lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
       mapM_ (newQueueNtfSubscription c rq') ntfServer_
       pure (rq', qUri)
@@ -1224,7 +1224,7 @@ createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientV
   (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
-  rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq
+  rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq subMode
   lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure (qInfo, clientServiceId rq')
@@ -1357,25 +1357,28 @@ subscribeConnections_ c conns = do
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
-subscribeAllConnections' :: AgentClient -> AM ()
-subscribeAllConnections' c = do
-  userSrvs <- withStore' c getSubscriptionServers
-  maxPending <- asks $ maxPendingSubscriptions . config
-  currPending <- newTVarIO 0
+subscribeAllConnections' :: AgentClient -> UserId -> Bool -> AM ()
+subscribeAllConnections' c activeUserId onlyNeeded = handleErr $ do
+  userSrvs <- withStore' c (`getSubscriptionServers` onlyNeeded)
   unless (null userSrvs) $ do
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs
+    maxPending <- asks $ maxPendingSubscriptions . config
+    currPending <- newTVarIO 0
+    let userSrvs' = sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs'
+    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs'
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
+    withStore' c unsetQueuesToSubscribe
   resumeAllDelivery
   resumeAllCommands c
   where
+    handleErr = (`catchAllErrors` \e -> notifySub' c "" (ERR e) >> throwE e)
     subscribeUserServer :: Int -> TVar Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
     subscribeUserServer maxPending currPending (userId, srv) = do
       atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
       tryAllErrors' $ do
         qs <- withStore' c $ \db -> do
-          qs <- getUserServerRcvQueueSubs db userId srv
+          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded
           atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
           pure qs
         let n = length qs
@@ -2097,7 +2100,7 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   -- The problem is that currently subscription already exists, and we do not support queues with credentials but without subscriptions.
   (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-  rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq'
+  rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq' SMSubscribe
   lift $ addNewQueueSubscription c rq'' tSess sessId
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
