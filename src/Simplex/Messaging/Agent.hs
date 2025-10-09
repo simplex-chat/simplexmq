@@ -13,6 +13,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
@@ -143,7 +144,9 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -198,7 +201,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (defaultJSON, parse)
 import Simplex.Messaging.Protocol
   ( BrokerMsg,
     Cmd (..),
@@ -3520,3 +3523,12 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
             smpClientVersion
           }
   pure (sq, e2ePubKey)
+
+$(pure [])
+
+instance FromJSON a => FromJSON (DatabaseDiff a) where
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''DatabaseDiff)
+
+instance ToJSON a => ToJSON (DatabaseDiff a) where
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''DatabaseDiff)
+  toJSON = $(JQ.mkToJSON defaultJSON ''DatabaseDiff)
