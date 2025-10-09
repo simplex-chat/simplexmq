@@ -67,7 +67,7 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
-    ConnectionsDiffInfo (..),
+    DatabaseDiff (..),
     compareConnections,
     syncConnections,
     subscribeConnection,
@@ -437,19 +437,17 @@ rejectContact :: AgentClient -> ConfirmationId -> AE ()
 rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
 
-data ConnectionsDiffInfo = ConnectionsDiffInfo
-  { missingUserIds :: [UserId],
-    extraUserIds :: [UserId],
-    missingConnIds :: [ConnId],
-    extraConnIds :: [ConnId]
+data DatabaseDiff a = DatabaseDiff
+  { missingIds :: [a],
+    extraIds :: [a]
   }
   deriving (Show)
 
-compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDiffInfo
+compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE (DatabaseDiff UserId, DatabaseDiff ConnId)
 compareConnections c = withAgentEnv c .: compareConnections' c
 {-# INLINE compareConnections #-}
 
-syncConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDiffInfo
+syncConnections :: AgentClient -> [UserId] -> [ConnId] -> AE (DatabaseDiff UserId, DatabaseDiff ConnId)
 syncConnections c = withAgentEnv c .: syncConnections' c
 {-# INLINE syncConnections #-}
 
@@ -1272,31 +1270,26 @@ rejectContact' c invId =
   withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
 
-syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDiffInfo
+syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
 syncConnections' c userIds connIds = do
-  knownUserIds <- withStore' c $ \db -> getUserIds db
-  let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
-  forM_ extraUserIds $ \uid -> deleteUser' c uid False
-  knownConnIds <- withStore' c $ \db -> getConnIds db
-  let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
-  deleteConnectionsAsync' c False extraConnIds
-  pure ConnectionsDiffInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+  r@(DatabaseDiff {extraIds = uIds}, DatabaseDiff {extraIds = cIds}) <- compareConnections' c userIds connIds
+  forM_ uIds $ \uid -> deleteUser' c uid False
+  deleteConnectionsAsync' c False cIds
+  pure r
 
-compareConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDiffInfo
+compareConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
 compareConnections' c userIds connIds = do
-  knownUserIds <- withStore' c $ \db -> getUserIds db
-  let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
-  knownConnIds <- withStore' c $ \db -> getConnIds db
-  let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
-  pure ConnectionsDiffInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+  knownUserIds <- withStore' c getUserIds
+  knownConnIds <- withStore' c getConnIds
+  pure (databaseDiff userIds knownUserIds, databaseDiff connIds knownConnIds)
 
-syncDiff :: (Ord a) => [a] -> [a] -> ([a], [a])
-syncDiff passed known =
+databaseDiff :: Ord a => [a] -> [a] -> DatabaseDiff a
+databaseDiff passed known =
   let passedSet = S.fromList passed
       knownSet = S.fromList known
-      missing = S.toList (passedSet `S.difference` knownSet)
-      extra = S.toList (knownSet  `S.difference` passedSet)
-    in (missing, extra)
+      missingIds = S.toList $ passedSet `S.difference` knownSet
+      extraIds = S.toList $ knownSet  `S.difference` passedSet
+   in DatabaseDiff {missingIds, extraIds}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe ClientServiceId)
