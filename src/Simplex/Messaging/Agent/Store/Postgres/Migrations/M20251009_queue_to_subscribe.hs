@@ -18,6 +18,6 @@ down_m20251009_queue_to_subscribe :: Text
 down_m20251009_queue_to_subscribe =
   T.pack
     [r|
-ALTER TABLE rcv_queues DROP COLUMN to_subscribe;
 DROP INDEX idx_rcv_queues_to_subscribe;
+ALTER TABLE rcv_queues DROP COLUMN to_subscribe;
 |]
