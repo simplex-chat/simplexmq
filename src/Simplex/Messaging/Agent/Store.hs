@@ -88,6 +88,8 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     clientService :: Maybe (StoredClientService q),
     -- | queue status
     status :: QueueStatus,
+    -- | to enable notifications for this queue - this field is duplicated from ConnData
+    enableNtfs :: Bool,
     -- | database queue ID (within connection)
     dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
@@ -110,6 +112,7 @@ data RcvQueueSub = RcvQueueSub
     rcvId :: SMP.RecipientId,
     rcvPrivateKey :: RcvPrivateAuthKey,
     status :: QueueStatus,
+    enableNtfs :: Bool,
     dbQueueId :: Int64,
     primary :: Bool,
     dbReplaceQueueId :: Maybe Int64
@@ -117,8 +120,8 @@ data RcvQueueSub = RcvQueueSub
   deriving (Show)
 
 rcvQueueSub :: RcvQueue -> RcvQueueSub
-rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
-  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, dbQueueId, primary, dbReplaceQueueId}
+rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
+  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId}
 
 data ShortLinkCreds = ShortLinkCreds
   { shortLinkId :: SMP.LinkId,

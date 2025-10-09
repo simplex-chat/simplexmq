@@ -229,6 +229,7 @@ rcvQueue1 =
       shortLink = Nothing,
       clientService = Nothing,
       status = New,
+      enableNtfs = True,
       dbQueueId = DBNewEntity,
       primary = True,
       dbReplaceQueueId = Nothing,
@@ -441,6 +442,7 @@ testUpgradeSndConnToDuplex =
               shortLink = Nothing,
               clientService = Nothing,
               status = New,
+              enableNtfs = True,
               dbQueueId = DBNewEntity,
               rcvSwchStatus = Nothing,
               primary = True,
@@ -564,7 +566,7 @@ testCreateSndMsg_ db expectedPrevHash connId sq sndMsgData@SndMsgData {..} = do
     `shouldReturn` Right (internalId, internalSndId, expectedPrevHash)
   createSndMsg db connId sndMsgData
     `shouldReturn` ()
-  createSndMsgDelivery db connId sq internalId
+  createSndMsgDelivery db sq internalId
     `shouldReturn` ()
 
 testCreateSndMsg :: SpecWith DBStore
