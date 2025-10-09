@@ -329,7 +329,7 @@ createUserRecord db = do
 
 getUserIds :: DB.Connection -> IO [UserId]
 getUserIds db =
-  map fromOnly <$> DB.query db "SELECT user_id FROM users WHERE deleted = ?" (Only (BI False))
+  map fromOnly <$> DB.query_ db "SELECT user_id FROM users WHERE deleted = 0"
 
 checkUser :: DB.Connection -> UserId -> IO (Either StoreError ())
 checkUser db userId =
