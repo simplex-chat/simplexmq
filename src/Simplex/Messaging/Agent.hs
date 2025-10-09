@@ -67,7 +67,7 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
-    ConnectionsDriftInfo (..),
+    ConnectionsDiffInfo (..),
     compareConnections,
     syncConnections,
     subscribeConnection,
@@ -434,7 +434,7 @@ rejectContact :: AgentClient -> ConfirmationId -> AE ()
 rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
 
-data ConnectionsDriftInfo = ConnectionsDriftInfo
+data ConnectionsDiffInfo = ConnectionsDiffInfo
   { missingUserIds :: [UserId],
     extraUserIds :: [UserId],
     missingConnIds :: [ConnId],
@@ -442,11 +442,11 @@ data ConnectionsDriftInfo = ConnectionsDriftInfo
   }
   deriving (Show)
 
-compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDriftInfo
+compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDiffInfo
 compareConnections c = withAgentEnv c .: compareConnections' c
 {-# INLINE compareConnections #-}
 
-syncConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDriftInfo
+syncConnections :: AgentClient -> [UserId] -> [ConnId] -> AE ConnectionsDiffInfo
 syncConnections c = withAgentEnv c .: syncConnections' c
 {-# INLINE syncConnections #-}
 
@@ -1265,7 +1265,7 @@ rejectContact' c invId =
   withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
 
-syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDriftInfo
+syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDiffInfo
 syncConnections' c userIds connIds = do
   knownUserIds <- withStore' c $ \db -> getUserIds db
   let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
@@ -1273,15 +1273,15 @@ syncConnections' c userIds connIds = do
   knownConnIds <- withStore' c $ \db -> getConnIds db
   let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
   deleteConnectionsAsync' c False extraConnIds
-  pure ConnectionsDriftInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+  pure ConnectionsDiffInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
 
-compareConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDriftInfo
+compareConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM ConnectionsDiffInfo
 compareConnections' c userIds connIds = do
   knownUserIds <- withStore' c $ \db -> getUserIds db
   let (missingUserIds, extraUserIds) = syncDiff userIds knownUserIds
   knownConnIds <- withStore' c $ \db -> getConnIds db
   let (missingConnIds, extraConnIds) = syncDiff connIds knownConnIds
-  pure ConnectionsDriftInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
+  pure ConnectionsDiffInfo {missingUserIds, extraUserIds, missingConnIds, extraConnIds}
 
 syncDiff :: (Ord a) => [a] -> [a] -> ([a], [a])
 syncDiff passed known =
