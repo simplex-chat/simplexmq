@@ -2057,7 +2057,7 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 getSubscriptionServers :: DB.Connection -> Bool -> IO [(UserId, SMPServer)]
 getSubscriptionServers db onlyNeeded =
-  map toUserServer <$> DB.query_ db (select <> toSubscribeCond onlyNeeded <> " c.deleted = 0 AND q.deleted = 0")
+  map toUserServer <$> DB.query_ db (select <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0")
   where
     select =
       [sql|
@@ -2066,6 +2066,9 @@ getSubscriptionServers db onlyNeeded =
         JOIN servers s ON q.host = s.host AND q.port = s.port
         JOIN connections c ON q.conn_id = c.conn_id
       |]
+    toSubscribe
+      | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
+      | otherwise = " WHERE "
     toUserServer :: (UserId, NonEmpty TransportHost, ServiceName, C.KeyHash) -> (UserId, SMPServer)
     toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
 
@@ -2074,14 +2077,12 @@ getUserServerRcvQueueSubs db userId srv onlyNeeded =
   map toRcvQueueSub
     <$> DB.query
       db
-      (rcvQueueSubQuery <> toSubscribeCond onlyNeeded <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?")
+      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?")
       (userId, host srv, port srv)
-
-toSubscribeCond :: Bool -> Query
-toSubscribeCond onlyNeeded
-  | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
-  | otherwise = " WHERE "
-{-# INLINE toSubscribeCond #-}
+  where
+    toSubscribe
+      | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
+      | otherwise = " WHERE "
 
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"

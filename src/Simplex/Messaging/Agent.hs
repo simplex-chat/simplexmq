@@ -445,7 +445,7 @@ subscribeConnections c = withAgentEnv c . subscribeConnections' c
 {-# INLINE subscribeConnections #-}
 
 -- | Subscribe to all connections
-subscribeAllConnections :: AgentClient -> UserId -> Bool -> AE ()
+subscribeAllConnections :: AgentClient -> Bool -> Maybe UserId -> AE ()
 subscribeAllConnections c = withAgentEnv c .: subscribeAllConnections' c
 
 -- | Get messages for connections (GET commands)
@@ -1357,13 +1357,15 @@ subscribeConnections_ c conns = do
       when (actual /= expected) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ INTERNAL $ "subscribeConnections result size: " <> show actual <> ", expected " <> show expected)
 
-subscribeAllConnections' :: AgentClient -> UserId -> Bool -> AM ()
-subscribeAllConnections' c activeUserId onlyNeeded = handleErr $ do
+subscribeAllConnections' :: AgentClient -> Bool -> Maybe UserId -> AM ()
+subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   userSrvs <- withStore' c (`getSubscriptionServers` onlyNeeded)
   unless (null userSrvs) $ do
     maxPending <- asks $ maxPendingSubscriptions . config
     currPending <- newTVarIO 0
-    let userSrvs' = sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs'
+    let userSrvs' = case activeUserId_ of
+          Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
+          Nothing -> userSrvs
     rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs'
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
