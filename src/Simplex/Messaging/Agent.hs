@@ -133,6 +133,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Concurrent.STM (retry)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -1359,23 +1360,33 @@ subscribeConnections_ c conns = do
 subscribeAllConnections' :: AgentClient -> AM ()
 subscribeAllConnections' c = do
   userSrvs <- withStore' c getSubscriptionServers
+  maxPending <- asks $ maxPendingSubscriptions . config
+  currPending <- newTVarIO 0
   unless (null userSrvs) $ do
-    rs <- lift $ mapConcurrently subscribeUserServer userSrvs
+    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
   resumeAllDelivery
   resumeAllCommands c
   where
-    subscribeUserServer :: (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
-    subscribeUserServer (userId, srv) = tryAllErrors' $ do
-      qs <- withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv
-      lift $ do
-        rs <- subscribeUserServerQueues c userId srv qs
-        -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
-        ns <- asks ntfSupervisor
-        whenM (liftIO $ hasInstantNotifications ns) $ sendNtfCreate ns rs
-        pure $ length qs
+    subscribeUserServer :: Int -> TVar Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer maxPending currPending (userId, srv) = do
+      atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
+      tryAllErrors' $ do
+        qs <- withStore' c $ \db -> do
+          qs <- getUserServerRcvQueueSubs db userId srv
+          atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
+          pure qs
+        let n = length qs
+        lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
+        pure n
+      where
+        subscribe qs = do
+          rs <- subscribeUserServerQueues c userId srv qs
+          -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
+          ns <- asks ntfSupervisor
+          whenM (liftIO $ hasInstantNotifications ns) $ sendNtfCreate ns rs
     sendNtfCreate :: NtfSupervisor -> [(RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId))] -> AM' ()
     sendNtfCreate ns rs = do
       let (csCreate, csDelete) = foldl' groupConnIds (S.empty, S.empty) rs
