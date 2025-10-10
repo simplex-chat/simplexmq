@@ -28,6 +28,7 @@
 module Simplex.Messaging.Agent.Store.AgentStore
   ( -- * Users
     createUserRecord,
+    getUserIds,
     deleteUserRecord,
     setUserDeleted,
     deleteUserWithoutConns,
@@ -42,6 +43,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getSubscriptionServers,
     getUserServerRcvQueueSubs,
     unsetQueuesToSubscribe,
+    getConnIds,
     getConn,
     getDeletedConn,
     getConns,
@@ -329,6 +331,10 @@ createUserRecord :: DB.Connection -> IO UserId
 createUserRecord db = do
   DB.execute_ db "INSERT INTO users DEFAULT VALUES"
   insertedRowId db
+
+getUserIds :: DB.Connection -> IO [UserId]
+getUserIds db =
+  map fromOnly <$> DB.query_ db "SELECT user_id FROM users WHERE deleted = 0"
 
 checkUser :: DB.Connection -> UserId -> IO (Either StoreError ())
 checkUser db userId =
@@ -2088,6 +2094,9 @@ unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
 -- * getConn helpers
+
+getConnIds :: DB.Connection -> IO [ConnId]
+getConnIds db = map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted = 0"
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getConn = getAnyConn False

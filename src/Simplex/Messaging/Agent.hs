@@ -13,6 +13,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
@@ -67,6 +68,9 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
+    DatabaseDiff (..),
+    compareConnections,
+    syncConnections,
     subscribeConnection,
     subscribeConnections,
     subscribeAllConnections,
@@ -140,7 +144,9 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -195,7 +201,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
-import Simplex.Messaging.Parsers (parse)
+import Simplex.Messaging.Parsers (defaultJSON, parse)
 import Simplex.Messaging.Protocol
   ( BrokerMsg,
     Cmd (..),
@@ -433,6 +439,24 @@ acceptContact c userId connId enableNtfs = withAgentEnv c .::. acceptContact' c 
 rejectContact :: AgentClient -> ConfirmationId -> AE ()
 rejectContact c = withAgentEnv c . rejectContact' c
 {-# INLINE rejectContact #-}
+
+data DatabaseDiff a = DatabaseDiff
+  { missingIds :: [a],
+    extraIds :: [a]
+  }
+  deriving (Show)
+
+instance Functor DatabaseDiff where
+  fmap f DatabaseDiff {missingIds, extraIds} =
+    DatabaseDiff {missingIds = map f missingIds, extraIds = map f extraIds}
+
+compareConnections :: AgentClient -> [UserId] -> [ConnId] -> AE (DatabaseDiff UserId, DatabaseDiff ConnId)
+compareConnections c = withAgentEnv c .: compareConnections' c
+{-# INLINE compareConnections #-}
+
+syncConnections :: AgentClient -> [UserId] -> [ConnId] -> AE (DatabaseDiff UserId, DatabaseDiff ConnId)
+syncConnections c = withAgentEnv c .: syncConnections' c
+{-# INLINE syncConnections #-}
 
 -- | Subscribe to receive connection messages (SUB command)
 subscribeConnection :: AgentClient -> ConnId -> AE (Maybe ClientServiceId)
@@ -1252,6 +1276,27 @@ rejectContact' :: AgentClient -> InvitationId -> AM ()
 rejectContact' c invId =
   withStore' c $ \db -> deleteInvitation db invId
 {-# INLINE rejectContact' #-}
+
+syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
+syncConnections' c userIds connIds = do
+  r@(DatabaseDiff {extraIds = uIds}, DatabaseDiff {extraIds = cIds}) <- compareConnections' c userIds connIds
+  forM_ uIds $ \uid -> deleteUser' c uid False
+  deleteConnectionsAsync' c False cIds
+  pure r
+
+compareConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
+compareConnections' c userIds connIds = do
+  knownUserIds <- withStore' c getUserIds
+  knownConnIds <- withStore' c getConnIds
+  pure (databaseDiff userIds knownUserIds, databaseDiff connIds knownConnIds)
+
+databaseDiff :: Ord a => [a] -> [a] -> DatabaseDiff a
+databaseDiff passed known =
+  let passedSet = S.fromList passed
+      knownSet = S.fromList known
+      missingIds = S.toList $ passedSet `S.difference` knownSet
+      extraIds = S.toList $ knownSet  `S.difference` passedSet
+   in DatabaseDiff {missingIds, extraIds}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
 subscribeConnection' :: AgentClient -> ConnId -> AM (Maybe ClientServiceId)
@@ -3478,3 +3523,12 @@ newSndQueue userId connId (Compatible (SMPQueueInfo smpClientVersion SMPQueueAdd
             smpClientVersion
           }
   pure (sq, e2ePubKey)
+
+$(pure [])
+
+instance FromJSON a => FromJSON (DatabaseDiff a) where
+  parseJSON = $(JQ.mkParseJSON defaultJSON ''DatabaseDiff)
+
+instance ToJSON a => ToJSON (DatabaseDiff a) where
+  toEncoding = $(JQ.mkToEncoding defaultJSON ''DatabaseDiff)
+  toJSON = $(JQ.mkToJSON defaultJSON ''DatabaseDiff)
