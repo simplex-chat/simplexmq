@@ -644,13 +644,16 @@ instance FromJSON RatchetSyncState where
 
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
+    status :: QueueStatus,
     rcvSwitchStatus :: Maybe RcvSwitchStatus,
-    canAbortSwitch :: Bool
+    canAbortSwitch :: Bool,
+    subStatus :: SubscriptionStatus
   }
   deriving (Eq, Show)
 
 data SndQueueInfo = SndQueueInfo
   { sndServer :: SMPServer,
+    status :: QueueStatus,
     sndSwitchStatus :: Maybe SndSwitchStatus
   }
   deriving (Eq, Show)
@@ -659,8 +662,7 @@ data SubscriptionStatus
   = SSActive
   | SSPending
   | SSRemoved {subError :: String}
-  | SSNoSubscription
-  | SSNoRcvQueue
+  | SSNoSub
   deriving (Eq, Show)
 
 data ConnectionStats = ConnectionStats
@@ -669,7 +671,7 @@ data ConnectionStats = ConnectionStats
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
     ratchetSyncSupported :: Bool,
-    subStatus :: SubscriptionStatus
+    subStatus :: Maybe SubscriptionStatus
   }
   deriving (Eq, Show)
 
@@ -2010,11 +2012,13 @@ serializeCommand = \case
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body
 
+$(J.deriveJSON (enumJSON fstToLower) ''QueueStatus)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "SS") ''SubscriptionStatus)
+
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 
 $(J.deriveJSON defaultJSON ''SndQueueInfo)
-
-$(J.deriveJSON (sumTypeJSON $ dropPrefix "SS") ''SubscriptionStatus)
 
 $(J.deriveJSON defaultJSON ''ConnectionStats)
 
