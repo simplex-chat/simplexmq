@@ -2377,7 +2377,7 @@ getConnectionRatchetAdHash' c connId = do
 connectionStats :: AgentClient -> Connection c -> AM ConnectionStats
 connectionStats c = \case
   RcvConnection cData rq -> do
-    rcvQueuesInfo <- (:[]) <$> rcvQueueInfo rq
+    rcvQueuesInfo <- (: []) <$> rcvQueueInfo rq
     pure (stats cData) {rcvQueuesInfo, subStatus = connSubStatus rcvQueuesInfo}
   SndConnection cData sq -> do
     pure (stats cData) {sndQueuesInfo = [sndQueueInfo sq]}
@@ -2390,8 +2390,8 @@ connectionStats c = \case
           subStatus = connSubStatus rcvQueuesInfo
         }
   ContactConnection cData rq -> do
-    rcvQueuesInfo <- (:[]) <$> rcvQueueInfo rq
-    pure (stats cData) {rcvQueuesInfo, subStatus  = connSubStatus rcvQueuesInfo}
+    rcvQueuesInfo <- (: []) <$> rcvQueueInfo rq
+    pure (stats cData) {rcvQueuesInfo, subStatus = connSubStatus rcvQueuesInfo}
   NewConnection cData ->
     pure $ stats cData
   where
@@ -2415,11 +2415,13 @@ connectionStats c = \case
           atomically $
             hasActiveSubscription c rq >>= \case
               True -> pure SSActive
-              False -> hasPendingSubscription c rq >>= \case
-                True -> pure SSPending
-                False -> hasRemovedSubscription c rq >>= \case
-                  Just err -> pure $ SSRemoved (show err)
-                  Nothing -> pure SSNoSub
+              False ->
+                hasPendingSubscription c rq >>= \case
+                  True -> pure SSPending
+                  False ->
+                    hasRemovedSubscription c rq >>= \case
+                      Just err -> pure $ SSRemoved (show err)
+                      Nothing -> pure SSNoSub
     sndQueueInfo :: SndQueue -> SndQueueInfo
     sndQueueInfo SndQueue {server, status, sndSwchStatus} =
       SndQueueInfo {sndServer = server, status, sndSwitchStatus = sndSwchStatus}
