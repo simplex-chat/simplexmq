@@ -137,6 +137,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM (retry)
 import Control.Logger.Simple
 import Control.Monad
@@ -859,7 +860,7 @@ switchConnectionAsync' c corrId connId =
             rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
             enqueueCommand c corrId connId Nothing $ AClientCommand SWCH
             let rqs' = updatedQs rq1 rqs
-            connectionStats c (DuplexConnection cData rqs' sqs)
+            connectionStats c $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
 newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
@@ -2407,25 +2408,23 @@ connectionStats c = \case
         }
     rcvQueueInfo :: RcvQueue -> AM RcvQueueInfo
     rcvQueueInfo rq@RcvQueue {server, status, rcvSwchStatus} = do
-      subStatus <- checkQueueSubStatus
+      subStatus <- atomically checkQueueSubStatus
       pure $ RcvQueueInfo {rcvServer = server, status, rcvSwitchStatus = rcvSwchStatus, canAbortSwitch = canAbortRcvSwitch rq, subStatus}
       where
-        checkQueueSubStatus :: AM SubscriptionStatus
+        checkQueueSubStatus :: STM SubscriptionStatus
         checkQueueSubStatus =
-          atomically $
-            ifM (hasActiveSubscription c rq) (pure SSActive) $
-              ifM (hasPendingSubscription c rq) (pure SSPending) $
-                maybe SSNoSub (SSRemoved . show) <$> hasRemovedSubscription c rq
+          ifM (hasActiveSubscription c rq) (pure SSActive) $
+            ifM (hasPendingSubscription c rq) (pure SSPending) $
+              maybe SSNoSub (SSRemoved . show) <$> hasRemovedSubscription c rq
     sndQueueInfo :: SndQueue -> SndQueueInfo
     sndQueueInfo SndQueue {server, status, sndSwchStatus} =
       SndQueueInfo {sndServer = server, status, sndSwitchStatus = sndSwchStatus}
     connSubStatus :: [RcvQueueInfo] -> Maybe SubscriptionStatus
-    connSubStatus rqis = do
-      let activeRqis = filter (\RcvQueueInfo {status} -> status == Active) rqis
-          rqisForStatus = if null activeRqis then rqis else activeRqis
-      if null rqisForStatus
-        then Nothing
-        else Just $ minimum $ map (\RcvQueueInfo {subStatus} -> subStatus) rqisForStatus
+    connSubStatus rqis =
+      let rqiActive RcvQueueInfo {status} = status == Active
+          rqiSubStatus RcvQueueInfo {subStatus} = subStatus
+          subStatuses = L.map rqiSubStatus <$> (L.nonEmpty (filter rqiActive rqis) <|> L.nonEmpty rqis)
+       in minimum <$> subStatuses
 
 -- | Change servers to be used for creating new queues.
 -- This function will set all servers as enabled in case all passed servers are disabled.
