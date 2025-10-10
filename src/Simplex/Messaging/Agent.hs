@@ -152,7 +152,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (isRight, partitionEithers, rights)
-import Data.Foldable (foldl', toList)
+import Data.Foldable (asum, foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
 import Data.Int (Int64)
@@ -2370,27 +2370,47 @@ getConnectionRatchetAdHash' c connId = do
   CR.Ratchet {rcAD = Str rcAD} <- withStore c (`getRatchet` connId)
   pure $ C.sha256Hash rcAD
 
-connectionStats :: Connection c -> ConnectionStats
-connectionStats = \case
-  RcvConnection cData rq ->
-    (stats cData) {rcvQueuesInfo = [rcvQueueInfo rq]}
-  SndConnection cData sq ->
-    (stats cData) {sndQueuesInfo = [sndQueueInfo sq]}
-  DuplexConnection cData rqs sqs ->
-    (stats cData) {rcvQueuesInfo = map rcvQueueInfo $ L.toList rqs, sndQueuesInfo = map sndQueueInfo $ L.toList sqs}
-  ContactConnection cData rq ->
-    (stats cData) {rcvQueuesInfo = [rcvQueueInfo rq]}
+connectionStats :: AgentClient -> Connection c -> AM ConnectionStats
+connectionStats c = \case
+  RcvConnection cData rq -> do
+    subStatus <- checkSubStatus [rq]
+    pure (stats cData) {rcvQueuesInfo = [rcvQueueInfo rq], subStatus}
+  SndConnection cData sq -> do
+    pure (stats cData) {sndQueuesInfo = [sndQueueInfo sq]}
+  DuplexConnection cData rqs sqs -> do
+    subStatus <- checkSubStatus (L.toList rqs)
+    pure
+      (stats cData)
+        { rcvQueuesInfo = map rcvQueueInfo $ L.toList rqs,
+          sndQueuesInfo = map sndQueueInfo $ L.toList sqs,
+          subStatus
+        }
+  ContactConnection cData rq -> do
+    subStatus <- checkSubStatus [rq]
+    pure (stats cData) {rcvQueuesInfo = [rcvQueueInfo rq], subStatus}
   NewConnection cData ->
-    stats cData
+    pure $ stats cData
   where
+    stats :: ConnData -> ConnectionStats
     stats ConnData {connAgentVersion, ratchetSyncState} =
       ConnectionStats
         { connAgentVersion,
           rcvQueuesInfo = [],
           sndQueuesInfo = [],
           ratchetSyncState,
-          ratchetSyncSupported = connAgentVersion >= ratchetSyncSMPAgentVersion
+          ratchetSyncSupported = connAgentVersion >= ratchetSyncSMPAgentVersion,
+          subStatus = SSNoRcvQueue
         }
+    checkSubStatus :: [RcvQueue] -> AM SubscriptionStatus
+    checkSubStatus [] = pure SSNoRcvQueue
+    checkSubStatus rqs =
+      anyM (map (atomically . hasActiveSubscription c) rqs) >>= \case
+        True -> pure SSActive
+        False -> anyM (map (atomically . hasPendingSubscription c) rqs) >>= \case
+          True -> pure SSPending
+          False -> asum (map (atomically . hasRemovedSubscription c) rqs) >>= \case
+            Just err -> pure $ SSRemoved (show err)
+            Nothing -> pure SSNoSubscription
 
 -- | Change servers to be used for creating new queues.
 -- This function will set all servers as enabled in case all passed servers are disabled.

@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgMeta (..),
     RcvQueueInfo (..),
     SndQueueInfo (..),
+    SubscriptionStatus (..),
     ConnectionStats (..),
     SwitchPhase (..),
     RcvSwitchStatus (..),
@@ -654,12 +655,21 @@ data SndQueueInfo = SndQueueInfo
   }
   deriving (Eq, Show)
 
+data SubscriptionStatus
+  = SSActive
+  | SSPending
+  | SSRemoved {subError :: String}
+  | SSNoSubscription
+  | SSNoRcvQueue
+  deriving (Eq, Show)
+
 data ConnectionStats = ConnectionStats
   { connAgentVersion :: VersionSMPA,
     rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
-    ratchetSyncSupported :: Bool
+    ratchetSyncSupported :: Bool,
+    subStatus :: SubscriptionStatus
   }
   deriving (Eq, Show)
 
@@ -2003,6 +2013,8 @@ serializeBinary body = bshow (B.length body) <> "\n" <> body
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 
 $(J.deriveJSON defaultJSON ''SndQueueInfo)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "SS") ''SubscriptionStatus)
 
 $(J.deriveJSON defaultJSON ''ConnectionStats)
 
