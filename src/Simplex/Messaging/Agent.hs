@@ -152,7 +152,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition ((.:), (.:.), (.::), (.::.))
 import Data.Either (isRight, partitionEithers, rights)
-import Data.Foldable (asum, foldl', toList)
+import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
 import Data.Int (Int64)
@@ -2424,7 +2424,12 @@ connectionStats c = \case
     sndQueueInfo SndQueue {server, status, sndSwchStatus} =
       SndQueueInfo {sndServer = server, status, sndSwitchStatus = sndSwchStatus}
     connSubStatus :: [RcvQueueInfo] -> Maybe SubscriptionStatus
-    connSubStatus rqsInfo = Nothing
+    connSubStatus rqis = do
+      let activeRqis = filter (\RcvQueueInfo {status} -> status == Active) rqis
+          rqisForStatus = if null activeRqis then rqis else activeRqis
+      if null rqisForStatus
+        then Nothing
+        else Just $ minimum $ map (\RcvQueueInfo {subStatus} -> subStatus) rqisForStatus
 
 -- | Change servers to be used for creating new queues.
 -- This function will set all servers as enabled in case all passed servers are disabled.

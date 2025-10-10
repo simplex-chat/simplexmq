@@ -663,7 +663,7 @@ data SubscriptionStatus
   | SSPending
   | SSRemoved {subError :: String}
   | SSNoSub
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data ConnectionStats = ConnectionStats
   { connAgentVersion :: VersionSMPA,
