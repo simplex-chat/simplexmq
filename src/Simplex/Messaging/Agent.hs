@@ -2413,15 +2413,9 @@ connectionStats c = \case
         checkQueueSubStatus :: AM SubscriptionStatus
         checkQueueSubStatus =
           atomically $
-            hasActiveSubscription c rq >>= \case
-              True -> pure SSActive
-              False ->
-                hasPendingSubscription c rq >>= \case
-                  True -> pure SSPending
-                  False ->
-                    hasRemovedSubscription c rq >>= \case
-                      Just err -> pure $ SSRemoved (show err)
-                      Nothing -> pure SSNoSub
+            ifM (hasActiveSubscription c rq) (pure SSActive) $
+              ifM (hasPendingSubscription c rq) (pure SSPending) $
+                maybe SSNoSub (SSRemoved . show) <$> hasRemovedSubscription c rq
     sndQueueInfo :: SndQueue -> SndQueueInfo
     sndQueueInfo SndQueue {server, status, sndSwchStatus} =
       SndQueueInfo {sndServer = server, status, sndSwitchStatus = sndSwchStatus}
