@@ -40,6 +40,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateNewConnRcv,
     updateNewConnSnd,
     createSndConn,
+    getClientNotices,
     getSubscriptionServers,
     getUserServerRcvQueueSubs,
     unsetQueuesToSubscribe,
@@ -271,7 +272,7 @@ import qualified Data.Set as S
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
-import Network.Socket (ServiceName)
+import Network.Socket (HostName, ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
@@ -283,6 +284,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -294,7 +296,6 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version.Internal
@@ -2061,6 +2062,9 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 -- * subscribe all connections
 
+getClientNotices :: DB.Connection -> IO [(HostName, BlockingInfo)]
+getClientNotices = undefined
+
 getSubscriptionServers :: DB.Connection -> Bool -> IO [(UserId, SMPServer)]
 getSubscriptionServers db onlyNeeded =
   map toUserServer <$> DB.query_ db (select <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0")
@@ -2333,7 +2337,8 @@ toRcvQueue
         _ -> Nothing
       enableNtfs = maybe True unBI enableNtfs_
       -- TODO [certs rcv] read client service
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+      clientNoticeId = Nothing -- TODO [notices]
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 -- | returns all connection queue credentials, the first queue is the primary one
 getRcvQueueSubsByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueueSub))
@@ -2354,7 +2359,8 @@ rcvQueueSubQuery =
 toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Maybe BoolInt, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
 toRcvQueueSub (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, enableNtfs_, dbQueueId, BI primary, dbReplaceQueueId) =
   let enableNtfs = maybe True unBI enableNtfs_
-   in RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId}
+      clientNoticeId = Nothing -- TODO [notices]
+   in RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =

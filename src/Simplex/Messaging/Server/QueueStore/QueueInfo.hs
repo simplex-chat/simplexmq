@@ -9,12 +9,14 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
 
 data QueueInfo = QueueInfo
@@ -61,6 +63,15 @@ instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . 
 
 instance ToField QueueMode where toField = toField . decodeLatin1 . smpEncode
 
+data ClientNotice = ClientNotice
+  { scope :: NonEmpty CNScope,
+    expires :: Maybe SystemDate -- Nothing - never
+  }
+  deriving (Eq, Show)
+
+data CNScope = CNSGroup | CNSContact
+  deriving (Eq, Show)
+
 $(JQ.deriveJSON (enumJSON $ dropPrefix "Q") ''QSubThread)
 
 $(JQ.deriveJSON defaultJSON ''QSub)
@@ -74,3 +85,7 @@ $(JQ.deriveJSON defaultJSON ''QueueInfo)
 instance Encoding QueueInfo where
   smpEncode = LB.toStrict . J.encode
   smpP = J.eitherDecodeStrict <$?> A.takeByteString
+
+$(JQ.deriveJSON (enumJSON $ dropPrefix "CNS") ''CNScope)
+
+$(JQ.deriveJSON defaultJSON ''ClientNotice)

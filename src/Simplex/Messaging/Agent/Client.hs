@@ -237,6 +237,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client
@@ -287,7 +288,6 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Session
-import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
@@ -340,6 +340,8 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     currentSubs :: TSessionSubs,
     removedSubs :: TMap (UserId, SMPServer) (TMap SMP.RecipientId SMPClientError),
+    clientNotices :: TMap HostName SMP.BlockingInfo,
+    clientNoticesLock :: TMVar (),
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
     asyncCmdWorkers :: TMap (ConnId, Maybe SMPServer) Worker,
@@ -485,8 +487,8 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains} currentTs agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> [(HostName, SMP.BlockingInfo)] -> Env -> IO AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains} currentTs notices agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
@@ -507,6 +509,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
   subscrConns <- newTVarIO S.empty
   currentSubs <- SS.emptyIO
   removedSubs <- TM.emptyIO
+  clientNotices <- newTVarIO $ M.fromList notices
+  clientNoticesLock <- newTMVarIO ()
   workerSeq <- newTVarIO 0
   smpDeliveryWorkers <- TM.emptyIO
   asyncCmdWorkers <- TM.emptyIO
@@ -545,6 +549,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
         subscrConns,
         currentSubs,
         removedSubs,
+        clientNotices,
+        clientNoticesLock,
         workerSeq,
         smpDeliveryWorkers,
         asyncCmdWorkers,
@@ -1404,6 +1410,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             clientService = ClientService DBNewEntity <$> serviceId,
             status = New,
             enableNtfs,
+            clientNoticeId = Nothing,
             dbQueueId = DBNewEntity,
             primary = True,
             dbReplaceQueueId = Nothing,
@@ -1454,10 +1461,10 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
         newErr :: String -> AM (Maybe ShortLinkCreds)
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
-processSubResults :: AgentClient -> SMPTransportSession -> SessionId -> NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM ()
+processSubResults :: AgentClient -> SMPTransportSession -> SessionId -> NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM [(RcvQueueSub, Maybe SMP.BlockingInfo)]
 processSubResults c tSess@(userId, srv, _) sessId rs = do
   pendingSubs <- SS.getPendingSubs tSess $ currentSubs c
-  let (failed, subscribed, ignored) = foldr (partitionResults pendingSubs) (M.empty, [], 0) rs
+  let (failed, notices, subscribed, ignored) = foldr (partitionResults pendingSubs) (M.empty, [], [], 0) rs
   unless (M.null failed) $ do
     incSMPServerStat' c userId srv connSubErrs $ M.size failed
     failSubscriptions c tSess failed
@@ -1465,19 +1472,29 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
     incSMPServerStat' c userId srv connSubscribed $ length subscribed
     SS.batchAddActiveSubs tSess sessId subscribed $ currentSubs c
   unless (ignored == 0) $ incSMPServerStat' c userId srv connSubIgnored ignored
+  pure notices
   where
     partitionResults ::
       Map SMP.RecipientId RcvQueueSub ->
       (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) ->
-      (Map SMP.RecipientId SMPClientError, [RcvQueueSub], Int) ->
-      (Map SMP.RecipientId SMPClientError, [RcvQueueSub], Int)
-    partitionResults pendingSubs (rq, r) acc@(failed, subscribed, ignored) = case r of
-      Left e
-        | temporaryClientError e -> acc
-        | otherwise -> (M.insert (queueId rq) e failed, subscribed, ignored)
+      (Map SMP.RecipientId SMPClientError, [(RcvQueueSub, Maybe SMP.BlockingInfo)], [RcvQueueSub], Int) ->
+      (Map SMP.RecipientId SMPClientError, [(RcvQueueSub, Maybe SMP.BlockingInfo)], [RcvQueueSub], Int)
+    partitionResults pendingSubs (rq@RcvQueueSub {clientNoticeId}, r) acc@(failed, notices, subscribed, ignored) = case r of
+      Left e -> case smpErrorBlockingInfo e of
+        -- block is treated as temporary error
+        Just info -> (failed, (rq, Just info) : notices, subscribed, ignored)
+        Nothing
+          | temporary && noNotice -> acc
+          | otherwise -> (failed', notices', subscribed, ignored)
+          where
+            failed' = if temporary then failed else M.insert (queueId rq) e failed
+            temporary = temporaryClientError e
       Right _serviceId -- TODO [certs rcv] store association with the service
-        | queueId rq `M.member` pendingSubs -> (failed, rq : subscribed, ignored)
-        | otherwise -> (failed, subscribed, ignored + 1)
+        | queueId rq `M.member` pendingSubs -> (failed, notices', rq : subscribed, ignored)
+        | otherwise -> (failed, notices', subscribed, ignored + 1)
+      where
+        notices' = if noNotice then notices else (rq, Nothing) : notices
+        noNotice = isNothing clientNoticeId
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
@@ -1586,12 +1603,16 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         if withEvents
           then Just . S.fromList . map qConnId . M.elems <$> atomically (SS.getActiveSubs tSess $ currentSubs c)
           else pure Nothing
-      active <-
-        atomically $
-          ifM
+      active <- E.uninterruptibleMask_ $ do
+        (active, notices) <- atomically $ do
+          r@(_, notices) <- ifM
             (activeClientSession c tSess sessId)
-            (processSubResults c tSess sessId rs $> True)
-            (incSMPServerStat' c userId srv connSubIgnored (length rs) $> False)
+            ((True,) <$> processSubResults c tSess sessId rs)
+            ((False, []) <$ incSMPServerStat' c userId srv connSubIgnored (length rs))
+          unless (null notices) $ takeTMVar $ clientNoticesLock c
+          pure r
+        unless (null notices) $ processClientNotices c notices `E.finally` atomically (putTMVar (clientNoticesLock c) ())
+        pure active
       forM_ cs_ $ \cs -> do
         let (errs, okConns) = partitionEithers $ map (\(RcvQueueSub {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
             conns = filter (`S.notMember` cs) okConns
@@ -1608,6 +1629,9 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
       where
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
+
+processClientNotices :: AgentClient -> [(RcvQueueSub, Maybe SMP.BlockingInfo)] -> IO ()
+processClientNotices c notices = undefined
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)

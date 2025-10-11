@@ -34,13 +34,13 @@ import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..))
+import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow)
 import System.IO
 
 data FileStoreLogRecord
-  = AddFile SenderId FileInfo RoundedSystemTime ServerEntityStatus
+  = AddFile SenderId FileInfo RoundedFileTime ServerEntityStatus
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
@@ -69,7 +69,7 @@ instance StrEncoding FileStoreLogRecord where
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
 
-logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedSystemTime -> ServerEntityStatus -> IO ()
+logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> IO ()
 logAddFile s = logFileStoreRecord s .:: AddFile
 
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()

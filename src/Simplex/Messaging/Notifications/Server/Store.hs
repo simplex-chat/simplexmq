@@ -25,7 +25,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM, ($>>=))
@@ -61,10 +61,10 @@ data NtfTknData = NtfTknData
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
     tknCronInterval :: TVar Word16,
-    tknUpdatedAt :: TVar (Maybe RoundedSystemTime)
+    tknUpdatedAt :: TVar (Maybe SystemDate)
   }
 
-mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPairX25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> IO NtfTknData
+mkNtfTknData :: NtfTokenId -> NewNtfEntity 'Token -> C.KeyPairX25519 -> C.DhSecretX25519 -> NtfRegCode -> SystemDate -> IO NtfTknData
 mkNtfTknData ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhKeys tknDhSecret tknRegCode ts = do
   tknStatus <- newTVarIO NTRegistered
   tknCronInterval <- newTVarIO 0

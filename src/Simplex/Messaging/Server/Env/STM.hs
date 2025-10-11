@@ -123,6 +123,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
@@ -464,7 +465,7 @@ data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
   { subThread :: ServerSub, -- Nothing value indicates that sub
-    delivered :: TVar (Maybe (MsgId, RoundedSystemTime))
+    delivered :: TVar (Maybe (MsgId, SystemSeconds))
   }
 
 newServer :: IO (Server s)

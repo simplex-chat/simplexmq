@@ -103,6 +103,7 @@ module Simplex.Messaging.Client
     temporaryClientError,
     smpClientServiceError,
     smpProxyError,
+    smpErrorBlockingInfo,
     textToHostMode,
     ServerTransmissionBatch,
     ServerTransmission (..),
@@ -793,6 +794,11 @@ smpProxyError = \case
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
+
+smpErrorBlockingInfo :: SMPClientError -> Maybe BlockingInfo
+smpErrorBlockingInfo = \case
+  PCEProtocolError (BLOCKED info) -> Just info
+  _ -> Nothing
 
 -- | Create a new SMP queue.
 --

@@ -16,7 +16,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfSubStatus, NtfSubscriptionId, NtfTokenId, NtfTknStatus, SMPQueueNtf)
 import Simplex.Messaging.Notifications.Server.Store (NtfSubData (..), NtfTknData (..))
 import Simplex.Messaging.Protocol (NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
+import Simplex.Messaging.SystemTime
 
 data NtfTknRec = NtfTknRec
   { ntfTknId :: NtfTokenId,
@@ -27,7 +27,7 @@ data NtfTknRec = NtfTknRec
     tknDhSecret :: C.DhSecretX25519,
     tknRegCode :: NtfRegCode,
     tknCronInterval :: Word16,
-    tknUpdatedAt :: Maybe RoundedSystemTime
+    tknUpdatedAt :: Maybe SystemDate
   }
   deriving (Show)
 

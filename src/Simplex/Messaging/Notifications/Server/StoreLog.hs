@@ -39,8 +39,8 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Protocol (EntityId (..), SMPServer, ServiceId)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime)
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.SystemTime
 import System.IO
 
 data NtfStoreLogRecord
@@ -49,7 +49,7 @@ data NtfStoreLogRecord
   | UpdateToken NtfTokenId DeviceToken NtfRegCode
   | TokenCron NtfTokenId Word16
   | DeleteToken NtfTokenId
-  | UpdateTokenTime NtfTokenId RoundedSystemTime
+  | UpdateTokenTime NtfTokenId SystemDate
   | CreateSubscription NtfSubRec
   | SubscriptionStatus NtfSubscriptionId NtfSubStatus NtfAssociatedService
   | DeleteSubscription NtfSubscriptionId
@@ -103,7 +103,7 @@ logTokenCron s tknId cronInt = logNtfStoreRecord s $ TokenCron tknId cronInt
 logDeleteToken :: StoreLog 'WriteMode -> NtfTokenId -> IO ()
 logDeleteToken s tknId = logNtfStoreRecord s $ DeleteToken tknId
 
-logUpdateTokenTime :: StoreLog 'WriteMode -> NtfTokenId -> RoundedSystemTime -> IO ()
+logUpdateTokenTime :: StoreLog 'WriteMode -> NtfTokenId -> SystemDate -> IO ()
 logUpdateTokenTime s tknId t = logNtfStoreRecord s $ UpdateTokenTime tknId t
 
 logCreateSubscription :: StoreLog 'WriteMode -> NtfSubRec -> IO ()

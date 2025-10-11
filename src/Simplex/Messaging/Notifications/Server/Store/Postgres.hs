@@ -65,10 +65,10 @@ import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog
 import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId, pattern SMPServer)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, getSystemDate)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate, withLog_)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util (anyM, firstRow, maybeFirstRow, toChunks, tshow)
 import System.Exit (exitFailure)
@@ -87,7 +87,7 @@ data NtfPostgresStore = NtfPostgresStore
     deletedTTL :: Int64
   }
 
-mkNtfTknRec :: NtfTokenId -> NewNtfEntity 'Token -> C.PrivateKeyX25519 -> C.DhSecretX25519 -> NtfRegCode -> RoundedSystemTime -> NtfTknRec
+mkNtfTknRec :: NtfTokenId -> NewNtfEntity 'Token -> C.PrivateKeyX25519 -> C.DhSecretX25519 -> NtfRegCode -> SystemDate -> NtfTknRec
 mkNtfTknRec ntfTknId (NewNtfTkn token tknVerifyKey _) tknDhPrivKey tknDhSecret tknRegCode ts =
   NtfTknRec {ntfTknId, token, tknStatus = NTRegistered, tknVerifyKey, tknDhPrivKey, tknDhSecret, tknRegCode, tknCronInterval = 0, tknUpdatedAt = Just ts}
 
@@ -170,7 +170,7 @@ updateTokenDate st db NtfTknRec {ntfTknId, tknUpdatedAt} = do
     void $ DB.execute db "UPDATE tokens SET updated_at = ? WHERE token_id = ?" (ts, ntfTknId)
     withLog "updateTokenDate" st $ \sl -> logUpdateTokenTime sl ntfTknId ts
 
-type NtfTknRow = (NtfTokenId, PushProvider, Binary ByteString, NtfTknStatus, NtfPublicAuthKey, C.PrivateKeyX25519, C.DhSecretX25519, Binary ByteString, Word16, Maybe RoundedSystemTime)
+type NtfTknRow = (NtfTokenId, PushProvider, Binary ByteString, NtfTknStatus, NtfPublicAuthKey, C.PrivateKeyX25519, C.DhSecretX25519, Binary ByteString, Word16, Maybe SystemDate)
 
 ntfTknQuery :: Query
 ntfTknQuery =

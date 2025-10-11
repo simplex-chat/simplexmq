@@ -150,7 +150,7 @@ import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:), (.:.), (.::), (.::.))
+import Data.Composition
 import Data.Either (isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
@@ -225,6 +225,7 @@ import Simplex.Messaging.Protocol
     senderCanSecure,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.QueueStore.QueueInfo (CNScope)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.TMap as TM
@@ -256,7 +257,8 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} stor
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
-      c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs =<< ask
+      notices <- liftIO $ withTransaction store getClientNotices `catchAll_` pure []
+      c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs notices =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -378,8 +380,8 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 {-# INLINE deleteConnectionsAsync #-}
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-createConnection c nm userId enableNtfs = withAgentEnv c .::. newConn c nm userId enableNtfs
+createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> CNScope -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
+createConnection c nm userId enableNtfs = withAgentEnv c .::: newConn c nm userId enableNtfs
 {-# INLINE createConnection #-}
 
 -- | Create or update user's contact connection short link
@@ -862,12 +864,16 @@ switchConnectionAsync' c corrId connId =
             pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
-newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-newConn c nm userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
+newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> CNScope -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
+newConn c nm userId enableNtfs cnScope cMode userData_ clientData pqInitKeys subMode = do
   srv <- getSMPServer c userId
+  when (connMode cMode == CMContact) $ checkClientNotices c srv cnScope
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   (connId,) <$> newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+
+checkClientNotices :: AgentClient -> SMPServerWithAuth -> CNScope -> AM ()
+checkClientNotices c srv cnScope = undefined
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =

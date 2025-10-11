@@ -58,8 +58,9 @@ import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey
 import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime, ServerEntityStatus (..), getRoundedSystemTime)
+import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
@@ -451,7 +452,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
       pure $ either FRErr id r
-    addFileRetry :: FileStore -> FileInfo -> Int -> RoundedSystemTime -> M (Either XFTPErrorType XFTPFileId)
+    addFileRetry :: FileStore -> FileInfo -> Int -> RoundedFileTime -> M (Either XFTPErrorType XFTPFileId)
     addFileRetry st file n ts =
       retryAdd n $ \sId -> runExceptT $ do
         ExceptT $ addFile st sId file ts EntityActive
@@ -579,8 +580,8 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
       liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
-getFileTime :: IO RoundedSystemTime
-getFileTime = getRoundedSystemTime fileTimePrecision
+getFileTime :: IO RoundedFileTime
+getFileTime = getRoundedSystemTime
 
 expireServerFiles :: Maybe Int -> ExpirationConfig -> M ()
 expireServerFiles itemDelay expCfg = do
