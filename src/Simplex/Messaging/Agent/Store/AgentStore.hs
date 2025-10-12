@@ -2089,7 +2089,7 @@ getClientNotices db presetDomains =
           Just (createdAt, ttl) -> (max createdAt createdAt', (+) <$> ttl <*> ttl')
           Nothing -> (createdAt', ttl')
 
-updateClientNotices :: DB.Connection -> SMPTransportSession -> SystemSeconds -> [(RcvQueueSub, Maybe ClientNotice)] -> IO [(RecipientId, Maybe Int64)]
+updateClientNotices :: DB.Connection -> SMPTransportSession -> SystemSeconds -> [(RcvQueueSub, Maybe ClientNotice)] -> IO [(RecipientId, Maybe NoticeId)]
 updateClientNotices db (_, srv, _) now =
   mapM $ \(rq, notice_) -> maybe (deleteNotice rq) (upsertNotice rq) notice_
   where

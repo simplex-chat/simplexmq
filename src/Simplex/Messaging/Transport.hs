@@ -169,7 +169,7 @@ smpBlockSize = 16384
 -- 15 - short links, with associated data passed in NEW of LSET command (3/30/2025)
 -- 16 - service certificates (5/31/2025)
 -- 17 - create notification credentials with NEW (7/12/2025)
--- 18 - include client-side restrictions into blocking information (10/10/2025)
+-- 18 - support client notices (10/10/2025)
 
 data SMPVersion
 

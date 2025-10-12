@@ -91,7 +91,7 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     -- | to enable notifications for this queue - this field is duplicated from ConnData
     enableNtfs :: Bool,
     -- | client notice
-    clientNoticeId :: Maybe Int64,
+    clientNoticeId :: Maybe NoticeId,
     -- | database queue ID (within connection)
     dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
@@ -115,7 +115,7 @@ data RcvQueueSub = RcvQueueSub
     rcvPrivateKey :: RcvPrivateAuthKey,
     status :: QueueStatus,
     enableNtfs :: Bool,
-    clientNoticeId :: Maybe Int64,
+    clientNoticeId :: Maybe NoticeId,
     dbQueueId :: Int64,
     primary :: Bool,
     dbReplaceQueueId :: Maybe Int64
@@ -411,14 +411,6 @@ data ConnData = ConnData
     pqSupport :: PQSupport
   }
   deriving (Eq, Show)
-
--- data ClientNoticeRec = ClientNoticeRec
---   { noticeId :: NoticeId,
---     noticeEntity :: (AProtocolServer, EntityId),
---     noticeDomains :: HostName,
---     noticeExpires :: SystemSeconds,
---     createdAt :: UTCTime
---   }
 
 type NoticeId = Int64
 

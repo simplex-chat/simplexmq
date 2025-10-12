@@ -1624,10 +1624,6 @@ instance ToJSON BlockingReason where
 instance FromJSON BlockingReason where
   parseJSON = strParseJSON "BlockingReason"
 
-instance ToField BlockingReason where toField = toField . decodeLatin1 . strEncode
-
-instance FromField BlockingReason where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
-
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
 transmissionP THandleParams {sessionId, implySessId, serviceAuth} = do
