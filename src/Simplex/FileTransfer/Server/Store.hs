@@ -75,14 +75,14 @@ newFileStore = do
   usedStorage <- newTVarIO 0
   pure FileStore {files, recipients, usedStorage}
 
-addFile :: FileStore -> SenderId -> FileInfo -> SystemHours -> ServerEntityStatus -> STM (Either XFTPErrorType ())
+addFile :: FileStore -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM (Either XFTPErrorType ())
 addFile FileStore {files} sId fileInfo createdAt status =
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
     f <- newFileRec sId fileInfo createdAt status
     TM.insert sId f files
     pure $ Right ()
 
-newFileRec :: SenderId -> FileInfo -> SystemHours -> ServerEntityStatus -> STM FileRec
+newFileRec :: SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM FileRec
 newFileRec senderId fileInfo createdAt status = do
   recipientIds <- newTVar S.empty
   filePath <- newTVar Nothing

@@ -23,8 +23,6 @@ newtype RoundedSystemTime (t :: Nat) = RoundedSystemTime {roundedSeconds :: Int6
 
 type SystemDate = RoundedSystemTime 86400
 
-type SystemHours = RoundedSystemTime 3600
-
 type SystemSeconds = RoundedSystemTime 1
 
 instance StrEncoding (RoundedSystemTime t) where
