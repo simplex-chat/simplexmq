@@ -804,6 +804,7 @@ smpErrorClientNotice :: SMPClientError -> Maybe ClientNotice
 smpErrorClientNotice = \case
   PCEProtocolError (BLOCKED BlockingInfo {notice}) -> notice
   _ -> Nothing
+{-# INLINE smpErrorClientNotice #-}
 
 -- | Create a new SMP queue.
 --

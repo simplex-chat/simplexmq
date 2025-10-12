@@ -1601,10 +1601,10 @@ data BlockingReason = BRSpam | BRContent
 
 instance StrEncoding BlockingInfo where
   strEncode BlockingInfo {reason, notice} =
-    "reason=" <> strEncode reason <> maybe "" ((" notice=" <>) . LB.toStrict . J.encode) notice
+    "reason=" <> strEncode reason <> maybe "" ((",notice=" <>) . LB.toStrict . J.encode) notice
   strP = do
     reason <- "reason=" *> strP
-    notice <- optional $ " notice=" *> (J.eitherDecodeStrict <$?> A.takeByteString)
+    notice <- optional $ ",notice=" *> (J.eitherDecodeStrict <$?> A.takeByteString)
     pure BlockingInfo {reason, notice}
 
 instance Encoding BlockingInfo where

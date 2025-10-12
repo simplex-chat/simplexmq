@@ -24,7 +24,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
-import Simplex.Messaging.Server.Main
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -36,6 +35,10 @@ import Simplex.Messaging.Transport (SMPServiceRole (..))
 import Simplex.Messaging.Transport.Credentials (genCredentials)
 import Test.Hspec hiding (fit, it)
 import Util
+
+#if defined(dbServerPostgres)
+import Simplex.Messaging.Server.Main
+#endif
 
 testPublicAuthKey :: C.APublicAuthKey
 testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")

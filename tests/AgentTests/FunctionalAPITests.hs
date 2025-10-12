@@ -87,6 +87,8 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT, INV, JOINED)
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
+import Simplex.Messaging.Agent.Store.AgentStore (getConn)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -100,10 +102,12 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, authCmdsSMPVersion, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, sendingProxySMPVersion, sndAuthKeySMPVersion, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
@@ -540,6 +544,10 @@ functionalAPITests ps = do
   describe "SMP queue info" $ do
     it "server should respond with queue and subscription information" $
       withSmpServer ps testServerQueueInfo
+#if !defined(dbServerPostgres)
+  describe "Client notices" $ do
+    it "should create client notice" $ testClientNotice ps
+#endif
 
 testBasicAuth :: (ASrvTransport, AStoreType) -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
 testBasicAuth (t, msType) allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 sqSecured baseId = do
@@ -3836,6 +3844,75 @@ testServerQueueInfo = do
         msgId_ <- forM qiMsg $ \MsgInfo {msgId, msgType} -> msgId <$ (Just msgType `shouldBe` msgType_)
         qDelivered <$> qiSub `shouldBe` Just msgId_
         pure msgId_
+
+testClientNotice :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testClientNotice ps = do
+  withAgent 1 agentCfg initAgentServers testDB $ \c -> do
+    (cId, _) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $
+      A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    ("", "", DOWN _ [_]) <- nGet c
+
+    addNotice c cId $ Just 1
+
+    (cId', _) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+      subscribedWithErrors c 1
+      testNotice c True
+      threadDelay 1000000
+      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    ("", "", DOWN _ [_]) <- nGet c
+
+    addNotice c cId' $ Just 1
+
+    (cId'', _) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+      subscribedWithErrors c 1
+      testNotice c True
+      threadDelay 1000000
+      testNotice c True
+      threadDelay 1000000
+      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+
+    addNotice c cId'' $ Just 1
+
+  withAgent 1 agentCfg initAgentServers testDB $ \c -> do
+    (cId3, _) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+      runRight_ $ subscribeAllConnections c False Nothing
+      subscribedWithErrors c 3
+      testNotice c True
+      threadDelay 2000000
+      testNotice c True
+      threadDelay 1000000
+      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    ("", "", DOWN _ [_]) <- nGet c
+
+    addNotice c cId3 Nothing
+
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      subscribedWithErrors c 1
+      testNotice c False
+
+    removeNotice c cId3
+
+  withAgent 1 agentCfg initAgentServers testDB $ \c -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      runRight_ $ subscribeAllConnections c False Nothing
+      subscribedWithErrors c 4
+      void $ runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+  where
+    addNotice c cId ttl = logNotice c cId $ Just ClientNotice {ttl}
+    removeNotice c cId = logNotice c cId Nothing
+    logNotice :: AgentClient -> ConnId -> Maybe ClientNotice -> IO ()
+    logNotice c cId notice = do
+      Right (SomeConn _ (ContactConnection _ RcvQueue {rcvId})) <- withTransaction (store $ agentEnv c) (`getConn` cId)
+      withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rcvId $ SMP.BlockingInfo SMP.BRContent notice
+    subscribedWithErrors c n = do
+      ("", "", ERRS errs) <- nGet c
+      length errs `shouldBe` n
+      forM_ errs $ \case
+        (_, SMP _  (BLOCKED _)) -> pure ()
+        r -> expectationFailure $ "unexpected event: " <> show r
+    testNotice c willExpire = do
+      NOTICE (Just "localhost") expiresAt_ <- runLeft $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      isJust expiresAt_ `shouldBe` willExpire
 
 noNetworkDelay :: AgentClient -> IO ()
 noNetworkDelay a = do

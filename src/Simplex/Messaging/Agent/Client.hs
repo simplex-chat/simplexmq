@@ -1484,19 +1484,18 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
       (Map SMP.RecipientId SMPClientError, [RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)], Int)
     partitionResults pendingSubs (rq@RcvQueueSub {clientNoticeId}, r) acc@(failed, subscribed, notices, ignored) = case r of
       Left e -> case smpErrorClientNotice e of
-        -- block is treated as temporary error
-        Just notice -> (failed, subscribed, (rq, Just notice) : notices, ignored)
+        Just notice -> (failed', subscribed, (rq, Just notice) : notices, ignored)
         Nothing
           | temporary && isNothing clientNoticeId -> acc
           | otherwise -> (failed', subscribed, notices', ignored)
-          where
-            failed' = if temporary then failed else M.insert (queueId rq) e failed
-            temporary = temporaryClientError e
+        where
+          failed' = if temporary then failed else M.insert (queueId rq) e failed
+          temporary = temporaryClientError e
       Right _serviceId -- TODO [certs rcv] store association with the service
         | queueId rq `M.member` pendingSubs -> (failed, rq : subscribed, notices', ignored)
         | otherwise -> (failed, subscribed, notices', ignored + 1)
       where
-        notices' = if isJust clientNoticeId then (rq, Nothing) : notices else notices
+        notices' = if isNothing clientNoticeId then notices else (rq, Nothing) : notices
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
@@ -1614,7 +1613,7 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
           unless (null notices) $ takeTMVar $ clientNoticesLock c
           pure r
         unless (null notices) $ void $
-          (runExceptT (processClientNotices c tSess notices) `runReaderT` agentEnv c)
+          (processClientNotices c tSess notices `runReaderT` agentEnv c)
             `E.finally` atomically (putTMVar (clientNoticesLock c) ())
         pure active
       forM_ cs_ $ \cs -> do
@@ -1634,16 +1633,16 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
 
-processClientNotices :: AgentClient -> SMPTransportSession -> [(RcvQueueSub, Maybe ClientNotice)] -> AM ()
+processClientNotices :: AgentClient -> SMPTransportSession -> [(RcvQueueSub, Maybe ClientNotice)] -> AM' ()
 processClientNotices c@AgentClient {presetDomains} tSess notices = do
   now <- liftIO getSystemSeconds
-  (noticeIds, clntNotices) <- withStore' c $ \db ->
-    (,)
-      <$> updateClientNotices db tSess now notices
-      <*> getClientNotices db presetDomains
-  atomically $ do
-    SS.updateClientNotices tSess noticeIds $ currentSubs c
-    writeTVar (clientNotices c) clntNotices
+  tryAllErrors' (withStore' c $ \db -> (,) <$> updateClientNotices db tSess now notices <*> getClientNotices db presetDomains) >>= \case
+    Right (noticeIds, clntNotices) -> atomically $ do
+      SS.updateClientNotices tSess noticeIds $ currentSubs c
+      writeTVar (clientNotices c) clntNotices
+    Left e -> do
+      logError $ "processClientNotices error: " <> tshow e
+      notifySub' c "" $ ERR e
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)

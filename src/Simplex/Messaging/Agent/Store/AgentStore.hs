@@ -2068,7 +2068,7 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 -- * subscribe all connections
 
 getClientNotices :: DB.Connection -> [HostName] -> IO (Map (Maybe HostName) (Maybe SystemSeconds))
-getClientNotices db presetDomains = do
+getClientNotices db presetDomains =
   M.map expiresAt . foldl' addNotice M.empty
     <$> DB.query_ db "SELECT host, created_at, notice_ttl FROM client_notices WHERE protocol = 'smp'"
   where
@@ -2097,24 +2097,26 @@ updateClientNotices db (_, srv, _) now =
       mapM_ (DB.execute db "DELETE FROM client_notices WHERE client_notice_id = ?" . Only) clientNoticeId
       pure (rcvId, Nothing)
     upsertNotice RcvQueueSub {rcvId} ClientNotice {ttl} = do
-      DB.execute
-        db
-        [sql|
-          INSERT INTO client_notices(protocol, host, port, entity_id, notice_ttl, created_at, updated_at)
-            VALUES ('smp',?,?,?,?,?,?)
-          ON CONFLICT (protocol, host, port, entity_id)
-          DO UPDATE SET
-            notice_reason = EXCLUDED.notice_reason,
-            notice_ttl = EXCLUDED.notice_ttl,
-            updated_at = EXCLUDED.updated_at
-        |]
-        (host srv, port srv, rcvId, ttl, now, now)
-      noticeId <- insertedRowId db
-      DB.execute
-        db
-        "UPDATE rcv_queues SET client_notice_id = ? WHERE host = ? AND port = ? AND entity_id = ?"
-        (noticeId, host srv, port srv, rcvId)
-      pure (rcvId, Just noticeId)
+      noticeId_ <-
+        maybeFirstRow fromOnly $
+          DB.query
+            db
+            [sql|
+              INSERT INTO client_notices(protocol, host, port, entity_id, notice_ttl, created_at, updated_at)
+                VALUES ('smp',?,?,?,?,?,?)
+              ON CONFLICT (protocol, host, port, entity_id)
+              DO UPDATE SET
+                notice_ttl = EXCLUDED.notice_ttl,
+                updated_at = EXCLUDED.updated_at
+              RETURNING client_notice_id
+            |]
+            (host srv, port srv, rcvId, ttl, now, now)
+      forM_ noticeId_ $ \noticeId -> do
+        DB.execute
+          db
+          "UPDATE rcv_queues SET client_notice_id = ? WHERE host = ? AND port = ? AND rcv_id = ?"
+          (noticeId, host srv, port srv, rcvId)
+      pure (rcvId, noticeId_)
 
 getSubscriptionServers :: DB.Connection -> Bool -> IO [(UserId, SMPServer)]
 getSubscriptionServers db onlyNeeded =
