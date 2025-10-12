@@ -2420,10 +2420,10 @@ connectionStats c = \case
     sndQueueInfo SndQueue {server, status, sndSwchStatus} =
       SndQueueInfo {sndServer = server, status, sndSwitchStatus = sndSwchStatus}
     connSubStatus :: [RcvQueueInfo] -> Maybe SubscriptionStatus
-    connSubStatus rqis =
+    connSubStatus rqs =
       let isActive RcvQueueInfo {status} = status == Active
           subStatus' RcvQueueInfo {subStatus} = subStatus
-       in minimum . L.map subStatus' <$> (L.nonEmpty (filter isActive rqis) <|> L.nonEmpty rqis)
+       in minimum . L.map subStatus' <$> (L.nonEmpty (filter isActive rqs) <|> L.nonEmpty rqs)
 
 -- | Change servers to be used for creating new queues.
 -- This function will set all servers as enabled in case all passed servers are disabled.
