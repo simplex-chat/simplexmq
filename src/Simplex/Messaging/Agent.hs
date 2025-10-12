@@ -137,7 +137,6 @@ module Simplex.Messaging.Agent
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent.STM (retry)
 import Control.Logger.Simple
 import Control.Monad
@@ -170,7 +169,7 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
-import Data.Time.Clock.System (SystemTime (..), getSystemTime, systemToUTCTime)
+import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
@@ -189,6 +188,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
@@ -226,9 +226,8 @@ import Simplex.Messaging.Protocol
     senderCanSecure,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import Simplex.Messaging.Agent.Store.Entity
+import Simplex.Messaging.SystemTime
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util
@@ -382,7 +381,7 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 
 -- | Create SMP agent connection (NEW command)
 createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-createConnection c nm userId enableNtfs = withAgentEnv c .::: newConn c nm userId enableNtfs
+createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newConn c nm userId enableNtfs checkNotices
 {-# INLINE createConnection #-}
 
 -- | Create or update user's contact connection short link
@@ -876,26 +875,16 @@ newConn c nm userId enableNtfs checkNotices cMode userData_ clientData pqInitKey
 checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
 checkClientNotices AgentClient {clientNotices, presetDomains} (ProtoServerWithAuth ProtocolServer {host} _) = do
   notices <- readTVarIO clientNotices
-  unless (M.null notices) $ do
-    ts <- liftIO $ systemSeconds <$> getSystemTime
-    forM_ (currentNotice notices ts) $ \ttl ->
-      let srv = encHost $ L.head host
-       in throwError $ SMP srv $ SMP.BLOCKED $ SMP.BlockingInfo SMP.BRContent $ Just ClientNotice {ttl}
+  unless (M.null notices) $ checkNotices notices =<< liftIO getSystemSeconds
   where
-    encHost = T.unpack . safeDecodeUtf8 . strEncode
-    currentNotice notices ts
-      | any (isPresetDomain presetDomains) host = hostNotice Nothing -- Nothing is used as key for preset servers
-      | otherwise = go $ L.toList host
+    checkNotices notices ts
+      | any (isPresetDomain presetDomains) host = checkHostNotice Nothing -- Nothing is used as key for preset servers
+      | otherwise = mapM_ checkHostNotice $ L.toList $ L.map Just host
       where
-        go = \case
-          [] -> Nothing
-          (h : hs) -> hostNotice (Just $ encHost h) <|> go hs
-        hostNotice hostKey =
-          M.lookup (PSMP, hostKey) notices >>= \case
-            Just expires
-              | ts < expires -> Just $ Just $ expires - ts
-              | otherwise -> Nothing
-            _ -> Just Nothing
+        checkHostNotice h = do
+          let h' = T.unpack . safeDecodeUtf8 . strEncode <$> h
+          forM_ (M.lookup h' notices) $ \expires_ ->
+            when (maybe True (ts <) expires_) $ throwError $ NOTICE h' $ roundedToUTCTime <$> expires_
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =

@@ -793,4 +793,8 @@ instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodeP
 instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s)
 
 deriving newtype instance FromField EncDataBytes
+
+deriving newtype instance ToField (RoundedSystemTime t)
+
+deriving newtype instance FromField (RoundedSystemTime t)
 #endif

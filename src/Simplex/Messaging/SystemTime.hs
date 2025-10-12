@@ -10,13 +10,14 @@ module Simplex.Messaging.SystemTime where
 
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Int (Int64)
-import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime, systemToUTCTime)
 import Data.Typeable (Proxy (..))
 import GHC.TypeLits (KnownNat, Nat, natVal)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Encoding.String
 
-newtype RoundedSystemTime (t :: Nat) = RoundedSystemTime Int64
+newtype RoundedSystemTime (t :: Nat) = RoundedSystemTime {roundedSeconds :: Int64}
   deriving (Eq, Ord, Show)
   deriving newtype (FromJSON, ToJSON, FromField, ToField)
 
@@ -40,5 +41,9 @@ getSystemDate = getRoundedSystemTime
 {-# INLINE getSystemDate #-}
 
 getSystemSeconds :: IO SystemSeconds
-getSystemSeconds = getRoundedSystemTime
+getSystemSeconds = RoundedSystemTime . systemSeconds <$> getSystemTime
 {-# INLINE getSystemSeconds #-}
+
+roundedToUTCTime :: RoundedSystemTime t -> UTCTime
+roundedToUTCTime = systemToUTCTime . (`MkSystemTime` 0) . roundedSeconds
+{-# INLINE roundedToUTCTime #-}
