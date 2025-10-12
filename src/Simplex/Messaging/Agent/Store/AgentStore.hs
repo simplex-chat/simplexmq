@@ -40,6 +40,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateNewConnRcv,
     updateNewConnSnd,
     createSndConn,
+    getClientNotices,
+    updateClientNotices,
     getSubscriptionServers,
     getUserServerRcvQueueSubs,
     unsetQueuesToSubscribe,
@@ -268,10 +270,11 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Ord (Down (..))
 import qualified Data.Set as S
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
-import Network.Socket (ServiceName)
+import Network.Socket (HostName, ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
@@ -283,6 +286,8 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.Entity
+import Simplex.Messaging.Client (SMPTransportSession, isPresetDomain)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -294,7 +299,8 @@ import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Agent.Store.Entity
+import Simplex.Messaging.Protocol.Types
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version.Internal
@@ -2061,6 +2067,55 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 -- * subscribe all connections
 
+getClientNotices :: DB.Connection -> [HostName] -> IO (Map (ProtocolType, Maybe HostName) (Maybe Int64))
+getClientNotices db presetDomains = do
+  M.map expiresAt . foldl' addNotice M.empty
+    <$> DB.query_ db "SELECT host, created_at, notice_ttl FROM client_notices WHERE protocol = 'smp'"
+  where
+    expiresAt (createdAt, ttl)  = (createdAt +) <$> ttl
+    addNotice ::
+      Map (ProtocolType, Maybe HostName) (Int64, Maybe Int64) ->
+      (NonEmpty TransportHost, Int64, Maybe Int64) ->
+      Map (ProtocolType, Maybe HostName) (Int64, Maybe Int64)
+    addNotice m (host, createdAt', ttl') =
+      let hostKeys
+            | any (isPresetDomain presetDomains) host = [Nothing]
+            | otherwise = L.toList $ L.map (Just . T.unpack . safeDecodeUtf8 . strEncode) host
+       in foldl' (\m' h -> M.alter (Just . addNoticeHost) (PSMP, h) m') m hostKeys
+      where
+        -- sum of ttls starting from the latest createdAt
+        addNoticeHost :: Maybe (Int64, Maybe Int64) -> (Int64, Maybe Int64)
+        addNoticeHost = \case
+          Just (createdAt, ttl) -> (max createdAt createdAt', (+) <$> ttl <*> ttl')
+          Nothing -> (createdAt', ttl')
+
+updateClientNotices :: DB.Connection -> SMPTransportSession -> SystemSeconds -> [(RcvQueueSub, Maybe ClientNotice)] -> IO [(RecipientId, Maybe Int64)]
+updateClientNotices db (_, srv, _) now =
+  mapM $ \(rq, notice_) -> maybe (deleteNotice rq) (upsertNotice rq) notice_
+  where
+    deleteNotice RcvQueueSub {rcvId, clientNoticeId} = do
+      mapM_ (DB.execute db "DELETE FROM client_notices WHERE client_notice_id = ?" . Only) clientNoticeId
+      pure (rcvId, Nothing)
+    upsertNotice RcvQueueSub {rcvId} ClientNotice {ttl} = do
+      DB.execute
+        db
+        [sql|
+          INSERT INTO client_notices(protocol, host, port, entity_id, notice_ttl, created_at, updated_at)
+            VALUES ('smp',?,?,?,?,?,?)
+          ON CONFLICT (protocol, host, port, entity_id)
+          DO UPDATE SET
+            notice_reason = EXCLUDED.notice_reason,
+            notice_ttl = EXCLUDED.notice_ttl,
+            updated_at = EXCLUDED.updated_at
+        |]
+        (host srv, port srv, rcvId, ttl, now, now)
+      noticeId <- insertedRowId db
+      DB.execute
+        db
+        "UPDATE rcv_queues SET client_notice_id = ? WHERE host = ? AND port = ? AND entity_id = ?"
+        (noticeId, host srv, port srv, rcvId)
+      pure (rcvId, Just noticeId)
+
 getSubscriptionServers :: DB.Connection -> Bool -> IO [(UserId, SMPServer)]
 getSubscriptionServers db onlyNeeded =
   map toUserServer <$> DB.query_ db (select <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0")
@@ -2333,7 +2388,8 @@ toRcvQueue
         _ -> Nothing
       enableNtfs = maybe True unBI enableNtfs_
       -- TODO [certs rcv] read client service
-   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
+      clientNoticeId = Nothing -- TODO [notices]
+   in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, clientService = Nothing, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}
 
 -- | returns all connection queue credentials, the first queue is the primary one
 getRcvQueueSubsByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueueSub))
@@ -2354,7 +2410,8 @@ rcvQueueSubQuery =
 toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey, QueueStatus, Maybe BoolInt, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
 toRcvQueueSub (userId, connId, host, port, keyHash, rcvId, rcvPrivateKey, status, enableNtfs_, dbQueueId, BI primary, dbReplaceQueueId) =
   let enableNtfs = maybe True unBI enableNtfs_
-   in RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId}
+      clientNoticeId = Nothing -- TODO [notices]
+   in RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =

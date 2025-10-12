@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Agent.TSessionSubs
@@ -22,6 +23,7 @@ module Simplex.Messaging.Agent.TSessionSubs
     getPendingSubs,
     getActiveSubs,
     setSubsPending,
+    updateClientNotices,
     foldSessionSubs,
     mapSubs,
   )
@@ -29,6 +31,8 @@ where
 
 import Control.Concurrent.STM
 import Control.Monad
+import Data.Int (Int64)
+import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (isJust)
@@ -181,6 +185,11 @@ setSubsPending_ s sessId_ = do
     writeTVar as M.empty
     modifyTVar' (pendingSubs s) $ M.union subs
   pure subs
+
+updateClientNotices :: SMPTransportSession -> [(RecipientId, Maybe Int64)] -> TSessionSubs -> STM ()
+updateClientNotices tSess noticeIds ss = do
+  s <- getSessSubs tSess ss
+  modifyTVar' (pendingSubs s) $ \m -> foldl' (\m' (rcvId, clientNoticeId) -> M.adjust (\rq -> rq {clientNoticeId}) rcvId m') m noticeIds
 
 foldSessionSubs :: (a -> (SMPTransportSession, SessSubs) -> IO a) -> a -> TSessionSubs -> IO a
 foldSessionSubs f a = foldM f a . M.assocs <=< readTVarIO . sessionSubs

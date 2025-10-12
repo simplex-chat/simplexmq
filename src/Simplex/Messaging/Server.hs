@@ -115,6 +115,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (foldLogLines)
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -1679,7 +1680,7 @@ client
               -- This is tracked as "subscription" in the client to prevent these
               -- clients from being able to subscribe.
               pure s
-            getMessage_ :: Sub -> Maybe (MsgId, RoundedSystemTime) -> M s (Transmission BrokerMsg)
+            getMessage_ :: Sub -> Maybe (MsgId, SystemSeconds) -> M s (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               stats <- asks serverStats
               fmap (either err id) $ liftIO $ runExceptT $
@@ -1805,13 +1806,13 @@ client
                           pure (corrId, entId, maybe OK (MSG . encryptMsg qr) msg_)
                 _ -> pure $ err NO_MSG
           where
-            getDelivered :: Sub -> STM (Maybe (ServerSub, RoundedSystemTime))
+            getDelivered :: Sub -> STM (Maybe (ServerSub, SystemSeconds))
             getDelivered Sub {delivered, subThread} = do
               readTVar delivered $>>= \(msgId', ts) ->
                 if msgId == msgId' || B.null msgId
                   then writeTVar delivered Nothing $> Just (subThread, ts)
                   else pure Nothing
-            updateStats :: ServerStats -> Bool -> RoundedSystemTime -> Message -> IO ()
+            updateStats :: ServerStats -> Bool -> SystemSeconds -> Message -> IO ()
             updateStats stats isGet deliveryTime = \case
               MessageQuota {} -> pure ()
               Message {msgFlags} -> do
@@ -2030,7 +2031,7 @@ client
             msgId' = messageId msg
             msgTs' = messageTs msg
 
-        setDelivered :: Sub -> Message -> RoundedSystemTime -> STM ()
+        setDelivered :: Sub -> Message -> SystemSeconds -> STM ()
         setDelivered Sub {delivered} msg !ts = do
           let !msgId = messageId msg
           writeTVar delivered $ Just (msgId, ts)

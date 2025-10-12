@@ -137,6 +137,7 @@ module Simplex.Messaging.Agent
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM (retry)
 import Control.Logger.Simple
 import Control.Monad
@@ -150,7 +151,7 @@ import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Composition ((.:), (.:.), (.::), (.::.))
+import Data.Composition
 import Data.Either (isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
@@ -169,7 +170,7 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock
-import Data.Time.Clock.System (systemToUTCTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime, systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
@@ -191,7 +192,7 @@ import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
-import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, nonBlockingWriteTBQueue, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, isPresetDomain, nonBlockingWriteTBQueue, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -225,6 +226,7 @@ import Simplex.Messaging.Protocol
     senderCanSecure,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.TMap as TM
@@ -250,13 +252,14 @@ getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
 getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
-getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp} store backgroundMode =
+getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, presetDomains} store backgroundMode =
   newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
-      c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs =<< ask
+      notices <- liftIO $ withTransaction store (`getClientNotices` presetDomains) `catchAll_` pure []
+      c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs notices =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
@@ -378,8 +381,8 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 {-# INLINE deleteConnectionsAsync #-}
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-createConnection c nm userId enableNtfs = withAgentEnv c .::. newConn c nm userId enableNtfs
+createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
+createConnection c nm userId enableNtfs = withAgentEnv c .::: newConn c nm userId enableNtfs
 {-# INLINE createConnection #-}
 
 -- | Create or update user's contact connection short link
@@ -862,12 +865,37 @@ switchConnectionAsync' c corrId connId =
             pure . connectionStats $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
-newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-newConn c nm userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
+newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe UserLinkData -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
+newConn c nm userId enableNtfs checkNotices cMode userData_ clientData pqInitKeys subMode = do
   srv <- getSMPServer c userId
+  when (checkNotices && connMode cMode == CMContact) $ checkClientNotices c srv
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   (connId,) <$> newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+
+checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
+checkClientNotices AgentClient {clientNotices, presetDomains} (ProtoServerWithAuth ProtocolServer {host} _) = do
+  notices <- readTVarIO clientNotices
+  unless (M.null notices) $ do
+    ts <- liftIO $ systemSeconds <$> getSystemTime
+    forM_ (currentNotice notices ts) $ \ttl ->
+      let srv = encHost $ L.head host
+       in throwError $ SMP srv $ SMP.BLOCKED $ SMP.BlockingInfo SMP.BRContent $ Just ClientNotice {ttl}
+  where
+    encHost = T.unpack . safeDecodeUtf8 . strEncode
+    currentNotice notices ts
+      | any (isPresetDomain presetDomains) host = hostNotice Nothing -- Nothing is used as key for preset servers
+      | otherwise = go $ L.toList host
+      where
+        go = \case
+          [] -> Nothing
+          (h : hs) -> hostNotice (Just $ encHost h) <|> go hs
+        hostNotice hostKey =
+          M.lookup (PSMP, hostKey) notices >>= \case
+            Just expires
+              | ts < expires -> Just $ Just $ expires - ts
+              | otherwise -> Nothing
+            _ -> Just Nothing
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =

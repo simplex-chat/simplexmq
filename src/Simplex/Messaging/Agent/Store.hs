@@ -90,6 +90,8 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     status :: QueueStatus,
     -- | to enable notifications for this queue - this field is duplicated from ConnData
     enableNtfs :: Bool,
+    -- | client notice
+    clientNoticeId :: Maybe Int64,
     -- | database queue ID (within connection)
     dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
@@ -113,6 +115,7 @@ data RcvQueueSub = RcvQueueSub
     rcvPrivateKey :: RcvPrivateAuthKey,
     status :: QueueStatus,
     enableNtfs :: Bool,
+    clientNoticeId :: Maybe Int64,
     dbQueueId :: Int64,
     primary :: Bool,
     dbReplaceQueueId :: Maybe Int64
@@ -120,8 +123,8 @@ data RcvQueueSub = RcvQueueSub
   deriving (Show)
 
 rcvQueueSub :: RcvQueue -> RcvQueueSub
-rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
-  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, dbQueueId, primary, dbReplaceQueueId}
+rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
+  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
 data ShortLinkCreds = ShortLinkCreds
   { shortLinkId :: SMP.LinkId,
@@ -408,6 +411,16 @@ data ConnData = ConnData
     pqSupport :: PQSupport
   }
   deriving (Eq, Show)
+
+-- data ClientNoticeRec = ClientNoticeRec
+--   { noticeId :: NoticeId,
+--     noticeEntity :: (AProtocolServer, EntityId),
+--     noticeDomains :: HostName,
+--     noticeExpires :: SystemSeconds,
+--     createdAt :: UTCTime
+--   }
+
+type NoticeId = Int64
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
