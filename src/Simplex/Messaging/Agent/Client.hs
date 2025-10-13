@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue_,
     subscribeQueues,
     subscribeUserServerQueues,
+    processClientNotices,
     getQueueMessage,
     decryptSMPMessage,
     failSubscription,

@@ -246,7 +246,7 @@ import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
-import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), fromTextField_)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String

@@ -993,14 +993,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   else do
                     r <- liftIO $ runExceptT $ do
                       (q, QueueRec {status}) <- ExceptT $ getSenderQueue st qId
-                      when (status == EntityActive) $ ExceptT $ blockQueue (queueStore st) q info
-                      pure status
+                      let rId = recipientId q
+                      when (status /= EntityBlocked info) $ do
+                        ExceptT $ blockQueue (queueStore st) q info
+                        liftIO $
+                          getSubscribedClient rId (queueSubscribers $ subscribers srv)
+                            $>>= readTVarIO
+                            >>= mapM_ (\c -> atomically (writeTBQueue (sndQ c) ([(NoCorrId, rId, ERR $ BLOCKED info)] , [])))
+                      pure (status, EntityBlocked info)
                     case r of
                       Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
-                      Right EntityActive -> do
+                      Right (EntityActive, status') -> do
                         incStat $ qBlocked stats
-                        liftIO $ hPutStrLn h "ok, queue blocked"
-                      Right status -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status
+                        liftIO $ hPutStrLn h $ "ok, queue blocked: " <> show status'
+                      Right (_, status') -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status'
               CPUnblock qId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do

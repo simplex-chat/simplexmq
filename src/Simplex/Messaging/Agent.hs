@@ -192,7 +192,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
-import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, isPresetDomain, nonBlockingWriteTBQueue, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, isPresetDomain, nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -2778,18 +2778,20 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     STEvent msgOrErr ->
       withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
         Right msg -> runProcessSMP rq conn (toConnData conn) msg
-        Left e -> lift $ notifyErr connId e
+        Left e -> lift $ do
+          processClientNotice rq e
+          notifyErr connId e
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
         SMP.SUB -> case respOrErr of
-          Right SMP.OK -> processSubOk rq upConnIds
+          Right SMP.OK -> liftIO $ processSubOk rq upConnIds
           -- TODO [certs rcv] associate queue with the service
-          Right (SMP.SOK serviceId_) -> processSubOk rq upConnIds
+          Right (SMP.SOK serviceId_) -> liftIO $ processSubOk rq upConnIds
           Right msg@SMP.MSG {} -> do
-            processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
+            liftIO $ processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
             runProcessSMP rq conn (toConnData conn) msg
-          Right r -> processSubErr rq $ unexpectedResponse r
-          Left e -> unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
+          Right r -> lift $ processSubErr rq $ unexpectedResponse r
+          Left e -> lift $ unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
         SMP.ACK _ -> case respOrErr of
           Right msg@SMP.MSG {} -> runProcessSMP rq conn (toConnData conn) msg
           _ -> pure () -- TODO process OK response to ACK
@@ -2811,21 +2813,28 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           tryAllErrors' (a rq conn) >>= \case
             Left e -> notify' connId (ERR e)
             Right () -> pure ()
-    processSubOk :: RcvQueue -> TVar [ConnId] -> AM ()
+    processSubOk :: RcvQueue -> TVar [ConnId] -> IO ()
     processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub rq) $ do
         SS.addActiveSub tSess sessId (rcvQueueSub rq) $ currentSubs c
         modifyTVar' upConnIds (connId :)
-    processSubErr :: RcvQueue -> SMPClientError -> AM ()
+    processSubErr :: RcvQueue -> SMPClientError -> AM' ()
     processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub rq) $
         failSubscription c tSess rq e >> incSMPServerStat c userId srv connSubErrs
-      lift $ notifyErr connId e
+      processClientNotice rq e
+      notifyErr connId e
     isPendingSub :: RcvQueue -> STM Bool
     isPendingSub rq = do
       pending <- (&&) <$> SS.hasPendingSub tSess (queueId rq) (currentSubs c) <*> activeClientSession c tSess sessId
       unless pending $ incSMPServerStat c userId srv connSubIgnored
       pure pending
+    processClientNotice rq e =
+      forM_ (smpErrorClientNotice e) $ \notice ->
+        E.bracket_
+          (atomically $ takeTMVar $ clientNoticesLock c)
+          (atomically $ putTMVar (clientNoticesLock c) ())
+          (processClientNotices c tSess [(rcvQueueSub rq, Just notice)])
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
     notify' connId msg = atomically $ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
     notifyErr :: ConnId -> SMPClientError -> AM' ()
