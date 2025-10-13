@@ -101,6 +101,8 @@ module Simplex.Messaging.Agent.Client
     removeSubscription,
     removeSubscriptions,
     hasActiveSubscription,
+    hasPendingSubscription,
+    hasRemovedSubscription,
     hasGetLock,
     releaseGetLock,
     activeClientSession,
@@ -1687,6 +1689,16 @@ hasActiveSubscription c rq = do
   tSess <- mkSMPTransportSession c rq
   SS.hasActiveSub tSess (queueId rq) $ currentSubs c
 {-# INLINE hasActiveSubscription #-}
+
+hasPendingSubscription :: SomeRcvQueue q => AgentClient -> q -> STM Bool
+hasPendingSubscription c rq = do
+  tSess <- mkSMPTransportSession c rq
+  SS.hasPendingSub tSess (queueId rq) $ currentSubs c
+{-# INLINE hasPendingSubscription #-}
+
+hasRemovedSubscription :: SomeRcvQueue q => AgentClient -> q -> STM (Maybe SMPClientError)
+hasRemovedSubscription c rq = do
+  TM.lookup (qUserId rq, qServer rq) (removedSubs c) $>>= TM.lookup (queueId rq)
 
 removeSubscription :: SomeRcvQueue q => AgentClient -> SMPTransportSession -> ConnId -> q -> STM ()
 removeSubscription c tSess connId rq = do
