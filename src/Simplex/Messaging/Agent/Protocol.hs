@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgMeta (..),
     RcvQueueInfo (..),
     SndQueueInfo (..),
+    SubscriptionStatus (..),
     ConnectionStats (..),
     SwitchPhase (..),
     RcvSwitchStatus (..),
@@ -643,23 +644,34 @@ instance FromJSON RatchetSyncState where
 
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
+    status :: QueueStatus,
     rcvSwitchStatus :: Maybe RcvSwitchStatus,
-    canAbortSwitch :: Bool
+    canAbortSwitch :: Bool,
+    subStatus :: SubscriptionStatus
   }
   deriving (Eq, Show)
 
 data SndQueueInfo = SndQueueInfo
   { sndServer :: SMPServer,
+    status :: QueueStatus,
     sndSwitchStatus :: Maybe SndSwitchStatus
   }
   deriving (Eq, Show)
+
+data SubscriptionStatus
+  = SSActive
+  | SSPending
+  | SSRemoved {subError :: String}
+  | SSNoSub
+  deriving (Eq, Ord, Show)
 
 data ConnectionStats = ConnectionStats
   { connAgentVersion :: VersionSMPA,
     rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
-    ratchetSyncSupported :: Bool
+    ratchetSyncSupported :: Bool,
+    subStatus :: Maybe SubscriptionStatus
   }
   deriving (Eq, Show)
 
@@ -2001,6 +2013,10 @@ serializeCommand = \case
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body
+
+$(J.deriveJSON (enumJSON fstToLower) ''QueueStatus)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "SS") ''SubscriptionStatus)
 
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 

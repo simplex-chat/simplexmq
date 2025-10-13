@@ -138,10 +138,6 @@ clientServiceId :: RcvQueue -> Maybe ClientServiceId
 clientServiceId = fmap dbServiceId . clientService
 {-# INLINE clientServiceId #-}
 
-rcvQueueInfo :: RcvQueue -> RcvQueueInfo
-rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
-  RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus, canAbortSwitch = canAbortRcvSwitch rq}
-
 rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
   SMPQueueAddress server sndId (C.publicKey e2ePrivKey) queueMode
@@ -213,10 +209,6 @@ data StoredSndQueue (q :: DBStored) = SndQueue
     smpClientVersion :: VersionSMPC
   }
   deriving (Show)
-
-sndQueueInfo :: SndQueue -> SndQueueInfo
-sndQueueInfo SndQueue {server, sndSwchStatus} =
-  SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
 
 instance SMPQueue RcvQueue where
   qServer RcvQueue {server} = server
