@@ -1488,6 +1488,8 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
     partitionResults pendingSubs (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed, notices, ignored) = case r of
       Left e -> case smpErrorClientNotice e of
         Just notice_ -> (failed', subscribed, (rq, notice_) : notices, ignored)
+          where
+            notices' = if isJust notice_ || isJust clientNoticeId then (rq, notice_) : notices else notices
         Nothing
           | temporaryClientError e -> acc
           | otherwise -> (failed', subscribed, notices, ignored)
@@ -1496,8 +1498,8 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
       Right _serviceId -- TODO [certs rcv] store association with the service
         | rcvId `M.member` pendingSubs -> (failed, rq : subscribed, notices', ignored)
         | otherwise -> (failed, subscribed, notices', ignored + 1)
-      where
-        notices' = if isNothing clientNoticeId then notices else (rq, Nothing) : notices
+        where
+          notices' = if isJust clientNoticeId then (rq, Nothing) : notices else notices
 
 temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
