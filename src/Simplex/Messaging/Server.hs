@@ -2043,7 +2043,6 @@ client
           writeTVar delivered $ Just (msgId, ts)
 
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
-        delQueueAndMsgs (_, QueueRec {status = EntityBlocked info}) = pure $ err $ BLOCKED info
         delQueueAndMsgs (q, QueueRec {rcvServiceId}) = do
           liftIO (deleteQueue ms q) >>= \case
             Right qr -> do
