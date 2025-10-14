@@ -2863,11 +2863,11 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
       unless pending $ incSMPServerStat c userId srv connSubIgnored
       pure pending
     processClientNotice rq e =
-      forM_ (smpErrorClientNotice e) $ \notice ->
+      forM_ (smpErrorClientNotice e) $ \notice_ ->
         E.bracket_
           (atomically $ takeTMVar $ clientNoticesLock c)
           (atomically $ putTMVar (clientNoticesLock c) ())
-          (processClientNotices c tSess [(rcvQueueSub rq, Just notice)])
+          (processClientNotices c tSess [(rcvQueueSub rq, notice_)])
     notify' :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
     notify' connId msg = atomically $ writeTBQueue subQ ("", connId, AEvt (sAEntity @e) msg)
     notifyErr :: ConnId -> SMPClientError -> AM' ()

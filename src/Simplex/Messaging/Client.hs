@@ -800,9 +800,9 @@ smpProxyError = \case
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
 
-smpErrorClientNotice :: SMPClientError -> Maybe ClientNotice
+smpErrorClientNotice :: SMPClientError -> Maybe (Maybe ClientNotice)
 smpErrorClientNotice = \case
-  PCEProtocolError (BLOCKED BlockingInfo {notice}) -> notice
+  PCEProtocolError (BLOCKED BlockingInfo {notice}) -> Just notice
   _ -> Nothing
 {-# INLINE smpErrorClientNotice #-}
 

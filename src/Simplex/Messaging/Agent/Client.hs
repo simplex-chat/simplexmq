@@ -1485,17 +1485,16 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
       (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) ->
       (Map SMP.RecipientId SMPClientError, [RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)], Int) ->
       (Map SMP.RecipientId SMPClientError, [RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)], Int)
-    partitionResults pendingSubs (rq@RcvQueueSub {clientNoticeId}, r) acc@(failed, subscribed, notices, ignored) = case r of
+    partitionResults pendingSubs (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed, notices, ignored) = case r of
       Left e -> case smpErrorClientNotice e of
-        Just notice -> (failed', subscribed, (rq, Just notice) : notices, ignored)
+        Just notice_ -> (failed', subscribed, (rq, notice_) : notices, ignored)
         Nothing
-          | temporary && isNothing clientNoticeId -> acc
-          | otherwise -> (failed', subscribed, notices', ignored)
+          | temporaryClientError e -> acc
+          | otherwise -> (failed', subscribed, notices, ignored)
         where
-          failed' = if temporary then failed else M.insert (queueId rq) e failed
-          temporary = temporaryClientError e
+          failed' = M.insert rcvId e failed
       Right _serviceId -- TODO [certs rcv] store association with the service
-        | queueId rq `M.member` pendingSubs -> (failed, rq : subscribed, notices', ignored)
+        | rcvId `M.member` pendingSubs -> (failed, rq : subscribed, notices', ignored)
         | otherwise -> (failed, subscribed, notices', ignored + 1)
       where
         notices' = if isNothing clientNoticeId then notices else (rq, Nothing) : notices

@@ -3910,6 +3910,7 @@ testClientNotice ps = do
       forM_ errs $ \case
         (_, SMP _  (BLOCKED _)) -> pure ()
         r -> expectationFailure $ "unexpected event: " <> show r
+    testNotice :: HasCallStack => AgentClient -> Bool -> IO ()
     testNotice c willExpire = do
       NOTICE (Just "localhost") expiresAt_ <- runLeft $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
       isJust expiresAt_ `shouldBe` willExpire
