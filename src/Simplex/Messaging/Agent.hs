@@ -882,10 +882,11 @@ checkClientNotices AgentClient {clientNotices, presetDomains} (ProtoServerWithAu
       | any (isPresetDomain presetDomains) host = checkHostNotice Nothing -- Nothing is used as key for preset servers
       | otherwise = mapM_ checkHostNotice $ L.toList $ L.map Just host
       where
-        checkHostNotice h = do
-          let h' = T.unpack . safeDecodeUtf8 . strEncode <$> h
-          forM_ (M.lookup h' notices) $ \expires_ ->
-            when (maybe True (ts <) expires_) $ throwError $ NOTICE h' $ roundedToUTCTime <$> expires_
+        encHost = safeDecodeUtf8 . strEncode
+        checkHostNotice h =
+          forM_ (M.lookup (encHost <$> h) notices) $ \expires_ ->
+            when (maybe True (ts <) expires_) $
+              throwError NOTICE {server = encHost $ L.head host, preset = isNothing h, expiresAt = roundedToUTCTime <$> expires_}
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =

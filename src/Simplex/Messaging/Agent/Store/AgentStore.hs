@@ -271,7 +271,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Ord (Down (..))
 import qualified Data.Set as S
-import qualified Data.Text as T
+import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
@@ -2067,20 +2067,20 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 -- * subscribe all connections
 
-getClientNotices :: DB.Connection -> [HostName] -> IO (Map (Maybe HostName) (Maybe SystemSeconds))
+getClientNotices :: DB.Connection -> [HostName] -> IO (Map (Maybe Text) (Maybe SystemSeconds))
 getClientNotices db presetDomains =
   M.map expiresAt . foldl' addNotice M.empty
     <$> DB.query_ db "SELECT host, created_at, notice_ttl FROM client_notices WHERE protocol = 'smp'"
   where
     expiresAt (createdAt, ttl)  = RoundedSystemTime . (createdAt +) <$> ttl
     addNotice ::
-      Map (Maybe HostName) (Int64, Maybe Int64) ->
+      Map (Maybe Text) (Int64, Maybe Int64) ->
       (NonEmpty TransportHost, Int64, Maybe Int64) ->
-      Map (Maybe HostName) (Int64, Maybe Int64)
+      Map (Maybe Text) (Int64, Maybe Int64)
     addNotice m (host, createdAt', ttl') =
       let hostKeys
             | any (isPresetDomain presetDomains) host = [Nothing]
-            | otherwise = L.toList $ L.map (Just . T.unpack . safeDecodeUtf8 . strEncode) host
+            | otherwise = L.toList $ L.map (Just . safeDecodeUtf8 . strEncode) host
        in foldl' (flip $ M.alter (Just . addNoticeHost)) m hostKeys
       where
         -- sum of ttls starting from the latest createdAt

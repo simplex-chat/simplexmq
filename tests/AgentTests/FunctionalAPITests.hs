@@ -3912,7 +3912,7 @@ testClientNotice ps = do
         r -> expectationFailure $ "unexpected event: " <> show r
     testNotice :: HasCallStack => AgentClient -> Bool -> IO ()
     testNotice c willExpire = do
-      NOTICE (Just "localhost") expiresAt_ <- runLeft $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      NOTICE "localhost" False expiresAt_ <- runLeft $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
       isJust expiresAt_ `shouldBe` willExpire
 
 noNetworkDelay :: AgentClient -> IO ()

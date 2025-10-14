@@ -1872,7 +1872,7 @@ data AgentErrorType
   | -- | errors of other agents
     AGENT {agentErr :: SMPAgentError}
   | -- | client notice
-    NOTICE {noticeServer :: Maybe String, expiresAt :: Maybe UTCTime}
+    NOTICE {server :: Text, preset :: Bool, expiresAt :: Maybe UTCTime}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
   | -- | critical agent errors that should be shown to the user, optionally with restart button

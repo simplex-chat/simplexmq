@@ -346,7 +346,7 @@ data AgentClient = AgentClient
     subscrConns :: TVar (Set ConnId),
     currentSubs :: TSessionSubs,
     removedSubs :: TMap (UserId, SMPServer) (TMap SMP.RecipientId SMPClientError),
-    clientNotices :: TMap (Maybe HostName) (Maybe SystemSeconds),
+    clientNotices :: TMap (Maybe Text) (Maybe SystemSeconds),
     clientNoticesLock :: TMVar (),
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
@@ -493,7 +493,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe HostName) (Maybe SystemSeconds) -> Env -> IO AgentClient
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe Text) (Maybe SystemSeconds) -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains} currentTs notices agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
