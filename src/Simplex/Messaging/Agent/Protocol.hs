@@ -129,6 +129,7 @@ module Simplex.Messaging.Agent.Protocol
     ClientServiceId,
     sameConnReqContact,
     sameShortLinkContact,
+    sameConnLinkContact,
     simplexChat,
     connReqUriP',
     simplexConnReqUri,
@@ -1663,6 +1664,11 @@ sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUr
 sameShortLinkContact :: ConnShortLink 'CMContact -> ConnShortLink 'CMContact -> Bool
 sameShortLinkContact (CSLContact _ ct srv k) (CSLContact _ ct' srv' k') =
   ct == ct' && sameSrvAddr srv srv' && k == k'
+
+sameConnLinkContact :: ConnectionLink 'CMContact -> ConnectionLink 'CMContact -> Bool
+sameConnLinkContact (CLFull cr) (CLFull cr') = sameConnReqContact cr cr'
+sameConnLinkContact (CLShort sl) (CLShort sl') = sameShortLinkContact sl sl'
+sameConnLinkContact _ _ = False
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
