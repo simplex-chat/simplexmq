@@ -15,6 +15,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Encoding
@@ -22,7 +23,6 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (XFTPServer)
 import System.FilePath ((</>))
-import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 
 type RcvFileId = ByteString -- Agent entity ID
 

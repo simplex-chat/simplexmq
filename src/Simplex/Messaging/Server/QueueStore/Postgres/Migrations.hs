@@ -1,11 +1,11 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Server.QueueStore.Postgres.Migrations where
 
 import Data.List (sortOn)
 import Data.Text (Text)
-import qualified Data.Text as T
 import Simplex.Messaging.Agent.Store.Shared
 import Text.RawString.QQ (r)
 
@@ -26,8 +26,7 @@ serverMigrations = sortOn name $ map migration serverSchemaMigrations
 
 m20250207_initial :: Text
 m20250207_initial =
-  T.pack
-    [r|
+  [r|
 CREATE TABLE msg_queues(
   recipient_id BYTEA NOT NULL,
   recipient_key BYTEA NOT NULL,
@@ -51,24 +50,21 @@ CREATE INDEX idx_msg_queues_deleted_at ON msg_queues (deleted_at);
 
 m20250319_updated_index :: Text
 m20250319_updated_index =
-  T.pack
-    [r|
+  [r|
 DROP INDEX idx_msg_queues_deleted_at;
 CREATE INDEX idx_msg_queues_updated_at ON msg_queues (deleted_at, updated_at);
     |]
 
 down_m20250319_updated_index :: Text
 down_m20250319_updated_index =
-  T.pack
-    [r|
+  [r|
 DROP INDEX idx_msg_queues_updated_at;
 CREATE INDEX idx_msg_queues_deleted_at ON msg_queues (deleted_at);
     |]
 
 m20250320_short_links :: Text
 m20250320_short_links =
-  T.pack
-    [r|
+  [r|
 ALTER TABLE msg_queues
   ADD COLUMN queue_mode TEXT,
   ADD COLUMN link_id BYTEA,
@@ -88,8 +84,7 @@ CREATE UNIQUE INDEX idx_msg_queues_link_id ON msg_queues(link_id);
 
 down_m20250320_short_links :: Text
 down_m20250320_short_links =
-  T.pack
-    [r|
+  [r|
 ALTER TABLE msg_queues ADD COLUMN snd_secure BOOLEAN NOT NULL DEFAULT FALSE;
 
 UPDATE msg_queues SET snd_secure = TRUE WHERE queue_mode = 'M';
@@ -124,8 +119,7 @@ ALTER TABLE msg_queues RENAME COLUMN recipient_keys TO recipient_key;
 
 m20250514_service_certs :: Text
 m20250514_service_certs =
-  T.pack
-    [r|
+  [r|
 CREATE TABLE services(
   service_id BYTEA NOT NULL,
   service_role TEXT NOT NULL,
@@ -147,8 +141,7 @@ CREATE INDEX idx_msg_queues_ntf_service_id ON msg_queues(ntf_service_id, deleted
 
 down_m20250514_service_certs :: Text
 down_m20250514_service_certs =
-  T.pack
-    [r|
+  [r|
 DROP INDEX idx_msg_queues_rcv_service_id;
 DROP INDEX idx_msg_queues_ntf_service_id;
 
@@ -163,8 +156,7 @@ DROP TABLE services;
 
 m20250903_store_messages :: Text
 m20250903_store_messages =
-  T.pack
-    [r|
+  [r|
 CREATE TABLE messages(
   message_id BIGINT NOT NULL PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   recipient_id BYTEA NOT NULL REFERENCES msg_queues ON DELETE CASCADE ON UPDATE RESTRICT,
@@ -434,8 +426,7 @@ $$;
 
 down_m20250903_store_messages :: Text
 down_m20250903_store_messages =
-  T.pack
-    [r|
+  [r|
 DROP FUNCTION write_message;
 DROP FUNCTION try_del_msg;
 DROP FUNCTION try_del_peek_msg;

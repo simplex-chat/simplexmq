@@ -126,6 +126,7 @@ dummyRQ userId server connId rcvId =
       rcvPrivateKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe",
       status = New,
       enableNtfs = False,
+      clientNoticeId = Nothing,
       dbQueueId = 0,
       primary = True,
       dbReplaceQueueId = Nothing

@@ -1290,11 +1290,11 @@ testBlockMessageQueue =
       pure (rId, sId)
 
     -- TODO [postgres] block via control port
-    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent
+    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent Nothing
 
     withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
-      Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
+      Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent Nothing))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "same queue ID in response"
   where
     runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a

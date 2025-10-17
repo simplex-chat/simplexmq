@@ -40,6 +40,7 @@ module Simplex.Messaging.Client
     transportHost',
     transportSession',
     useWebPort,
+    isPresetDomain,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -103,6 +104,7 @@ module Simplex.Messaging.Client
     temporaryClientError,
     smpClientServiceError,
     smpProxyError,
+    smpErrorClientNotice,
     textToHostMode,
     ServerTransmissionBatch,
     ServerTransmission (..),
@@ -157,6 +159,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -715,12 +718,15 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               Right _ -> logWarn "SMP client unprocessed event"
 
 useWebPort :: NetworkConfig -> [HostName] -> ProtocolServer p -> Bool
-useWebPort cfg presetDomains srv = case smpWebPortServers cfg of
+useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortServers cfg of
   SWPAll -> True
-  SWPPreset -> case srv of
-    ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
-    _ -> False
+  SWPPreset -> isPresetDomain presetDomains h
   SWPOff -> False
+
+isPresetDomain :: [HostName] -> TransportHost -> Bool
+isPresetDomain presetDomains = \case
+  THDomainName h -> any (`isSuffixOf` h) presetDomains
+  _ -> False
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
@@ -793,6 +799,12 @@ smpProxyError = \case
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
+
+smpErrorClientNotice :: SMPClientError -> Maybe (Maybe ClientNotice)
+smpErrorClientNotice = \case
+  PCEProtocolError (BLOCKED BlockingInfo {notice}) -> Just notice
+  _ -> Nothing
+{-# INLINE smpErrorClientNotice #-}
 
 -- | Create a new SMP queue.
 --
