@@ -341,12 +341,13 @@ data AgentClient = AgentClient
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     presetDomains :: [HostName],
+    presetServers :: [SMPServer],
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
     currentSubs :: TSessionSubs,
     removedSubs :: TMap (UserId, SMPServer) (TMap SMP.RecipientId SMPClientError),
-    clientNotices :: TMap (Maybe Text) (Maybe SystemSeconds),
+    clientNotices :: TMap (Maybe SMPServer) (Maybe SystemSeconds),
     clientNoticesLock :: TMVar (),
     workerSeq :: TVar Int,
     smpDeliveryWorkers :: TMap SndQAddr (Worker, TMVar ()),
@@ -493,8 +494,8 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe Text) (Maybe SystemSeconds) -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains} currentTs notices agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains, presetServers} currentTs notices agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
@@ -550,6 +551,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
         xftpClients,
         useNetworkConfig,
         presetDomains,
+        presetServers,
         userNetworkInfo,
         userNetworkUpdated,
         subscrConns,
@@ -1638,9 +1640,9 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         sessId = sessionId $ thParams smp
 
 processClientNotices :: AgentClient -> SMPTransportSession -> [(RcvQueueSub, Maybe ClientNotice)] -> AM' ()
-processClientNotices c@AgentClient {presetDomains} tSess notices = do
+processClientNotices c@AgentClient {presetServers} tSess notices = do
   now <- liftIO getSystemSeconds
-  tryAllErrors' (withStore' c $ \db -> (,) <$> updateClientNotices db tSess now notices <*> getClientNotices db presetDomains) >>= \case
+  tryAllErrors' (withStore' c $ \db -> (,) <$> updateClientNotices db tSess now notices <*> getClientNotices db presetServers) >>= \case
     Right (noticeIds, clntNotices) -> atomically $ do
       SS.updateClientNotices tSess noticeIds $ currentSubs c
       writeTVar (clientNotices c) clntNotices

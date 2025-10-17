@@ -15,6 +15,7 @@ CREATE TABLE client_notices(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   entity_id BYTEA NOT NULL,
+  server_key_hash BYTEA,
   notice_ttl BIGINT,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL

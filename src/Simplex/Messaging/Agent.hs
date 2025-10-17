@@ -193,7 +193,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
-import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, isPresetDomain, nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -252,13 +252,13 @@ getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
 getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
-getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, presetDomains} store backgroundMode =
+getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, presetServers} store backgroundMode =
   newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
-      notices <- liftIO $ withTransaction store (`getClientNotices` presetDomains) `catchAll_` pure []
+      notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
       c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs notices =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
@@ -874,19 +874,17 @@ newConn c nm userId enableNtfs checkNotices cMode userData_ clientData pqInitKey
     `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
-checkClientNotices AgentClient {clientNotices, presetDomains} (ProtoServerWithAuth ProtocolServer {host} _) = do
+checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAuth srv@(ProtocolServer {host}) _) = do
   notices <- readTVarIO clientNotices
   unless (M.null notices) $ checkNotices notices =<< liftIO getSystemSeconds
   where
-    checkNotices notices ts
-      | any (isPresetDomain presetDomains) host = checkHostNotice Nothing -- Nothing is used as key for preset servers
-      | otherwise = mapM_ checkHostNotice $ L.toList $ L.map Just host
-      where
-        encHost = safeDecodeUtf8 . strEncode
-        checkHostNotice h =
-          forM_ (M.lookup (encHost <$> h) notices) $ \expires_ ->
-            when (maybe True (ts <) expires_) $
-              throwError NOTICE {server = encHost $ L.head host, preset = isNothing h, expiresAt = roundedToUTCTime <$> expires_}
+    srvKey
+      | isPresetServer srv presetServers = Nothing -- Nothing is used as key for preset servers
+      | otherwise = Just srv
+    checkNotices notices ts =
+      forM_ (M.lookup srvKey notices) $ \expires_ ->
+        when (maybe True (ts <) expires_) $
+          throwError NOTICE {server = safeDecodeUtf8 $ strEncode $ L.head host, preset = isNothing srvKey, expiresAt = roundedToUTCTime <$> expires_}
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =

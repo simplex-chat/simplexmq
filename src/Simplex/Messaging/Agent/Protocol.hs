@@ -168,6 +168,7 @@ module Simplex.Messaging.Agent.Protocol
     updateSMPServerHosts,
     shortenShortLink,
     restoreShortLink,
+    isPresetServer,
     linkUserData,
     linkUserData',
   )
@@ -1624,15 +1625,16 @@ shortenShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
   where
-    shortServer srv@(SMPServer hs@(h :| _) p kh) =
-      if isPresetServer then SMPServerOnlyHost h else srv
-      where
-        isPresetServer = case findPresetServer srv presetSrvs of
-          Just (SMPServer hs' p' kh') ->
-            all (`elem` hs') hs
-              && (p == p' || (null p' && (p == "443" || p == "5223")))
-              && kh == kh'
-          Nothing -> False
+    shortServer srv@(SMPServer (h :| _) _ _) =
+      if isPresetServer srv presetSrvs then SMPServerOnlyHost h else srv
+
+isPresetServer :: Foldable t => SMPServer -> t SMPServer -> Bool
+isPresetServer srv@(SMPServer hs p kh) presetSrvs = case findPresetServer srv presetSrvs of
+  Just (SMPServer hs' p' kh') ->
+    all (`elem` hs') hs
+      && (p == p' || (null p' && (p == "443" || p == "5223")))
+      && kh == kh'
+  Nothing -> False
 
 -- explicit bidirectional is used for ghc 8.10.7 compatibility, [h]/[] patterns are not reversible.
 pattern SMPServerOnlyHost :: TransportHost -> SMPServer
@@ -1650,7 +1652,7 @@ restoreShortLink presetSrvs = \case
       s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
       s -> s
 
-findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
+findPresetServer :: Foldable t => SMPServer -> t SMPServer -> Maybe SMPServer
 findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
 {-# INLINE findPresetServer #-}
 

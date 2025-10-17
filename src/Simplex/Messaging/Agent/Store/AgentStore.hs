@@ -271,11 +271,10 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Ord (Down (..))
 import qualified Data.Set as S
-import Data.Text (Text)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import Data.Word (Word32)
-import Network.Socket (HostName, ServiceName)
+import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
@@ -288,7 +287,7 @@ import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Agent.Store.Entity
-import Simplex.Messaging.Client (SMPTransportSession, isPresetDomain)
+import Simplex.Messaging.Client (SMPTransportSession)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs (..))
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), RatchetX448, SkippedMsgDiff (..), SkippedMsgKeys)
@@ -2067,21 +2066,29 @@ newQueueId_ (Only maxId : _) = DBEntityId (maxId + 1)
 
 -- * subscribe all connections
 
-getClientNotices :: DB.Connection -> [HostName] -> IO (Map (Maybe Text) (Maybe SystemSeconds))
-getClientNotices db presetDomains =
+getClientNotices :: DB.Connection -> [SMPServer] -> IO (Map (Maybe SMPServer) (Maybe SystemSeconds))
+getClientNotices db presetSrvs =
   M.map expiresAt . foldl' addNotice M.empty
-    <$> DB.query_ db "SELECT host, created_at, notice_ttl FROM client_notices WHERE protocol = 'smp'"
+    <$> DB.query_
+      db
+      [sql|
+        SELECT n.host, n.port, n.entity_id, COALESCE(n.server_key_hash, s.key_hash), n.created_at, n.notice_ttl
+        FROM client_notices n
+        JOIN servers s ON n.host = s.host AND n.port = s.port
+        WHERE n.protocol = 'smp'
+      |]
   where
     expiresAt (createdAt, ttl)  = RoundedSystemTime . (createdAt +) <$> ttl
     addNotice ::
-      Map (Maybe Text) (Int64, Maybe Int64) ->
-      (NonEmpty TransportHost, Int64, Maybe Int64) ->
-      Map (Maybe Text) (Int64, Maybe Int64)
-    addNotice m (host, createdAt', ttl') =
-      let hostKeys
-            | any (isPresetDomain presetDomains) host = [Nothing]
-            | otherwise = L.toList $ L.map (Just . safeDecodeUtf8 . strEncode) host
-       in foldl' (flip $ M.alter (Just . addNoticeHost)) m hostKeys
+      Map (Maybe SMPServer) (Int64, Maybe Int64) ->
+      (NonEmpty TransportHost, ServiceName, RecipientId, C.KeyHash, Int64, Maybe Int64) ->
+      Map (Maybe SMPServer) (Int64, Maybe Int64)
+    addNotice m (host, port, _, keyHash, createdAt', ttl') =
+      let srv = SMPServer host port keyHash
+          srvKey
+            | isPresetServer srv presetSrvs = Nothing
+            | otherwise = Just srv
+       in M.alter (Just . addNoticeHost) srvKey m
       where
         -- sum of ttls starting from the latest createdAt
         addNoticeHost :: Maybe (Int64, Maybe Int64) -> (Int64, Maybe Int64)
@@ -2096,27 +2103,31 @@ updateClientNotices db (_, srv, _) now =
     deleteNotice RcvQueueSub {rcvId, clientNoticeId} = do
       mapM_ (DB.execute db "DELETE FROM client_notices WHERE client_notice_id = ?" . Only) clientNoticeId
       pure (rcvId, Nothing)
-    upsertNotice RcvQueueSub {rcvId} ClientNotice {ttl} = do
-      noticeId_ <-
-        maybeFirstRow fromOnly $
-          DB.query
-            db
-            [sql|
-              INSERT INTO client_notices(protocol, host, port, entity_id, notice_ttl, created_at, updated_at)
-                VALUES ('smp',?,?,?,?,?,?)
-              ON CONFLICT (protocol, host, port, entity_id)
-              DO UPDATE SET
-                notice_ttl = EXCLUDED.notice_ttl,
-                updated_at = EXCLUDED.updated_at
-              RETURNING client_notice_id
-            |]
-            (host srv, port srv, rcvId, ttl, now, now)
-      forM_ noticeId_ $ \noticeId -> do
-        DB.execute
-          db
-          "UPDATE rcv_queues SET client_notice_id = ? WHERE host = ? AND port = ? AND rcv_id = ?"
-          (noticeId, host srv, port srv, rcvId)
-      pure (rcvId, noticeId_)
+    upsertNotice RcvQueueSub {rcvId, server} ClientNotice {ttl} =
+      getServerKeyHash_ db server >>= \case
+        Left _ -> pure (rcvId, Nothing)
+        Right keyHash_ -> do
+          noticeId_ <-
+            maybeFirstRow fromOnly $
+              DB.query
+                db
+                [sql|
+                  INSERT INTO client_notices(protocol, host, port, entity_id, server_key_hash, notice_ttl, created_at, updated_at)
+                    VALUES ('smp',?,?,?,?,?,?,?)
+                  ON CONFLICT (protocol, host, port, entity_id)
+                  DO UPDATE SET
+                    server_key_hash = EXCLUDED.server_key_hash,
+                    notice_ttl = EXCLUDED.notice_ttl,
+                    updated_at = EXCLUDED.updated_at
+                  RETURNING client_notice_id
+                |]
+                (host srv, port srv, rcvId, keyHash_, ttl, now, now)
+          forM_ noticeId_ $ \noticeId -> do
+            DB.execute
+              db
+              "UPDATE rcv_queues SET client_notice_id = ? WHERE host = ? AND port = ?AND rcv_id = ?"
+              (noticeId, host srv, port srv, rcvId)
+          pure (rcvId, noticeId_)
 
 getSubscriptionServers :: DB.Connection -> Bool -> IO [(UserId, SMPServer)]
 getSubscriptionServers db onlyNeeded =
