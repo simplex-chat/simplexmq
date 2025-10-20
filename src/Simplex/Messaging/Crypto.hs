@@ -76,6 +76,7 @@ module Simplex.Messaging.Crypto
     generateKeyPair,
     generateSignatureKeyPair,
     generateAuthKeyPair,
+    generatePrivateAuthKey,
     generateDhKeyPair,
     privateToX509,
     x509ToPublic,
@@ -331,10 +332,10 @@ type PublicKeyX448 = PublicKey X448
 
 -- | GADT for private keys.
 data PrivateKey (a :: Algorithm) where
-  PrivateKeyEd25519 :: Ed25519.SecretKey -> Ed25519.PublicKey -> PrivateKey Ed25519
-  PrivateKeyEd448 :: Ed448.SecretKey -> Ed448.PublicKey -> PrivateKey Ed448
-  PrivateKeyX25519 :: X25519.SecretKey -> X25519.PublicKey -> PrivateKey X25519
-  PrivateKeyX448 :: X448.SecretKey -> X448.PublicKey -> PrivateKey X448
+  PrivateKeyEd25519 :: Ed25519.SecretKey -> PrivateKey Ed25519
+  PrivateKeyEd448 :: Ed448.SecretKey -> PrivateKey Ed448
+  PrivateKeyX25519 :: X25519.SecretKey -> PrivateKey X25519
+  PrivateKeyX448 :: X448.SecretKey -> PrivateKey X448
 
 deriving instance Eq (PrivateKey a)
 
@@ -618,48 +619,66 @@ class CryptoPrivateKey pk where
   type PublicKeyType pk
   toPrivKey :: (forall a. AlgorithmI a => PrivateKey a -> b) -> pk -> b
   privKey :: APrivateKey -> Either String pk
+  toPublic :: pk -> PublicKeyType pk
 
 instance CryptoPrivateKey APrivateKey where
   type PublicKeyType APrivateKey = APublicKey
   toPrivKey f (APrivateKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey = Right
+  {-# INLINE privKey #-}
+  toPublic (APrivateKey a k) = APublicKey a (toPublic k)
+  {-# INLINE toPublic #-}
 
 instance CryptoPrivateKey APrivateSignKey where
   type PublicKeyType APrivateSignKey = APublicVerifyKey
   toPrivKey f (APrivateSignKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey a k) = case signatureAlgorithm a of
     Just Dict -> Right $ APrivateSignKey a k
     _ -> Left "key does not support signature algorithms"
+  toPublic (APrivateSignKey a k) = APublicVerifyKey a (toPublic k)
+  {-# INLINE toPublic #-}
 
 instance CryptoPrivateKey APrivateAuthKey where
   type PublicKeyType APrivateAuthKey = APublicAuthKey
   toPrivKey f (APrivateAuthKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey a k) = case authAlgorithm a of
     Just Dict -> Right $ APrivateAuthKey a k
     _ -> Left "key does not support auth algorithms"
+  toPublic (APrivateAuthKey a k) = APublicAuthKey a (toPublic k)
+  {-# INLINE toPublic #-}
 
 instance CryptoPrivateKey APrivateDhKey where
   type PublicKeyType APrivateDhKey = APublicDhKey
   toPrivKey f (APrivateDhKey _ k) = f k
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey a k) = case dhAlgorithm a of
     Just Dict -> Right $ APrivateDhKey a k
     _ -> Left "key does not support DH algorithm"
+  toPublic (APrivateDhKey a k) = APublicDhKey a (toPublic k)
+  {-# INLINE toPublic #-}
 
 instance AlgorithmI a => CryptoPrivateKey (PrivateKey a) where
   type PublicKeyType (PrivateKey a) = PublicKey a
   toPrivKey = id
+  {-# INLINE toPrivKey #-}
   privKey (APrivateKey _ k) = checkAlgorithm k
+  {-# INLINE privKey #-}
+  toPublic = publicKey
+  {-# INLINE toPublic #-}
 
 publicKey :: PrivateKey a -> PublicKey a
 publicKey = \case
-  PrivateKeyEd25519 _ k -> PublicKeyEd25519 k
-  PrivateKeyEd448 _ k -> PublicKeyEd448 k
-  PrivateKeyX25519 _ k -> PublicKeyX25519 k
-  PrivateKeyX448 _ k -> PublicKeyX448 k
+  PrivateKeyEd25519 pk -> PublicKeyEd25519 (Ed25519.toPublic pk)
+  PrivateKeyEd448 pk -> PublicKeyEd448 (Ed448.toPublic pk)
+  PrivateKeyX25519 pk -> PublicKeyX25519 (X25519.toPublic pk)
+  PrivateKeyX448 pk -> PublicKeyX448 (X448.toPublic pk)
 
 -- | Expand signature private key to a key pair.
 signatureKeyPair :: APrivateSignKey -> ASignatureKeyPair
-signatureKeyPair ak@(APrivateSignKey a k) = (APublicVerifyKey a (publicKey k), ak)
+signatureKeyPair ak@(APrivateSignKey a k) = (APublicVerifyKey a (toPublic k), ak)
 
 encodePrivKey :: CryptoPrivateKey pk => pk -> ByteString
 encodePrivKey = toPrivKey $ encodeASNObj . privateToX509
@@ -709,6 +728,9 @@ generateSignatureKeyPair a g = bimap (APublicVerifyKey a) (APrivateSignKey a) <$
 generateAuthKeyPair :: (AlgorithmI a, AuthAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM AAuthKeyPair
 generateAuthKeyPair a g = bimap (APublicAuthKey a) (APrivateAuthKey a) <$> generateKeyPair g
 
+generatePrivateAuthKey :: (AlgorithmI a, AuthAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM APrivateAuthKey
+generatePrivateAuthKey a g = APrivateAuthKey a <$> generatePrivateKey g
+
 generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ADhKeyPair
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
 
@@ -716,23 +738,19 @@ generateKeyPair :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (KeyPair a)
 generateKeyPair g = stateTVar g (`withDRG` generateKeyPair_)
 
 generateKeyPair_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (KeyPair a)
-generateKeyPair_ = case sAlgorithm @a of
-  SEd25519 ->
-    Ed25519.generateSecretKey >>= \pk ->
-      let k = Ed25519.toPublic pk
-       in pure (PublicKeyEd25519 k, PrivateKeyEd25519 pk k)
-  SEd448 ->
-    Ed448.generateSecretKey >>= \pk ->
-      let k = Ed448.toPublic pk
-       in pure (PublicKeyEd448 k, PrivateKeyEd448 pk k)
-  SX25519 ->
-    X25519.generateSecretKey >>= \pk ->
-      let k = X25519.toPublic pk
-       in pure (PublicKeyX25519 k, PrivateKeyX25519 pk k)
-  SX448 ->
-    X448.generateSecretKey >>= \pk ->
-      let k = X448.toPublic pk
-       in pure (PublicKeyX448 k, PrivateKeyX448 pk k)
+generateKeyPair_ = do
+  pk <- generatePrivateKey_
+  pure (toPublic pk, pk)
+
+generatePrivateKey :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (PrivateKey a)
+generatePrivateKey g = stateTVar g (`withDRG` generatePrivateKey_)
+
+generatePrivateKey_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (PrivateKey a)
+generatePrivateKey_ = case sAlgorithm @a of
+  SEd25519 -> PrivateKeyEd25519 <$> Ed25519.generateSecretKey
+  SEd448 -> PrivateKeyEd448 <$> Ed448.generateSecretKey
+  SX25519 -> PrivateKeyX25519 <$> X25519.generateSecretKey
+  SX448 -> PrivateKeyX448 <$> X448.generateSecretKey
 
 instance ToField APrivateSignKey where toField = toField . Binary . encodePrivKey
 
@@ -856,8 +874,8 @@ instance SignatureSize APublicVerifyKey where
 
 instance SignatureAlgorithm a => SignatureSize (PrivateKey a) where
   signatureSize = \case
-    PrivateKeyEd25519 _ _ -> Ed25519.signatureSize
-    PrivateKeyEd448 _ _ -> Ed448.signatureSize
+    PrivateKeyEd25519 _ -> Ed25519.signatureSize
+    PrivateKeyEd448 _ -> Ed448.signatureSize
   {-# INLINE signatureSize #-}
 
 instance SignatureAlgorithm a => SignatureSize (PublicKey a) where
@@ -1157,8 +1175,8 @@ cryptoFailable = liftEither . first AESCipherError . CE.eitherCryptoError
 --
 -- Used by SMP clients to sign SMP commands and by SMP agents to sign messages.
 sign' :: SignatureAlgorithm a => PrivateKey a -> ByteString -> Signature a
-sign' (PrivateKeyEd25519 pk k) msg = SignatureEd25519 $ Ed25519.sign pk k msg
-sign' (PrivateKeyEd448 pk k) msg = SignatureEd448 $ Ed448.sign pk k msg
+sign' (PrivateKeyEd25519 pk) msg = SignatureEd25519 $ Ed25519.sign pk (Ed25519.toPublic pk) msg
+sign' (PrivateKeyEd448 pk) msg = SignatureEd448 $ Ed448.sign pk (Ed448.toPublic pk) msg
 {-# INLINE sign' #-}
 
 sign :: APrivateSignKey -> ByteString -> ASignature
@@ -1262,8 +1280,8 @@ verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' o
   _ -> False
 
 dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
-dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk _) = DhSecretX25519 $ X25519.dh k pk
-dh' (PublicKeyX448 k) (PrivateKeyX448 pk _) = DhSecretX448 $ X448.dh k pk
+dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
+dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
 {-# INLINE dh' #-}
 
 -- | NaCl @crypto_box@ encrypt with padding with a shared DH secret and 192-bit nonce.
@@ -1467,10 +1485,10 @@ publicToX509 = \case
 
 privateToX509 :: PrivateKey a -> X.PrivKey
 privateToX509 = \case
-  PrivateKeyEd25519 k _ -> X.PrivKeyEd25519 k
-  PrivateKeyEd448 k _ -> X.PrivKeyEd448 k
-  PrivateKeyX25519 k _ -> X.PrivKeyX25519 k
-  PrivateKeyX448 k _ -> X.PrivKeyX448 k
+  PrivateKeyEd25519 k -> X.PrivKeyEd25519 k
+  PrivateKeyEd448 k -> X.PrivKeyEd448 k
+  PrivateKeyX25519 k -> X.PrivKeyX25519 k
+  PrivateKeyX448 k -> X.PrivKeyX448 k
 
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
@@ -1497,10 +1515,10 @@ x509ToPublic' k = x509ToPublic (k, []) >>= pubKey
 
 x509ToPrivate :: (X.PrivKey, [ASN1]) -> Either String APrivateKey
 x509ToPrivate = \case
-  (X.PrivKeyEd25519 k, []) -> Right . APrivateKey SEd25519 . PrivateKeyEd25519 k $ Ed25519.toPublic k
-  (X.PrivKeyEd448 k, []) -> Right . APrivateKey SEd448 . PrivateKeyEd448 k $ Ed448.toPublic k
-  (X.PrivKeyX25519 k, []) -> Right . APrivateKey SX25519 . PrivateKeyX25519 k $ X25519.toPublic k
-  (X.PrivKeyX448 k, []) -> Right . APrivateKey SX448 . PrivateKeyX448 k $ X448.toPublic k
+  (X.PrivKeyEd25519 k, []) -> Right $ APrivateKey SEd25519 $ PrivateKeyEd25519 k
+  (X.PrivKeyEd448 k, []) -> Right $ APrivateKey SEd448 $ PrivateKeyEd448 k
+  (X.PrivKeyX25519 k, []) -> Right $ APrivateKey SX25519 $ PrivateKeyX25519 k
+  (X.PrivKeyX448 k, []) -> Right $ APrivateKey SX448 $ PrivateKeyX448 k
   r -> asnKeyError r
 
 x509ToPrivate' :: CryptoPrivateKey k => X.PrivKey -> Either String k

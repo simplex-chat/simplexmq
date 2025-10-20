@@ -186,6 +186,26 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       storeLogExists <- doesFileExist storeLogFilePath
       msgsFileExists <- doesFileExist storeMsgsFilePath
       case (cmd, tables) of
+        (SCImport, DTAll)
+          | not schemaExists && storeLogExists && msgsFileExists -> do
+              storeLogFile <- getRequiredStoreLogFile ini
+              confirmOrExit
+                ("WARNING: store log file " <> storeLogFile <> " and message log file " <> storeMsgsFilePath <> " will be imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
+                "Store logs not imported"
+              (sCnt, qCnt) <- importStoreLogToDatabase logPath storeLogFile dbOpts
+              putStrLn $ "Imported: " <> show sCnt <> " services, " <> show qCnt <> " queues"
+              putStrLn "Importing messages..."
+              mCnt <- importMessagesToDatabase storeMsgsFilePath dbOpts
+              putStrLn $ "Import completed: " <> show mCnt <> " messages"
+              putStrLn $ case readStoreType ini of
+                Right (ASType SQSPostgres SMSPostgres) -> "store_queues and store_messages set to `database`, start the server."
+                Right _ -> "set store_queues and store_messages to `database` in INI file"
+                Left e -> e <> ", configure storage correctly"
+          | otherwise -> do
+              when schemaExists $ putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
+              unless storeLogExists $ putStrLn $ storeLogFilePath <> " file does not exist."
+              unless msgsFileExists $ putStrLn $ storeMsgsFilePath <> " file does not exist."
+              exitFailure
         (SCImport, DTQueues)
           | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
           | schemaExists -> do
@@ -224,8 +244,27 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               putStrLn $ "Import completed: " <> show mCnt <> " messages"
               putStrLn $ case readStoreType ini of
                 Right (ASType SQSPostgres SMSPostgres) -> "store_queues and store_messages set to `database`, start the server."
-                Right _ -> "set store_queues and store_messages set to `database` in INI file"
+                Right _ -> "set store_queues and store_messages to `database` in INI file"
                 Left e -> e <> ", configure storage correctly"
+        (SCExport, DTAll)
+          | schemaExists && not storeLogExists && not msgsFileExists -> do
+              confirmOrExit
+                ("WARNING: PostrgreSQL schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath <> " and to message log file " <> storeMsgsFilePath)
+                "Database store not exported"
+              (sCnt, qCnt) <- exportDatabaseToStoreLog logPath dbOpts storeLogFilePath
+              putStrLn $ "Exported: " <> show sCnt <> " services, " <> show qCnt <> " queues"
+              putStrLn "Exporting messages..."
+              let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
+              ms <- newMsgStore $ PostgresMsgStoreCfg storeCfg defaultMsgQueueQuota
+              withFile storeMsgsFilePath WriteMode (try . exportDbMessages True ms) >>= \case
+                Right mCnt -> putStrLn $ "Export completed: " <> show mCnt <> " messages"
+                Left (e :: SomeException) -> putStrLn $ "Error exporting messages: " <> show e
+              closeMsgStore ms
+          | otherwise -> do
+              unless schemaExists $ putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
+              when storeLogExists $ putStrLn $ storeLogFilePath <> " file already exists."
+              when msgsFileExists $ putStrLn $ storeMsgsFilePath <> " file already exists."
+              exitFailure
         (SCExport, DTQueues)
           | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
           | not schemaExists -> do
@@ -262,6 +301,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   putStrLn $ "Export completed: " <> show mCnt <> " messages"
                   putStrLn "Export queues with `smp-server database export queues`"
                 Left (e :: SomeException) -> putStrLn $ "Error exporting messages: " <> show e
+              closeMsgStore ms
         (SCDelete, _)
           | not schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
@@ -760,16 +800,18 @@ data CliCommand
 
 data StoreCmd = SCImport | SCExport | SCDelete
 
-data DatabaseTable = DTQueues | DTMessages
+data DatabaseTable = DTQueues | DTMessages | DTAll
 
 instance StrEncoding DatabaseTable where
   strEncode = \case
     DTQueues -> "queues"
     DTMessages -> "messages"
+    DTAll -> "all"
   strP =
     A.takeTill (== ' ') >>= \case
       "queues" -> pure DTQueues
       "messages" -> pure DTMessages
+      "all" -> pure DTAll
       _ -> fail "DatabaseTable"
 
 cliCommandP :: FilePath -> FilePath -> FilePath -> Parser CliCommand
@@ -940,6 +982,7 @@ cliCommandP cfgPath logPath iniFile =
         ( long "table"
             <> help "Database tables: queues/messages"
             <> metavar "TABLE"
+            <> value DTAll
         )
     parseBasicAuth :: ReadM ServerPassword
     parseBasicAuth = eitherReader $ fmap ServerPassword . strDecode . B.pack

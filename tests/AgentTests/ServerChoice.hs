@@ -65,7 +65,8 @@ initServers =
       xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig,
       useServices = M.empty,
-      presetDomains = []
+      presetDomains = [],
+      presetServers = []
     }
 
 testChooseDifferentOperator :: IO ()

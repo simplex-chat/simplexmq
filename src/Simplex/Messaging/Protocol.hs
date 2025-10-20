@@ -218,6 +218,7 @@ import Control.Applicative (optional, (<|>))
 import Control.Exception (Exception, SomeException, displayException, fromException)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -225,6 +226,7 @@ import Data.Bifunctor (bimap, first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
@@ -250,6 +252,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
+import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport
@@ -1596,7 +1599,8 @@ toNetworkError e = maybe (NEConnectError err) fromTLSError (fromException e)
       _ -> NETLSError err
 
 data BlockingInfo = BlockingInfo
-  { reason :: BlockingReason
+  { reason :: BlockingReason,
+    notice :: Maybe ClientNotice
   }
   deriving (Eq, Show)
 
@@ -1604,10 +1608,12 @@ data BlockingReason = BRSpam | BRContent
   deriving (Eq, Show)
 
 instance StrEncoding BlockingInfo where
-  strEncode BlockingInfo {reason} = "reason=" <> strEncode reason
+  strEncode BlockingInfo {reason, notice} =
+    "reason=" <> strEncode reason <> maybe "" ((",notice=" <>) . LB.toStrict . J.encode) notice
   strP = do
     reason <- "reason=" *> strP
-    pure BlockingInfo {reason}
+    notice <- optional $ ",notice=" *> (J.eitherDecodeStrict <$?> A.takeByteString)
+    pure BlockingInfo {reason, notice}
 
 instance Encoding BlockingInfo where
   smpEncode = strEncode
@@ -1854,9 +1860,13 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | otherwise -> e END_
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
-    ERR err -> case err of
-      BLOCKED _ | v < blockedEntitySMPVersion -> e (ERR_, ' ', AUTH)
-      _ -> e (ERR_, ' ', err)
+    ERR err -> e (ERR_, ' ', err')
+      where
+        err' = case err of
+          BLOCKED info
+            | v < blockedEntitySMPVersion -> AUTH
+            | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
+          _ -> err
     PONG -> e PONG_
     where
       e :: Encoding a => a -> ByteString

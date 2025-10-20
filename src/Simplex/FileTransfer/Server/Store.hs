@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -8,6 +9,7 @@ module Simplex.FileTransfer.Server.Store
   ( FileStore (..),
     FileRec (..),
     FileRecipient (..),
+    RoundedFileTime,
     newFileStore,
     addFile,
     setFilePath,
@@ -33,7 +35,8 @@ import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime (..), ServerEntityStatus (..))
+import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM, ($>>=))
@@ -49,9 +52,11 @@ data FileRec = FileRec
     fileInfo :: FileInfo,
     filePath :: TVar (Maybe FilePath),
     recipientIds :: TVar (Set RecipientId),
-    createdAt :: RoundedSystemTime,
+    createdAt :: RoundedFileTime,
     fileStatus :: TVar ServerEntityStatus
   }
+
+type RoundedFileTime = RoundedSystemTime 3600
 
 fileTimePrecision :: Int64
 fileTimePrecision = 3600 -- truncate creation time to 1 hour
@@ -70,14 +75,14 @@ newFileStore = do
   usedStorage <- newTVarIO 0
   pure FileStore {files, recipients, usedStorage}
 
-addFile :: FileStore -> SenderId -> FileInfo -> RoundedSystemTime -> ServerEntityStatus -> STM (Either XFTPErrorType ())
+addFile :: FileStore -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM (Either XFTPErrorType ())
 addFile FileStore {files} sId fileInfo createdAt status =
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
     f <- newFileRec sId fileInfo createdAt status
     TM.insert sId f files
     pure $ Right ()
 
-newFileRec :: SenderId -> FileInfo -> RoundedSystemTime -> ServerEntityStatus -> STM FileRec
+newFileRec :: SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM FileRec
 newFileRec senderId fileInfo createdAt status = do
   recipientIds <- newTVar S.empty
   filePath <- newTVar Nothing
