@@ -43,7 +43,6 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
@@ -58,6 +57,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
+import Simplex.Messaging.Server.QueueStore.Types
 import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
 #endif
 
