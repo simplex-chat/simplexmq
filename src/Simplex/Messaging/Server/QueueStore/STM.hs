@@ -43,6 +43,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
@@ -253,7 +254,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     setStatus (queueRec sq) EntityActive
       $>> withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
 
-  updateQueueTime :: STMQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+  updateQueueTime :: STMQueueStore q -> q -> SystemDate -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t = withQueueRec qr update $>>= log'
     where
       qr = queueRec sq

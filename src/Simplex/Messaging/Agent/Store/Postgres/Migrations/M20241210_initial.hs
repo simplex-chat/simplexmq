@@ -1,15 +1,14 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20241210_initial where
 
 import Data.Text (Text)
-import qualified Data.Text as T
 import Text.RawString.QQ (r)
 
 m20241210_initial :: Text
 m20241210_initial =
-  T.pack
-    [r|
+  [r|
 CREATE TABLE users(
   user_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   deleted SMALLINT NOT NULL DEFAULT 0

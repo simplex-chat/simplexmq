@@ -103,12 +103,13 @@ library
       Simplex.Messaging.Agent.Store.AgentStore
       Simplex.Messaging.Agent.Store.Common
       Simplex.Messaging.Agent.Store.DB
+      Simplex.Messaging.Agent.Store.Entity
       Simplex.Messaging.Agent.Store.Interface
       Simplex.Messaging.Agent.Store.Migrations
       Simplex.Messaging.Agent.Store.Migrations.App
       Simplex.Messaging.Agent.Store.Postgres.Options
       Simplex.Messaging.Agent.Store.Shared
-      Simplex.Messaging.Agent.TRcvQueues
+      Simplex.Messaging.Agent.TSessionSubs
       Simplex.Messaging.Client
       Simplex.Messaging.Client.Agent
       Simplex.Messaging.Compression
@@ -130,12 +131,13 @@ library
       Simplex.Messaging.Notifications.Types
       Simplex.Messaging.Parsers
       Simplex.Messaging.Protocol
+      Simplex.Messaging.Protocol.Types
       Simplex.Messaging.Server.Expiration
       Simplex.Messaging.Server.QueueStore.Postgres.Config
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.Session
-      Simplex.Messaging.Agent.Store.Entity
+      Simplex.Messaging.SystemTime
       Simplex.Messaging.TMap
       Simplex.Messaging.Transport
       Simplex.Messaging.Transport.Buffer
@@ -163,7 +165,9 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250322_short_links
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250702_conn_invitations_remove_cascade_delete
-          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250815_service_certs
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251009_queue_to_subscribe
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251010_client_notices
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251020_service_certs
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -211,7 +215,9 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250203_msg_bodies
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250322_short_links
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250702_conn_invitations_remove_cascade_delete
-          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250815_service_certs
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251009_queue_to_subscribe
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251010_client_notices
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251020_service_certs
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:
           Simplex.Messaging.Agent.Store.Postgres
@@ -477,7 +483,7 @@ test-suite simplexmq-test
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
       CoreTests.StoreLogTests
-      CoreTests.TRcvQueuesTests
+      CoreTests.TSessionSubs
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests

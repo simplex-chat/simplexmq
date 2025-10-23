@@ -116,6 +116,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (foldLogLines)
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -993,14 +994,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   else do
                     r <- liftIO $ runExceptT $ do
                       (q, QueueRec {status}) <- ExceptT $ getSenderQueue st qId
-                      when (status == EntityActive) $ ExceptT $ blockQueue (queueStore st) q info
-                      pure status
+                      let rId = recipientId q
+                      when (status /= EntityBlocked info) $ do
+                        ExceptT $ blockQueue (queueStore st) q info
+                        liftIO $
+                          getSubscribedClient rId (queueSubscribers $ subscribers srv)
+                            $>>= readTVarIO
+                            >>= mapM_ (\c -> atomically (writeTBQueue (sndQ c) ([(NoCorrId, rId, ERR $ BLOCKED info)] , [])))
+                      pure (status, EntityBlocked info)
                     case r of
                       Left e -> liftIO $ hPutStrLn h $ "error: " <> show e
-                      Right EntityActive -> do
+                      Right (EntityActive, status') -> do
                         incStat $ qBlocked stats
-                        liftIO $ hPutStrLn h "ok, queue blocked"
-                      Right status -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status
+                        liftIO $ hPutStrLn h $ "ok, queue blocked: " <> show status'
+                      Right (_, status') -> liftIO $ hPutStrLn h $ "ok, already inactive: " <> show status'
               CPUnblock qId -> withUserRole $ unliftIO u $ do
                 st <- asks msgStore
                 r <- liftIO $ runExceptT $ do
@@ -1686,7 +1693,7 @@ client
               -- This is tracked as "subscription" in the client to prevent these
               -- clients from being able to subscribe.
               pure s
-            getMessage_ :: Sub -> Maybe (MsgId, RoundedSystemTime) -> M s (Transmission BrokerMsg)
+            getMessage_ :: Sub -> Maybe (MsgId, SystemSeconds) -> M s (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               stats <- asks serverStats
               fmap (either err id) $ liftIO $ runExceptT $
@@ -1877,13 +1884,13 @@ client
                           pure (corrId, entId, maybe OK (MSG . encryptMsg qr) msg_)
                 _ -> pure $ err NO_MSG
           where
-            getDelivered :: Sub -> STM (Maybe (ServerSub, RoundedSystemTime))
+            getDelivered :: Sub -> STM (Maybe (ServerSub, SystemSeconds))
             getDelivered Sub {delivered, subThread} = do
               readTVar delivered $>>= \(msgId', ts) ->
                 if msgId == msgId' || B.null msgId
                   then writeTVar delivered Nothing $> Just (subThread, ts)
                   else pure Nothing
-            updateStats :: ServerStats -> Bool -> RoundedSystemTime -> Message -> IO ()
+            updateStats :: ServerStats -> Bool -> SystemSeconds -> Message -> IO ()
             updateStats stats isGet deliveryTime = \case
               MessageQuota {} -> pure ()
               Message {msgFlags} -> do
@@ -2112,7 +2119,7 @@ client
             msgId' = messageId msg
             msgTs' = messageTs msg
 
-        setDelivered :: Sub -> Message -> RoundedSystemTime -> STM ()
+        setDelivered :: Sub -> Message -> SystemSeconds -> STM ()
         setDelivered Sub {delivered} msg !ts = do
           let !msgId = messageId msg
           writeTVar delivered $ Just (msgId, ts)

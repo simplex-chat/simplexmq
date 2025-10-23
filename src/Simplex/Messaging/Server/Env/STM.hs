@@ -123,6 +123,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
@@ -464,7 +465,7 @@ data SubscriptionThread = NoSub | SubPending | SubThread (Weak ThreadId)
 
 data Sub = Sub
   { subThread :: ServerSub, -- Nothing value indicates that sub
-    delivered :: TVar (Maybe (MsgId, RoundedSystemTime))
+    delivered :: TVar (Maybe (MsgId, SystemSeconds))
   }
 
 newServer :: IO (Server s)
@@ -567,6 +568,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms True) f $ queueStore ms
       pure $ StoreMemory ms
     SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
+      logWarn $
+        "Journal message store is deprecated and will be removed soon.\n"
+          <> "Please migrate to in-memory storage using `journal export` command.\n"
+          <> "After that you can migrate to PostgreSQL using `database import` command."
       let qsCfg = MQStoreCfg
           cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
       ms <- newMsgStore cfg

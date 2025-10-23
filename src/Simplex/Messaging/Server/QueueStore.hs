@@ -1,8 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -14,14 +12,13 @@ module Simplex.Messaging.Server.QueueStore where
 import Control.Applicative (optional, (<|>))
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Transport (SMPServiceRole)
 #if defined(dbServerPostgres)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -40,7 +37,7 @@ data QueueRec = QueueRec
     queueData :: Maybe (LinkId, QueueLinkData),
     notifier :: Maybe NtfCreds,
     status :: ServerEntityStatus,
-    updatedAt :: Maybe RoundedSystemTime,
+    updatedAt :: Maybe SystemDate,
     rcvServiceId :: Maybe ServiceId
   }
   deriving (Show)
@@ -67,7 +64,7 @@ data ServiceRec = ServiceRec
     serviceRole :: SMPServiceRole,
     serviceCert :: X.CertificateChain,
     serviceCertHash :: XV.Fingerprint, -- SHA512 hash of long-term service client certificate. See comment for ClientHandshake.
-    serviceCreatedAt :: RoundedSystemTime
+    serviceCreatedAt :: SystemDate
     -- entitiesHash :: IdsHash -- a xor-hash of all associated entities
   }
   deriving (Show)
@@ -112,22 +109,3 @@ instance FromField ServerEntityStatus where fromField = fromTextField_ $ eitherT
 
 instance ToField ServerEntityStatus where toField = toField . decodeLatin1 . strEncode
 #endif
-
-newtype RoundedSystemTime = RoundedSystemTime Int64
-  deriving (Eq, Ord, Show)
-#if defined(dbServerPostgres)
-  deriving newtype (FromField, ToField)
-#endif
-
-instance StrEncoding RoundedSystemTime where
-  strEncode (RoundedSystemTime t) = strEncode t
-  strP = RoundedSystemTime <$> strP
-
-getRoundedSystemTime :: Int64 -> IO RoundedSystemTime
-getRoundedSystemTime prec = (\t -> RoundedSystemTime $ (systemSeconds t `div` prec) * prec) <$> getSystemTime
-
-getSystemDate :: IO RoundedSystemTime
-getSystemDate = getRoundedSystemTime 86400
-
-getSystemSeconds :: IO RoundedSystemTime
-getSystemSeconds = RoundedSystemTime . systemSeconds <$> getSystemTime

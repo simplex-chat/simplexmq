@@ -1,13 +1,13 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250815_service_certs where
+module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251020_service_certs where
 
 import Data.Text (Text)
 import qualified Data.Text as T
 import Text.RawString.QQ (r)
 
-m20250815_service_certs :: Text
-m20250815_service_certs =
+m20251020_service_certs :: Text
+m20251020_service_certs =
   T.pack
     [r|
 CREATE TABLE client_services(
@@ -29,8 +29,8 @@ CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
 ALTER TABLE rcv_queues ADD COLUMN rcv_service_assoc SMALLINT NOT NULL DEFAULT 0;
     |]
 
-down_m20250815_service_certs :: Text
-down_m20250815_service_certs =
+down_m20251020_service_certs :: Text
+down_m20251020_service_certs =
   T.pack
     [r|
 ALTER TABLE rcv_queues DROP COLUMN rcv_service_assoc;

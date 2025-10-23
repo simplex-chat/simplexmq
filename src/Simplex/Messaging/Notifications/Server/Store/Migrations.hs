@@ -1,11 +1,11 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Notifications.Server.Store.Migrations where
 
 import Data.List (sortOn)
 import Data.Text (Text)
-import qualified Data.Text as T
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
 import Simplex.Messaging.Agent.Store.Shared
 import Text.RawString.QQ (r)
@@ -25,8 +25,7 @@ ntfServerMigrations = sortOn name $ map migration ntfServerSchemaMigrations
 
 m20250417_initial :: Text
 m20250417_initial =
-  T.pack
-    [r|
+  [r|
 CREATE TABLE tokens(
   token_id BYTEA NOT NULL,
   push_provider TEXT NOT NULL,
@@ -85,8 +84,7 @@ CREATE UNIQUE INDEX idx_last_notifications_token_subscription ON last_notificati
 
 m20250517_service_cert :: Text
 m20250517_service_cert =
-  T.pack
-    [r|
+  [r|
 ALTER TABLE smp_servers ADD COLUMN ntf_service_id BYTEA;
 
 ALTER TABLE subscriptions ADD COLUMN ntf_service_assoc BOOLEAN NOT NULL DEFAULT FALSE;
@@ -97,8 +95,7 @@ CREATE INDEX idx_subscriptions_smp_server_id_ntf_service_status ON subscriptions
 
 down_m20250517_service_cert :: Text
 down_m20250517_service_cert =
-  T.pack
-    [r|
+  [r|
 DROP INDEX idx_subscriptions_smp_server_id_ntf_service_status;
 CREATE INDEX idx_subscriptions_smp_server_id_status ON subscriptions(smp_server_id, status);
 
@@ -110,8 +107,7 @@ ALTER TABLE subscriptions DROP COLUMN ntf_service_assoc;
 m20250830_queue_ids_hash :: Text
 m20250830_queue_ids_hash =
   createXorHashFuncs
-    <> T.pack
-      [r|
+    <> [r|
 ALTER TABLE smp_servers
   ADD COLUMN smp_notifier_count BIGINT NOT NULL DEFAULT 0,
   ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
@@ -210,8 +206,7 @@ FOR EACH ROW EXECUTE PROCEDURE on_subscription_update();
 
 down_m20250830_queue_ids_hash :: Text
 down_m20250830_queue_ids_hash =
-  T.pack
-    [r|
+  [r|
 DROP TRIGGER tr_subscriptions_insert ON subscriptions;
 DROP TRIGGER tr_subscriptions_delete ON subscriptions;
 DROP TRIGGER tr_subscriptions_update ON subscriptions;

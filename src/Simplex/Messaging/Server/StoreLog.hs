@@ -55,9 +55,9 @@ import GHC.IO (catchAny)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
--- import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.StoreLog.Types
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Util (ifM, tshow, unlessM, whenM)
 import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.IO
@@ -75,7 +75,7 @@ data StoreLogRecord
   | UnblockQueue QueueId
   | DeleteQueue QueueId
   | DeleteNotifier QueueId
-  | UpdateTime QueueId RoundedSystemTime
+  | UpdateTime QueueId SystemDate
   | NewService ServiceRec
   | QueueService RecipientId ASubscriberParty (Maybe ServiceId)
   deriving (Show)
@@ -280,7 +280,7 @@ logDeleteQueue s = writeStoreLogRecord s . DeleteQueue
 logDeleteNotifier :: StoreLog 'WriteMode -> QueueId -> IO ()
 logDeleteNotifier s = writeStoreLogRecord s . DeleteNotifier
 
-logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> RoundedSystemTime -> IO ()
+logUpdateQueueTime :: StoreLog 'WriteMode -> QueueId -> SystemDate -> IO ()
 logUpdateQueueTime s qId t = writeStoreLogRecord s $ UpdateTime qId t
 
 logNewService :: StoreLog 'WriteMode -> ServiceRec -> IO ()

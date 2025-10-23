@@ -49,7 +49,6 @@ import Simplex.Messaging.Protocol
     RcvNtfDhSecret,
     RcvPrivateAuthKey,
     SndPrivateAuthKey,
-    SndPublicAuthKey,
     VersionSMPC,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -89,6 +88,10 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     rcvServiceAssoc :: ServiceAssoc,
     -- | queue status
     status :: QueueStatus,
+    -- | to enable notifications for this queue - this field is duplicated from ConnData
+    enableNtfs :: Bool,
+    -- | client notice
+    clientNoticeId :: Maybe NoticeId,
     -- | database queue ID (within connection)
     dbQueueId :: DBEntityId' q,
     -- | True for a primary or a next primary queue of the connection (next if dbReplaceQueueId is set)
@@ -104,6 +107,25 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
   }
   deriving (Show)
 
+data RcvQueueSub = RcvQueueSub
+  { userId :: UserId,
+    connId :: ConnId,
+    server :: SMPServer,
+    rcvId :: SMP.RecipientId,
+    rcvPrivateKey :: RcvPrivateAuthKey,
+    status :: QueueStatus,
+    enableNtfs :: Bool,
+    clientNoticeId :: Maybe NoticeId,
+    dbQueueId :: Int64,
+    primary :: Bool,
+    dbReplaceQueueId :: Maybe Int64
+  }
+  deriving (Show)
+
+rcvQueueSub :: RcvQueue -> RcvQueueSub
+rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
+  RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
+
 data ShortLinkCreds = ShortLinkCreds
   { shortLinkId :: SMP.LinkId,
     shortLinkKey :: LinkKey,
@@ -113,10 +135,6 @@ data ShortLinkCreds = ShortLinkCreds
   deriving (Show)
 
 type ServiceAssoc = Bool
-
-rcvQueueInfo :: RcvQueue -> RcvQueueInfo
-rcvQueueInfo rq@RcvQueue {server, rcvSwchStatus} =
-  RcvQueueInfo {rcvServer = server, rcvSwitchStatus = rcvSwchStatus, canAbortSwitch = canAbortRcvSwitch rq}
 
 rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
@@ -153,7 +171,6 @@ data InvShortLink = InvShortLink
     linkId :: SMP.LinkId,
     linkKey :: LinkKey,
     sndPrivateKey :: SndPrivateAuthKey, -- stored to allow retries
-    sndPublicKey :: SndPublicAuthKey,
     sndId :: Maybe SMP.SenderId
   }
   deriving (Show)
@@ -171,9 +188,7 @@ data StoredSndQueue (q :: DBStored) = SndQueue
     sndId :: SMP.SenderId,
     -- | sender can secure the queue
     queueMode :: Maybe QueueMode,
-    -- | key pair used by the sender to authorize transmissions
-    -- TODO combine keys to key pair so that types match
-    sndPublicKey :: SndPublicAuthKey,
+    -- | sender key used to authorize transmissions
     sndPrivateKey :: SndPrivateAuthKey,
     -- | DH public key used to negotiate per-queue e2e encryption
     e2ePubKey :: Maybe C.PublicKeyX25519,
@@ -193,10 +208,6 @@ data StoredSndQueue (q :: DBStored) = SndQueue
   }
   deriving (Show)
 
-sndQueueInfo :: SndQueue -> SndQueueInfo
-sndQueueInfo SndQueue {server, sndSwchStatus} =
-  SndQueueInfo {sndServer = server, sndSwitchStatus = sndSwchStatus}
-
 instance SMPQueue RcvQueue where
   qServer RcvQueue {server} = server
   {-# INLINE qServer #-}
@@ -207,6 +218,12 @@ instance SMPQueue NewRcvQueue where
   qServer RcvQueue {server} = server
   {-# INLINE qServer #-}
   queueId RcvQueue {rcvId} = rcvId
+  {-# INLINE queueId #-}
+
+instance SMPQueue RcvQueueSub where
+  qServer RcvQueueSub {server} = server
+  {-# INLINE qServer #-}
+  queueId RcvQueueSub {rcvId} = rcvId
   {-# INLINE queueId #-}
 
 instance SMPQueue SndQueue where
@@ -248,6 +265,7 @@ class SMPQueue q => SMPQueueRec q where
   qUserId :: q -> UserId
   qConnId :: q -> ConnId
   dbQId :: q -> Int64
+  qPrimary :: q -> Bool
   dbReplaceQId :: q -> Maybe Int64
 
 instance SMPQueueRec RcvQueue where
@@ -257,7 +275,21 @@ instance SMPQueueRec RcvQueue where
   {-# INLINE qConnId #-}
   dbQId RcvQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
+  qPrimary RcvQueue {primary} = primary
+  {-# INLINE qPrimary #-}
   dbReplaceQId RcvQueue {dbReplaceQueueId} = dbReplaceQueueId
+  {-# INLINE dbReplaceQId #-}
+
+instance SMPQueueRec RcvQueueSub where
+  qUserId RcvQueueSub {userId} = userId
+  {-# INLINE qUserId #-}
+  qConnId RcvQueueSub {connId} = connId
+  {-# INLINE qConnId #-}
+  dbQId RcvQueueSub {dbQueueId} = dbQueueId
+  {-# INLINE dbQId #-}
+  qPrimary RcvQueueSub {primary} = primary
+  {-# INLINE qPrimary #-}
+  dbReplaceQId RcvQueueSub {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
 
 instance SMPQueueRec SndQueue where
@@ -267,8 +299,21 @@ instance SMPQueueRec SndQueue where
   {-# INLINE qConnId #-}
   dbQId SndQueue {dbQueueId = DBEntityId qId} = qId
   {-# INLINE dbQId #-}
+  qPrimary SndQueue {primary} = primary
+  {-# INLINE qPrimary #-}
   dbReplaceQId SndQueue {dbReplaceQueueId} = dbReplaceQueueId
   {-# INLINE dbReplaceQId #-}
+
+class SMPQueueRec q => SomeRcvQueue q where
+  rcvAuthKey :: q -> RcvPrivateAuthKey
+
+instance SomeRcvQueue RcvQueue where
+  rcvAuthKey RcvQueue {rcvPrivateKey} = rcvPrivateKey
+  {-# INLINE rcvAuthKey #-}
+
+instance SomeRcvQueue RcvQueueSub where
+  rcvAuthKey RcvQueueSub {rcvPrivateKey} = rcvPrivateKey
+  {-# INLINE rcvAuthKey #-}
 
 -- * Connection types
 
@@ -285,16 +330,18 @@ data ConnType = CNew | CRcv | CSnd | CDuplex | CContact deriving (Eq, Show)
 --
 -- - DuplexConnection is a connection that has both receive and send queues set up,
 --   typically created by upgrading a receive or a send connection with a missing queue.
-data Connection (d :: ConnType) where
-  NewConnection :: ConnData -> Connection CNew
-  RcvConnection :: ConnData -> RcvQueue -> Connection CRcv
-  SndConnection :: ConnData -> SndQueue -> Connection CSnd
-  DuplexConnection :: ConnData -> NonEmpty RcvQueue -> NonEmpty SndQueue -> Connection CDuplex
-  ContactConnection :: ConnData -> RcvQueue -> Connection CContact
+data Connection' (d :: ConnType) rq sq where
+  NewConnection :: ConnData -> Connection' CNew rq sq
+  RcvConnection :: ConnData -> rq -> Connection' CRcv rq sq
+  SndConnection :: ConnData -> sq -> Connection' CSnd rq sq
+  DuplexConnection :: ConnData -> NonEmpty rq -> NonEmpty sq -> Connection' CDuplex rq sq
+  ContactConnection :: ConnData -> rq -> Connection' CContact rq sq
 
-deriving instance Show (Connection d)
+deriving instance (Show rq, Show sq) => Show (Connection' d rq sq)
 
-toConnData :: Connection d -> ConnData
+type Connection d = Connection' d RcvQueue SndQueue
+
+toConnData :: Connection' d rq sq -> ConnData
 toConnData = \case
   NewConnection cData -> cData
   RcvConnection cData _ -> cData
@@ -302,7 +349,7 @@ toConnData = \case
   DuplexConnection cData _ _ -> cData
   ContactConnection cData _ -> cData
 
-updateConnection :: ConnData -> Connection d -> Connection d
+updateConnection :: ConnData -> Connection' d rq sq -> Connection' d rq sq
 updateConnection cData = \case
   NewConnection _ -> NewConnection cData
   RcvConnection _ rq -> RcvConnection cData rq
@@ -335,9 +382,13 @@ instance TestEquality SConnType where
 
 -- | Connection of an unknown type.
 -- Used to refer to an arbitrary connection when retrieving from store.
-data SomeConn = forall d. SomeConn (SConnType d) (Connection d)
+data SomeConn' rq sq = forall d. SomeConn (SConnType d) (Connection' d rq sq)
 
-deriving instance Show SomeConn
+deriving instance (Show rq, Show sq) => Show (SomeConn' rq sq)
+
+type SomeConn = SomeConn' RcvQueue SndQueue
+
+type SomeConnSub = SomeConn' RcvQueueSub SndQueue
 
 data ConnData = ConnData
   { connId :: ConnId,
@@ -350,6 +401,8 @@ data ConnData = ConnData
     pqSupport :: PQSupport
   }
   deriving (Eq, Show)
+
+type NoticeId = Int64
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool

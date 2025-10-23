@@ -60,6 +60,9 @@ CREATE TABLE rcv_queues(
   link_priv_sig_key BLOB,
   link_enc_fixed_data BLOB,
   queue_mode TEXT,
+  to_subscribe INTEGER NOT NULL DEFAULT 0,
+  client_notice_id INTEGER
+  REFERENCES client_notices ON UPDATE RESTRICT ON DELETE SET NULL,
   rcv_service_assoc INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(host, port, rcv_id),
   FOREIGN KEY(host, port) REFERENCES servers
@@ -437,6 +440,17 @@ CREATE TABLE inv_short_links(
   snd_id BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
 );
+CREATE TABLE client_notices(
+  client_notice_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  protocol TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port TEXT NOT NULL,
+  entity_id BLOB NOT NULL,
+  server_key_hash BLOB,
+  notice_ttl INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE client_services(
   user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
   host TEXT NOT NULL,
@@ -584,6 +598,14 @@ CREATE UNIQUE INDEX idx_inv_short_links_link_id ON inv_short_links(
   port,
   link_id
 );
+CREATE INDEX idx_rcv_queues_to_subscribe ON rcv_queues(to_subscribe);
+CREATE UNIQUE INDEX idx_client_notices_entity ON client_notices(
+  protocol,
+  host,
+  port,
+  entity_id
+);
+CREATE INDEX idx_rcv_queues_client_notice_id ON rcv_queues(client_notice_id);
 CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(
   user_id,
   host,

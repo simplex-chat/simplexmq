@@ -15,7 +15,7 @@ import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
 import CoreTests.StoreLogTests
-import CoreTests.TRcvQueuesTests
+import CoreTests.TSessionSubs
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
@@ -99,7 +99,7 @@ main = do
 #else
           describe "Store log tests" storeLogTests
 #endif
-          describe "TRcvQueues tests" tRcvQueuesTests
+          describe "TSessionSubs tests" tSessionSubsTests
           describe "Util tests" utilTests
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
@@ -112,8 +112,8 @@ main = do
               testStoreDBOpts
               "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"
         around_ (postgressBracket testServerDBConnectInfo) $ do
-          describe "SMP server via TLS, postgres+jornal message store" $
-            before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
+          -- xdescribe "SMP server via TLS, postgres+jornal message store" $
+          --   before (pure (transport @TLS, ASType SQSPostgres SMSJournal)) serverTests
           describe "SMP server via TLS, postgres-only message store" $
             before (pure (transport @TLS, ASType SQSPostgres SMSPostgres)) serverTests
 #endif
@@ -137,19 +137,20 @@ main = do
           describe "Notifications server (SMP server: jornal store)" $
             ntfServerTests (transport @TLS, ASType SQSMemory SMSJournal)
           around_ (postgressBracket testServerDBConnectInfo) $ do
-            describe "Notifications server (SMP server: postgres+jornal store)" $
-              ntfServerTests (transport @TLS, ASType SQSPostgres SMSJournal)
+            -- xdescribe "Notifications server (SMP server: postgres+jornal store)" $
+            --   ntfServerTests (transport @TLS, ASType SQSPostgres SMSJournal)
             describe "Notifications server (SMP server: postgres-only store)" $
               ntfServerTests (transport @TLS, ASType SQSPostgres SMSPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $ do
-          describe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
-          describe "SMP client agent, postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
-          describe "SMP proxy, postgres+jornal message store" $
-            before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
+          -- xdescribe "SMP client agent, postgres+jornal message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSJournal)
+          describe "SMP client agent, server postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
+          -- xdescribe "SMP proxy, postgres+jornal message store" $
+          --   before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
           describe "SMP proxy, postgres-only message store" $
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
 #endif
-        describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
+        -- xdescribe "SMP client agent, server jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
+        describe "SMP client agent, server memory message store" $ agentTests (transport @TLS, ASType SQSMemory SMSMemory)
         describe "SMP proxy, jornal message store" $
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do

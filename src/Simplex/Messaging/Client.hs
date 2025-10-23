@@ -29,6 +29,7 @@
 module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
+    SMPTransportSession,
     ProtocolClient (thParams, sessionTs),
     SMPClient,
     ProxiedRelay (..),
@@ -39,6 +40,7 @@ module Simplex.Messaging.Client
     transportHost',
     transportSession',
     useWebPort,
+    isPresetDomain,
 
     -- * SMP protocol command functions
     createSMPQueue,
@@ -102,6 +104,7 @@ module Simplex.Messaging.Client
     temporaryClientError,
     smpClientServiceError,
     smpProxyError,
+    smpErrorClientNotice,
     textToHostMode,
     ServerTransmissionBatch,
     ServerTransmission (..),
@@ -156,6 +159,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -549,6 +553,8 @@ type UserId = Int64
 -- Please note that for SMP connection ID is used as entity ID, not queue ID.
 type TransportSession msg = (UserId, ProtoServer msg, Maybe ByteString)
 
+type SMPTransportSession = TransportSession BrokerMsg
+
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.
 --
@@ -712,12 +718,15 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               Right _ -> logWarn "SMP client unprocessed event"
 
 useWebPort :: NetworkConfig -> [HostName] -> ProtocolServer p -> Bool
-useWebPort cfg presetDomains srv = case smpWebPortServers cfg of
+useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortServers cfg of
   SWPAll -> True
-  SWPPreset -> case srv of
-    ProtocolServer {host = THDomainName h :| _} -> any (`isSuffixOf` h) presetDomains
-    _ -> False
+  SWPPreset -> isPresetDomain presetDomains h
   SWPOff -> False
+
+isPresetDomain :: [HostName] -> TransportHost -> Bool
+isPresetDomain presetDomains = \case
+  THDomainName h -> any (`isSuffixOf` h) presetDomains
+  _ -> False
 
 unexpectedResponse :: Show r => r -> ProtocolClientError err
 unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
@@ -790,6 +799,12 @@ smpProxyError = \case
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
+
+smpErrorClientNotice :: SMPClientError -> Maybe (Maybe ClientNotice)
+smpErrorClientNotice = \case
+  PCEProtocolError (BLOCKED BlockingInfo {notice}) -> Just notice
+  _ -> Nothing
+{-# INLINE smpErrorClientNotice #-}
 
 -- | Create a new SMP queue.
 --
@@ -924,12 +939,12 @@ secureSMPQueue c nm rpKey rId senderKey = okSMPCommand (KEY senderKey) c nm rpKe
 {-# INLINE secureSMPQueue #-}
 
 -- | Secure the SMP queue via sender queue ID.
-secureSndSMPQueue :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO ()
-secureSndSMPQueue c nm spKey sId senderKey = okSMPCommand (SKEY senderKey) c nm spKey sId
+secureSndSMPQueue :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> SenderId -> ExceptT SMPClientError IO ()
+secureSndSMPQueue c nm spKey sId = okSMPCommand (SKEY $ C.toPublic spKey) c nm spKey sId
 {-# INLINE secureSndSMPQueue #-}
 
-proxySecureSndSMPQueue :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError ())
-proxySecureSndSMPQueue c nm proxiedRelay spKey sId senderKey = proxyOKSMPCommand c nm proxiedRelay (Just spKey) sId (SKEY senderKey)
+proxySecureSndSMPQueue :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> SenderId -> ExceptT SMPClientError IO (Either ProxyClientError ())
+proxySecureSndSMPQueue c nm proxiedRelay spKey sId = proxyOKSMPCommand c nm proxiedRelay (Just spKey) sId (SKEY $ C.toPublic spKey)
 {-# INLINE proxySecureSndSMPQueue #-}
 
 -- | Add or update date for queue link
@@ -943,15 +958,15 @@ deleteSMPQueueLink = okSMPCommand LDEL
 {-# INLINE deleteSMPQueueLink #-}
 
 -- | Get 1-time inviation SMP queue link data and secure the queue via queue link ID.
-secureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
-secureGetSMPQueueLink c nm spKey lnkId senderKey =
-  sendSMPCommand c nm (Just spKey) lnkId (LKEY senderKey) >>= \case
+secureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> LinkId -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
+secureGetSMPQueueLink c nm spKey lnkId =
+  sendSMPCommand c nm (Just spKey) lnkId (LKEY $ C.toPublic spKey) >>= \case
     LNK sId d -> pure (sId, d)
     r -> throwE $ unexpectedResponse r
 
-proxySecureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> SndPublicAuthKey -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
-proxySecureGetSMPQueueLink c nm proxiedRelay spKey lnkId senderKey =
-  proxySMPCommand  c nm proxiedRelay (Just spKey) lnkId (LKEY senderKey) >>= \case
+proxySecureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SndPrivateAuthKey -> LinkId -> ExceptT SMPClientError IO (Either ProxyClientError (SenderId, QueueLinkData))
+proxySecureGetSMPQueueLink c nm proxiedRelay spKey lnkId =
+  proxySMPCommand  c nm proxiedRelay (Just spKey) lnkId (LKEY $ C.toPublic spKey) >>= \case
     Right (LNK sId d) -> pure $ Right (sId, d)
     Right r -> throwE $ unexpectedResponse r
     Left e -> pure $ Left e

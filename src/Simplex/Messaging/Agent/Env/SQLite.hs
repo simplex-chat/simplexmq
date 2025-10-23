@@ -91,7 +91,8 @@ data InitialAgentServers = InitialAgentServers
     xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
     netCfg :: NetworkConfig,
     useServices :: Map UserId Bool,
-    presetDomains :: [HostName]
+    presetDomains :: [HostName],
+    presetServers :: [SMPServer]
   }
 
 data ServerCfg p = ServerCfg
@@ -167,6 +168,7 @@ data AgentConfig = AgentConfig
     ntfBatchSize :: Int,
     ntfSubFirstCheckInterval :: NominalDiffTime,
     ntfSubCheckInterval :: NominalDiffTime,
+    maxPendingSubscriptions :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
@@ -238,6 +240,7 @@ defaultAgentConfig =
       ntfBatchSize = 150,
       ntfSubFirstCheckInterval = nominalDay,
       ntfSubCheckInterval = 3 * nominalDay,
+      maxPendingSubscriptions = 35000,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",

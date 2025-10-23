@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgMeta (..),
     RcvQueueInfo (..),
     SndQueueInfo (..),
+    SubscriptionStatus (..),
     ConnectionStats (..),
     SwitchPhase (..),
     RcvSwitchStatus (..),
@@ -164,6 +165,7 @@ module Simplex.Messaging.Agent.Protocol
     updateSMPServerHosts,
     shortenShortLink,
     restoreShortLink,
+    isPresetServer,
     linkUserData,
     linkUserData',
   )
@@ -401,7 +403,7 @@ data AEvent (e :: AEntity) where
   OK :: AEvent AEConn
   JOINED :: SndQueueSecured -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
-  ERRS :: [(ConnId, AgentErrorType)] -> AEvent AENone
+  ERRS :: NonEmpty (ConnId, AgentErrorType) -> AEvent AENone
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
@@ -639,23 +641,34 @@ instance FromJSON RatchetSyncState where
 
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
+    status :: QueueStatus,
     rcvSwitchStatus :: Maybe RcvSwitchStatus,
-    canAbortSwitch :: Bool
+    canAbortSwitch :: Bool,
+    subStatus :: SubscriptionStatus
   }
   deriving (Eq, Show)
 
 data SndQueueInfo = SndQueueInfo
   { sndServer :: SMPServer,
+    status :: QueueStatus,
     sndSwitchStatus :: Maybe SndSwitchStatus
   }
   deriving (Eq, Show)
+
+data SubscriptionStatus
+  = SSActive
+  | SSPending
+  | SSRemoved {subError :: String}
+  | SSNoSub
+  deriving (Eq, Ord, Show)
 
 data ConnectionStats = ConnectionStats
   { connAgentVersion :: VersionSMPA,
     rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
-    ratchetSyncSupported :: Bool
+    ratchetSyncSupported :: Bool,
+    subStatus :: Maybe SubscriptionStatus
   }
   deriving (Eq, Show)
 
@@ -1608,15 +1621,16 @@ shortenShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
   where
-    shortServer srv@(SMPServer hs@(h :| _) p kh) =
-      if isPresetServer then SMPServerOnlyHost h else srv
-      where
-        isPresetServer = case findPresetServer srv presetSrvs of
-          Just (SMPServer hs' p' kh') ->
-            all (`elem` hs') hs
-              && (p == p' || (null p' && (p == "443" || p == "5223")))
-              && kh == kh'
-          Nothing -> False
+    shortServer srv@(SMPServer (h :| _) _ _) =
+      if isPresetServer srv presetSrvs then SMPServerOnlyHost h else srv
+
+isPresetServer :: Foldable t => SMPServer -> t SMPServer -> Bool
+isPresetServer srv@(SMPServer hs p kh) presetSrvs = case findPresetServer srv presetSrvs of
+  Just (SMPServer hs' p' kh') ->
+    all (`elem` hs') hs
+      && (p == p' || (null p' && (p == "443" || p == "5223")))
+      && kh == kh'
+  Nothing -> False
 
 -- explicit bidirectional is used for ghc 8.10.7 compatibility, [h]/[] patterns are not reversible.
 pattern SMPServerOnlyHost :: TransportHost -> SMPServer
@@ -1634,7 +1648,7 @@ restoreShortLink presetSrvs = \case
       s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
       s -> s
 
-findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
+findPresetServer :: Foldable t => SMPServer -> t SMPServer -> Maybe SMPServer
 findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
 {-# INLINE findPresetServer #-}
 
@@ -1845,6 +1859,8 @@ data AgentErrorType
     BROKER {brokerAddress :: String, brokerErr :: BrokerErrorType}
   | -- | errors of other agents
     AGENT {agentErr :: SMPAgentError}
+  | -- | client notice
+    NOTICE {server :: Text, preset :: Bool, expiresAt :: Maybe UTCTime}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
   | -- | critical agent errors that should be shown to the user, optionally with restart button
@@ -1985,6 +2001,10 @@ serializeCommand = \case
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body
+
+$(J.deriveJSON (enumJSON fstToLower) ''QueueStatus)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "SS") ''SubscriptionStatus)
 
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 

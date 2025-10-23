@@ -27,7 +27,7 @@ import Data.Time.Clock (UTCTime (..))
 import GHC.IORef (atomicSwapIORef)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..))
-import Simplex.Messaging.Server.QueueStore (RoundedSystemTime (..))
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Util (atomicModifyIORef'_, tshow, unlessM)
 
 data ServerStats = ServerStats
@@ -1044,7 +1044,7 @@ data TimeBuckets = TimeBuckets
 emptyTimeBuckets :: TimeBuckets
 emptyTimeBuckets = TimeBuckets 0 0 IM.empty
 
-updateTimeBuckets :: RoundedSystemTime -> RoundedSystemTime -> TimeBuckets -> TimeBuckets
+updateTimeBuckets :: SystemSeconds -> SystemSeconds -> TimeBuckets -> TimeBuckets
 updateTimeBuckets
   (RoundedSystemTime deliveryTime)
   (RoundedSystemTime currTime)

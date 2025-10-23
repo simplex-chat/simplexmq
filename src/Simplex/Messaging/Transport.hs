@@ -55,6 +55,7 @@ module Simplex.Messaging.Transport
     shortLinksSMPVersion,
     serviceCertsSMPVersion,
     newNtfCredsSMPVersion,
+    clientNoticesSMPVersion,
     rcvServiceSMPVersion,
     simplexMQVersion,
     smpBlockSize,
@@ -169,7 +170,8 @@ smpBlockSize = 16384
 -- 15 - short links, with associated data passed in NEW of LSET command (3/30/2025)
 -- 16 - service certificates (5/31/2025)
 -- 17 - create notification credentials with NEW (7/12/2025)
--- 18 - service subscriptions to messages (8/25/2025)
+-- 18 - support client notices (10/10/2025)
+-- 19 - service subscriptions to messages (10/20/2025)
 
 data SMPVersion
 
@@ -215,8 +217,11 @@ serviceCertsSMPVersion = VersionSMP 16
 newNtfCredsSMPVersion :: VersionSMP
 newNtfCredsSMPVersion = VersionSMP 17
 
+clientNoticesSMPVersion :: VersionSMP
+clientNoticesSMPVersion = VersionSMP 18
+
 rcvServiceSMPVersion :: VersionSMP
-rcvServiceSMPVersion = VersionSMP 18
+rcvServiceSMPVersion = VersionSMP 19
 
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 6
@@ -225,13 +230,13 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 18
+currentClientSMPRelayVersion = VersionSMP 19
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 18
+currentServerSMPRelayVersion = VersionSMP 19
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -239,7 +244,7 @@ currentServerSMPRelayVersion = VersionSMP 18
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 17
+proxiedSMPRelayVersion = VersionSMP 18
 
 -- minimal supported protocol version is 6
 -- TODO remove code that supports sending commands without batching
