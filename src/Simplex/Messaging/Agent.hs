@@ -551,6 +551,8 @@ testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPSMP -> runSMPServerTest c nm userId srv
   SPXFTP -> runXFTPServerTest c nm userId srv
   SPNTF -> runNTFServerTest c nm userId srv
+  -- TODO
+  SPHTTPS -> pure Nothing
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
 setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()

@@ -165,23 +165,23 @@ newNtfPushServer qSize apnsConfig = do
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient s pp = do
   case pp of
-    PPWebPush -> newWPPushClient s
-    _ -> newAPNSPushClient s pp
+    PPWP p -> newWPPushClient s p
+    PPAPNS p -> newAPNSPushClient s p
 
-newAPNSPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
+newAPNSPushClient :: NtfPushServer -> APNSProvider -> IO PushProviderClient
 newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
   c <- case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
-  atomically $ TM.insert pp c pushClients
+  atomically $ TM.insert (PPAPNS pp) c pushClients
   pure c
 
-newWPPushClient :: NtfPushServer -> IO PushProviderClient
-newWPPushClient NtfPushServer {pushClients} = do
+newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
+newWPPushClient NtfPushServer {pushClients} pp = do
   logDebug "New WP Client requested"
   manager <- newManager tlsManagerSettings
   let c = wpPushProviderClient manager
-  atomically $ TM.insert PPWebPush c pushClients
+  atomically $ TM.insert (PPWP pp) c pushClients
   pure c
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient

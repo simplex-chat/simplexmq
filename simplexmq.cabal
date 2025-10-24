@@ -483,6 +483,7 @@ test-suite simplexmq-test
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
+      NtfProtocolTests
       RemoteControl
       ServerTests
       SMPAgentClient
