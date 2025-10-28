@@ -388,7 +388,10 @@ data APNSProvider
   | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
-newtype WPProvider = WPP (ProtocolServer 'PHTTPS)
+newtype WPSrvLoc = WPSrvLoc SrvLoc
+  deriving (Eq, Ord, Show)
+
+newtype WPProvider = WPP WPSrvLoc
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
@@ -436,6 +439,14 @@ instance StrEncoding APNSProvider where
       "apns_test" -> pure PPApnsTest
       "apns_null" -> pure PPApnsNull
       _ -> fail "bad APNSProvider"
+
+instance Encoding WPSrvLoc where
+  smpEncode (WPSrvLoc srv) = smpEncode srv
+  smpP = WPSrvLoc <$> smpP
+
+instance StrEncoding WPSrvLoc where
+  strEncode (WPSrvLoc srv) = "https://" <> strEncode srv
+  strP = WPSrvLoc <$> ("https://" *> strP)
 
 instance Encoding WPProvider where
   smpEncode (WPP srv) = "WP" <> smpEncode srv
