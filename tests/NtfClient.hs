@@ -60,6 +60,7 @@ import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Control.Exception (throwIO)
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -293,6 +294,7 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
           sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 getMockNotification :: MonadIO m => APNSMockServer -> DeviceToken -> m APNSMockRequest
+getMockNotification _ (WPDeviceToken _ _) = liftIO . throwIO $ userError "Invalid pusher"
 getMockNotification APNSMockServer {notifications} (APNSDeviceToken _ token) = do
   atomically $ TM.lookup token notifications >>= maybe retry readTBQueue
 
