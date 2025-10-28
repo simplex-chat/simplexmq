@@ -12,7 +12,6 @@
 module Simplex.Messaging.Notifications.Protocol where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad
 import qualified Crypto.PubKey.ECC.Types as ECC
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
@@ -571,14 +570,6 @@ data WPTokenParams = WPTokenParams
   }
   deriving (Eq, Ord, Show)
 
-data WPEndpoint = WPEndpoint
-  { endpoint :: B.ByteString,
-    auth :: B.ByteString,
-    p256dh :: B.ByteString
-  }
-  deriving (Eq, Ord, Show)
-
-
 instance Encoding Auth where
   smpEncode a = smpEncode $ authToByteString a
   smpP = smpP >>= \bs ->
@@ -620,14 +611,6 @@ instance StrEncoding WPKey where
     (wpAuth, wpP256dh) <- strP
     pure WPKey {wpAuth, wpP256dh}
 
-instance Encoding WPEndpoint where
-  smpEncode WPEndpoint {endpoint, auth, p256dh} = smpEncode (endpoint, auth, p256dh)
-  smpP = do
-    endpoint <- smpP
-    auth <- smpP
-    p256dh <- smpP
-    pure WPEndpoint {endpoint, auth, p256dh}
-
 instance Encoding WPTokenParams where
   smpEncode WPTokenParams {wpPath, wpKey} = smpEncode (wpPath, wpKey)
   smpP = do
@@ -642,32 +625,6 @@ instance StrEncoding WPTokenParams where
     _ <- A.char ' '
     wpKey <- strP
     pure WPTokenParams {wpPath, wpKey}
-
-instance StrEncoding WPEndpoint where
-  strEncode WPEndpoint {endpoint, auth, p256dh} = endpoint <> " " <> strEncode auth <> " " <> strEncode p256dh
-  strP = do
-    endpoint <- A.takeWhile (/= ' ')
-    _ <- A.char ' '
-    (auth, p256dh) <- strP
-    -- auth is a 16 bytes long random key
-    when (B.length auth /= 16) $ fail "Invalid auth key length"
-    -- p256dh is a public key on the P-256 curve, encoded in uncompressed format
-    -- 0x04 + the 2 points = 65 bytes
-    when (B.length p256dh /= 65) $ fail "Invalid p256dh key length"
-    -- TODO [webpush] parse it here (or rather in WPTokenParams)
-    when (B.take 1 p256dh /= "\x04") $ fail "Invalid p256dh key, doesn't start with 0x04"
-    pure WPEndpoint {endpoint, auth, p256dh}
-
-instance ToJSON WPEndpoint where
-  toEncoding WPEndpoint {endpoint, auth, p256dh} = J.pairs $ "endpoint" .= decodeLatin1 endpoint <> "auth" .= decodeLatin1 (strEncode auth) <> "p256dh" .= decodeLatin1 (strEncode p256dh)
-  toJSON WPEndpoint {endpoint, auth, p256dh} = J.object ["endpoint" .= decodeLatin1 endpoint, "auth" .= decodeLatin1 (strEncode auth), "p256dh" .= decodeLatin1 (strEncode p256dh) ]
-
-instance FromJSON WPEndpoint where
-  parseJSON = J.withObject "WPEndpoint" $ \o -> do
-    endpoint <- encodeUtf8 <$> o .: "endpoint"
-    auth <- strDecode . encodeUtf8 <$?> o .: "auth"
-    p256dh <- strDecode . encodeUtf8 <$?> o .: "p256dh"
-    pure WPEndpoint {endpoint, auth, p256dh}
 
 data DeviceToken
   = APNSDeviceToken APNSProvider B.ByteString
