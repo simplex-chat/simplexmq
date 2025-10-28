@@ -539,6 +539,13 @@ uncompressDecodePoint s
   where
     prefix = "\x04" :: BL.ByteString
 
+-- Used to test encryption against the RFC8291 Example - which gives the AS private key
+uncompressDecodePrivateNumber :: BL.ByteString -> Either CE.CryptoError ECC.PrivateNumber
+uncompressDecodePrivateNumber s
+  | BL.length s /= 32 = Left CE.CryptoError_KeySizeInvalid
+  | otherwise = do
+    decodeBigInt s
+
 uncompressEncode :: WPP256dh -> BL.ByteString
 uncompressEncode (WPP256dh p) = uncompressEncodePoint p
 

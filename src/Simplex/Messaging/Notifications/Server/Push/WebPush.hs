@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPProvider (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPProvider (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, authToByteString)
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
@@ -65,13 +65,18 @@ wpPushProviderClient mg NtfTknRec {token = WPDeviceToken (WPP s) param} pn = do
     body :: ExceptT PushProviderError IO B.ByteString
     body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodePN pn)
 
--- | encrypt :: auth -> key -> clear -> cipher
+-- | encrypt :: UA key -> clear -> cipher
 -- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
 wpEncrypt :: WPKey -> B.ByteString -> ExceptT C.CryptoError IO B.ByteString
-wpEncrypt WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} clearT = do
+wpEncrypt wpKey clearT = do
   salt :: B.ByteString <- liftIO $ getRandomBytes 16
   asPrivK <- liftIO $ ECDH.generatePrivate $ ECC.getCurveByName ECC.SEC_p256r1
-  --let uaPubK = wpP256dh key
+  wpEncrypt' wpKey asPrivK salt clearT
+
+-- | encrypt :: UA key -> AS key -> salt -> clear -> cipher
+-- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
+wpEncrypt' :: WPKey -> ECC.PrivateNumber -> B.ByteString -> B.ByteString -> ExceptT C.CryptoError IO B.ByteString
+wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
   let uaPubKS = BL.toStrict . uncompressEncodePoint $ uaPubK
   let asPubKS = BL.toStrict . uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
       ecdhSecret = ECDH.getShared (ECC.getCurveByName ECC.SEC_p256r1) asPrivK uaPubK
@@ -89,9 +94,14 @@ wpEncrypt WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} clearT = do
   iv <- ivFrom nonce
   -- The last record uses a padding delimiter octet set to the value 0x02
   (C.AuthTag (CT.AuthTag tag), cipherT) <- C.encryptAES128NoPad (C.Key cek) iv $ clearT <> "\x02"
+  -- Uncomment to see intermediate values, to compare with RFC8291 example
+  -- liftIO . print $ strEncode (BA.convert ecdhSecret :: B.ByteString)
+  -- liftIO . print . strEncode $ takeHM 32 prkKey
+  -- liftIO . print $ strEncode cek
+  -- liftIO . print $ strEncode cipherT
   pure $ header <> cipherT <> BA.convert tag
   where
-    auth = strEncode wpAuth
+    auth = authToByteString wpAuth
     hmac k v = HMAC.hmac k v :: HMAC.HMAC SHA256
     takeHM :: Int -> HMAC.HMAC SHA256 -> B.ByteString
     takeHM n v = BL.toStrict $ BL.pack $ take n $ BA.unpack v
