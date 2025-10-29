@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPProvider (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, authToByteString)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPProvider (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, authToByteString, wpRequest)
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
@@ -35,15 +35,13 @@ import qualified Crypto.Cipher.Types as CT
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
-import Simplex.Messaging.Encoding.String (StrEncoding(..))
 
 wpPushProviderClient :: Manager -> PushProviderClient
 wpPushProviderClient _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
-wpPushProviderClient mg NtfTknRec {token = WPDeviceToken (WPP s) param} pn = do
+wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = do
   -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
   -- parsing will happen in DeviceToken parser, so it won't fail here
-  let endpoint = strEncode s <> wpPath param
-  r <- liftPPWPError $ parseUrlThrow $ B.unpack endpoint
+  r <- wpRequest token
   logDebug $ "Request to " <> tshow (host r)
   encBody <- body
   let requestHeaders =

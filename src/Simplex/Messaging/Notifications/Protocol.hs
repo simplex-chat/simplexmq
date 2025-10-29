@@ -40,6 +40,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Binary as Bin
 import qualified Crypto.Error as CE
 import qualified Data.Bits as Bits
+import Network.HTTP.Client (Request, parseUrlThrow)
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -659,7 +660,10 @@ instance StrEncoding DeviceToken where
       deviceToken =
         strP >>= \case
           PPAPNS p -> APNSDeviceToken p <$> hexStringP
-          PPWP p -> WPDeviceToken p <$> strP
+          PPWP p -> do
+            t <- WPDeviceToken p <$> strP
+            _ <- wpRequest t
+            pure t
       hexStringP = do
         _ <- A.space
         A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
@@ -695,6 +699,14 @@ deviceToken' :: PushProvider -> B.ByteString -> DeviceToken
 deviceToken' pp t = case pp of
   PPAPNS p -> APNSDeviceToken p t
   PPWP p -> WPDeviceToken p <$> either error id $ strDecode t
+
+wpRequest :: MonadFail m => DeviceToken -> m Request
+wpRequest (APNSDeviceToken _ _) = fail "Invalid device token"
+wpRequest (WPDeviceToken (WPP s) param) = do
+  let endpoint = strEncode s <> wpPath param
+  case parseUrlThrow $ B.unpack endpoint of
+    Left _ -> fail "Invalid URL"
+    Right r -> pure r
 
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,
