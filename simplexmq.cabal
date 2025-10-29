@@ -483,7 +483,6 @@ test-suite simplexmq-test
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
-      NtfProtocolTests
       RemoteControl
       ServerTests
       SMPAgentClient
@@ -509,6 +508,7 @@ test-suite simplexmq-test
           AgentTests.NotificationTests
           NtfClient
           NtfServerTests
+          NtfWPTests
           PostgresSchemaDump
   hs-source-dirs:
       tests

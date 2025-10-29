@@ -40,12 +40,12 @@ import XFTPServerTests (xftpServerTests)
 import Fixtures
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
-import NtfProtocolTests (ntfProtocolTests)
 #endif
 
 #if defined(dbServerPostgres)
 import NtfServerTests (ntfServerTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestStoreDBOpts)
+import NtfProtocolTests (ntfWPTests)
 import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
@@ -140,6 +140,7 @@ main = do
             before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
           describe "SMP proxy, postgres-only message store" $
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
+        describe "NTF WP tests" ntfWPTests
 #endif
         describe "SMP client agent, jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
         describe "SMP proxy, jornal message store" $
@@ -151,7 +152,6 @@ main = do
           describe "XFTP agent" xftpAgentTests
         describe "XRCP" remoteControlTests
         describe "Server CLIs" cliTests
-        describe "NTFProtocol" ntfProtocolTests
 
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of

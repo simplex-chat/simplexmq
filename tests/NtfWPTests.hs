@@ -14,8 +14,8 @@ import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt')
 import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString.Lazy as BL
 
-ntfProtocolTests :: Spec
-ntfProtocolTests = describe "NTF Protocol" $ do
+ntfWPTests :: Spec
+ntfWPTests = describe "NTF Protocol" $ do
   it "decode WPDeviceToken from string" testWPDeviceTokenStrEncoding
   it "Encrypt RFC8291 example" testWPEncryption
 
