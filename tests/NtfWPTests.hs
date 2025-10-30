@@ -17,10 +17,12 @@ import Simplex.Messaging.Notifications.Server.Push
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Simplex.Messaging.Crypto as C
 import Data.Time.Clock.System (SystemTime(..))
+import Data.Either (isLeft)
 
 ntfWPTests :: Spec
 ntfWPTests = describe "NTF Protocol" $ do
   it "decode WPDeviceToken from string" testWPDeviceTokenStrEncoding
+  it "decode invalid WPDeviceToken" testInvalidWPDeviceTokenStrEncoding
   it "Encrypt RFC8291 example" testWPEncryption
   it "PushNotifications encoding" testPNEncoding
 
@@ -46,6 +48,15 @@ testWPDeviceTokenStrEncoding = do
   -- strEncode parsed `shouldBe` ts
 
   strEncode s <> wpPath params `shouldBe` "https://localhost/secret"
+
+testInvalidWPDeviceTokenStrEncoding :: Expectation
+testInvalidWPDeviceTokenStrEncoding = do
+  -- http-client parser parseUrlThrow is very very lax,
+  -- e.g "https://#1" is a valid URL. But that is the same parser
+  -- we use to send the requests, so that's fine.
+  let ts = "webpush https://localhost:/ AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
+  let t = strDecode ts :: Either String DeviceToken
+  t `shouldSatisfy` isLeft
 
 -- | Example from RFC8291
 testWPEncryption :: Expectation
