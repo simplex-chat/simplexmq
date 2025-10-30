@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), wpRequest)
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
@@ -72,8 +72,8 @@ wpEncrypt wpKey clearT = do
 -- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
 wpEncrypt' :: WPKey -> ECC.PrivateNumber -> B.ByteString -> B.ByteString -> ExceptT C.CryptoError IO B.ByteString
 wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
-  let uaPubKS = BL.toStrict . uncompressEncodePoint $ uaPubK
-  let asPubKS = BL.toStrict . uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
+  let uaPubKS = BL.toStrict . C.uncompressEncodePoint $ uaPubK
+  let asPubKS = BL.toStrict . C.uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
       ecdhSecret = ECDH.getShared (ECC.getCurveByName ECC.SEC_p256r1) asPrivK uaPubK
       prkKey = hmac (unWPAuth wpAuth) ecdhSecret
       keyInfo = "WebPush: info\0" <> uaPubKS <> asPubKS

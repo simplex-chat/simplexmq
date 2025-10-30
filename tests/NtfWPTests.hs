@@ -65,7 +65,7 @@ testWPEncryption = do
   let pParams :: WPTokenParams = either error id $ strDecode "/push/JzLQ3raZJfFBR0aqvOMsLrt54w4rJUsV BTBZMqHH6r4Tts7J_aSIgg BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
   let salt :: B.ByteString = either error id $ strDecode "DGv6ra1nlYgDCS1FRnbzlw"
   let privBS :: BL.ByteString = either error BL.fromStrict $ strDecode "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"
-  asPriv :: ECC.PrivateNumber <- case uncompressDecodePrivateNumber privBS of
+  asPriv :: ECC.PrivateNumber <- case C.uncompressDecodePrivateNumber privBS of
     Left e -> fail $ "Cannot decode PrivateNumber from b64 " <> show e
     Right p -> pure p
   mCip <- runExceptT $ wpEncrypt' (wpKey pParams) asPriv salt clearT

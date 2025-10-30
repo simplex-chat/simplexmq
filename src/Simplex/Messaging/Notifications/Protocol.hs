@@ -484,57 +484,11 @@ data WPKey = WPKey
   }
   deriving (Eq, Ord, Show)
 
--- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
--- | as required by RFC8291
--- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
-uncompressEncodePoint :: ECC.Point -> BL.ByteString
-uncompressEncodePoint (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
-uncompressEncodePoint ECC.PointO = "\0"
-
-uncompressDecodePoint :: BL.ByteString -> Either CE.CryptoError ECC.Point
-uncompressDecodePoint "\0" = pure ECC.PointO
-uncompressDecodePoint s
-  | BL.take 1 s /= prefix = Left CE.CryptoError_PointFormatUnsupported
-  | BL.length s /= 65 = Left CE.CryptoError_KeySizeInvalid
-  | otherwise = do
-    let s' = BL.drop 1 s
-    x <- decodeBigInt $ BL.take 32 s'
-    y <- decodeBigInt $ BL.drop 32 s'
-    pure $ ECC.Point x y
-  where
-    prefix = "\x04" :: BL.ByteString
-
--- Used to test encryption against the RFC8291 Example - which gives the AS private key
-uncompressDecodePrivateNumber :: BL.ByteString -> Either CE.CryptoError ECC.PrivateNumber
-uncompressDecodePrivateNumber s
-  | BL.length s /= 32 = Left CE.CryptoError_KeySizeInvalid
-  | otherwise = do
-    decodeBigInt s
-
 uncompressEncode :: WPP256dh -> BL.ByteString
-uncompressEncode (WPP256dh p) = uncompressEncodePoint p
+uncompressEncode (WPP256dh p) = C.uncompressEncodePoint p
 
 uncompressDecode :: BL.ByteString -> Either CE.CryptoError WPP256dh
-uncompressDecode bs = WPP256dh <$> uncompressDecodePoint bs
-
-encodeBigInt :: Integer -> BL.ByteString
-encodeBigInt i = do
-  let s1 = Bits.shiftR i 64
-      s2 = Bits.shiftR s1 64
-      s3 = Bits.shiftR s2 64
-  Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
-  where
-    w64 :: Integer -> Bin.Word64
-    w64 = fromIntegral
-
-decodeBigInt :: BL.ByteString -> Either CE.CryptoError Integer
-decodeBigInt s
-  | BL.length s /= 32 = Left CE.CryptoError_PointSizeInvalid
-  | otherwise = do
-      let (w3, w2, w1, w0) = Bin.decode s :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64 )
-      pure $ shift 3 w3 + shift 2 w2 + shift 1 w1 + shift 0 w0
-  where
-    shift i w = Bits.shiftL (fromIntegral w) (64 * i)
+uncompressDecode bs = WPP256dh <$> C.uncompressDecodePoint bs
 
 data WPTokenParams = WPTokenParams
   { wpPath :: ByteString,
