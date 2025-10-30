@@ -2,7 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE DataKinds #-}
 
-module NtfProtocolTests where
+module NtfWPTests where
 
 import Test.Hspec hiding (fit, it)
 import Util
