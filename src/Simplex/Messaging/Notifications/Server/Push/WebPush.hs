@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPProvider (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, authToByteString, wpRequest)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, authToByteString, wpRequest)
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
