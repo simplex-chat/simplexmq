@@ -10,14 +10,19 @@ import Simplex.Messaging.Encoding.String (StrEncoding(..))
 import qualified Data.ByteString as B
 import qualified Crypto.PubKey.ECC.Types as ECC
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt')
+import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt', encodePN)
 import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString.Lazy as BL
+import Simplex.Messaging.Notifications.Server.Push
+import Data.List.NonEmpty (NonEmpty ((:|)))
+import qualified Simplex.Messaging.Crypto as C
+import Data.Time.Clock.System (SystemTime(..))
 
 ntfWPTests :: Spec
 ntfWPTests = describe "NTF Protocol" $ do
   it "decode WPDeviceToken from string" testWPDeviceTokenStrEncoding
   it "Encrypt RFC8291 example" testWPEncryption
+  it "PushNotifications encoding" testPNEncoding
 
 testWPDeviceTokenStrEncoding :: Expectation
 testWPDeviceTokenStrEncoding = do
@@ -57,3 +62,19 @@ testWPEncryption = do
     Left _ -> fail "Cannot encrypt clear text"
     Right c -> pure c
   strEncode cipher `shouldBe` "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+
+testPNEncoding :: Expectation
+testPNEncoding = do
+  let pnVerif = PNVerification (NtfRegCode "abcd")
+      pnCheck = PNCheckMessages
+      pnMess = pnM "MyMessage"
+  enc pnCheck `shouldBe` "{\"checkMessages\":true}"
+  enc pnVerif `shouldBe` "{\"verification\":\"YWJjZA==\"}"
+  enc pnMess `shouldBe` "{\"message\":\"smp://AAAA@l/AAAA 1761827386 bm9uY2UAAAAAAAAAAAAAAAAAAAAAAAAA TXlNZXNzYWdl\"}"
+  where
+    enc p = BL.toStrict $ encodePN p
+    pnM :: B.ByteString -> PushNotification
+    pnM m = do
+      let smpQ = either error id $ strDecode "smp://AAAA@l/AAAA"
+      let now = MkSystemTime 1761827386 0
+      PNMessage $ PNMessageData smpQ now (C.cbNonce "nonce") m :| []
