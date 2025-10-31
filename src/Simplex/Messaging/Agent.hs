@@ -102,6 +102,7 @@ module Simplex.Messaging.Agent
     reconnectSMPServer,
     registerNtfToken,
     verifyNtfToken,
+    verifySavedNtfToken,
     checkNtfToken,
     deleteNtfToken,
     getNtfToken,
@@ -627,6 +628,11 @@ registerNtfToken c = withAgentEnv c .:. registerNtfToken' c
 verifyNtfToken :: AgentClient -> NetworkRequestMode -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
 verifyNtfToken c = withAgentEnv c .:: verifyNtfToken' c
 {-# INLINE verifyNtfToken #-}
+
+-- | Verify saved device notifications token
+verifySavedNtfToken :: AgentClient -> NetworkRequestMode -> ByteString -> AE ()
+verifySavedNtfToken c = withAgentEnv c .: verifySavedNtfToken' c
+{-# INLINE verifySavedNtfToken #-}
 
 checkNtfToken :: AgentClient -> NetworkRequestMode -> DeviceToken -> AE NtfTknStatus
 checkNtfToken c = withAgentEnv c .: checkNtfToken' c
@@ -2543,6 +2549,19 @@ verifyNtfToken' c nm deviceToken nonce code =
         lift $ setCronInterval c nm tknId tkn
         when (ntfMode == NMInstant) $ initializeNtfSubs c
     _ -> throwE $ CMD PROHIBITED "verifyNtfToken: no token"
+
+verifySavedNtfToken' :: AgentClient -> NetworkRequestMode -> ByteString -> AM ()
+verifySavedNtfToken' c nm code =
+  withStore' c getSavedNtfToken >>= \case
+    Just tkn@NtfToken {ntfTokenId = Just tknId, ntfMode} -> do
+      let code' = NtfRegCode code
+      toStatus <-
+        withToken c nm tkn (Just (NTConfirmed, NTAVerify code')) (NTActive, Just NTACheck) $
+          agentNtfVerifyToken c nm tknId tkn code'
+      when (toStatus == NTActive) $ do
+        lift $ setCronInterval c nm tknId tkn
+        when (ntfMode == NMInstant) $ initializeNtfSubs c
+    _ -> throwE $ CMD PROHIBITED "verifySavedNtfToken: no token"
 
 setCronInterval :: AgentClient -> NetworkRequestMode -> NtfTokenId -> NtfToken -> AM' ()
 setCronInterval c nm tknId tkn = do
