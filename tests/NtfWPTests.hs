@@ -10,7 +10,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding(..))
 import qualified Data.ByteString as B
 import qualified Crypto.PubKey.ECC.Types as ECC
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt', encodeWPN)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt', encodeWPN, getVapidHeader')
 import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString.Lazy as BL
 import Simplex.Messaging.Notifications.Server.Push
@@ -18,6 +18,9 @@ import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Simplex.Messaging.Crypto as C
 import Data.Time.Clock.System (SystemTime(..))
 import Data.Either (isLeft)
+import Data.IORef (newIORef)
+import Simplex.Messaging.Notifications.Server.Main (getVapidKey)
+import Control.Monad (unless)
 
 ntfWPTests :: Spec
 ntfWPTests = describe "NTF Protocol" $ do
@@ -25,6 +28,7 @@ ntfWPTests = describe "NTF Protocol" $ do
   it "decode invalid WPDeviceToken" testInvalidWPDeviceTokenStrEncoding
   it "Encrypt RFC8291 example" testWPEncryption
   it "PushNotifications encoding" testPNEncoding
+  it "Vapid header cache" testVapidCache
 
 testWPDeviceTokenStrEncoding :: Expectation
 testWPDeviceTokenStrEncoding = do
@@ -89,3 +93,29 @@ testPNEncoding = do
       let smpQ = either error id $ strDecode "smp://AAAA@l/AAAA"
       let now = MkSystemTime 1761827386 0
       PNMessage $ PNMessageData smpQ now (C.cbNonce "nonce") m :| []
+
+testVapidCache :: Expectation
+testVapidCache = do
+  let wpaud = "https://localhost"
+  let now = 1761900906
+  cache <- newIORef Nothing
+  vapidKey <- getVapidKey "tests/fixtures/vapid.privkey"
+  v1 <- getVapidHeader' now vapidKey cache wpaud
+  v2 <- getVapidHeader' now vapidKey cache wpaud
+  v1 `shouldBe` v2
+  -- we just don't test the signature here
+  v1 `shouldContainBS` "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJleHAiOjE3NjE5MDQ1MDYsImF1ZCI6Imh0dHBzOi8vbG9jYWxob3N0Iiwic3ViIjoiaHR0cHM6Ly9naXRodWIuY29tL3NpbXBsZXgtY2hhdC9zaW1wbGV4bXEvIn0."
+  v1 `shouldContainBS` ",k=BIk7ASkEr1A1rJRGXMKi77tAGj3dRouSgZdW6S5pee7a3h7fkvd0OYQixy4yj35UFZt8hd9TwAQiybDK_HJLwJA"
+  v3 <- getVapidHeader' (now + 3600) vapidKey cache wpaud
+  v1 `shouldNotBe` v3
+  v3 `shouldContainBS` "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9."
+  v3 `shouldContainBS` ",k=BIk7ASkEr1A1rJRGXMKi77tAGj3dRouSgZdW6S5pee7a3h7fkvd0OYQixy4yj35UFZt8hd9TwAQiybDK_HJLwJA"
+
+shouldContainBS :: B.ByteString -> B.ByteString -> Expectation
+shouldContainBS actual expected =
+  unless (expected `B.isInfixOf` actual) $
+    expectationFailure $
+      "Expected ByteString to contain:\n" ++
+      show expected ++
+      "\nBut got:\n" ++
+      show actual

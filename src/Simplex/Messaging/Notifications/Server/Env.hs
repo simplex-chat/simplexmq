@@ -49,6 +49,7 @@ import UnliftIO.STM
 import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient, WebPushConfig)
 import Network.HTTP.Client (newManager, ManagerSettings (..), Request (..), Manager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Data.IORef (newIORef)
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
@@ -179,10 +180,12 @@ newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
 
 newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
-newWPPushClient NtfPushServer {pushClients} pp = do
+newWPPushClient NtfPushServer {wpConfig, pushClients} pp = do
   logDebug "New WP Client requested"
   -- We use one http manager per push server (which may be used by different clients)
-  wpPushProviderClient <$> wpHTTPManager
+  manager <- wpHTTPManager
+  cache <- newIORef Nothing
+  pure $ wpPushProviderClient wpConfig cache manager
 
 wpHTTPManager :: IO Manager
 wpHTTPManager = newManager tlsManagerSettings {

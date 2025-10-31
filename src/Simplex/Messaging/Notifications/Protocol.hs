@@ -394,6 +394,9 @@ newtype WPSrvLoc = WPSrvLoc SrvLoc
 newtype WPProvider = WPP WPSrvLoc
   deriving (Eq, Ord, Show)
 
+wpAud :: WPProvider -> B.ByteString
+wpAud (WPP (WPSrvLoc (SrvLoc aud _))) = B.pack aud
+
 instance Encoding PushProvider where
   smpEncode = \case
     PPAPNS p -> smpEncode p

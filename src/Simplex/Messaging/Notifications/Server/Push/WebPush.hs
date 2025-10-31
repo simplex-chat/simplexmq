@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), wpRequest)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), wpRequest, wpAud)
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
@@ -34,6 +34,10 @@ import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
 import qualified Data.ByteString.Base64.URL as B64
+import Data.IORef
+import Data.Int (Int64)
+import Data.Time.Clock.System (systemSeconds, getSystemTime)
+import qualified Data.Text.Encoding as T
 
 -- | Vapid
 -- | fp: fingerprint, base64url encoded without padding
@@ -53,18 +57,76 @@ data WebPushConfig = WebPushConfig
   { vapidKey :: VapidKey
   }
 
-wpPushProviderClient :: Manager -> PushProviderClient
-wpPushProviderClient _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
-wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = do
+data WPCache = WPCache
+  { vapidHeader :: B.ByteString,
+    expire :: Int64
+  }
+
+getVapidHeader :: VapidKey -> IORef (Maybe WPCache) -> B.ByteString -> IO B.ByteString
+getVapidHeader vapidK cache uriAuthority = do
+  h <- readIORef cache
+  now <- systemSeconds <$> getSystemTime
+  case h of
+    Nothing -> newCacheEntry now
+    Just entry -> if expire entry > now then pure $ vapidHeader entry
+      else newCacheEntry now
+  where
+    newCacheEntry :: Int64 -> IO B.ByteString
+    newCacheEntry now = do
+      -- The new entry expires in one hour
+      let expire = now + 3600
+      vapidHeader <- mkVapidHeader vapidK uriAuthority expire
+      let entry = Just WPCache { vapidHeader, expire }
+      atomicWriteIORef cache entry
+      pure vapidHeader
+
+-- | With time in input for the tests
+getVapidHeader' :: Int64 -> VapidKey -> IORef (Maybe WPCache) -> B.ByteString -> IO B.ByteString
+getVapidHeader' now vapidK cache uriAuthority = do
+  h <- readIORef cache
+  case h of
+    Nothing -> newCacheEntry
+    Just entry -> if expire entry > now then pure $ vapidHeader entry
+      else newCacheEntry
+  where
+    newCacheEntry :: IO B.ByteString
+    newCacheEntry = do
+      -- The new entry expires in one hour
+      let expire = now + 3600
+      vapidHeader <- mkVapidHeader vapidK uriAuthority expire
+      let entry = Just WPCache { vapidHeader, expire }
+      atomicWriteIORef cache entry
+      pure vapidHeader
+
+-- | mkVapidHeader -> vapid -> endpoint -> expire -> vapid header
+mkVapidHeader :: VapidKey -> B.ByteString -> Int64 -> IO B.ByteString
+mkVapidHeader VapidKey {key, fp} uriAuthority expire = do
+  let jwtHeader = mkJWTHeader "ES256" Nothing
+      jwtClaims = JWTClaims
+        { iss = Nothing,
+          iat = Nothing,
+          exp = Just expire,
+          aud = Just $ T.decodeUtf8 uriAuthority,
+          sub = Just "https://github.com/simplex-chat/simplexmq/"
+        }
+      jwt = JWTToken jwtHeader jwtClaims
+  signedToken <- signedJWTToken key jwt
+  pure $ "vapid t=" <> signedToken <> ",k=" <> fp
+
+wpPushProviderClient :: WebPushConfig -> IORef (Maybe WPCache) -> Manager -> PushProviderClient
+wpPushProviderClient _ _ _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
+wpPushProviderClient conf cache mg NtfTknRec {token = token@(WPDeviceToken pp param)} pn = do
   -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
   -- parsing will happen in DeviceToken parser, so it won't fail here
   r <- wpRequest token
+  vapidH <- liftPPWPError $ getVapidHeader (vapidKey conf) cache aud
   logDebug $ "Request to " <> tshow (host r)
   encBody <- body
   let requestHeaders =
         [ ("TTL", "2592000"), -- 30 days
           ("Urgency", "high"),
-          ("Content-Encoding", "aes128gcm")
+          ("Content-Encoding", "aes128gcm"),
+          ("Authorization", vapidH)
     -- TODO: topic for pings and interval
         ]
       req =
@@ -79,6 +141,7 @@ wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = d
   where
     body :: ExceptT PushProviderError IO B.ByteString
     body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodeWPN pn)
+    aud = wpAud pp
 
 -- | encrypt :: UA key -> clear -> cipher
 -- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
