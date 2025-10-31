@@ -16,7 +16,7 @@ import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
 import Control.Logger.Simple (logDebug)
 import Simplex.Messaging.Util (tshow)
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString as B
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception ( fromException, SomeException, try )
 import qualified Network.HTTP.Types as N
@@ -51,7 +51,7 @@ data VapidKey = VapidKey
 mkVapid :: ECDSA.PrivateKey -> VapidKey
 mkVapid key = VapidKey { key, fp }
   where
-    fp = B64.encodeUnpadded . B.toStrict . C.uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) . ECDSA.private_d $ key
+    fp = B64.encodeUnpadded . BL.toStrict . C.uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) . ECDSA.private_d $ key
 
 data WebPushConfig = WebPushConfig
   { vapidKey :: VapidKey
