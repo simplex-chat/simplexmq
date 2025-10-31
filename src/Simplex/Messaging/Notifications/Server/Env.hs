@@ -46,7 +46,7 @@ import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, Transport
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient, WebPushConfig)
 import Network.HTTP.Client (newManager, ManagerSettings (..), Request (..), Manager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 
@@ -61,6 +61,7 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    wpConfig :: WebPushConfig,
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     dbStoreConfig :: PostgresStoreCfg,
@@ -100,7 +101,7 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds, startOptions} = do
+newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, wpConfig, dbStoreConfig, ntfCredentials, useServiceCreds, startOptions} = do
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
@@ -116,7 +117,7 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
         pure smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {serviceCredentials = Just service}}
       else pure smpAgentCfg
   subscriber <- newNtfSubscriber smpAgentCfg' random
-  pushServer <- newNtfPushServer pushQSize apnsConfig
+  pushServer <- newNtfPushServer pushQSize apnsConfig wpConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where
@@ -153,14 +154,15 @@ data SMPSubscriber = SMPSubscriber
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (Maybe T.Text, NtfTknRec, PushNotification), -- Maybe Text is a hostname of "own" server
     pushClients :: TMap PushProvider PushProviderClient,
-    apnsConfig :: APNSPushClientConfig
+    apnsConfig :: APNSPushClientConfig,
+    wpConfig :: WebPushConfig
   }
 
-newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
-newNtfPushServer qSize apnsConfig = do
+newNtfPushServer :: Natural -> APNSPushClientConfig -> WebPushConfig -> IO NtfPushServer
+newNtfPushServer qSize apnsConfig wpConfig = do
   pushQ <- newTBQueueIO qSize
   pushClients <- TM.emptyIO
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  pure NtfPushServer {pushQ, pushClients, apnsConfig, wpConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient s pp = do

@@ -32,6 +32,26 @@ import qualified Crypto.Cipher.Types as CT
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Data.ByteString.Base64.URL as B64
+
+-- | Vapid
+-- | fp: fingerprint, base64url encoded without padding
+-- | key: privkey
+data VapidKey = VapidKey
+  { key::ECDSA.PrivateKey,
+    fp::B.ByteString
+  }
+  deriving (Eq, Show)
+
+mkVapid :: ECDSA.PrivateKey -> VapidKey
+mkVapid key = VapidKey { key, fp }
+  where
+    fp = B64.encodeUnpadded . B.toStrict . C.uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) . ECDSA.private_d $ key
+
+data WebPushConfig = WebPushConfig
+  { vapidKey :: VapidKey
+  }
 
 wpPushProviderClient :: Manager -> PushProviderClient
 wpPushProviderClient _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
