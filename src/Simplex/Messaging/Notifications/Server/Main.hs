@@ -57,7 +57,7 @@ import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 import System.Process (readCreateProcess, shell)
-import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushConfig(..), VapidKey, mkVapid)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushConfig(..), VapidKey(..), mkVapid)
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -215,12 +215,13 @@ ntfServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
-      vapidKey <- getVapidKey vapidKeyPath
+      vapidKey@VapidKey {fp = vapidFp } <- getVapidKey vapidKeyPath
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@NtfServerConfig {transports} = serverConfig vapidKey
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
+      B.putStrLn $ "VAPID: " <> vapidFp
       printNtfServerConfig transports dbStoreConfig
       runNtfServer cfg
       where
