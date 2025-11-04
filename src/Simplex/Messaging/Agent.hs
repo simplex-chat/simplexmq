@@ -891,8 +891,8 @@ setConnShortLink' c nm connId cMode newLinkData clientData =
   withConnLock c connId "setConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     (rq, lnkId, sl, d) <- case (conn, cMode, newLinkData) of
-      (ContactConnection _ rq, SCMContact, newCtLinkData@NewContactLinkData {}) -> prepareContactLinkData rq newCtLinkData
-      (RcvConnection _ rq, SCMInvitation, newInvLinkData@NewInvitationLinkData {}) -> prepareInvLinkData rq newInvLinkData
+      (ContactConnection _ rq, SCMContact, d@NewContactLinkData {}) -> prepareContactLinkData rq d
+      (RcvConnection _ rq, SCMInvitation, d@NewInvitationLinkData {}) -> prepareInvLinkData rq d
       _ -> throwE $ CMD PROHIBITED "setConnShortLink: invalid connection or mode"
     addQueueLink c nm rq lnkId d
     pure sl
