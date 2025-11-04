@@ -112,6 +112,7 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    NewConnLinkData (..),
     UserLinkData (..),
     OwnerAuth (..),
     OwnerId,
@@ -1704,6 +1705,15 @@ data ConnLinkData c where
 newtype UserLinkData = UserLinkData ByteString
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
+
+data NewConnLinkData c where
+  NewInvitationLinkData :: UserLinkData -> NewConnLinkData 'CMInvitation
+  NewContactLinkData ::
+    { direct :: Bool,
+      owners :: [OwnerAuth],
+      relays :: [ConnShortLink 'CMContact],
+      userData :: UserLinkData
+    } -> NewConnLinkData 'CMContact
 
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
