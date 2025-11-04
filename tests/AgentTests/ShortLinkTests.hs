@@ -10,7 +10,8 @@ import AgentTests.ConnectionRequestTests (contactConnRequest, invConnRequest)
 import AgentTests.EqInstances ()
 import Control.Concurrent.STM
 import Control.Monad.Except
-import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), LinkKey (..), NewConnLinkData (..), SConnectionMode (..), SMPAgentError (..), UserLinkData (..), linkUserData, supportedSMPAgentVRange)
+import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Agent.Protocol (AgentErrorType (..), ConnectionMode (..), ConnShortLink (..), LinkKey (..), NewConnLinkData (..), SConnectionMode (..), SMPAgentError (..), UserLinkData (..), linkDirect, linkOwners, linkRelays, linkUserData, supportedSMPAgentVRange)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Test.Hspec hiding (fit, it)
@@ -58,6 +59,12 @@ testInvShortLinkBadDataHash = do
   SL.decryptLinkData @'CMInvitation linkKey k srvData
     `shouldBe` Left (AGENT (A_LINK "link data hash"))
 
+relayLink1 :: ConnShortLink 'CMContact
+relayLink1 = either error id $ strDecode "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM?p=7001&c=LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI"
+
+relayLink2 :: ConnShortLink 'CMContact
+relayLink2 = either error id $ strDecode "https://localhost/a#4AkRDmhf64tdRlN406g8lJRg5OCmhD6ynIhi6glOcCM"
+
 testContactShortLink :: IO ()
 testContactShortLink = do
   -- encrypt
@@ -71,6 +78,9 @@ testContactShortLink = do
   -- decrypt
   Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k srvData
   connReq `shouldBe` contactConnRequest
+  linkDirect connData' `shouldBe` True
+  linkOwners connData' `shouldBe` []
+  linkRelays connData' `shouldBe` []
   linkUserData connData' `shouldBe` userData
 
 testUpdateContactShortLink :: IO ()
@@ -85,12 +95,15 @@ testUpdateContactShortLink = do
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
   -- encrypt updated user data
   let updatedUserData = UserLinkData "updated user data"
-      newLinkData' = NewContactLinkData {direct = True, owners = [], relays = [], userData = updatedUserData}
+      newLinkData' = NewContactLinkData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedUserData}
       signed = SL.encodeSignUserData SCMContact (snd sigKeys) supportedSMPAgentVRange newLinkData'
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
   Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k (fd, ud')
   connReq `shouldBe` contactConnRequest
+  linkDirect connData' `shouldBe` False
+  linkOwners connData' `shouldBe` []
+  linkRelays connData' `shouldBe` [relayLink1, relayLink2]
   linkUserData connData' `shouldBe` updatedUserData
 
 testContactShortLinkBadDataHash :: IO ()

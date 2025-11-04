@@ -172,6 +172,9 @@ module Simplex.Messaging.Agent.Protocol
     isPresetServer,
     linkUserData,
     linkUserData',
+    linkDirect,
+    linkOwners,
+    linkRelays,
   )
 where
 
@@ -1724,6 +1727,18 @@ linkUserData = \case
 linkUserData' :: ConnLinkData c -> ByteString
 linkUserData' d = let UserLinkData s = linkUserData d in s
 {-# INLINE linkUserData' #-}
+
+linkDirect :: ConnLinkData 'CMContact -> Bool
+linkDirect ContactLinkData {direct} = direct
+{-# INLINE linkDirect #-}
+
+linkOwners :: ConnLinkData 'CMContact -> [OwnerAuth]
+linkOwners ContactLinkData {owners} = owners
+{-# INLINE linkOwners #-}
+
+linkRelays :: ConnLinkData 'CMContact -> [ConnShortLink 'CMContact]
+linkRelays ContactLinkData {relays} = relays
+{-# INLINE linkRelays #-}
 
 type OwnerId = ByteString
 
