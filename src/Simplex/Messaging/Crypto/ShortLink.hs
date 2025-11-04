@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -48,24 +49,20 @@ contactShortLinkKdf (LinkKey k) =
 invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
-encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> NewConnLinkData c -> (LinkKey, (ByteString, ByteString))
+encodeSignLinkData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
 encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
   let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq}
-      md = smpEncode $ connLinkData @c agentVRange userData
+      md = smpEncode $ connLinkData agentVRange userData
    in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
 
-encodeSignUserData :: forall c. ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> NewConnLinkData c -> ByteString
-encodeSignUserData _ pk agentVRange newLinkData =
-  encodeSign pk $ smpEncode $ connLinkData @c agentVRange newLinkData
+encodeSignUserData :: ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> UserConnLinkData c -> ByteString
+encodeSignUserData _ pk agentVRange userLinkData =
+  encodeSign pk $ smpEncode $ connLinkData agentVRange userLinkData
 
-connLinkData :: forall c. ConnectionModeI c => VersionRangeSMPA -> NewConnLinkData c -> ConnLinkData c
-connLinkData agentVRange newLinkData = case sConnectionMode @c of
-  SCMInvitation ->
-    let NewInvitationLinkData userData = newLinkData
-     in InvitationLinkData agentVRange userData
-  SCMContact ->
-    let NewContactLinkData {direct, owners, relays, userData} = newLinkData
-     in ContactLinkData {agentVRange, direct, owners, relays, userData}
+connLinkData :: VersionRangeSMPA -> UserConnLinkData c -> ConnLinkData c
+connLinkData vr = \case
+  UserInvLinkData d -> InvitationLinkData vr d
+  UserContactLinkData d -> ContactLinkData vr d
 
 encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
 encodeSign pk s = smpEncode (C.sign' pk s) <> s

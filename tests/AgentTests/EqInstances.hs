@@ -5,7 +5,7 @@
 module AgentTests.EqInstances where
 
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Protocol (ConnLinkData (..), OwnerAuth (..), UserLinkData (..))
+import Simplex.Messaging.Agent.Protocol (ConnLinkData (..), OwnerAuth (..), UserContactData (..), UserLinkData (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client (ProxiedRelay (..))
 
@@ -31,6 +31,10 @@ deriving instance Eq ShortLinkCreds
 deriving instance Show (ConnLinkData c)
 
 deriving instance Eq (ConnLinkData c)
+
+deriving instance Show UserContactData
+
+deriving instance Eq UserContactData
 
 deriving instance Show UserLinkData
 
