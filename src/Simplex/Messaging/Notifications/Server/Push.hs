@@ -89,6 +89,17 @@ signedJWTToken pk (JWTToken hdr claims) = do
     jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
     serialize sig = U.encodeUnpadded $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
 
+-- | Does it work with APNS ?
+signedJWTTokenRawSign :: EC.PrivateKey -> JWTToken -> IO SignedJWTToken
+signedJWTTokenRawSign pk (JWTToken hdr claims) = do
+  let hc = jwtEncode hdr <> "." <> jwtEncode claims
+  sig <- EC.sign pk SHA256 hc
+  pure $ hc <> "." <> serialize sig
+  where
+    jwtEncode :: ToJSON a => a -> ByteString
+    jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
+    serialize sig = U.encodeUnpadded $ LB.toStrict $ C.encodeBigInt (EC.sign_r sig) <> C.encodeBigInt (EC.sign_s sig)
+
 readECPrivateKey :: FilePath -> IO EC.PrivateKey
 readECPrivateKey f = do
   -- this pattern match is specific to APNS key type, it may need to be extended for other push providers

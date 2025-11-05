@@ -125,11 +125,11 @@ mkVapidHeader VapidKey {key, fp} uriAuthority expire = do
           { iss = Nothing,
             iat = Nothing,
             exp = Just expire,
-            aud = Just $ T.decodeUtf8 uriAuthority,
+            aud = Just $ T.decodeUtf8 $ "https://" <> uriAuthority,
             sub = Just "https://github.com/simplex-chat/simplexmq/"
           }
       jwt = JWTToken jwtHeader jwtClaims
-  signedToken <- signedJWTToken key jwt
+  signedToken <- signedJWTTokenRawSign key jwt
   pure $ "vapid t=" <> signedToken <> ",k=" <> fp
 
 wpPushProviderClient :: WebPushClient -> PushProviderClient
