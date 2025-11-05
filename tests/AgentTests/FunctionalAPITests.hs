@@ -1508,49 +1508,51 @@ testInvitationShortLinkRestart ps = withAgentClients2 $ \a b -> do
 testContactShortLinkRestart :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
   let userData = UserLinkData "some user data"
-      newLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData}
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+      newLinkData = UserContactLinkData userCtData
   (contactId, (CCLink connReq0 (Just shortLink), Nothing)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn SMOnlyCreate
   Right connReq <- pure $ smpDecode (smpEncode connReq0)
   let updatedData = UserLinkData "updated user data"
-      userCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData}
-      userLinkData' = UserContactLinkData userCtData
+      updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData}
+      updatedLinkData = UserContactLinkData updatedCtData
   withSmpServer ps $ do
     (connReq', ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
     -- update user data
-    shortLink' <- runRight $ setConnShortLink a contactId SCMContact userLinkData' Nothing
+    shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
   withSmpServer ps $ do
     (connReq4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
     connReq4 `shouldBe` connReq
-    updatedCtData' `shouldBe` userCtData
+    updatedCtData' `shouldBe` updatedCtData
 
 testAddContactShortLinkRestart :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
   let userData = UserLinkData "some user data"
-      newLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData}
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+      newLinkData = UserContactLinkData userCtData
   ((contactId, (CCLink connReq0 Nothing, Nothing)), shortLink) <- withSmpServer ps $ runRight $ do
     r@(contactId, _) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
     (r,) <$> setConnShortLink a contactId SCMContact newLinkData Nothing
   Right connReq <- pure $ smpDecode (smpEncode connReq0)
   let updatedData = UserLinkData "updated user data"
-      userCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData}
-      userLinkData' = UserContactLinkData userCtData
+      updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData}
+      updatedLinkData = UserContactLinkData updatedCtData
   withSmpServer ps $ do
     (connReq', ContactLinkData _  userCtData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
-    userCtData `shouldBe` userCtData'
+    userCtData' `shouldBe` userCtData
     -- update user data
-    shortLink' <- runRight $ setConnShortLink a contactId SCMContact userLinkData' Nothing
+    shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
   withSmpServer ps $ do
     (connReq4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
     connReq4 `shouldBe` connReq
-    userCtData `shouldBe` updatedCtData'
+    updatedCtData' `shouldBe` updatedCtData
 
 testOldContactQueueShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
