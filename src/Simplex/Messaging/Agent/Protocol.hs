@@ -112,6 +112,8 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    UserConnLinkData (..),
+    UserContactData (..),
     UserLinkData (..),
     OwnerAuth (..),
     OwnerId,
@@ -1686,25 +1688,30 @@ data FixedLinkData c = FixedLinkData
 
 data ConnLinkData c where
   InvitationLinkData :: VersionRangeSMPA -> UserLinkData -> ConnLinkData 'CMInvitation
-  ContactLinkData ::
-    { agentVRange :: VersionRangeSMPA,
-      -- direct connection via connReq in fixed data is allowed.
-      direct :: Bool,
-      -- additional owner keys to sign changes of mutable data.
-      owners :: [OwnerAuth],
-      -- alternative addresses of chat relays that receive requests for this contact address.
-      relays :: [ConnShortLink 'CMContact],
-      userData :: UserLinkData
-    } -> ConnLinkData 'CMContact
+  ContactLinkData :: VersionRangeSMPA -> UserContactData -> ConnLinkData 'CMContact
+
+data UserContactData = UserContactData
+  { -- direct connection via connReq in fixed data is allowed.
+    direct :: Bool,
+    -- additional owner keys to sign changes of mutable data.
+    owners :: [OwnerAuth],
+    -- alternative addresses of chat relays that receive requests for this contact address.
+    relays :: [ConnShortLink 'CMContact],
+    userData :: UserLinkData
+  }
 
 newtype UserLinkData = UserLinkData ByteString
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
 
+data UserConnLinkData c where
+  UserInvLinkData :: UserLinkData -> UserConnLinkData 'CMInvitation
+  UserContactLinkData :: UserContactData -> UserConnLinkData 'CMContact
+
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
   InvitationLinkData _ d -> d
-  ContactLinkData {userData} -> userData
+  ContactLinkData _ UserContactData {userData} -> userData
 {-# INLINE linkUserData #-}
 
 linkUserData' :: ConnLinkData c -> ByteString
@@ -1745,8 +1752,8 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
     InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, userData)
-    ContactLinkData {agentVRange, direct, owners, relays, userData} ->
-      B.concat [smpEncode (CMContact, agentVRange, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+    ContactLinkData vr UserContactData {direct, owners, relays, userData} ->
+      B.concat [smpEncode (CMContact, vr, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
   smpP = (\(ACLD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1759,11 +1766,12 @@ instance Encoding AConnLinkData where
         (vr, userData) <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
       CMContact -> do
-        (agentVRange, direct) <- smpP
+        (vr, direct) <- smpP
         owners <- smpListP
         relays <- smpListP
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-        pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
+        let cd = UserContactData {direct, owners, relays, userData}
+        pure $ ACLD SCMContact $ ContactLinkData vr cd
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
