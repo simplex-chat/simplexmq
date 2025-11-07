@@ -1777,7 +1777,7 @@ client
               Just _ -> runExceptT $ do
                 ExceptT $ setQueueService (queueStore ms) q party Nothing
                 liftIO $ incSrvStat srvAssocRemoved
-                -- getSub may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
+                -- getSubscription may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
                 -- For notification service it can only be Just if storage and session states diverge.
                 r <- atomically $ getSubscription >>= newSub
                 atomically writeSub

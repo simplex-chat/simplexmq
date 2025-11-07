@@ -1507,7 +1507,7 @@ resubscribeConnections' c connIds = do
       [] -> pure True
       rqs' -> anyM $ map (atomically . hasActiveSubscription c) rqs'
 
--- TODO [serts rcv] compare hash with lock
+-- TODO [certs rcv] compare hash with lock
 subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
 subscribeClientServices' c userId =
   ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"

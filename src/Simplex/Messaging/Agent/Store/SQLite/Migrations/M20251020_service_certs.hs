@@ -10,7 +10,7 @@ m20251020_service_certs :: Query
 m20251020_service_certs =
   [sql|
 CREATE TABLE client_services(
-  user_id INTEGER NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   service_cert BLOB NOT NULL,
