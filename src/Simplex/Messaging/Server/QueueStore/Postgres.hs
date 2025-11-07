@@ -24,9 +24,11 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     batchInsertServices,
     batchInsertQueues,
     foldServiceRecs,
+    foldRcvServiceQueueRecs,
     foldQueueRecs,
     foldRecentQueueRecs,
     handleDuplicate,
+    rowToQueueRec,
     withLog_,
     withDB,
     withDB',
@@ -577,11 +579,16 @@ insertServiceQuery =
     VALUES (?,?,?,?,?)
   |]
 
-foldServiceRecs :: forall a q. Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
+foldServiceRecs :: Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
 foldServiceRecs st f =
   withTransaction (dbStore st) $ \db ->
     DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
       \ !acc -> fmap (acc <>) . f . rowToServiceRec
+
+foldRcvServiceQueueRecs :: PostgresQueueStore q -> ServiceId -> (a -> (RecipientId, QueueRec) -> IO a) -> a -> IO a
+foldRcvServiceQueueRecs st serviceId f acc =
+  withTransaction (dbStore st) $ \db ->
+    DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \a -> f a . rowToQueueRec
 
 foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs withData = foldQueueRecs_ foldRecs
@@ -769,10 +776,6 @@ instance ToField SMPServiceRole where toField = toField . decodeLatin1 . smpEnco
 
 instance FromField SMPServiceRole where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
-instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
-
-instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
-
 #if !defined(dbPostgres)
 instance ToField EntityId where toField (EntityId s) = toField $ Binary s
 
@@ -797,4 +800,8 @@ deriving newtype instance FromField EncDataBytes
 deriving newtype instance ToField (RoundedSystemTime t)
 
 deriving newtype instance FromField (RoundedSystemTime t)
+
+instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
+
+instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
 #endif

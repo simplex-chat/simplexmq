@@ -85,7 +85,7 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     -- | short link ID and credentials
     shortLink :: Maybe ShortLinkCreds,
     -- | associated client service
-    clientService :: Maybe (StoredClientService q),
+    rcvServiceAssoc :: ServiceAssoc,
     -- | queue status
     status :: QueueStatus,
     -- | to enable notifications for this queue - this field is duplicated from ConnData
@@ -134,9 +134,7 @@ data ShortLinkCreds = ShortLinkCreds
   }
   deriving (Show)
 
-clientServiceId :: RcvQueue -> Maybe ClientServiceId
-clientServiceId = fmap dbServiceId . clientService
-{-# INLINE clientServiceId #-}
+type ServiceAssoc = Bool
 
 rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =

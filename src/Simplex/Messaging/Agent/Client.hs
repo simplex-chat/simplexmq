@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent.Client
     newRcvQueue_,
     subscribeQueues,
     subscribeUserServerQueues,
+    subscribeClientService,
     processClientNotices,
     getQueueMessage,
     decryptSMPMessage,
@@ -223,6 +224,7 @@ import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
+import qualified Data.X509.Validation as XV
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
@@ -238,7 +240,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
-import Simplex.Messaging.Agent.Store.AgentStore (getClientNotices, updateClientNotices)
+import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -262,6 +264,7 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
+    IdsHash,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -296,8 +299,9 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion, SessionId, THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
@@ -331,6 +335,7 @@ data AgentClient = AgentClient
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
+    useClientServices :: TMap UserId Bool,
     -- smpProxiedRelays:
     -- SMPTransportSession defines connection from proxy to relay,
     -- SMPServerWithAuth defines client connected to SMP proxy (with the same userId and entityId in TransportSession)
@@ -495,7 +500,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomains, presetServers} currentTs notices agentEnv = do
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
@@ -505,6 +510,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
   msgQ <- newTBQueueIO qSize
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
+  useClientServices <- newTVarIO useServices
   smpProxiedRelays <- TM.emptyIO
   ntfServers <- newTVarIO ntf
   ntfClients <- TM.emptyIO
@@ -544,6 +550,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, presetDomai
         msgQ,
         smpServers,
         smpClients,
+        useClientServices,
         smpProxiedRelays,
         ntfServers,
         ntfClients,
@@ -597,6 +604,28 @@ agentClientStore AgentClient {agentEnv = Env {store}} = store
 agentDRG :: AgentClient -> TVar ChaChaDRG
 agentDRG AgentClient {agentEnv = Env {random}} = random
 {-# INLINE agentDRG #-}
+
+getServiceCredentials :: AgentClient -> UserId -> SMPServer -> AM (Maybe (ServiceCredentials, Maybe ServiceId))
+getServiceCredentials c userId srv =
+  liftIO (TM.lookupIO userId $ useClientServices c)
+    $>>= \useService -> if useService then Just <$> getService else pure Nothing
+  where
+    getService :: AM (ServiceCredentials, Maybe ServiceId)
+    getService = do
+      let g = agentDRG c
+      ((C.KeyHash kh, serviceCreds), serviceId_) <-
+        withStore' c $ \db ->
+          getClientService db userId srv >>= \case
+            Just service -> pure service
+            Nothing -> do
+              cred <- genCredentials g Nothing (25, 24 * 999999) "simplex"
+              let tlsCreds = tlsCredentials [cred]
+              createClientService db userId srv tlsCreds
+              pure (tlsCreds, Nothing)
+      (_, pk) <- atomically $ C.generateKeyPair g
+      let serviceSignKey = C.APrivateSignKey C.SEd25519 pk
+          creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
+      pure (creds, serviceId_)
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
   type Client msg = c | c -> msg
@@ -701,7 +730,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm tSess@(_, srv, _) prs v =
+smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAllErrors` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
@@ -709,12 +738,22 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
     connectClient v' = do
       cfg <- lift $ getClientConfig c smpCfg
       g <- asks random
+      service <- getServiceCredentials c userId srv
+      let cfg' = cfg {serviceCredentials = fst <$> service}
       env <- ask
-      liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
+      smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
-        smp <- ExceptT $ getProtocolClient g nm tSess cfg presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
-        atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
-        pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
+        ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+      atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
+      updateClientService service smp
+      pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
+    updateClientService service smp = case (service, smpClientService smp) of
+      (Just (_, serviceId_), Just THClientService {serviceId})
+        | serviceId_ /= Just serviceId -> withStore' c $ \db -> setClientServiceId db userId srv serviceId
+        | otherwise -> pure ()
+      (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
+      (Nothing, Just _) -> logError "server returned serviceId without service credentials in request"
+      (Nothing, Nothing) -> pure ()
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
 smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, cId) env v prs client = do
@@ -862,7 +901,6 @@ waitForProtocolClient c nm tSess@(_, srv, _) clients v = do
           (throwE e)
     Nothing -> throwE $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
--- clientConnected arg is only passed for SMP server
 newProtocolClient ::
   forall v err msg.
   (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) =>
@@ -1399,7 +1437,8 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
     withClient c nm tSess $ \(SMPConnectedClient smp _) -> do
       (ntfKeys, ntfCreds) <- liftIO $ mkNtfCreds a g smp
       (thParams smp,ntfKeys,) <$> createSMPQueue smp nm nonce_ rKeys dhKey auth subMode (queueReqData cqrd) ntfCreds
-  -- TODO [certs rcv] validate that serviceId is the same as in the client session
+  -- TODO [certs rcv] validate that serviceId is the same as in the client session, fail otherwise
+  -- possibly, it should allow returning Nothing - it would indicate incorrect old version
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds thParams' qik
   let rq =
@@ -1415,7 +1454,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             sndId,
             queueMode,
             shortLink,
-            clientService = ClientService DBNewEntity <$> serviceId,
+            rcvServiceAssoc = isJust serviceId,
             status = New,
             enableNtfs,
             clientNoticeId = Nothing,
@@ -1649,6 +1688,11 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
     Left e -> do
       logError $ "processClientNotices error: " <> tshow e
       notifySub' c "" $ ERR e
+
+subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM (Int64, IdsHash)
+subscribeClientService c userId srv =
+  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $
+    (`subscribeService` SMP.SRecipientService) . connectedClient
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)

@@ -87,6 +87,8 @@ module Simplex.Messaging.Crypto
     signatureKeyPair,
     publicToX509,
     encodeASNObj,
+    decodeASNKey,
+    asnKeyError,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -1493,11 +1495,11 @@ encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
 -- Decoding of binary X509 'CryptoPublicKey'.
 decodePubKey :: CryptoPublicKey k => ByteString -> Either String k
-decodePubKey = decodeKey >=> x509ToPublic >=> pubKey
+decodePubKey = decodeASNKey >=> x509ToPublic >=> pubKey
 
 -- Decoding of binary PKCS8 'PrivateKey'.
 decodePrivKey :: CryptoPrivateKey k => ByteString -> Either String k
-decodePrivKey = decodeKey >=> x509ToPrivate >=> privKey
+decodePrivKey = decodeASNKey >=> x509ToPrivate >=> privKey
 
 x509ToPublic :: (X.PubKey, [ASN1]) -> Either String APublicKey
 x509ToPublic = \case
@@ -1505,7 +1507,7 @@ x509ToPublic = \case
   (X.PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
   (X.PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
   (X.PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
-  r -> keyError r
+  r -> asnKeyError r
 
 x509ToPublic' :: CryptoPublicKey k => X.PubKey -> Either String k
 x509ToPublic' k = x509ToPublic (k, []) >>= pubKey
@@ -1517,16 +1519,16 @@ x509ToPrivate = \case
   (X.PrivKeyEd448 k, []) -> Right $ APrivateKey SEd448 $ PrivateKeyEd448 k
   (X.PrivKeyX25519 k, []) -> Right $ APrivateKey SX25519 $ PrivateKeyX25519 k
   (X.PrivKeyX448 k, []) -> Right $ APrivateKey SX448 $ PrivateKeyX448 k
-  r -> keyError r
+  r -> asnKeyError r
 
 x509ToPrivate' :: CryptoPrivateKey k => X.PrivKey -> Either String k
 x509ToPrivate' pk = x509ToPrivate (pk, []) >>= privKey
 {-# INLINE x509ToPrivate' #-}
 
-decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
-decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
+decodeASNKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
+decodeASNKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
 
-keyError :: (a, [ASN1]) -> Either String b
-keyError = \case
+asnKeyError :: (a, [ASN1]) -> Either String b
+asnKeyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"

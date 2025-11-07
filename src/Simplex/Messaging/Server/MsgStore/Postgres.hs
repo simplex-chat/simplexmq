@@ -119,6 +119,34 @@ instance MsgStoreClass PostgresMsgStore where
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
+  foldRcvServiceMessages :: PostgresMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO a
+  foldRcvServiceMessages ms serviceId f acc =
+    withTransaction (dbStore $ queueStore_ ms) $ \db ->
+      DB.fold
+        db
+        [sql|
+          SELECT q.recipient_id, q.recipient_keys, q.rcv_dh_secret,
+            q.sender_id, q.sender_key, q.queue_mode,
+            q.notifier_id, q.notifier_key, q.rcv_ntf_dh_secret, q.ntf_service_id,
+            q.status, q.updated_at, q.link_id, q.rcv_service_id,
+            m.msg_id, m.msg_ts, m.msg_quota, m.msg_ntf_flag, m.msg_body
+          FROM msg_queues q
+          LEFT JOIN (
+              SELECT recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body,
+                ROW_NUMBER() OVER (PARTITION BY recipient_id ORDER BY message_id ASC) AS row_num
+              FROM messages
+          ) m ON q.recipient_id = m.recipient_id AND m.row_num = 1
+          WHERE q.rcv_service_id = ? AND q.deleted_at IS NULL;
+        |]
+        (Only serviceId)
+        acc
+        f'
+    where
+      f' a (qRow :. mRow) =
+        let (rId, qr) = rowToQueueRec qRow
+            msg_ = toMaybeMessage mRow
+         in f a rId $ Right ((qr,) <$> msg_)
+
   logQueueStates _ = error "logQueueStates not used"
 
   logQueueState _ = error "logQueueState not used"
@@ -246,6 +274,11 @@ instance MsgStoreClass PostgresMsgStore where
 uninterruptibleMask_ :: ExceptT ErrorType IO a -> ExceptT ErrorType IO a
 uninterruptibleMask_ = ExceptT . E.uninterruptibleMask_ . runExceptT
 {-# INLINE uninterruptibleMask_ #-}
+
+toMaybeMessage :: (Maybe (Binary MsgId), Maybe Int64, Maybe Bool, Maybe Bool, Maybe (Binary MsgBody)) -> Maybe Message
+toMaybeMessage = \case
+  (Just msgId, Just ts, Just msgQuota, Just ntf, Just body) -> Just $ toMessage (msgId, ts, msgQuota, ntf, body)
+  _ -> Nothing
 
 toMessage :: (Binary MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
 toMessage (Binary msgId, ts, msgQuota, ntf, Binary body)

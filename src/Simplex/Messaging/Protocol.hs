@@ -140,6 +140,7 @@ module Simplex.Messaging.Protocol
     RcvMessage (..),
     MsgId,
     MsgBody,
+    IdsHash,
     MaxMessageLen,
     MaxRcvMessageLen,
     EncRcvMsgBody (..),
@@ -698,11 +699,13 @@ data BrokerMsg where
   -- | Service subscription success - confirms when queue was associated with the service
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues subscribed with SUBS command
-  SOKS :: Int64 -> BrokerMsg
+  SOKS :: Int64 -> IdsHash -> BrokerMsg
   -- MSG v1/2 has to be supported for encoding/decoding
   -- v1: MSG :: MsgId -> SystemTime -> MsgBody -> BrokerMsg
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
   MSG :: RcvMessage -> BrokerMsg
+  -- sent once delivering messages to SUBS command is complete
+  SALL :: BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
@@ -939,6 +942,7 @@ data BrokerMsgTag
   | SOK_
   | SOKS_
   | MSG_
+  | SALL_
   | NID_
   | NMSG_
   | PKEY_
@@ -1031,6 +1035,7 @@ instance Encoding BrokerMsgTag where
     SOK_ -> "SOK"
     SOKS_ -> "SOKS"
     MSG_ -> "MSG"
+    SALL_ -> "SALL"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
     PKEY_ -> "PKEY"
@@ -1052,6 +1057,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "SOK" -> Just SOK_
     "SOKS" -> Just SOKS_
     "MSG" -> Just MSG_
+    "SALL" -> Just SALL_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
     "PKEY" -> Just PKEY_
@@ -1454,6 +1460,8 @@ type MsgId = ByteString
 -- | SMP message body.
 type MsgBody = ByteString
 
+type IdsHash = ByteString
+
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 
 -- | Type for protocol errors.
@@ -1834,9 +1842,12 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SOK serviceId_
       | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
       | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
-    SOKS n -> e (SOKS_, ' ', n)
+    SOKS n idsHash
+      | v >= rcvServiceSMPVersion -> e (SOKS_, ' ', n, idsHash)
+      | otherwise -> e (SOKS_, ' ', n)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
+    SALL -> e SALL_
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
@@ -1867,6 +1878,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       MSG . RcvMessage msgId <$> bodyP
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
+    SALL_ -> pure SALL
     IDS_
       | v >= newNtfCredsSMPVersion -> ids smpP smpP smpP smpP
       | v >= serviceCertsSMPVersion -> ids smpP smpP smpP nothing
@@ -1887,7 +1899,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId, serverNtfCreds}
     LNK_ -> LNK <$> _smpP <*> smpP
     SOK_ -> SOK <$> _smpP
-    SOKS_ -> SOKS <$> _smpP
+    SOKS_
+      | v >= rcvServiceSMPVersion -> SOKS <$> _smpP <*> smpP
+      | otherwise -> SOKS <$> _smpP <*> pure B.empty
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
@@ -1917,6 +1931,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG -> noEntityMsg
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
+    SALL -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY
