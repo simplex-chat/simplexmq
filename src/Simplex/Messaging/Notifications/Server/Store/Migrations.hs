@@ -6,13 +6,15 @@ module Simplex.Messaging.Notifications.Server.Store.Migrations where
 
 import Data.List (sortOn)
 import Data.Text (Text)
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
 import Simplex.Messaging.Agent.Store.Shared
 import Text.RawString.QQ (r)
 
 ntfServerSchemaMigrations :: [(String, Text, Maybe Text)]
 ntfServerSchemaMigrations =
   [ ("20250417_initial", m20250417_initial, Nothing),
-    ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert)
+    ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
+    ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -101,3 +103,125 @@ ALTER TABLE smp_servers DROP COLUMN ntf_service_id;
 
 ALTER TABLE subscriptions DROP COLUMN ntf_service_assoc;
     |]
+
+m20250830_queue_ids_hash :: Text
+m20250830_queue_ids_hash =
+  createXorHashFuncs
+    <> [r|
+ALTER TABLE smp_servers
+  ADD COLUMN smp_notifier_count BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN smp_notifier_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
+
+CREATE FUNCTION should_subscribe_status(p_status TEXT) RETURNS BOOLEAN
+LANGUAGE plpgsql IMMUTABLE STRICT
+AS $$
+BEGIN
+  RETURN p_status IN ('NEW', 'PENDING', 'ACTIVE', 'INACTIVE');
+END;
+$$;
+
+CREATE FUNCTION update_all_aggregates() RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  WITH acc AS (
+    SELECT
+      s.smp_server_id,
+      count(smp_notifier_id) as notifier_count,
+      xor_aggregate(public.digest(s.smp_notifier_id, 'md5')) AS notifier_hash
+    FROM subscriptions s
+    WHERE s.ntf_service_assoc = true AND should_subscribe_status(s.status)
+    GROUP BY s.smp_server_id
+  )
+  UPDATE smp_servers srv
+  SET smp_notifier_count = COALESCE(acc.notifier_count, 0),
+      smp_notifier_ids_hash = COALESCE(acc.notifier_hash, '\x00000000000000000000000000000000')
+  FROM acc
+  WHERE srv.smp_server_id = acc.smp_server_id;
+END;
+$$;
+
+SELECT update_all_aggregates();
+
+CREATE FUNCTION update_aggregates(p_server_id BIGINT, p_change BIGINT, p_notifier_id BYTEA) RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE smp_servers
+  SET smp_notifier_count = smp_notifier_count + p_change,
+      smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
+  WHERE smp_server_id = p_server_id;
+END;
+$$;
+
+CREATE FUNCTION on_subscription_insert() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION on_subscription_delete() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+CREATE FUNCTION on_subscription_update() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    IF NOT (NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status)) THEN
+      PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
+    END IF;
+  ELSIF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER tr_subscriptions_insert
+AFTER INSERT ON subscriptions
+FOR EACH ROW EXECUTE PROCEDURE on_subscription_insert();
+
+CREATE TRIGGER tr_subscriptions_delete
+AFTER DELETE ON subscriptions
+FOR EACH ROW EXECUTE PROCEDURE on_subscription_delete();
+
+CREATE TRIGGER tr_subscriptions_update
+AFTER UPDATE ON subscriptions
+FOR EACH ROW EXECUTE PROCEDURE on_subscription_update();
+      |]
+
+down_m20250830_queue_ids_hash :: Text
+down_m20250830_queue_ids_hash =
+  [r|
+DROP TRIGGER tr_subscriptions_insert ON subscriptions;
+DROP TRIGGER tr_subscriptions_delete ON subscriptions;
+DROP TRIGGER tr_subscriptions_update ON subscriptions;
+
+DROP FUNCTION on_subscription_insert;
+DROP FUNCTION on_subscription_delete;
+DROP FUNCTION on_subscription_update;
+
+DROP FUNCTION update_aggregates;
+DROP FUNCTION update_all_aggregates;
+
+DROP FUNCTION should_subscribe_status;
+
+ALTER TABLE smp_servers
+  DROP COLUMN smp_notifier_count,
+  DROP COLUMN smp_notifier_ids_hash;
+    |]
+    <> dropXorHashFuncs

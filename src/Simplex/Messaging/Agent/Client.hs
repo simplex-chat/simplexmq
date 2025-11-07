@@ -279,6 +279,7 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SProtocolType (..),
+    ServiceSub,
     SndPublicAuthKey,
     SubscriptionMode (..),
     NewNtfCreds (..),
@@ -1689,10 +1690,10 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
       logError $ "processClientNotices error: " <> tshow e
       notifySub' c "" $ ERR e
 
-subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM (Int64, IdsHash)
-subscribeClientService c userId srv =
-  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $
-    (`subscribeService` SMP.SRecipientService) . connectedClient
+subscribeClientService :: AgentClient -> UserId -> SMPServer -> Int64 -> IdsHash -> AM ServiceSub
+subscribeClientService c userId srv n idsHash =
+  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
+    subscribeService smp SMP.SRecipientService n idsHash
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)

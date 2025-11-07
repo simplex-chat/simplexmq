@@ -458,7 +458,9 @@ CREATE TABLE client_services(
   service_cert BLOB NOT NULL,
   service_cert_hash BLOB NOT NULL,
   service_priv_key BLOB NOT NULL,
-  rcv_service_id BLOB,
+  service_id BLOB,
+  service_queue_count INTEGER NOT NULL DEFAULT 0,
+  service_queue_ids_hash BLOB NOT NULL DEFAULT x'00000000000000000000000000000000',
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
 );
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);

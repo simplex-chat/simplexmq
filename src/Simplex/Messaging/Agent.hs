@@ -211,7 +211,6 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
-    IdsHash,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -222,6 +221,7 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta,
     SParty (..),
     SProtocolType (..),
+    ServiceSub (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
@@ -500,7 +500,7 @@ resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either Agen
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
-subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
+subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType ServiceSub))
 subscribeClientServices c = withAgentEnv c . subscribeClientServices' c
 {-# INLINE subscribeClientServices #-}
 
@@ -1507,15 +1507,15 @@ resubscribeConnections' c connIds = do
       [] -> pure True
       rqs' -> anyM $ map (atomically . hasActiveSubscription c) rqs'
 
--- TODO [certs rcv] compare hash with lock
-subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
+-- TODO [certs rcv] compare hash. possibly, it should return both expected and returned counts
+subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType ServiceSub))
 subscribeClientServices' c userId =
   ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"
   where
     useService = liftIO $ (Just True ==) <$> TM.lookupIO userId (useClientServices c)
     subscribe = do
       srvs <- withStore' c (`getClientServiceServers` userId)
-      lift $ M.fromList . zip srvs <$> mapConcurrently (tryAllErrors' . subscribeClientService c userId) srvs
+      lift $ M.fromList <$> mapConcurrently (\(srv, ServiceSub _ n idsHash) -> fmap (srv,) $ tryAllErrors' $ subscribeClientService c userId srv n idsHash) srvs
 
 -- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))

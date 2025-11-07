@@ -7,6 +7,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres.Migrations where
 import Data.List (sortOn)
 import Data.Text (Text)
 import Simplex.Messaging.Agent.Store.Shared
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
 import Text.RawString.QQ (r)
 
 serverSchemaMigrations :: [(String, Text, Maybe Text)]
@@ -15,7 +16,8 @@ serverSchemaMigrations =
     ("20250319_updated_index", m20250319_updated_index, Just down_m20250319_updated_index),
     ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links),
     ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs),
-    ("20250903_store_messages", m20250903_store_messages, Just down_m20250903_store_messages)
+    ("20250903_store_messages", m20250903_store_messages, Just down_m20250903_store_messages),
+    ("20250915_queue_ids_hash", m20250915_queue_ids_hash, Just down_m20250915_queue_ids_hash)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -447,3 +449,139 @@ ALTER TABLE msg_queues
 
 DROP TABLE messages;
     |]
+
+m20250915_queue_ids_hash :: Text
+m20250915_queue_ids_hash =
+  createXorHashFuncs
+    <> [r|
+ALTER TABLE services
+  ADD COLUMN queue_count BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN queue_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000';
+
+CREATE FUNCTION update_all_aggregates() RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  WITH acc AS (
+    SELECT
+      s.service_id,
+      count(1) as q_count,
+      xor_aggregate(public.digest(CASE WHEN s.service_role = 'M' THEN q.recipient_id ELSE COALESCE(q.notifier_id, '\x00000000000000000000000000000000') END, 'md5')) AS q_ids_hash
+    FROM services s
+    JOIN msg_queues q ON (s.service_id = q.rcv_service_id AND s.service_role = 'M') OR (s.service_id = q.ntf_service_id AND s.service_role = 'N')
+    WHERE q.deleted_at IS NULL
+    GROUP BY s.service_id
+  )
+  UPDATE services s
+  SET queue_count = COALESCE(acc.q_count, 0),
+      queue_ids_hash = COALESCE(acc.q_ids_hash, '\x00000000000000000000000000000000')
+  FROM acc
+  WHERE s.service_id = acc.service_id;
+END;
+$$;
+
+SELECT update_all_aggregates();
+
+CREATE FUNCTION update_aggregates(p_service_id BYTEA, p_role TEXT, p_queue_id BYTEA, p_change BIGINT) RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE services
+  SET queue_count = queue_count + p_change,
+      queue_ids_hash = xor_combine(queue_ids_hash, public.digest(p_queue_id, 'md5'))
+  WHERE service_id = p_service_id AND service_role = p_role;
+END;
+$$;
+
+CREATE FUNCTION on_queue_insert() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.rcv_service_id IS NOT NULL THEN
+    PERFORM update_aggregates(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
+  END IF;
+  IF NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL THEN
+    PERFORM update_aggregates(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION on_queue_delete() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.deleted_at IS NULL THEN
+    IF OLD.rcv_service_id IS NOT NULL THEN
+      PERFORM update_aggregates(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+    END IF;
+    IF OLD.ntf_service_id IS NOT NULL AND OLD.notifier_id IS NOT NULL THEN
+      PERFORM update_aggregates(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+    END IF;
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+CREATE FUNCTION on_queue_update() RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.deleted_at IS NULL AND OLD.rcv_service_id IS NOT NULL THEN
+    IF NOT (NEW.deleted_at IS NULL AND NEW.rcv_service_id IS NOT NULL) THEN
+      PERFORM update_aggregates(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+    ELSIF OLD.rcv_service_id IS DISTINCT FROM NEW.rcv_service_id THEN
+      PERFORM update_aggregates(OLD.rcv_service_id, 'M', OLD.recipient_id, -1);
+      PERFORM update_aggregates(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
+    END IF;
+  ELSIF NEW.deleted_at IS NULL AND NEW.rcv_service_id IS NOT NULL THEN
+    PERFORM update_aggregates(NEW.rcv_service_id, 'M', NEW.recipient_id, 1);
+  END IF;
+
+  IF OLD.deleted_at IS NULL AND OLD.ntf_service_id IS NOT NULL AND OLD.notifier_id IS NOT NULL THEN
+    IF NOT (NEW.deleted_at IS NULL AND NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL) THEN
+      PERFORM update_aggregates(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+    ELSIF OLD.ntf_service_id IS DISTINCT FROM NEW.ntf_service_id OR OLD.notifier_id IS DISTINCT FROM NEW.notifier_id THEN
+      PERFORM update_aggregates(OLD.ntf_service_id, 'N', OLD.notifier_id, -1);
+      PERFORM update_aggregates(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
+    END IF;
+  ELSIF NEW.deleted_at IS NULL AND NEW.ntf_service_id IS NOT NULL AND NEW.notifier_id IS NOT NULL THEN
+    PERFORM update_aggregates(NEW.ntf_service_id, 'N', NEW.notifier_id, 1);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER tr_queue_insert
+AFTER INSERT ON msg_queues
+FOR EACH ROW EXECUTE PROCEDURE on_queue_insert();
+
+CREATE TRIGGER tr_queue_delete
+AFTER DELETE ON msg_queues
+FOR EACH ROW EXECUTE PROCEDURE on_queue_delete();
+
+CREATE TRIGGER tr_queue_update
+AFTER UPDATE ON msg_queues
+FOR EACH ROW EXECUTE PROCEDURE on_queue_update();
+      |]
+
+down_m20250915_queue_ids_hash :: Text
+down_m20250915_queue_ids_hash =
+  [r|
+DROP TRIGGER tr_queue_insert ON msg_queues;
+DROP TRIGGER tr_queue_delete ON msg_queues;
+DROP TRIGGER tr_queue_update ON msg_queues;
+
+DROP FUNCTION on_queue_insert;
+DROP FUNCTION on_queue_delete;
+DROP FUNCTION on_queue_update;
+
+DROP FUNCTION update_aggregates;
+
+DROP FUNCTION update_all_aggregates;
+
+ALTER TABLE services
+  DROP COLUMN queue_count,
+  DROP COLUMN queue_ids_hash;
+    |]
+    <> dropXorHashFuncs
