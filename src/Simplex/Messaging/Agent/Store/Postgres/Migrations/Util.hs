@@ -6,6 +6,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Text.RawString.QQ (r)
 
+-- xor_combine is only applied to locally computed md5 hashes (128 bits/16 bytes),
+-- so it is safe to require that all values are of the same length.
 createXorHashFuncs :: Text
 createXorHashFuncs =
   T.pack
