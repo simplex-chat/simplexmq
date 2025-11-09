@@ -21,7 +21,7 @@ CREATE FUNCTION smp_agent_test_protocol_schema.on_rcv_queue_delete() RETURNS tri
     AS $$
 BEGIN
   IF OLD.rcv_service_assoc != 0 AND OLD.deleted = 0 THEN
-    PERFORM update_aggregates(OLD.user_id, OLD.host, OLD.port, -1, OLD.rcv_id);
+    PERFORM update_aggregates(OLD.conn_id, OLD.host, OLD.port, -1, OLD.rcv_id);
   END IF;
   RETURN OLD;
 END;
@@ -34,7 +34,7 @@ CREATE FUNCTION smp_agent_test_protocol_schema.on_rcv_queue_insert() RETURNS tri
     AS $$
 BEGIN
   IF NEW.rcv_service_assoc != 0 AND NEW.deleted = 0 THEN
-    PERFORM update_aggregates(NEW.user_id, NEW.host, NEW.port, 1, NEW.rcv_id);
+    PERFORM update_aggregates(NEW.conn_id, NEW.host, NEW.port, 1, NEW.rcv_id);
   END IF;
   RETURN NEW;
 END;
@@ -48,10 +48,10 @@ CREATE FUNCTION smp_agent_test_protocol_schema.on_rcv_queue_update() RETURNS tri
 BEGIN
   IF OLD.rcv_service_assoc != 0 AND OLD.deleted = 0 THEN
     IF NOT (NEW.rcv_service_assoc != 0 AND NEW.deleted = 0) THEN
-      PERFORM update_aggregates(OLD.user_id, OLD.host, OLD.port, -1, OLD.rcv_id);
+      PERFORM update_aggregates(OLD.conn_id, OLD.host, OLD.port, -1, OLD.rcv_id);
     END IF;
   ELSIF NEW.rcv_service_assoc != 0 AND NEW.deleted = 0 THEN
-    PERFORM update_aggregates(NEW.user_id, NEW.host, NEW.port, 1, NEW.rcv_id);
+    PERFORM update_aggregates(NEW.conn_id, NEW.host, NEW.port, 1, NEW.rcv_id);
   END IF;
   RETURN NEW;
 END;
@@ -59,47 +59,46 @@ $$;
 
 
 
-CREATE FUNCTION smp_agent_test_protocol_schema.update_aggregates(p_user_id bigint, p_host text, p_port text, p_change bigint, p_rcv_id bytea) RETURNS void
+CREATE FUNCTION smp_agent_test_protocol_schema.update_aggregates(p_conn_id bytea, p_host text, p_port text, p_change bigint, p_rcv_id bytea) RETURNS void
     LANGUAGE plpgsql
     AS $$
+DECLARE q_user_id BIGINT;
 BEGIN
+  SELECT user_id INTO q_user_id FROM connections WHERE conn_id = p_conn_id;
   UPDATE client_services
   SET service_queue_count = service_queue_count + p_change,
       service_queue_ids_hash = xor_combine(service_queue_ids_hash, public.digest(p_rcv_id, 'md5'))
-  WHERE user_id = p_user_id AND host = p_host AND port = p_port;
+  WHERE user_id = q_user_id AND host = p_host AND port = p_port;
 END;
 $$;
-
-
-
-CREATE FUNCTION smp_agent_test_protocol_schema.xor_combine(state bytea, value bytea) RETURNS bytea
-    LANGUAGE plpgsql IMMUTABLE STRICT
-    AS $$
-DECLARE
-  result BYTEA := state;
-  i INTEGER;
-  len INTEGER := octet_length(value);
-BEGIN
-  IF octet_length(state) != len THEN
-    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
-  END IF;
-  FOR i IN 0..len-1 LOOP
-    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
-  END LOOP;
-  RETURN result;
-END;
-$$;
-
-
-
-CREATE AGGREGATE smp_agent_test_protocol_schema.xor_aggregate(bytea) (
-    SFUNC = smp_agent_test_protocol_schema.xor_combine,
-    STYPE = bytea,
-    INITCOND = '\x00000000000000000000000000000000'
-);
 
 
 SET default_table_access_method = heap;
+
+
+CREATE TABLE smp_agent_test_protocol_schema.client_notices (
+    client_notice_id bigint NOT NULL,
+    protocol text NOT NULL,
+    host text NOT NULL,
+    port text NOT NULL,
+    entity_id bytea NOT NULL,
+    server_key_hash bytea,
+    notice_ttl bigint,
+    created_at bigint NOT NULL,
+    updated_at bigint NOT NULL
+);
+
+
+
+ALTER TABLE smp_agent_test_protocol_schema.client_notices ALTER COLUMN client_notice_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME smp_agent_test_protocol_schema.client_notices_client_notice_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 
 
 CREATE TABLE smp_agent_test_protocol_schema.client_services (
@@ -535,6 +534,8 @@ CREATE TABLE smp_agent_test_protocol_schema.rcv_queues (
     link_priv_sig_key bytea,
     link_enc_fixed_data bytea,
     queue_mode text,
+    to_subscribe smallint DEFAULT 0 NOT NULL,
+    client_notice_id bigint,
     rcv_service_assoc smallint DEFAULT 0 NOT NULL
 );
 
@@ -816,6 +817,11 @@ ALTER TABLE smp_agent_test_protocol_schema.xftp_servers ALTER COLUMN xftp_server
 
 
 
+ALTER TABLE ONLY smp_agent_test_protocol_schema.client_notices
+    ADD CONSTRAINT client_notices_pkey PRIMARY KEY (client_notice_id);
+
+
+
 ALTER TABLE ONLY smp_agent_test_protocol_schema.commands
     ADD CONSTRAINT commands_pkey PRIMARY KEY (command_id);
 
@@ -996,6 +1002,10 @@ ALTER TABLE ONLY smp_agent_test_protocol_schema.xftp_servers
 
 
 
+CREATE UNIQUE INDEX idx_client_notices_entity ON smp_agent_test_protocol_schema.client_notices USING btree (protocol, host, port, entity_id);
+
+
+
 CREATE INDEX idx_commands_conn_id ON smp_agent_test_protocol_schema.commands USING btree (conn_id);
 
 
@@ -1124,11 +1134,19 @@ CREATE UNIQUE INDEX idx_rcv_queue_id ON smp_agent_test_protocol_schema.rcv_queue
 
 
 
+CREATE INDEX idx_rcv_queues_client_notice_id ON smp_agent_test_protocol_schema.rcv_queues USING btree (client_notice_id);
+
+
+
 CREATE UNIQUE INDEX idx_rcv_queues_link_id ON smp_agent_test_protocol_schema.rcv_queues USING btree (host, port, link_id);
 
 
 
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON smp_agent_test_protocol_schema.rcv_queues USING btree (host, port, ntf_id);
+
+
+
+CREATE INDEX idx_rcv_queues_to_subscribe ON smp_agent_test_protocol_schema.rcv_queues USING btree (to_subscribe);
 
 
 
@@ -1342,6 +1360,11 @@ ALTER TABLE ONLY smp_agent_test_protocol_schema.rcv_files
 
 ALTER TABLE ONLY smp_agent_test_protocol_schema.rcv_messages
     ADD CONSTRAINT rcv_messages_conn_id_internal_id_fkey FOREIGN KEY (conn_id, internal_id) REFERENCES smp_agent_test_protocol_schema.messages(conn_id, internal_id) ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY smp_agent_test_protocol_schema.rcv_queues
+    ADD CONSTRAINT rcv_queues_client_notice_id_fkey FOREIGN KEY (client_notice_id) REFERENCES smp_agent_test_protocol_schema.client_notices(client_notice_id) ON UPDATE RESTRICT ON DELETE SET NULL;
 
 
 

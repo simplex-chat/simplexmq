@@ -2302,7 +2302,8 @@ withStore c action = do
       [ E.Handler $ \(e :: SQL.SQLError) ->
           let se = SQL.sqlError e
               busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
-           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
+              err = tshow se <> ": " <> SQL.sqlErrorDetails e <> ", " <> SQL.sqlErrorContext e
+           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ encodeUtf8 err,
         E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
       ]
 #endif

@@ -25,11 +25,64 @@ CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(user_i
 CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
 
 ALTER TABLE rcv_queues ADD COLUMN rcv_service_assoc INTEGER NOT NULL DEFAULT 0;
+
+CREATE TRIGGER tr_rcv_queue_insert
+AFTER INSERT ON rcv_queues
+FOR EACH ROW
+WHEN NEW.rcv_service_assoc != 0 AND NEW.deleted = 0
+BEGIN
+  UPDATE client_services
+  SET service_queue_count = service_queue_count + 1,
+      service_queue_ids_hash = simplex_xor_md5_combine(service_queue_ids_hash, NEW.rcv_id)
+  WHERE user_id = (SELECT user_id FROM connections WHERE conn_id = NEW.conn_id)
+    AND host = NEW.host AND port = NEW.port;
+END;
+
+CREATE TRIGGER tr_rcv_queue_delete
+AFTER DELETE ON rcv_queues
+FOR EACH ROW
+WHEN OLD.rcv_service_assoc != 0 AND OLD.deleted = 0
+BEGIN
+  UPDATE client_services
+  SET service_queue_count = service_queue_count - 1,
+      service_queue_ids_hash = simplex_xor_md5_combine(service_queue_ids_hash, OLD.rcv_id)
+  WHERE user_id = (SELECT user_id FROM connections WHERE conn_id = OLD.conn_id)
+    AND host = OLD.host AND port = OLD.port;
+END;
+
+CREATE TRIGGER tr_rcv_queue_update_remove
+AFTER UPDATE ON rcv_queues
+FOR EACH ROW
+WHEN OLD.rcv_service_assoc != 0 AND OLD.deleted = 0 AND NOT (NEW.rcv_service_assoc != 0 AND NEW.deleted = 0)
+BEGIN
+  UPDATE client_services
+  SET service_queue_count = service_queue_count - 1,
+      service_queue_ids_hash = simplex_xor_md5_combine(service_queue_ids_hash, OLD.rcv_id)
+  WHERE user_id = (SELECT user_id FROM connections WHERE conn_id = OLD.conn_id)
+    AND host = OLD.host AND port = OLD.port;
+END;
+
+CREATE TRIGGER tr_rcv_queue_update_add
+AFTER UPDATE ON rcv_queues
+FOR EACH ROW
+WHEN NEW.rcv_service_assoc != 0 AND NEW.deleted = 0 AND NOT (OLD.rcv_service_assoc != 0 AND OLD.deleted = 0)
+BEGIN
+  UPDATE client_services
+  SET service_queue_count = service_queue_count + 1,
+      service_queue_ids_hash = simplex_xor_md5_combine(service_queue_ids_hash, NEW.rcv_id)
+  WHERE user_id = (SELECT user_id FROM connections WHERE conn_id = NEW.conn_id)
+    AND host = NEW.host AND port = NEW.port;
+END;
   |]
 
 down_m20251020_service_certs :: Query
 down_m20251020_service_certs =
   [sql|
+DROP TRIGGER tr_rcv_queue_insert;
+DROP TRIGGER tr_rcv_queue_delete;
+DROP TRIGGER tr_rcv_queue_update_remove;
+DROP TRIGGER tr_rcv_queue_update_add;
+
 ALTER TABLE rcv_queues DROP COLUMN rcv_service_assoc;
 
 DROP INDEX idx_server_certs_host_port;

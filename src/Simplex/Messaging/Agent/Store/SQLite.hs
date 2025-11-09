@@ -43,8 +43,11 @@ module Simplex.Messaging.Agent.Store.SQLite
 where
 
 import Control.Monad
+import Data.Bits (xor)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import Data.Functor (($>))
 import Data.IORef
 import Data.Maybe (fromMaybe)
@@ -52,6 +55,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
+import Database.SQLite.Simple.Function
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
@@ -59,10 +63,11 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, takeFileName, (</>))
-import UnliftIO.Exception (bracketOnError, onException)
+import UnliftIO.Exception (bracketOnError, onException, throwIO)
 import UnliftIO.MVar
 import UnliftIO.STM
 
@@ -119,6 +124,11 @@ connectDB path key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
+      createFunction (DB.conn db) "simplex_xor_md5_combine" xorMd5Combine
+        >>= either (throwIO . userError . show) pure
+
+xorMd5Combine :: ByteString -> ByteString -> ByteString
+xorMd5Combine idsHash rId = B.packZipWith xor idsHash $ C.md5Hash rId
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =
