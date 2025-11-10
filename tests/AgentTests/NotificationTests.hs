@@ -355,7 +355,7 @@ testNtfTokenServerRestartReverifyTimeout t apns = do
           SET tkn_status = ?, tkn_action = ?
           WHERE provider = ? AND device_token = ?
         |]
-        (NTConfirmed, Just (NTAVerify code), PPApnsTest, "abcd" :: ByteString)
+        (NTConfirmed, Just (NTAVerify code), PPAPNS PPApnsTest, "abcd" :: ByteString)
     Just NtfToken {ntfTknStatus = NTConfirmed, ntfTknAction = Just (NTAVerify _)} <- withTransaction store getSavedNtfToken
     pure ()
   threadDelay 1500000
@@ -409,7 +409,7 @@ testNtfTokenServerRestartReregisterTimeout t apns = do
           SET tkn_id = NULL, tkn_dh_secret = NULL, tkn_status = ?, tkn_action = ?
           WHERE provider = ? AND device_token = ?
         |]
-        (NTNew, Just NTARegister, PPApnsTest, "abcd" :: ByteString)
+        (NTNew, Just NTARegister, PPAPNS PPApnsTest, "abcd" :: ByteString)
     Just NtfToken {ntfTokenId = Nothing, ntfTknStatus = NTNew, ntfTknAction = Just NTARegister} <- withTransaction store getSavedNtfToken
     pure ()
   threadDelay 1000000

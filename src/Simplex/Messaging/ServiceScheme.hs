@@ -9,6 +9,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Network.Socket (HostName, ServiceName)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Encoding (Encoding(..))
 
 data ServiceScheme = SSSimplex | SSAppServer SrvLoc
   deriving (Eq, Show)
@@ -23,6 +24,12 @@ instance StrEncoding ServiceScheme where
 
 data SrvLoc = SrvLoc HostName ServiceName
   deriving (Eq, Ord, Show)
+
+instance Encoding SrvLoc where
+  smpEncode (SrvLoc h s) = smpEncode (h, s)
+  smpP = do
+    (h, s) <- smpP
+    pure $ SrvLoc h s
 
 instance StrEncoding SrvLoc where
   strEncode (SrvLoc host port) = B.pack $ host <> if null port then "" else ':' : port

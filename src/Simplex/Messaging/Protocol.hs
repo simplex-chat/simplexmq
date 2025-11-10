@@ -1147,7 +1147,7 @@ sameSrvAddr :: ProtocolServer p -> ProtocolServer p -> Bool
 sameSrvAddr ProtocolServer {host, port} ProtocolServer {host = h', port = p'} = host == h' && port == p'
 {-# INLINE sameSrvAddr #-}
 
-data ProtocolType = PSMP | PNTF | PXFTP | PHTTPS
+data ProtocolType = PSMP | PNTF | PXFTP
   deriving (Eq, Ord, Show)
 
 instance StrEncoding ProtocolType where
@@ -1155,20 +1155,17 @@ instance StrEncoding ProtocolType where
     PSMP -> "smp"
     PNTF -> "ntf"
     PXFTP -> "xftp"
-    PHTTPS -> "https"
   strP =
     A.takeTill (\c -> c == ':' || c == ' ') >>= \case
       "smp" -> pure PSMP
       "ntf" -> pure PNTF
       "xftp" -> pure PXFTP
-      "https" -> pure PHTTPS
       _ -> fail "bad ProtocolType"
 
 data SProtocolType (p :: ProtocolType) where
   SPSMP :: SProtocolType 'PSMP
   SPNTF :: SProtocolType 'PNTF
   SPXFTP :: SProtocolType 'PXFTP
-  SPHTTPS :: SProtocolType 'PHTTPS
 
 deriving instance Eq (SProtocolType p)
 
@@ -1187,7 +1184,6 @@ instance TestEquality SProtocolType where
   testEquality SPSMP SPSMP = Just Refl
   testEquality SPNTF SPNTF = Just Refl
   testEquality SPXFTP SPXFTP = Just Refl
-  testEquality SPHTTPS SPHTTPS = Just Refl
   testEquality _ _ = Nothing
 
 protocolType :: SProtocolType p -> ProtocolType
@@ -1195,14 +1191,12 @@ protocolType = \case
   SPSMP -> PSMP
   SPNTF -> PNTF
   SPXFTP -> PXFTP
-  SPHTTPS -> PHTTPS
 
 aProtocolType :: ProtocolType -> AProtocolType
 aProtocolType = \case
   PSMP -> AProtocolType SPSMP
   PNTF -> AProtocolType SPNTF
   PXFTP -> AProtocolType SPXFTP
-  PHTTPS -> AProtocolType SPHTTPS
 
 instance ProtocolTypeI p => StrEncoding (SProtocolType p) where
   strEncode = strEncode . protocolType
@@ -1239,8 +1233,6 @@ instance ProtocolTypeI 'PSMP where protocolTypeI = SPSMP
 instance ProtocolTypeI 'PNTF where protocolTypeI = SPNTF
 
 instance ProtocolTypeI 'PXFTP where protocolTypeI = SPXFTP
-
-instance ProtocolTypeI 'PHTTPS where protocolTypeI = SPHTTPS
 
 type family UserProtocol (p :: ProtocolType) :: Constraint where
   UserProtocol PSMP = ()

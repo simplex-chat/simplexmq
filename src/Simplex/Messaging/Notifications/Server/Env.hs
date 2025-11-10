@@ -47,7 +47,7 @@ import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient)
-import Network.HTTP.Client (newManager)
+import Network.HTTP.Client (newManager, ManagerSettings (..), Request (..), Manager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 
 data NtfServerConfig = NtfServerConfig
@@ -165,24 +165,34 @@ newNtfPushServer qSize apnsConfig = do
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient s pp = do
   case pp of
-    PPWebPush -> newWPPushClient s
-    _ -> newAPNSPushClient s pp
+    PPWP p -> newWPPushClient s p
+    PPAPNS p -> newAPNSPushClient s p
 
-newAPNSPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
+newAPNSPushClient :: NtfPushServer -> APNSProvider -> IO PushProviderClient
 newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
   c <- case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
-  atomically $ TM.insert pp c pushClients
+  atomically $ TM.insert (PPAPNS pp) c pushClients
   pure c
 
-newWPPushClient :: NtfPushServer -> IO PushProviderClient
-newWPPushClient NtfPushServer {pushClients} = do
+newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
+newWPPushClient NtfPushServer {pushClients} pp = do
   logDebug "New WP Client requested"
-  manager <- newManager tlsManagerSettings
+  -- We use one http manager per push server (which may be used by different clients)
+  manager <- wpHTTPManager
   let c = wpPushProviderClient manager
-  atomically $ TM.insert PPWebPush c pushClients
+  atomically $ TM.insert (PPWP pp) c pushClients
   pure c
+
+wpHTTPManager :: IO Manager
+wpHTTPManager = newManager tlsManagerSettings {
+    -- Ideally, we should be able to override the domain resolution to
+    -- disable requests to non-public IPs. The risk is very limited as
+    -- we allow https only, and the body is encrypted. Disabling redirections
+    -- avoids cross-protocol redir (https => http/unix)
+    managerModifyRequest = \r -> pure r { redirectCount = 0 }
+  }
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 getPushClient s@NtfPushServer {pushClients} pp =

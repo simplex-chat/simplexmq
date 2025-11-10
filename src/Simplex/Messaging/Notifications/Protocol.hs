@@ -12,14 +12,13 @@
 module Simplex.Messaging.Notifications.Protocol where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad
 import qualified Crypto.PubKey.ECC.Types as ECC
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString as S
 import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
@@ -28,7 +27,7 @@ import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System
 import Data.Type.Equality
-import Data.Word (Word16)
+import Data.Word (Word8, Word16)
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -37,6 +36,11 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, invalidReasonNTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Binary as Bin
+import qualified Crypto.Error as CE
+import qualified Data.Bits as Bits
+import Network.HTTP.Client (Request, parseUrlThrow)
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -109,7 +113,7 @@ instance ProtocolMsgTag NtfCmdTag where
 instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
   decodeTag s = decodeTag s >>= (\(NCT _ t) -> checkEntity' t)
 
-newtype NtfRegCode = NtfRegCode ByteString
+newtype NtfRegCode = NtfRegCode B.ByteString
   deriving (Eq, Show)
 
 instance Encoding NtfRegCode where
@@ -208,7 +212,7 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
     SDEL -> e SDEL_
     PING -> e PING_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> B.ByteString
       e = smpEncode
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
@@ -317,7 +321,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
-      e :: Encoding a => a -> ByteString
+      e :: Encoding a => a -> B.ByteString
       e = smpEncode
 
   protocolP _v = \case
@@ -384,7 +388,10 @@ data APNSProvider
   | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
-newtype WPProvider = WPP (ProtocolServer 'PHTTPS)
+newtype WPSrvLoc = WPSrvLoc SrvLoc
+  deriving (Eq, Ord, Show)
+
+newtype WPProvider = WPP WPSrvLoc
   deriving (Eq, Ord, Show)
 
 instance Encoding PushProvider where
@@ -433,6 +440,14 @@ instance StrEncoding APNSProvider where
       "apns_null" -> pure PPApnsNull
       _ -> fail "bad APNSProvider"
 
+instance Encoding WPSrvLoc where
+  smpEncode (WPSrvLoc srv) = smpEncode srv
+  smpP = WPSrvLoc <$> smpP
+
+instance StrEncoding WPSrvLoc where
+  strEncode (WPSrvLoc srv) = "https://" <> strEncode srv
+  strP = WPSrvLoc <$> ("https://" *> strP)
+
 instance Encoding WPProvider where
   smpEncode (WPP srv) = "WP" <> smpEncode srv
   smpP = WPP <$> ("WP" *> smpP)
@@ -441,64 +456,187 @@ instance StrEncoding WPProvider where
   strEncode (WPP srv) = "webpush " <> strEncode srv
   strP = WPP <$> ("webpush " *> strP)
 
-instance FromField APNSProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
-instance ToField APNSProvider where toField = toField . decodeLatin1 . strEncode
+instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
-data WPTokenParams = WPTokenParams
-  { wpPath :: Text, -- parser should validate it's a valid type
-    wpAuth :: ByteString, -- if we enforce size constraints, should also be in parser.
-    wpKey :: WPKey -- or another correct type that is needed for encryption, so it fails in parser and not there
-  }
+tupleToList16
+  :: (a,a,a,a,
+      a,a,a,a,
+      a,a,a,a,
+      a,a,a,a)
+  -> [a]
+tupleToList16
+  (a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15) =
+    [a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15]
 
-newtype WPKey =  WPKey ECC.Point
+listToTuple16
+  :: [a]
+  -> Maybe (a,a,a,a,
+            a,a,a,a,
+            a,a,a,a,
+            a,a,a,a)
+listToTuple16
+  [a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15] =
+    Just (a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15)
+listToTuple16 _ = Nothing
 
-data WPEndpoint = WPEndpoint
-  { endpoint :: ByteString,
-    auth :: ByteString,
-    p256dh :: ByteString
+newtype Auth = Auth (Word8, Word8, Word8, Word8,
+                     Word8, Word8, Word8, Word8,
+                     Word8, Word8, Word8, Word8,
+                     Word8, Word8, Word8, Word8)
+
+instance Eq Auth where
+  (Auth t1) == (Auth t2) = tupleToList16 t1 == tupleToList16 t2
+
+instance Ord Auth where
+  compare (Auth t1) (Auth t2) = compare (tupleToList16 t1) (tupleToList16 t2)
+
+instance Show Auth where
+  show (Auth t) = "Auth " ++ show (tupleToList16 t)
+
+authFromByteString :: S.ByteString -> Maybe Auth
+authFromByteString bs = do
+  tup <- listToTuple16 $ S.unpack bs
+  pure (Auth tup)
+
+authToByteString :: Auth -> S.ByteString
+authToByteString (Auth a) = S.pack $ tupleToList16 a
+
+newtype WPP256dh = WPP256dh ECC.PublicPoint
+  deriving (Eq, Show)
+
+instance Ord WPP256dh where
+  compare (WPP256dh p1) (WPP256dh p2) = comparePt p1 p2
+    where
+      comparePt ECC.PointO ECC.PointO = EQ
+      comparePt ECC.PointO (ECC.Point _ _) = LT
+      comparePt (ECC.Point _ _) ECC.PointO = GT
+      comparePt (ECC.Point x1 y1)  (ECC.Point x2 y2) = compare (x1, y1) (x2, y2)
+
+data WPKey = WPKey
+  { wpAuth :: Auth,
+    wpP256dh :: WPP256dh
   }
   deriving (Eq, Ord, Show)
 
-instance Encoding WPEndpoint where
-  smpEncode WPEndpoint {endpoint, auth, p256dh} = smpEncode (endpoint, auth, p256dh)
+-- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
+-- | as required by RFC8291
+-- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
+uncompressEncodePoint :: ECC.Point -> BL.ByteString
+uncompressEncodePoint (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
+uncompressEncodePoint ECC.PointO = "\0"
+
+uncompressDecodePoint :: BL.ByteString -> Either CE.CryptoError ECC.Point
+uncompressDecodePoint "\0" = pure ECC.PointO
+uncompressDecodePoint s
+  | BL.take 1 s /= prefix = Left CE.CryptoError_PointFormatUnsupported
+  | BL.length s /= 65 = Left CE.CryptoError_KeySizeInvalid
+  | otherwise = do
+    let s' = BL.drop 1 s
+    x <- decodeBigInt $ BL.take 32 s'
+    y <- decodeBigInt $ BL.drop 32 s'
+    pure $ ECC.Point x y
+  where
+    prefix = "\x04" :: BL.ByteString
+
+-- Used to test encryption against the RFC8291 Example - which gives the AS private key
+uncompressDecodePrivateNumber :: BL.ByteString -> Either CE.CryptoError ECC.PrivateNumber
+uncompressDecodePrivateNumber s
+  | BL.length s /= 32 = Left CE.CryptoError_KeySizeInvalid
+  | otherwise = do
+    decodeBigInt s
+
+uncompressEncode :: WPP256dh -> BL.ByteString
+uncompressEncode (WPP256dh p) = uncompressEncodePoint p
+
+uncompressDecode :: BL.ByteString -> Either CE.CryptoError WPP256dh
+uncompressDecode bs = WPP256dh <$> uncompressDecodePoint bs
+
+encodeBigInt :: Integer -> BL.ByteString
+encodeBigInt i = do
+  let s1 = Bits.shiftR i 64
+      s2 = Bits.shiftR s1 64
+      s3 = Bits.shiftR s2 64
+  Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
+  where
+    w64 :: Integer -> Bin.Word64
+    w64 = fromIntegral
+
+decodeBigInt :: BL.ByteString -> Either CE.CryptoError Integer
+decodeBigInt s
+  | BL.length s /= 32 = Left CE.CryptoError_PointSizeInvalid
+  | otherwise = do
+      let (w3, w2, w1, w0) = Bin.decode s :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64 )
+      pure $ shift 3 w3 + shift 2 w2 + shift 1 w1 + shift 0 w0
+  where
+    shift i w = Bits.shiftL (fromIntegral w) (64 * i)
+
+data WPTokenParams = WPTokenParams
+  { wpPath :: B.ByteString,
+    wpKey :: WPKey
+  }
+  deriving (Eq, Ord, Show)
+
+instance Encoding Auth where
+  smpEncode a = smpEncode $ authToByteString a
+  smpP = smpP >>= \bs ->
+    case authFromByteString bs of
+      Nothing -> fail "Invalid auth"
+      Just a -> pure a
+
+instance StrEncoding Auth where
+  strEncode a = strEncode $ authToByteString a
+  strP = strP >>= \bs ->
+    case authFromByteString bs of
+      Nothing -> fail "Invalid auth"
+      Just a -> pure a
+
+instance Encoding WPP256dh where
+  smpEncode p = smpEncode . BL.toStrict $ uncompressEncode p
+  smpP = smpP >>= \bs ->
+    case uncompressDecode (BL.fromStrict bs) of
+      Left _ -> fail "Invalid p256dh key"
+      Right res -> pure res
+
+instance StrEncoding WPP256dh where
+  strEncode p = strEncode . BL.toStrict $ uncompressEncode p
+  strP = strP >>= \bs ->
+    case uncompressDecode (BL.fromStrict bs) of
+      Left _ -> fail "Invalid p256dh key"
+      Right res -> pure res
+
+instance Encoding WPKey where
+  smpEncode WPKey {wpAuth, wpP256dh} = smpEncode (wpAuth, wpP256dh)
   smpP = do
-    endpoint <- smpP
-    auth <- smpP
-    p256dh <- smpP
-    pure WPEndpoint {endpoint, auth, p256dh}
+    wpAuth <- smpP
+    wpP256dh <- smpP
+    pure WPKey {wpAuth, wpP256dh}
 
-instance StrEncoding WPEndpoint where
-  strEncode WPEndpoint {endpoint, auth, p256dh} = endpoint <> " " <> strEncode auth <> " " <> strEncode p256dh
+instance StrEncoding WPKey where
+  strEncode WPKey {wpAuth, wpP256dh} = strEncode (wpAuth, wpP256dh)
   strP = do
-    endpoint <- A.takeWhile (/= ' ')
+    (wpAuth, wpP256dh) <- strP
+    pure WPKey {wpAuth, wpP256dh}
+
+instance Encoding WPTokenParams where
+  smpEncode WPTokenParams {wpPath, wpKey} = smpEncode (wpPath, wpKey)
+  smpP = do
+    wpPath <- smpP
+    wpKey <- smpP
+    pure WPTokenParams {wpPath, wpKey}
+
+instance StrEncoding WPTokenParams where
+  strEncode WPTokenParams {wpPath, wpKey} = wpPath <> " " <> strEncode wpKey
+  strP = do
+    wpPath <- A.takeWhile (/= ' ')
     _ <- A.char ' '
-    (auth, p256dh) <- strP
-    -- auth is a 16 bytes long random key
-    when (B.length auth /= 16) $ fail "Invalid auth key length"
-    -- p256dh is a public key on the P-256 curve, encoded in uncompressed format
-    -- 0x04 + the 2 points = 65 bytes
-    when (B.length p256dh /= 65) $ fail "Invalid p256dh key length"
-    -- TODO [webpush] parse it here (or rather in WPTokenParams)
-    when (B.take 1 p256dh /= "\x04") $ fail "Invalid p256dh key, doesn't start with 0x04"
-    pure WPEndpoint {endpoint, auth, p256dh}
-
-instance ToJSON WPEndpoint where
-  toEncoding WPEndpoint {endpoint, auth, p256dh} = J.pairs $ "endpoint" .= decodeLatin1 endpoint <> "auth" .= decodeLatin1 (strEncode auth) <> "p256dh" .= decodeLatin1 (strEncode p256dh)
-  toJSON WPEndpoint {endpoint, auth, p256dh} = J.object ["endpoint" .= decodeLatin1 endpoint, "auth" .= decodeLatin1 (strEncode auth), "p256dh" .= decodeLatin1 (strEncode p256dh) ]
-
-instance FromJSON WPEndpoint where
-  parseJSON = J.withObject "WPEndpoint" $ \o -> do
-    endpoint <- encodeUtf8 <$> o .: "endpoint"
-    auth <- strDecode . encodeUtf8 <$?> o .: "auth"
-    p256dh <- strDecode . encodeUtf8 <$?> o .: "p256dh"
-    pure WPEndpoint {endpoint, auth, p256dh}
+    wpKey <- strP
+    pure WPTokenParams {wpPath, wpKey}
 
 data DeviceToken
-  = APNSDeviceToken APNSProvider ByteString
-  | WPDeviceToken WPProvider WPEndpoint
-  -- TODO [webpush] replace with WPTokenParams
-  -- | WPDeviceToken WPProvider WPTokenParams
+  = APNSDeviceToken APNSProvider B.ByteString
+  | WPDeviceToken WPProvider WPTokenParams
   deriving (Eq, Ord, Show)
 
 instance Encoding DeviceToken where
@@ -513,50 +651,67 @@ instance Encoding DeviceToken where
 instance StrEncoding DeviceToken where
   strEncode token = case token of
     APNSDeviceToken p t -> strEncode p <> " " <> t
-    WPDeviceToken p t -> strEncode (p, t)
+    -- We don't do strEncode (p, t), because we don't want any space between
+    -- p (e.g. webpush https://localhost) and t.wpPath (e.g /random)
+    WPDeviceToken p t -> strEncode p <> strEncode t
   strP = nullToken <|> deviceToken
     where
       nullToken = "apns_null test_ntf_token" $> APNSDeviceToken PPApnsNull "test_ntf_token"
       deviceToken =
-        strP_ >>= \case
+        strP >>= \case
           PPAPNS p -> APNSDeviceToken p <$> hexStringP
-          PPWP p -> WPDeviceToken p <$> strP
-      hexStringP =
+          PPWP p -> do
+            t <- WPDeviceToken p <$> strP
+            _ <- wpRequest t
+            pure t
+      hexStringP = do
+        _ <- A.space
         A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
--- TODO [webpush] is it needed?
 instance ToJSON DeviceToken where
   toEncoding token = case token of
     APNSDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= decodeLatin1 t
-    WPDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= toJSON t
+    -- ToJSON/FromJSON isn't used for WPDeviceToken, we just include the pushProvider so it can fail properly if used to decrypt
+    WPDeviceToken p _ -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p)
+    -- WPDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= toJSON t
   toJSON token = case token of
     APNSDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= decodeLatin1 t]
-    WPDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= toJSON t]
+    -- ToJSON/FromJSON isn't used for WPDeviceToken, we just include the pushProvider so it can fail properly if used to decrypt
+    WPDeviceToken p _ -> J.object ["pushProvider" .= decodeLatin1 (strEncode p)]
+    -- WPDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= toJSON t]
 
 instance FromJSON DeviceToken where
   parseJSON = J.withObject "DeviceToken" $ \o ->
     (strDecode . encodeUtf8 <$?> o .: "pushProvider") >>= \case
       PPAPNS p -> APNSDeviceToken p . encodeUtf8 <$> (o .: "token")
-      PPWP p -> WPDeviceToken p <$> (o .: "token")
+      PPWP _ -> fail "FromJSON not implemented for WPDeviceToken"
 
 -- | Returns fields for the device token (pushProvider, token)
 -- TODO [webpush] save token as separate fields
-deviceTokenFields :: DeviceToken -> (PushProvider, ByteString)
+deviceTokenFields :: DeviceToken -> (PushProvider, B.ByteString)
 deviceTokenFields dt = case dt of
   APNSDeviceToken p t -> (PPAPNS p, t)
   WPDeviceToken p t -> (PPWP p, strEncode t)
 
 -- | Returns the device token from the fields (pushProvider, token)
-deviceToken' :: PushProvider -> ByteString -> DeviceToken
+deviceToken' :: PushProvider -> B.ByteString -> DeviceToken
 deviceToken' pp t = case pp of
   PPAPNS p -> APNSDeviceToken p t
   PPWP p -> WPDeviceToken p <$> either error id $ strDecode t
 
+wpRequest :: MonadFail m => DeviceToken -> m Request
+wpRequest (APNSDeviceToken _ _) = fail "Invalid device token"
+wpRequest (WPDeviceToken (WPP s) param) = do
+  let endpoint = strEncode s <> wpPath param
+  case parseUrlThrow $ B.unpack endpoint of
+    Left _ -> fail "Invalid URL"
+    Right r -> pure r
+
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,
 -- and encoding of PNMessageData's smpQueue has comma in list of hosts
-encodePNMessages :: NonEmpty PNMessageData -> ByteString
+encodePNMessages :: NonEmpty PNMessageData -> B.ByteString
 encodePNMessages = B.intercalate ";" . map strEncode . L.toList
 
 pnMessagesP :: A.Parser (NonEmpty PNMessageData)
@@ -601,7 +756,7 @@ data NtfSubStatus
   | -- | SMP SERVICE error - rejected service signature on individual subscriptions
     NSService
   | -- | SMP error other than AUTH
-    NSErr ByteString
+    NSErr B.ByteString
   deriving (Eq, Ord, Show)
 
 ntfShouldSubscribe :: NtfSubStatus -> Bool

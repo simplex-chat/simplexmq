@@ -514,6 +514,7 @@ test-suite simplexmq-test
           AgentTests.NotificationTests
           NtfClient
           NtfServerTests
+          NtfWPTests
           PostgresSchemaDump
   hs-source-dirs:
       tests
