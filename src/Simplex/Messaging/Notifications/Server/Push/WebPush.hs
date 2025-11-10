@@ -108,7 +108,6 @@ wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
       Left e -> throwE e
       Right iv -> pure iv
 
--- TODO [webpush] use ToJSON
 encodePN :: PushNotification -> BL.ByteString
 encodePN pn = J.encode $ case pn of
   PNVerification code -> J.object ["verification" .= code]
