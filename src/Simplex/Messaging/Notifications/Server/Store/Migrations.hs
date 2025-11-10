@@ -79,7 +79,7 @@ CREATE INDEX idx_last_notifications_token_id_sent_at ON last_notifications(token
 CREATE INDEX idx_last_notifications_subscription_id ON last_notifications(subscription_id);
 
 CREATE UNIQUE INDEX idx_last_notifications_token_subscription ON last_notifications(token_id, subscription_id);
-    |]
+  |]
 
 m20250517_service_cert :: Text
 m20250517_service_cert =
@@ -90,7 +90,7 @@ ALTER TABLE subscriptions ADD COLUMN ntf_service_assoc BOOLEAN NOT NULL DEFAULT 
 
 DROP INDEX idx_subscriptions_smp_server_id_status;
 CREATE INDEX idx_subscriptions_smp_server_id_ntf_service_status ON subscriptions(smp_server_id, ntf_service_assoc, status);
-    |]
+  |]
 
 down_m20250517_service_cert :: Text
 down_m20250517_service_cert =
@@ -101,12 +101,11 @@ CREATE INDEX idx_subscriptions_smp_server_id_status ON subscriptions(smp_server_
 ALTER TABLE smp_servers DROP COLUMN ntf_service_id;
 
 ALTER TABLE subscriptions DROP COLUMN ntf_service_assoc;
-    |]
+  |]
 
 m20250916_webpush :: Text
 m20250916_webpush =
-  T.pack
-    [r|
+  [r|
 CREATE TABLE webpush_servers(
   wp_server_id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   wp_host TEXT NOT NULL,
@@ -119,12 +118,11 @@ ALTER TABLE tokens
   ADD COLUMN wp_path TEXT,
   ADD COLUMN wp_auth BYTEA,
   ADD COLUMN wp_key BYTEA;
-    |]
+  |]
 
 down_m20250916_webpush :: Text
 down_m20250916_webpush =
-  T.pack
-    [r|
+  [r|
 ALTER TABLE tokens
   DROP COLUMN wp_server_id,
   DROP COLUMN wp_path,
@@ -132,4 +130,4 @@ ALTER TABLE tokens
   DROP COLUMN wp_key;
 
 DROP TABLE webpush_servers;
-    |]
+  |]
