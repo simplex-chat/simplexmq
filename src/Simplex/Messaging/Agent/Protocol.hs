@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Protocol
     MsgMeta (..),
     RcvQueueInfo (..),
     SndQueueInfo (..),
+    SubscriptionStatus (..),
     ConnectionStats (..),
     SwitchPhase (..),
     RcvSwitchStatus (..),
@@ -111,6 +112,8 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    UserConnLinkData (..),
+    UserContactData (..),
     UserLinkData (..),
     OwnerAuth (..),
     OwnerId,
@@ -167,6 +170,7 @@ module Simplex.Messaging.Agent.Protocol
     updateSMPServerHosts,
     shortenShortLink,
     restoreShortLink,
+    isPresetServer,
     linkUserData,
     linkUserData',
   )
@@ -405,7 +409,7 @@ data AEvent (e :: AEntity) where
   OK :: AEvent AEConn
   JOINED :: SndQueueSecured -> Maybe ClientServiceId -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
-  ERRS :: [(ConnId, AgentErrorType)] -> AEvent AENone
+  ERRS :: NonEmpty (ConnId, AgentErrorType) -> AEvent AENone
   SUSPENDED :: AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
@@ -643,23 +647,34 @@ instance FromJSON RatchetSyncState where
 
 data RcvQueueInfo = RcvQueueInfo
   { rcvServer :: SMPServer,
+    status :: QueueStatus,
     rcvSwitchStatus :: Maybe RcvSwitchStatus,
-    canAbortSwitch :: Bool
+    canAbortSwitch :: Bool,
+    subStatus :: SubscriptionStatus
   }
   deriving (Eq, Show)
 
 data SndQueueInfo = SndQueueInfo
   { sndServer :: SMPServer,
+    status :: QueueStatus,
     sndSwitchStatus :: Maybe SndSwitchStatus
   }
   deriving (Eq, Show)
+
+data SubscriptionStatus
+  = SSActive
+  | SSPending
+  | SSRemoved {subError :: String}
+  | SSNoSub
+  deriving (Eq, Ord, Show)
 
 data ConnectionStats = ConnectionStats
   { connAgentVersion :: VersionSMPA,
     rcvQueuesInfo :: [RcvQueueInfo],
     sndQueuesInfo :: [SndQueueInfo],
     ratchetSyncState :: RatchetSyncState,
-    ratchetSyncSupported :: Bool
+    ratchetSyncSupported :: Bool,
+    subStatus :: Maybe SubscriptionStatus
   }
   deriving (Eq, Show)
 
@@ -1612,15 +1627,16 @@ shortenShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
   where
-    shortServer srv@(SMPServer hs@(h :| _) p kh) =
-      if isPresetServer then SMPServerOnlyHost h else srv
-      where
-        isPresetServer = case findPresetServer srv presetSrvs of
-          Just (SMPServer hs' p' kh') ->
-            all (`elem` hs') hs
-              && (p == p' || (null p' && (p == "443" || p == "5223")))
-              && kh == kh'
-          Nothing -> False
+    shortServer srv@(SMPServer (h :| _) _ _) =
+      if isPresetServer srv presetSrvs then SMPServerOnlyHost h else srv
+
+isPresetServer :: Foldable t => SMPServer -> t SMPServer -> Bool
+isPresetServer srv@(SMPServer hs p kh) presetSrvs = case findPresetServer srv presetSrvs of
+  Just (SMPServer hs' p' kh') ->
+    all (`elem` hs') hs
+      && (p == p' || (null p' && (p == "443" || p == "5223")))
+      && kh == kh'
+  Nothing -> False
 
 -- explicit bidirectional is used for ghc 8.10.7 compatibility, [h]/[] patterns are not reversible.
 pattern SMPServerOnlyHost :: TransportHost -> SMPServer
@@ -1638,7 +1654,7 @@ restoreShortLink presetSrvs = \case
       s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
       s -> s
 
-findPresetServer :: SMPServer -> NonEmpty SMPServer -> Maybe SMPServer
+findPresetServer :: Foldable t => SMPServer -> t SMPServer -> Maybe SMPServer
 findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = h' :| _} -> h == h')
 {-# INLINE findPresetServer #-}
 
@@ -1676,25 +1692,30 @@ data FixedLinkData c = FixedLinkData
 
 data ConnLinkData c where
   InvitationLinkData :: VersionRangeSMPA -> UserLinkData -> ConnLinkData 'CMInvitation
-  ContactLinkData ::
-    { agentVRange :: VersionRangeSMPA,
-      -- direct connection via connReq in fixed data is allowed.
-      direct :: Bool,
-      -- additional owner keys to sign changes of mutable data.
-      owners :: [OwnerAuth],
-      -- alternative addresses of chat relays that receive requests for this contact address.
-      relays :: [ConnShortLink 'CMContact],
-      userData :: UserLinkData
-    } -> ConnLinkData 'CMContact
+  ContactLinkData :: VersionRangeSMPA -> UserContactData -> ConnLinkData 'CMContact
+
+data UserContactData = UserContactData
+  { -- direct connection via connReq in fixed data is allowed.
+    direct :: Bool,
+    -- additional owner keys to sign changes of mutable data.
+    owners :: [OwnerAuth],
+    -- alternative addresses of chat relays that receive requests for this contact address.
+    relays :: [ConnShortLink 'CMContact],
+    userData :: UserLinkData
+  }
 
 newtype UserLinkData = UserLinkData ByteString
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
 
+data UserConnLinkData c where
+  UserInvLinkData :: UserLinkData -> UserConnLinkData 'CMInvitation
+  UserContactLinkData :: UserContactData -> UserConnLinkData 'CMContact
+
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
   InvitationLinkData _ d -> d
-  ContactLinkData {userData} -> userData
+  ContactLinkData _ UserContactData {userData} -> userData
 {-# INLINE linkUserData #-}
 
 linkUserData' :: ConnLinkData c -> ByteString
@@ -1735,8 +1756,8 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
     InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, userData)
-    ContactLinkData {agentVRange, direct, owners, relays, userData} ->
-      B.concat [smpEncode (CMContact, agentVRange, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+    ContactLinkData vr UserContactData {direct, owners, relays, userData} ->
+      B.concat [smpEncode (CMContact, vr, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
   smpP = (\(ACLD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1749,11 +1770,12 @@ instance Encoding AConnLinkData where
         (vr, userData) <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
       CMContact -> do
-        (agentVRange, direct) <- smpP
+        (vr, direct) <- smpP
         owners <- smpListP
         relays <- smpListP
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-        pure $ ACLD SCMContact ContactLinkData {agentVRange, direct, owners, relays, userData}
+        let cd = UserContactData {direct, owners, relays, userData}
+        pure $ ACLD SCMContact $ ContactLinkData vr cd
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
@@ -1859,6 +1881,8 @@ data AgentErrorType
     BROKER {brokerAddress :: String, brokerErr :: BrokerErrorType}
   | -- | errors of other agents
     AGENT {agentErr :: SMPAgentError}
+  | -- | client notice
+    NOTICE {server :: Text, preset :: Bool, expiresAt :: Maybe UTCTime}
   | -- | agent implementation or dependency errors
     INTERNAL {internalErr :: String}
   | -- | critical agent errors that should be shown to the user, optionally with restart button
@@ -1999,6 +2023,10 @@ serializeCommand = \case
 
 serializeBinary :: ByteString -> ByteString
 serializeBinary body = bshow (B.length body) <> "\n" <> body
+
+$(J.deriveJSON (enumJSON fstToLower) ''QueueStatus)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "SS") ''SubscriptionStatus)
 
 $(J.deriveJSON defaultJSON ''RcvQueueInfo)
 

@@ -47,7 +47,7 @@ for os in 22.04 24.04; do
 	docker exec \
 		-t \
 		builder \
-		sh -c 'cabal update && cabal build --jobs=$(nproc) --enable-tests -fserver_postgres && mkdir -p /out && for i in smp-server simplexmq-test; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable) && chmod +x "$bin" && mv "$bin" /out/; done && strip /out/smp-server'
+		sh -c 'git config --global --add safe.directory \*; cabal update && cabal build --jobs=$(nproc) --enable-tests -fserver_postgres && mkdir -p /out && for i in smp-server simplexmq-test; do bin=$(find /project/dist-newstyle -name "$i" -type f -executable) && chmod +x "$bin" && mv "$bin" /out/; done && strip /out/smp-server'
 
 	# Copy smp-server postgresql binary and prepare it
 	docker cp \

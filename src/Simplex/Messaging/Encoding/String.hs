@@ -10,6 +10,9 @@ module Simplex.Messaging.Encoding.String
     strToJSON,
     strToJEncoding,
     strParseJSON,
+    textToJSON,
+    textToEncoding,
+    textParseJSON,
     base64urlP,
     strEncodeList,
     strListP,
@@ -225,9 +228,22 @@ _strP = A.space *> strP
 
 strToJSON :: StrEncoding a => a -> J.Value
 strToJSON = J.String . decodeLatin1 . strEncode
+{-# INLINE strToJSON #-}
 
 strToJEncoding :: StrEncoding a => a -> J.Encoding
 strToJEncoding = JE.text . decodeLatin1 . strEncode
+{-# INLINE strToJEncoding #-}
 
 strParseJSON :: StrEncoding a => String -> J.Value -> JT.Parser a
 strParseJSON name = J.withText name $ either fail pure . parseAll strP . encodeUtf8
+
+textToJSON :: TextEncoding a => a -> J.Value
+textToJSON = J.String . textEncode
+{-# INLINE textToJSON #-}
+
+textToEncoding :: TextEncoding a => a -> J.Encoding
+textToEncoding = JE.text . textEncode
+{-# INLINE textToEncoding #-}
+
+textParseJSON :: TextEncoding a => String -> J.Value -> JT.Parser a
+textParseJSON name = J.withText name $ maybe (fail name) pure . textDecode

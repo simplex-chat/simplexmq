@@ -14,6 +14,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 
 class StoreQueueClass q where
@@ -41,7 +42,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   suspendQueue :: s -> q -> IO (Either ErrorType ())
   blockQueue :: s -> q -> BlockingInfo -> IO (Either ErrorType ())
   unblockQueue :: s -> q -> IO (Either ErrorType ())
-  updateQueueTime :: s -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+  updateQueueTime :: s -> q -> SystemDate -> IO (Either ErrorType QueueRec)
   deleteStoreQueue :: s -> q -> IO (Either ErrorType QueueRec)
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
   setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
