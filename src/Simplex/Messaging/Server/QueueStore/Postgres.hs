@@ -85,6 +85,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations
 import Simplex.Messaging.Server.QueueStore.STM (STMService (..), readQueueRecIO)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
@@ -429,7 +430,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     setStatusDB "unblockQueue" st sq EntityActive $
       withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
 
-  updateQueueTime :: PostgresQueueStore q -> q -> RoundedSystemTime -> IO (Either ErrorType QueueRec)
+  updateQueueTime :: PostgresQueueStore q -> q -> SystemDate -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t =
     withQueueRec sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
       if updatedAt == Just t
@@ -641,7 +642,7 @@ type QueueRecRow =
   ( RecipientId, NonEmpty RcvPublicAuthKey, RcvDhSecret,
     SenderId, Maybe SndPublicAuthKey, Maybe QueueMode,
     Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret, Maybe ServiceId,
-    ServerEntityStatus, Maybe RoundedSystemTime, Maybe LinkId, Maybe ServiceId
+    ServerEntityStatus, Maybe SystemDate, Maybe LinkId, Maybe ServiceId
   )
 
 queueRecToRow :: (RecipientId, QueueRec) -> QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes)
@@ -709,11 +710,11 @@ mkNotifier (Just notifierId, Just notifierKey, Just rcvNtfDhSecret) ntfServiceId
   Just NtfCreds {notifierId, notifierKey, rcvNtfDhSecret, ntfServiceId}
 mkNotifier _ _ = Nothing
 
-serviceRecToRow :: ServiceRec -> (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, RoundedSystemTime)
+serviceRecToRow :: ServiceRec -> (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, SystemDate)
 serviceRecToRow ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash = XV.Fingerprint fp, serviceCreatedAt} =
   (serviceId, serviceRole, serviceCert, Binary fp, serviceCreatedAt)
 
-rowToServiceRec :: (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, RoundedSystemTime) -> ServiceRec
+rowToServiceRec :: (ServiceId, SMPServiceRole, X.CertificateChain, Binary ByteString, SystemDate) -> ServiceRec
 rowToServiceRec (serviceId, serviceRole, serviceCert, Binary fp, serviceCreatedAt) =
   ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash = XV.Fingerprint fp, serviceCreatedAt}
 
@@ -792,4 +793,8 @@ instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodeP
 instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s)
 
 deriving newtype instance FromField EncDataBytes
+
+deriving newtype instance ToField (RoundedSystemTime t)
+
+deriving newtype instance FromField (RoundedSystemTime t)
 #endif

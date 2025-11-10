@@ -35,8 +35,8 @@ tlsCredentials credentials = (C.KeyHash rootFP, (X509.CertificateChain certs, pr
 
 privateToTls :: C.APrivateSignKey -> TLS.PrivKey
 privateToTls (C.APrivateSignKey _ k) = case k of
-  C.PrivateKeyEd25519 secret _ -> TLS.PrivKeyEd25519 secret
-  C.PrivateKeyEd448 secret _ -> TLS.PrivKeyEd448 secret
+  C.PrivateKeyEd25519 pk -> TLS.PrivKeyEd25519 pk
+  C.PrivateKeyEd448 pk -> TLS.PrivKeyEd448 pk
 
 type Credentials = (C.ASignatureKeyPair, X509.SignedCertificate)
 

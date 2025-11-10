@@ -1,15 +1,14 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250203_msg_bodies where
 
 import Data.Text (Text)
-import qualified Data.Text as T
 import Text.RawString.QQ (r)
 
 m20250203_msg_bodies :: Text
 m20250203_msg_bodies =
-  T.pack
-    [r|
+  [r|
 ALTER TABLE snd_messages ADD COLUMN msg_encrypt_key BYTEA;
 ALTER TABLE snd_messages ADD COLUMN padded_msg_len BIGINT;
 
@@ -25,8 +24,7 @@ CREATE INDEX idx_snd_messages_snd_message_body_id ON snd_messages(snd_message_bo
 
 down_m20250203_msg_bodies :: Text
 down_m20250203_msg_bodies =
-  T.pack
-    [r|
+  [r|
 DROP INDEX idx_snd_messages_snd_message_body_id;
 ALTER TABLE snd_messages DROP COLUMN snd_message_body_id;
 DROP TABLE snd_message_bodies;
