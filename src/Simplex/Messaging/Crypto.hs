@@ -1048,12 +1048,12 @@ encryptAES128NoPad key iv = encryptAEAD128NoPad key iv ""
 
 encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEADNoPad aesKey ivBytes ad msg = do
-  aead <- initAEADGCM aesKey ivBytes
+  aead <- initAEADGCM @AES256 aesKey ivBytes
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
 
 encryptAEAD128NoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEAD128NoPad aesKey ivBytes ad msg = do
-  aead <- initAEAD128GCM aesKey ivBytes
+  aead <- initAEADGCM @AES128 aesKey ivBytes
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
 
 -- | AEAD-GCM decryption with associated data.
@@ -1075,7 +1075,7 @@ decryptAESNoPad key iv = decryptAEADNoPad key iv ""
 
 decryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
-  aead <- initAEADGCM aesKey iv
+  aead <- initAEADGCM @AES256 aesKey iv
   maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg tag)
 
 maxMsgLen :: Int
@@ -1150,14 +1150,8 @@ initAEAD (Key aesKey) (IV ivBytes) = do
     AES.aeadInit AES.AEAD_GCM cipher iv
 
 -- this function requires 12 bytes IV, it does not transforms IV.
-initAEADGCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES256)
+initAEADGCM :: forall c. AES.BlockCipher c => Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
-  cipher <- AES.cipherInit aesKey
-  AES.aeadInit AES.AEAD_GCM cipher ivBytes
-
--- this function requires 12 bytes IV, it does not transforms IV.
-initAEAD128GCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES128)
-initAEAD128GCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
   cipher <- AES.cipherInit aesKey
   AES.aeadInit AES.AEAD_GCM cipher ivBytes
 
