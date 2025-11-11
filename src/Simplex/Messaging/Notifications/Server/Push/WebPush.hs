@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (WPDeviceToken, APNSDeviceToken), encodePNMessages, PNMessageData, WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, authToByteString, wpRequest)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest)
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
@@ -25,9 +25,6 @@ import Data.Aeson ((.=))
 import qualified Data.Binary as Bin
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Lazy as BL
-import Data.List.NonEmpty (NonEmpty)
-import qualified Data.Text.Encoding as T
-import qualified Data.Text as T
 import Control.Monad.Trans.Except (throwE)
 import Crypto.Hash.Algorithms (SHA256)
 import Crypto.Random (MonadRandom(getRandomBytes))
@@ -61,7 +58,7 @@ wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = d
   pure ()
   where
     body :: ExceptT PushProviderError IO B.ByteString
-    body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodePN pn)
+    body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodeWPN pn)
 
 -- | encrypt :: UA key -> clear -> cipher
 -- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
@@ -78,7 +75,7 @@ wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
   let uaPubKS = BL.toStrict . uncompressEncodePoint $ uaPubK
   let asPubKS = BL.toStrict . uncompressEncodePoint . ECDH.calculatePublic (ECC.getCurveByName ECC.SEC_p256r1) $ asPrivK
       ecdhSecret = ECDH.getShared (ECC.getCurveByName ECC.SEC_p256r1) asPrivK uaPubK
-      prkKey = hmac auth ecdhSecret
+      prkKey = hmac (unWPAuth wpAuth) ecdhSecret
       keyInfo = "WebPush: info\0" <> uaPubKS <> asPubKS
       ikm = hmac prkKey (keyInfo <> "\x01")
       prk = hmac salt ikm
@@ -99,7 +96,6 @@ wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
   -- liftIO . print $ strEncode cipherT
   pure $ header <> cipherT <> BA.convert tag
   where
-    auth = authToByteString wpAuth
     hmac k v = HMAC.hmac k v :: HMAC.HMAC SHA256
     takeHM :: Int -> HMAC.HMAC SHA256 -> B.ByteString
     takeHM n v = BL.toStrict $ BL.pack $ take n $ BA.unpack v
@@ -108,14 +104,14 @@ wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
       Left e -> throwE e
       Right iv -> pure iv
 
-encodePN :: PushNotification -> BL.ByteString
-encodePN pn = J.encode $ case pn of
+encodeWPN :: PushNotification -> BL.ByteString
+encodeWPN pn = J.encode $ case pn of
   PNVerification code -> J.object ["verification" .= code]
-  PNMessage d -> J.object ["message" .= encodeData d]
+  -- This hack prevents sending unencrypted message metadata in notifications, as we do not use it in the client - it simply receives all messages on each notification.
+  -- If we decide to change it to pull model as used in iOS, we can change JSON key to "message" with any payload, as the current clients would interpret it as "checkMessages".
+  -- In this case an additional encryption layer would need to be added here, in the same way as with APNS notifications.
+  PNMessage _ -> J.object ["checkMessages" .= True]
   PNCheckMessages -> J.object ["checkMessages" .= True]
-  where
-    encodeData :: NonEmpty PNMessageData -> String
-    encodeData a = T.unpack . T.decodeUtf8 $ encodePNMessages a
 
 liftPPWPError :: IO a -> ExceptT PushProviderError IO a
 liftPPWPError = liftPPWPError' toPPWPError

@@ -17,8 +17,8 @@ import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString as S
 import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
@@ -27,7 +27,7 @@ import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System
 import Data.Type.Equality
-import Data.Word (Word8, Word16)
+import Data.Word (Word16)
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -113,7 +113,7 @@ instance ProtocolMsgTag NtfCmdTag where
 instance NtfEntityI e => ProtocolMsgTag (NtfCommandTag e) where
   decodeTag s = decodeTag s >>= (\(NCT _ t) -> checkEntity' t)
 
-newtype NtfRegCode = NtfRegCode B.ByteString
+newtype NtfRegCode = NtfRegCode ByteString
   deriving (Eq, Show)
 
 instance Encoding NtfRegCode where
@@ -212,7 +212,7 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
     SDEL -> e SDEL_
     PING -> e PING_
     where
-      e :: Encoding a => a -> B.ByteString
+      e :: Encoding a => a -> ByteString
       e = smpEncode
 
   protocolP _v tag = (\(NtfCmd _ c) -> checkEntity c) <$?> protocolP _v (NCT (sNtfEntity @e) tag)
@@ -321,7 +321,7 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where
-      e :: Encoding a => a -> B.ByteString
+      e :: Encoding a => a -> ByteString
       e = smpEncode
 
   protocolP _v = \case
@@ -460,48 +460,12 @@ instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe
 
 instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
-tupleToList16
-  :: (a,a,a,a,
-      a,a,a,a,
-      a,a,a,a,
-      a,a,a,a)
-  -> [a]
-tupleToList16
-  (a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15) =
-    [a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15]
+newtype WPAuth = WPAuth {unWPAuth :: ByteString} deriving (Eq, Ord, Show)
 
-listToTuple16
-  :: [a]
-  -> Maybe (a,a,a,a,
-            a,a,a,a,
-            a,a,a,a,
-            a,a,a,a)
-listToTuple16
-  [a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15] =
-    Just (a0,a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12,a13,a14,a15)
-listToTuple16 _ = Nothing
-
-newtype Auth = Auth (Word8, Word8, Word8, Word8,
-                     Word8, Word8, Word8, Word8,
-                     Word8, Word8, Word8, Word8,
-                     Word8, Word8, Word8, Word8)
-
-instance Eq Auth where
-  (Auth t1) == (Auth t2) = tupleToList16 t1 == tupleToList16 t2
-
-instance Ord Auth where
-  compare (Auth t1) (Auth t2) = compare (tupleToList16 t1) (tupleToList16 t2)
-
-instance Show Auth where
-  show (Auth t) = "Auth " ++ show (tupleToList16 t)
-
-authFromByteString :: S.ByteString -> Maybe Auth
-authFromByteString bs = do
-  tup <- listToTuple16 $ S.unpack bs
-  pure (Auth tup)
-
-authToByteString :: Auth -> S.ByteString
-authToByteString (Auth a) = S.pack $ tupleToList16 a
+toWPAuth :: ByteString -> Either String WPAuth
+toWPAuth s
+  | B.length s == 16 = Right $ WPAuth s
+  | otherwise = Left "bad WPAuth"
 
 newtype WPP256dh = WPP256dh ECC.PublicPoint
   deriving (Eq, Show)
@@ -515,7 +479,7 @@ instance Ord WPP256dh where
       comparePt (ECC.Point x1 y1)  (ECC.Point x2 y2) = compare (x1, y1) (x2, y2)
 
 data WPKey = WPKey
-  { wpAuth :: Auth,
+  { wpAuth :: WPAuth,
     wpP256dh :: WPP256dh
   }
   deriving (Eq, Ord, Show)
@@ -573,24 +537,18 @@ decodeBigInt s
     shift i w = Bits.shiftL (fromIntegral w) (64 * i)
 
 data WPTokenParams = WPTokenParams
-  { wpPath :: B.ByteString,
+  { wpPath :: ByteString,
     wpKey :: WPKey
   }
   deriving (Eq, Ord, Show)
 
-instance Encoding Auth where
-  smpEncode a = smpEncode $ authToByteString a
-  smpP = smpP >>= \bs ->
-    case authFromByteString bs of
-      Nothing -> fail "Invalid auth"
-      Just a -> pure a
+instance Encoding WPAuth where
+  smpEncode = smpEncode . unWPAuth
+  smpP = toWPAuth <$?> smpP
 
-instance StrEncoding Auth where
-  strEncode a = strEncode $ authToByteString a
-  strP = strP >>= \bs ->
-    case authFromByteString bs of
-      Nothing -> fail "Invalid auth"
-      Just a -> pure a
+instance StrEncoding WPAuth where
+  strEncode = strEncode . unWPAuth
+  strP = toWPAuth <$?> strP
 
 instance Encoding WPP256dh where
   smpEncode p = smpEncode . BL.toStrict $ uncompressEncode p
@@ -635,7 +593,7 @@ instance StrEncoding WPTokenParams where
     pure WPTokenParams {wpPath, wpKey}
 
 data DeviceToken
-  = APNSDeviceToken APNSProvider B.ByteString
+  = APNSDeviceToken APNSProvider ByteString
   | WPDeviceToken WPProvider WPTokenParams
   deriving (Eq, Ord, Show)
 
@@ -689,13 +647,13 @@ instance FromJSON DeviceToken where
 
 -- | Returns fields for the device token (pushProvider, token)
 -- TODO [webpush] save token as separate fields
-deviceTokenFields :: DeviceToken -> (PushProvider, B.ByteString)
+deviceTokenFields :: DeviceToken -> (PushProvider, ByteString)
 deviceTokenFields dt = case dt of
   APNSDeviceToken p t -> (PPAPNS p, t)
   WPDeviceToken p t -> (PPWP p, strEncode t)
 
 -- | Returns the device token from the fields (pushProvider, token)
-deviceToken' :: PushProvider -> B.ByteString -> DeviceToken
+deviceToken' :: PushProvider -> ByteString -> DeviceToken
 deviceToken' pp t = case pp of
   PPAPNS p -> APNSDeviceToken p t
   PPWP p -> WPDeviceToken p <$> either error id $ strDecode t
@@ -711,7 +669,7 @@ wpRequest (WPDeviceToken (WPP s) param) = do
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,
 -- and encoding of PNMessageData's smpQueue has comma in list of hosts
-encodePNMessages :: NonEmpty PNMessageData -> B.ByteString
+encodePNMessages :: NonEmpty PNMessageData -> ByteString
 encodePNMessages = B.intercalate ";" . map strEncode . L.toList
 
 pnMessagesP :: A.Parser (NonEmpty PNMessageData)
@@ -756,7 +714,7 @@ data NtfSubStatus
   | -- | SMP SERVICE error - rejected service signature on individual subscriptions
     NSService
   | -- | SMP error other than AUTH
-    NSErr B.ByteString
+    NSErr ByteString
   deriving (Eq, Ord, Show)
 
 ntfShouldSubscribe :: NtfSubStatus -> Bool
