@@ -10,7 +10,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding(..))
 import qualified Data.ByteString as B
 import qualified Crypto.PubKey.ECC.Types as ECC
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt', encodePN)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt', encodeWPN)
 import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString.Lazy as BL
 import Simplex.Messaging.Notifications.Server.Push
@@ -83,7 +83,7 @@ testPNEncoding = do
   enc pnVerif `shouldBe` "{\"verification\":\"YWJjZA==\"}"
   enc pnMess `shouldBe` "{\"message\":\"smp://AAAA@l/AAAA 1761827386 bm9uY2UAAAAAAAAAAAAAAAAAAAAAAAAA TXlNZXNzYWdl\"}"
   where
-    enc p = BL.toStrict $ encodePN p
+    enc p = BL.toStrict $ encodeWPN p
     pnM :: B.ByteString -> PushNotification
     pnM m = do
       let smpQ = either error id $ strDecode "smp://AAAA@l/AAAA"

@@ -914,8 +914,6 @@ data CryptoError
     CERatchetEarlierMessage Word32
   | -- | duplicate message number
     CERatchetDuplicateMessage
-  | -- | unable to decode ecc key
-    CryptoInvalidECCKey CE.CryptoError -- TODO [webpush] remove this error, it will be parsing error
   deriving (Eq, Show, Exception)
 
 aesKeySize :: Int
