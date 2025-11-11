@@ -597,6 +597,11 @@ data DeviceToken
   | WPDeviceToken WPProvider WPTokenParams
   deriving (Eq, Ord, Show)
 
+tokenPushProvider :: DeviceToken -> PushProvider
+tokenPushProvider = \case
+  APNSDeviceToken pp _ -> PPAPNS pp
+  WPDeviceToken pp _ -> PPWP pp
+
 instance Encoding DeviceToken where
   smpEncode token = case token of
     APNSDeviceToken p t -> smpEncode (p, t)

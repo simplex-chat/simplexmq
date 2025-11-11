@@ -630,18 +630,17 @@ showServer' = decodeLatin1 . strEncode . host
 ntfPush :: NtfPushServer -> M ()
 ntfPush s@NtfPushServer {pushQ} = forever $ do
   (srvHost_, tkn@NtfTknRec {ntfTknId, token = t, tknStatus}, ntf) <- atomically (readTBQueue pushQ)
-  let (pp, _) = deviceTokenFields t
-  liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
+  logDebug $ "sending push notification to " <> tshow (tokenPushProvider t)
   st <- asks store
   case ntf of
     PNVerification _ ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification st tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ setTknStatusConfirmed st tkn
           incNtfStatT t ntfVrfDelivered
         Left _ -> incNtfStatT t ntfVrfFailed
     PNCheckMessages -> do
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification st tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
           incNtfStatT t ntfCronDelivered
@@ -649,7 +648,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
     PNMessage {} -> checkActiveTkn tknStatus $ do
       stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification st tkn ntf) >>= \case
         Left _ -> do
           incNtfStatT t ntfFailed
           liftIO $ mapM_ (`incServerStat` ntfFailedOwn stats) srvHost_
@@ -662,8 +661,8 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
     checkActiveTkn status action
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
-    deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
-    deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf = do
+    deliverNotification :: NtfPostgresStore -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
+    deliverNotification st tkn@NtfTknRec {ntfTknId, token} ntf = do
       deliver <- getPushClient s pp
       runExceptT (deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
@@ -679,6 +678,7 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
           PPInvalidPusher -> err e
           _ -> err e
       where
+        pp = tokenPushProvider token
         retryDeliver :: IO (Either PushProviderError ())
         retryDeliver = do
           deliver <- newPushClient s pp

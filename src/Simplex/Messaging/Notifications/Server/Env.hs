@@ -164,26 +164,23 @@ newNtfPushServer qSize apnsConfig = do
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 newPushClient s pp = do
-  case pp of
+  c <- case pp of
     PPWP p -> newWPPushClient s p
     PPAPNS p -> newAPNSPushClient s p
+  atomically $ TM.insert pp c $ pushClients s
+  pure c
 
 newAPNSPushClient :: NtfPushServer -> APNSProvider -> IO PushProviderClient
 newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
-  c <- case apnsProviderHost pp of
+  case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
-  atomically $ TM.insert (PPAPNS pp) c pushClients
-  pure c
 
 newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
 newWPPushClient NtfPushServer {pushClients} pp = do
   logDebug "New WP Client requested"
   -- We use one http manager per push server (which may be used by different clients)
-  manager <- wpHTTPManager
-  let c = wpPushProviderClient manager
-  atomically $ TM.insert (PPWP pp) c pushClients
-  pure c
+  wpPushProviderClient <$> wpHTTPManager
 
 wpHTTPManager :: IO Manager
 wpHTTPManager = newManager tlsManagerSettings {
@@ -191,7 +188,7 @@ wpHTTPManager = newManager tlsManagerSettings {
     -- disable requests to non-public IPs. The risk is very limited as
     -- we allow https only, and the body is encrypted. Disabling redirections
     -- avoids cross-protocol redir (https => http/unix)
-    managerModifyRequest = \r -> pure r { redirectCount = 0 }
+    managerModifyRequest = \r -> pure r {redirectCount = 0}
   }
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
