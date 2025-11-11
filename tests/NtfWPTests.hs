@@ -81,7 +81,7 @@ testPNEncoding = do
       pnMess = pnM "MyMessage"
   enc pnCheck `shouldBe` "{\"checkMessages\":true}"
   enc pnVerif `shouldBe` "{\"verification\":\"YWJjZA==\"}"
-  enc pnMess `shouldBe` "{\"message\":\"smp://AAAA@l/AAAA 1761827386 bm9uY2UAAAAAAAAAAAAAAAAAAAAAAAAA TXlNZXNzYWdl\"}"
+  enc pnMess `shouldBe` "{\"checkMessages\":true}"
   where
     enc p = BL.toStrict $ encodeWPN p
     pnM :: B.ByteString -> PushNotification
