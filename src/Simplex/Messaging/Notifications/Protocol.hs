@@ -470,13 +470,13 @@ toWPAuth s
 newtype WPP256dh = WPP256dh ECC.PublicPoint
   deriving (Eq, Show)
 
+-- This Ord instance for ECC point is quite arbitrary, it is needed because token is used as Map key
 instance Ord WPP256dh where
-  compare (WPP256dh p1) (WPP256dh p2) = comparePt p1 p2
-    where
-      comparePt ECC.PointO ECC.PointO = EQ
-      comparePt ECC.PointO (ECC.Point _ _) = LT
-      comparePt (ECC.Point _ _) ECC.PointO = GT
-      comparePt (ECC.Point x1 y1)  (ECC.Point x2 y2) = compare (x1, y1) (x2, y2)
+  compare (WPP256dh p1) (WPP256dh p2) = case (p1, p2) of
+    (ECC.PointO, ECC.PointO) -> EQ
+    (ECC.PointO, _) -> GT
+    (_, ECC.PointO) -> LT
+    (ECC.Point x1 y1, ECC.Point x2 y2) -> compare (x1, y1) (x2, y2)
 
 data WPKey = WPKey
   { wpAuth :: WPAuth,
