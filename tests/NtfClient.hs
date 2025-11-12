@@ -22,15 +22,19 @@ import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:))
 import qualified Data.Aeson as J
+import Data.Aeson.Types ((.=))
 import qualified Data.Aeson.Types as JT
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import GHC.Generics (Generic)
+import qualified Network.HPACK as H
+import qualified Network.HPACK.Token as H
 import Network.HTTP.Types (Status)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
@@ -42,7 +46,7 @@ import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost,
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfResponse)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfResponse, WPTokenParams (..))
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Main (getVapidKey)
@@ -69,6 +73,9 @@ testHost = "localhost"
 
 apnsTestPort :: ServiceName
 apnsTestPort = "6010"
+
+wpTestPort :: ServiceName
+wpTestPort = "6011"
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -224,23 +231,34 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
 ntfTest :: Transport c => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()
 
-data APNSMockRequest = APNSMockRequest
-  { notification :: APNSNotification
+data PushMockRequest a = PushMockRequest
+  { notification :: a
   }
 
-data APNSMockResponse = APNSRespOk | APNSRespError Status Text
+data PushMockResponse = PushRespOk | PushRespError Status Text
 
-data APNSMockServer = APNSMockServer
+data PushMockServer a = PushMockServer
   { action :: Async (),
-    notifications :: TM.TMap ByteString (TBQueue APNSMockRequest),
+    notifications :: TM.TMap ByteString (TBQueue (PushMockRequest a)),
     http2Server :: HTTP2Server
   }
 
-apnsMockServerConfig :: HTTP2ServerConfig
-apnsMockServerConfig =
+data WPNotification = WPNotification
+  { authorization :: Maybe ByteString,
+    encoding :: Maybe ByteString,
+    ttl :: Maybe ByteString,
+    urgency :: Maybe ByteString,
+    body :: ByteString
+  }
+
+newtype APNSMockServer = APNSMockServer (PushMockServer APNSNotification)
+newtype WPMockServer = WPMockServer (PushMockServer WPNotification)
+
+pushMockServerConfig :: ServiceName -> HTTP2ServerConfig
+pushMockServerConfig port =
   HTTP2ServerConfig
     { qSize = 2,
-      http2Port = apnsTestPort,
+      http2Port = port,
       bufferSize = 16384,
       bodyHeadSize = 16384,
       serverSupported = http2TLSParams,
@@ -254,7 +272,14 @@ apnsMockServerConfig =
     }
 
 withAPNSMockServer :: (APNSMockServer -> IO a) -> IO a
-withAPNSMockServer = E.bracket (getAPNSMockServer apnsMockServerConfig) closeAPNSMockServer
+withAPNSMockServer = E.bracket (getAPNSMockServer $ pushMockServerConfig apnsTestPort) closeAPNSMockServer
+  where
+    closeAPNSMockServer (APNSMockServer a) = closePushMockServer a
+
+withWPMockServer :: (WPMockServer -> IO a) -> IO a
+withWPMockServer = E.bracket (getWPMockServer $ pushMockServerConfig wpTestPort) closeWPMockServer
+  where
+    closeWPMockServer (WPMockServer a) = closePushMockServer a
 
 deriving instance Generic APNSAlertBody
 
@@ -284,36 +309,63 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
   http2Server <- getHTTP2Server config
   notifications <- TM.emptyIO
   action <- async $ runAPNSMockServer notifications http2Server
-  pure APNSMockServer {action, notifications, http2Server}
+  pure $ APNSMockServer PushMockServer {action, notifications, http2Server}
   where
     runAPNSMockServer notifications HTTP2Server {reqQ} = forever $ do
       HTTP2Request {request, reqBody = HTTP2Body {bodyHead}, sendResponse} <- atomically $ readTBQueue reqQ
       let sendApnsResponse = \case
-            APNSRespOk -> sendResponse $ H.responseNoBody N.ok200 []
-            APNSRespError status reason ->
+            PushRespOk -> sendResponse $ H.responseNoBody N.ok200 []
+            PushRespError status reason ->
               sendResponse . H.responseBuilder status [] . lazyByteString $ J.encode APNSErrorResponse {reason}
       case J.decodeStrict' bodyHead of
         Just notification -> do
           Just token <- pure $ B.stripPrefix "/3/device/" =<< H.requestPath request
           q <- atomically $ TM.lookup token notifications >>= maybe (newTokenQueue token) pure
-          atomically $ writeTBQueue q APNSMockRequest {notification}
-          sendApnsResponse APNSRespOk
+          atomically $ writeTBQueue q PushMockRequest {notification}
+          sendApnsResponse PushRespOk
           where
             newTokenQueue token = newTBQueue qSize >>= \q -> TM.insert token q notifications >> pure q
         _ -> do
           putStrLn $ "runAPNSMockServer J.decodeStrict' error, reqBody: " <> show bodyHead
-          sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
+          sendApnsResponse $ PushRespError N.badRequest400 "bad_request_body"
 
-getMockNotification :: MonadIO m => APNSMockServer -> DeviceToken -> m APNSMockRequest
-getMockNotification _ (WPDeviceToken _ _) = liftIO . throwIO $ userError "Invalid pusher"
-getMockNotification APNSMockServer {notifications} (APNSDeviceToken _ token) = do
+getWPMockServer :: HTTP2ServerConfig -> IO WPMockServer
+getWPMockServer config@HTTP2ServerConfig {qSize} = do
+  http2Server <- getHTTP2Server config
+  notifications <- TM.emptyIO
+  action <- async $ runWPMockServer notifications http2Server
+  pure $ WPMockServer PushMockServer {action, notifications, http2Server}
+  where
+    runWPMockServer notifications HTTP2Server {reqQ} = forever $ do
+      HTTP2Request {request, reqBody = HTTP2Body {bodyHead}, sendResponse} <- atomically $ readTBQueue reqQ
+      let sendWPResponse = \case
+            PushRespOk -> sendResponse $ H.responseNoBody N.ok200 []
+            PushRespError status reason ->
+              sendResponse . H.responseBuilder status [] . lazyByteString $ J.encode $ J.object ["error" .= reason]
+          path = fromMaybe "/default" $ H.requestPath request
+          (_, headers) = H.requestHeaders request
+          authorization = H.getHeaderValue H.tokenAuthorization headers
+          encoding = H.getHeaderValue H.tokenContentEncoding headers
+          ttl = H.getHeaderValue (H.toToken "TTL") headers
+          urgency = H.getHeaderValue (H.toToken "urgency") headers
+          notification = WPNotification {body = bodyHead, authorization, encoding, ttl, urgency}
+      q <- atomically $ TM.lookup path notifications >>= maybe (newTokenQueue path) pure
+      atomically $ writeTBQueue q PushMockRequest {notification}
+      sendWPResponse PushRespOk
+      where
+        newTokenQueue path = newTBQueue qSize >>= \q -> TM.insert path q notifications >> pure q
+
+getMockNotification :: MonadIO m => PushMockServer a -> DeviceToken -> m (PushMockRequest a)
+getMockNotification PushMockServer {notifications} (WPDeviceToken _ (WPTokenParams path _)) = do
+  atomically $ TM.lookup path notifications >>= maybe retry readTBQueue
+getMockNotification PushMockServer {notifications} (APNSDeviceToken _ token) = do
   atomically $ TM.lookup token notifications >>= maybe retry readTBQueue
 
-getAnyMockNotification :: MonadIO m => APNSMockServer -> m APNSMockRequest
-getAnyMockNotification APNSMockServer {notifications} = do
+getAnyMockNotification :: MonadIO m => PushMockServer a -> m (PushMockRequest a)
+getAnyMockNotification PushMockServer {notifications} = do
   atomically $ readTVar notifications >>= mapM readTBQueue . M.elems >>= \case [] -> retry; ntf : _ -> pure ntf
 
-closeAPNSMockServer :: APNSMockServer -> IO ()
-closeAPNSMockServer APNSMockServer {action, http2Server} = do
+closePushMockServer :: PushMockServer a -> IO ()
+closePushMockServer PushMockServer {action, http2Server} = do
   closeHTTP2Server http2Server
   uninterruptibleCancel action
