@@ -257,7 +257,6 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
--- TODO [webpush] change type accept token components so it only allows APNS token
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient 'APNS
 apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn (APNSDeviceToken _ tknStr) pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c

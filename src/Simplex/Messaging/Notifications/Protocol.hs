@@ -28,7 +28,7 @@ import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System
 import Data.Type.Equality
-import Data.Word (Word16)
+import Data.Word (Word16, Word64)
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -39,7 +39,6 @@ import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Binary as Bin
-import qualified Crypto.Error as CE
 import qualified Data.Bits as Bits
 import Network.HTTP.Client (Request, parseUrlThrow)
 
@@ -546,52 +545,50 @@ data WPKey = WPKey
 -- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
 -- | as required by RFC8291
 -- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
-uncompressEncodePoint :: ECC.Point -> BL.ByteString
+uncompressEncodePoint :: ECC.Point -> ByteString
 uncompressEncodePoint (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
 uncompressEncodePoint ECC.PointO = "\0"
 
-uncompressDecodePoint :: BL.ByteString -> Either CE.CryptoError ECC.Point
+uncompressDecodePoint :: ByteString -> Either String ECC.Point
 uncompressDecodePoint "\0" = pure ECC.PointO
 uncompressDecodePoint s
-  | BL.take 1 s /= prefix = Left CE.CryptoError_PointFormatUnsupported
-  | BL.length s /= 65 = Left CE.CryptoError_KeySizeInvalid
+  | B.null s = Left "KeySizeInvalid"
+  | B.head s /= '\x04' = Left "PointFormatUnsupported"
+  | B.length s /= 65 = Left "KeySizeInvalid"
   | otherwise = do
-    let s' = BL.drop 1 s
-    x <- decodeBigInt $ BL.take 32 s'
-    y <- decodeBigInt $ BL.drop 32 s'
-    pure $ ECC.Point x y
-  where
-    prefix = "\x04" :: BL.ByteString
+      let s' = B.drop 1 s
+      x <- decodeBigInt $ B.take 32 s'
+      y <- decodeBigInt $ B.drop 32 s'
+      pure $ ECC.Point x y
 
 -- Used to test encryption against the RFC8291 Example - which gives the AS private key
-uncompressDecodePrivateNumber :: BL.ByteString -> Either CE.CryptoError ECC.PrivateNumber
+uncompressDecodePrivateNumber :: ByteString -> Either String ECC.PrivateNumber
 uncompressDecodePrivateNumber s
-  | BL.length s /= 32 = Left CE.CryptoError_KeySizeInvalid
-  | otherwise = do
-    decodeBigInt s
+  | B.length s /= 32 = Left "KeySizeInvalid"
+  | otherwise = decodeBigInt s
 
-uncompressEncode :: WPP256dh -> BL.ByteString
+uncompressEncode :: WPP256dh -> ByteString
 uncompressEncode (WPP256dh p) = uncompressEncodePoint p
 
-uncompressDecode :: BL.ByteString -> Either CE.CryptoError WPP256dh
+uncompressDecode :: ByteString -> Either String WPP256dh
 uncompressDecode bs = WPP256dh <$> uncompressDecodePoint bs
 
-encodeBigInt :: Integer -> BL.ByteString
-encodeBigInt i = do
+encodeBigInt :: Integer -> ByteString
+encodeBigInt i =
   let s1 = Bits.shiftR i 64
       s2 = Bits.shiftR s1 64
       s3 = Bits.shiftR s2 64
-  Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
+   in BL.toStrict $ Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
   where
-    w64 :: Integer -> Bin.Word64
+    w64 :: Integer -> Word64
     w64 = fromIntegral
 
-decodeBigInt :: BL.ByteString -> Either CE.CryptoError Integer
+decodeBigInt :: ByteString -> Either String Integer
 decodeBigInt s
-  | BL.length s /= 32 = Left CE.CryptoError_PointSizeInvalid
+  | B.length s /= 32 = Left "PointSizeInvalid"
   | otherwise = do
-      let (w3, w2, w1, w0) = Bin.decode s :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64 )
-      pure $ shift 3 w3 + shift 2 w2 + shift 1 w1 + shift 0 w0
+      let (w3, w2, w1, w0) = Bin.decode (BL.fromStrict s) :: (Word64, Word64, Word64, Word64)
+       in Right $ shift 3 w3 + shift 2 w2 + shift 1 w1 + fromIntegral w0
   where
     shift i w = Bits.shiftL (fromIntegral w) (64 * i)
 
@@ -610,18 +607,12 @@ instance StrEncoding WPAuth where
   strP = toWPAuth <$?> strP
 
 instance Encoding WPP256dh where
-  smpEncode p = smpEncode . BL.toStrict $ uncompressEncode p
-  smpP = smpP >>= \bs ->
-    case uncompressDecode (BL.fromStrict bs) of
-      Left _ -> fail "Invalid p256dh key"
-      Right res -> pure res
+  smpEncode p = smpEncode $ uncompressEncode p
+  smpP = uncompressDecode <$?> smpP
 
 instance StrEncoding WPP256dh where
-  strEncode p = strEncode . BL.toStrict $ uncompressEncode p
-  strP = strP >>= \bs ->
-    case uncompressDecode (BL.fromStrict bs) of
-      Left _ -> fail "Invalid p256dh key"
-      Right res -> pure res
+  strEncode p = strEncode $ uncompressEncode p
+  strP = uncompressDecode <$?> strP
 
 instance Encoding WPKey where
   smpEncode WPKey {wpAuth, wpP256dh} = smpEncode (wpAuth, wpP256dh)
