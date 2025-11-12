@@ -217,11 +217,11 @@ runNtfTestCfg (t, msType) baseId smpCfg ntfCfg' aCfg bCfg runTest = do
   threadDelay 100000
 
 testNotificationToken :: APNSMockServer -> IO ()
-testNotificationToken apns = do
+testNotificationToken (APNSMockServer apns) = do
   withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
     let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+    PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -241,16 +241,16 @@ v .-> key = do
 -- logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 testNtfTokenRepeatRegistration :: APNSMockServer -> IO ()
-testNtfTokenRepeatRegistration apns = do
+testNtfTokenRepeatRegistration (APNSMockServer apns) = do
   withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
     let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+    PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
+    PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
       getMockNotification apns tkn
     _ <- ntfData' .-> "verification"
     _ <- C.cbNonce <$> ntfData' .-> "nonce"
@@ -260,18 +260,18 @@ testNtfTokenRepeatRegistration apns = do
     pure ()
 
 testNtfTokenSecondRegistration :: APNSMockServer -> IO ()
-testNtfTokenSecondRegistration apns =
+testNtfTokenSecondRegistration (APNSMockServer apns) =
   withAgentClients2 $ \a a' -> runRight_ $ do
     let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+    PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
     nonce <- C.cbNonce <$> ntfData .-> "nonce"
     verifyNtfToken a tkn nonce verification
 
     NTRegistered <- registerNtfToken a' tkn NMPeriodic
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
+    PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
       getMockNotification apns tkn
     verification' <- ntfData' .-> "verification"
     nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
@@ -290,12 +290,12 @@ testNtfTokenSecondRegistration apns =
     pure ()
 
 testNtfTokenServerRestart :: ASrvTransport -> APNSMockServer -> IO ()
-testNtfTokenServerRestart t apns = do
+testNtfTokenServerRestart t (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest "abcd"
   ntfData <- withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       pure ntfData
   -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
@@ -311,12 +311,12 @@ testNtfTokenServerRestart t apns = do
       pure ()
 
 testNtfTokenServerRestartReverify :: ASrvTransport -> APNSMockServer -> IO ()
-testNtfTokenServerRestartReverify t apns = do
+testNtfTokenServerRestartReverify t (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a -> do
     ntfData <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       pure ntfData
     runRight_ $ do
@@ -334,12 +334,12 @@ testNtfTokenServerRestartReverify t apns = do
       pure ()
 
 testNtfTokenServerRestartReverifyTimeout :: ASrvTransport -> APNSMockServer -> IO ()
-testNtfTokenServerRestartReverifyTimeout t apns = do
+testNtfTokenServerRestartReverifyTimeout t (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
     (nonce, verification) <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -369,12 +369,12 @@ testNtfTokenServerRestartReverifyTimeout t apns = do
       pure ()
 
 testNtfTokenServerRestartReregister :: ASrvTransport -> APNSMockServer -> IO ()
-testNtfTokenServerRestartReregister t apns = do
+testNtfTokenServerRestartReregister t (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
         getMockNotification apns tkn
       pure ()
   -- the new agent is created as otherwise when running the tests in CI the old agent was keeping the connection to the server
@@ -384,7 +384,7 @@ testNtfTokenServerRestartReregister t apns = do
     -- so that repeat registration happens when client is restarted.
     withNtfServer t $ runRight_ $ do
       NTRegistered <- registerNtfToken a' tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -393,12 +393,12 @@ testNtfTokenServerRestartReregister t apns = do
       pure ()
 
 testNtfTokenServerRestartReregisterTimeout :: ASrvTransport -> APNSMockServer -> IO ()
-testNtfTokenServerRestartReregisterTimeout t apns = do
+testNtfTokenServerRestartReregisterTimeout t (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
         getMockNotification apns tkn
       pure ()
     -- this emulates the situation when server registered token but the client did not receive the response
@@ -419,7 +419,7 @@ testNtfTokenServerRestartReregisterTimeout t apns = do
     -- so that repeat registration happens when client is restarted.
     withNtfServer t $ runRight_ $ do
       NTRegistered <- registerNtfToken a' tkn NMPeriodic
-      APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+      PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       verification <- ntfData .-> "verification"
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -434,14 +434,14 @@ getTestNtfTokenPort a =
     Nothing -> error "no active NtfToken"
 
 testNtfTokenMultipleServers :: ASrvTransport -> APNSMockServer -> IO ()
-testNtfTokenMultipleServers t apns = do
+testNtfTokenMultipleServers t (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest "abcd"
   withAgent 1 agentCfg initAgentServers2 testDB $ \a ->
     withNtfServerThreadOn t ntfTestPort ntfTestDBCfg $ \ntf ->
       withNtfServerThreadOn t ntfTestPort2 ntfTestDBCfg2 $ \ntf2 -> runRight_ $ do
         -- register a new token, the agent picks a server and stores its choice
         NTRegistered <- registerNtfToken a tkn NMPeriodic
-        APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+        PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
           getMockNotification apns tkn
         verification <- ntfData .-> "verification"
         nonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -544,7 +544,7 @@ testRunNTFServerTests t srv =
       testProtocolServer a NRMInteractive 1 $ ProtoServerWithAuth srv Nothing
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
-testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do
+testNotificationSubscriptionExistingConnection (APNSMockServer apns) baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
@@ -557,7 +557,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     -- register notification token
     let tkn = APNSDeviceToken PPApnsTest "abcd"
     NTRegistered <- registerNtfToken alice tkn NMInstant
-    APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+    PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
     vNonce <- C.cbNonce <$> ntfData .-> "nonce"
@@ -567,7 +567,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
     -- notification
-    (nonce, message) <- messageNotification apns tkn
+    (nonce, message) <- messageNotification (APNSMockServer apns) tkn
     pure (bobId, aliceId, nonce, message)
 
   Right [NotificationInfo {ntfConnId = cId, ntfMsgMeta = Just NMsgMeta {msgTs}}] <- runExceptT $ getNotificationConns alice nonce message
@@ -600,7 +600,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     2 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello again"
     get bob ##> ("", aliceId, SENT $ baseId + 2)
     -- no notifications should follow
-    noNotification alice apns
+    noNotification alice $ APNSMockServer apns
   where
     msgId = subtract baseId
 
@@ -645,10 +645,10 @@ testNotificationSubscriptionNewConnection apns baseId alice bob =
     msgId = subtract baseId
 
 registerTestToken :: AgentClient -> ByteString -> NotificationsMode -> APNSMockServer -> ExceptT AgentErrorType IO DeviceToken
-registerTestToken a token mode apns = do
+registerTestToken a token mode (APNSMockServer apns) = do
   let tkn = APNSDeviceToken PPApnsTest token
   NTRegistered <- registerNtfToken a tkn mode
-  Just APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
+  Just PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
     timeout 1000000 $ getMockNotification apns tkn
   verification' <- ntfData' .-> "verification"
   nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
@@ -1032,10 +1032,10 @@ testMessage_ apns a aId b bId msg = do
   ackMessage a bId msgId Nothing
 
 messageNotification :: HasCallStack => APNSMockServer -> DeviceToken -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
-messageNotification apns tkn = do
+messageNotification (APNSMockServer apns) tkn = do
   500000 `timeout` getMockNotification apns tkn >>= \case
     Nothing -> error "no notification"
-    Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}} -> do
+    Just PushMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}} -> do
       nonce <- C.cbNonce <$> ntfData .-> "nonce"
       message <- ntfData .-> "message"
       pure (nonce, message)
@@ -1049,14 +1049,14 @@ messageNotificationData c apns = do
   pure $ L.last pnMsgs
 
 noNotification :: AgentClient -> APNSMockServer -> ExceptT AgentErrorType IO ()
-noNotification c apns = do
+noNotification c (APNSMockServer apns) = do
   NtfToken {deviceToken} <- getNtfTokenData c
   500000 `timeout` getMockNotification apns deviceToken >>= \case
     Nothing -> pure ()
     _ -> error "unexpected notification"
 
 noNotifications :: APNSMockServer -> ExceptT AgentErrorType IO ()
-noNotifications apns = do
+noNotifications (APNSMockServer apns) = do
   500000 `timeout` getAnyMockNotification apns >>= \case
     Nothing -> pure ()
     _ -> error "unexpected notification"
