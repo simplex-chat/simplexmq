@@ -1,4 +1,6 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -10,8 +12,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest)
-import Simplex.Messaging.Notifications.Server.Store.Types
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), PushType (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest)
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
 import Control.Logger.Simple (logDebug)
@@ -33,12 +34,11 @@ import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
 
-wpPushProviderClient :: Manager -> PushProviderClient
-wpPushProviderClient _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
-wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = do
+wpPushProviderClient :: Manager -> PushProviderClient 'WebPush
+wpPushProviderClient mg _ t@(WPDeviceToken _ params) pn = do
   -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
   -- parsing will happen in DeviceToken parser, so it won't fail here
-  r <- wpRequest token
+  r <- wpRequest t
   logDebug $ "Request to " <> tshow (host r)
   encBody <- body
   let requestHeaders =
@@ -58,7 +58,7 @@ wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = d
   pure ()
   where
     body :: ExceptT PushProviderError IO B.ByteString
-    body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodeWPN pn)
+    body = withExceptT PPCryptoError $ wpEncrypt (wpKey params) (BL.toStrict $ encodeWPN pn)
 
 -- | encrypt :: UA key -> clear -> cipher
 -- | https://www.rfc-editor.org/rfc/rfc8291#section-3.4
@@ -123,7 +123,7 @@ toPPWPError :: SomeException -> PushProviderError
 toPPWPError e = case fromException e of
     Just (InvalidUrlException _ _) -> PPWPInvalidUrl
     Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (responseStatus resp) ("" :: String)
-    _ -> PPWPOtherError e
+    _ -> PPWPOtherError $ tshow e
   where
     fromStatusCode status reason
       | status == N.status200 = PPWPRemovedEndpoint

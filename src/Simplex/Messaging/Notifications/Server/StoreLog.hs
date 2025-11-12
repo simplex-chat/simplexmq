@@ -46,7 +46,7 @@ import System.IO
 data NtfStoreLogRecord
   = CreateToken NtfTknRec
   | TokenStatus NtfTokenId NtfTknStatus
-  | UpdateToken NtfTokenId DeviceToken NtfRegCode
+  | UpdateToken NtfTokenId ADeviceToken NtfRegCode
   | TokenCron NtfTokenId Word16
   | DeleteToken NtfTokenId
   | UpdateTokenTime NtfTokenId SystemDate
@@ -94,7 +94,7 @@ logCreateToken s = logNtfStoreRecord s . CreateToken
 logTokenStatus :: StoreLog 'WriteMode -> NtfTokenId -> NtfTknStatus -> IO ()
 logTokenStatus s tknId tknStatus = logNtfStoreRecord s $ TokenStatus tknId tknStatus
 
-logUpdateToken :: StoreLog 'WriteMode -> NtfTokenId -> DeviceToken -> NtfRegCode -> IO ()
+logUpdateToken :: StoreLog 'WriteMode -> NtfTokenId -> ADeviceToken -> NtfRegCode -> IO ()
 logUpdateToken s tknId token regCode = logNtfStoreRecord s $ UpdateToken tknId token regCode
 
 logTokenCron :: StoreLog 'WriteMode -> NtfTokenId -> Word16 -> IO ()

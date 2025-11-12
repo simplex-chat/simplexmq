@@ -42,7 +42,7 @@ instance FromField NtfTknAction where fromField = blobFieldDecoder smpDecode
 instance ToField NtfTknAction where toField = toField . Binary . smpEncode
 
 data NtfToken = NtfToken
-  { deviceToken :: DeviceToken,
+  { deviceToken :: ADeviceToken,
     ntfServer :: NtfServer,
     ntfTokenId :: Maybe NtfTokenId,
     -- TODO combine keys to key pair as the types should match
@@ -63,7 +63,7 @@ data NtfToken = NtfToken
   }
   deriving (Show)
 
-newNtfToken :: DeviceToken -> NtfServer -> C.AAuthKeyPair -> C.KeyPairX25519 -> NotificationsMode -> NtfToken
+newNtfToken :: ADeviceToken -> NtfServer -> C.AAuthKeyPair -> C.KeyPairX25519 -> NotificationsMode -> NtfToken
 newNtfToken deviceToken ntfServer (ntfPubKey, ntfPrivKey) ntfDhKeys ntfMode =
   NtfToken
     { deviceToken,

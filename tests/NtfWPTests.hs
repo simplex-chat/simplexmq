@@ -34,7 +34,7 @@ testWPDeviceTokenStrEncoding = do
 
   let auth = either error id $ strDecode "AQ3VfRX3_F38J3ltcmMVRg"
   let pk = either error id $ strDecode "BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
-  let params ::WPTokenParams = either error id $ strDecode "/secret AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
+  let params :: WPTokenParams = either error id $ strDecode "/secret AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
   wpPath params `shouldBe` "/secret"
   let key = wpKey params
   wpAuth key `shouldBe` auth
@@ -55,7 +55,7 @@ testInvalidWPDeviceTokenStrEncoding = do
   -- e.g "https://#1" is a valid URL. But that is the same parser
   -- we use to send the requests, so that's fine.
   let ts = "webpush https://localhost:/ AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
-  let t = strDecode ts :: Either String DeviceToken
+  let t = strDecode ts :: Either String ADeviceToken
   t `shouldSatisfy` isLeft
 
 -- | Example from RFC8291

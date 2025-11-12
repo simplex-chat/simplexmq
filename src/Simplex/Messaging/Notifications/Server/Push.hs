@@ -36,7 +36,6 @@ import Network.HTTP.Types (Status)
 import Control.Exception (Exception)
 import Simplex.Messaging.Notifications.Server.Store.Types (NtfTknRec)
 import Control.Monad.Except (ExceptT)
-import GHC.Exception (SomeException)
 
 data JWTHeader = JWTHeader
   { alg :: Text, -- key algorithm, ES256 for APNS
@@ -94,11 +93,10 @@ data PushProviderError
   | PPTokenInvalid NTInvalidReason
   | PPRetryLater
   | PPPermanentError
-  | PPInvalidPusher
   | PPWPInvalidUrl
   | PPWPRemovedEndpoint
   | PPWPRequestTooLong
-  | PPWPOtherError SomeException
+  | PPWPOtherError Text
   deriving (Show, Exception)
 
-type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
+type PushProviderClient p = NtfTknRec -> DeviceToken p -> PushNotification -> ExceptT PushProviderError IO ()

@@ -43,7 +43,7 @@ ntfCheckToken c nm pKey tknId =
     NRTkn stat -> pure stat
     r -> throwE $ unexpectedResponse r
 
-ntfReplaceToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> DeviceToken -> ExceptT NtfClientError IO ()
+ntfReplaceToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> ADeviceToken -> ExceptT NtfClientError IO ()
 ntfReplaceToken c nm pKey tknId token = okNtfCommand (TRPL token) c nm pKey tknId
 
 ntfDeleteToken :: NtfClient -> NetworkRequestMode -> C.APrivateAuthKey -> NtfTokenId -> ExceptT NtfClientError IO ()

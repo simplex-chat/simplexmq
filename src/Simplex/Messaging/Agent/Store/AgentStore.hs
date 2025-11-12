@@ -294,7 +294,7 @@ import Simplex.Messaging.Crypto.Ratchet (PQEncryption (..), PQSupport (..), Ratc
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..), deviceTokenFields, deviceToken')
+import Simplex.Messaging.Notifications.Protocol (ADeviceToken (..), NtfSubscriptionId, NtfTknStatus (..), NtfTokenId, SMPQueueNtf (..), deviceToken', deviceTokenFields)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol
@@ -1464,7 +1464,7 @@ updateNtfTokenRegistration db NtfToken {deviceToken, ntfServer = ProtocolServer 
     |]
     (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
 
-updateDeviceToken :: DB.Connection -> NtfToken -> DeviceToken -> IO ()
+updateDeviceToken :: DB.Connection -> NtfToken -> ADeviceToken -> IO ()
 updateDeviceToken db NtfToken {deviceToken, ntfServer = ProtocolServer {host, port}} toDt = do
   let (provider, token) = deviceTokenFields deviceToken
   updatedAt <- getCurrentTime

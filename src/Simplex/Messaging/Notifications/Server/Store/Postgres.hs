@@ -172,7 +172,7 @@ updateTokenDate st db NtfTknRec {ntfTknId, tknUpdatedAt} = do
     void $ DB.execute db "UPDATE tokens SET updated_at = ? WHERE token_id = ?" (ts, ntfTknId)
     withLog "updateTokenDate" st $ \sl -> logUpdateTokenTime sl ntfTknId ts
 
-type NtfTknRow = (NtfTokenId, PushProvider, Binary ByteString, NtfTknStatus, NtfPublicAuthKey, C.PrivateKeyX25519, C.DhSecretX25519, Binary ByteString, Word16, Maybe SystemDate)
+type NtfTknRow = (NtfTokenId, APushProvider, Binary ByteString, NtfTknStatus, NtfPublicAuthKey, C.PrivateKeyX25519, C.DhSecretX25519, Binary ByteString, Word16, Maybe SystemDate)
 
 ntfTknQuery :: Query
 ntfTknQuery =

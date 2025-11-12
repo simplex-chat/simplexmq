@@ -152,35 +152,38 @@ data SMPSubscriber = SMPSubscriber
 
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (Maybe T.Text, NtfTknRec, PushNotification), -- Maybe Text is a hostname of "own" server
-    pushClients :: TMap PushProvider PushProviderClient,
+    apnsPushClients :: TMap APNSProvider (PushProviderClient 'APNS),
+    webPushClients :: TMap WPProvider (PushProviderClient 'WebPush),
     apnsConfig :: APNSPushClientConfig
   }
 
 newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
 newNtfPushServer qSize apnsConfig = do
   pushQ <- newTBQueueIO qSize
-  pushClients <- TM.emptyIO
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  apnsPushClients <- TM.emptyIO
+  webPushClients <- TM.emptyIO
+  pure NtfPushServer {pushQ, apnsPushClients, webPushClients, apnsConfig}
 
-newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-newPushClient s pp = do
-  c <- case pp of
-    PPWP p -> newWPPushClient s p
-    PPAPNS p -> newAPNSPushClient s p
-  atomically $ TM.insert pp c $ pushClients s
-  pure c
+newPushClient :: NtfPushServer -> PushProvider p -> IO (PushProviderClient p)
+newPushClient s = \case
+  PPWP p -> newWPPushClient s p
+  PPAPNS p -> newAPNSPushClient s p
 
-newAPNSPushClient :: NtfPushServer -> APNSProvider -> IO PushProviderClient
-newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
-  case apnsProviderHost pp of
-    Nothing -> pure $ \_ _ -> pure ()
-    Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
+newAPNSPushClient :: NtfPushServer -> APNSProvider -> IO (PushProviderClient 'APNS)
+newAPNSPushClient NtfPushServer {apnsConfig, apnsPushClients} pp = case apnsProviderHost pp of
+  Nothing -> pure $ \_ _ _ -> pure ()
+  Just host -> do
+    c <- apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
+    atomically $ TM.insert pp c apnsPushClients
+    pure c
 
-newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
-newWPPushClient NtfPushServer {pushClients} pp = do
+newWPPushClient :: NtfPushServer -> WPProvider -> IO (PushProviderClient 'WebPush)
+newWPPushClient NtfPushServer {webPushClients} pp = do
   logDebug "New WP Client requested"
   -- We use one http manager per push server (which may be used by different clients)
-  wpPushProviderClient <$> wpHTTPManager
+  c <- wpPushProviderClient <$> wpHTTPManager
+  atomically $ TM.insert pp c webPushClients
+  pure c
 
 wpHTTPManager :: IO Manager
 wpHTTPManager = newManager tlsManagerSettings {
@@ -191,9 +194,10 @@ wpHTTPManager = newManager tlsManagerSettings {
     managerModifyRequest = \r -> pure r {redirectCount = 0}
   }
 
-getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-getPushClient s@NtfPushServer {pushClients} pp =
-  TM.lookupIO pp pushClients >>= maybe (newPushClient s pp) pure
+getPushClient :: NtfPushServer -> PushProvider p -> IO (PushProviderClient p)
+getPushClient s = \case
+  PPAPNS p -> TM.lookupIO p (apnsPushClients s) >>= maybe (newAPNSPushClient s p) pure
+  PPWP p -> TM.lookupIO p (webPushClients s) >>= maybe (newWPPushClient s p) pure
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity

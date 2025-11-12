@@ -1,5 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -256,9 +258,8 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 -- TODO [webpush] change type accept token components so it only allows APNS token
-apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient _ NtfTknRec {token = WPDeviceToken _ _} _ = throwE PPInvalidPusher
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = APNSDeviceToken _ tknStr} pn = do
+apnsPushProviderClient :: APNSPushClient -> PushProviderClient 'APNS
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn (APNSDeviceToken _ tknStr) pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
