@@ -1322,7 +1322,7 @@ runNTFServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
         (nKey, npKey) <- atomically $ C.generateAuthKeyPair a g
         (dhKey, _) <- atomically $ C.generateKeyPair g
         r <- runExceptT $ do
-          let deviceToken = DeviceToken PPApnsNull "test_ntf_token"
+          let deviceToken = ADT SAPNS $ APNSDeviceToken PPApnsNull "test_ntf_token"
           (tknId, _) <- liftError (testErr TSCreateNtfToken) $ ntfRegisterToken ntf nm npKey (NewNtfTkn deviceToken nKey dhKey)
           liftError (testErr TSDeleteNtfToken) $ ntfDeleteToken ntf nm npKey tknId
         ok <- netTimeoutInt (tcpTimeout $ networkConfig cfg) nm `timeout` closeProtocolClient ntf
@@ -1972,7 +1972,7 @@ agentNtfCheckToken :: AgentClient -> NetworkRequestMode -> NtfTokenId -> NtfToke
 agentNtfCheckToken c nm tknId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c nm ntfServer tknId "TCHK" $ \ntf -> ntfCheckToken ntf nm ntfPrivKey tknId
 
-agentNtfReplaceToken :: AgentClient -> NetworkRequestMode -> NtfTokenId -> NtfToken -> DeviceToken -> AM ()
+agentNtfReplaceToken :: AgentClient -> NetworkRequestMode -> NtfTokenId -> NtfToken -> ADeviceToken -> AM ()
 agentNtfReplaceToken c nm tknId NtfToken {ntfServer, ntfPrivKey} token =
   withNtfClient c nm ntfServer tknId "TRPL" $ \ntf -> ntfReplaceToken ntf nm ntfPrivKey tknId token
 

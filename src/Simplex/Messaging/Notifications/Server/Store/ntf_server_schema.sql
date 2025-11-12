@@ -92,7 +92,31 @@ CREATE TABLE ntf_server.tokens (
     reg_code bytea NOT NULL,
     cron_interval bigint NOT NULL,
     cron_sent_at bigint,
-    updated_at bigint
+    updated_at bigint,
+    wp_server_id bigint,
+    wp_path text,
+    wp_auth bytea,
+    wp_key bytea
+);
+
+
+
+CREATE TABLE ntf_server.webpush_servers (
+    wp_server_id bigint NOT NULL,
+    wp_host text NOT NULL,
+    wp_port text NOT NULL,
+    wp_keyhash bytea NOT NULL
+);
+
+
+
+ALTER TABLE ntf_server.webpush_servers ALTER COLUMN wp_server_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME ntf_server.webpush_servers_wp_server_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -119,6 +143,11 @@ ALTER TABLE ONLY ntf_server.subscriptions
 
 ALTER TABLE ONLY ntf_server.tokens
     ADD CONSTRAINT tokens_pkey PRIMARY KEY (token_id);
+
+
+
+ALTER TABLE ONLY ntf_server.webpush_servers
+    ADD CONSTRAINT webpush_servers_pkey PRIMARY KEY (wp_server_id);
 
 
 
@@ -175,6 +204,11 @@ ALTER TABLE ONLY ntf_server.subscriptions
 
 ALTER TABLE ONLY ntf_server.subscriptions
     ADD CONSTRAINT subscriptions_token_id_fkey FOREIGN KEY (token_id) REFERENCES ntf_server.tokens(token_id) ON UPDATE RESTRICT ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY ntf_server.tokens
+    ADD CONSTRAINT tokens_wp_server_id_fkey FOREIGN KEY (wp_server_id) REFERENCES ntf_server.webpush_servers(wp_server_id) ON UPDATE RESTRICT ON DELETE RESTRICT;
 
 
 

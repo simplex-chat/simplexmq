@@ -107,7 +107,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-    let tkn = DeviceToken PPApnsTest "abcd"
+    let tkn = ADT SAPNS $ APNSDeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \apns ->
       smpTest2 t msType $ \rh sh ->
         ntfTest t $ \nh -> do
@@ -160,7 +160,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           (msgBody, "hello") #== "delivered from queue"
           Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, ACK mId1)
           -- replace token
-          let tkn' = DeviceToken PPApnsTest "efgh"
+          let tkn' = ADT SAPNS $ APNSDeviceToken PPApnsTest "efgh"
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
           tId `shouldBe` tId'
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
@@ -237,7 +237,7 @@ registerToken nh apns token = do
   g <- C.newRandom
   (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-  let tkn = DeviceToken PPApnsTest token
+  let tkn = ADT SAPNS $ APNSDeviceToken PPApnsTest token
   RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
   APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
     getMockNotification apns tkn

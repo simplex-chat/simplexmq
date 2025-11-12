@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -12,6 +13,7 @@
 module Simplex.Messaging.Notifications.Protocol where
 
 import Control.Applicative (optional, (<|>))
+import qualified Crypto.PubKey.ECC.Types as ECC
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
@@ -26,7 +28,7 @@ import Data.Maybe (isNothing)
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System
 import Data.Type.Equality
-import Data.Word (Word16)
+import Data.Word (Word16, Word64)
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -35,6 +37,10 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, invalidReasonNTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Binary as Bin
+import qualified Data.Bits as Bits
+import Network.HTTP.Client (Request, parseUrlThrow)
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -127,7 +133,7 @@ instance ToJSON NtfRegCode where
   toEncoding = strToJEncoding
 
 data NewNtfEntity (e :: NtfEntity) where
-  NewNtfTkn :: DeviceToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
+  NewNtfTkn :: ADeviceToken -> NtfPublicAuthKey -> C.PublicKeyX25519 -> NewNtfEntity 'Token
   NewNtfSub :: NtfTokenId -> SMPQueueNtf -> NtfPrivateAuthKey -> NewNtfEntity 'Subscription
 
 deriving instance Show (NewNtfEntity e)
@@ -172,7 +178,7 @@ data NtfCommand (e :: NtfEntity) where
   -- | check token status
   TCHK :: NtfCommand 'Token
   -- | replace device token (while keeping all existing subscriptions)
-  TRPL :: DeviceToken -> NtfCommand 'Token
+  TRPL :: ADeviceToken -> NtfCommand 'Token
   -- | delete token - all subscriptions will be removed and no more notifications will be sent
   TDEL :: NtfCommand 'Token
   -- | enable periodic background notification to fetch the new messages - interval is in minutes, minimum is 20, 0 to disable
@@ -372,14 +378,86 @@ instance StrEncoding SMPQueueNtf where
     notifierId <- A.char '/' *> strP
     pure SMPQueueNtf {smpServer, notifierId}
 
-data PushProvider
+data PushType = APNS | WebPush deriving (Eq, Ord, Show)
+
+data SPushType (p :: PushType) where
+  SAPNS :: SPushType 'APNS
+  SWebPush :: SPushType 'WebPush
+
+toPushType :: SPushType p -> PushType
+toPushType = \case
+  SAPNS -> APNS
+  SWebPush -> WebPush
+
+deriving instance Show (SPushType p)
+
+class PushTypeI (p :: PushType) where sPushType :: SPushType p
+
+instance PushTypeI 'APNS where sPushType = SAPNS
+
+instance PushTypeI 'WebPush where sPushType = SWebPush
+
+instance TestEquality SPushType where
+  testEquality SAPNS SAPNS = Just Refl
+  testEquality SWebPush SWebPush = Just Refl
+  testEquality _ _ = Nothing
+
+checkPushType :: forall t p p'. (PushTypeI p, PushTypeI p') => t p' -> Either String (t p)
+checkPushType c = case testEquality (sPushType @p) (sPushType @p') of
+  Just Refl -> Right c
+  Nothing -> Left "bad push type"
+
+data PushProvider (p :: PushType) where
+  PPAPNS :: APNSProvider -> PushProvider 'APNS
+  PPWP :: WPProvider -> PushProvider 'WebPush
+
+deriving instance Eq (PushProvider p)
+
+deriving instance Ord (PushProvider p)
+
+deriving instance Show (PushProvider p)
+
+data APushProvider = forall p. PushTypeI p => APP (SPushType p) (PushProvider p)
+
+instance Eq APushProvider where
+  APP pt p == APP pt' p' = case testEquality pt pt' of
+    Just Refl -> p == p'
+    Nothing -> False
+
+instance Ord APushProvider where
+  APP pt t `compare` APP pt' t' = case testEquality pt pt' of
+    Just Refl -> t `compare` t'
+    Nothing -> toPushType pt `compare` toPushType pt'
+
+deriving instance Show APushProvider
+
+data APNSProvider
   = PPApnsDev -- provider for Apple development environment
   | PPApnsProd -- production environment, including TestFlight
   | PPApnsTest -- used for tests, to use APNS mock server
   | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
-instance Encoding PushProvider where
+newtype WPSrvLoc = WPSrvLoc SrvLoc
+  deriving (Eq, Ord, Show)
+
+newtype WPProvider = WPP WPSrvLoc
+  deriving (Eq, Ord, Show)
+
+instance PushTypeI p => Encoding (PushProvider p) where
+  smpEncode = \case
+    PPAPNS p -> smpEncode p
+    PPWP p -> smpEncode p
+  smpP = (\(APP _ p) -> checkPushType p) <$?> smpP
+
+instance Encoding APushProvider where
+  smpEncode (APP _ p) = smpEncode p
+  smpP =
+    A.peekChar' >>= \case
+      'A' -> APP SAPNS . PPAPNS <$> smpP
+      _ -> APP SWebPush . PPWP <$> smpP
+
+instance Encoding APNSProvider where
   smpEncode = \case
     PPApnsDev -> "AD"
     PPApnsProd -> "AP"
@@ -391,9 +469,22 @@ instance Encoding PushProvider where
       "AP" -> pure PPApnsProd
       "AT" -> pure PPApnsTest
       "AN" -> pure PPApnsNull
-      _ -> fail "bad PushProvider"
+      _ -> fail "bad APNSProvider"
 
-instance StrEncoding PushProvider where
+instance PushTypeI p => StrEncoding (PushProvider p) where
+  strEncode = \case
+    PPAPNS p -> strEncode p
+    PPWP p -> strEncode p
+  strP = (\(APP _ p) -> checkPushType p) <$?> strP
+
+instance StrEncoding APushProvider where
+  strEncode (APP _ p) = strEncode p
+  strP =
+    A.peekChar' >>= \case
+      'a' -> APP SAPNS . PPAPNS <$> strP
+      _ -> APP SWebPush . PPWP <$> strP
+
+instance StrEncoding APNSProvider where
   strEncode = \case
     PPApnsDev -> "apns_dev"
     PPApnsProd -> "apns_prod"
@@ -405,38 +496,251 @@ instance StrEncoding PushProvider where
       "apns_prod" -> pure PPApnsProd
       "apns_test" -> pure PPApnsTest
       "apns_null" -> pure PPApnsNull
-      _ -> fail "bad PushProvider"
+      _ -> fail "bad APNSProvider"
 
-instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+instance Encoding WPSrvLoc where
+  smpEncode (WPSrvLoc srv) = smpEncode srv
+  smpP = WPSrvLoc <$> smpP
 
-instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
+instance StrEncoding WPSrvLoc where
+  strEncode (WPSrvLoc srv) = "https://" <> strEncode srv
+  strP = WPSrvLoc <$> ("https://" *> strP)
 
-data DeviceToken = DeviceToken PushProvider ByteString
+instance Encoding WPProvider where
+  smpEncode (WPP srv) = "WP" <> smpEncode srv
+  smpP = WPP <$> ("WP" *> smpP)
+
+instance StrEncoding WPProvider where
+  strEncode (WPP srv) = "webpush " <> strEncode srv
+  strP = WPP <$> ("webpush " *> strP)
+
+instance FromField APushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
+
+instance ToField APushProvider where toField = toField . decodeLatin1 . strEncode
+
+newtype WPAuth = WPAuth {unWPAuth :: ByteString} deriving (Eq, Ord, Show)
+
+toWPAuth :: ByteString -> Either String WPAuth
+toWPAuth s
+  | B.length s == 16 = Right $ WPAuth s
+  | otherwise = Left "bad WPAuth"
+
+newtype WPP256dh = WPP256dh ECC.PublicPoint
+  deriving (Eq, Show)
+
+-- This Ord instance for ECC point is quite arbitrary, it is needed because token is used as Map key
+instance Ord WPP256dh where
+  compare (WPP256dh p1) (WPP256dh p2) = case (p1, p2) of
+    (ECC.PointO, ECC.PointO) -> EQ
+    (ECC.PointO, _) -> GT
+    (_, ECC.PointO) -> LT
+    (ECC.Point x1 y1, ECC.Point x2 y2) -> compare (x1, y1) (x2, y2)
+
+data WPKey = WPKey
+  { wpAuth :: WPAuth,
+    wpP256dh :: WPP256dh
+  }
   deriving (Eq, Ord, Show)
 
-instance Encoding DeviceToken where
-  smpEncode (DeviceToken p t) = smpEncode (p, t)
-  smpP = DeviceToken <$> smpP <*> smpP
+-- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
+-- | as required by RFC8291
+-- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
+uncompressEncodePoint :: ECC.Point -> ByteString
+uncompressEncodePoint (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
+uncompressEncodePoint ECC.PointO = "\0"
 
-instance StrEncoding DeviceToken where
-  strEncode (DeviceToken p t) = strEncode p <> " " <> t
-  strP = nullToken <|> hexToken
+uncompressDecodePoint :: ByteString -> Either String ECC.Point
+uncompressDecodePoint "\0" = pure ECC.PointO
+uncompressDecodePoint s
+  | B.null s = Left "KeySizeInvalid"
+  | B.head s /= '\x04' = Left "PointFormatUnsupported"
+  | B.length s /= 65 = Left "KeySizeInvalid"
+  | otherwise = do
+      let s' = B.drop 1 s
+      x <- decodeBigInt $ B.take 32 s'
+      y <- decodeBigInt $ B.drop 32 s'
+      pure $ ECC.Point x y
+
+-- Used to test encryption against the RFC8291 Example - which gives the AS private key
+uncompressDecodePrivateNumber :: ByteString -> Either String ECC.PrivateNumber
+uncompressDecodePrivateNumber s
+  | B.length s /= 32 = Left "KeySizeInvalid"
+  | otherwise = decodeBigInt s
+
+uncompressEncode :: WPP256dh -> ByteString
+uncompressEncode (WPP256dh p) = uncompressEncodePoint p
+
+uncompressDecode :: ByteString -> Either String WPP256dh
+uncompressDecode bs = WPP256dh <$> uncompressDecodePoint bs
+
+encodeBigInt :: Integer -> ByteString
+encodeBigInt i =
+  let s1 = Bits.shiftR i 64
+      s2 = Bits.shiftR s1 64
+      s3 = Bits.shiftR s2 64
+   in BL.toStrict $ Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
+  where
+    w64 :: Integer -> Word64
+    w64 = fromIntegral
+
+decodeBigInt :: ByteString -> Either String Integer
+decodeBigInt s
+  | B.length s /= 32 = Left "PointSizeInvalid"
+  | otherwise = do
+      let (w3, w2, w1, w0) = Bin.decode (BL.fromStrict s) :: (Word64, Word64, Word64, Word64)
+       in Right $ shift 3 w3 + shift 2 w2 + shift 1 w1 + fromIntegral w0
+  where
+    shift i w = Bits.shiftL (fromIntegral w) (64 * i)
+
+data WPTokenParams = WPTokenParams
+  { wpPath :: ByteString,
+    wpKey :: WPKey
+  }
+  deriving (Eq, Ord, Show)
+
+instance Encoding WPAuth where
+  smpEncode = smpEncode . unWPAuth
+  smpP = toWPAuth <$?> smpP
+
+instance StrEncoding WPAuth where
+  strEncode = strEncode . unWPAuth
+  strP = toWPAuth <$?> strP
+
+instance Encoding WPP256dh where
+  smpEncode p = smpEncode $ uncompressEncode p
+  smpP = uncompressDecode <$?> smpP
+
+instance StrEncoding WPP256dh where
+  strEncode p = strEncode $ uncompressEncode p
+  strP = uncompressDecode <$?> strP
+
+instance Encoding WPKey where
+  smpEncode WPKey {wpAuth, wpP256dh} = smpEncode (wpAuth, wpP256dh)
+  smpP = do
+    wpAuth <- smpP
+    wpP256dh <- smpP
+    pure WPKey {wpAuth, wpP256dh}
+
+instance StrEncoding WPKey where
+  strEncode WPKey {wpAuth, wpP256dh} = strEncode (wpAuth, wpP256dh)
+  strP = do
+    (wpAuth, wpP256dh) <- strP
+    pure WPKey {wpAuth, wpP256dh}
+
+instance Encoding WPTokenParams where
+  smpEncode WPTokenParams {wpPath, wpKey} = smpEncode (wpPath, wpKey)
+  smpP = do
+    wpPath <- smpP
+    wpKey <- smpP
+    pure WPTokenParams {wpPath, wpKey}
+
+instance StrEncoding WPTokenParams where
+  strEncode WPTokenParams {wpPath, wpKey} = wpPath <> " " <> strEncode wpKey
+  strP = do
+    wpPath <- A.takeWhile (/= ' ')
+    _ <- A.char ' '
+    wpKey <- strP
+    pure WPTokenParams {wpPath, wpKey}
+
+data DeviceToken (p :: PushType) where
+  APNSDeviceToken :: APNSProvider -> ByteString -> DeviceToken 'APNS
+  WPDeviceToken :: WPProvider -> WPTokenParams -> DeviceToken 'WebPush
+
+deriving instance Eq (DeviceToken p)
+
+deriving instance Ord (DeviceToken p)
+
+deriving instance Show (DeviceToken p)
+
+data ADeviceToken = forall p. PushTypeI p => ADT (SPushType p) (DeviceToken p)
+
+instance Eq ADeviceToken where
+  ADT p t == ADT p' t' = case testEquality p p' of
+    Just Refl -> t == t'
+    Nothing -> False
+
+instance Ord ADeviceToken where
+  ADT p t `compare` ADT p' t' = case testEquality p p' of
+    Just Refl -> t `compare` t'
+    Nothing -> toPushType p `compare` toPushType p'
+
+deriving instance Show ADeviceToken
+
+tokenPushProvider :: DeviceToken p -> PushProvider p
+tokenPushProvider = \case
+  APNSDeviceToken p _ -> PPAPNS p
+  WPDeviceToken p _ -> PPWP p
+
+instance PushTypeI p => Encoding (DeviceToken p) where
+  smpEncode = \case
+    APNSDeviceToken p t -> smpEncode (p, t)
+    WPDeviceToken p t -> smpEncode (p, t)
+  smpP = (\(ADT _ t) -> checkPushType t) <$?> smpP
+
+instance Encoding ADeviceToken where
+  smpEncode (ADT _ t) = smpEncode t
+  smpP =
+    smpP >>= \case
+      APP _ (PPAPNS p) -> ADT SAPNS . APNSDeviceToken p <$> smpP
+      APP _ (PPWP p) -> ADT SWebPush . WPDeviceToken p <$> smpP
+
+instance PushTypeI p => StrEncoding (DeviceToken p) where
+  strEncode token = case token of
+    APNSDeviceToken p t -> strEncode p <> " " <> t
+    -- We don't do strEncode (p, t), because we don't want any space between
+    -- p (e.g. webpush https://localhost) and t.wpPath (e.g /random)
+    WPDeviceToken p t -> strEncode p <> strEncode t
+  strP = (\(ADT _ t) -> checkPushType t) <$?> strP
+
+instance StrEncoding ADeviceToken where
+  strEncode (ADT _ t) = strEncode t
+  strP = nullToken <|> deviceToken
     where
-      nullToken = "apns_null test_ntf_token" $> DeviceToken PPApnsNull "test_ntf_token"
-      hexToken = DeviceToken <$> strP <* A.space <*> hexStringP
-      hexStringP =
+      nullToken = "apns_null test_ntf_token" $> ADT SAPNS (APNSDeviceToken PPApnsNull "test_ntf_token")
+      deviceToken :: A.Parser ADeviceToken
+      deviceToken =
+        strP >>= \case
+          APP _ (PPAPNS p) -> ADT SAPNS . APNSDeviceToken p <$> hexStringP
+          APP _ (PPWP p) -> do
+            t <- WPDeviceToken p <$> strP
+            _ <- wpRequest t
+            pure $ ADT SWebPush t
+      hexStringP = do
+        _ <- A.space
         A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
-instance ToJSON DeviceToken where
-  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
-  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
+instance ToJSON (DeviceToken 'APNS) where
+  toEncoding = \case
+    APNSDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= decodeLatin1 t
+  toJSON = \case
+    APNSDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= decodeLatin1 t]
 
-instance FromJSON DeviceToken where
-  parseJSON = J.withObject "DeviceToken" $ \o -> do
-    pp <- strDecode . encodeUtf8 <$?> o .: "pushProvider"
-    t <- encodeUtf8 <$> o .: "token"
-    pure $ DeviceToken pp t
+instance FromJSON (DeviceToken 'APNS) where
+  parseJSON = J.withObject "DeviceToken" $ \o ->
+    (strDecode @(PushProvider 'APNS) . encodeUtf8 <$?> o .: "pushProvider") >>= \case
+      PPAPNS p -> APNSDeviceToken p . encodeUtf8 <$> (o .: "token")
+
+-- | Returns fields for the device token (pushProvider, token)
+-- TODO [webpush] save token as separate fields
+deviceTokenFields :: ADeviceToken -> (APushProvider, ByteString)
+deviceTokenFields = \case
+  ADT _ (APNSDeviceToken p t) -> (APP SAPNS (PPAPNS p), t)
+  ADT _ (WPDeviceToken p t) -> (APP SWebPush (PPWP p), strEncode t)
+
+-- | Returns the device token from the fields (pushProvider, token)
+-- TODO [webpush] read token as separate fields, don't use `error`
+deviceToken' :: APushProvider -> ByteString -> ADeviceToken
+deviceToken' pp t = case pp of
+  APP _ (PPAPNS p) -> ADT SAPNS $ APNSDeviceToken p t
+  APP _ (PPWP p) -> ADT SWebPush . WPDeviceToken p <$> either error id $ strDecode t
+
+wpRequest :: MonadFail m => DeviceToken 'WebPush -> m Request
+wpRequest (WPDeviceToken (WPP s) params) = do
+  let endpoint = strEncode s <> wpPath params
+  case parseUrlThrow $ B.unpack endpoint of
+    Left _ -> fail "Invalid URL"
+    Right r -> pure r
 
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,

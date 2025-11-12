@@ -128,8 +128,9 @@ insertNtfTknQuery =
   |]
 
 replaceNtfToken :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
-replaceNtfToken st NtfTknRec {ntfTknId, token = token@(DeviceToken pp ppToken), tknStatus, tknRegCode = code@(NtfRegCode regCode)} =
+replaceNtfToken st NtfTknRec {ntfTknId, token, tknStatus, tknRegCode = code@(NtfRegCode regCode)} =
   withFastDB "replaceNtfToken" st $ \db -> runExceptT $ do
+    let (pp, ppToken) = deviceTokenFields token
     ExceptT $ assertUpdated <$>
       DB.execute
         db
@@ -143,7 +144,7 @@ replaceNtfToken st NtfTknRec {ntfTknId, token = token@(DeviceToken pp ppToken), 
 
 ntfTknToRow :: NtfTknRec -> NtfTknRow
 ntfTknToRow NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt} =
-  let DeviceToken pp ppToken = token
+  let (pp, ppToken) = deviceTokenFields token
       NtfRegCode regCode = tknRegCode
    in (ntfTknId, pp, Binary ppToken, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, Binary regCode, tknCronInterval, tknUpdatedAt)
 
@@ -153,7 +154,8 @@ getNtfToken st tknId =
     getNtfToken_ st " WHERE token_id = ?" (Only tknId)
 
 findNtfTokenRegistration :: NtfPostgresStore -> NewNtfEntity 'Token -> IO (Either ErrorType (Maybe NtfTknRec))
-findNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) =
+findNtfTokenRegistration st (NewNtfTkn token tknVerifyKey _) = do
+  let (pp, ppToken) = deviceTokenFields token
   getNtfToken_ st " WHERE push_provider = ? AND push_provider_token = ? AND verify_key = ?" (pp, Binary ppToken, tknVerifyKey)
 
 getNtfToken_ :: ToRow q => NtfPostgresStore -> Query -> q -> IO (Either ErrorType (Maybe NtfTknRec))
@@ -170,7 +172,7 @@ updateTokenDate st db NtfTknRec {ntfTknId, tknUpdatedAt} = do
     void $ DB.execute db "UPDATE tokens SET updated_at = ? WHERE token_id = ?" (ts, ntfTknId)
     withLog "updateTokenDate" st $ \sl -> logUpdateTokenTime sl ntfTknId ts
 
-type NtfTknRow = (NtfTokenId, PushProvider, Binary ByteString, NtfTknStatus, NtfPublicAuthKey, C.PrivateKeyX25519, C.DhSecretX25519, Binary ByteString, Word16, Maybe SystemDate)
+type NtfTknRow = (NtfTokenId, APushProvider, Binary ByteString, NtfTknStatus, NtfPublicAuthKey, C.PrivateKeyX25519, C.DhSecretX25519, Binary ByteString, Word16, Maybe SystemDate)
 
 ntfTknQuery :: Query
 ntfTknQuery =
@@ -181,7 +183,7 @@ ntfTknQuery =
 
 rowToNtfTkn :: NtfTknRow -> NtfTknRec
 rowToNtfTkn (ntfTknId, pp, Binary ppToken, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, Binary regCode, tknCronInterval, tknUpdatedAt)  =
-  let token = DeviceToken pp ppToken
+  let token = deviceToken' pp ppToken
       tknRegCode = NtfRegCode regCode
    in NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, tknRegCode, tknCronInterval, tknUpdatedAt}
 
@@ -376,8 +378,9 @@ setTknStatusConfirmed st NtfTknRec {ntfTknId} =
     when (updated > 0) $ withLog "updateTknStatus" st $ \sl -> logTokenStatus sl ntfTknId NTConfirmed
 
 setTokenActive :: NtfPostgresStore -> NtfTknRec -> IO (Either ErrorType ())
-setTokenActive st tkn@NtfTknRec {ntfTknId, token = DeviceToken pp ppToken} =
+setTokenActive st tkn@NtfTknRec {ntfTknId, token} =
   withFastDB' "setTokenActive" st $ \db -> do
+    let (pp, ppToken) = deviceTokenFields token
     updateTknStatus_ st db tkn NTActive
     -- this removes other instances of the same token, e.g. because of repeated token registration attempts
     tknIds <-

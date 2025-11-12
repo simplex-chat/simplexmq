@@ -93,6 +93,10 @@ data PushProviderError
   | PPTokenInvalid NTInvalidReason
   | PPRetryLater
   | PPPermanentError
+  | PPWPInvalidUrl
+  | PPWPRemovedEndpoint
+  | PPWPRequestTooLong
+  | PPWPOtherError Text
   deriving (Show, Exception)
 
-type PushProviderClient = NtfTknRec -> PushNotification -> ExceptT PushProviderError IO ()
+type PushProviderClient p = NtfTknRec -> DeviceToken p -> PushNotification -> ExceptT PushProviderError IO ()

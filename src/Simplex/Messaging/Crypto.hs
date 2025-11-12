@@ -128,6 +128,7 @@ module Simplex.Messaging.Crypto
     encryptAEAD,
     decryptAEAD,
     encryptAESNoPad,
+    encryptAES128NoPad,
     decryptAESNoPad,
     authTagSize,
     randomAesKey,
@@ -210,7 +211,7 @@ import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Crypto.Cipher.AES (AES256)
+import Crypto.Cipher.AES (AES256, AES128)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
@@ -1039,9 +1040,20 @@ encryptAESNoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag
 encryptAESNoPad key iv = encryptAEADNoPad key iv ""
 {-# INLINE encryptAESNoPad #-}
 
+-- Used to encrypt WebPush notifications
+-- This function requires 12 bytes IV, it does not transform IV.
+encryptAES128NoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAES128NoPad key iv = encryptAEAD128NoPad key iv ""
+{-# INLINE encryptAES128NoPad #-}
+
 encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEADNoPad aesKey ivBytes ad msg = do
-  aead <- initAEADGCM aesKey ivBytes
+  aead <- initAEADGCM @AES256 aesKey ivBytes
+  pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
+
+encryptAEAD128NoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAEAD128NoPad aesKey ivBytes ad msg = do
+  aead <- initAEADGCM @AES128 aesKey ivBytes
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
 
 -- | AEAD-GCM decryption with associated data.
@@ -1063,7 +1075,7 @@ decryptAESNoPad key iv = decryptAEADNoPad key iv ""
 
 decryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
-  aead <- initAEADGCM aesKey iv
+  aead <- initAEADGCM @AES256 aesKey iv
   maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg tag)
 
 maxMsgLen :: Int
@@ -1138,7 +1150,7 @@ initAEAD (Key aesKey) (IV ivBytes) = do
     AES.aeadInit AES.AEAD_GCM cipher iv
 
 -- this function requires 12 bytes IV, it does not transforms IV.
-initAEADGCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES256)
+initAEADGCM :: forall c. AES.BlockCipher c => Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
   cipher <- AES.cipherInit aesKey
   AES.aeadInit AES.AEAD_GCM cipher ivBytes

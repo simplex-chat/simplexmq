@@ -201,7 +201,7 @@ import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
+import Simplex.Messaging.Notifications.Protocol (ADeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON, parse)
 import Simplex.Messaging.Protocol
@@ -619,24 +619,24 @@ reconnectAllServers c = do
   reconnectServerClients c ntfClients
 
 -- | Register device notifications token
-registerNtfToken :: AgentClient -> NetworkRequestMode -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
+registerNtfToken :: AgentClient -> NetworkRequestMode -> ADeviceToken -> NotificationsMode -> AE NtfTknStatus
 registerNtfToken c = withAgentEnv c .:. registerNtfToken' c
 {-# INLINE registerNtfToken #-}
 
 -- | Verify device notifications token
-verifyNtfToken :: AgentClient -> NetworkRequestMode -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
+verifyNtfToken :: AgentClient -> NetworkRequestMode -> ADeviceToken -> C.CbNonce -> ByteString -> AE ()
 verifyNtfToken c = withAgentEnv c .:: verifyNtfToken' c
 {-# INLINE verifyNtfToken #-}
 
-checkNtfToken :: AgentClient -> NetworkRequestMode -> DeviceToken -> AE NtfTknStatus
+checkNtfToken :: AgentClient -> NetworkRequestMode -> ADeviceToken -> AE NtfTknStatus
 checkNtfToken c = withAgentEnv c .: checkNtfToken' c
 {-# INLINE checkNtfToken #-}
 
-deleteNtfToken :: AgentClient -> DeviceToken -> AE ()
+deleteNtfToken :: AgentClient -> ADeviceToken -> AE ()
 deleteNtfToken c = withAgentEnv c . deleteNtfToken' c
 {-# INLINE deleteNtfToken #-}
 
-getNtfToken :: AgentClient -> AE (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
+getNtfToken :: AgentClient -> AE (ADeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken c = withAgentEnv c $ getNtfToken' c
 {-# INLINE getNtfToken #-}
 
@@ -2453,7 +2453,7 @@ checkUserServers name srvs =
   unless (any (\ServerCfg {enabled} -> enabled) srvs) $
     logWarn (name <> ": all passed servers are disabled, using all servers.")
 
-registerNtfToken' :: AgentClient -> NetworkRequestMode -> DeviceToken -> NotificationsMode -> AM NtfTknStatus
+registerNtfToken' :: AgentClient -> NetworkRequestMode -> ADeviceToken -> NotificationsMode -> AM NtfTknStatus
 registerNtfToken' c nm suppliedDeviceToken suppliedNtfMode =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId, ntfTknStatus, ntfTknAction, ntfMode = savedNtfMode} -> do
@@ -2530,7 +2530,7 @@ registerNtfToken' c nm suppliedDeviceToken suppliedNtfMode =
       ns <- asks ntfSupervisor
       atomically $ nsUpdateToken ns tkn {deviceToken = suppliedDeviceToken, ntfTknStatus = NTRegistered, ntfMode = suppliedNtfMode}
 
-verifyNtfToken' :: AgentClient -> NetworkRequestMode -> DeviceToken -> C.CbNonce -> ByteString -> AM ()
+verifyNtfToken' :: AgentClient -> NetworkRequestMode -> ADeviceToken -> C.CbNonce -> ByteString -> AM ()
 verifyNtfToken' c nm deviceToken nonce code =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfDhSecret = Just dhSecret, ntfMode} -> do
@@ -2549,7 +2549,7 @@ setCronInterval c nm tknId tkn = do
   cron <- asks $ ntfCron . config
   void $ forkIO $ void $ runExceptT $ agentNtfSetCronInterval c nm tknId tkn cron
 
-checkNtfToken' :: AgentClient -> NetworkRequestMode -> DeviceToken -> AM NtfTknStatus
+checkNtfToken' :: AgentClient -> NetworkRequestMode -> ADeviceToken -> AM NtfTknStatus
 checkNtfToken' c nm deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken, ntfTokenId = Just tknId, ntfTknAction} -> do
@@ -2563,7 +2563,7 @@ checkNtfToken' c nm deviceToken =
       pure status
     _ -> throwE $ CMD PROHIBITED "checkNtfToken: no token"
 
-deleteNtfToken' :: AgentClient -> DeviceToken -> AM ()
+deleteNtfToken' :: AgentClient -> ADeviceToken -> AM ()
 deleteNtfToken' c deviceToken =
   withStore' c getSavedNtfToken >>= \case
     Just tkn@NtfToken {deviceToken = savedDeviceToken} -> do
@@ -2572,7 +2572,7 @@ deleteNtfToken' c deviceToken =
       deleteNtfSubs c NSCSmpDelete
     _ -> throwE $ CMD PROHIBITED "deleteNtfToken: no token"
 
-getNtfToken' :: AgentClient -> AM (DeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
+getNtfToken' :: AgentClient -> AM (ADeviceToken, NtfTknStatus, NotificationsMode, NtfServer)
 getNtfToken' c =
   withStore' c getSavedNtfToken >>= \case
     Just NtfToken {deviceToken, ntfTknStatus, ntfMode, ntfServer} -> pure (deviceToken, ntfTknStatus, ntfMode, ntfServer)

@@ -3,6 +3,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -41,7 +42,7 @@ import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost,
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfResponse)
+import Simplex.Messaging.Notifications.Protocol (ADeviceToken (..), DeviceToken (..), NtfResponse)
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Push.APNS
@@ -60,6 +61,7 @@ import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Control.Exception (throwIO)
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -292,8 +294,9 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
           putStrLn $ "runAPNSMockServer J.decodeStrict' error, reqBody: " <> show bodyHead
           sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
-getMockNotification :: MonadIO m => APNSMockServer -> DeviceToken -> m APNSMockRequest
-getMockNotification APNSMockServer {notifications} (DeviceToken _ token) = do
+getMockNotification :: MonadIO m => APNSMockServer -> ADeviceToken -> m APNSMockRequest
+getMockNotification _ (ADT _ WPDeviceToken {}) = liftIO . throwIO $ userError "Invalid pusher"
+getMockNotification APNSMockServer {notifications} (ADT _ (APNSDeviceToken _ token)) = do
   atomically $ TM.lookup token notifications >>= maybe retry readTBQueue
 
 getAnyMockNotification :: MonadIO m => APNSMockServer -> m APNSMockRequest

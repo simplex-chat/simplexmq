@@ -33,7 +33,7 @@ import Simplex.Messaging.Util (whenM, ($>>=))
 data NtfSTMStore = NtfSTMStore
   { tokens :: TMap NtfTokenId NtfTknData,
     -- multiple registrations exist to protect from malicious registrations if token is compromised
-    tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
+    tokenRegistrations :: TMap ADeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
     tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
     subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId,
@@ -54,7 +54,7 @@ newNtfSTMStore = do
 
 data NtfTknData = NtfTknData
   { ntfTknId :: NtfTokenId,
-    token :: DeviceToken,
+    token :: ADeviceToken,
     tknStatus :: TVar NtfTknStatus,
     tknVerifyKey :: NtfPublicAuthKey,
     tknDhKeys :: C.KeyPairX25519,

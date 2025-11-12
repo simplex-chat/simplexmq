@@ -13,14 +13,14 @@ import Data.Maybe (fromMaybe)
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode, NtfSubStatus, NtfSubscriptionId, NtfTokenId, NtfTknStatus, SMPQueueNtf)
+import Simplex.Messaging.Notifications.Protocol (ADeviceToken, NtfRegCode, NtfSubStatus, NtfSubscriptionId, NtfTokenId, NtfTknStatus, SMPQueueNtf)
 import Simplex.Messaging.Notifications.Server.Store (NtfSubData (..), NtfTknData (..))
 import Simplex.Messaging.Protocol (NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey)
 import Simplex.Messaging.SystemTime
 
 data NtfTknRec = NtfTknRec
   { ntfTknId :: NtfTokenId,
-    token :: DeviceToken,
+    token :: ADeviceToken,
     tknStatus :: NtfTknStatus,
     tknVerifyKey :: NtfPublicAuthKey,
     tknDhPrivKey :: C.PrivateKeyX25519,

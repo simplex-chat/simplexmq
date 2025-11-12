@@ -1,5 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -124,7 +126,7 @@ data APNSPushClientConfig = APNSPushClientConfig
     caStoreFile :: FilePath
   }
 
-apnsProviderHost :: PushProvider -> Maybe HostName
+apnsProviderHost :: APNSProvider -> Maybe HostName
 apnsProviderHost = \case
   PPApnsNull -> Nothing
   PPApnsTest -> Just "localhost"
@@ -255,8 +257,8 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
-apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = DeviceToken _ tknStr} pn = do
+apnsPushProviderClient :: APNSPushClient -> PushProviderClient 'APNS
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn (APNSDeviceToken _ tknStr) pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn

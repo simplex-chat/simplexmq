@@ -45,6 +45,7 @@ import AgentTests.SchemaDump (schemaDumpTest)
 #if defined(dbServerPostgres)
 import NtfServerTests (ntfServerTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestStoreDBOpts)
+import NtfWPTests (ntfWPTests)
 import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
@@ -139,6 +140,7 @@ main = do
           --   before (pure $ ASType SQSPostgres SMSJournal) smpProxyTests
           describe "SMP proxy, postgres-only message store" $
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
+        describe "NTF WP tests" ntfWPTests
 #endif
         -- xdescribe "SMP client agent, server jornal message store" $ agentTests (transport @TLS, ASType SQSMemory SMSJournal)
         describe "SMP client agent, server memory message store" $ agentTests (transport @TLS, ASType SQSMemory SMSMemory)
