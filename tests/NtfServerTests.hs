@@ -48,11 +48,14 @@ import Simplex.Messaging.Transport
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
+import Simplex.Messaging.Encoding.String (StrEncoding(..))
+import System.Environment (setEnv)
 
 ntfServerTests :: (ASrvTransport, AStoreType) -> Spec
 ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
-  describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
+  describe "APNS notification subscriptions (NKEY)" $ testAPNSNotificationSubscription ps createNtfQueueNKEY
+  describe "WP notification subscriptions (NKEY)" $ testWPNotificationSubscription ps createNtfQueueNKEY
   -- describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
 
@@ -99,22 +102,22 @@ v .-> key =
   let J.Object o = v
    in U.decodeLenient . encodeUtf8 <$> JT.parseEither (J..: key) o
 
-testNotificationSubscription :: (ASrvTransport, AStoreType) -> CreateQueueFunc -> Spec
-testNotificationSubscription (ATransport t, msType) createQueue =
-  it "should create notification subscription and notify when message is received" $ do
+testAPNSNotificationSubscription :: (ASrvTransport, AStoreType) -> CreateQueueFunc -> Spec
+testAPNSNotificationSubscription (ATransport t, msType) createQueue =
+  it "should create APNS notification subscription and notify when message is received" $ do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = APNSDeviceToken PPApnsTest "abcd"
-    withAPNSMockServer $ \apns ->
+    withAPNSMockServer $ \(APNSMockServer apns) ->
       smpTest2 t msType $ \rh sh ->
         ntfTest t $ \nh -> do
           ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret) <- createQueue rh sPub nPub
           -- register and verify token
           RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
-          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+          PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
             getMockNotification apns tkn
           let dhSecret = C.dh' ntfDh dhPriv
               decryptCode nd =
@@ -127,7 +130,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           RespNtf "1a" NoEntity (NRTknId tId1 ntfDh1) <- signSendRecvNtf nh tknKey ("1a", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
           tId1 `shouldBe` tId
           ntfDh1 `shouldBe` ntfDh
-          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData1}} <-
+          PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData1}} <-
             getMockNotification apns tkn
           let code1 = decryptCode ntfData1
           code `shouldBe` code1
@@ -141,7 +144,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           threadDelay 50000
           Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
           -- receive notification
-          APNSMockRequest {notification} <- getMockNotification apns tkn
+          PushMockRequest {notification} <- getMockNotification apns tkn
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
               Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
@@ -163,7 +166,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           let tkn' = APNSDeviceToken PPApnsTest "efgh"
           RespNtf "7" tId' NROk <- signSendRecvNtf nh tknKey ("7", tId, TRPL tkn')
           tId `shouldBe` tId'
-          APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
+          PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
             getMockNotification apns tkn'
           let Right verification2 = ntfData2 .-> "verification"
               Right nonce2 = C.cbNonce <$> ntfData2 .-> "nonce"
@@ -172,7 +175,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
           -- send message
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
-          APNSMockRequest {notification = notification3} <- getMockNotification apns tkn'
+          PushMockRequest {notification = notification3} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
               Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"
@@ -181,6 +184,32 @@ testNotificationSubscription (ATransport t, msType) createQueue =
               PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
+
+testWPNotificationSubscription :: (ASrvTransport, AStoreType) -> CreateQueueFunc -> Spec
+testWPNotificationSubscription (ATransport t, msType) createQueue =
+  it "should create WP notification subscription and notify when message is received" $ do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let params ::WPTokenParams = either error id $ strDecode "/secret AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
+        tkn = WPDeviceToken (WPP $ WPSrvLoc $ SrvLoc "localhost" wpTestPort) params
+    _ <- setEnv "SYSTEM_CERTIFICATE_PATH" "tests/fixtures/"
+    withWPMockServer $ \(WPMockServer wp) ->
+      smpTest2 t msType $ \rh sh ->
+        ntfTest t $ \nh -> do
+          ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret) <- createQueue rh sPub nPub
+          -- register and verify token
+          RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+          PushMockRequest {notification = WPNotification {authorization, encoding, ttl, urgency, body}} <-
+            getMockNotification wp tkn
+          encoding `shouldBe` Just "aes128gcm"
+          ttl `shouldBe` Just "2592000"
+          urgency `shouldBe` Just "high"
+          -- TODO: uncomment when vapid is merged
+          -- authorization `shouldContainBS` "vapid t="
+
 
 testRetriedNtfSubscription :: (ASrvTransport, AStoreType) -> Spec
 testRetriedNtfSubscription (ATransport t, msType) =
@@ -233,13 +262,13 @@ createNtfQueueNKEY h sPub nPub = do
   pure ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret)
 
 registerToken :: Transport c => THandleNTF c 'TClient -> APNSMockServer -> ByteString -> IO (C.APrivateAuthKey, C.DhSecretX25519, NtfEntityId, NtfRegCode)
-registerToken nh apns token = do
+registerToken nh (APNSMockServer apns) token = do
   g <- C.newRandom
   (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
   let tkn = APNSDeviceToken PPApnsTest token
   RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
-  APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
+  PushMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
     getMockNotification apns tkn
   let dhSecret = C.dh' ntfDh dhPriv
       decryptCode nd =
