@@ -10,7 +10,7 @@ module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
 import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest, WPProvider (..))
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.Push
 import Control.Monad.Except
@@ -32,25 +32,63 @@ import qualified Crypto.Cipher.Types as CT
 import qualified Crypto.MAC.HMAC as HMAC
 import qualified Crypto.PubKey.ECC.DH as ECDH
 import qualified Crypto.PubKey.ECC.Types as ECC
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, getHTTP2Client, defaultHTTP2ClientConfig, HTTP2ClientError, HTTP2Response (..), sendRequest)
+import Network.Socket (ServiceName, HostName)
+import System.X509.Unix
+import qualified Network.HTTP2.Client as H
+import Data.ByteString.Builder (lazyByteString)
+import Simplex.Messaging.Encoding.String (StrEncoding(..))
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body(..))
+import Data.Bifunctor (first)
 
-wpPushProviderClient :: Manager -> PushProviderClient
-wpPushProviderClient _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
-wpPushProviderClient mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = do
+wpHTTP2Client :: HostName -> ServiceName -> IO (Either HTTP2ClientError HTTP2Client)
+wpHTTP2Client h p = do
+  caStore <- Just <$> getSystemCertificateStore
+  let config = defaultHTTP2ClientConfig
+  getHTTP2Client h p caStore config nop
+  where
+    nop = pure ()
+
+wpHeaders :: [(N.HeaderName, B.ByteString)]
+wpHeaders = [
+  -- Why http2-client doesn't accept TTL AND Urgency?
+  -- Keeping Urgency for now, the TTL should be around 30 days by default on the push servers
+  -- ("TTL", "2592000"), -- 30 days
+  ("Urgency", "high"),
+  ("Content-Encoding", "aes128gcm")
+  -- TODO: topic for pings and interval
+  ]
+
+wpHTTP2Req :: B.ByteString -> BL.ByteString -> H.Request
+wpHTTP2Req path s =  H.requestBuilder N.methodPost path wpHeaders (lazyByteString s)
+
+wpPushProviderClientH2 :: HTTP2Client -> PushProviderClient
+wpPushProviderClientH2 _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
+wpPushProviderClientH2 http2 NtfTknRec {token = (WPDeviceToken (WPP p) param)} pn = do
+  -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
+  -- parsing will happen in DeviceToken parser, so it won't fail here
+  encBody <- body
+  let req = wpHTTP2Req (wpPath param) $ BL.fromStrict encBody
+  logDebug $ "HTTP/2 Request to " <> tshow (strEncode p)
+  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
+  pure ()
+  where
+    body :: ExceptT PushProviderError IO B.ByteString
+    body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodeWPN pn)
+    liftHTTPS2 a = ExceptT $ first PPConnection <$> a
+
+wpPushProviderClientH1 :: Manager -> PushProviderClient
+wpPushProviderClientH1 _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
+wpPushProviderClientH1 mg NtfTknRec {token = token@(WPDeviceToken _ param)} pn = do
   -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
   -- parsing will happen in DeviceToken parser, so it won't fail here
   r <- wpRequest token
-  logDebug $ "Request to " <> tshow (host r)
+  logDebug $ "HTTP/1 Request to " <> tshow (host r)
   encBody <- body
-  let requestHeaders =
-        [ ("TTL", "2592000"), -- 30 days
-          ("Urgency", "high"),
-          ("Content-Encoding", "aes128gcm")
-    -- TODO: topic for pings and interval
-        ]
-      req =
+  let req =
         r
           { method = "POST",
-            requestHeaders,
+            requestHeaders = wpHeaders,
             requestBody = RequestBodyBS encBody,
             redirectCount = 0
           }
