@@ -8,7 +8,6 @@
 
 module Simplex.Messaging.Notifications.Server.Push.WebPush where
 
-import Network.HTTP.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), WPAuth (..), WPKey (..), WPTokenParams (..), WPP256dh (..), uncompressEncodePoint, wpRequest, WPProvider (..))
 import Simplex.Messaging.Notifications.Server.Store.Types
@@ -19,7 +18,6 @@ import Simplex.Messaging.Util (tshow)
 import qualified Data.ByteString.Char8 as B
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception ( fromException, SomeException, try )
-import qualified Network.HTTP.Types as N
 import qualified Data.Aeson as J
 import Data.Aeson ((.=))
 import qualified Data.Binary as Bin
@@ -35,10 +33,11 @@ import qualified Crypto.PubKey.ECC.Types as ECC
 import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, getHTTP2Client, defaultHTTP2ClientConfig, HTTP2ClientError, HTTP2Response (..), sendRequest)
 import Network.Socket (ServiceName, HostName)
 import System.X509.Unix
-import qualified Network.HTTP2.Client as H
+import qualified Network.HTTP.Types as N
+import Network.HTTP.Client
+import qualified Network.HTTP2.Client as H2
 import Data.ByteString.Builder (lazyByteString)
 import Simplex.Messaging.Encoding.String (StrEncoding(..))
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body(..))
 import Data.Bifunctor (first)
 
 wpHTTP2Client :: HostName -> ServiceName -> IO (Either HTTP2ClientError HTTP2Client)
@@ -59,8 +58,8 @@ wpHeaders = [
   -- TODO: topic for pings and interval
   ]
 
-wpHTTP2Req :: B.ByteString -> BL.ByteString -> H.Request
-wpHTTP2Req path s =  H.requestBuilder N.methodPost path wpHeaders (lazyByteString s)
+wpHTTP2Req :: B.ByteString -> BL.ByteString -> H2.Request
+wpHTTP2Req path s =  H2.requestBuilder N.methodPost path wpHeaders (lazyByteString s)
 
 wpPushProviderClientH2 :: HTTP2Client -> PushProviderClient
 wpPushProviderClientH2 _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
@@ -70,8 +69,11 @@ wpPushProviderClientH2 http2 NtfTknRec {token = (WPDeviceToken (WPP p) param)} p
   encBody <- body
   let req = wpHTTP2Req (wpPath param) $ BL.fromStrict encBody
   logDebug $ "HTTP/2 Request to " <> tshow (strEncode p)
-  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
-  pure ()
+  HTTP2Response {response} <- liftHTTPS2 $ sendRequest http2 req Nothing
+  let status = H2.responseStatus response
+  if status >= Just N.ok200 && status < Just N.status300
+  then pure ()
+  else throwError $ fromStatusCode status
   where
     body :: ExceptT PushProviderError IO B.ByteString
     body = withExceptT PPCryptoError $ wpEncrypt (wpKey param) (BL.toStrict $ encodeWPN pn)
@@ -160,13 +162,14 @@ liftPPWPError' err a = liftIO (try @SomeException a) >>= either (throwError . er
 toPPWPError :: SomeException -> PushProviderError
 toPPWPError e = case fromException e of
     Just (InvalidUrlException _ _) -> PPWPInvalidUrl
-    Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (responseStatus resp) ("" :: String)
+    Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (Just $ responseStatus resp)
     _ -> PPWPOtherError e
-  where
-    fromStatusCode status reason
-      | status == N.status200 = PPWPRemovedEndpoint
-      | status == N.status410 = PPWPRemovedEndpoint
-      | status == N.status413 = PPWPRequestTooLong
-      | status == N.status429 = PPRetryLater
-      | status >= N.status500 = PPRetryLater
-      | otherwise = PPResponseError (Just status) (tshow reason)
+
+fromStatusCode :: Maybe N.Status -> PushProviderError
+fromStatusCode status
+  | status == Just N.status404 = PPWPRemovedEndpoint
+  | status == Just N.status410 = PPWPRemovedEndpoint
+  | status == Just N.status413 = PPWPRequestTooLong
+  | status == Just N.status429 = PPRetryLater
+  | status >= Just N.status500 = PPRetryLater
+  | otherwise = PPResponseError status "Invalid response"
