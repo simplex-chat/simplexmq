@@ -42,10 +42,10 @@ import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfRegCode (.
 import Simplex.Messaging.Notifications.Server.Push
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Util (liftError', safeDecodeUtf8, tshow)
-import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, getHTTP2Client, defaultHTTP2ClientConfig, HTTP2ClientError, sendRequest)
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, getHTTP2Client, defaultHTTP2ClientConfig, HTTP2ClientError, sendRequest, HTTP2Response (..))
 import Network.Socket (ServiceName, HostName)
 import System.X509.Unix
-import qualified Network.HTTP2.Client as H
+import qualified Network.HTTP2.Client as H2
 import Data.ByteString.Builder (lazyByteString)
 import Simplex.Messaging.Encoding.String (StrEncoding(..))
 import Data.Bifunctor (first)
@@ -157,8 +157,8 @@ wpHeaders vapidH = [
   -- TODO: topic for pings and interval
   ]
 
-wpHTTP2Req :: B.ByteString -> [(N.HeaderName, B.ByteString)] -> LB.ByteString -> H.Request
-wpHTTP2Req path headers s =  H.requestBuilder N.methodPost path headers (lazyByteString s)
+wpHTTP2Req :: B.ByteString -> [(N.HeaderName, B.ByteString)] -> LB.ByteString -> H2.Request
+wpHTTP2Req path headers s =  H2.requestBuilder N.methodPost path headers (lazyByteString s)
 
 wpPushProviderClientH2 :: WebPushClient -> HTTP2Client -> PushProviderClient
 wpPushProviderClientH2 _ _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
@@ -169,7 +169,11 @@ wpPushProviderClientH2 c@WebPushClient {wpConfig, cache} http2 tkn@NtfTknRec {to
   vapidH <- liftError' toPPWPError $ try $ getVapidHeader (vapidKey wpConfig) cache $ wpAud pp
   let req = wpHTTP2Req (wpPath params) (wpHeaders vapidH) $ LB.fromStrict encBody
   logDebug $ "HTTP/2 Request to " <> tshow (strEncode p)
-  void $ liftHTTPS2 $ sendRequest http2 req Nothing
+  HTTP2Response {response} <- liftHTTPS2 $ sendRequest http2 req Nothing
+  let status = H2.responseStatus response
+  if status >= Just N.ok200 && status < Just N.status300
+  then pure ()
+  else throwError $ fromStatusCode status
   where
     body :: ExceptT PushProviderError IO B.ByteString
     body = withExceptT PPCryptoError $ wpEncrypt c tkn params pn
@@ -249,13 +253,14 @@ wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
 toPPWPError :: SomeException -> PushProviderError
 toPPWPError e = case fromException e of
   Just (InvalidUrlException _ _) -> PPWPInvalidUrl
-  Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (responseStatus resp) ("" :: String)
+  Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (Just $ responseStatus resp)
   _ -> PPWPOtherError e
-  where
-    fromStatusCode status reason
-      | status == N.status200 = PPWPRemovedEndpoint
-      | status == N.status410 = PPWPRemovedEndpoint
-      | status == N.status413 = PPWPRequestTooLong
-      | status == N.status429 = PPRetryLater
-      | status >= N.status500 = PPRetryLater
-      | otherwise = PPResponseError (Just status) (tshow reason)
+
+fromStatusCode :: Maybe N.Status -> PushProviderError
+fromStatusCode status
+  | status == Just N.status404 = PPWPRemovedEndpoint
+  | status == Just N.status410 = PPWPRemovedEndpoint
+  | status == Just N.status413 = PPWPRequestTooLong
+  | status == Just N.status429 = PPRetryLater
+  | status >= Just N.status500 = PPRetryLater
+  | otherwise = PPResponseError status "Invalid response"
