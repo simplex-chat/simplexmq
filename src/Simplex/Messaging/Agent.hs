@@ -594,6 +594,7 @@ testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPNTF -> runNTFServerTest c nm userId srv
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
+-- TODO [certs rcv] should fail if any user is enabled to use services and per-connection isolation is chosen
 setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()
 setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
   ts <- getCurrentTime
@@ -771,6 +772,7 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
       whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
 
+-- TODO [certs rcv] should fail enabling if per-connection isolation is set
 setUserService' :: AgentClient -> UserId -> Bool -> AM ()
 setUserService' c userId enable = do
   wasEnabled <- liftIO $ fromMaybe False <$> TM.lookupIO userId (useClientServices c)
@@ -2870,7 +2872,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     processSubOk :: RcvQueue -> TVar [ConnId] -> IO ()
     processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub rq) $ do
-        SS.addActiveSub tSess sessId (rcvQueueSub rq) $ currentSubs c
+        SS.addActiveSub tSess sessId rq $ currentSubs c
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM' ()
     processSubErr rq@RcvQueue {connId} e = do
