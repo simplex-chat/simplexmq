@@ -83,6 +83,9 @@ initAgentServersProxy_ smpProxyMode smpProxyFallback =
 initAgentServersProxy2 :: InitialAgentServers
 initAgentServersProxy2 = initAgentServersProxy {smp = userServers [testSMPServer2]}
 
+initAgentServersClientService :: InitialAgentServers
+initAgentServersClientService = initAgentServers {useServices = M.fromList [(1, True)]}
+
 agentCfg :: AgentConfig
 agentCfg =
   defaultAgentConfig

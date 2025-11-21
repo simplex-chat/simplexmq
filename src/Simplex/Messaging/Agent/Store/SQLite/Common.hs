@@ -53,6 +53,12 @@ withConnectionPriority DBStore {dbSem, dbConnection} priority action
   | priority = E.bracket_ signal release $ withMVar dbConnection action
   | otherwise = lowPriority
   where
+    -- To debug FK errors, set foreign_keys = OFF in Simplex.Messaging.Agent.Store.SQLite and use action' instead of action
+    -- action' conn = do
+    --   r <- action conn
+    --   violations <- DB.query_ conn "PRAGMA foreign_key_check" :: IO [ (String, Int, String, Int)]
+    --   unless (null violations) $ print violations
+    --   pure r
     lowPriority = wait >> withMVar dbConnection (\db -> ifM free (Just <$> action db) (pure Nothing)) >>= maybe lowPriority pure
     signal = atomically $ modifyTVar' dbSem (+ 1)
     release = atomically $ modifyTVar' dbSem $ \sem -> if sem > 0 then sem - 1 else 0

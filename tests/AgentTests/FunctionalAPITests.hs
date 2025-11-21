@@ -476,6 +476,8 @@ functionalAPITests ps = do
       testUsersNoServer ps
     it "should connect two users and switch session mode" $
       withSmpServer ps testTwoUsers
+  describe "Client service certificates" $ do
+    it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -3663,6 +3665,32 @@ testTwoUsers = withAgentClients2 $ \a b -> do
   where
     hasClients :: HasCallStack => AgentClient -> Int -> ExceptT AgentErrorType IO ()
     hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
+
+testClientServiceConnection :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testClientServiceConnection ps = do
+  (sId, uId) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+    conns@(sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+      subscribeClientServices service 1
+      subscribeConnection user sId
+      exchangeGreetingsMsgId 4 service uId user sId
+    pure conns
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      subscribeClientServices service 1
+      subscribeConnection user sId
+      exchangeGreetingsMsgId 6 service uId user sId
+    ("", "", DOWN _ [_]) <- nGet user
+    -- TODO [certs rcv] how to integrate service counts into stats
+    -- r <- nGet service -- TODO [certs rcv] some event when service disconnects with count
+    -- print r
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      ("", "", UP _ [_]) <- nGet user
+      -- r <- nGet service -- TODO [certs rcv] some event when service reconnects with count
+      exchangeGreetingsMsgId 8 service uId user sId
 
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do

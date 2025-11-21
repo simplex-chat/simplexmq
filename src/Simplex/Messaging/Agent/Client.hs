@@ -624,9 +624,8 @@ getServiceCredentials c userId srv =
               let tlsCreds = tlsCredentials [cred]
               createClientService db userId srv tlsCreds
               pure (tlsCreds, Nothing)
-      (_, pk) <- atomically $ C.generateKeyPair g
-      let serviceSignKey = C.APrivateSignKey C.SEd25519 pk
-          creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
+      serviceSignKey <- liftEitherWith INTERNAL $ C.x509ToPrivate' $ snd serviceCreds
+      let creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
       pure (creds, serviceId_)
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where

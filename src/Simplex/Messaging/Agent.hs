@@ -2831,12 +2831,13 @@ processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion Err
 processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId, ts) = do
   upConnIds <- newTVarIO []
   forM_ ts $ \(entId, t) -> case t of
-    STEvent msgOrErr ->
-      withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
-        Right msg -> runProcessSMP rq conn (toConnData conn) msg
-        Left e -> lift $ do
-          processClientNotice rq e
-          notifyErr connId e
+    STEvent msgOrErr
+      | entId == SMP.NoEntity -> pure () -- TODO [certs rcv] process SALL
+      | otherwise -> withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
+          Right msg -> runProcessSMP rq conn (toConnData conn) msg
+          Left e -> lift $ do
+            processClientNotice rq e
+            notifyErr connId e
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
         SMP.SUB -> case respOrErr of

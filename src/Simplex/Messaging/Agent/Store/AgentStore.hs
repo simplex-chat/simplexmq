@@ -402,29 +402,31 @@ deleteUsersWithoutConns db = do
   pure userIds
 
 createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ()
-createClientService db userId srv (kh, (cert, pk)) =
+createClientService db userId srv (kh, (cert, pk)) = do
+  serverKeyHash_ <- createServer_ db srv
   DB.execute
     db
     [sql|
       INSERT INTO client_services
-        (user_id, host, port, service_cert_hash, service_cert, service_priv_key)
-      VALUES (?,?,?,?,?,?)
-      ON CONFLICT (user_id, host, port)
+        (user_id, host, port, server_key_hash, service_cert_hash, service_cert, service_priv_key)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT (user_id, host, port, server_key_hash)
       DO UPDATE SET
         service_cert_hash = EXCLUDED.service_cert_hash,
         service_cert = EXCLUDED.service_cert,
         service_priv_key = EXCLUDED.service_priv_key,
-        rcv_service_id = NULL
+        service_id = NULL
     |]
-    (userId, host srv, port srv, kh, cert, pk)
+    (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
 
+-- TODO [certs rcv] get correct service based on key hash of the server
 getClientService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
 getClientService db userId srv =
   maybeFirstRow toService $
     DB.query
       db
       [sql|
-        SELECT service_cert_hash, service_cert, service_priv_key, rcv_service_id
+        SELECT service_cert_hash, service_cert, service_priv_key, service_id
         FROM client_services
         WHERE user_id = ? AND host = ? AND port = ?
       |]
@@ -438,9 +440,10 @@ getClientServiceServers db userId =
     <$> DB.query
       db
       [sql|
-        SELECT c.host, c.port, s.key_hash, c.rcv_service_id, c.rcv_service_queue_count, c.rcv_service_queue_ids_hash
+        SELECT c.host, c.port, s.key_hash, c.service_id, c.service_queue_count, c.service_queue_ids_hash
         FROM client_services c
         JOIN servers s ON s.host = c.host AND s.port = c.port
+        WHERE c.user_id = ?
       |]
       (Only userId)
   where
@@ -453,7 +456,7 @@ setClientServiceId db userId srv serviceId =
     db
     [sql|
       UPDATE client_services
-      SET rcv_service_id = ?
+      SET service_id = ?
       WHERE user_id = ? AND host = ? AND port = ?
     |]
     (serviceId, userId, host srv, port srv)
