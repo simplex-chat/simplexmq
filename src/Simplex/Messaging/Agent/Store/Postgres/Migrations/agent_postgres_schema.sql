@@ -105,6 +105,7 @@ CREATE TABLE smp_agent_test_protocol_schema.client_services (
     user_id bigint NOT NULL,
     host text NOT NULL,
     port text NOT NULL,
+    server_key_hash bytea,
     service_cert bytea NOT NULL,
     service_cert_hash bytea NOT NULL,
     service_priv_key bytea NOT NULL,
@@ -1154,7 +1155,7 @@ CREATE INDEX idx_server_certs_host_port ON smp_agent_test_protocol_schema.client
 
 
 
-CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON smp_agent_test_protocol_schema.client_services USING btree (user_id, host, port);
+CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON smp_agent_test_protocol_schema.client_services USING btree (user_id, host, port, server_key_hash);
 
 
 

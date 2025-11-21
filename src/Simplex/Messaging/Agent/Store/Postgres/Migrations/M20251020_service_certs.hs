@@ -21,7 +21,7 @@ CREATE TABLE client_services(
   service_id BYTEA,
   service_queue_count BIGINT NOT NULL DEFAULT 0,
   service_queue_ids_hash BYTEA NOT NULL DEFAULT '\x00000000000000000000000000000000',
-  FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
+  FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT
 );
 
 CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(user_id, host, port, server_key_hash);

@@ -455,6 +455,7 @@ CREATE TABLE client_services(
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   host TEXT NOT NULL,
   port TEXT NOT NULL,
+  server_key_hash BLOB,
   service_cert BLOB NOT NULL,
   service_cert_hash BLOB NOT NULL,
   service_priv_key BLOB NOT NULL,
@@ -609,7 +610,8 @@ CREATE INDEX idx_rcv_queues_client_notice_id ON rcv_queues(client_notice_id);
 CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(
   user_id,
   host,
-  port
+  port,
+  server_key_hash
 );
 CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
 CREATE TRIGGER tr_rcv_queue_insert
