@@ -1,15 +1,15 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251020_service_certs where
 
 import Data.Text (Text)
-import qualified Data.Text as T
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
 import Text.RawString.QQ (r)
 
 m20251020_service_certs :: Text
 m20251020_service_certs =
-  T.pack
-    [r|
+  createXorHashFuncs <> [r|
 CREATE TABLE client_services(
   user_id BIGINT NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
   host TEXT NOT NULL,
@@ -94,8 +94,7 @@ FOR EACH ROW EXECUTE PROCEDURE on_rcv_queue_update();
 
 down_m20251020_service_certs :: Text
 down_m20251020_service_certs =
-  T.pack
-    [r|
+  [r|
 DROP TRIGGER tr_rcv_queue_insert ON rcv_queues;
 DROP TRIGGER tr_rcv_queue_delete ON rcv_queues;
 DROP TRIGGER tr_rcv_queue_update ON rcv_queues;
@@ -111,4 +110,5 @@ ALTER TABLE rcv_queues DROP COLUMN rcv_service_assoc;
 DROP INDEX idx_server_certs_host_port;
 DROP INDEX idx_server_certs_user_id_host_port;
 DROP TABLE client_services;
-    |]
+  |]
+  <> dropXorHashFuncs
