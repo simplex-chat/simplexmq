@@ -73,6 +73,34 @@ END;
 $$;
 
 
+
+CREATE FUNCTION smp_agent_test_protocol_schema.xor_combine(state bytea, value bytea) RETURNS bytea
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+  result BYTEA := state;
+  i INTEGER;
+  len INTEGER := octet_length(value);
+BEGIN
+  IF octet_length(state) != len THEN
+    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
+  END IF;
+  FOR i IN 0..len-1 LOOP
+    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
+  END LOOP;
+  RETURN result;
+END;
+$$;
+
+
+
+CREATE AGGREGATE smp_agent_test_protocol_schema.xor_aggregate(bytea) (
+    SFUNC = smp_agent_test_protocol_schema.xor_combine,
+    STYPE = bytea,
+    INITCOND = '\x00000000000000000000000000000000'
+);
+
+
 SET default_table_access_method = heap;
 
 
@@ -1240,7 +1268,7 @@ CREATE TRIGGER tr_rcv_queue_update AFTER UPDATE ON smp_agent_test_protocol_schem
 
 
 ALTER TABLE ONLY smp_agent_test_protocol_schema.client_services
-    ADD CONSTRAINT client_services_host_port_fkey FOREIGN KEY (host, port) REFERENCES smp_agent_test_protocol_schema.servers(host, port) ON UPDATE CASCADE ON DELETE RESTRICT;
+    ADD CONSTRAINT client_services_host_port_fkey FOREIGN KEY (host, port) REFERENCES smp_agent_test_protocol_schema.servers(host, port) ON DELETE RESTRICT;
 
 
 
