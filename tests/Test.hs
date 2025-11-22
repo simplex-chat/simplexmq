@@ -73,17 +73,6 @@ main = do
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
       $ do
-#if defined(dbPostgres)
-        around_ (postgressBracket testDBConnectInfo) $
-          describe "Agent PostgreSQL schema dump" $
-            postgresSchemaDumpTest
-              appMigrations
-              ["20250322_short_links"] -- snd_secure and last_broker_ts columns swap order on down migration
-              (testDBOpts testDB)
-              "src/Simplex/Messaging/Agent/Store/Postgres/Migrations/agent_postgres_schema.sql"
-#else
-        describe "Agent SQLite schema dump" schemaDumpTest
-#endif
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
@@ -160,6 +149,17 @@ main = do
           describe "XFTP agent" xftpAgentTests
         describe "XRCP" remoteControlTests
         describe "Server CLIs" cliTests
+#if defined(dbPostgres)
+        around_ (postgressBracket testDBConnectInfo) $
+          describe "Agent PostgreSQL schema dump" $
+            postgresSchemaDumpTest
+              appMigrations
+              ["20250322_short_links"] -- snd_secure and last_broker_ts columns swap order on down migration
+              (testDBOpts testDB)
+              "src/Simplex/Messaging/Agent/Store/Postgres/Migrations/agent_postgres_schema.sql"
+#else
+        describe "Agent SQLite schema dump" schemaDumpTest
+#endif
 
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of
