@@ -42,6 +42,9 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Concurrent.MVar
+import Control.Concurrent.STM
+import Control.Exception (bracketOnError, onException, throwIO)
 import Control.Monad
 import Data.Bits (xor)
 import Data.ByteArray (ScrubbedBytes)
@@ -55,21 +58,21 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
-import Database.SQLite.Simple.Function
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
+import Database.SQLite3.Bindings
+import Foreign.C.Types
+import Foreign.Ptr
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
+import Simplex.Messaging.Agent.Store.SQLite.Util (SQLiteFunc, createStaticFunction, mkSQLiteFunc)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, takeFileName, (</>))
-import UnliftIO.Exception (bracketOnError, onException, throwIO)
-import UnliftIO.MVar
-import UnliftIO.STM
 
 -- * SQLite Store implementation
 
@@ -114,9 +117,9 @@ connectDB path key track = do
   pure db
   where
     prepare db = do
-      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
-      exec . fromQuery $
+      let db' = SQL.connectionHandle $ DB.conn db
+      unless (BA.null key) . SQLite3.exec db' $ "PRAGMA key = " <> keyString key <> ";"
+      SQLite3.exec db' . fromQuery $
         [sql|
           PRAGMA busy_timeout = 100;
           PRAGMA foreign_keys = ON;
@@ -124,8 +127,18 @@ connectDB path key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
-      createFunction (DB.conn db) "simplex_xor_md5_combine" xorMd5Combine
+      createStaticFunction db' "simplex_xor_md5_combine" 2 True sqliteXorMd5CombinePtr
         >>= either (throwIO . userError . show) pure
+
+foreign export ccall "simplex_xor_md5_combine" sqliteXorMd5Combine :: SQLiteFunc
+
+foreign import ccall "&simplex_xor_md5_combine" sqliteXorMd5CombinePtr :: FunPtr SQLiteFunc
+
+sqliteXorMd5Combine :: SQLiteFunc
+sqliteXorMd5Combine = mkSQLiteFunc $ \cxt args -> do
+  idsHash <- SQLite3.funcArgBlob args 0
+  rId <- SQLite3.funcArgBlob args 1
+  SQLite3.funcResultBlob cxt $ xorMd5Combine idsHash rId
 
 xorMd5Combine :: ByteString -> ByteString -> ByteString
 xorMd5Combine idsHash rId = B.packZipWith xor idsHash $ C.md5Hash rId
