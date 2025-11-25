@@ -573,7 +573,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> queueSubErrorStatus err) $ L.toList errs) $ \subStatuses -> do
               updated <- batchUpdateSrvSubErrors st srv subStatuses
               logSubErrors srv subStatuses updated
-              -- TODO [certs] resubscribe queues with statuses NSErr and NSService
+              -- TODO [certs rcv] resubscribe queues with statuses NSErr and NSService
           CAServiceDisconnected srv serviceSub ->
             logNote $ "SMP server service disconnected " <> showService srv serviceSub
           CAServiceSubscribed srv serviceSub@(ServiceSub _ expected _) (ServiceSub _ n _) -- TODO [certs rcv] compare hash
@@ -603,7 +603,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
     queueSubErrorStatus :: SMPClientError -> Maybe NtfSubStatus
     queueSubErrorStatus = \case
       PCEProtocolError AUTH -> Just NSAuth
-      -- TODO [certs] we could allow making individual subscriptions within service session to handle SERVICE error.
+      -- TODO [certs rcv] we could allow making individual subscriptions within service session to handle SERVICE error.
       -- This would require full stack changes in SMP server, SMP client and SMP service agent.
       PCEProtocolError SERVICE -> Just NSService
       PCEProtocolError e -> updateErr "SMP error " e

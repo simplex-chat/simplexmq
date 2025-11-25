@@ -194,7 +194,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
-import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -249,13 +249,15 @@ import UnliftIO.STM
 type AE a = ExceptT AgentErrorType IO a
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
+getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> AE AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
-getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, presetServers} store backgroundMode =
-  newSMPAgentEnv cfg store >>= runReaderT runAgent
+getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> AE AgentClient
+getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netCfg, useServices, presetServers} store backgroundMode = do
+  -- This error should be prevented in the app
+  when (any id useServices && sessionMode netCfg == TSMEntity) $ throwE $ CMD PROHIBITED "newAgentClient"
+  liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
   where
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
@@ -594,18 +596,22 @@ testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPNTF -> runNTFServerTest c nm userId srv
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
--- TODO [certs rcv] should fail if any user is enabled to use services and per-connection isolation is chosen
-setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()
+setNetworkConfig :: AgentClient -> NetworkConfig -> AE ()
 setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
-  ts <- getCurrentTime
-  changed <- atomically $ do
-    (_, cfg) <- readTVar useNetworkConfig
-    let changed = cfg /= cfg'
-        !cfgSlow = slowNetworkConfig cfg'
-    when changed $ writeTVar useNetworkConfig (cfgSlow, cfg')
-    when (socksProxy cfg /= socksProxy cfg') $ writeTVar proxySessTs ts
-    pure changed
-  when changed $ reconnectAllServers c
+  ts <- liftIO getCurrentTime
+  (ok, changed) <- atomically $ do
+    useServices <- readTVar $ useClientServices c
+    if any id useServices && sessionMode cfg' == TSMEntity
+      then pure (False, False)
+      else do
+        (_, cfg) <- readTVar useNetworkConfig
+        let changed = cfg /= cfg'
+            !cfgSlow = slowNetworkConfig cfg'
+        when changed $ writeTVar useNetworkConfig (cfgSlow, cfg')
+        when (socksProxy cfg /= socksProxy cfg') $ writeTVar proxySessTs ts
+        pure (True, changed)
+  unless ok $ throwE $ CMD PROHIBITED "setNetworkConfig"
+  when changed $ liftIO $ reconnectAllServers c
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
 setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated} ni = withAgentEnv' c $ do
@@ -772,13 +778,19 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
       whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
 
--- TODO [certs rcv] should fail enabling if per-connection isolation is set
 setUserService' :: AgentClient -> UserId -> Bool -> AM ()
 setUserService' c userId enable = do
-  wasEnabled <- liftIO $ fromMaybe False <$> TM.lookupIO userId (useClientServices c)
-  when (enable /= wasEnabled) $ do
-    atomically $ TM.insert userId enable $ useClientServices c
-    unless enable $ withStore' c (`deleteClientServices` userId)
+  (ok, changed) <- atomically $ do
+    (cfg, _) <- readTVar $ useNetworkConfig c
+    if enable && sessionMode cfg == TSMEntity
+      then pure (False, False)
+      else do
+        wasEnabled <- fromMaybe False <$> TM.lookup userId (useClientServices c)
+        let changed = enable /= wasEnabled
+        when changed $ TM.insert userId enable $ useClientServices c
+        pure (True, changed)
+  unless ok $ throwE $ CMD PROHIBITED "setNetworkConfig"
+  when (changed && not enable) $ withStore' c (`deleteClientServices` userId)
 
 newConnAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
 newConnAsync c userId corrId enableNtfs cMode pqInitKeys subMode = do
