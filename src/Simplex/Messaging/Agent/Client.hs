@@ -241,7 +241,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
@@ -279,6 +279,7 @@ import Simplex.Messaging.Protocol
     RcvNtfPublicDhKey,
     SMPMsgMeta (..),
     SProtocolType (..),
+    ServiceSub (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     NewNtfCreds (..),
@@ -499,6 +500,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
+-- TODO [certs rcv] should fail if both per-connection isolation is set and any users use services
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
   let cfg = config agentEnv
@@ -622,9 +624,8 @@ getServiceCredentials c userId srv =
               let tlsCreds = tlsCredentials [cred]
               createClientService db userId srv tlsCreds
               pure (tlsCreds, Nothing)
-      (_, pk) <- atomically $ C.generateKeyPair g
-      let serviceSignKey = C.APrivateSignKey C.SEd25519 pk
-          creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
+      serviceSignKey <- liftEitherWith INTERNAL $ C.x509ToPrivate' $ snd serviceCreds
+      let creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
       pure (creds, serviceId_)
 
 class (Encoding err, Show err) => ProtocolServerClient v err msg | msg -> v, msg -> err where
@@ -744,9 +745,11 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
         ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+      -- TODO [certs rcv] add service to SS, possibly combine with SS.setSessionId
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
+    -- TODO [certs rcv] this should differentiate between service ID just set and service ID changed, and in the latter case disassociate the queue
     updateClientService service smp = case (service, smpClientService smp) of
       (Just (_, serviceId_), Just THClientService {serviceId})
         | serviceId_ /= Just serviceId -> withStore' c $ \db -> setClientServiceId db userId srv serviceId
@@ -763,32 +766,34 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
     -- we make active subscriptions pending only if the client for tSess was current (in the map) and active,
     -- because we can have a race condition when a new current client could have already
     -- made subscriptions active, and the old client would be processing diconnection later.
-    removeClientAndSubs :: IO ([RcvQueueSub], [ConnId])
+    removeClientAndSubs :: IO ([RcvQueueSub], [ConnId], Maybe ServiceSub)
     removeClientAndSubs = atomically $ do
       removeSessVar v tSess smpClients
-      ifM (readTVar active) removeSubs (pure ([], []))
+      ifM (readTVar active) removeSubs (pure ([], [], Nothing))
       where
         sessId = sessionId $ thParams client
         removeSubs = do
           mode <- getSessionMode c
-          subs <- SS.setSubsPending mode tSess sessId $ currentSubs c
+          (subs, serviceSub_) <- SS.setSubsPending mode tSess sessId $ currentSubs c
           let qs = M.elems subs
               cs = nubOrd $ map qConnId qs
           -- this removes proxied relays that this client created sessions to
           destSrvs <- M.keys <$> readTVar prs
           forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, cId) smpProxiedRelays
-          pure (qs, cs)
+          pure (qs, cs, serviceSub_)
 
-    serverDown :: ([RcvQueueSub], [ConnId]) -> IO ()
-    serverDown (qs, conns) = whenM (readTVarIO active) $ do
+    serverDown :: ([RcvQueueSub], [ConnId], Maybe ServiceSub) -> IO ()
+    serverDown (qs, conns, serviceSub_) = whenM (readTVarIO active) $ do
       notifySub c $ hostEvent' DISCONNECT client
       unless (null conns) $ notifySub c $ DOWN srv conns
-      unless (null qs) $ do
+      unless (null qs && isNothing serviceSub_) $ do
         releaseGetLocksIO c qs
         mode <- getSessionModeIO c
         let resubscribe
               | (mode == TSMEntity) == isJust cId = resubscribeSMPSession c tSess
-              | otherwise = void $ subscribeQueues c True qs
+              | otherwise = do
+                  mapM_ (runExceptT . resubscribeClientService c tSess) serviceSub_
+                  unless (null qs) $ void $ subscribeQueues c True qs
         runReaderT resubscribe env
 
 resubscribeSMPSession :: AgentClient -> SMPTransportSession -> AM' ()
@@ -807,11 +812,12 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
     runSubWorker = do
       ri <- asks $ reconnectInterval . config
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
-        pending <- atomically $ SS.getPendingSubs tSess $ currentSubs c
-        unless (M.null pending) $ do
+        (pendingSubs, pendingSS) <- atomically $ SS.getPendingSubs tSess $ currentSubs c
+        unless (M.null pendingSubs && isNothing pendingSS) $ do
           liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
-          handleNotify $ resubscribeSessQueues c tSess $ M.elems pending
+          mapM_ (handleNotify . void . runExceptT . resubscribeClientService c tSess) pendingSS
+          unless (M.null pendingSubs) $ handleNotify $ resubscribeSessQueues c tSess $ M.elems pendingSubs
           loop
     isForeground = (ASForeground ==) <$> readTVar (agentState c)
     cleanup :: SessionVar (Async ()) -> STM ()
@@ -1508,25 +1514,25 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
         newErr :: String -> AM (Maybe ShortLinkCreds)
         newErr = throwE . BROKER (B.unpack $ strEncode srv) . UNEXPECTED . ("Create queue: " <>)
 
-processSubResults :: AgentClient -> SMPTransportSession -> SessionId -> NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM [(RcvQueueSub, Maybe ClientNotice)]
-processSubResults c tSess@(userId, srv, _) sessId rs = do
-  pendingSubs <- SS.getPendingSubs tSess $ currentSubs c
-  let (failed, subscribed, notices, ignored) = foldr (partitionResults pendingSubs) (M.empty, [], [], 0) rs
+processSubResults :: AgentClient -> SMPTransportSession -> SessionId -> Maybe ServiceId -> NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM ([RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)])
+processSubResults c tSess@(userId, srv, _) sessId smpServiceId rs = do
+  pending <- SS.getPendingSubs tSess $ currentSubs c
+  let (failed, subscribed@(qs, sQs), notices, ignored) = foldr (partitionResults pending) (M.empty, ([], []), [], 0) rs
   unless (M.null failed) $ do
     incSMPServerStat' c userId srv connSubErrs $ M.size failed
     failSubscriptions c tSess failed
-  unless (null subscribed) $ do
-    incSMPServerStat' c userId srv connSubscribed $ length subscribed
+  unless (null qs && null sQs) $ do
+    incSMPServerStat' c userId srv connSubscribed $ length qs + length sQs
     SS.batchAddActiveSubs tSess sessId subscribed $ currentSubs c
   unless (ignored == 0) $ incSMPServerStat' c userId srv connSubIgnored ignored
-  pure notices
+  pure (sQs, notices)
   where
     partitionResults ::
-      Map SMP.RecipientId RcvQueueSub ->
+      (Map SMP.RecipientId RcvQueueSub, Maybe ServiceSub) ->
       (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) ->
-      (Map SMP.RecipientId SMPClientError, [RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)], Int) ->
-      (Map SMP.RecipientId SMPClientError, [RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)], Int)
-    partitionResults pendingSubs (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed, notices, ignored) = case r of
+      (Map SMP.RecipientId SMPClientError, ([RcvQueueSub], [RcvQueueSub]), [(RcvQueueSub, Maybe ClientNotice)], Int) ->
+      (Map SMP.RecipientId SMPClientError, ([RcvQueueSub], [RcvQueueSub]), [(RcvQueueSub, Maybe ClientNotice)], Int)
+    partitionResults (pendingSubs, pendingSS) (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed@(qs, sQs), notices, ignored) = case r of
       Left e -> case smpErrorClientNotice e of
         Just notice_ -> (failed', subscribed, (rq, notice_) : notices, ignored)
           where
@@ -1536,8 +1542,12 @@ processSubResults c tSess@(userId, srv, _) sessId rs = do
           | otherwise -> (failed', subscribed, notices, ignored)
         where
           failed' = M.insert rcvId e failed
-      Right _serviceId -- TODO [certs rcv] store association with the service
-        | rcvId `M.member` pendingSubs -> (failed, rq : subscribed, notices', ignored)
+      Right serviceId_
+        | rcvId `M.member` pendingSubs ->
+            let subscribed' = case (smpServiceId, serviceId_, pendingSS) of
+                  (Just sId, Just sId', Just ServiceSub {serviceId}) | sId == sId' && sId == serviceId -> (qs, rq : sQs)
+                  _ -> (rq : qs, sQs)
+             in (failed, subscribed', notices', ignored)
         | otherwise -> (failed, subscribed, notices', ignored + 1)
         where
           notices' = if isJust clientNoticeId then (rq, Nothing) : notices else notices
@@ -1576,6 +1586,7 @@ serverHostError = \case
 
 -- | Batch by transport session and subscribe queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> Bool -> [RcvQueueSub] -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
+subscribeQueues _ _ [] = pure []
 subscribeQueues c withEvents qs = do
   (errs, qs') <- checkQueues c qs
   atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
@@ -1632,6 +1643,7 @@ checkQueues c = fmap partitionEithers . mapM checkQueue
 -- This function expects that all queues belong to one transport session,
 -- and that they are already added to pending subscriptions.
 resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> AM' ()
+resubscribeSessQueues _ _ [] = pure ()
 resubscribeSessQueues c tSess qs = do
   (errs, qs_) <- checkQueues c qs
   forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c True (tSess, qs')
@@ -1650,13 +1662,15 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
           then Just . S.fromList . map qConnId . M.elems <$> atomically (SS.getActiveSubs tSess $ currentSubs c)
           else pure Nothing
       active <- E.uninterruptibleMask_ $ do
-        (active, notices) <- atomically $ do
-          r@(_, notices) <- ifM
+        (active, (serviceQs, notices)) <- atomically $ do
+          r@(_, (_, notices)) <- ifM
             (activeClientSession c tSess sessId)
-            ((True,) <$> processSubResults c tSess sessId rs)
-            ((False, []) <$ incSMPServerStat' c userId srv connSubIgnored (length rs))
+            ((True,) <$> processSubResults c tSess sessId smpServiceId rs)
+            ((False, ([], [])) <$ incSMPServerStat' c userId srv connSubIgnored (length rs))
           unless (null notices) $ takeTMVar $ clientNoticesLock c
           pure r
+        unless (null serviceQs) $ void $
+          processRcvServiceAssocs c serviceQs `runReaderT` agentEnv c
         unless (null notices) $ void $
           (processClientNotices c tSess notices `runReaderT` agentEnv c)
             `E.finally` atomically (putTMVar (clientNoticesLock c) ())
@@ -1677,6 +1691,13 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
       where
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
+        smpServiceId = (\THClientService {serviceId} -> serviceId) <$> smpClientService smp
+
+processRcvServiceAssocs :: AgentClient -> [RcvQueueSub] -> AM' ()
+processRcvServiceAssocs c serviceQs =
+  withStore' c (`setRcvServiceAssocs` serviceQs) `catchAllErrors'` \e -> do
+    logError $ "processClientNotices error: " <> tshow e
+    notifySub' c "" $ ERR e
 
 processClientNotices :: AgentClient -> SMPTransportSession -> [(RcvQueueSub, Maybe ClientNotice)] -> AM' ()
 processClientNotices c@AgentClient {presetServers} tSess notices = do
@@ -1689,10 +1710,35 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
       logError $ "processClientNotices error: " <> tshow e
       notifySub' c "" $ ERR e
 
-subscribeClientService :: AgentClient -> UserId -> SMPServer -> AM (Int64, IdsHash)
-subscribeClientService c userId srv =
-  withLogClient c NRMBackground (userId, srv, Nothing) B.empty "SUBS" $
-    (`subscribeService` SMP.SRecipientService) . connectedClient
+resubscribeClientService :: AgentClient -> SMPTransportSession -> ServiceSub -> AM ServiceSub
+resubscribeClientService c tSess (ServiceSub _ n idsHash) =
+  withServiceClient c tSess $ \smp _ -> do
+    subscribeClientService_ c tSess smp n idsHash
+
+subscribeClientService :: AgentClient -> UserId -> SMPServer -> Int64 -> IdsHash -> AM ServiceSub
+subscribeClientService c userId srv n idsHash =
+  withServiceClient c tSess $ \smp smpServiceId -> do
+    let serviceSub = ServiceSub smpServiceId n idsHash
+    atomically $ SS.setPendingServiceSub tSess serviceSub $ currentSubs c
+    subscribeClientService_ c tSess smp n idsHash
+  where
+    tSess = (userId, srv, Nothing)
+
+withServiceClient :: AgentClient -> SMPTransportSession -> (SMPClient -> ServiceId -> ExceptT SMPClientError IO a) -> AM a
+withServiceClient c tSess action =
+  withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
+    case (\THClientService {serviceId} -> serviceId) <$> smpClientService smp of
+      Just smpServiceId -> action smp smpServiceId
+      Nothing -> throwE PCEServiceUnavailable
+
+subscribeClientService_ :: AgentClient -> SMPTransportSession -> SMPClient -> Int64 -> IdsHash -> ExceptT SMPClientError IO ServiceSub
+subscribeClientService_ c tSess smp n idsHash = do
+  -- TODO [certs rcv] handle error
+  serviceSub' <- subscribeService smp SMP.SRecipientService n idsHash
+  let sessId = sessionId $ thParams smp
+  atomically $ whenM (activeClientSession c tSess sessId) $
+    SS.setActiveServiceSub tSess sessId serviceSub' $ currentSubs c
+  pure serviceSub'
 
 activeClientSession :: AgentClient -> SMPTransportSession -> SessionId -> STM Bool
 activeClientSession c tSess sessId = sameSess <$> tryReadSessVar tSess (smpClients c)
@@ -1762,7 +1808,7 @@ addNewQueueSubscription c rq' tSess sessId = do
     modifyTVar' (subscrConns c) $ S.insert $ qConnId rq
     active <- activeClientSession c tSess sessId
     if active
-      then SS.addActiveSub tSess sessId rq $ currentSubs c
+      then SS.addActiveSub tSess sessId rq' $ currentSubs c
       else SS.addPendingSub tSess rq $ currentSubs c
     pure active
   unless same $ resubscribeSMPSession c tSess
@@ -1951,6 +1997,7 @@ releaseGetLock c rq =
 {-# INLINE releaseGetLock #-}
 
 releaseGetLocksIO :: SomeRcvQueue q => AgentClient -> [q] -> IO ()
+releaseGetLocksIO _ [] = pure ()
 releaseGetLocksIO c rqs = do
   locks <- readTVarIO $ getMsgLocks c
   forM_ rqs $ \rq ->
@@ -2301,7 +2348,8 @@ withStore c action = do
       [ E.Handler $ \(e :: SQL.SQLError) ->
           let se = SQL.sqlError e
               busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
-           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
+              err = tshow se <> ": " <> SQL.sqlErrorDetails e <> ", " <> SQL.sqlErrorContext e
+           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ encodeUtf8 err,
         E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
       ]
 #endif

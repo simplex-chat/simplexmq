@@ -178,6 +178,7 @@ module Simplex.Messaging.Crypto
     sha512Hash,
     sha3_256,
     sha3_384,
+    md5Hash,
 
     -- * Message padding / un-padding
     canPad,
@@ -216,7 +217,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, MD5, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -1023,6 +1024,9 @@ sha3_256 = BA.convert . (hash :: ByteString -> Digest SHA3_256)
 sha3_384 :: ByteString -> ByteString
 sha3_384 = BA.convert . (hash :: ByteString -> Digest SHA3_384)
 {-# INLINE sha3_384 #-}
+
+md5Hash :: ByteString -> ByteString
+md5Hash = BA.convert . (hash :: ByteString -> Digest MD5)
 
 -- | AEAD-GCM encryption with associated data.
 --

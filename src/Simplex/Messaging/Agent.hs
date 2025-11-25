@@ -211,7 +211,6 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
-    IdsHash,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -222,6 +221,7 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta,
     SParty (..),
     SProtocolType (..),
+    ServiceSub (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
@@ -500,7 +500,7 @@ resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either Agen
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
-subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
+subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType ServiceSub))
 subscribeClientServices c = withAgentEnv c . subscribeClientServices' c
 {-# INLINE subscribeClientServices #-}
 
@@ -594,6 +594,7 @@ testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPNTF -> runNTFServerTest c nm userId srv
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
+-- TODO [certs rcv] should fail if any user is enabled to use services and per-connection isolation is chosen
 setNetworkConfig :: AgentClient -> NetworkConfig -> IO ()
 setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
   ts <- getCurrentTime
@@ -771,6 +772,7 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
       whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
 
+-- TODO [certs rcv] should fail enabling if per-connection isolation is set
 setUserService' :: AgentClient -> UserId -> Bool -> AM ()
 setUserService' c userId enable = do
   wasEnabled <- liftIO $ fromMaybe False <$> TM.lookupIO userId (useClientServices c)
@@ -1507,15 +1509,15 @@ resubscribeConnections' c connIds = do
       [] -> pure True
       rqs' -> anyM $ map (atomically . hasActiveSubscription c) rqs'
 
--- TODO [certs rcv] compare hash with lock
-subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType (Int64, IdsHash)))
+-- TODO [certs rcv] compare hash. possibly, it should return both expected and returned counts
+subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType ServiceSub))
 subscribeClientServices' c userId =
   ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"
   where
     useService = liftIO $ (Just True ==) <$> TM.lookupIO userId (useClientServices c)
     subscribe = do
       srvs <- withStore' c (`getClientServiceServers` userId)
-      lift $ M.fromList . zip srvs <$> mapConcurrently (tryAllErrors' . subscribeClientService c userId) srvs
+      lift $ M.fromList <$> mapConcurrently (\(srv, ServiceSub _ n idsHash) -> fmap (srv,) $ tryAllErrors' $ subscribeClientService c userId srv n idsHash) srvs
 
 -- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
@@ -2829,12 +2831,13 @@ processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion Err
 processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId, ts) = do
   upConnIds <- newTVarIO []
   forM_ ts $ \(entId, t) -> case t of
-    STEvent msgOrErr ->
-      withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
-        Right msg -> runProcessSMP rq conn (toConnData conn) msg
-        Left e -> lift $ do
-          processClientNotice rq e
-          notifyErr connId e
+    STEvent msgOrErr
+      | entId == SMP.NoEntity -> pure () -- TODO [certs rcv] process SALL
+      | otherwise -> withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
+          Right msg -> runProcessSMP rq conn (toConnData conn) msg
+          Left e -> lift $ do
+            processClientNotice rq e
+            notifyErr connId e
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
         SMP.SUB -> case respOrErr of
@@ -2870,7 +2873,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     processSubOk :: RcvQueue -> TVar [ConnId] -> IO ()
     processSubOk rq@RcvQueue {connId} upConnIds =
       atomically . whenM (isPendingSub rq) $ do
-        SS.addActiveSub tSess sessId (rcvQueueSub rq) $ currentSubs c
+        SS.addActiveSub tSess sessId rq $ currentSubs c
         modifyTVar' upConnIds (connId :)
     processSubErr :: RcvQueue -> SMPClientError -> AM' ()
     processSubErr rq@RcvQueue {connId} e = do

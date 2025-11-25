@@ -53,6 +53,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getSubscriptionServers,
     getUserServerRcvQueueSubs,
     unsetQueuesToSubscribe,
+    setRcvServiceAssocs,
     getConnIds,
     getConn,
     getDeletedConn,
@@ -401,29 +402,31 @@ deleteUsersWithoutConns db = do
   pure userIds
 
 createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ()
-createClientService db userId srv (kh, (cert, pk)) =
+createClientService db userId srv (kh, (cert, pk)) = do
+  serverKeyHash_ <- createServer_ db srv
   DB.execute
     db
     [sql|
       INSERT INTO client_services
-        (user_id, host, port, service_cert_hash, service_cert, service_priv_key)
-      VALUES (?,?,?,?,?,?)
-      ON CONFLICT (user_id, host, port)
+        (user_id, host, port, server_key_hash, service_cert_hash, service_cert, service_priv_key)
+      VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT (user_id, host, port, server_key_hash)
       DO UPDATE SET
         service_cert_hash = EXCLUDED.service_cert_hash,
         service_cert = EXCLUDED.service_cert,
         service_priv_key = EXCLUDED.service_priv_key,
-        rcv_service_id = NULL
+        service_id = NULL
     |]
-    (userId, host srv, port srv, kh, cert, pk)
+    (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
 
+-- TODO [certs rcv] get correct service based on key hash of the server
 getClientService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
 getClientService db userId srv =
   maybeFirstRow toService $
     DB.query
       db
       [sql|
-        SELECT service_cert_hash, service_cert, service_priv_key, rcv_service_id
+        SELECT service_cert_hash, service_cert, service_priv_key, service_id
         FROM client_services
         WHERE user_id = ? AND host = ? AND port = ?
       |]
@@ -431,19 +434,21 @@ getClientService db userId srv =
   where
     toService (kh, cert, pk, serviceId_) = ((kh, (cert, pk)), serviceId_)
 
-getClientServiceServers :: DB.Connection -> UserId -> IO [SMPServer]
+getClientServiceServers :: DB.Connection -> UserId -> IO [(SMPServer, ServiceSub)]
 getClientServiceServers db userId =
   map toServer
     <$> DB.query
       db
       [sql|
-        SELECT c.host, c.port, s.key_hash
+        SELECT c.host, c.port, s.key_hash, c.service_id, c.service_queue_count, c.service_queue_ids_hash
         FROM client_services c
         JOIN servers s ON s.host = c.host AND s.port = c.port
+        WHERE c.user_id = ?
       |]
       (Only userId)
   where
-    toServer (host, port, kh) = SMPServer host port kh
+    toServer (host, port, kh, serviceId, n, Binary idsHash) =
+      (SMPServer host port kh, ServiceSub serviceId n (IdsHash idsHash))
 
 setClientServiceId :: DB.Connection -> UserId -> SMPServer -> ServiceId -> IO ()
 setClientServiceId db userId srv serviceId =
@@ -451,7 +456,7 @@ setClientServiceId db userId srv serviceId =
     db
     [sql|
       UPDATE client_services
-      SET rcv_service_id = ?
+      SET service_id = ?
       WHERE user_id = ? AND host = ? AND port = ?
     |]
     (serviceId, userId, host srv, port srv)
@@ -2099,7 +2104,7 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} subMode serverKeyHash_ = do
           ntf_public_key, ntf_private_key, ntf_id, rcv_ntf_dh_secret
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
     |]
-    ( (host server, port server, rcvId, rcvServiceAssoc, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
+    ( (host server, port server, rcvId, BI rcvServiceAssoc, connId', rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret)
         :. (sndId, queueMode, status, BI toSubscribe, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_)
         :. (shortLinkId <$> shortLink, shortLinkKey <$> shortLink, linkPrivSigKey <$> shortLink, linkEncFixedData <$> shortLink)
         :. ntfCredsFields
@@ -2247,6 +2252,14 @@ getUserServerRcvQueueSubs db userId srv onlyNeeded =
 
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
+
+setRcvServiceAssocs :: DB.Connection -> [RcvQueueSub] -> IO ()
+setRcvServiceAssocs db rqs =
+#if defined(dbPostgres)
+  DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN " $ Only $ In (map queueId rqs)
+#else
+  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = " $ map (Only . queueId) rqs
+#endif
 
 -- * getConn helpers
 
@@ -2468,13 +2481,13 @@ rcvQueueQuery =
 
 toRcvQueue ::
   (UserId, C.KeyHash, ConnId, NonEmpty TransportHost, ServiceName, SMP.RecipientId, SMP.RcvPrivateAuthKey, SMP.RcvDhSecret, C.PrivateKeyX25519, Maybe C.DhSecretX25519, SMP.SenderId, Maybe QueueMode)
-    :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int, ServiceAssoc)
+    :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, DBEntityId, BoolInt, Maybe Int64, Maybe RcvSwitchStatus, Maybe VersionSMPC, Int, BoolInt)
     :. (Maybe SMP.NtfPublicAuthKey, Maybe SMP.NtfPrivateAuthKey, Maybe SMP.NotifierId, Maybe RcvNtfDhSecret)
     :. (Maybe SMP.LinkId, Maybe LinkKey, Maybe C.PrivateKeyEd25519, Maybe EncDataBytes) ->
   RcvQueue
 toRcvQueue
   ( (userId, keyHash, connId, host, port, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode)
-      :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors, rcvServiceAssoc)
+      :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion_, deleteErrors, BI rcvServiceAssoc)
       :. (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_)
       :. (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_)
   ) =
