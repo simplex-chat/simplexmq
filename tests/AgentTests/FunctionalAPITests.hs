@@ -3607,7 +3607,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetings a bId1' b aId1'
     a `hasClients` 1
     b `hasClients` 1
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
+    setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
@@ -3617,7 +3617,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 4 a bId1 b aId1
     exchangeGreetingsMsgId 4 a bId1' b aId1'
     liftIO $ threadDelay 250000
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
+    setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -3632,7 +3632,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetings a bId2' b aId2'
     a `hasClients` 2
     b `hasClients` 1
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
+    setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -3646,7 +3646,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 4 a bId2 b aId2
     exchangeGreetingsMsgId 4 a bId2' b aId2'
     liftIO $ threadDelay 250000
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
+    setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -3695,7 +3695,7 @@ testClientServiceConnection ps = do
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
   Right st <- liftIO $ createStore dbPath
-  c <- getSMPAgentClient_ clientId cfg' initServers st False
+  Right c <- runExceptT $ getSMPAgentClient_ clientId cfg' initServers st False
   when (dbNew st) $ insertUser st
   pure c
 

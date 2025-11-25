@@ -923,7 +923,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     putSubscribersInfo protoName ServerSubscribers {queueSubscribers, subClients} showIds = do
                       activeSubs <- getSubscribedClients queueSubscribers
                       hPutStrLn h $ protoName <> " subscriptions: " <> show (M.size activeSubs)
-                      -- TODO [certs] service subscriptions
+                      -- TODO [certs rcv] service subscriptions
                       clnts <- countSubClients activeSubs
                       hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size clnts) <> (if showIds then " " <> show (IS.toList clnts) else "")
                       clnts' <- readTVarIO subClients

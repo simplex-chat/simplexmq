@@ -500,7 +500,6 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
--- TODO [certs rcv] should fail if both per-connection isolation is set and any users use services
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
   let cfg = config agentEnv
@@ -749,7 +748,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
-    -- TODO [certs rcv] this should differentiate between service ID just set and service ID changed, and in the latter case disassociate the queue
+    -- TODO [certs rcv] this should differentiate between service ID just set and service ID changed, and in the latter case disassociate the queues
     updateClientService service smp = case (service, smpClientService smp) of
       (Just (_, serviceId_), Just THClientService {serviceId})
         | serviceId_ /= Just serviceId -> withStore' c $ \db -> setClientServiceId db userId srv serviceId
