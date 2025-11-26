@@ -194,7 +194,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
-import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (NetworkRequestMode (..), ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -222,6 +222,7 @@ import Simplex.Messaging.Protocol
     SParty (..),
     SProtocolType (..),
     ServiceSub (..),
+    ServiceSubResult,
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
@@ -502,7 +503,7 @@ resubscribeConnections :: AgentClient -> [ConnId] -> AE (Map ConnId (Either Agen
 resubscribeConnections c = withAgentEnv c . resubscribeConnections' c
 {-# INLINE resubscribeConnections #-}
 
-subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType ServiceSub))
+subscribeClientServices :: AgentClient -> UserId -> AE (Map SMPServer (Either AgentErrorType ServiceSubResult))
 subscribeClientServices c = withAgentEnv c . subscribeClientServices' c
 {-# INLINE subscribeClientServices #-}
 
@@ -1514,14 +1515,14 @@ resubscribeConnections' c connIds = do
       rqs' -> anyM $ map (atomically . hasActiveSubscription c) rqs'
 
 -- TODO [certs rcv] compare hash. possibly, it should return both expected and returned counts
-subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType ServiceSub))
+subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType ServiceSubResult))
 subscribeClientServices' c userId =
   ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"
   where
     useService = liftIO $ (Just True ==) <$> TM.lookupIO userId (useClientServices c)
     subscribe = do
       srvs <- withStore' c (`getClientServiceServers` userId)
-      lift $ M.fromList <$> mapConcurrently (\(srv, ServiceSub _ n idsHash) -> fmap (srv,) $ tryAllErrors' $ subscribeClientService c userId srv n idsHash) srvs
+      lift $ M.fromList <$> mapConcurrently (\(srv, ServiceSub _ n idsHash) -> fmap (srv,) $ tryAllErrors' $ subscribeClientService c False userId srv n idsHash) srvs
 
 -- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
@@ -2837,7 +2838,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
   serviceRQs <- newTVarIO ([] :: [RcvQueue])
   forM_ ts $ \(entId, t) -> case t of
     STEvent msgOrErr
-      | entId == SMP.NoEntity -> pure () -- TODO [certs rcv] process SALL
+      | entId == SMP.NoEntity -> case msgOrErr of
+          Right msg -> case msg of
+            SMP.ALLS -> notifySub c $ SERVICE_ALL srv
+            SMP.ERR e -> notifyErr "" $ PCEProtocolError e
+            _ -> logError $ "unexpected event: " <> tshow msg
+          Left e -> notifyErr "" e
       | otherwise -> withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
           Right msg -> runProcessSMP rq conn (toConnData conn) msg
           Left e -> lift $ do

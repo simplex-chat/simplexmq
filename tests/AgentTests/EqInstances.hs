@@ -8,7 +8,6 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol (ConnLinkData (..), OwnerAuth (..), UserContactData (..), UserLinkData (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client (ProxiedRelay (..))
-import Simplex.Messaging.Protocol (ServiceSub (..))
 
 instance (Eq rq, Eq sq) => Eq (SomeConn' rq sq) where
   SomeConn d c == SomeConn d' c' = case testEquality d d' of
@@ -48,7 +47,3 @@ deriving instance Eq OwnerAuth
 deriving instance Show ProxiedRelay
 
 deriving instance Eq ProxiedRelay
-
-deriving instance Show ServiceSub
-
-deriving instance Eq ServiceSub

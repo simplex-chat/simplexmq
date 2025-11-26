@@ -3668,27 +3668,35 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 
 testClientServiceConnection :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testClientServiceConnection ps = do
-  (sId, uId) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+  ((sId, uId), qIdHash) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
     conns@(sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
       conns@(sId, uId) <- makeConnection service user
       exchangeGreetings service uId user sId
       pure conns
     withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
-      subscribeClientServices service 1
+      [(_, Right (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash)))] <- M.toList <$> subscribeClientServices service 1
+      ("", "", SERVICE_ALL _) <- nGet service
       subscribeConnection user sId
       exchangeGreetingsMsgId 4 service uId user sId
-    pure conns
+      pure (conns, qIdHash)
   withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-      subscribeClientServices service 1
+      [(_, Right (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash')))] <- M.toList <$> subscribeClientServices service 1
+      ("", "", SERVICE_ALL _) <- nGet service
+      liftIO $ qIdHash' `shouldBe` qIdHash
       subscribeConnection user sId
       exchangeGreetingsMsgId 6 service uId user sId
     ("", "", DOWN _ [_]) <- nGet user
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 qIdHash')) <- nGet service
+    qIdHash' `shouldBe` qIdHash
     -- TODO [certs rcv] how to integrate service counts into stats
     -- r <- nGet service -- TODO [certs rcv] some event when service disconnects with count
     -- print r
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       ("", "", UP _ [_]) <- nGet user
+      ("", "", SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash''))) <- nGet service
+      ("", "", SERVICE_ALL _) <- nGet service
+      liftIO $ qIdHash'' `shouldBe` qIdHash
       -- r <- nGet service -- TODO [certs rcv] some event when service reconnects with count
       exchangeGreetingsMsgId 8 service uId user sId
 

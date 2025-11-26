@@ -234,6 +234,8 @@ import Simplex.Messaging.Protocol
     NMsgMeta,
     ProtocolServer (..),
     QueueMode (..),
+    ServiceSub,
+    ServiceSubResult,
     SMPClientVersion,
     SMPServer,
     SMPServerWithAuth,
@@ -388,6 +390,9 @@ data AEvent (e :: AEntity) where
   DISCONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DOWN :: SMPServer -> [ConnId] -> AEvent AENone
   UP :: SMPServer -> [ConnId] -> AEvent AENone
+  SERVICE_ALL :: SMPServer -> AEvent AENone -- all service messages are delivered
+  SERVICE_DOWN :: SMPServer -> ServiceSub -> AEvent AENone
+  SERVICE_UP :: SMPServer -> ServiceSubResult -> AEvent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> AEvent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> AEvent AEConn
   SENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
@@ -459,6 +464,9 @@ data AEventTag (e :: AEntity) where
   DISCONNECT_ :: AEventTag AENone
   DOWN_ :: AEventTag AENone
   UP_ :: AEventTag AENone
+  SERVICE_ALL_ :: AEventTag AENone
+  SERVICE_DOWN_ :: AEventTag AENone
+  SERVICE_UP_ :: AEventTag AENone
   SWITCH_ :: AEventTag AEConn
   RSYNC_ :: AEventTag AEConn
   SENT_ :: AEventTag AEConn
@@ -514,6 +522,9 @@ aEventTag = \case
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
   UP {} -> UP_
+  SERVICE_ALL _ -> SERVICE_ALL_
+  SERVICE_DOWN {} -> SERVICE_DOWN_
+  SERVICE_UP {} -> SERVICE_UP_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
   SENT {} -> SENT_

@@ -733,7 +733,7 @@ testServiceDeliverSubscribe =
                     pure $ Just $ Just mId3
                   _ -> pure Nothing
               ]
-        Resp "" NoEntity SALL <- tGet1 sh
+        Resp "" NoEntity ALLS <- tGet1 sh
         Resp "12" _ OK <- signSendRecv sh rKey ("12", rId, ACK mId3)
         Resp "14" _ OK <- signSendRecv h sKey ("14", sId, _SEND "hello 4")
         Resp "" _ (Msg mId4 msg4) <- tGet1 sh
@@ -831,7 +831,7 @@ testServiceUpgradeAndDowngrade =
                     pure $ Just $ Just (rKey2, rId2, mId3)
                   _ -> pure Nothing
               ]
-        Resp "" NoEntity SALL <- tGet1 sh
+        Resp "" NoEntity ALLS <- tGet1 sh
         Resp "15" _ OK <- signSendRecv sh rKey3_1 ("15", rId3_1, ACK mId3_1)
         Resp "16" _ OK <- signSendRecv sh rKey3_2 ("16", rId3_2, ACK mId3_2)
         pure ()
