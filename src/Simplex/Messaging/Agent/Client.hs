@@ -50,6 +50,7 @@ module Simplex.Messaging.Agent.Client
     subscribeQueues,
     subscribeUserServerQueues,
     subscribeClientService,
+    processRcvServiceAssocs,
     processClientNotices,
     getQueueMessage,
     decryptSMPMessage,
@@ -1692,7 +1693,8 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         sessId = sessionId $ thParams smp
         smpServiceId = (\THClientService {serviceId} -> serviceId) <$> smpClientService smp
 
-processRcvServiceAssocs :: AgentClient -> [RcvQueueSub] -> AM' ()
+processRcvServiceAssocs :: SMPQueue q => AgentClient -> [q] -> AM' ()
+processRcvServiceAssocs _ [] = pure ()
 processRcvServiceAssocs c serviceQs =
   withStore' c (`setRcvServiceAssocs` serviceQs) `catchAllErrors'` \e -> do
     logError $ "processClientNotices error: " <> tshow e

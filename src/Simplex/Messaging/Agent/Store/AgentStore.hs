@@ -2251,7 +2251,7 @@ getUserServerRcvQueueSubs db userId srv onlyNeeded =
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
-setRcvServiceAssocs :: DB.Connection -> [RcvQueueSub] -> IO ()
+setRcvServiceAssocs :: SMPQueue q => DB.Connection -> [q] -> IO ()
 setRcvServiceAssocs db rqs =
 #if defined(dbPostgres)
   DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN " $ Only $ In (map queueId rqs)

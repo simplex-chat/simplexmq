@@ -232,7 +232,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.SystemTime
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPVersion)
+import Simplex.Messaging.Transport (SMPVersion, THClientService' (..), THandleAuth (..), THandleParams (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
@@ -1355,11 +1355,7 @@ toConnResult connId rs = case M.lookup connId rs of
   Just (Left e) -> throwE e
   _ -> throwE $ INTERNAL $ "no result for connection " <> B.unpack connId
 
-type QCmdResult a = (QueueStatus, Either AgentErrorType a)
-
-type QDelResult = QCmdResult ()
-
-type QSubResult = QCmdResult (Maybe SMP.ServiceId)
+type QCmdResult = (QueueStatus, Either AgentErrorType ())
 
 subscribeConnections' :: AgentClient -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
 subscribeConnections' _ [] = pure M.empty
@@ -1367,16 +1363,15 @@ subscribeConnections' c connIds = subscribeConnections_ c . zip connIds =<< with
 
 subscribeConnections_ :: AgentClient -> [(ConnId, Either StoreError SomeConnSub)] -> AM (Map ConnId (Either AgentErrorType ()))
 subscribeConnections_ c conns = do
-  -- TODO [certs rcv] - it should exclude connections already associated, and then if some don't deliver any response they may be unassociated
   let (subRs, cs) = foldr partitionResultsConns ([], []) conns
   resumeDelivery cs
   resumeConnCmds c $ map fst cs
+  -- queue/service association is handled in the client
   rcvRs <- lift $ connResults <$> subscribeQueues c False (concatMap rcvQueues cs)
-  rcvRs' <- storeClientServiceAssocs rcvRs
   ns <- asks ntfSupervisor
-  lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs' cs
+  lift $ whenM (liftIO $ hasInstantNotifications ns) . void . forkIO . void $ sendNtfCreate ns rcvRs cs
   -- union is left-biased
-  let rs = rcvRs' `M.union` subRs
+  let rs = rcvRs `M.union` subRs
   notifyResultError rs
   pure rs
   where
@@ -1400,24 +1395,21 @@ subscribeConnections_ c conns = do
       _ -> Left $ INTERNAL "unexpected queue status"
     rcvQueues :: (ConnId, SomeConnSub) -> [RcvQueueSub]
     rcvQueues (_, SomeConn _ conn) = connRcvQueues conn
-    connResults :: [(RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId))
+    connResults :: [(RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId))] -> Map ConnId (Either AgentErrorType ())
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QSubResult -> (RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId QSubResult
-        addResult rs (RcvQueueSub {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
+        addResult :: Map ConnId QCmdResult -> (RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId)) -> Map ConnId QCmdResult
+        addResult rs (RcvQueueSub {connId, status}, r) = M.alter (combineRes (status, () <$ r)) connId rs
         -- combines two results for one connection, by using only Active queues (if there is at least one Active queue)
-        combineRes :: QSubResult -> Maybe QSubResult -> Maybe QSubResult
+        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QSubResult -> Int
+        order :: QCmdResult -> Int
         order (Active, Right _) = 1
         order (Active, _) = 2
         order (_, Right _) = 3
         order _ = 4
-    -- TODO [certs rcv] store associations of queues with client service ID
-    storeClientServiceAssocs :: Map ConnId (Either AgentErrorType (Maybe SMP.ServiceId)) -> AM (Map ConnId (Either AgentErrorType ()))
-    storeClientServiceAssocs = pure . M.map (() <$)
     sendNtfCreate :: NtfSupervisor -> Map ConnId (Either AgentErrorType ()) -> [(ConnId, SomeConnSub)] -> AM' ()
     sendNtfCreate ns rcvRs cs = do
       let oks = M.keysSet $ M.filter (either temporaryAgentError $ const True) rcvRs
@@ -2383,13 +2375,13 @@ deleteConnQueues c nm waitDelivery ntf rqs = do
     connResults = M.map snd . foldl' addResult M.empty
       where
         -- collects results by connection ID
-        addResult :: Map ConnId QDelResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QDelResult
+        addResult :: Map ConnId QCmdResult -> (RcvQueue, Either AgentErrorType ()) -> Map ConnId QCmdResult
         addResult rs (RcvQueue {connId, status}, r) = M.alter (combineRes (status, r)) connId rs
         -- combines two results for one connection, by prioritizing errors in Active queues
-        combineRes :: QDelResult -> Maybe QDelResult -> Maybe QDelResult
+        combineRes :: QCmdResult -> Maybe QCmdResult -> Maybe QCmdResult
         combineRes r' (Just r) = Just $ if order r <= order r' then r else r'
         combineRes r' _ = Just r'
-        order :: QDelResult -> Int
+        order :: QCmdResult -> Int
         order (Active, Left _) = 1
         order (_, Left _) = 2
         order _ = 3
@@ -2840,8 +2832,9 @@ data ACKd = ACKd | ACKPending
 -- It cannot be finally, as sometimes it needs to be ACK+DEL,
 -- and sometimes ACK has to be sent from the consumer.
 processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
-processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId, ts) = do
+processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandleParams {thAuth, sessionId = sessId}, ts) = do
   upConnIds <- newTVarIO []
+  serviceRQs <- newTVarIO ([] :: [RcvQueue])
   forM_ ts $ \(entId, t) -> case t of
     STEvent msgOrErr
       | entId == SMP.NoEntity -> pure () -- TODO [certs rcv] process SALL
@@ -2853,11 +2846,10 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
     STResponse (Cmd SRecipient cmd) respOrErr ->
       withRcvConn entId $ \rq conn -> case cmd of
         SMP.SUB -> case respOrErr of
-          Right SMP.OK -> liftIO $ processSubOk rq upConnIds
-          -- TODO [certs rcv] associate queue with the service
-          Right (SMP.SOK _serviceId_) -> liftIO $ processSubOk rq upConnIds
+          Right SMP.OK -> liftIO $ processSubOk rq upConnIds serviceRQs Nothing
+          Right (SMP.SOK serviceId_) -> liftIO $ processSubOk rq upConnIds serviceRQs serviceId_
           Right msg@SMP.MSG {} -> do
-            liftIO $ processSubOk rq upConnIds -- the connection is UP even when processing this particular message fails
+            liftIO $ processSubOk rq upConnIds serviceRQs Nothing -- the connection is UP even when processing this particular message fails
             runProcessSMP rq conn (toConnData conn) msg
           Right r -> lift $ processSubErr rq $ unexpectedResponse r
           Left e -> lift $ unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
@@ -2873,6 +2865,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
   unless (null connIds) $ do
     notify' "" $ UP srv connIds
     atomically $ incSMPServerStat' c userId srv connSubscribed $ length connIds
+  readTVarIO serviceRQs >>= processRcvServiceAssocs c
   where
     withRcvConn :: SMP.RecipientId -> (forall c. RcvQueue -> Connection c -> AM ()) -> AM' ()
     withRcvConn rId a = do
@@ -2882,11 +2875,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
           tryAllErrors' (a rq conn) >>= \case
             Left e -> notify' connId (ERR e)
             Right () -> pure ()
-    processSubOk :: RcvQueue -> TVar [ConnId] -> IO ()
-    processSubOk rq@RcvQueue {connId} upConnIds =
+    processSubOk :: RcvQueue -> TVar [ConnId] -> TVar [RcvQueue] -> Maybe SMP.ServiceId -> IO ()
+    processSubOk rq@RcvQueue {connId} upConnIds serviceRQs serviceId_ =
       atomically . whenM (isPendingSub rq) $ do
         SS.addActiveSub tSess sessId rq $ currentSubs c
         modifyTVar' upConnIds (connId :)
+        when (isJust serviceId_ && serviceId_ == clientServiceId_) $ modifyTVar' serviceRQs (rq :)
+    clientServiceId_ = (\THClientService {serviceId} -> serviceId) <$> (clientService =<< thAuth)
     processSubErr :: RcvQueue -> SMPClientError -> AM' ()
     processSubErr rq@RcvQueue {connId} e = do
       atomically . whenM (isPendingSub rq) $
