@@ -419,18 +419,19 @@ createClientService db userId srv (kh, (cert, pk)) = do
     |]
     (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
 
--- TODO [certs rcv] get correct service based on key hash of the server
 getClientService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
 getClientService db userId srv =
   maybeFirstRow toService $
     DB.query
       db
       [sql|
-        SELECT service_cert_hash, service_cert, service_priv_key, service_id
-        FROM client_services
-        WHERE user_id = ? AND host = ? AND port = ?
+        SELECT c.service_cert_hash, c.service_cert, c.service_priv_key, c.service_id
+        FROM client_services c
+        JOIN servers s ON c.host = s.host AND c.port = s.port
+        WHERE c.user_id = ? AND c.host = ? AND c.port = ?
+          AND COALESCE(c.server_key_hash, s.key_hash) = ?
       |]
-      (userId, host srv, port srv)
+      (userId, host srv, port srv, keyHash srv)
   where
     toService (kh, cert, pk, serviceId_) = ((kh, (cert, pk)), serviceId_)
 
@@ -2250,12 +2251,12 @@ getUserServerRcvQueueSubs db userId srv onlyNeeded =
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
-setRcvServiceAssocs :: DB.Connection -> [RcvQueueSub] -> IO ()
+setRcvServiceAssocs :: SMPQueue q => DB.Connection -> [q] -> IO ()
 setRcvServiceAssocs db rqs =
 #if defined(dbPostgres)
   DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN " $ Only $ In (map queueId rqs)
 #else
-  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = " $ map (Only . queueId) rqs
+  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = ?" $ map (Only . queueId) rqs
 #endif
 
 -- * getConn helpers

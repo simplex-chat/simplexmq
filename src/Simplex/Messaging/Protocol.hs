@@ -142,6 +142,8 @@ module Simplex.Messaging.Protocol
     MsgBody,
     IdsHash (..),
     ServiceSub (..),
+    ServiceSubResult (..),
+    serviceSubResult,
     queueIdsHash,
     queueIdHash,
     MaxMessageLen,
@@ -712,7 +714,7 @@ data BrokerMsg where
   -- v2: MsgId -> SystemTime -> MsgFlags -> MsgBody -> BrokerMsg
   MSG :: RcvMessage -> BrokerMsg
   -- sent once delivering messages to SUBS command is complete
-  SALL :: BrokerMsg
+  ALLS :: BrokerMsg
   NID :: NotifierId -> RcvNtfPublicDhKey -> BrokerMsg
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
@@ -949,7 +951,7 @@ data BrokerMsgTag
   | SOK_
   | SOKS_
   | MSG_
-  | SALL_
+  | ALLS_
   | NID_
   | NMSG_
   | PKEY_
@@ -1042,7 +1044,7 @@ instance Encoding BrokerMsgTag where
     SOK_ -> "SOK"
     SOKS_ -> "SOKS"
     MSG_ -> "MSG"
-    SALL_ -> "SALL"
+    ALLS_ -> "ALLS"
     NID_ -> "NID"
     NMSG_ -> "NMSG"
     PKEY_ -> "PKEY"
@@ -1064,7 +1066,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "SOK" -> Just SOK_
     "SOKS" -> Just SOKS_
     "MSG" -> Just MSG_
-    "SALL" -> Just SALL_
+    "ALLS" -> Just ALLS_
     "NID" -> Just NID_
     "NMSG" -> Just NMSG_
     "PKEY" -> Just PKEY_
@@ -1468,10 +1470,29 @@ type MsgId = ByteString
 type MsgBody = ByteString
 
 data ServiceSub = ServiceSub
-  { serviceId :: ServiceId,
+  { smpServiceId :: ServiceId,
     smpQueueCount :: Int64,
     smpQueueIdsHash :: IdsHash
   }
+  deriving (Eq, Show)
+
+data ServiceSubResult = ServiceSubResult (Maybe ServiceSubError) ServiceSub
+  deriving (Eq, Show)
+
+data ServiceSubError
+  = SSErrorServiceId {expectedServiceId :: ServiceId, subscribedServiceId :: ServiceId}
+  | SSErrorQueueCount {expectedQueueCount :: Int64, subscribedQueueCount :: Int64}
+  | SSErrorQueueIdsHash {expectedQueueIdsHash :: IdsHash, subscribedQueueIdsHash :: IdsHash}
+  deriving (Eq, Show)
+
+serviceSubResult :: ServiceSub -> ServiceSub -> ServiceSubResult
+serviceSubResult s s' = ServiceSubResult subError_ s'
+  where
+    subError_
+      | smpServiceId s /= smpServiceId s' = Just $ SSErrorServiceId (smpServiceId s) (smpServiceId s')
+      | smpQueueCount s /= smpQueueCount s' = Just $ SSErrorQueueCount (smpQueueCount s) (smpQueueCount s')
+      | smpQueueIdsHash s /= smpQueueIdsHash s' = Just $ SSErrorQueueIdsHash (smpQueueIdsHash s) (smpQueueIdsHash s')
+      | otherwise = Nothing
 
 newtype IdsHash = IdsHash {unIdsHash :: BS.ByteString}
   deriving (Eq, Show)
@@ -1897,7 +1918,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | otherwise -> e (SOKS_, ' ', n)
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
-    SALL -> e SALL_
+    ALLS -> e ALLS_
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
@@ -1928,7 +1949,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       MSG . RcvMessage msgId <$> bodyP
       where
         bodyP = EncRcvMsgBody . unTail <$> smpP
-    SALL_ -> pure SALL
+    ALLS_ -> pure ALLS
     IDS_
       | v >= newNtfCredsSMPVersion -> ids smpP smpP smpP smpP
       | v >= serviceCertsSMPVersion -> ids smpP smpP smpP nothing
@@ -1981,7 +2002,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG -> noEntityMsg
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
-    SALL -> noEntityMsg
+    ALLS -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY

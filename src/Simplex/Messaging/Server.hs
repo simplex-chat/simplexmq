@@ -1806,7 +1806,7 @@ client
           where
             deliverServiceMessages expectedCnt = do
               (qCnt, _msgCnt, _dupCnt, _errCnt) <- foldRcvServiceMessages ms serviceId deliverQueueMsg (0, 0, 0, 0)
-              atomically $ writeTBQueue msgQ [(NoCorrId, NoEntity, SALL)]
+              atomically $ writeTBQueue msgQ [(NoCorrId, NoEntity, ALLS)]
               -- TODO [certs rcv] compare with expected
               logNote $ "Service subscriptions for " <> tshow serviceId <> " (" <> tshow qCnt <> " queues)"
             deliverQueueMsg :: (Int, Int, Int, Int) -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO (Int, Int, Int, Int)
