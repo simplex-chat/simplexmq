@@ -303,7 +303,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleParams (sessionId, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -1444,8 +1444,8 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
     withClient c nm tSess $ \(SMPConnectedClient smp _) -> do
       (ntfKeys, ntfCreds) <- liftIO $ mkNtfCreds a g smp
       (thParams smp,ntfKeys,) <$> createSMPQueue smp nm nonce_ rKeys dhKey auth subMode (queueReqData cqrd) ntfCreds
-  -- TODO [certs rcv] validate that serviceId is the same as in the client session, fail otherwise
-  -- possibly, it should allow returning Nothing - it would indicate incorrect old version
+  let sessServiceId = (\THClientService {serviceId = sId} -> sId) <$> (clientService =<< thAuth thParams')
+  when (isJust serviceId && serviceId /= sessServiceId) $ logError "incorrect service ID in NEW response"
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
   shortLink <- mkShortLinkCreds thParams' qik
   let rq =
@@ -1461,7 +1461,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
             sndId,
             queueMode,
             shortLink,
-            rcvServiceAssoc = isJust serviceId,
+            rcvServiceAssoc = isJust serviceId && serviceId == sessServiceId,
             status = New,
             enableNtfs,
             clientNoticeId = Nothing,
