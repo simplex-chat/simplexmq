@@ -747,15 +747,13 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
         ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
-      -- TODO [certs rcv] add service to SS, possibly combine with SS.setSessionId
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
-    -- TODO [certs rcv] this should differentiate between service ID just set and service ID changed, and in the latter case disassociate the queues
     updateClientService service smp = case (service, smpClientService smp) of
-      (Just (_, serviceId_), Just THClientService {serviceId})
-        | serviceId_ /= Just serviceId -> withStore' c $ \db -> setClientServiceId db userId srv serviceId
-        | otherwise -> pure ()
+      (Just (_, serviceId_), Just THClientService {serviceId}) -> withStore' c $ \db -> do
+        setClientServiceId db userId srv serviceId
+        forM_ serviceId_ $ \sId -> when (sId /= serviceId) $ removeRcvServiceAssocs db userId srv
       (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
       (Nothing, Just _) -> logError "server returned serviceId without service credentials in request"
       (Nothing, Nothing) -> pure ()

@@ -54,6 +54,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getUserServerRcvQueueSubs,
     unsetQueuesToSubscribe,
     setRcvServiceAssocs,
+    removeRcvServiceAssocs,
     getConnIds,
     getConn,
     getDeletedConn,
@@ -2256,8 +2257,28 @@ setRcvServiceAssocs db rqs =
 #if defined(dbPostgres)
   DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN " $ Only $ In (map queueId rqs)
 #else
-  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = ?" $ map (Only . queueId) rqs
+  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_isd = ?" $ map (Only . queueId) rqs
 #endif
+
+removeRcvServiceAssocs :: DB.Connection -> UserId -> SMPServer -> IO ()
+removeRcvServiceAssocs db userId (SMPServer h p kh) =
+  DB.execute
+    db
+    [sql|
+      UPDATE rcv_queues
+      SET rcv_service_assoc = 0
+      WHERE EXISTS (
+        SELECT 1
+        FROM connections c
+        JOIN servers s ON rcv_queues.host = s.host AND rcv_queues.port = s.port
+        WHERE c.conn_id = rcv_queues.conn_id
+          AND c.user_id = ?
+          AND rcv_queues.host = ?
+          AND rcv_queues.port = ?
+          AND COALESCE(rcv_queues.server_key_hash, s.key_hash) = ?
+      )
+    |]
+    (userId, h, p, kh)
 
 -- * getConn helpers
 
