@@ -42,18 +42,26 @@ module Simplex.Messaging.Agent.Store.SQLite
   )
 where
 
+import Control.Concurrent.MVar
+import Control.Concurrent.STM
+import Control.Exception (bracketOnError, onException, throwIO)
 import Control.Monad
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import qualified Data.ByteString as B
 import Data.Functor (($>))
 import Data.IORef
 import Data.Maybe (fromMaybe)
+import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
+import Database.SQLite3 (FuncArgs, FuncContext, funcArgInt64, funcResultBlob)
 import qualified Database.SQLite3 as SQLite3
+import Database.SQLite3.Direct (createAggregate)
+import Simplex.MemberRelations.MemberRelations (MemberRelation (..), fromRelationInt, setRelations)
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
@@ -62,9 +70,6 @@ import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, takeFileName, (</>))
-import UnliftIO.Exception (bracketOnError, onException)
-import UnliftIO.MVar
-import UnliftIO.STM
 
 -- * SQLite Store implementation
 
@@ -109,9 +114,9 @@ connectDB path key track = do
   pure db
   where
     prepare db = do
-      let exec = SQLite3.exec $ SQL.connectionHandle $ DB.conn db
-      unless (BA.null key) . exec $ "PRAGMA key = " <> keyString key <> ";"
-      exec . fromQuery $
+      let db' = SQL.connectionHandle $ DB.conn db
+      unless (BA.null key) . SQLite3.exec db' $ "PRAGMA key = " <> keyString key <> ";"
+      SQLite3.exec db' . fromQuery $
         [sql|
           PRAGMA busy_timeout = 100;
           PRAGMA foreign_keys = ON;
@@ -119,6 +124,21 @@ connectDB path key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
+      createAggregate db' "build_relations_vector" (Just 2) [] buildRelationsVectorStep buildRelationsVectorFinal
+        >>= either (throwIO . userError . show) pure
+
+-- | Step function for build_relations_vector aggregate.
+-- Accumulates (idx, relation) pairs.
+buildRelationsVectorStep :: FuncContext -> FuncArgs -> [(Int64, MemberRelation)] -> IO [(Int64, MemberRelation)]
+buildRelationsVectorStep _ args acc = do
+  idx <- funcArgInt64 args 0
+  relation <- fromRelationInt . fromIntegral <$> funcArgInt64 args 1
+  pure $ (idx, relation) : acc
+
+-- | Final function for build_relations_vector aggregate.
+-- Builds the vector from accumulated pairs using setRelations.
+buildRelationsVectorFinal :: FuncContext -> [(Int64, MemberRelation)] -> IO ()
+buildRelationsVectorFinal ctx acc = funcResultBlob ctx $ setRelations acc B.empty
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =
