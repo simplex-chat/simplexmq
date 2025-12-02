@@ -303,7 +303,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -619,7 +619,7 @@ getServiceCredentials c userId srv =
       let g = agentDRG c
       ((C.KeyHash kh, serviceCreds), serviceId_) <-
         withStore' c $ \db ->
-          getClientService db userId srv >>= \case
+          getClientServiceCredentials db userId srv >>= \case
             Just service -> pure service
             Nothing -> do
               cred <- genCredentials g Nothing (25, 24 * 999999) "simplex"
@@ -1256,6 +1256,15 @@ protocolClientError protocolError_ host = \case
   PCEServiceUnavailable {} -> BROKER host NO_SERVICE
   PCEIOError e -> BROKER host $ NETWORK $ NEConnectError $ E.displayException e
 
+-- it is consistent with smpClientServiceError
+clientServiceError :: AgentErrorType -> Bool
+clientServiceError = \case
+  BROKER _ NO_SERVICE -> True
+  BROKER _ (TRANSPORT (TEHandshake BAD_SERVICE)) -> True -- TODO [certs rcv] this error may be temporary, so we should possibly resubscribe.
+  SMP _ SMP.SERVICE -> True
+  SMP _ (SMP.PROXY (SMP.BROKER NO_SERVICE)) -> True -- for completeness, it cannot happen.
+  _ -> False
+
 data ProtocolTestStep
   = TSConnect
   | TSDisconnect
@@ -1716,8 +1725,9 @@ resubscribeClientService :: AgentClient -> SMPTransportSession -> ServiceSub -> 
 resubscribeClientService c tSess serviceSub =
   withServiceClient c tSess $ \smp _ -> subscribeClientService_ c True tSess smp serviceSub
 
-subscribeClientService :: AgentClient -> Bool -> UserId -> SMPServer -> Int64 -> IdsHash -> AM ServiceSubResult
-subscribeClientService c withEvent userId srv n idsHash =
+-- TODO [certs rcv] update service in the database if it has different ID and re-associate queues, and send event
+subscribeClientService :: AgentClient -> Bool -> UserId -> SMPServer -> ServiceSub -> AM ServiceSubResult
+subscribeClientService c withEvent userId srv (ServiceSub _ n idsHash) =
   withServiceClient c tSess $ \smp smpServiceId -> do
     let serviceSub = ServiceSub smpServiceId n idsHash
     atomically $ SS.setPendingServiceSub tSess serviceSub $ currentSubs c
@@ -1726,14 +1736,21 @@ subscribeClientService c withEvent userId srv n idsHash =
     tSess = (userId, srv, Nothing)
 
 withServiceClient :: AgentClient -> SMPTransportSession -> (SMPClient -> ServiceId -> ExceptT SMPClientError IO a) -> AM a
-withServiceClient c tSess action =
-  withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
+withServiceClient c tSess@(userId, srv, _) subscribe =
+  unassocOnError $ withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
     case (\THClientService {serviceId} -> serviceId) <$> smpClientService smp of
-      Just smpServiceId -> action smp smpServiceId
+      Just smpServiceId -> subscribe smp smpServiceId
       Nothing -> throwE PCEServiceUnavailable
+  where
+    unassocOnError a = a `catchE` \e -> do
+      when (clientServiceError e) $ do
+        qs <- withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
+        void $ lift $ subscribeUserServerQueues c userId srv qs
+      throwE e
 
+-- TODO [certs rcv] send subscription error event?
 subscribeClientService_ :: AgentClient -> Bool -> SMPTransportSession -> SMPClient -> ServiceSub -> ExceptT SMPClientError IO ServiceSubResult
-subscribeClientService_ c withEvent tSess@(_, srv, _) smp expected@(ServiceSub _ n idsHash) = do
+subscribeClientService_ c withEvent tSess@(userId, srv, _) smp expected@(ServiceSub _ n idsHash) = do
   subscribed <- subscribeService smp SMP.SRecipientService n idsHash
   let sessId = sessionId $ thParams smp
       r = serviceSubResult expected subscribed

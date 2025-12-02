@@ -778,6 +778,7 @@ temporaryClientError = \case
   _ -> False
 {-# INLINE temporaryClientError #-}
 
+-- it is consistent with clientServiceError
 smpClientServiceError :: SMPClientError -> Bool
 smpClientServiceError = \case
   PCEServiceUnavailable -> True

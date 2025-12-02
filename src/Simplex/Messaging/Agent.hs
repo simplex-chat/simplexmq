@@ -153,7 +153,7 @@ import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition
-import Data.Either (isRight, partitionEithers, rights)
+import Data.Either (fromRight, isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
@@ -221,7 +221,6 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta,
     SParty (..),
     SProtocolType (..),
-    ServiceSub (..),
     ServiceSubResult,
     SndPublicAuthKey,
     SubscriptionMode (..),
@@ -1451,7 +1450,12 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     let userSrvs' = case activeUserId_ of
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs'
+    useServices <- readTVarIO $ useClientServices c
+    userSrvs'' <-
+      if any id useServices
+        then lift $ mapConcurrently (subscribeService useServices) userSrvs'
+        else pure $ map (,False) userSrvs'
+    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs''
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
@@ -1460,16 +1464,23 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   resumeAllCommands c
   where
     handleErr = (`catchAllErrors` \e -> notifySub' c "" (ERR e) >> throwE e)
-    subscribeUserServer :: Int -> TVar Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
-    subscribeUserServer maxPending currPending (userId, srv) = do
+    subscribeService :: Map UserId Bool -> (UserId, SMPServer) -> AM' ((UserId, SMPServer), ServiceAssoc)
+    subscribeService useServices us@(userId, srv) = fmap ((us,) . fromRight False) $ tryAllErrors' $ do
+      withStore' c (\db -> getSubscriptionService db userId srv) >>= \case
+        Just serviceSub -> case M.lookup userId useServices of
+          Just True -> isRight <$> tryAllErrors (subscribeClientService c True userId srv serviceSub)
+          _ -> False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs db userId srv)
+        _ -> pure False
+    subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer maxPending currPending ((userId, srv), hasService) = do
       atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
       tryAllErrors' $ do
         qs <- withStore' c $ \db -> do
-          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded
-          atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
+          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded hasService
+          unless (null qs) $ atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
           pure qs
         let n = length qs
-        lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
+        unless (null qs) $ lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
         pure n
       where
         subscribe qs = do
@@ -1522,7 +1533,7 @@ subscribeClientServices' c userId =
     useService = liftIO $ (Just True ==) <$> TM.lookupIO userId (useClientServices c)
     subscribe = do
       srvs <- withStore' c (`getClientServiceServers` userId)
-      lift $ M.fromList <$> mapConcurrently (\(srv, ServiceSub _ n idsHash) -> fmap (srv,) $ tryAllErrors' $ subscribeClientService c False userId srv n idsHash) srvs
+      lift $ M.fromList <$> mapConcurrently (\(srv, serviceSub) -> fmap (srv,) $ tryAllErrors' $ subscribeClientService c False userId srv serviceSub) srvs
 
 -- requesting messages sequentially, to reduce memory usage
 getConnectionMessages' :: AgentClient -> NonEmpty ConnMsgReq -> AM' (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
