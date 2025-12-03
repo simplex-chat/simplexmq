@@ -124,8 +124,6 @@ import Fixtures
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
-import Simplex.Messaging.Agent.Store (Connection' (..), StoredRcvQueue (..), SomeConn' (..))
-import Simplex.Messaging.Agent.Store.AgentStore (getConn)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
@@ -477,7 +475,7 @@ functionalAPITests ps = do
     it "should connect two users and switch session mode" $
       withSmpServer ps testTwoUsers
   describe "Client service certificates" $ do
-    it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
+    fit "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -3679,26 +3677,43 @@ testClientServiceConnection ps = do
       subscribeConnection user sId
       exchangeGreetingsMsgId 4 service uId user sId
       pure (conns, qIdHash)
-  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+  (uId', sId') <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-      [(_, Right (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash')))] <- M.toList <$> subscribeClientServices service 1
-      ("", "", SERVICE_ALL _) <- nGet service
-      liftIO $ qIdHash' `shouldBe` qIdHash
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash')))) -> qIdHash' == qIdHash; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
       subscribeConnection user sId
       exchangeGreetingsMsgId 6 service uId user sId
     ("", "", DOWN _ [_]) <- nGet user
     ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 qIdHash')) <- nGet service
     qIdHash' `shouldBe` qIdHash
     -- TODO [certs rcv] how to integrate service counts into stats
-    -- r <- nGet service -- TODO [certs rcv] some event when service disconnects with count
-    -- print r
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       ("", "", UP _ [_]) <- nGet user
-      ("", "", SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash''))) <- nGet service
-      ("", "", SERVICE_ALL _) <- nGet service
-      liftIO $ qIdHash'' `shouldBe` qIdHash
-      -- r <- nGet service -- TODO [certs rcv] some event when service reconnects with count
+      -- Nothing in ServiceSubResult confirms that both counts and IDs hash match
+      -- SERVICE_ALL may be deliverd before SERVICE_UP event in case there are no messages to deliver
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash'')))) -> qIdHash'' == qIdHash; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
       exchangeGreetingsMsgId 8 service uId user sId
+      conns'@(uId', sId') <- makeConnection user service -- opposite direction
+      exchangeGreetings user sId' service uId'
+      pure conns'
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 2 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      -- TODO [certs rcv] test message delivery during subscription
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_, _]) <- nGet user
+      exchangeGreetingsMsgId 4 user sId' service uId'
+      exchangeGreetingsMsgId 10 service uId user sId
 
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
