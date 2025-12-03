@@ -90,7 +90,6 @@ library
       Simplex.FileTransfer.Transport
       Simplex.FileTransfer.Types
       Simplex.FileTransfer.Util
-      Simplex.MemberRelations.MemberRelations
       Simplex.Messaging.Agent
       Simplex.Messaging.Agent.Client
       Simplex.Messaging.Agent.Env.SQLite
