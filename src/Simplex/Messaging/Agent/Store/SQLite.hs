@@ -52,15 +52,16 @@ import qualified Data.ByteString as B
 import Data.Functor (($>))
 import Data.IORef
 import Data.Maybe (fromMaybe)
-import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
-import Database.SQLite3 (FuncArgs, FuncContext, funcArgInt64, funcArgText, funcResultBlob)
+import Database.SQLite3 (funcArgInt64, funcArgText, funcResultBlob)
 import qualified Database.SQLite3 as SQLite3
-import Database.SQLite3.Direct (createAggregate)
+import Database.SQLite3.Bindings
+import Foreign.C.Types
+import Foreign.Ptr
 import Simplex.MemberRelations.MemberRelations (IntroductionDirection (..), MemberRelation (..), fromIntroductionInt, setNewRelations)
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
@@ -115,7 +116,6 @@ connectDB path functions key track = do
   pure db
   where
     prepare db = do
-      let db' = SQL.connectionHandle $ DB.conn db
       unless (BA.null key) . SQLite3.exec db' $ "PRAGMA key = " <> keyString key <> ";"
       SQLite3.exec db' . fromQuery $
         [sql|
@@ -125,16 +125,28 @@ connectDB path functions key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
-      forM_ functions $ \SQLiteFuncDef {funcName, argCount, deterministic, funcPtr} ->
-        createStaticFunction db' funcName argCount deterministic funcPtr
-          >>= either (throwIO . userError . show) pure
-      createAggregate db' "migrate_relations_vector" (Just 3) [] migrateRelationsVectorStep migrateRelationsVectorFinal
+      mapM_ addFunction functions
+      createStaticAggregate db' "simplex_member_relations" 3 sqliteMemberRelationsStepPtr sqliteMemberRelationsFinalPtr
         >>= either (throwIO . userError . show) pure
+      where
+        db' = SQL.connectionHandle $ DB.conn db
+        addFunction SQLiteFuncDef {funcName, argCount, funcPtrs} =
+          either (throwIO . userError . show) pure =<< case funcPtrs of
+            SQLiteFuncPtr isDet funcPtr -> createStaticFunction db' funcName argCount isDet funcPtr
+            SQLiteAggrPtrs stepPtr finalPtr -> createStaticAggregate db' funcName argCount stepPtr finalPtr
 
--- | Step function for migrate_relations_vector aggregate.
--- Accumulates (idx, direction, relation) tuples.
-migrateRelationsVectorStep :: FuncContext -> FuncArgs -> [(Int64, IntroductionDirection, MemberRelation)] -> IO [(Int64, IntroductionDirection, MemberRelation)]
-migrateRelationsVectorStep _ args acc = do
+
+foreign export ccall "simplex_member_relations_step" sqliteMemberRelationsStep :: SQLiteFunc
+
+foreign import ccall "&simplex_member_relations_step" sqliteMemberRelationsStepPtr :: FunPtr SQLiteFunc
+
+foreign export ccall "simplex_member_relations_final" sqliteMemberRelationsFinal :: SQLiteFuncFinal
+
+foreign import ccall "&simplex_member_relations_final" sqliteMemberRelationsFinalPtr :: FunPtr SQLiteFuncFinal
+
+-- accumulates (idx, direction, relation) tuples.
+sqliteMemberRelationsStep :: SQLiteFunc
+sqliteMemberRelationsStep = mkSQLiteAggStep [] $ \_ args acc -> do
   idx <- funcArgInt64 args 0
   direction <- fromIntroductionInt . fromIntegral <$> funcArgInt64 args 1
   introStatus <- funcArgText args 2
@@ -147,10 +159,9 @@ migrateRelationsVectorStep _ args acc = do
       "con" -> MRConnected
       _ -> MRIntroduced -- 'new', 'sent', 'rcv', 'fwd'
 
--- | Final function for migrate_relations_vector aggregate.
 -- Builds the vector from accumulated tuples using setNewRelations.
-migrateRelationsVectorFinal :: FuncContext -> [(Int64, IntroductionDirection, MemberRelation)] -> IO ()
-migrateRelationsVectorFinal ctx acc = funcResultBlob ctx $ setNewRelations acc B.empty
+sqliteMemberRelationsFinal :: SQLiteFuncFinal
+sqliteMemberRelationsFinal = mkSQLiteAggFinal [] $ \cxt acc -> funcResultBlob cxt $ setNewRelations acc B.empty
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =

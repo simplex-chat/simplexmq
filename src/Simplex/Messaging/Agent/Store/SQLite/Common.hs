@@ -7,6 +7,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
   ( DBStore (..),
     DBOpts (..),
     SQLiteFuncDef (..),
+    SQLiteFuncPtrs (..),
     withConnection,
     withConnection',
     withTransaction,
@@ -55,13 +56,17 @@ data DBOpts = DBOpts
     track :: DB.TrackQueries
   }
 
--- e.g. `SQLiteFuncDef "name" 2 True f`
+-- e.g. `SQLiteFuncDef "func_name" 2 (SQLiteFuncPtr True func)`
+-- or   `SQLiteFuncDef "aggr_name" 3 (SQLiteAggrPtrs step final)`
 data SQLiteFuncDef = SQLiteFuncDef
   { funcName :: ByteString,
     argCount :: CArgCount,
-    deterministic :: Bool,
-    funcPtr :: FunPtr SQLiteFunc
+    funcPtrs :: SQLiteFuncPtrs
   }
+
+data SQLiteFuncPtrs
+  = SQLiteFuncPtr {deterministic :: Bool, funcPtr :: FunPtr SQLiteFunc}
+  | SQLiteAggrPtrs {stepPtr :: FunPtr SQLiteFunc, finalPtr :: FunPtr SQLiteFuncFinal}
 
 withConnectionPriority :: DBStore -> Bool -> (DB.Connection -> IO a) -> IO a
 withConnectionPriority DBStore {dbSem, dbConnection} priority action
