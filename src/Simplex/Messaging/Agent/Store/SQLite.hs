@@ -58,10 +58,10 @@ import qualified Data.Text as T
 import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
-import Database.SQLite3 (FuncArgs, FuncContext, funcArgInt64, funcResultBlob)
+import Database.SQLite3 (FuncArgs, FuncContext, funcArgInt64, funcArgText, funcResultBlob)
 import qualified Database.SQLite3 as SQLite3
 import Database.SQLite3.Direct (createAggregate)
-import Simplex.MemberRelations.MemberRelations (MemberRelation (..), fromRelationInt, setRelations)
+import Simplex.MemberRelations.MemberRelations (IntroductionDirection (..), MemberRelation (..), fromIntroductionInt, setNewRelations)
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
@@ -124,21 +124,29 @@ connectDB path key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
-      createAggregate db' "build_relations_vector" (Just 2) [] buildRelationsVectorStep buildRelationsVectorFinal
+      createAggregate db' "migrate_relations_vector" (Just 3) [] migrateRelationsVectorStep migrateRelationsVectorFinal
         >>= either (throwIO . userError . show) pure
 
--- | Step function for build_relations_vector aggregate.
--- Accumulates (idx, relation) pairs.
-buildRelationsVectorStep :: FuncContext -> FuncArgs -> [(Int64, MemberRelation)] -> IO [(Int64, MemberRelation)]
-buildRelationsVectorStep _ args acc = do
+-- | Step function for migrate_relations_vector aggregate.
+-- Accumulates (idx, direction, relation) tuples.
+migrateRelationsVectorStep :: FuncContext -> FuncArgs -> [(Int64, IntroductionDirection, MemberRelation)] -> IO [(Int64, IntroductionDirection, MemberRelation)]
+migrateRelationsVectorStep _ args acc = do
   idx <- funcArgInt64 args 0
-  relation <- fromRelationInt . fromIntegral <$> funcArgInt64 args 1
-  pure $ (idx, relation) : acc
+  direction <- fromIntroductionInt . fromIntegral <$> funcArgInt64 args 1
+  introStatus <- funcArgText args 2
+  let relation = introStatusToRelation direction introStatus
+  pure $ (idx, direction, relation) : acc
+  where
+    introStatusToRelation dir status = case status of
+      "re-con" -> if dir == IDSubjectIntroduced then MRSubjectConnected else MRReferencedConnected
+      "to-con" -> if dir == IDSubjectIntroduced then MRReferencedConnected else MRSubjectConnected
+      "con" -> MRConnected
+      _ -> MRIntroduced -- 'new', 'sent', 'rcv', 'fwd'
 
--- | Final function for build_relations_vector aggregate.
--- Builds the vector from accumulated pairs using setRelations.
-buildRelationsVectorFinal :: FuncContext -> [(Int64, MemberRelation)] -> IO ()
-buildRelationsVectorFinal ctx acc = funcResultBlob ctx $ setRelations acc B.empty
+-- | Final function for migrate_relations_vector aggregate.
+-- Builds the vector from accumulated tuples using setNewRelations.
+migrateRelationsVectorFinal :: FuncContext -> [(Int64, IntroductionDirection, MemberRelation)] -> IO ()
+migrateRelationsVectorFinal ctx acc = funcResultBlob ctx $ setNewRelations acc B.empty
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =
