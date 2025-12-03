@@ -1458,7 +1458,7 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     --    This approach preserves performance for all clients that do not use services.
     -- 2) at least one user ID has services enabled:
     --    Service will be loaded for all user/server combinations:
-    --    a) service is enabled for and service record exists: subscription will be attempted,
+    --    a) service is enabled for user ID and service record exists: subscription will be attempted,
     --    b) service is disabled and record exists: service record and all associations will be removed,
     --    c) service is disabled or no record: no subscription attempt.
     -- On successful service subscription, only unassociated queues will be subscribed.

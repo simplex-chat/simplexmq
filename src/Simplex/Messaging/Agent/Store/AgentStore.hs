@@ -2278,8 +2278,20 @@ getUserServerRcvQueueSubs db userId srv onlyNeeded hasService =
       | hasService = " AND q.rcv_service_assoc = 0"
       | otherwise = ""
 
-unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer ->  IO [RcvQueueSub]
-unassocUserServerRcvQueueSubs db userId srv = undefined
+unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [RcvQueueSub]
+unassocUserServerRcvQueueSubs db userId (SMPServer h p kh) =
+  map toRcvQueueSub
+    <$> DB.query
+      db
+      (removeRcvAssocsQuery <> " " <> returningColums)
+      (h, p, userId, kh)
+  where
+    returningColums =
+      [sql|
+        RETURNING c.user_id, rcv_queues.conn_id, rcv_queues.host, rcv_queues.port, COALESCE(rcv_queues.server_key_hash, s.key_hash),
+          rcv_queues.rcv_id, rcv_queues.rcv_private_key, rcv_queues.status, c.enable_ntfs, rcv_queues.client_notice_id,
+          rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
+      |]
 
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
@@ -2289,28 +2301,26 @@ setRcvServiceAssocs db rqs =
 #if defined(dbPostgres)
   DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN " $ Only $ In (map queueId rqs)
 #else
-  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_isd = ?" $ map (Only . queueId) rqs
+  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = ?" $ map (Only . queueId) rqs
 #endif
 
 removeRcvServiceAssocs :: DB.Connection -> UserId -> SMPServer -> IO ()
-removeRcvServiceAssocs db userId (SMPServer h p kh) =
-  DB.execute
-    db
-    [sql|
-      UPDATE rcv_queues
-      SET rcv_service_assoc = 0
-      WHERE EXISTS (
-        SELECT 1
-        FROM connections c
-        JOIN servers s ON rcv_queues.host = s.host AND rcv_queues.port = s.port
-        WHERE c.conn_id = rcv_queues.conn_id
-          AND c.user_id = ?
-          AND rcv_queues.host = ?
-          AND rcv_queues.port = ?
-          AND COALESCE(rcv_queues.server_key_hash, s.key_hash) = ?
-      )
-    |]
-    (userId, h, p, kh)
+removeRcvServiceAssocs db userId (SMPServer h p kh) = DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
+
+removeRcvAssocsQuery :: Query
+removeRcvAssocsQuery =
+  [sql|
+    UPDATE rcv_queues
+    SET rcv_service_assoc = 0
+    FROM connections c, servers s
+    WHERE rcv_queues.host = ?
+      AND rcv_queues.port = ?
+      AND c.conn_id = rcv_queues.conn_id
+      AND c.user_id = ?
+      AND s.host = rcv_queues.host
+      AND s.port = rcv_queues.port
+      AND COALESCE(rcv_queues.server_key_hash, s.key_hash) = ?
+  |]
 
 removeUserRcvServiceAssocs :: DB.Connection -> UserId -> IO ()
 removeUserRcvServiceAssocs db userId =
@@ -2319,11 +2329,8 @@ removeUserRcvServiceAssocs db userId =
     [sql|
       UPDATE rcv_queues
       SET rcv_service_assoc = 0
-      WHERE EXISTS (
-        SELECT 1
-        FROM connections c
-        WHERE c.conn_id = rcv_queues.conn_id AND c.user_id = ?
-      )
+      FROM connections c
+      WHERE c.conn_id = rcv_queues.conn_id AND c.user_id = ?
     |]
     (Only userId)
 
