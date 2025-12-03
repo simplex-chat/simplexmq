@@ -475,7 +475,7 @@ functionalAPITests ps = do
     it "should connect two users and switch session mode" $
       withSmpServer ps testTwoUsers
   describe "Client service certificates" $ do
-    fit "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
+    it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
