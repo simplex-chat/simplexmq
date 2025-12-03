@@ -1451,6 +1451,17 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
     useServices <- readTVarIO $ useClientServices c
+    -- These options are possible below:
+    -- 1) services fully disabled:
+    --    No service subscriptions will be attempted, and existing services and association will remain in in the database,
+    --    but they will be ignored because of hasService parameter set to False.
+    --    This approach preserves performance for all clients that do not use services.
+    -- 2) at least one user ID has services enabled:
+    --    Service will be loaded for all user/server combinations:
+    --    a) service is enabled for and service record exists: subscription will be attempted,
+    --    b) service is disabled and record exists: service record and all associations will be removed,
+    --    c) service is disabled or no record: no subscription attempt.
+    -- On successful service subscription, only unassociated queues will be subscribed.
     userSrvs'' <-
       if any id useServices
         then lift $ mapConcurrently (subscribeService useServices) userSrvs'
@@ -1468,6 +1479,8 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     subscribeService useServices us@(userId, srv) = fmap ((us,) . fromRight False) $ tryAllErrors' $ do
       withStore' c (\db -> getSubscriptionService db userId srv) >>= \case
         Just serviceSub -> case M.lookup userId useServices of
+          -- TODO [certs rcv] improve logic to differentiate between permanent and temporary service subscription errors,
+          -- as the current logic would fall back to per-queue subscriptions on ANY service subscription error (e.g., network connection error).
           Just True -> isRight <$> tryAllErrors (subscribeClientService c True userId srv serviceSub)
           _ -> False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs db userId srv)
         _ -> pure False
