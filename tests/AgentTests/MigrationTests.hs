@@ -230,6 +230,7 @@ createStore randSuffix migrations confirmMigrations = do
   let dbOpts =
         DBOpts {
           dbFilePath = testDB randSuffix,
+          dbFunctions = [],
           dbKey = "",
           keepKey = False,
           vacuum = True,

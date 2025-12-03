@@ -6,6 +6,7 @@
 module Simplex.Messaging.Agent.Store.SQLite.Common
   ( DBStore (..),
     DBOpts (..),
+    SQLiteFuncDef (..),
     withConnection,
     withConnection',
     withTransaction,
@@ -20,9 +21,13 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (retry)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import Data.ByteString (ByteString)
 import Database.SQLite.Simple (SQLError)
 import qualified Database.SQLite.Simple as SQL
+import Database.SQLite3.Bindings
+import Foreign.Ptr
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
+import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Util (ifM, unlessM)
 import qualified UnliftIO.Exception as E
 import UnliftIO.MVar
@@ -33,6 +38,7 @@ storeKey key keepKey = if keepKey || BA.null key then Just key else Nothing
 
 data DBStore = DBStore
   { dbFilePath :: FilePath,
+    dbFunctions :: [SQLiteFuncDef],
     dbKey :: TVar (Maybe ScrubbedBytes),
     dbSem :: TVar Int,
     dbConnection :: MVar DB.Connection,
@@ -42,10 +48,19 @@ data DBStore = DBStore
 
 data DBOpts = DBOpts
   { dbFilePath :: FilePath,
+    dbFunctions :: [SQLiteFuncDef],
     dbKey :: ScrubbedBytes,
     keepKey :: Bool,
     vacuum :: Bool,
     track :: DB.TrackQueries
+  }
+
+-- e.g. `SQLiteFuncDef "name" 2 True f`
+data SQLiteFuncDef = SQLiteFuncDef
+  { funcName :: ByteString,
+    argCount :: CArgCount,
+    deterministic :: Bool,
+    funcPtr :: FunPtr SQLiteFunc
   }
 
 withConnectionPriority :: DBStore -> Bool -> (DB.Connection -> IO a) -> IO a
