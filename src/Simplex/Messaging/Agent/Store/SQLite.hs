@@ -67,8 +67,8 @@ import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSc
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
-import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
 import Simplex.Messaging.Agent.Store.SQLite.Util (SQLiteFunc, createStaticFunction, mkSQLiteFunc)
+import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -77,10 +77,10 @@ import System.FilePath (takeDirectory, takeFileName, (</>))
 -- * SQLite Store implementation
 
 createDBStore :: DBOpts -> [Migration] -> MigrationConfig -> IO (Either MigrationError DBStore)
-createDBStore opts@DBOpts {dbFilePath, dbKey, keepKey, track} migrations migrationConfig = do
+createDBStore opts@DBOpts {dbFilePath} migrations migrationConfig = do
   let dbDir = takeDirectory dbFilePath
   createDirectoryIfMissing True dbDir
-  st <- connectSQLiteStore dbFilePath dbKey keepKey track
+  st <- connectSQLiteStore opts
   r <- migrateDBSchema st opts Nothing migrations migrationConfig `onException` closeDBStore st
   case r of
     Right () -> pure $ Right st
@@ -99,23 +99,24 @@ migrateDBSchema st DBOpts {dbFilePath, vacuum} migrationsTable migrations Migrat
       dbm = DBMigrate {initialize, getCurrent, run, backup}
    in sharedMigrateSchema dbm (dbNew st) migrations confirm
 
-connectSQLiteStore :: FilePath -> ScrubbedBytes -> Bool -> DB.TrackQueries -> IO DBStore
-connectSQLiteStore dbFilePath key keepKey track = do
+connectSQLiteStore :: DBOpts -> IO DBStore
+connectSQLiteStore DBOpts {dbFilePath, dbFunctions, dbKey = key, keepKey, track} = do
   dbNew <- not <$> doesFileExist dbFilePath
-  dbConn <- dbBusyLoop (connectDB dbFilePath key track)
+  dbConn <- dbBusyLoop $ connectDB dbFilePath dbFunctions key track
   dbConnection <- newMVar dbConn
   dbKey <- newTVarIO $! storeKey key keepKey
   dbClosed <- newTVarIO False
   dbSem <- newTVarIO 0
-  pure DBStore {dbFilePath, dbKey, dbSem, dbConnection, dbNew, dbClosed}
+  pure DBStore {dbFilePath, dbFunctions, dbKey, dbSem, dbConnection, dbNew, dbClosed}
 
-connectDB :: FilePath -> ScrubbedBytes -> DB.TrackQueries -> IO DB.Connection
-connectDB path key track = do
+connectDB :: FilePath -> [SQLiteFuncDef] -> ScrubbedBytes -> DB.TrackQueries -> IO DB.Connection
+connectDB path functions key track = do
   db <- DB.open path track
   prepare db `onException` DB.close db
   -- _printPragmas db path
   pure db
   where
+    functions' = SQLiteFuncDef "simplex_xor_md5_combine" 2 True sqliteXorMd5CombinePtr : functions
     prepare db = do
       let db' = SQL.connectionHandle $ DB.conn db
       unless (BA.null key) . SQLite3.exec db' $ "PRAGMA key = " <> keyString key <> ";"
@@ -127,8 +128,9 @@ connectDB path key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
-      createStaticFunction db' "simplex_xor_md5_combine" 2 True sqliteXorMd5CombinePtr
-        >>= either (throwIO . userError . show) pure
+      forM_ functions' $ \SQLiteFuncDef {funcName, argCount, deterministic, funcPtr} ->
+        createStaticFunction db' funcName argCount deterministic funcPtr
+          >>= either (throwIO . userError . show) pure
 
 foreign export ccall "simplex_xor_md5_combine" sqliteXorMd5Combine :: SQLiteFunc
 
@@ -155,12 +157,12 @@ openSQLiteStore st@DBStore {dbClosed} key keepKey =
   ifM (readTVarIO dbClosed) (openSQLiteStore_ st key keepKey) (putStrLn "openSQLiteStore: already opened")
 
 openSQLiteStore_ :: DBStore -> ScrubbedBytes -> Bool -> IO ()
-openSQLiteStore_ DBStore {dbConnection, dbFilePath, dbKey, dbClosed} key keepKey =
+openSQLiteStore_ DBStore {dbConnection, dbFilePath, dbFunctions, dbKey, dbClosed} key keepKey =
   bracketOnError
     (takeMVar dbConnection)
     (tryPutMVar dbConnection)
     $ \DB.Connection {slow, track} -> do
-      DB.Connection {conn} <- connectDB dbFilePath key track
+      DB.Connection {conn} <- connectDB dbFilePath dbFunctions key track
       atomically $ do
         writeTVar dbClosed False
         writeTVar dbKey $! storeKey key keepKey
