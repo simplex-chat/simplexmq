@@ -110,7 +110,6 @@ connectDB path functions key track = do
   pure db
   where
     prepare db = do
-      let db' = SQL.connectionHandle $ DB.conn db
       unless (BA.null key) . SQLite3.exec db' $ "PRAGMA key = " <> keyString key <> ";"
       SQLite3.exec db' . fromQuery $
         [sql|
@@ -120,9 +119,13 @@ connectDB path functions key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
-      forM_ functions $ \SQLiteFuncDef {funcName, argCount, deterministic, funcPtr} ->
-        createStaticFunction db' funcName argCount deterministic funcPtr
-          >>= either (throwIO . userError . show) pure
+      mapM_ addFunction functions
+      where
+        db' = SQL.connectionHandle $ DB.conn db
+        addFunction SQLiteFuncDef {funcName, argCount, funcPtrs} =
+          either (throwIO . userError . show) pure =<< case funcPtrs of
+            SQLiteFuncPtr isDet funcPtr -> createStaticFunction db' funcName argCount isDet funcPtr
+            SQLiteAggrPtrs stepPtr finalPtr -> createStaticAggregate db' funcName argCount stepPtr finalPtr
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =
