@@ -12,8 +12,6 @@ module Simplex.Messaging.Notifications.Server.Push where
 
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
-import qualified Crypto.PubKey.ECC.Types as ECT
-import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding (DER (..))
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -27,7 +25,6 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Time.Clock.System
-import qualified Data.X509 as X
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport.HTTP2.Client (HTTP2ClientError)
@@ -73,12 +70,6 @@ signedJWTToken pk (JWTToken hdr claims) = do
     jwtEncode :: ToJSON a => a -> ByteString
     jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
     serialize sig = U.encodeUnpadded $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
-
-readECPrivateKey :: FilePath -> IO EC.PrivateKey
-readECPrivateKey f = do
-  -- this pattern match is specific to APNS key type, it may need to be extended for other push providers
-  [PK.Unprotected (X.PrivKeyEC X.PrivKeyEC_Named {privkeyEC_name, privkeyEC_priv})] <- PK.readKeyFile f
-  pure EC.PrivateKey {private_curve = ECT.getCurveByName privkeyEC_name, private_d = privkeyEC_priv}
 
 data PushNotification
   = PNVerification NtfRegCode
