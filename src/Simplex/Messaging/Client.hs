@@ -778,10 +778,10 @@ temporaryClientError = \case
   _ -> False
 {-# INLINE temporaryClientError #-}
 
+-- it is consistent with clientServiceError
 smpClientServiceError :: SMPClientError -> Bool
 smpClientServiceError = \case
   PCEServiceUnavailable -> True
-  PCETransportError (TEHandshake BAD_SERVICE) -> True -- TODO [certs rcv] this error may be temporary, so we should possibly resubscribe.
   PCEProtocolError SERVICE -> True
   PCEProtocolError (PROXY (BROKER NO_SERVICE)) -> True -- for completeness, it cannot happen.
   _ -> False
