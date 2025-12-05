@@ -143,6 +143,7 @@ module Simplex.Messaging.Protocol
     IdsHash (..),
     ServiceSub (..),
     ServiceSubResult (..),
+    ServiceSubError (..),
     serviceSubResult,
     queueIdsHash,
     queueIdHash,

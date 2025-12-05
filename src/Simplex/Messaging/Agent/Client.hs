@@ -120,6 +120,7 @@ module Simplex.Messaging.Agent.Client
     getAgentSubscriptions,
     slowNetworkConfig,
     protocolClientError,
+    clientServiceError,
     Worker (..),
     SessionVar (..),
     SubscriptionsInfo (..),
@@ -1260,7 +1261,6 @@ protocolClientError protocolError_ host = \case
 clientServiceError :: AgentErrorType -> Bool
 clientServiceError = \case
   BROKER _ NO_SERVICE -> True
-  BROKER _ (TRANSPORT (TEHandshake BAD_SERVICE)) -> True -- TODO [certs rcv] this error may be temporary, so we should possibly resubscribe.
   SMP _ SMP.SERVICE -> True
   SMP _ (SMP.PROXY (SMP.BROKER NO_SERVICE)) -> True -- for completeness, it cannot happen.
   _ -> False
@@ -1566,6 +1566,8 @@ temporaryAgentError :: AgentErrorType -> Bool
 temporaryAgentError = \case
   BROKER _ e -> tempBrokerError e
   SMP _ (SMP.PROXY (SMP.BROKER e)) -> tempBrokerError e
+  SMP _ (SMP.STORE _) -> True
+  NTF _ (SMP.STORE _) -> True
   XFTP _ XFTP.TIMEOUT -> True
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> tempBrokerError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)) -> True
@@ -1576,6 +1578,7 @@ temporaryAgentError = \case
     tempBrokerError = \case
       NETWORK _ -> True
       TIMEOUT -> True
+      TRANSPORT (TEHandshake BAD_SERVICE) -> True -- this error is considered temporary because it is DB error
       _ -> False
 
 temporaryOrHostError :: AgentErrorType -> Bool
@@ -1722,8 +1725,12 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
       notifySub' c "" $ ERR e
 
 resubscribeClientService :: AgentClient -> SMPTransportSession -> ServiceSub -> AM ServiceSubResult
-resubscribeClientService c tSess serviceSub =
-  withServiceClient c tSess $ \smp _ -> subscribeClientService_ c True tSess smp serviceSub
+resubscribeClientService c tSess@(userId, srv, _) serviceSub =
+  withServiceClient c tSess (\smp _ -> subscribeClientService_ c True tSess smp serviceSub) `catchE` \e -> do
+    when (clientServiceError e) $ do
+      qs <- withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
+      void $ lift $ subscribeUserServerQueues c userId srv qs
+    throwE e
 
 -- TODO [certs rcv] update service in the database if it has different ID and re-associate queues, and send event
 subscribeClientService :: AgentClient -> Bool -> UserId -> SMPServer -> ServiceSub -> AM ServiceSubResult
@@ -1737,16 +1744,10 @@ subscribeClientService c withEvent userId srv (ServiceSub _ n idsHash) =
 
 withServiceClient :: AgentClient -> SMPTransportSession -> (SMPClient -> ServiceId -> ExceptT SMPClientError IO a) -> AM a
 withServiceClient c tSess@(userId, srv, _) subscribe =
-  unassocOnError $ withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
+  withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
     case (\THClientService {serviceId} -> serviceId) <$> smpClientService smp of
       Just smpServiceId -> subscribe smp smpServiceId
       Nothing -> throwE PCEServiceUnavailable
-  where
-    unassocOnError a = a `catchE` \e -> do
-      when (clientServiceError e) $ do
-        qs <- withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
-        void $ lift $ subscribeUserServerQueues c userId srv qs
-      throwE e
 
 -- TODO [certs rcv] send subscription error event?
 subscribeClientService_ :: AgentClient -> Bool -> SMPTransportSession -> SMPClient -> ServiceSub -> ExceptT SMPClientError IO ServiceSubResult

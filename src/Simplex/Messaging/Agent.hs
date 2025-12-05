@@ -1479,10 +1479,12 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     subscribeService useServices us@(userId, srv) = fmap ((us,) . fromRight False) $ tryAllErrors' $ do
       withStore' c (\db -> getSubscriptionService db userId srv) >>= \case
         Just serviceSub -> case M.lookup userId useServices of
-          -- TODO [certs rcv] improve logic to differentiate between permanent and temporary service subscription errors,
-          -- as the current logic would fall back to per-queue subscriptions on ANY service subscription error (e.g., network connection error).
-          Just True -> isRight <$> tryAllErrors (subscribeClientService c True userId srv serviceSub)
-          _ -> False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs db userId srv)
+          Just True -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
+            Left e | clientServiceError e -> unassocQueues $> False
+            _ -> pure True
+          _ -> unassocQueues $> False
+          where
+            unassocQueues = withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
         _ -> pure False
     subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
     subscribeUserServer maxPending currPending ((userId, srv), hasService) = do
@@ -1498,7 +1500,6 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
       where
         subscribe qs = do
           rs <- subscribeUserServerQueues c userId srv qs
-          -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
           ns <- asks ntfSupervisor
           whenM (liftIO $ hasInstantNotifications ns) $ sendNtfCreate ns rs
     sendNtfCreate :: NtfSupervisor -> [(RcvQueueSub, Either AgentErrorType (Maybe SMP.ServiceId))] -> AM' ()

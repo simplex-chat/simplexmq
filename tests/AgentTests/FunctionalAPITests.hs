@@ -66,7 +66,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, isSuffixOf, nub)
+import Data.List (find, isPrefixOf, isSuffixOf, nub)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -113,7 +113,7 @@ import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
-import System.Directory (copyFile, renameFile)
+import System.Directory (copyFile, removeFile, renameFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
@@ -124,10 +124,13 @@ import Fixtures
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
+import qualified Simplex.Messaging.Agent.Store.Postgres as Postgres
+import qualified Simplex.Messaging.Agent.Store.Postgres.Common as Postgres
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres
+import Simplex.Messaging.Server.QueueStore.Postgres.Migrations
 import Simplex.Messaging.Server.QueueStore.Types (QueueStoreClass (..))
 #endif
 
@@ -476,6 +479,7 @@ functionalAPITests ps = do
       withSmpServer ps testTwoUsers
   describe "Client service certificates" $ do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
+    it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -3714,6 +3718,47 @@ testClientServiceConnection ps = do
       ("", "", UP _ [_, _]) <- nGet user
       exchangeGreetingsMsgId 4 user sId' service uId'
       exchangeGreetingsMsgId 10 service uId user sId
+
+testClientServiceIDChange :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testClientServiceIDChange ps@(_, ASType qs _) = do
+  (sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+  _ :: () <- case qs of
+    SQSPostgres -> do
+#if defined(dbServerPostgres)
+      st <- either (error . show) pure =<< Postgres.createDBStore testStoreDBOpts serverMigrations (MigrationConfig MCError Nothing)
+      void $ Postgres.withTransaction st (`PSQL.execute_` "DELETE FROM services")
+#else
+      pure ()
+#endif
+    SQSMemory -> do
+      s <- readFile testStoreLogFile
+      removeFile testStoreLogFile
+      writeFile testStoreLogFile $ unlines $ filter (not . ("NEW_SERVICE" `isPrefixOf`)) $ lines s
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult (Just (SMP.SSErrorQueueCount 1 0)) (SMP.ServiceSub _ 0 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (UP _ _)) -> True; _ -> False
+        ]
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 4 service uId user sId
+  -- disable service in the client
+  -- The test uses True for non-existing user to make sure it's removed for user 1,
+  -- because if no users use services, then it won't be checking them to optimize for most clients.
+  withAgentClientsServers2 (agentCfg, initAgentServers {useServices = M.fromList [(100, True)]}) (agentCfg, initAgentServers) $ \notService user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      subscribeAllConnections notService False Nothing
+      ("", "", UP _ [_]) <- nGet notService
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 6 notService uId user sId
 
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
