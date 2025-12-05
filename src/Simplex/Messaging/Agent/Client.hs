@@ -1743,7 +1743,7 @@ subscribeClientService c withEvent userId srv (ServiceSub _ n idsHash) =
     tSess = (userId, srv, Nothing)
 
 withServiceClient :: AgentClient -> SMPTransportSession -> (SMPClient -> ServiceId -> ExceptT SMPClientError IO a) -> AM a
-withServiceClient c tSess@(userId, srv, _) subscribe =
+withServiceClient c tSess subscribe =
   withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
     case (\THClientService {serviceId} -> serviceId) <$> smpClientService smp of
       Just smpServiceId -> subscribe smp smpServiceId

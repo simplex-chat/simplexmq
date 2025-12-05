@@ -70,7 +70,7 @@ import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
+import Simplex.Messaging.Util (ifM, packZipWith, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, takeFileName, (</>))
 
@@ -146,7 +146,8 @@ sqliteXorMd5Combine = mkSQLiteFunc $ \cxt args -> do
   SQLite3.funcResultBlob cxt $ xorMd5Combine idsHash rId
 
 xorMd5Combine :: ByteString -> ByteString -> ByteString
-xorMd5Combine idsHash rId = B.packZipWith xor idsHash $ C.md5Hash rId
+xorMd5Combine idsHash rId = packZipWith xor idsHash $ C.md5Hash rId
+{-# INLINE xorMd5Combine #-}
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =
