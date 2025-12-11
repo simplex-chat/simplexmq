@@ -18,7 +18,7 @@
 module Simplex.Messaging.Server.Main where
 
 import Control.Concurrent.STM
-import Control.Exception (SomeException, finally, try)
+import Control.Exception (finally)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -28,10 +28,8 @@ import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.Int (Int64)
 import Data.List (find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
-import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -61,14 +59,17 @@ import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupp
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, unlessM)
+import Simplex.Messaging.Util (eitherToMaybe, ifM)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
-import System.IO (BufferMode (..), IOMode (..), hSetBuffering, stderr, stdout, withFile)
+import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 #if defined(dbServerPostgres)
+import Control.Exception (SomeException, try)
+import Data.Int (Int64)
+import qualified Data.Map.Strict as M
 import Data.Semigroup (Sum (..))
 import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
@@ -79,7 +80,9 @@ import Simplex.Messaging.Server.QueueStore.Postgres (batchInsertQueues, batchIns
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logNewService, logCreateQueue, openWriteStoreLog)
+import Simplex.Messaging.Util (unlessM)
 import System.Directory (renameFile)
+import System.IO (IOMode (..), withFile)
 #endif
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
