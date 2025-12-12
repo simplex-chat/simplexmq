@@ -1357,7 +1357,6 @@ forkClient Client {endThreads, endThreadSeq} label action = do
 
 client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
 client
-  -- TODO [certs rcv] rcv subscriptions
   Server {subscribers, ntfSubscribers}
   ms
   clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
@@ -1801,27 +1800,36 @@ client
           sharedSubscribeService SRecipientService serviceId expected subscribers serviceSubscribed serviceSubsCount rcvServices >>= \case
             Left e -> pure $ ERR e
             Right (hasSub, (count, idsHash)) -> do
-              unless hasSub $ forkClient clnt "deliverServiceMessages" $ liftIO $ deliverServiceMessages count
+              stats <- asks serverStats
+              unless hasSub $ forkClient clnt "deliverServiceMessages" $ liftIO $ deliverServiceMessages stats count
               pure $ SOKS count idsHash
           where
-            deliverServiceMessages expectedCnt = do
-              (qCnt, _msgCnt, _dupCnt, _errCnt) <- foldRcvServiceMessages ms serviceId deliverQueueMsg (0, 0, 0, 0)
-              atomically $ writeTBQueue msgQ [(NoCorrId, NoEntity, ALLS)]
-              -- TODO [certs rcv] compare with expected
-              logNote $ "Service subscriptions for " <> tshow serviceId <> " (" <> tshow qCnt <> " queues)"
-            deliverQueueMsg :: (Int, Int, Int, Int) -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO (Int, Int, Int, Int)
-            deliverQueueMsg (!qCnt, !msgCnt, !dupCnt, !errCnt) rId = \case
-              Left e -> pure (qCnt + 1, msgCnt, dupCnt, errCnt + 1) -- TODO [certs rcv] deliver subscription error
+            deliverServiceMessages stats expectedCnt = do
+              foldRcvServiceMessages ms serviceId deliverQueueMsg (0, 0, 0, [(NoCorrId, NoEntity, ALLS)]) >>= \case
+                Right (qCnt, msgCnt, dupCnt, evts) -> do
+                  atomically $ writeTBQueue msgQ evts
+                  atomicModifyIORef'_ (rcvServicesSubMsg stats) (+ msgCnt)
+                  atomicModifyIORef'_ (rcvServicesSubDuplicate stats) (+ dupCnt)
+                  let logMsg = "Subscribed service " <> tshow serviceId <> " ("
+                  if qCnt == expectedCnt
+                    then logNote $ logMsg <> tshow qCnt <> " queues)"
+                    else logError $ logMsg <> "expected " <> tshow expectedCnt <> "," <> tshow qCnt <> " queues)"
+                Left e -> do
+                  logError $ "Service subscription error for " <> tshow serviceId <> ": " <> tshow e
+                  atomically $ writeTBQueue msgQ [(NoCorrId, NoEntity, ERR e)]
+            deliverQueueMsg :: (Int64, Int, Int, NonEmpty (Transmission BrokerMsg)) -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO (Int64, Int, Int, NonEmpty (Transmission BrokerMsg))
+            deliverQueueMsg (!qCnt, !msgCnt, !dupCnt, evts) rId = \case
+              Left e -> pure (qCnt + 1, msgCnt, dupCnt, (NoCorrId, rId, ERR e) <| evts)
               Right qMsg_ -> case qMsg_ of
-                Nothing -> pure (qCnt + 1, msgCnt, dupCnt, errCnt)
+                Nothing -> pure (qCnt + 1, msgCnt, dupCnt, evts)
                 Just (qr, msg) ->
                   atomically (getSubscription rId) >>= \case
-                    Nothing -> pure (qCnt + 1, msgCnt, dupCnt + 1, errCnt)
+                    Nothing -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
                     Just sub -> do
                       ts <- getSystemSeconds
                       atomically $ setDelivered sub msg ts
                       atomically $ writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]
-                      pure (qCnt + 1, msgCnt + 1, dupCnt, errCnt)
+                      pure (qCnt + 1, msgCnt + 1, dupCnt, evts)
             getSubscription rId =
               TM.lookup rId (subscriptions clnt) >>= \case
                 -- If delivery subscription already exists, then there is no need to deliver message.

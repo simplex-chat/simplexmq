@@ -3693,7 +3693,6 @@ testClientServiceConnection ps = do
     ("", "", DOWN _ [_]) <- nGet user
     ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 qIdHash')) <- nGet service
     qIdHash' `shouldBe` qIdHash
-    -- TODO [certs rcv] how to integrate service counts into stats
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       ("", "", UP _ [_]) <- nGet user
       -- Nothing in ServiceSubResult confirms that both counts and IDs hash match
