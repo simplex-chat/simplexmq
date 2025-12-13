@@ -1539,7 +1539,6 @@ resubscribeConnections' c connIds = do
       [] -> pure True
       rqs' -> anyM $ map (atomically . hasActiveSubscription c) rqs'
 
--- TODO [certs rcv] compare hash. possibly, it should return both expected and returned counts
 subscribeClientServices' :: AgentClient -> UserId -> AM (Map SMPServer (Either AgentErrorType ServiceSubResult))
 subscribeClientServices' c userId =
   ifM useService subscribe $ throwError $ CMD PROHIBITED "no user service allowed"

@@ -119,9 +119,9 @@ instance MsgStoreClass PostgresMsgStore where
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
-  foldRcvServiceMessages :: PostgresMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO a
+  foldRcvServiceMessages :: PostgresMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO (Either ErrorType a)
   foldRcvServiceMessages ms serviceId f acc =
-    withTransaction (dbStore $ queueStore_ ms) $ \db ->
+    runExceptT $ withDB' "foldRcvServiceMessages" (queueStore_ ms) $ \db ->
       DB.fold
         db
         [sql|

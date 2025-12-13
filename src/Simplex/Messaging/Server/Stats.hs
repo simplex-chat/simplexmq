@@ -86,6 +86,8 @@ data ServerStats = ServerStats
     pMsgFwdsRecv :: IORef Int,
     rcvServices :: ServiceStats,
     ntfServices :: ServiceStats,
+    rcvServicesSubMsg :: IORef Int,
+    rcvServicesSubDuplicate :: IORef Int,
     qCount :: IORef Int,
     msgCount :: IORef Int,
     ntfCount :: IORef Int
@@ -145,6 +147,8 @@ data ServerStatsData = ServerStatsData
     _pMsgFwdsRecv :: Int,
     _ntfServices :: ServiceStatsData,
     _rcvServices :: ServiceStatsData,
+    _rcvServicesSubMsg :: Int,
+    _rcvServicesSubDuplicate :: Int,
     _qCount :: Int,
     _msgCount :: Int,
     _ntfCount :: Int
@@ -206,6 +210,8 @@ newServerStats ts = do
   pMsgFwdsRecv <- newIORef 0
   rcvServices <- newServiceStats
   ntfServices <- newServiceStats
+  rcvServicesSubMsg <- newIORef 0
+  rcvServicesSubDuplicate <- newIORef 0
   qCount <- newIORef 0
   msgCount <- newIORef 0
   ntfCount <- newIORef 0
@@ -264,6 +270,8 @@ newServerStats ts = do
         pMsgFwdsRecv,
         rcvServices,
         ntfServices,
+        rcvServicesSubMsg,
+        rcvServicesSubDuplicate,
         qCount,
         msgCount,
         ntfCount
@@ -324,6 +332,8 @@ getServerStatsData s = do
   _pMsgFwdsRecv <- readIORef $ pMsgFwdsRecv s
   _rcvServices <- getServiceStatsData $ rcvServices s
   _ntfServices <- getServiceStatsData $ ntfServices s
+  _rcvServicesSubMsg <- readIORef $ rcvServicesSubMsg s
+  _rcvServicesSubDuplicate <- readIORef $ rcvServicesSubDuplicate s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
   _ntfCount <- readIORef $ ntfCount s
@@ -382,6 +392,8 @@ getServerStatsData s = do
         _pMsgFwdsRecv,
         _rcvServices,
         _ntfServices,
+        _rcvServicesSubMsg,
+        _rcvServicesSubDuplicate,
         _qCount,
         _msgCount,
         _ntfCount
@@ -443,6 +455,8 @@ setServerStats s d = do
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
   setServiceStats (rcvServices s) $! _rcvServices d
   setServiceStats (ntfServices s) $! _ntfServices d
+  writeIORef (rcvServicesSubMsg s) $! _rcvServicesSubMsg d
+  writeIORef (rcvServicesSubDuplicate s) $! _rcvServicesSubDuplicate d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
@@ -636,6 +650,8 @@ instance StrEncoding ServerStatsData where
           _pMsgFwdsRecv,
           _rcvServices,
           _ntfServices,
+          _rcvServicesSubMsg = 0,
+          _rcvServicesSubDuplicate = 0,
           _qCount,
           _msgCount = 0,
           _ntfCount = 0

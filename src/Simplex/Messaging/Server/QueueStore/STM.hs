@@ -63,8 +63,8 @@ data STMQueueStore q = STMQueueStore
 
 data STMService = STMService
   { serviceRec :: ServiceRec,
-    serviceRcvQueues :: TVar (Set RecipientId, IdsHash), -- TODO [certs rcv] get/maintain hash
-    serviceNtfQueues :: TVar (Set NotifierId, IdsHash) -- TODO [certs rcv] get/maintain hash
+    serviceRcvQueues :: TVar (Set RecipientId, IdsHash),
+    serviceNtfQueues :: TVar (Set NotifierId, IdsHash)
   }
 
 setStoreLog :: STMQueueStore q -> StoreLog 'WriteMode -> IO ()

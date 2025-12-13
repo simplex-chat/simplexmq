@@ -444,9 +444,9 @@ instance MsgStoreClass (JournalMsgStore s) where
       getLoadedQueue :: JournalQueue s -> IO (JournalQueue s)
       getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
 
-  foldRcvServiceMessages :: JournalMsgStore s -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO a
+  foldRcvServiceMessages :: JournalMsgStore s -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO (Either ErrorType a)
   foldRcvServiceMessages ms serviceId f acc = case queueStore_ ms of
-    MQStore st -> foldRcvServiceQueues st serviceId f' acc
+    MQStore st -> fmap Right $ foldRcvServiceQueues st serviceId f' acc
       where
         f' a (q, qr) = runExceptT (tryPeekMsg ms q) >>= f a (recipientId q) . ((qr,) <$$>)
 #if defined(dbServerPostgres)

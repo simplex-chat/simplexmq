@@ -147,6 +147,9 @@ module Simplex.Messaging.Protocol
     serviceSubResult,
     queueIdsHash,
     queueIdHash,
+    noIdsHash,
+    addServiceSubs,
+    subtractServiceSubs,
     MaxMessageLen,
     MaxRcvMessageLen,
     EncRcvMsgBody (..),
@@ -1525,6 +1528,14 @@ queueIdsHash = mconcat . map queueIdHash
 queueIdHash :: QueueId -> IdsHash
 queueIdHash = IdsHash . C.md5Hash . unEntityId
 {-# INLINE queueIdHash #-}
+
+addServiceSubs :: (Int64, IdsHash) -> (Int64, IdsHash) -> (Int64, IdsHash)
+addServiceSubs (n', idsHash') (n, idsHash) = (n + n', idsHash <> idsHash')
+
+subtractServiceSubs :: (Int64, IdsHash) -> (Int64, IdsHash) -> (Int64, IdsHash)
+subtractServiceSubs (n', idsHash') (n, idsHash)
+  | n > n' = (n - n', idsHash <> idsHash') -- concat is a reversible xor: (x `xor` y) `xor` y == x
+  | otherwise = (0, noIdsHash)
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 
