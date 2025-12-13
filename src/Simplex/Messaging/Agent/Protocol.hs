@@ -126,9 +126,6 @@ module Simplex.Messaging.Agent.Protocol
     ContactConnType (..),
     ShortLinkScheme (..),
     LinkKey (..),
-    StoredClientService (..),
-    ClientService,
-    ClientServiceId,
     sameConnReqContact,
     sameShortLinkContact,
     simplexChat,
@@ -212,7 +209,6 @@ import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
-import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Client (ProxyClientError)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
@@ -238,6 +234,8 @@ import Simplex.Messaging.Protocol
     NMsgMeta,
     ProtocolServer (..),
     QueueMode (..),
+    ServiceSub,
+    ServiceSubResult,
     SMPClientVersion,
     SMPServer,
     SMPServerWithAuth,
@@ -381,7 +379,7 @@ type SndQueueSecured = Bool
 
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
-  INV :: AConnectionRequestUri -> Maybe ClientServiceId -> AEvent AEConn
+  INV :: AConnectionRequestUri -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -392,6 +390,9 @@ data AEvent (e :: AEntity) where
   DISCONNECT :: AProtocolType -> TransportHost -> AEvent AENone
   DOWN :: SMPServer -> [ConnId] -> AEvent AENone
   UP :: SMPServer -> [ConnId] -> AEvent AENone
+  SERVICE_ALL :: SMPServer -> AEvent AENone -- all service messages are delivered
+  SERVICE_DOWN :: SMPServer -> ServiceSub -> AEvent AENone
+  SERVICE_UP :: SMPServer -> ServiceSubResult -> AEvent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> AEvent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> AEvent AEConn
   SENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
@@ -407,7 +408,7 @@ data AEvent (e :: AEntity) where
   DEL_USER :: Int64 -> AEvent AENone
   STAT :: ConnectionStats -> AEvent AEConn
   OK :: AEvent AEConn
-  JOINED :: SndQueueSecured -> Maybe ClientServiceId -> AEvent AEConn
+  JOINED :: SndQueueSecured -> AEvent AEConn
   ERR :: AgentErrorType -> AEvent AEConn
   ERRS :: NonEmpty (ConnId, AgentErrorType) -> AEvent AENone
   SUSPENDED :: AEvent AENone
@@ -463,6 +464,9 @@ data AEventTag (e :: AEntity) where
   DISCONNECT_ :: AEventTag AENone
   DOWN_ :: AEventTag AENone
   UP_ :: AEventTag AENone
+  SERVICE_ALL_ :: AEventTag AENone
+  SERVICE_DOWN_ :: AEventTag AENone
+  SERVICE_UP_ :: AEventTag AENone
   SWITCH_ :: AEventTag AEConn
   RSYNC_ :: AEventTag AEConn
   SENT_ :: AEventTag AEConn
@@ -518,6 +522,9 @@ aEventTag = \case
   DISCONNECT {} -> DISCONNECT_
   DOWN {} -> DOWN_
   UP {} -> UP_
+  SERVICE_ALL _ -> SERVICE_ALL_
+  SERVICE_DOWN {} -> SERVICE_DOWN_
+  SERVICE_UP {} -> SERVICE_UP_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
   SENT {} -> SENT_
@@ -1782,16 +1789,6 @@ instance Encoding UserLinkData where
   {-# INLINE smpEncode #-}
   smpP = UserLinkData <$> ((A.char '\255' *> (unLarge <$> smpP)) <|> smpP)
   {-# INLINE smpP #-}
-
-data StoredClientService (s :: DBStored) = ClientService
-  { dbServiceId :: DBEntityId' s,
-    serviceId :: SMP.ServiceId
-  }
-  deriving (Eq, Show)
-
-type ClientService = StoredClientService 'DBStored
-
-type ClientServiceId = DBEntityId
 
 -- | SMP queue status.
 data QueueStatus
