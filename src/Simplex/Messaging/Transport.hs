@@ -560,7 +560,6 @@ data SMPClientHandshake = SMPClientHandshake
     keyHash :: C.KeyHash,
     -- | pub key to agree shared secret for entity ID encryption, shared secret for command authorization is agreed using per-queue keys.
     authPubKey :: Maybe C.PublicKeyX25519,
-    -- TODO [certs rcv] remove proxyServer, as serviceInfo includes it as clientRole
     -- | Whether connecting client is a proxy server (send from SMP v12).
     -- This property, if True, disables additional transport encrytion inside TLS.
     -- (Proxy server connection already has additional encryption, so this layer is not needed there).
