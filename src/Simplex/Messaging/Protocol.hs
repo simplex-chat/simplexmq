@@ -726,7 +726,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
-  ENDS :: Int64 -> BrokerMsg
+  ENDS :: Int64 -> IdsHash -> BrokerMsg
   DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
@@ -1925,9 +1925,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SOK serviceId_
       | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
       | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
-    SOKS n idsHash
-      | v >= rcvServiceSMPVersion -> e (SOKS_, ' ', n, idsHash)
-      | otherwise -> e (SOKS_, ' ', n)
+    SOKS n idsHash -> serviceResp SOKS_ n idsHash
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     ALLS -> e ALLS_
@@ -1937,7 +1935,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
-    ENDS n -> e (ENDS_, ' ', n)
+    ENDS n idsHash -> serviceResp ENDS_ n idsHash
     DELD
       | v >= deletedEventSMPVersion -> e DELD_
       | otherwise -> e END_
@@ -1954,6 +1952,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
+      serviceResp tag n idsHash
+        | v >= serviceCertsSMPVersion = e (tag, ' ', n, idsHash)
+        | otherwise = e (tag, ' ', n)
 
   protocolP v = \case
     MSG_ -> do
@@ -1982,21 +1983,23 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId, serverNtfCreds}
     LNK_ -> LNK <$> _smpP <*> smpP
     SOK_ -> SOK <$> _smpP
-    SOKS_
-      | v >= rcvServiceSMPVersion -> SOKS <$> _smpP <*> smpP
-      | otherwise -> SOKS <$> _smpP <*> pure noIdsHash
+    SOKS_ -> serviceRespP SOKS
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
-    ENDS_ -> ENDS <$> _smpP
+    ENDS_ -> serviceRespP ENDS
     DELD_ -> pure DELD
     INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
+    where
+      serviceRespP resp
+        | v >= serviceCertsSMPVersion = resp <$> _smpP <*> smpP
+        | otherwise = resp <$> _smpP <*> pure noIdsHash
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX

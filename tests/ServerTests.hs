@@ -1334,7 +1334,7 @@ testMessageServiceNotifications =
           Resp "4" _ (SOK (Just serviceId')) <- serviceSignSendRecv nh2 nKey servicePK ("4", nId, NSUB)
           serviceId' `shouldBe` serviceId
           -- service subscription is terminated
-          Resp "" serviceId2 (ENDS 1) <- tGet1 nh1
+          Resp "" serviceId2 (ENDS 1 _) <- tGet1 nh1
           serviceId2 `shouldBe` serviceId
           deliverMessage rh rId rKey sh sId sKey nh2 "hello again" dec
           1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh1 >>= \case
@@ -1374,7 +1374,7 @@ testMessageServiceNotifications =
           Resp "12" serviceId5 (SOKS 2 idsHash') <- signSendRecv nh1 (C.APrivateAuthKey C.SEd25519 servicePK) ("12", serviceId, NSUBS 2 idsHash)
           idsHash' `shouldBe` idsHash
           serviceId5 `shouldBe` serviceId
-          Resp "" serviceId6 (ENDS 2) <- tGet1 nh2
+          Resp "" serviceId6 (ENDS 2 _) <- tGet1 nh2
           serviceId6 `shouldBe` serviceId
           deliverMessage rh rId rKey sh sId sKey nh1 "connection 1 one more" dec
           deliverMessage rh rId'' rKey'' sh sId'' sKey'' nh1 "connection 2 one more" dec''

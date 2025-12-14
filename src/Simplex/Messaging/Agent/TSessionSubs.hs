@@ -23,6 +23,7 @@ module Simplex.Messaging.Agent.TSessionSubs
     batchDeletePendingSubs,
     deleteSub,
     batchDeleteSubs,
+    deleteServiceSub,
     hasPendingSubs,
     getPendingSubs,
     getActiveSubs,
@@ -175,6 +176,9 @@ batchDeleteSubs tSess rqs = lookupSubs tSess >=> mapM_ (\s -> delete (activeSubs
   where
     rIds = S.fromList $ map queueId rqs
     delete = (`modifyTVar'` (`M.withoutKeys` rIds))
+
+deleteServiceSub :: SMPTransportSession -> TSessionSubs -> STM ()
+deleteServiceSub tSess = lookupSubs tSess >=> mapM_ (\s -> writeTVar (activeServiceSub s) Nothing >> writeTVar (pendingServiceSub s) Nothing)
 
 hasPendingSubs :: SMPTransportSession -> TSessionSubs -> STM Bool
 hasPendingSubs tSess = lookupSubs tSess >=> maybe (pure False) (\s -> anyM [hasSubs s, hasServiceSub s])

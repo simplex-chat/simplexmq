@@ -266,7 +266,6 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
-    IdsHash,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -1757,7 +1756,7 @@ withServiceClient c tSess subscribe =
 
 -- TODO [certs rcv] send subscription error event?
 subscribeClientService_ :: AgentClient -> Bool -> SMPTransportSession -> SMPClient -> ServiceSub -> ExceptT SMPClientError IO ServiceSubResult
-subscribeClientService_ c withEvent tSess@(userId, srv, _) smp expected@(ServiceSub _ n idsHash) = do
+subscribeClientService_ c withEvent tSess@(_, srv, _) smp expected@(ServiceSub _ n idsHash) = do
   subscribed <- subscribeService smp SMP.SRecipientService n idsHash
   let sessId = sessionId $ thParams smp
       r = serviceSubResult expected subscribed

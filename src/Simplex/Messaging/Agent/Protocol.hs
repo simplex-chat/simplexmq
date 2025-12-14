@@ -393,6 +393,7 @@ data AEvent (e :: AEntity) where
   SERVICE_ALL :: SMPServer -> AEvent AENone -- all service messages are delivered
   SERVICE_DOWN :: SMPServer -> ServiceSub -> AEvent AENone
   SERVICE_UP :: SMPServer -> ServiceSubResult -> AEvent AENone
+  SERVICE_END :: SMPServer -> ServiceSub -> AEvent AENone
   SWITCH :: QueueDirection -> SwitchPhase -> ConnectionStats -> AEvent AEConn
   RSYNC :: RatchetSyncState -> Maybe AgentCryptoError -> ConnectionStats -> AEvent AEConn
   SENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
@@ -467,6 +468,7 @@ data AEventTag (e :: AEntity) where
   SERVICE_ALL_ :: AEventTag AENone
   SERVICE_DOWN_ :: AEventTag AENone
   SERVICE_UP_ :: AEventTag AENone
+  SERVICE_END_ :: AEventTag AENone
   SWITCH_ :: AEventTag AEConn
   RSYNC_ :: AEventTag AEConn
   SENT_ :: AEventTag AEConn
@@ -525,6 +527,7 @@ aEventTag = \case
   SERVICE_ALL _ -> SERVICE_ALL_
   SERVICE_DOWN {} -> SERVICE_DOWN_
   SERVICE_UP {} -> SERVICE_UP_
+  SERVICE_END {} -> SERVICE_END_
   SWITCH {} -> SWITCH_
   RSYNC {} -> RSYNC_
   SENT {} -> SENT_

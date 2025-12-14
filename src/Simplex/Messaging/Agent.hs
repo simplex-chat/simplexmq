@@ -221,6 +221,7 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta,
     SParty (..),
     SProtocolType (..),
+    ServiceSub (..),
     ServiceSubResult (..),
     ServiceSubError (..),
     SndPublicAuthKey,
@@ -3118,16 +3119,26 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               notifyEnd removed
                 | removed = notify END >> logServer "<--" c srv rId "END"
                 | otherwise = logServer "<--" c srv rId "END from disconnected client - ignored"
-          -- TODO [certs rcv]
-          r@(SMP.ENDS _) -> unexpected r
+          SMP.ENDS n idsHash ->
+            atomically (ifM (activeClientSession c tSess sessId) (SS.deleteServiceSub tSess (currentSubs c) $> True) (pure False))
+              >>= notifyEnd
+            where
+              notifyEnd removed
+                | removed = do
+                    forM_ clientServiceId_ $ \serviceId ->
+                      notify_ B.empty $ SERVICE_END srv $ ServiceSub serviceId n idsHash
+                    logServer "<--" c srv rId "ENDS"
+                | otherwise = logServer "<--" c srv rId "ENDS from disconnected client - ignored"
           -- TODO [certs rcv] Possibly, we need to add some flag to connection that it was deleted
           SMP.DELD -> atomically (removeSubscription c tSess connId rq) >> notify DELD
           SMP.ERR e -> notify $ ERR $ SMP (B.unpack $ strEncode srv) e
           r -> unexpected r
         where
           notify :: forall e m. (AEntityI e, MonadIO m) => AEvent e -> m ()
-          notify msg =
-            let t = ("", connId, AEvt (sAEntity @e) msg)
+          notify = notify_ connId
+          notify_ :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
+          notify_ connId' msg =
+            let t = ("", connId', AEvt (sAEntity @e) msg)
              in atomically $ ifM (isFullTBQueue subQ) (modifyTVar' pendingMsgs (t :)) (writeTBQueue subQ t)
 
           prohibited :: Text -> AM ()
