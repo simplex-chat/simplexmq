@@ -283,6 +283,7 @@ import Simplex.Messaging.Protocol
     SProtocolType (..),
     ServiceSub (..),
     ServiceSubResult (..),
+    ServiceSubError (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     NewNtfCreds (..),
@@ -1725,12 +1726,17 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
       notifySub' c "" $ ERR e
 
 resubscribeClientService :: AgentClient -> SMPTransportSession -> ServiceSub -> AM ServiceSubResult
-resubscribeClientService c tSess@(userId, srv, _) serviceSub =
-  withServiceClient c tSess (\smp _ -> subscribeClientService_ c True tSess smp serviceSub) `catchE` \e -> do
-    when (clientServiceError e) $ do
+resubscribeClientService c tSess@(userId, srv, _) serviceSub = do
+  r <- tryAllErrors (withServiceClient c tSess $ \smp _ -> subscribeClientService_ c True tSess smp serviceSub)
+  case r of
+    Right (ServiceSubResult (Just SSErrorServiceId {}) _) -> unassocSubscribeQueues
+    Left e | clientServiceError e -> unassocSubscribeQueues
+    _ -> pure ()
+  either throwE pure r
+  where
+    unassocSubscribeQueues = do
       qs <- withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
       void $ lift $ subscribeUserServerQueues c userId srv qs
-    throwE e
 
 -- TODO [certs rcv] update service in the database if it has different ID and re-associate queues, and send event
 subscribeClientService :: AgentClient -> Bool -> UserId -> SMPServer -> ServiceSub -> AM ServiceSubResult

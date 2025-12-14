@@ -221,7 +221,8 @@ import Simplex.Messaging.Protocol
     SMPMsgMeta,
     SParty (..),
     SProtocolType (..),
-    ServiceSubResult,
+    ServiceSubResult (..),
+    ServiceSubError (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
@@ -1480,11 +1481,13 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
       withStore' c (\db -> getSubscriptionService db userId srv) >>= \case
         Just serviceSub -> case M.lookup userId useServices of
           Just True -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
-            Left e | clientServiceError e -> unassocQueues $> False
+            Right (ServiceSubResult (Just SSErrorServiceId {}) _) -> unassocQueues
+            Left e | clientServiceError e -> unassocQueues
             _ -> pure True
-          _ -> unassocQueues $> False
+          _ -> unassocQueues
           where
-            unassocQueues = withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
+            unassocQueues :: AM Bool
+            unassocQueues = False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs' db userId srv)
         _ -> pure False
     subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
     subscribeUserServer maxPending currPending ((userId, srv), hasService) = do

@@ -55,6 +55,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getSubscriptionServers,
     getUserServerRcvQueueSubs,
     unassocUserServerRcvQueueSubs,
+    unassocUserServerRcvQueueSubs',
     unsetQueuesToSubscribe,
     setRcvServiceAssocs,
     removeRcvServiceAssocs,
@@ -2292,6 +2293,9 @@ unassocUserServerRcvQueueSubs db userId (SMPServer h p kh) =
           rcv_queues.rcv_id, rcv_queues.rcv_private_key, rcv_queues.status, c.enable_ntfs, rcv_queues.client_notice_id,
           rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
       |]
+
+unassocUserServerRcvQueueSubs' :: DB.Connection -> UserId -> SMPServer -> IO ()
+unassocUserServerRcvQueueSubs' db userId (SMPServer h p kh) = DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
 
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
