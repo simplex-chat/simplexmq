@@ -21,7 +21,6 @@ import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Transport.Server (SocketStats (..))
 import Simplex.Messaging.Util (tshow)
 
--- TODO [certs rcv] add service subscriptions and count/hash diffs
 data ServerMetrics = ServerMetrics
   { statsData :: ServerStatsData,
     activeQueueCounts :: PeriodStatCounts,
@@ -118,6 +117,8 @@ prometheusMetrics sm rtm ts =
         _pMsgFwdsRecv,
         _rcvServices,
         _ntfServices,
+        _rcvServicesSubMsg,
+        _rcvServicesSubDuplicate,
         _qCount,
         _msgCount,
         _ntfCount
@@ -383,6 +384,14 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_ntf_services_queues_count The count of queues associated with notification services.\n\
       \# TYPE simplex_smp_ntf_services_queues_count gauge\n\
       \simplex_smp_ntf_services_queues_count " <> mshow (ntfServiceQueuesCount entityCounts) <> "\n# ntfServiceQueuesCount\n\
+      \\n\
+      \# HELP simplex_smp_rcv_services_sub_msg The count of subscribed service queues with messages.\n\
+      \# TYPE simplex_smp_rcv_services_sub_msg counter\n\
+      \simplex_smp_rcv_services_sub_msg " <> mshow _rcvServicesSubMsg <> "\n# rcvServicesSubMsg\n\
+      \\n\
+      \# HELP simplex_smp_rcv_services_sub_duplicate The count of duplicate subscribed service queues.\n\
+      \# TYPE simplex_smp_rcv_services_sub_duplicate counter\n\
+      \simplex_smp_rcv_services_sub_duplicate " <> mshow _rcvServicesSubDuplicate <> "\n# rcvServicesSubDuplicate\n\
       \\n"
         <> showServices _rcvServices "rcv" "receiving"
         <> showServices _ntfServices "ntf" "notification"
@@ -418,6 +427,30 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_" <> pfx <> "_services_sub_end Ended subscriptions with " <> name <> " services.\n\
       \# TYPE simplex_smp_" <> pfx <> "_services_sub_end gauge\n\
       \simplex_smp_" <> pfx <> "_services_sub_end " <> mshow (_srvSubEnd ss) <> "\n# " <> pfx <> ".srvSubEnd\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_ok Service subscriptions for " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_ok gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_ok " <> mshow (_srvSubOk ss) <> "\n# " <> pfx <> ".srvSubOk\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_more Service subscriptions for " <> name <> " services with more queues than in the client.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_more gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_more " <> mshow (_srvSubMore ss) <> "\n# " <> pfx <> ".srvSubMore\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_fewer Service subscriptions for " <> name <> " services with fewer queues than in the client.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_fewer gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_fewer " <> mshow (_srvSubFewer ss) <> "\n# " <> pfx <> ".srvSubFewer\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_diff Service subscriptions for " <> name <> " services with different hash than in the client.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_diff gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_diff " <> mshow (_srvSubDiff ss) <> "\n# " <> pfx <> ".srvSubDiff\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_more_total Service subscriptions for " <> name <> " services with more queues than in the client total.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_more_total gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_more_total " <> mshow (_srvSubMoreTotal ss) <> "\n# " <> pfx <> ".srvSubMoreTotal\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_fewer_total Service subscriptions for " <> name <> " services with fewer queues than in the client total.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_fewer_total gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
     info =
       "# Info\n\

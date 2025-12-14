@@ -581,9 +581,9 @@ foldServiceRecs st f =
     DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
       \ !acc -> fmap (acc <>) . f . rowToServiceRec
 
-foldRcvServiceQueueRecs :: PostgresQueueStore q -> ServiceId -> (a -> (RecipientId, QueueRec) -> IO a) -> a -> IO a
+foldRcvServiceQueueRecs :: PostgresQueueStore q -> ServiceId -> (a -> (RecipientId, QueueRec) -> IO a) -> a -> IO (Either ErrorType a)
 foldRcvServiceQueueRecs st serviceId f acc =
-  withTransaction (dbStore st) $ \db ->
+  runExceptT $ withDB' "foldRcvServiceQueueRecs" st $ \db ->
     DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \a -> f a . rowToQueueRec
 
 foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a

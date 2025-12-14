@@ -576,9 +576,10 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
               -- TODO [certs rcv] resubscribe queues with statuses NSErr and NSService
           CAServiceDisconnected srv serviceSub ->
             logNote $ "SMP server service disconnected " <> showService srv serviceSub
-          CAServiceSubscribed srv serviceSub@(ServiceSub _ expected _) (ServiceSub _ n _) -- TODO [certs rcv] compare hash
-            | expected == n -> logNote msg
-            | otherwise -> logWarn $ msg <> ", confirmed subs: " <> tshow n
+          CAServiceSubscribed srv serviceSub@(ServiceSub _ n idsHash) (ServiceSub _ n' idsHash')
+            | n /= n' -> logWarn $ msg <> ", confirmed subs: " <> tshow n'
+            | idsHash /= idsHash' -> logWarn $ msg <> ", different IDs hash"
+            | otherwise -> logNote msg
             where
               msg = "SMP server service subscribed " <> showService srv serviceSub
           CAServiceSubError srv serviceSub e ->
@@ -593,8 +594,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
                 void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
               Left e -> logError $ "SMP server update and resubscription error " <> tshow e
       where
-        -- TODO [certs rcv] compare hash
-        showService srv (ServiceSub serviceId n _idsHash) = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
+        showService srv (ServiceSub serviceId n _) = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
 
     logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int -> IO ()
     logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
