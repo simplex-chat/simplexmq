@@ -1443,10 +1443,10 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
       tryAllErrors' $ do
         qs <- withStore' c $ \db -> do
           qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded
-          atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
+          unless (null qs) $ atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
           pure qs
         let n = length qs
-        lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
+        unless (null qs) $ lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
         pure n
       where
         subscribe qs = do
