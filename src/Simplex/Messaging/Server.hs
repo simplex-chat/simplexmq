@@ -337,8 +337,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               modifyTVar' totalServiceSubs decrease
               where
                 decrease = subtractServiceSubs (1, queueIdHash qId)
-            -- TODO [certs rcv] for SMP subscriptions CSADecreaseSubs should also remove all delivery threads of the passed client
-            CSADecreaseSubs changedSubs -> atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
+            CSADecreaseSubs changedSubs -> do
+              atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
+              forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
           where
             endSub :: Client s -> QueueId -> STM (Maybe sub)
             endSub c qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs c $>)
