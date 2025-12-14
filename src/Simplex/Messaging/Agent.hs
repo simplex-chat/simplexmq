@@ -1482,9 +1482,14 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
       withStore' c (\db -> getSubscriptionService db userId srv) >>= \case
         Just serviceSub -> case M.lookup userId useServices of
           Just True -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
-            Right (ServiceSubResult (Just SSErrorServiceId {}) _) -> unassocQueues
-            Left e | clientServiceError e -> unassocQueues
-            _ -> pure True
+            Right (ServiceSubResult e _) -> case e of
+              Just SSErrorServiceId {} -> unassocQueues
+              _ -> pure True
+            Left e -> do
+              atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
+              if clientServiceError e
+                then unassocQueues
+                else pure True
           _ -> unassocQueues
           where
             unassocQueues :: AM Bool
