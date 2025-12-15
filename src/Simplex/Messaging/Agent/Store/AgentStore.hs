@@ -2265,12 +2265,12 @@ getSubscriptionServers db onlyNeeded =
 
 -- TODO [certs rcv] check index for getting queues with service present
 getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId srv onlyNeeded hasService =
+getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService =
   map toRcvQueueSub
     <$> DB.query
       db
-      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?" <> serviceCond)
-      (userId, host srv, port srv)
+      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond)
+      (userId, h, p, kh)
   where
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
