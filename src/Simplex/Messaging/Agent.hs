@@ -1484,6 +1484,9 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
           Just True -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
             Right (ServiceSubResult e _) -> case e of
               Just SSErrorServiceId {} -> unassocQueues
+              -- Below would resubscribe all queues after service was disabled and re-enabled
+              -- Possibly, we should always resubscribe all with expected is greated than subscribed
+              Just SSErrorQueueCount {expectedQueueCount = n, subscribedQueueCount = n'} | n > 0 && n' == 0 -> unassocQueues
               _ -> pure True
             Left e -> do
               atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)

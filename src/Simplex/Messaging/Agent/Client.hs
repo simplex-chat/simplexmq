@@ -1526,23 +1526,23 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
 
 processSubResults :: AgentClient -> SMPTransportSession -> SessionId -> Maybe ServiceId -> NonEmpty (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) -> STM ([RcvQueueSub], [(RcvQueueSub, Maybe ClientNotice)])
 processSubResults c tSess@(userId, srv, _) sessId serviceId_ rs = do
-  pending <- SS.getPendingSubs tSess $ currentSubs c
-  let (failed, subscribed@(qs, sQs), notices, ignored) = foldr (partitionResults pending) (M.empty, ([], []), [], 0) rs
+  pendingSubs <- SS.getPendingQueueSubs tSess $ currentSubs c
+  let (failed, subscribed@(qs, sQs), notices, ignored) = foldr (partitionResults pendingSubs) (M.empty, ([], []), [], 0) rs
   unless (M.null failed) $ do
     incSMPServerStat' c userId srv connSubErrs $ M.size failed
     failSubscriptions c tSess failed
   unless (null qs && null sQs) $ do
     incSMPServerStat' c userId srv connSubscribed $ length qs + length sQs
-    SS.batchAddActiveSubs tSess sessId subscribed $ currentSubs c
+    SS.batchAddActiveSubs tSess sessId serviceId_ subscribed $ currentSubs c
   unless (ignored == 0) $ incSMPServerStat' c userId srv connSubIgnored ignored
   pure (sQs, notices)
   where
     partitionResults ::
-      (Map SMP.RecipientId RcvQueueSub, Maybe ServiceSub) ->
+      Map SMP.RecipientId RcvQueueSub ->
       (RcvQueueSub, Either SMPClientError (Maybe ServiceId)) ->
       (Map SMP.RecipientId SMPClientError, ([RcvQueueSub], [RcvQueueSub]), [(RcvQueueSub, Maybe ClientNotice)], Int) ->
       (Map SMP.RecipientId SMPClientError, ([RcvQueueSub], [RcvQueueSub]), [(RcvQueueSub, Maybe ClientNotice)], Int)
-    partitionResults (pendingSubs, pendingSS) (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed@(qs, sQs), notices, ignored) = case r of
+    partitionResults pendingSubs (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed@(qs, sQs), notices, ignored) = case r of
       Left e -> case smpErrorClientNotice e of
         Just notice_ -> (failed', subscribed, (rq, notice_) : notices, ignored)
           where
@@ -1554,8 +1554,8 @@ processSubResults c tSess@(userId, srv, _) sessId serviceId_ rs = do
           failed' = M.insert rcvId e failed
       Right serviceId_'
         | rcvId `M.member` pendingSubs ->
-            let subscribed' = case (serviceId_, serviceId_', pendingSS) of
-                  (Just sId, Just sId', Just ServiceSub {smpServiceId}) | sId == sId' && sId == smpServiceId -> (qs, rq : sQs)
+            let subscribed' = case (serviceId_, serviceId_') of
+                  (Just sId, Just sId') | sId == sId' -> (qs, rq : sQs)
                   _ -> (rq : qs, sQs)
              in (failed, subscribed', notices', ignored)
         | otherwise -> (failed, subscribed, notices', ignored + 1)

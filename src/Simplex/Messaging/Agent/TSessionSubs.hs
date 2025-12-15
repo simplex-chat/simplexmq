@@ -26,6 +26,7 @@ module Simplex.Messaging.Agent.TSessionSubs
     deleteServiceSub,
     hasPendingSubs,
     getPendingSubs,
+    getPendingQueueSubs,
     getActiveSubs,
     setSubsPending,
     updateClientNotices,
@@ -40,12 +41,12 @@ import Data.Int (Int64)
 import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as S
 import Simplex.Messaging.Agent.Protocol (SMPQueue (..))
 import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), SomeRcvQueue, StoredRcvQueue (rcvServiceAssoc), rcvQueueSub)
 import Simplex.Messaging.Client (SMPTransportSession, TransportSessionMode (..))
-import Simplex.Messaging.Protocol (RecipientId, ServiceSub (..), queueIdHash)
+import Simplex.Messaging.Protocol (RecipientId, ServiceSub (..), noIdsHash, queueIdHash)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -138,22 +139,27 @@ addActiveSub' tSess sessId rq serviceAssoc ss = do
          in modifyTVar' (activeServiceSub s) (updateServiceSub <$>)
     else TM.insert rId rq $ pendingSubs s
 
-batchAddActiveSubs :: SMPTransportSession -> SessionId -> ([RcvQueueSub], [RcvQueueSub]) -> TSessionSubs -> STM ()
-batchAddActiveSubs tSess sessId (rqs, serviceRQs) ss = do
+batchAddActiveSubs :: SMPTransportSession -> SessionId -> Maybe ServiceId -> ([RcvQueueSub], [RcvQueueSub]) -> TSessionSubs -> STM ()
+batchAddActiveSubs tSess sessId serviceId_ (rqs, serviceRQs) ss = do
   s <- getSessSubs tSess ss
   sessId' <- readTVar $ subsSessId s
   let qs = M.fromList $ map (\rq -> (rcvId rq, rq)) rqs
+      serviceQs = M.fromList $ map (\rq -> (rcvId rq, rq)) serviceRQs
   if Just sessId == sessId'
     then do
       TM.union qs $ activeSubs s
       modifyTVar' (pendingSubs s) (`M.difference` qs)
-      serviceSub_ <- readTVar $ activeServiceSub s
-      forM_ serviceSub_ $ \(ServiceSub serviceId n idsHash) -> do
-        unless (null serviceRQs) $ do
+      forM_ serviceId_ $ \serviceId -> unless (null serviceRQs) $ do
+        modifyTVar' (pendingSubs s) (`M.difference` serviceQs)
+        ServiceSub serviceId' n idsHash <-
+          fromMaybe (ServiceSub serviceId 0 noIdsHash) <$> readTVar (activeServiceSub s)
+        when (serviceId == serviceId') $ do
           let idsHash' = idsHash <> mconcat (map (queueIdHash . rcvId) serviceRQs)
               n' = n + fromIntegral (length serviceRQs)
           writeTVar (activeServiceSub s) $ Just $ ServiceSub serviceId n' idsHash'
-    else TM.union qs $ pendingSubs s
+    else do
+      TM.union qs $ pendingSubs s
+      when (isJust serviceId_ && not (null serviceRQs)) $ TM.union serviceQs $ pendingSubs s
 
 batchAddPendingSubs :: SMPTransportSession -> [RcvQueueSub] -> TSessionSubs -> STM ()
 batchAddPendingSubs tSess rqs ss = do
@@ -190,6 +196,10 @@ getPendingSubs :: SMPTransportSession -> TSessionSubs -> STM (Map RecipientId Rc
 getPendingSubs tSess = lookupSubs tSess >=> maybe (pure (M.empty, Nothing)) get
   where
     get s = liftM2 (,) (readTVar $ pendingSubs s) (readTVar $ pendingServiceSub s)
+
+getPendingQueueSubs :: SMPTransportSession -> TSessionSubs -> STM (Map RecipientId RcvQueueSub)
+getPendingQueueSubs = getSubs_ pendingSubs
+{-# INLINE getPendingQueueSubs #-}
 
 getActiveSubs :: SMPTransportSession -> TSessionSubs -> STM (Map RecipientId RcvQueueSub)
 getActiveSubs = getSubs_ activeSubs
