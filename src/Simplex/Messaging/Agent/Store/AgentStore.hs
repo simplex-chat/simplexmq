@@ -2147,12 +2147,12 @@ getSubscriptionServers db onlyNeeded =
     toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
 
 getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId srv onlyNeeded =
+getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded =
   map toRcvQueueSub
     <$> DB.query
       db
-      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ?")
-      (userId, host srv, port srv)
+      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?")
+      (userId, h, p, kh)
   where
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
