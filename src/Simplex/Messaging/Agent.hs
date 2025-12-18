@@ -1042,10 +1042,10 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
     createRcvQueue nonce_ qd e2eKeys = do
       AgentConfig {smpClientVRange = vr} <- asks config
       ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
-      (rq, qUri, tSess, sessId) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAllErrors` \e -> liftIO (print e) >> throwE e
+      (rq, qUri, tSess, sessId, serviceId_) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAllErrors` \e -> liftIO (print e) >> throwE e
       atomically $ incSMPServerStat c userId srv connCreated
       rq' <- withStore c $ \db -> updateNewConnRcv db connId rq subMode
-      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
       mapM_ (newQueueNtfSubscription c rq') ntfServer_
       pure (rq', qUri)
     createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
@@ -1293,11 +1293,11 @@ joinConnSrvAsync _c _userId _connId _enableNtfs (CRContactUri _) _cInfo _subMode
 createReplyQueue :: AgentClient -> NetworkRequestMode -> ConnData -> SndQueue -> SubscriptionMode -> SMPServerWithAuth -> AM SMPQueueInfo
 createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientVersion} subMode srv = do
   ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
-  (rq, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
+  (rq, qUri, tSess, sessId, serviceId_) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
   atomically $ incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
   rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq subMode
-  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId
+  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure qInfo
 
@@ -1453,22 +1453,14 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
     useServices <- readTVarIO $ useClientServices c
-    -- These options are possible below:
-    -- 1) services fully disabled:
-    --    No service subscriptions will be attempted, and existing services and association will remain in in the database,
-    --    but they will be ignored because of hasService parameter set to False.
-    --    This approach preserves performance for all clients that do not use services.
-    -- 2) at least one user ID has services enabled:
-    --    Service will be loaded for all user/server combinations:
-    --    a) service is enabled for user ID and service record exists: subscription will be attempted,
-    --    b) service is disabled and record exists: service record and all associations will be removed,
-    --    c) service is disabled or no record: no subscription attempt.
+    -- Service will be loaded for all user/server combinations:
+    -- a) service is enabled for user ID and service record exists: subscription will be attempted,
+    -- b) service is disabled and record exists: service record and all associations will be removed,
+    -- c) service is disabled or no record: no subscription attempt.
     -- On successful service subscription, only unassociated queues will be subscribed.
-    userSrvs'' <-
-      if any id useServices
-        then lift $ mapConcurrently (subscribeService useServices) userSrvs'
-        else pure $ map (,False) userSrvs'
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs''
+    userSrvs2 <- withStore' c $ \db -> mapM (getService db useServices) userSrvs'
+    userSrvs3 <- lift $ mapConcurrently subscribeService userSrvs2
+    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs3
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
@@ -1477,23 +1469,27 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   resumeAllCommands c
   where
     handleErr = (`catchAllErrors` \e -> notifySub' c "" (ERR e) >> throwE e)
-    subscribeService :: Map UserId Bool -> (UserId, SMPServer) -> AM' ((UserId, SMPServer), ServiceAssoc)
-    subscribeService useServices us@(userId, srv) = fmap ((us,) . fromRight False) $ tryAllErrors' $ do
-      withStore' c (\db -> getSubscriptionService db userId srv) >>= \case
+    getService :: DB.Connection -> Map UserId Bool -> (UserId, SMPServer) -> IO ((UserId, SMPServer), Maybe ServiceSub)
+    getService db useServices us@(userId, srv) =
+      fmap (us,) $ getSubscriptionService db userId srv >>= \case
         Just serviceSub -> case M.lookup userId useServices of
-          Just True -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
-            Right (ServiceSubResult e _) -> case e of
-              Just SSErrorServiceId {} -> unassocQueues
-              -- Below would resubscribe all queues after service was disabled and re-enabled
-              -- Possibly, we should always resubscribe all with expected is greated than subscribed
-              Just SSErrorQueueCount {expectedQueueCount = n, subscribedQueueCount = n'} | n > 0 && n' == 0 -> unassocQueues
-              _ -> pure True
-            Left e -> do
-              atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
-              if clientServiceError e
-                then unassocQueues
-                else pure True
-          _ -> unassocQueues
+          Just True -> pure $ Just serviceSub
+          _ -> Nothing <$ unassocUserServerRcvQueueSubs' db userId srv
+        _ -> pure Nothing
+    subscribeService :: ((UserId, SMPServer), Maybe ServiceSub) -> AM' ((UserId, SMPServer), ServiceAssoc)
+    subscribeService (us@(userId, srv), serviceSub_) = fmap ((us,) . fromRight False) $ tryAllErrors' $
+      case serviceSub_ of
+        Just serviceSub -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
+          Right (ServiceSubResult e _) -> case e of
+            Just SSErrorServiceId {} -> unassocQueues
+            -- Possibly, we should always resubscribe all when expected is greater than subscribed
+            Just SSErrorQueueCount {expectedQueueCount = n, subscribedQueueCount = n'} | n > 0 && n' == 0 -> unassocQueues
+            _ -> pure True
+          Left e -> do
+            atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
+            if clientServiceError e
+              then unassocQueues
+              else pure True
           where
             unassocQueues :: AM Bool
             unassocQueues = False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs' db userId srv)
@@ -2231,10 +2227,10 @@ switchDuplexConnection c nm (DuplexConnection cData@ConnData {connId, userId} rq
   srv' <- if srv == server then getNextSMPServer c userId [server] else pure srvAuth
   -- TODO [notications] possible improvement would be to create ntf credentials here, to avoid creating them after rotation completes.
   -- The problem is that currently subscription already exists, and we do not support queues with credentials but without subscriptions.
-  (q, qUri, tSess, sessId) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
+  (q, qUri, tSess, sessId, serviceId_) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
   rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq' SMSubscribe
-  lift $ addNewQueueSubscription c rq'' tSess sessId
+  lift $ addNewQueueSubscription c rq'' tSess sessId serviceId_
   void . enqueueMessages c cData sqs SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
   rq1 <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSendingQADD
   let rqs' = updatedQs rq1 rqs <> [rq'']
@@ -2920,7 +2916,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
     processSubOk :: RcvQueue -> TVar [ConnId] -> TVar [RcvQueue] -> Maybe SMP.ServiceId -> IO ()
     processSubOk rq@RcvQueue {connId} upConnIds serviceRQs serviceId_ =
       atomically . whenM (isPendingSub rq) $ do
-        SS.addActiveSub tSess sessId rq $ currentSubs c
+        SS.addActiveSub tSess sessId serviceId_ rq $ currentSubs c
         modifyTVar' upConnIds (connId :)
         when (isJust serviceId_ && serviceId_ == clientServiceId_) $ modifyTVar' serviceRQs (rq :)
     clientServiceId_ = (\THClientService {serviceId} -> serviceId) <$> (clientService =<< thAuth)

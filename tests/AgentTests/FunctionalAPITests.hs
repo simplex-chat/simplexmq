@@ -3722,10 +3722,22 @@ testClientServiceConnection ps = do
 testClientServiceIDChange :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testClientServiceIDChange ps@(_, ASType qs _) = do
   (sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
-    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    conns <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       conns@(sId, uId) <- makeConnection service user
       exchangeGreetings service uId user sId
       pure conns
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    pure conns
   _ :: () <- case qs of
     SQSPostgres -> do
 #if defined(dbServerPostgres)
@@ -3740,6 +3752,7 @@ testClientServiceIDChange ps@(_, ASType qs _) = do
       writeFile testStoreLogFile $ unlines $ filter (not . ("NEW_SERVICE" `isPrefixOf`)) $ lines s
   withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
       subscribeAllConnections service False Nothing
       liftIO $ getInAnyOrder service
         [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult (Just (SMP.SSErrorQueueCount 1 0)) (SMP.ServiceSub _ 0 _)))) -> True; _ -> False,
@@ -3749,10 +3762,11 @@ testClientServiceIDChange ps@(_, ASType qs _) = do
       subscribeAllConnections user False Nothing
       ("", "", UP _ [_]) <- nGet user
       exchangeGreetingsMsgId 4 service uId user sId
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    pure ()
   -- disable service in the client
-  -- The test uses True for non-existing user to make sure it's removed for user 1,
-  -- because if no users use services, then it won't be checking them to optimize for most clients.
-  withAgentClientsServers2 (agentCfg, initAgentServers {useServices = M.fromList [(100, True)]}) (agentCfg, initAgentServers) $ \notService user -> do
+  withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       subscribeAllConnections notService False Nothing
       ("", "", UP _ [_]) <- nGet notService
@@ -3853,12 +3867,6 @@ testMigrateConnectionsToService ps = do
   withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
       subscribeAllConnections service False Nothing
-      -- the "error" in SERVICE_UP event is expected, because when service was disabled for the user,
-      -- the service and associations were not removed, to optimize non-service clients.
-      liftIO $ getInAnyOrder service
-        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult (Just (SMP.SSErrorQueueCount 6 0)) (SMP.ServiceSub _ 0 _)))) -> True; _ -> False,
-          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
-        ]
       service `up` 8
       subscribeAllConnections user False Nothing
       user `up` 8

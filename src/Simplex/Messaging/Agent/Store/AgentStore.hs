@@ -38,7 +38,6 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- * Client services
     createClientService,
     getClientServiceCredentials,
-    getSubscriptionServices,
     getSubscriptionService,
     getClientServiceServers,
     setClientServiceId,
@@ -345,7 +344,7 @@ handleSQLError err e = case constraintViolation e of
 handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
   | SQL.sqlError e == SQL.ErrorConstraint = err
-  | otherwise = SEInternal $ bshow e
+  | otherwise = SEInternal $ encodeUtf8 $ tshow e <> ": " <> SQL.sqlErrorDetails e <> ", " <> SQL.sqlErrorContext e
 #endif
 
 createUserRecord :: DB.Connection -> IO UserId
@@ -440,11 +439,6 @@ getClientServiceCredentials db userId srv =
   where
     toService (kh, cert, pk, serviceId_) = ((kh, (cert, pk)), serviceId_)
 
-getSubscriptionServices :: DB.Connection -> IO [(UserId, (SMPServer, ServiceSub))]
-getSubscriptionServices db = map toUserService <$> DB.query_ db clientServiceQuery
-  where
-    toUserService (Only userId :. serviceRow) = (userId, toServerService serviceRow)
-
 getSubscriptionService :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ServiceSub)
 getSubscriptionService db userId (SMPServer h p kh) =
   maybeFirstRow toService $
@@ -454,7 +448,7 @@ getSubscriptionService db userId (SMPServer h p kh) =
         SELECT c.service_id, c.service_queue_count, c.service_queue_ids_hash
         FROM client_services c
         JOIN servers s ON s.host = c.host AND s.port = c.port
-        WHERE c.user_id = ? AND c.host = ? AND c.port = ? AND COALESCE(c.server_key_hash, s.key_hash) = ?
+        WHERE c.user_id = ? AND c.host = ? AND c.port = ? AND COALESCE(c.server_key_hash, s.key_hash) = ? AND service_id IS NOT NULL
       |]
       (userId, h, p, kh)
   where
@@ -462,15 +456,16 @@ getSubscriptionService db userId (SMPServer h p kh) =
 
 getClientServiceServers :: DB.Connection -> UserId -> IO [(SMPServer, ServiceSub)]
 getClientServiceServers db userId =
-  map toServerService <$> DB.query db (clientServiceQuery <> " WHERE c.user_id = ?") (Only userId)
-
-clientServiceQuery :: Query
-clientServiceQuery =
-  [sql|
-    SELECT c.host, c.port, COALESCE(c.server_key_hash, s.key_hash), c.service_id, c.service_queue_count, c.service_queue_ids_hash
-    FROM client_services c
-    JOIN servers s ON s.host = c.host AND s.port = c.port
-  |]
+  map toServerService <$>
+    DB.query
+      db
+      [sql|
+        SELECT c.host, c.port, COALESCE(c.server_key_hash, s.key_hash), c.service_id, c.service_queue_count, c.service_queue_ids_hash
+        FROM client_services c
+        JOIN servers s ON s.host = c.host AND s.port = c.port
+        WHERE c.user_id = ? AND service_id IS NOT NULL
+      |]
+      (Only userId)
 
 toServerService :: (NonEmpty TransportHost, ServiceName, C.KeyHash, ServiceId, Int64, Binary ByteString) -> (ProtocolServer 'PSMP, ServiceSub)
 toServerService (host, port, kh, serviceId, n, Binary idsHash) =
@@ -488,14 +483,20 @@ setClientServiceId db userId srv serviceId =
     (serviceId, userId, host srv, port srv)
 
 deleteClientService :: DB.Connection -> UserId -> SMPServer -> IO ()
-deleteClientService db userId srv =
+deleteClientService db userId (SMPServer h p kh) =
   DB.execute
     db
     [sql|
       DELETE FROM client_services
       WHERE user_id = ? AND host = ? AND port = ?
+        AND EXISTS (
+          SELECT 1 FROM servers s
+          WHERE s.host = client_services.host
+            AND s.port = client_services.port
+            AND COALESCE(client_services.server_key_hash, s.key_hash) = ?
+        );
     |]
-    (userId, host srv, port srv)
+    (userId, h, p, Just kh)
 
 deleteClientServices :: DB.Connection -> UserId -> IO ()
 deleteClientServices db userId = do
@@ -2280,7 +2281,8 @@ getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService =
       | otherwise = ""
 
 unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [RcvQueueSub]
-unassocUserServerRcvQueueSubs db userId (SMPServer h p kh) =
+unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
+  deleteClientService db userId srv
   map toRcvQueueSub
     <$> DB.query
       db
@@ -2295,7 +2297,9 @@ unassocUserServerRcvQueueSubs db userId (SMPServer h p kh) =
       |]
 
 unassocUserServerRcvQueueSubs' :: DB.Connection -> UserId -> SMPServer -> IO ()
-unassocUserServerRcvQueueSubs' db userId (SMPServer h p kh) = DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
+unassocUserServerRcvQueueSubs' db userId srv@(SMPServer h p kh) = do
+  deleteClientService db userId srv
+  DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
 
 unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"

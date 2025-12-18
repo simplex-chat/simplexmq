@@ -69,21 +69,21 @@ testSessionSubs = do
   atomically (SS.hasPendingSub tSess1 (rcvId q4) ss) `shouldReturn` False
   atomically (SS.hasActiveSub tSess1 (rcvId q4) ss) `shouldReturn` False
   -- setting active queue without setting session ID would keep it as pending
-  atomically $ SS.addActiveSub' tSess1 "123" q1 False ss
+  atomically $ SS.addActiveSub' tSess1 "123" Nothing q1 False ss
   atomically (SS.hasPendingSub tSess1 (rcvId q1) ss) `shouldReturn` True
   atomically (SS.hasActiveSub tSess1 (rcvId q1) ss) `shouldReturn` False
   dumpSessionSubs ss `shouldReturn` st
   countSubs ss `shouldReturn` (0, 3)
   -- setting active queues
   atomically $ SS.setSessionId tSess1 "123" ss
-  atomically $ SS.addActiveSub' tSess1 "123" q1 False ss
+  atomically $ SS.addActiveSub' tSess1 "123" Nothing q1 False ss
   atomically (SS.hasPendingSub tSess1 (rcvId q1) ss) `shouldReturn` False
   atomically (SS.hasActiveSub tSess1 (rcvId q1) ss) `shouldReturn` True
   atomically (SS.getActiveSubs tSess1 ss) `shouldReturn` M.fromList [("r1", q1)]
   atomically (SS.getPendingSubs tSess1 ss) `shouldReturn` (M.fromList [("r2", q2)], Nothing)
   countSubs ss `shouldReturn` (1, 2)
   atomically $ SS.setSessionId tSess2 "456" ss
-  atomically $ SS.addActiveSub' tSess2 "456" q4 False ss
+  atomically $ SS.addActiveSub' tSess2 "456" Nothing q4 False ss
   atomically (SS.hasPendingSub tSess2 (rcvId q4) ss) `shouldReturn` False
   atomically (SS.hasActiveSub tSess2 (rcvId q4) ss) `shouldReturn` True
   atomically (SS.hasActiveSub tSess1 (rcvId q4) ss) `shouldReturn` False -- wrong transport session
