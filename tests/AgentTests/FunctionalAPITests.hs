@@ -450,8 +450,10 @@ functionalAPITests ps = do
     it "should send multiple messages to the same connection" $ withSmpServer ps testSendMessagesB
     it "should send messages to the 2 connections" $ withSmpServer ps testSendMessagesB2
   describe "Async agent commands" $ do
-    fdescribe "connect using async agent commands" $
+    describe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
+    fit "should add short link data using async agent command" $
+      testSetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
     describe "accept connection using async command" $
@@ -2583,9 +2585,6 @@ testAsyncCommands sqSecured alice bob baseId =
     bobId <- createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
-    setConnShortLinkAsync alice "1a" bobId SCMInvitation (UserInvLinkData $ UserLinkData "test") Nothing
-    ("1a", bobId'', LINK (ACSL SCMInvitation _)) <- get alice
-    liftIO $ bobId'' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
@@ -2630,6 +2629,23 @@ testAsyncCommands sqSecured alice bob baseId =
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId
+
+testSetConnShortLinkAsync :: (ASrvTransport, AStoreType) -> IO ()
+testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
+  withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+    let userData = UserLinkData "test user data"
+        newLinkData = UserInvLinkData userData
+    (bobId, (CCLink qInfo _, _)) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing IKPQOn SMSubscribe
+    let updatedData = UserLinkData "updated user data"
+    setConnShortLinkAsync alice "1" bobId SCMInvitation (UserInvLinkData updatedData) Nothing
+    ("1", bobId', LINK (ACSL SCMInvitation _)) <- get alice
+    liftIO $ bobId' `shouldBe` bobId
+    (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+    ("", _, CONF confId _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, INFO "alice's connInfo")
+    get bob ##> ("", aliceId, CON)
 
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
 testAsyncCommandsRestore ps = do
