@@ -436,7 +436,7 @@ deriving instance Show AEvtTag
 
 data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
-  | SLINK AConnectionMode AUserConnLinkData (Maybe CRClientData) -- response LINK
+  | LSET AConnectionMode AUserConnLinkData (Maybe CRClientData) -- response LINK
   | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
@@ -446,7 +446,7 @@ data ACommand
 
 data ACommandTag
   = NEW_
-  | SLINK_
+  | LSET_
   | JOIN_
   | LET_
   | ACK_
@@ -503,7 +503,7 @@ deriving instance Show (AEventTag e)
 aCommandTag :: ACommand -> ACommandTag
 aCommandTag = \case
   NEW {} -> NEW_
-  SLINK {} -> SLINK_
+  LSET {} -> LSET_
   JOIN {} -> JOIN_
   LET {} -> LET_
   ACK {} -> ACK_
@@ -1988,7 +1988,7 @@ instance StrEncoding ACommandTag where
   strP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NEW_
-      "SLINK" -> pure SLINK_
+      "LSET" -> pure LSET_
       "JOIN" -> pure JOIN_
       "LET" -> pure LET_
       "ACK" -> pure ACK_
@@ -1997,7 +1997,7 @@ instance StrEncoding ACommandTag where
       _ -> fail "bad ACommandTag"
   strEncode = \case
     NEW_ -> "NEW"
-    SLINK_ -> "SLINK"
+    LSET_ -> "LSET"
     JOIN_ -> "JOIN"
     LET_ -> "LET"
     ACK_ -> "ACK"
@@ -2009,7 +2009,7 @@ commandP binaryP =
   strP
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
-      SLINK_ -> undefined
+      LSET_ -> undefined
       JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
@@ -2027,7 +2027,7 @@ commandP binaryP =
 serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
-  SLINK {} -> undefined
+  LSET {} -> undefined
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
