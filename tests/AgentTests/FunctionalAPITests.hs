@@ -2636,18 +2636,19 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let userData = UserLinkData "test user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
         newLinkData = UserContactLinkData userCtData
-    (contactId, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    (cId, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
     -- verify initial link data
     (_, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
     liftIO $ userCtData' `shouldBe` userCtData
     -- update link data async
     let updatedData = UserLinkData "updated user data"
         updatedCtData = UserContactData {direct = False, owners = [], relays = [], userData = updatedData}
-    setConnShortLinkAsync alice "1" contactId SCMContact (UserContactLinkData updatedCtData) Nothing
-    ("1", contactId', LINK (ACSL SCMContact _)) <- get alice
-    liftIO $ contactId' `shouldBe` contactId
+    setConnShortLinkAsync alice "1" cId SCMContact (UserContactLinkData updatedCtData) Nothing
+    ("1", cId', LINK (ACSL SCMContact shortLink')) <- get alice
+    liftIO $ cId' `shouldBe` cId
+    liftIO $ shortLink' `shouldBe` shortLink
     -- verify updated link data
-    (_, ContactLinkData _ updatedCtData') <- getConnShortLink bob 1 shortLink
+    (_, ContactLinkData _ updatedCtData') <- getConnShortLink bob 1 shortLink'
     liftIO $ updatedCtData' `shouldBe` updatedCtData
     -- complete connection via contact address
     (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
