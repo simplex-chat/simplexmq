@@ -2634,17 +2634,30 @@ testSetConnShortLinkAsync :: (ASrvTransport, AStoreType) -> IO ()
 testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
   withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
     let userData = UserLinkData "test user data"
-        newLinkData = UserInvLinkData userData
-    (bobId, (CCLink qInfo _, _)) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing IKPQOn SMSubscribe
+        userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+        newLinkData = UserContactLinkData userCtData
+    (contactId, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    -- verify initial link data
+    (_, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    liftIO $ userCtData' `shouldBe` userCtData
+    -- update link data async
     let updatedData = UserLinkData "updated user data"
-    setConnShortLinkAsync alice "1" bobId SCMInvitation (UserInvLinkData updatedData) Nothing
-    ("1", bobId', LINK (ACSL SCMInvitation _)) <- get alice
-    liftIO $ bobId' `shouldBe` bobId
+        updatedCtData = UserContactData {direct = False, owners = [], relays = [], userData = updatedData}
+    setConnShortLinkAsync alice "1" contactId SCMContact (UserContactLinkData updatedCtData) Nothing
+    ("1", contactId', LINK (ACSL SCMContact _)) <- get alice
+    liftIO $ contactId' `shouldBe` contactId
+    -- verify updated link data
+    (_, ContactLinkData _ updatedCtData') <- getConnShortLink bob 1 shortLink
+    liftIO $ updatedCtData' `shouldBe` updatedCtData
+    -- complete connection via contact address
     (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
-    ("", _, CONF confId _ "bob's connInfo") <- get alice
-    allowConnection alice bobId confId "alice's connInfo"
+    ("", _, REQ invId _ "bob's connInfo") <- get alice
+    bobId <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+    (_, Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    ("", _, CONF confId _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, INFO "bob's connInfo")
     get alice ##> ("", bobId, CON)
-    get bob ##> ("", aliceId, INFO "alice's connInfo")
     get bob ##> ("", aliceId, CON)
 
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
