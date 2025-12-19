@@ -382,6 +382,7 @@ type SndQueueSecured = Bool
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> Maybe ClientServiceId -> AEvent AEConn
+  LINK :: AConnShortLink -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -435,6 +436,7 @@ deriving instance Show AEvtTag
 
 data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
+  | SLINK AConnectionMode AUserConnLinkData (Maybe CRClientData) -- response LINK
   | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
@@ -444,6 +446,7 @@ data ACommand
 
 data ACommandTag
   = NEW_
+  | SLINK_
   | JOIN_
   | LET_
   | ACK_
@@ -453,6 +456,7 @@ data ACommandTag
 
 data AEventTag (e :: AEntity) where
   INV_ :: AEventTag AEConn
+  LINK_ :: AEventTag AEConn
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
@@ -499,6 +503,7 @@ deriving instance Show (AEventTag e)
 aCommandTag :: ACommand -> ACommandTag
 aCommandTag = \case
   NEW {} -> NEW_
+  SLINK {} -> SLINK_
   JOIN {} -> JOIN_
   LET {} -> LET_
   ACK {} -> ACK_
@@ -508,6 +513,7 @@ aCommandTag = \case
 aEventTag :: AEvent e -> AEventTag e
 aEventTag = \case
   INV {} -> INV_
+  LINK _ -> LINK_
   CONF {} -> CONF_
   REQ {} -> REQ_
   INFO {} -> INFO_
@@ -1712,6 +1718,8 @@ data UserConnLinkData c where
   UserInvLinkData :: UserLinkData -> UserConnLinkData 'CMInvitation
   UserContactLinkData :: UserContactData -> UserConnLinkData 'CMContact
 
+data AUserConnLinkData = forall m. ConnectionModeI m => AUCLD (SConnectionMode m) (UserConnLinkData m)
+
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
   InvitationLinkData _ d -> d
@@ -1776,6 +1784,10 @@ instance Encoding AConnLinkData where
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         let cd = UserContactData {direct, owners, relays, userData}
         pure $ ACLD SCMContact $ ContactLinkData vr cd
+
+instance Encoding AUserConnLinkData where
+  smpEncode = undefined
+  smpP = undefined
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
@@ -1976,6 +1988,7 @@ instance StrEncoding ACommandTag where
   strP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NEW_
+      "SLINK" -> pure SLINK_
       "JOIN" -> pure JOIN_
       "LET" -> pure LET_
       "ACK" -> pure ACK_
@@ -1984,6 +1997,7 @@ instance StrEncoding ACommandTag where
       _ -> fail "bad ACommandTag"
   strEncode = \case
     NEW_ -> "NEW"
+    SLINK_ -> "SLINK"
     JOIN_ -> "JOIN"
     LET_ -> "LET"
     ACK_ -> "ACK"
@@ -1995,6 +2009,7 @@ commandP binaryP =
   strP
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
+      SLINK_ -> undefined
       JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
@@ -2012,6 +2027,7 @@ commandP binaryP =
 serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
+  SLINK {} -> undefined
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
