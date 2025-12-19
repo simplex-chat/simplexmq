@@ -452,7 +452,7 @@ functionalAPITests ps = do
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
-    fit "should add short link data using async agent command" $
+    it "should add short link data using async agent command" $
       testSetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
