@@ -347,7 +347,7 @@ createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAs
 {-# INLINE createConnectionAsync #-}
 
 -- | Create or update user's contact connection short link (LSET command) asynchronously, no synchronous response
-setConnShortLinkAsync :: AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE ()
+setConnShortLinkAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE ()
 setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
@@ -892,10 +892,15 @@ checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAu
         when (maybe True (ts <) expires_) $
           throwError NOTICE {server = safeDecodeUtf8 $ strEncode $ L.head host, preset = isNothing srvKey, expiresAt = roundedToUTCTime <$> expires_}
 
-setConnShortLinkAsync' :: AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM ()
+setConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM ()
 setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
-  -- enqueue command LSET
-  undefined
+  withConnLock c connId "setConnShortLinkAsync" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    srv <- case (conn, cMode, userLinkData) of
+      (ContactConnection _ RcvQueue {server}, SCMContact, UserContactLinkData {}) -> pure server
+      (RcvConnection _ RcvQueue {server}, SCMInvitation, UserInvLinkData {}) -> pure server
+      _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
+    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData =
@@ -1668,10 +1673,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             (CCLink cReq _, service) <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq) service
-        LSET {} ->
-          -- create link (reuse setConnShortLink')
-          -- notify - LINK
-          undefined
+        LSET (AUCLD cMode userLinkData) clientData ->
+          withServer' . tryCommand $ do
+            link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
+            notify $ LINK (ACSL cMode link)
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do

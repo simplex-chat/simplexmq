@@ -450,7 +450,7 @@ functionalAPITests ps = do
     it "should send multiple messages to the same connection" $ withSmpServer ps testSendMessagesB
     it "should send messages to the 2 connections" $ withSmpServer ps testSendMessagesB2
   describe "Async agent commands" $ do
-    describe "connect using async agent commands" $
+    fdescribe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
@@ -2583,6 +2583,9 @@ testAsyncCommands sqSecured alice bob baseId =
     bobId <- createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
+    setConnShortLinkAsync alice "1a" bobId SCMInvitation (UserInvLinkData $ UserLinkData "test") Nothing
+    ("1a", bobId'', LINK (ACSL SCMInvitation _)) <- get alice
+    liftIO $ bobId'' `shouldBe` bobId
     aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do

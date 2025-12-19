@@ -112,6 +112,7 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    AUserConnLinkData (..),
     UserConnLinkData (..),
     UserContactData (..),
     UserLinkData (..),
@@ -436,7 +437,7 @@ deriving instance Show AEvtTag
 
 data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
-  | LSET AConnectionMode AUserConnLinkData (Maybe CRClientData) -- response LINK
+  | LSET AUserConnLinkData (Maybe CRClientData) -- response LINK
   | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
@@ -1709,8 +1710,10 @@ data UserContactData = UserContactData
     relays :: [ConnShortLink 'CMContact],
     userData :: UserLinkData
   }
+  deriving (Eq, Show)
 
 newtype UserLinkData = UserLinkData ByteString
+  deriving (Eq, Show)
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
 
@@ -1718,7 +1721,18 @@ data UserConnLinkData c where
   UserInvLinkData :: UserLinkData -> UserConnLinkData 'CMInvitation
   UserContactLinkData :: UserContactData -> UserConnLinkData 'CMContact
 
+deriving instance Eq (UserConnLinkData m)
+
+deriving instance Show (UserConnLinkData m)
+
 data AUserConnLinkData = forall m. ConnectionModeI m => AUCLD (SConnectionMode m) (UserConnLinkData m)
+
+instance Eq AUserConnLinkData where
+  AUCLD m d == AUCLD m' d' = case testEquality m m' of
+    Just Refl -> d == d'
+    Nothing -> False
+
+deriving instance Show AUserConnLinkData
 
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
@@ -1746,6 +1760,7 @@ data OwnerAuth = OwnerAuth
     -- Owner validation should detect and reject loops.
     authOwnerSig :: C.Signature 'C.Ed25519
   }
+  deriving (Eq, Show)
 
 instance Encoding OwnerAuth where
   smpEncode OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig} =
@@ -1785,9 +1800,35 @@ instance Encoding AConnLinkData where
         let cd = UserContactData {direct, owners, relays, userData}
         pure $ ACLD SCMContact $ ContactLinkData vr cd
 
+instance ConnectionModeI c => Encoding (UserConnLinkData c) where
+  smpEncode = \case
+    UserInvLinkData userData -> smpEncode (CMInvitation, userData)
+    UserContactLinkData UserContactData {direct, owners, relays, userData} ->
+      B.concat [smpEncode (CMContact, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+  smpP = (\(AUCLD _ d) -> checkConnMode d) <$?> smpP
+  {-# INLINE smpP #-}
+
 instance Encoding AUserConnLinkData where
-  smpEncode = undefined
-  smpP = undefined
+  smpEncode (AUCLD _ d) = smpEncode d
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      CMInvitation -> do
+        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+        pure $ AUCLD SCMInvitation $ UserInvLinkData userData
+      CMContact -> do
+        direct <- smpP
+        owners <- smpListP
+        relays <- smpListP
+        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+        let cd = UserContactData {direct, owners, relays, userData}
+        pure $ AUCLD SCMContact $ UserContactLinkData cd
+
+instance StrEncoding AUserConnLinkData where
+  strEncode = smpEncode
+  {-# INLINE strEncode #-}
+  strP = smpP
+  {-# INLINE strP #-}
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
@@ -2009,7 +2050,7 @@ commandP binaryP =
   strP
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
-      LSET_ -> undefined
+      LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
       JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
@@ -2027,7 +2068,7 @@ commandP binaryP =
 serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
-  LSET {} -> undefined
+  LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
