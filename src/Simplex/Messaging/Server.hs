@@ -316,8 +316,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             cancelServiceSubs :: ServiceId -> Maybe (Client s) -> STM [PrevClientSub s]
             cancelServiceSubs serviceId =
               checkAnotherClient $ \c -> do
-                changedSubs@(n, _) <- swapTVar (clientServiceSubs c) (0, noIdsHash)
-                pure [(c, CSADecreaseSubs changedSubs, (serviceId, ENDS n))]
+                changedSubs@(n, idsHash) <- swapTVar (clientServiceSubs c) (0, mempty)
+                pure [(c, CSADecreaseSubs changedSubs, (serviceId, ENDS n idsHash))]
             checkAnotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
             checkAnotherClient mkSub = \case
               Just c@Client {clientId, connected} | clntId /= clientId ->

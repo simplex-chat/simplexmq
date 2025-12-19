@@ -502,7 +502,7 @@ newServerSubscribers = do
   subQ <- newTQueueIO
   queueSubscribers <- SubscribedClients <$> TM.emptyIO
   serviceSubscribers <- SubscribedClients <$> TM.emptyIO
-  totalServiceSubs <- newTVarIO (0, noIdsHash)
+  totalServiceSubs <- newTVarIO (0, mempty)
   subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
@@ -513,8 +513,8 @@ newClient clientId qSize clientTHParams createdAt = do
   ntfSubscriptions <- TM.emptyIO
   serviceSubscribed <- newTVarIO False
   ntfServiceSubscribed <- newTVarIO False
-  serviceSubsCount <- newTVarIO (0, noIdsHash)
-  ntfServiceSubsCount <- newTVarIO (0, noIdsHash)
+  serviceSubsCount <- newTVarIO (0, mempty)
+  ntfServiceSubsCount <- newTVarIO (0, mempty)
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize

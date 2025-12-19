@@ -147,7 +147,6 @@ module Simplex.Messaging.Protocol
     serviceSubResult,
     queueIdsHash,
     queueIdHash,
-    noIdsHash,
     addServiceSubs,
     subtractServiceSubs,
     MaxMessageLen,
@@ -726,7 +725,7 @@ data BrokerMsg where
   RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
-  ENDS :: Int64 -> BrokerMsg
+  ENDS :: Int64 -> IdsHash -> BrokerMsg
   DELD :: BrokerMsg
   INFO :: QueueInfo -> BrokerMsg
   OK :: BrokerMsg
@@ -1518,10 +1517,6 @@ instance Monoid IdsHash where
 xor' :: Word8 -> Word8 -> Word8
 xor' x y = let !r = xor x y in r
 
-noIdsHash ::IdsHash
-noIdsHash = IdsHash B.empty
-{-# INLINE noIdsHash #-}
-
 queueIdsHash :: [QueueId] -> IdsHash
 queueIdsHash = mconcat . map queueIdHash
 
@@ -1535,7 +1530,7 @@ addServiceSubs (n', idsHash') (n, idsHash) = (n + n', idsHash <> idsHash')
 subtractServiceSubs :: (Int64, IdsHash) -> (Int64, IdsHash) -> (Int64, IdsHash)
 subtractServiceSubs (n', idsHash') (n, idsHash)
   | n > n' = (n - n', idsHash <> idsHash') -- concat is a reversible xor: (x `xor` y) `xor` y == x
-  | otherwise = (0, noIdsHash)
+  | otherwise = (0, mempty)
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
 
@@ -1883,7 +1878,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         QUE_ -> pure QUE
     CT SRecipientService SUBS_
       | v >= rcvServiceSMPVersion -> Cmd SRecipientService <$> (SUBS <$> _smpP <*> smpP)
-      | otherwise -> pure $ Cmd SRecipientService $ SUBS (-1) noIdsHash
+      | otherwise -> pure $ Cmd SRecipientService $ SUBS (-1) mempty
     CT SSender tag ->
       Cmd SSender <$> case tag of
         SKEY_ -> SKEY <$> _smpP
@@ -1902,7 +1897,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifier NSUB_ -> pure $ Cmd SNotifier NSUB
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
-      | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) noIdsHash
+      | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1925,9 +1920,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     SOK serviceId_
       | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
       | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
-    SOKS n idsHash
-      | v >= rcvServiceSMPVersion -> e (SOKS_, ' ', n, idsHash)
-      | otherwise -> e (SOKS_, ' ', n)
+    SOKS n idsHash -> serviceResp SOKS_ n idsHash
     MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} ->
       e (MSG_, ' ', msgId, Tail body)
     ALLS -> e ALLS_
@@ -1937,7 +1930,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
-    ENDS n -> e (ENDS_, ' ', n)
+    ENDS n idsHash -> serviceResp ENDS_ n idsHash
     DELD
       | v >= deletedEventSMPVersion -> e DELD_
       | otherwise -> e END_
@@ -1954,6 +1947,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
+      serviceResp tag n idsHash
+        | v >= serviceCertsSMPVersion = e (tag, ' ', n, idsHash)
+        | otherwise = e (tag, ' ', n)
 
   protocolP v = \case
     MSG_ -> do
@@ -1982,21 +1978,23 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId, serverNtfCreds}
     LNK_ -> LNK <$> _smpP <*> smpP
     SOK_ -> SOK <$> _smpP
-    SOKS_
-      | v >= rcvServiceSMPVersion -> SOKS <$> _smpP <*> smpP
-      | otherwise -> SOKS <$> _smpP <*> pure noIdsHash
+    SOKS_ -> serviceRespP SOKS
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
     RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
     PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
     END_ -> pure END
-    ENDS_ -> ENDS <$> _smpP
+    ENDS_ -> serviceRespP ENDS
     DELD_ -> pure DELD
     INFO_ -> INFO <$> _smpP
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
+    where
+      serviceRespP resp
+        | v >= serviceCertsSMPVersion = resp <$> _smpP <*> smpP
+        | otherwise = resp <$> _smpP <*> pure mempty
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX

@@ -480,6 +480,7 @@ functionalAPITests ps = do
   describe "Client service certificates" $ do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
+    it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -3721,10 +3722,22 @@ testClientServiceConnection ps = do
 testClientServiceIDChange :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testClientServiceIDChange ps@(_, ASType qs _) = do
   (sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
-    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    conns <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       conns@(sId, uId) <- makeConnection service user
       exchangeGreetings service uId user sId
       pure conns
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    pure conns
   _ :: () <- case qs of
     SQSPostgres -> do
 #if defined(dbServerPostgres)
@@ -3739,25 +3752,174 @@ testClientServiceIDChange ps@(_, ASType qs _) = do
       writeFile testStoreLogFile $ unlines $ filter (not . ("NEW_SERVICE" `isPrefixOf`)) $ lines s
   withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
       subscribeAllConnections service False Nothing
       liftIO $ getInAnyOrder service
         [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult (Just (SMP.SSErrorQueueCount 1 0)) (SMP.ServiceSub _ 0 _)))) -> True; _ -> False,
           \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False,
-          \case ("", "", AEvt SAENone (UP _ _)) -> True; _ -> False
+          \case ("", "", AEvt SAENone (UP _ [_])) -> True; _ -> False
         ]
       subscribeAllConnections user False Nothing
       ("", "", UP _ [_]) <- nGet user
       exchangeGreetingsMsgId 4 service uId user sId
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    pure ()
   -- disable service in the client
-  -- The test uses True for non-existing user to make sure it's removed for user 1,
-  -- because if no users use services, then it won't be checking them to optimize for most clients.
-  withAgentClientsServers2 (agentCfg, initAgentServers {useServices = M.fromList [(100, True)]}) (agentCfg, initAgentServers) $ \notService user -> do
+  withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
       subscribeAllConnections notService False Nothing
       ("", "", UP _ [_]) <- nGet notService
       subscribeAllConnections user False Nothing
       ("", "", UP _ [_]) <- nGet user
       exchangeGreetingsMsgId 6 notService uId user sId
+
+testMigrateConnectionsToService :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testMigrateConnectionsToService ps = do
+  (((sId1, uId1), (uId2, sId2)), ((sId3, uId3), (uId4, sId4)), ((sId5, uId5), (uId6, sId6))) <-
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      -- starting without service
+      cs12@((sId1, uId1), (uId2, sId2)) <-
+        withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user ->
+          runRight $ (,) <$> makeConnection notService user <*> makeConnection user notService
+      -- migrating to service
+      cs34@((sId3, uId3), (uId4, sId4)) <-
+        withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+          subscribeAllConnections service False Nothing
+          service `up` 2
+          subscribeAllConnections user False Nothing
+          user `up` 2
+          exchangeGreetingsMsgId 2 service uId1 user sId1
+          exchangeGreetingsMsgId 2 service uId2 user sId2
+          (,) <$> makeConnection service user <*> makeConnection user service
+      -- starting as service
+      cs56 <-
+        withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+          subscribeAllConnections service False Nothing
+          liftIO $ getInAnyOrder service
+            [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 4 _)))) -> True; _ -> False,
+              \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+            ]
+          subscribeAllConnections user False Nothing
+          user `up` 4
+          exchangeGreetingsMsgId 4 service uId1 user sId1
+          exchangeGreetingsMsgId 4 service uId2 user sId2
+          exchangeGreetingsMsgId 2 service uId3 user sId3
+          exchangeGreetingsMsgId 2 service uId4 user sId4
+          (,) <$> makeConnection service user <*> makeConnection user service
+      pure (cs12, cs34, cs56)
+  -- server reconnecting resubscribes service
+  let testSendMessages6 s u n = do
+        exchangeGreetingsMsgId (n + 4) s uId1 u sId1
+        exchangeGreetingsMsgId (n + 4) s uId2 u sId2
+        exchangeGreetingsMsgId (n + 2) s uId3 u sId3
+        exchangeGreetingsMsgId (n + 2) s uId4 u sId4
+        exchangeGreetingsMsgId n s uId5 u sId5
+        exchangeGreetingsMsgId n s uId6 u sId6
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 6 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      subscribeAllConnections user False Nothing
+      user `up` 6
+      testSendMessages6 service user 2
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 6 _)) <- nGet service
+    user `down` 6
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 6 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      user `up` 6
+      testSendMessages6 service user 4
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 6 _)) <- nGet service
+    user `down` 6
+  -- disabling service and adding connections
+  ((sId7, uId7), (uId8, sId8)) <-
+    withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user -> do
+      cs78@((sId7, uId7), (uId8, sId8)) <-
+        withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+          subscribeAllConnections notService False Nothing
+          notService `up` 6
+          subscribeAllConnections user False Nothing
+          user `up` 6
+          testSendMessages6 notService user 6
+          (,) <$> makeConnection notService user <*> makeConnection user notService
+      notService `down` 8
+      user `down` 8
+      withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+        notService `up` 8
+        user `up` 8
+        testSendMessages6 notService user 8
+        exchangeGreetingsMsgId 2 notService uId7 user sId7
+        exchangeGreetingsMsgId 2 notService uId8 user sId8
+      notService `down` 8
+      user `down` 8
+      pure cs78
+  let testSendMessages8 s u n = do
+        testSendMessages6 s u (n + 8)
+        exchangeGreetingsMsgId (n + 2) s uId7 u sId7
+        exchangeGreetingsMsgId (n + 2) s uId8 u sId8
+  -- re-enabling service and adding connections
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      subscribeAllConnections service False Nothing
+      service `up` 8
+      subscribeAllConnections user False Nothing
+      user `up` 8
+      testSendMessages8 service user 2
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 8 _)) <- nGet service
+    user `down` 8
+    -- re-connect to server
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 8 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      user `up` 8
+      testSendMessages8 service user 4
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ _ _)) <- nGet service -- should be 8 here
+    user `down` 8
+  -- restart agents
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 8 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      subscribeAllConnections user False Nothing
+      user `up` 8
+      testSendMessages8 service user 6
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 8 _)) <- nGet service
+    user `down` 8
+    runRight_ $ do
+      void $ sendMessage user sId7 SMP.noMsgFlags "hello 1"
+      void $ sendMessage user sId8 SMP.noMsgFlags "hello 2"
+    -- re-connect to server
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 8 _)))) -> True; _ -> False,
+          \case ("", c, AEvt SAEConn (Msg "hello 1")) -> c == uId7; _ -> False,
+          \case ("", c, AEvt SAEConn (Msg "hello 2")) -> c == uId8; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      liftIO $ getInAnyOrder user
+        [ \case ("", "", AEvt SAENone (UP _ [_, _, _, _, _, _, _, _])) -> True; _ -> False,
+          \case ("", c, AEvt SAEConn (SENT 10)) -> c == sId7; _ -> False,
+          \case ("", c, AEvt SAEConn (SENT 10)) -> c == sId8; _ -> False
+        ]
+      testSendMessages6 service user 16
+  where
+    up c n = do
+      ("", "", UP _ conns) <- nGet c
+      liftIO $ length conns `shouldBe` n
+    down c n = do
+      ("", "", DOWN _ conns) <- nGet c
+      liftIO $ length conns `shouldBe` n
 
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
