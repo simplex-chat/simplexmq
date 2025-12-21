@@ -15,6 +15,7 @@ module Simplex.Messaging.Client.Agent
   ( SMPClientAgent (..),
     SMPClientAgentConfig (..),
     SMPClientAgentEvent (..),
+    DBService (..),
     OwnServer,
     defaultSMPClientAgentConfig,
     newSMPClientAgent,
@@ -133,6 +134,7 @@ defaultSMPClientAgentConfig =
 data SMPClientAgent p = SMPClientAgent
   { agentCfg :: SMPClientAgentConfig,
     agentParty :: SParty p,
+    dbService :: Maybe DBService,
     active :: TVar Bool,
     startedAt :: UTCTime,
     msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
@@ -155,8 +157,8 @@ data SMPClientAgent p = SMPClientAgent
 
 type OwnServer = Bool
 
-newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> TVar ChaChaDRG -> IO (SMPClientAgent p)
-newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} randomDrg = do
+newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> Maybe DBService -> TVar ChaChaDRG -> IO (SMPClientAgent p)
+newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} dbService randomDrg = do
   active <- newTVarIO True
   startedAt <- getCurrentTime
   msgQ <- newTBQueueIO msgQSize
@@ -173,6 +175,7 @@ newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize
     SMPClientAgent
       { agentCfg,
         agentParty,
+        dbService,
         active,
         startedAt,
         msgQ,
@@ -187,6 +190,11 @@ newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize
         smpSubWorkers,
         workerSeq
       }
+
+data DBService = DBService
+  { getCredentials :: SMPServer -> IO (Either SMPClientError ServiceCredentials),
+    updateServiceId :: SMPServer -> Maybe ServiceId -> IO (Either SMPClientError ())
+  }
 
 -- | Get or create SMP client for SMPServer
 getSMPServerClient' :: SMPClientAgent p -> SMPServer -> ExceptT SMPClientError IO SMPClient
@@ -218,7 +226,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
     newSMPClient v = do
-      r <- connectClient ca srv v `E.catch` (pure . Left . PCEIOError)
+      r <- connectClient ca srv v `E.catch` \(e :: E.SomeException) -> pure $ Left $ PCEIOError $ E.displayException e
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
@@ -227,8 +235,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           atomically $ do
             putTMVar (sessionVar v) (Right c)
             TM.insert (sessionId $ thParams smp) c smpSessions
-          let serviceId_ = (\THClientService {serviceId} -> serviceId) <$> smpClientService smp
-          notify ca $ CAConnected srv serviceId_
+          notify ca $ CAConnected srv $ smpClientServiceId smp
           pure $ Right c
         Left e -> do
           let ei = persistErrorInterval agentCfg
@@ -249,9 +256,18 @@ isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
 
 -- | Run an SMP client for SMPClientVar
 connectClient :: SMPClientAgent p -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
-connectClient ca@SMPClientAgent {agentCfg, smpClients, smpSessions, msgQ, randomDrg, startedAt} srv v =
-  getProtocolClient randomDrg NRMBackground (1, srv, Nothing) (smpCfg agentCfg) [] (Just msgQ) startedAt clientDisconnected
+connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, msgQ, randomDrg, startedAt} srv v = case dbService of
+  Just dbs -> runExceptT $ do
+    creds <- ExceptT $ getCredentials dbs srv
+    smp <- ExceptT $ getClient cfg {serviceCredentials = Just creds}
+    whenM (atomically $ activeClientSession ca smp srv) $
+      ExceptT $ updateServiceId dbs srv $ smpClientServiceId smp
+    pure smp
+  Nothing -> getClient cfg
   where
+    cfg = smpCfg agentCfg
+    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] (Just msgQ) startedAt clientDisconnected
+
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do
       removeClientAndSubs smp >>= serverDown
@@ -435,7 +451,7 @@ smpSubscribeQueues ca smp srv subs = do
       unless (null notPending) $ removePendingSubs ca srv notPending
       pure acc
     sessId = sessionId $ thParams smp
-    smpServiceId = (\THClientService {serviceId} -> serviceId) <$> smpClientService smp
+    smpServiceId = smpClientServiceId smp
     groupSub ::
       Map QueueId C.APrivateAuthKey ->
       ((QueueId, C.APrivateAuthKey), Either SMPClientError (Maybe ServiceId)) ->

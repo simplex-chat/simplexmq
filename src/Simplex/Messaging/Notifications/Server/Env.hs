@@ -4,11 +4,14 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Env where
 
 import Control.Concurrent (ThreadId)
+import Control.Monad.Except
+import Control.Monad.Trans.Except
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
@@ -19,7 +22,7 @@ import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
-import Simplex.Messaging.Client (ProtocolClientConfig (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -28,7 +31,7 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), ServiceId, Transmission)
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -36,8 +39,9 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceCredentials (..), THandleParams, TransportPeer (..))
+import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
-import System.Exit (exitFailure)
+import Simplex.Messaging.Util (liftEitherWith)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
@@ -95,20 +99,31 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
-  serviceCertHash@(XV.Fingerprint fp) <- loadFingerprint ntfCredentials
-  smpAgentCfg' <-
-    if useServiceCreds
-      then do
-        serviceSignKey <- case C.x509ToPrivate' $ snd tlsServerCreds of
-          Right pk -> pure pk
-          Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
-        let service = ServiceCredentials {serviceRole = SRNotifier, serviceCreds = tlsServerCreds, serviceCertHash, serviceSignKey}
-        pure smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {serviceCredentials = Just service}}
-      else pure smpAgentCfg
-  subscriber <- newNtfSubscriber smpAgentCfg' random
+  XV.Fingerprint fp <- loadFingerprint ntfCredentials
+  let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
+  subscriber <- newNtfSubscriber smpAgentCfg dbService random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  where
+    mkDbService g st = DBService {getCredentials, updateServiceId}
+      where
+        getCredentials :: SMPServer -> IO (Either SMPClientError ServiceCredentials)
+        getCredentials srv = runExceptT $ do
+          ExceptT (withClientDB "" st $ \db -> getNtfServiceCredentials db srv >>= mapM (mkServiceCreds db)) >>= \case
+            Just (C.KeyHash kh, serviceCreds) -> do
+              serviceSignKey <- liftEitherWith PCEIOError $ C.x509ToPrivate' $ snd serviceCreds
+              pure ServiceCredentials {serviceRole = SRNotifier, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
+            Nothing -> throwE PCEServiceUnavailable -- this error cannot happen, as clients never connect to unknown servers
+        mkServiceCreds db = \case
+          (_, Just tlsCreds) -> pure tlsCreds
+          (srvId, Nothing) -> do
+            cred <- genCredentials g Nothing (25, 24 * 999999) "simplex"
+            let tlsCreds = tlsCredentials [cred]
+            setNtfServiceCredentials db srvId tlsCreds
+            pure tlsCreds
+        updateServiceId :: SMPServer -> Maybe ServiceId -> IO (Either SMPClientError ())
+        updateServiceId srv serviceId_ = withClientDB "" st $ \db -> updateNtfServiceId db srv serviceId_
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriberVar,
@@ -118,11 +133,11 @@ data NtfSubscriber = NtfSubscriber
 
 type SMPSubscriberVar = SessionVar SMPSubscriber
 
-newNtfSubscriber :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO NtfSubscriber
-newNtfSubscriber smpAgentCfg random = do
+newNtfSubscriber :: SMPClientAgentConfig -> Maybe DBService -> TVar ChaChaDRG -> IO NtfSubscriber
+newNtfSubscriber smpAgentCfg dbService random = do
   smpSubscribers <- TM.emptyIO
   subscriberSeq <- newTVarIO 0
-  smpAgent <- newSMPClientAgent SNotifierService smpAgentCfg random
+  smpAgent <- newSMPClientAgent SNotifierService smpAgentCfg dbService random
   pure NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent}
 
 data SMPSubscriber = SMPSubscriber

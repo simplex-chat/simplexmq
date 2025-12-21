@@ -44,18 +44,20 @@ import Database.PostgreSQL.Simple.FromField (FromField (..))
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Network.Socket (ServiceName)
+import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.AgentStore ()
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store.Migrations
 import Simplex.Messaging.Notifications.Server.Store.Types
-import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), IdsHash (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, SMPServer, ServiceId, ServiceSub (..), pattern SMPServer)
+import Simplex.Messaging.Protocol (EntityId (..), EncNMsgMeta, ErrorType (..), IdsHash (..), NotifierId, NtfPrivateAuthKey, NtfPublicAuthKey, ProtocolServer (..), SMPServer, ServiceId, ServiceSub (..), pattern SMPServer)
 import Simplex.Messaging.Server.QueueStore.Postgres (handleDuplicate)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.SystemTime
@@ -65,6 +67,7 @@ import System.Exit (exitFailure)
 import Text.Hex (decodeHex)
 
 #if !defined(dbPostgres)
+import qualified Data.X509 as X
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (eitherToMaybe)
@@ -239,6 +242,73 @@ getUsedSMPServers st =
     rowToSrvSubs ((host, port, kh) :. (srvId, serviceId_, n, idsHash)) =
       let service_ = (\serviceId -> ServiceSub serviceId n idsHash) <$> serviceId_
        in (SMPServer host port kh, srvId, service_)
+
+getNtfServiceCredentials :: DB.Connection -> SMPServer -> IO (Maybe (Int64, Maybe (C.KeyHash, TLS.Credential)))
+getNtfServiceCredentials db srv =
+  maybeFirstRow toService $
+    DB.query
+      db
+      [sql|
+        SELECT smp_server_id, ntf_service_cert_hash, ntf_service_cert, ntf_service_priv_key
+        FROM smp_servers
+        WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
+        FOR UPDATE
+      |]
+      (host srv, port srv, keyHash srv)
+  where
+    toService (Only srvId :. creds) = (srvId, toCredentials creds)
+    toCredentials = \case
+      (Just kh, Just cert, Just pk) -> Just (kh, (cert, pk))
+      _ -> Nothing
+
+setNtfServiceCredentials :: DB.Connection -> Int64 -> (C.KeyHash, TLS.Credential) -> IO ()
+setNtfServiceCredentials db srvId (kh, (cert, pk)) =
+  void $ DB.execute
+    db
+    [sql|
+      UPDATE smp_servers
+      SET ntf_service_cert_hash = ?, ntf_service_cert = ?, ntf_service_priv_key = ?
+      WHERE smp_server_id = ?
+    |]
+    (kh, cert, pk, srvId)
+
+updateNtfServiceId :: DB.Connection -> SMPServer -> Maybe ServiceId -> IO ()
+updateNtfServiceId db srv newServiceId_ = do
+  maybeFirstRow id (getSMPServiceForUpdate_ db srv) >>= mapM_ updateService
+  where
+    updateService (srvId, currServiceId_) = unless (currServiceId_ == newServiceId_) $ do
+      when (isJust currServiceId_) $ do
+        void $ removeServiceAssociation_ db srvId
+        logError $ "STORE: service ID for " <> enc (host srv) <> toServiceId <> ", removed sub associations"
+      void $ case newServiceId_ of
+        Just newServiceId ->
+          DB.execute
+            db
+            [sql|
+              UPDATE smp_servers
+              SET ntf_service_id = ?,
+                  smp_notifier_count = 0,
+                  smp_notifier_ids_hash = DEFAULT
+              WHERE smp_server_id = ?
+            |]
+            (newServiceId, srvId)
+        Nothing ->
+          DB.execute
+            db
+            [sql|
+              UPDATE smp_servers
+              SET ntf_service_id = NULL,
+                  ntf_service_cert = NULL,
+                  ntf_service_cert_hash = NULL,
+                  ntf_service_priv_key = NULL,
+                  smp_notifier_count = 0,
+                  smp_notifier_ids_hash = DEFAULT
+              WHERE smp_server_id = ?
+            |]
+            (Only srvId)
+    toServiceId = maybe " removed" ((" changed to " <>) . enc) newServiceId_
+    enc :: StrEncoding a => a -> Text
+    enc = decodeLatin1 . strEncode
 
 getServerNtfSubscriptions :: NtfPostgresStore -> Int64 -> Maybe NtfSubscriptionId -> Int -> IO (Either ErrorType [ServerNtfSub])
 getServerNtfSubscriptions st srvId afterSubId_ count =
@@ -451,23 +521,24 @@ updateSrvSubStatus st q status =
 batchUpdateSrvSubStatus :: NtfPostgresStore -> SMPServer -> Maybe ServiceId -> NonEmpty NotifierId -> NtfSubStatus -> IO Int
 batchUpdateSrvSubStatus st srv newServiceId nIds status =
   fmap (fromRight (-1)) $ withDB "batchUpdateSrvSubStatus" st $ \db -> runExceptT $ do
-    (srvId :: Int64, currServiceId) <- ExceptT $ getSMPServerService db
+    (srvId, currServiceId) <- ExceptT $ firstRow id AUTH $ getSMPServiceForUpdate_ db srv
+    -- TODO [certs rcv] should this remove associations/credentials when newServiceId is Nothing or different
     unless (currServiceId == newServiceId) $ liftIO $ void $
       DB.execute db "UPDATE smp_servers SET ntf_service_id = ? WHERE smp_server_id = ?" (newServiceId, srvId)
     let params = L.toList $ L.map (srvId,isJust newServiceId,status,) nIds
     liftIO $ fromIntegral <$> DB.executeMany db updateSubStatusQuery params
-  where
-    getSMPServerService db =
-      firstRow id AUTH $
-        DB.query
-          db
-          [sql|
-            SELECT smp_server_id, ntf_service_id
-            FROM smp_servers
-            WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
-            FOR UPDATE
-          |]
-          (srvToRow srv)
+
+getSMPServiceForUpdate_ :: DB.Connection -> SMPServer -> IO [(Int64, Maybe ServiceId)]
+getSMPServiceForUpdate_ db srv =
+  DB.query
+    db
+    [sql|
+      SELECT smp_server_id, ntf_service_id
+      FROM smp_servers
+      WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
+      FOR UPDATE
+    |]
+    (srvToRow srv)
 
 batchUpdateSrvSubErrors :: NtfPostgresStore -> SMPServer -> NonEmpty (NotifierId, NtfSubStatus) -> IO Int
 batchUpdateSrvSubErrors st srv subs =
@@ -498,34 +569,51 @@ updateSubStatusQuery =
       AND (s.status != upd.status OR s.ntf_service_assoc != upd.ntf_service_assoc)
   |]
 
-removeServiceAssociation :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
-removeServiceAssociation st srv = do
-  withDB "removeServiceAssociation" st $ \db -> runExceptT $ do
-    srvId <- ExceptT $ removeServerService db
-    subsCount <-
-      liftIO $
-        DB.execute
-          db
-          [sql|
-            UPDATE subscriptions s
-            SET status = ?, ntf_service_assoc = FALSE
-            WHERE smp_server_id = ?
-              AND (s.status != ? OR s.ntf_service_assoc != FALSE)
-          |]
-          (NSInactive, srvId, NSInactive)
+removeServiceAssociation_ :: DB.Connection -> Int64 -> IO Int64
+removeServiceAssociation_ db srvId =
+  DB.execute
+    db
+    [sql|
+      UPDATE subscriptions s
+      SET status = ?, ntf_service_assoc = FALSE
+      WHERE smp_server_id = ?
+        AND (s.status != ? OR s.ntf_service_assoc != FALSE)
+    |]
+    (NSInactive, srvId, NSInactive)
+
+removeServiceAndAssociations :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
+removeServiceAndAssociations st srv = do
+  withDB "removeServiceAndAssociations" st $ \db -> runExceptT $ do
+    srvId <- ExceptT $ getServerId db
+    subsCount <- liftIO $ removeServiceAssociation_ db srvId
+    liftIO $ removeServerService db srvId
     pure (srvId, fromIntegral subsCount)
   where
-    removeServerService db =
+    getServerId db =
       firstRow fromOnly AUTH $
         DB.query
           db
           [sql|
-            UPDATE smp_servers
-            SET ntf_service_id = NULL
+            SELECT smp_server_id
+            FROM smp_servers
             WHERE smp_host = ? AND smp_port = ? AND smp_keyhash = ?
-            RETURNING smp_server_id
+            FOR UPDATE
           |]
           (srvToRow srv)
+    removeServerService db srvId =
+      DB.execute
+        db
+        [sql|
+          UPDATE smp_servers
+          SET ntf_service_id = NULL,
+              ntf_service_cert = NULL,
+              ntf_service_cert_hash = NULL,
+              ntf_service_priv_key = NULL,
+              smp_notifier_count = 0,
+              smp_notifier_ids_hash = DEFAULT
+          WHERE smp_server_id = ?
+        |]
+        (Only srvId)
 
 addTokenLastNtf :: NtfPostgresStore -> PNMessageData -> IO (Either ErrorType (NtfTknRec, NonEmpty PNMessageData))
 addTokenLastNtf st newNtf =
@@ -632,6 +720,13 @@ withDB_ op st priority action =
       where
         err = op <> ", withDB, " <> tshow e
 
+withClientDB :: Text -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either SMPClientError a)
+withClientDB op st action =
+  E.uninterruptibleMask_ $ E.try (withTransaction (dbStore st) action) >>= bimapM logErr pure
+  where
+    logErr :: E.SomeException -> IO SMPClientError
+    logErr e = logError ("STORE: " <> op <> ", withDB, " <> tshow e) $> PCEIOError (E.displayException e)
+
 assertUpdated :: Int64 -> Either ErrorType ()
 assertUpdated 0 = Left AUTH
 assertUpdated _ = Right ()
@@ -668,4 +763,9 @@ instance ToField C.KeyHash where toField = toField . Binary . strEncode
 instance FromField C.CbNonce where fromField = blobFieldDecoder $ parseAll smpP
 
 instance ToField C.CbNonce where toField = toField . Binary . smpEncode
+
+instance ToField X.PrivKey where toField = toField . Binary . C.encodeASNObj
+
+instance FromField X.PrivKey where
+  fromField = blobFieldDecoder $ C.decodeASNKey >=> \case (pk, []) -> Right pk; r -> C.asnKeyError r
 #endif

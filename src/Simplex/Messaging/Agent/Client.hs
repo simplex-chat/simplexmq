@@ -751,8 +751,8 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
-    updateClientService service smp = case (service, smpClientService smp) of
-      (Just (_, serviceId_), Just THClientService {serviceId}) -> withStore' c $ \db -> do
+    updateClientService service smp = case (service, smpClientServiceId smp) of
+      (Just (_, serviceId_), Just serviceId) -> withStore' c $ \db -> do
         setClientServiceId db userId srv serviceId
         forM_ serviceId_ $ \sId -> when (sId /= serviceId) $ removeRcvServiceAssocs db userId srv
       (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
@@ -1255,7 +1255,7 @@ protocolClientError protocolError_ host = \case
   PCETransportError e -> BROKER host $ TRANSPORT e
   e@PCECryptoError {} -> INTERNAL $ show e
   PCEServiceUnavailable {} -> BROKER host NO_SERVICE
-  PCEIOError e -> BROKER host $ NETWORK $ NEConnectError $ E.displayException e
+  PCEIOError e -> BROKER host $ NETWORK $ NEConnectError e
 
 -- it is consistent with smpClientServiceError
 clientServiceError :: AgentErrorType -> Bool
@@ -1546,6 +1546,7 @@ processSubResults c tSess@(userId, srv, _) sessId serviceId_ rs = do
       Left e -> case smpErrorClientNotice e of
         Just notice_ -> (failed', subscribed, (rq, notice_) : notices, ignored)
           where
+            -- TODO [certs rcv] not used?
             notices' = if isJust notice_ || isJust clientNoticeId then (rq, notice_) : notices else notices
         Nothing
           | temporaryClientError e -> acc
@@ -1678,7 +1679,7 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         (active, (serviceQs, notices)) <- atomically $ do
           r@(_, (_, notices)) <- ifM
             (activeClientSession c tSess sessId)
-            ((True,) <$> processSubResults c tSess sessId smpServiceId rs)
+            ((True,) <$> processSubResults c tSess sessId (smpClientServiceId smp) rs)
             ((False, ([], [])) <$ incSMPServerStat' c userId srv connSubIgnored (length rs))
           unless (null notices) $ takeTMVar $ clientNoticesLock c
           pure r
@@ -1704,7 +1705,6 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
       where
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
-        smpServiceId = (\THClientService {serviceId} -> serviceId) <$> smpClientService smp
 
 processRcvServiceAssocs :: SMPQueue q => AgentClient -> [q] -> AM' ()
 processRcvServiceAssocs _ [] = pure ()
@@ -1752,7 +1752,7 @@ subscribeClientService c withEvent userId srv (ServiceSub _ n idsHash) =
 withServiceClient :: AgentClient -> SMPTransportSession -> (SMPClient -> ServiceId -> ExceptT SMPClientError IO a) -> AM a
 withServiceClient c tSess subscribe =
   withLogClient c NRMBackground tSess B.empty "SUBS" $ \(SMPConnectedClient smp _) ->
-    case (\THClientService {serviceId} -> serviceId) <$> smpClientService smp of
+    case smpClientServiceId smp of
       Just smpServiceId -> subscribe smp smpServiceId
       Nothing -> throwE PCEServiceUnavailable
 

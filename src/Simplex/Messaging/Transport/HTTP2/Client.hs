@@ -11,7 +11,6 @@
 module Simplex.Messaging.Transport.HTTP2.Client where
 
 import Control.Concurrent.Async
-import Control.Exception (IOException, try)
 import qualified Control.Exception as E
 import Control.Monad
 import Data.Functor (($>))
@@ -90,7 +89,7 @@ defaultHTTP2ClientConfig =
       suportedTLSParams = http2TLSParams
     }
 
-data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError IOException
+data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError String
   deriving (Show)
 
 getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)
@@ -111,7 +110,7 @@ attachHTTP2Client config host port disconnected bufferSize tls = getVerifiedHTTP
 getVerifiedHTTP2ClientWith :: forall p. TransportPeerI p => HTTP2ClientConfig -> TransportHost -> ServiceName -> IO () -> ((TLS p -> H.Client HTTP2Response) -> IO HTTP2Response) -> IO (Either HTTP2ClientError HTTP2Client)
 getVerifiedHTTP2ClientWith config host port disconnected setup =
   (mkHTTPS2Client >>= runClient)
-    `E.catch` \(e :: IOException) -> pure . Left $ HCIOError e
+    `E.catch` \(e :: E.SomeException) -> pure $ Left $ HCIOError $ E.displayException e
   where
     mkHTTPS2Client :: IO HClient
     mkHTTPS2Client = do
@@ -177,9 +176,9 @@ sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req reqTimeout_ = do
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  reqTimeout `timeout` try (sendReq req process) >>= \case
+  reqTimeout `timeout` E.try (sendReq req process) >>= \case
     Just (Right r) -> pure $ Right r
-    Just (Left e) -> disconnected $> Left (HCIOError e)
+    Just (Left (e :: E.SomeException)) -> disconnected $> Left (HCIOError $ E.displayException e)
     Nothing -> pure $ Left HCResponseTimeout
   where
     process r = do

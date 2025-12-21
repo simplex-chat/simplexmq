@@ -172,7 +172,10 @@ CREATE TABLE ntf_server.smp_servers (
     smp_keyhash bytea NOT NULL,
     ntf_service_id bytea,
     smp_notifier_count bigint DEFAULT 0 NOT NULL,
-    smp_notifier_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL
+    smp_notifier_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL,
+    ntf_service_cert bytea,
+    ntf_service_cert_hash bytea,
+    ntf_service_priv_key bytea
 );
 
 

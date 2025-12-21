@@ -472,15 +472,21 @@ toServerService (host, port, kh, serviceId, n, Binary idsHash) =
   (SMPServer host port kh, ServiceSub serviceId n (IdsHash idsHash))
 
 setClientServiceId :: DB.Connection -> UserId -> SMPServer -> ServiceId -> IO ()
-setClientServiceId db userId srv serviceId =
+setClientServiceId db userId (SMPServer h p kh) serviceId =
   DB.execute
     db
     [sql|
       UPDATE client_services
       SET service_id = ?
-      WHERE user_id = ? AND host = ? AND port = ?
+      FROM servers s
+      WHERE client_services.user_id = ?
+        AND client_services.host = ?
+        AND client_services.port = ?
+        AND s.host = client_services.host
+        AND s.port = client_services.port
+        AND COALESCE(client_services.server_key_hash, s.key_hash) = ?
     |]
-    (serviceId, userId, host srv, port srv)
+    (serviceId, userId, h, p, kh)
 
 deleteClientService :: DB.Connection -> UserId -> SMPServer -> IO ()
 deleteClientService db userId (SMPServer h p kh) =
@@ -2307,7 +2313,7 @@ unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe =
 setRcvServiceAssocs :: SMPQueue q => DB.Connection -> [q] -> IO ()
 setRcvServiceAssocs db rqs =
 #if defined(dbPostgres)
-  DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN " $ Only $ In (map queueId rqs)
+  DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN ?" $ Only $ In (map queueId rqs)
 #else
   DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = ?" $ map (Only . queueId) rqs
 #endif

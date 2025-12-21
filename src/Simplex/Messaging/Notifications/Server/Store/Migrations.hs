@@ -14,7 +14,8 @@ ntfServerSchemaMigrations :: [(String, Text, Maybe Text)]
 ntfServerSchemaMigrations =
   [ ("20250417_initial", m20250417_initial, Nothing),
     ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
-    ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash)
+    ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash),
+    ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -225,3 +226,36 @@ ALTER TABLE smp_servers
   DROP COLUMN smp_notifier_ids_hash;
     |]
     <> dropXorHashFuncs
+
+m20251219_service_cert_per_server :: Text
+m20251219_service_cert_per_server =
+  [r|
+ALTER TABLE smp_servers
+  ADD COLUMN ntf_service_cert BYTEA,
+  ADD COLUMN ntf_service_cert_hash BYTEA,
+  ADD COLUMN ntf_service_priv_key BYTEA;
+  |]
+  <> resetNtfServices
+
+down_m20251219_service_cert_per_server :: Text
+down_m20251219_service_cert_per_server =
+  [r|
+ALTER TABLE smp_servers
+  DROP COLUMN ntf_service_cert,
+  DROP COLUMN ntf_service_cert_hash,
+  DROP COLUMN ntf_service_priv_key;
+  |]
+  <> resetNtfServices
+
+resetNtfServices :: Text
+resetNtfServices =
+  [r|
+ALTER TABLE subscriptions DISABLE TRIGGER tr_subscriptions_update;
+UPDATE subscriptions SET ntf_service_assoc = FALSE;
+ALTER TABLE subscriptions ENABLE TRIGGER tr_subscriptions_update;
+
+UPDATE smp_servers
+SET ntf_service_id = NULL,
+    smp_notifier_count = 0,
+    smp_notifier_ids_hash = DEFAULT;
+  |]

@@ -3677,6 +3677,7 @@ testClientServiceConnection ps = do
       exchangeGreetings service uId user sId
       pure conns
     withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+      liftIO $ threadDelay 250000
       [(_, Right (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash)))] <- M.toList <$> subscribeClientServices service 1
       ("", "", SERVICE_ALL _) <- nGet service
       subscribeConnection user sId
@@ -3684,6 +3685,7 @@ testClientServiceConnection ps = do
       pure (conns, qIdHash)
   (uId', sId') <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
       subscribeAllConnections service False Nothing
       liftIO $ getInAnyOrder service
         [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash')))) -> qIdHash' == qIdHash; _ -> False,
@@ -3708,6 +3710,7 @@ testClientServiceConnection ps = do
       pure conns'
   withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
     withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
       subscribeAllConnections service False Nothing
       liftIO $ getInAnyOrder service
         [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 2 _)))) -> True; _ -> False,

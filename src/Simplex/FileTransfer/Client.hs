@@ -11,6 +11,7 @@
 
 module Simplex.FileTransfer.Client where
 
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -264,7 +265,7 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         where
           errors =
             [ Handler $ \(e :: H.HTTP2Error) -> pure $ Left $ PCENetworkError $ NEConnectError $ displayException e,
-              Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError e,
+              Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError $ E.displayException e,
               Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
             ]
           download cbState =
