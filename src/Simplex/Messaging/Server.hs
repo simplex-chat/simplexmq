@@ -46,6 +46,7 @@ module Simplex.Messaging.Server
 where
 
 import Control.Concurrent.STM (throwSTM)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -1385,7 +1386,7 @@ client
               Just r -> Just <$> proxyServerResponse a r
               Nothing ->
                 forkProxiedCmd $
-                  liftIO (runExceptT (getSMPServerClient'' a srv) `catch` (pure . Left . PCEIOError))
+                  liftIO (runExceptT (getSMPServerClient'' a srv) `E.catch` (\(e :: SomeException) -> pure $ Left $ PCEIOError $ E.displayException e))
                     >>= proxyServerResponse a
           proxyServerResponse :: SMPClientAgent 'Sender -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
           proxyServerResponse a smp_ = do
@@ -1422,7 +1423,7 @@ client
             inc own pRequests
             if v >= sendingProxySMPVersion
               then forkProxiedCmd $ do
-                liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `catch` (pure . Left . PCEIOError))  >>= \case
+                liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catch` (\(e :: SomeException) -> pure $ Left $ PCEIOError $ E.displayException e))  >>= \case
                   Right r -> PRES r <$ inc own pSuccesses
                   Left e -> ERR (smpProxyError e) <$ case e of
                     PCEProtocolError {} -> inc own pSuccesses

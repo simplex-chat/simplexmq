@@ -588,7 +588,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
             logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
           CAServiceUnavailable srv serviceSub -> do
             logError $ "SMP server service unavailable: " <> showService srv serviceSub
-            removeServiceAssociation st srv >>= \case
+            removeServiceAndAssociations st srv >>= \case
               Right (srvId, updated) -> do
                 logSubStatus srv "removed service association" updated updated
                 void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)

@@ -52,6 +52,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueuesNtfs,
     subscribeService,
     smpClientService,
+    smpClientServiceId,
     secureSMPQueue,
     secureSndSMPQueue,
     proxySecureSndSMPQueue,
@@ -128,7 +129,8 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception
+import Control.Exception (Exception, SomeException)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -565,7 +567,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
-        `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
+        `E.catch` \(e :: SomeException) -> pure $ Left $ PCEIOError $ E.displayException e
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
@@ -638,7 +640,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
           raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
-            `finally` disconnected c'
+            `E.finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -765,7 +767,7 @@ data ProtocolClientError err
   | -- | Error when cryptographically "signing" the command or when initializing crypto_box.
     PCECryptoError C.CryptoError
   | -- | IO Error
-    PCEIOError IOException
+    PCEIOError String
   deriving (Eq, Show, Exception)
 
 type SMPClientError = ProtocolClientError ErrorType
@@ -925,6 +927,10 @@ subscribeService c party n idsHash = case smpClientService c of
 smpClientService :: SMPClient -> Maybe THClientService
 smpClientService = thAuth . thParams >=> clientService
 {-# INLINE smpClientService #-}
+
+smpClientServiceId :: SMPClient -> Maybe ServiceId
+smpClientServiceId = fmap (\THClientService {serviceId} -> serviceId) . smpClientService
+{-# INLINE smpClientServiceId #-}
 
 enablePings :: SMPClient -> IO ()
 enablePings ProtocolClient {client_ = PClient {sendPings}} = atomically $ writeTVar sendPings True

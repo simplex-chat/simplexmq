@@ -706,7 +706,7 @@ mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount ma
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
-  smpAgent <- newSMPClientAgent SSender smpAgentCfg random
+  smpAgent <- newSMPClientAgent SSender smpAgentCfg Nothing random
   pure ProxyAgent {smpAgent}
 
 readWriteQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO (StoreLog 'WriteMode)
