@@ -14,7 +14,7 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
 import Data.Default (def)
-import Data.List (delete, find)
+import Data.List (delete, find, partition)
 import Data.Maybe (mapMaybe)
 import Data.String (IsString)
 import qualified Data.Text as T
@@ -53,11 +53,11 @@ getLocalAddress preferred_ =
       ok -> Just RCCtrlAddress {address = THIPv4 ok, interface = T.pack name}
 
 mkLastLocalHost :: [RCCtrlAddress] -> [RCCtrlAddress]
-mkLastLocalHost addrs = case find localHost addrs of
-  Nothing -> addrs
-  Just lh -> delete lh addrs <> [lh]
+mkLastLocalHost addrs = other <> local
   where
-    localHost RCCtrlAddress {address = a} = a == THIPv4 (127, 0, 0, 1)
+    (local, other) = partition localHost addrs
+    localHost RCCtrlAddress {address = THIPv4 (127, _, _, _)} = True
+    localHost _ = False
 
 preferAddress :: RCCtrlAddress -> [RCCtrlAddress] -> [RCCtrlAddress]
 preferAddress RCCtrlAddress {address, interface} addrs =
