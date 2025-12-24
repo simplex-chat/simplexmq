@@ -1948,7 +1948,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       e :: Encoding a => a -> ByteString
       e = smpEncode
       serviceResp tag n idsHash
-        | v >= serviceCertsSMPVersion = e (tag, ' ', n, idsHash)
+        | v >= rcvServiceSMPVersion = e (tag, ' ', n, idsHash)
         | otherwise = e (tag, ' ', n)
 
   protocolP v = \case
@@ -1993,7 +1993,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG_ -> pure PONG
     where
       serviceRespP resp
-        | v >= serviceCertsSMPVersion = resp <$> _smpP <*> smpP
+        | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
 
   fromProtocolError = \case
