@@ -89,7 +89,7 @@ defaultHTTP2ClientConfig =
       suportedTLSParams = http2TLSParams
     }
 
-data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError String
+data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError String | HCCancelled
   deriving (Show)
 
 getHTTP2Client :: HostName -> ServiceName -> Maybe XS.CertificateStore -> HTTP2ClientConfig -> IO () -> IO (Either HTTP2ClientError HTTP2Client)

@@ -107,6 +107,7 @@ module Simplex.Messaging.Client
     smpProxyError,
     smpErrorClientNotice,
     textToHostMode,
+    clientHandlers,
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
@@ -129,7 +130,7 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception (Exception, SomeException)
+import Control.Exception (Exception, Handler (..), IOException, SomeException)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -567,7 +568,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
-        `E.catch` \(e :: SomeException) -> pure $ Left $ PCEIOError $ E.displayException e
+        `E.catches` clientHandlers
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
@@ -719,6 +720,13 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               Left e -> logError $ "SMP client error: " <> tshow e
               Right _ -> logWarn "SMP client unprocessed event"
 
+clientHandlers :: [Handler (Either (ProtocolClientError e) a)]
+clientHandlers =
+  [ Handler $ \(_ :: AsyncCancelled) -> pure $ Left $ PCECancelled,
+    Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError $ E.displayException e,
+    Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
+  ]
+
 useWebPort :: NetworkConfig -> [HostName] -> ProtocolServer p -> Bool
 useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortServers cfg of
   SWPAll -> True
@@ -768,6 +776,8 @@ data ProtocolClientError err
     PCECryptoError C.CryptoError
   | -- | IO Error
     PCEIOError String
+  | -- | when client creation cancelled and AsyncCancelled is thrown to the thread
+    PCECancelled
   deriving (Eq, Show, Exception)
 
 type SMPClientError = ProtocolClientError ErrorType
@@ -777,6 +787,7 @@ temporaryClientError = \case
   PCENetworkError _ -> True
   PCEResponseTimeout -> True
   PCEIOError _ -> True
+  PCECancelled -> True
   _ -> False
 {-# INLINE temporaryClientError #-}
 
@@ -801,6 +812,7 @@ smpProxyError = \case
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
+  PCECancelled -> INTERNAL
 
 smpErrorClientNotice :: SMPClientError -> Maybe (Maybe ClientNotice)
 smpErrorClientNotice = \case
