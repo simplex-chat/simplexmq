@@ -11,11 +11,10 @@
 module Simplex.Messaging.Transport.HTTP2.Client where
 
 import Control.Concurrent.Async
-import Control.Exception (Handler (..), IOException, SomeException)
+import Control.Exception (Handler (..), IOException, SomeAsyncException, SomeException)
 import qualified Control.Exception as E
 import Control.Monad
 import Data.Functor (($>))
-import Data.Maybe (fromMaybe)
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
@@ -91,13 +90,13 @@ defaultHTTP2ClientConfig =
       suportedTLSParams = http2TLSParams
     }
 
-data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError String | HCCancelled
+data HTTP2ClientError = HCResponseTimeout | HCNetworkError NetworkError | HCIOError String
   deriving (Show)
 
 httpClientHandlers :: [Handler (Either HTTP2ClientError a)]
 httpClientHandlers =
-  [ Handler $ \(_ :: AsyncCancelled) -> pure $ Left $ HCCancelled,
-    Handler $ \(e :: IOException) -> pure $ Left $ HCIOError $ E.displayException e,
+  [ Handler $ \(e :: IOException) -> pure $ Left $ HCIOError $ E.displayException e,
+    Handler $ \(e :: SomeAsyncException) -> E.throwIO e,
     Handler $ \(e :: SomeException) -> pure $ Left $ HCNetworkError $ toNetworkError e
   ]
 
@@ -185,8 +184,10 @@ sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req reqTimeout_ = do
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  fromMaybe (Left HCResponseTimeout)
-    <$> timeout reqTimeout (((Right <$> sendReq req process) `E.catches` httpClientHandlers) >>= (disconnected $>))
+  reqTimeout `timeout` ((Right <$> sendReq req process) `E.catches` httpClientHandlers) >>= \case
+    Just (Right r) -> pure $ Right r
+    Just (Left e) -> disconnected $> Left e
+    Nothing -> pure $ Left HCResponseTimeout
   where
     process r = do
       respBody <- getHTTP2Body r $ bodyHeadSize config

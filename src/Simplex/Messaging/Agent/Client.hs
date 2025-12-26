@@ -1256,7 +1256,6 @@ protocolClientError protocolError_ host = \case
   e@PCECryptoError {} -> INTERNAL $ show e
   PCEServiceUnavailable {} -> BROKER host NO_SERVICE
   PCEIOError e -> BROKER host $ NETWORK $ NEConnectError e
-  PCECancelled -> BROKER host $ NETWORK $ NEConnectError "Cancelled"
 
 -- it is consistent with smpClientServiceError
 clientServiceError :: AgentErrorType -> Bool

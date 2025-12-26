@@ -198,7 +198,6 @@ xftpClientError = \case
   HCResponseTimeout -> PCEResponseTimeout
   HCNetworkError e -> PCENetworkError e
   HCIOError e -> PCEIOError e
-  HCCancelled -> PCECancelled
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
 sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do

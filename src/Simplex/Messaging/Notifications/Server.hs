@@ -616,7 +616,6 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       PCEResponseTimeout -> Nothing
       PCENetworkError _ -> Nothing
       PCEIOError _ -> Nothing
-      PCECancelled -> Nothing
       where
         -- Note on moving to PostgreSQL: the idea of logging errors without e is removed here
         updateErr :: Show e => ByteString -> e -> Maybe NtfSubStatus

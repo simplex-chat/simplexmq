@@ -130,7 +130,7 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception (Exception, Handler (..), IOException, SomeException)
+import Control.Exception (Exception, Handler (..), IOException, SomeAsyncException, SomeException)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -722,8 +722,8 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
 
 clientHandlers :: [Handler (Either (ProtocolClientError e) a)]
 clientHandlers =
-  [ Handler $ \(_ :: AsyncCancelled) -> pure $ Left $ PCECancelled,
-    Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError $ E.displayException e,
+  [ Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError $ E.displayException e,
+    Handler $ \(e :: SomeAsyncException) -> E.throwIO e,
     Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
   ]
 
@@ -776,8 +776,6 @@ data ProtocolClientError err
     PCECryptoError C.CryptoError
   | -- | IO Error
     PCEIOError String
-  | -- | when client creation cancelled and AsyncCancelled is thrown to the thread
-    PCECancelled
   deriving (Eq, Show, Exception)
 
 type SMPClientError = ProtocolClientError ErrorType
@@ -787,7 +785,6 @@ temporaryClientError = \case
   PCENetworkError _ -> True
   PCEResponseTimeout -> True
   PCEIOError _ -> True
-  PCECancelled -> True
   _ -> False
 {-# INLINE temporaryClientError #-}
 
@@ -812,7 +809,6 @@ smpProxyError = \case
   PCETransportError t -> PROXY $ BROKER $ TRANSPORT t
   PCECryptoError _ -> CRYPTO
   PCEIOError _ -> INTERNAL
-  PCECancelled -> INTERNAL
 
 smpErrorClientNotice :: SMPClientError -> Maybe (Maybe ClientNotice)
 smpErrorClientNotice = \case
