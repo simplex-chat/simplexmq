@@ -334,7 +334,7 @@ randomSUBv6 = randomSUB_ C.SEd25519 minServerSMPRelayVersion
 randomSUB :: ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUB = randomSUB_ C.SEd25519 currentClientSMPRelayVersion
 
--- TODO [certs] test with the additional certificate signature
+-- TODO [certs rcv] test with the additional certificate signature
 randomSUB_ :: (C.AlgorithmI a, C.AuthAlgorithm a) => C.SAlgorithm a -> VersionSMP -> ByteString -> IO (Either TransportError (Maybe TAuthorizations, ByteString))
 randomSUB_ a v sessId = do
   g <- C.newRandom

@@ -87,6 +87,8 @@ module Simplex.Messaging.Crypto
     signatureKeyPair,
     publicToX509,
     encodeASNObj,
+    decodeASNKey,
+    asnKeyError,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -176,6 +178,7 @@ module Simplex.Messaging.Crypto
     sha512Hash,
     sha3_256,
     sha3_384,
+    md5Hash,
 
     -- * Message padding / un-padding
     canPad,
@@ -214,7 +217,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, MD5, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -1022,6 +1025,9 @@ sha3_384 :: ByteString -> ByteString
 sha3_384 = BA.convert . (hash :: ByteString -> Digest SHA3_384)
 {-# INLINE sha3_384 #-}
 
+md5Hash :: ByteString -> ByteString
+md5Hash = BA.convert . (hash :: ByteString -> Digest MD5)
+
 -- | AEAD-GCM encryption with associated data.
 --
 -- Used as part of double ratchet encryption.
@@ -1493,11 +1499,11 @@ encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
 -- Decoding of binary X509 'CryptoPublicKey'.
 decodePubKey :: CryptoPublicKey k => ByteString -> Either String k
-decodePubKey = decodeKey >=> x509ToPublic >=> pubKey
+decodePubKey = decodeASNKey >=> x509ToPublic >=> pubKey
 
 -- Decoding of binary PKCS8 'PrivateKey'.
 decodePrivKey :: CryptoPrivateKey k => ByteString -> Either String k
-decodePrivKey = decodeKey >=> x509ToPrivate >=> privKey
+decodePrivKey = decodeASNKey >=> x509ToPrivate >=> privKey
 
 x509ToPublic :: (X.PubKey, [ASN1]) -> Either String APublicKey
 x509ToPublic = \case
@@ -1505,7 +1511,7 @@ x509ToPublic = \case
   (X.PubKeyEd448 k, []) -> Right . APublicKey SEd448 $ PublicKeyEd448 k
   (X.PubKeyX25519 k, []) -> Right . APublicKey SX25519 $ PublicKeyX25519 k
   (X.PubKeyX448 k, []) -> Right . APublicKey SX448 $ PublicKeyX448 k
-  r -> keyError r
+  r -> asnKeyError r
 
 x509ToPublic' :: CryptoPublicKey k => X.PubKey -> Either String k
 x509ToPublic' k = x509ToPublic (k, []) >>= pubKey
@@ -1517,16 +1523,16 @@ x509ToPrivate = \case
   (X.PrivKeyEd448 k, []) -> Right $ APrivateKey SEd448 $ PrivateKeyEd448 k
   (X.PrivKeyX25519 k, []) -> Right $ APrivateKey SX25519 $ PrivateKeyX25519 k
   (X.PrivKeyX448 k, []) -> Right $ APrivateKey SX448 $ PrivateKeyX448 k
-  r -> keyError r
+  r -> asnKeyError r
 
 x509ToPrivate' :: CryptoPrivateKey k => X.PrivKey -> Either String k
 x509ToPrivate' pk = x509ToPrivate (pk, []) >>= privKey
 {-# INLINE x509ToPrivate' #-}
 
-decodeKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
-decodeKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
+decodeASNKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
+decodeASNKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
 
-keyError :: (a, [ASN1]) -> Either String b
-keyError = \case
+asnKeyError :: (a, [ASN1]) -> Either String b
+asnKeyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"
