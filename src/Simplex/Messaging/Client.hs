@@ -107,6 +107,7 @@ module Simplex.Messaging.Client
     smpProxyError,
     smpErrorClientNotice,
     textToHostMode,
+    clientHandlers,
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
@@ -129,7 +130,7 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception (Exception, SomeException)
+import Control.Exception (Exception, Handler (..), IOException, SomeAsyncException, SomeException)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -567,7 +568,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
-        `E.catch` \(e :: SomeException) -> pure $ Left $ PCEIOError $ E.displayException e
+        `E.catches` clientHandlers
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
@@ -718,6 +719,13 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             Nothing <$ case clientResp of
               Left e -> logError $ "SMP client error: " <> tshow e
               Right _ -> logWarn "SMP client unprocessed event"
+
+clientHandlers :: [Handler (Either (ProtocolClientError e) a)]
+clientHandlers =
+  [ Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError $ E.displayException e,
+    Handler $ \(e :: SomeAsyncException) -> E.throwIO e,
+    Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
+  ]
 
 useWebPort :: NetworkConfig -> [HostName] -> ProtocolServer p -> Bool
 useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortServers cfg of

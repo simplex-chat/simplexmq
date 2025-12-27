@@ -337,8 +337,8 @@ resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
 {-# INLINE resumeAgentClient #-}
 
-createUser :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AE UserId
-createUser c = withAgentEnv c .: createUser' c
+createUser :: AgentClient -> Bool -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AE UserId
+createUser c = withAgentEnv c .:. createUser' c
 {-# INLINE createUser #-}
 
 -- | Delete user record optionally deleting all user's connections on SMP servers
@@ -754,14 +754,23 @@ logConnection c connected =
   let event = if connected then "connected to" else "disconnected from"
    in logInfo $ T.unwords ["client", tshow (clientId c), event, "Agent"]
 
-createUser' :: AgentClient -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AM UserId
-createUser' c smp xftp = do
+createUser' :: AgentClient -> Bool -> NonEmpty (ServerCfg 'PSMP) -> NonEmpty (ServerCfg 'PXFTP) -> AM UserId
+createUser' c useService smp xftp = do
   liftIO $ checkUserServers "createUser SMP" smp
   liftIO $ checkUserServers "createUser XFTP" xftp
   userId <- withStore' c createUserRecord
-  atomically $ TM.insert userId (mkUserServers smp) $ smpServers c
-  atomically $ TM.insert userId (mkUserServers xftp) $ xftpServers c
-  atomically $ TM.insert userId False $ useClientServices c
+  ok <- atomically $ do
+    (cfg, _) <- readTVar $ useNetworkConfig c
+    if useService && sessionMode cfg == TSMEntity
+      then pure False
+      else do
+        TM.insert userId (mkUserServers smp) $ smpServers c
+        TM.insert userId (mkUserServers xftp) $ xftpServers c
+        TM.insert userId useService $ useClientServices c
+        pure True
+  unless ok $ do
+    withStore c (`deleteUserRecord` userId)
+    throwE $ CMD PROHIBITED "createUser'"
   pure userId
 
 deleteUser' :: AgentClient -> UserId -> Bool -> AM ()

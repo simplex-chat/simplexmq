@@ -586,7 +586,7 @@ removeServiceAndAssociations st srv = do
   withDB "removeServiceAndAssociations" st $ \db -> runExceptT $ do
     srvId <- ExceptT $ getServerId db
     subsCount <- liftIO $ removeServiceAssociation_ db srvId
-    liftIO $ removeServerService db srvId
+    liftIO $ void $ removeServerService db srvId
     pure (srvId, fromIntegral subsCount)
   where
     getServerId db =
