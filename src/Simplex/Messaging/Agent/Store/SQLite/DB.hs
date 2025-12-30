@@ -23,9 +23,11 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
     query_,
     blobFieldDecoder,
     fromTextField_,
+    safeFromTextField,
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Exception
 import Control.Monad (when)
@@ -47,7 +49,7 @@ import Database.SQLite.Simple.ToField (ToField (..))
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (diffToMicroseconds, tshow)
+import Simplex.Messaging.Util (diffToMicroseconds, safeDecodeUtf8, tshow)
 
 newtype BoolInt = BI {unBI :: Bool}
   deriving newtype (FromField, ToField)
@@ -150,5 +152,11 @@ fromTextField_ fromText = \case
       Just x -> Ok x
       _ -> returnError ConversionFailed f ("invalid text: " <> T.unpack t)
   f -> returnError ConversionFailed f "expecting SQLText column type"
+
+-- fallback to read from text fields that were incorrectly written as blob
+safeFromTextField :: Typeable a => (Text -> Maybe a) -> FieldParser a
+safeFromTextField fromText f = fromTextField_ fromText f <|> blobFieldDecoder dec f
+  where
+    dec = maybe (Left "BLOB decoding fallback error") Right . fromText . safeDecodeUtf8
 
 $(J.deriveJSON defaultJSON ''SlowQueryStats)

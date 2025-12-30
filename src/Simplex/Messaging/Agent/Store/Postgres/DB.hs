@@ -15,6 +15,7 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
     PSQL.query_,
     blobFieldDecoder,
     fromTextField_,
+    safeFromTextField,
   )
 where
 
@@ -87,3 +88,8 @@ fromTextField_ fromText f val =
         _ -> returnError ConversionFailed f "invalid text value"
       Nothing -> returnError UnexpectedNull f "NULL value found for non-NULL field"
     else returnError Incompatible f "expecting TEXT or VARCHAR column type"
+
+-- for compatibilty with SQLite - PostgreSQL cannot have mixed types in column
+safeFromTextField :: Typeable a => (Text -> Maybe a) -> FieldParser a
+safeFromTextField = fromTextField_
+{-# INLINE safeFromTextField #-}
