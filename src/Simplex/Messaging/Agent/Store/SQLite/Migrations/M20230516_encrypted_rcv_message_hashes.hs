@@ -14,7 +14,7 @@ CREATE TABLE encrypted_rcv_message_hashes(
   hash BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+) STRICT;
 
 CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hashes(conn_id, hash);
 |]

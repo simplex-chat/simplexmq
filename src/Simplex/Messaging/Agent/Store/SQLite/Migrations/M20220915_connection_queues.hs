@@ -41,7 +41,7 @@ CREATE TABLE snd_message_deliveries (
   snd_queue_id INTEGER NOT NULL,
   internal_id INTEGER NOT NULL,
   FOREIGN KEY (conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-);
+) STRICT;
 
 CREATE INDEX idx_snd_message_deliveries ON snd_message_deliveries (conn_id, snd_queue_id);
 

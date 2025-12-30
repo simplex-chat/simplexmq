@@ -19,5 +19,5 @@ CREATE TABLE commands (
   agent_version INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY (host, port) REFERENCES servers
     ON DELETE RESTRICT ON UPDATE CASCADE
-);
+) STRICT;
 |]

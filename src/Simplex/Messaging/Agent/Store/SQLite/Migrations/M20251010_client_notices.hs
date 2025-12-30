@@ -18,7 +18,7 @@ CREATE TABLE client_notices(
   notice_ttl INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-);
+) STRICT;
 
 CREATE UNIQUE INDEX idx_client_notices_entity ON client_notices(protocol, host, port, entity_id);
 

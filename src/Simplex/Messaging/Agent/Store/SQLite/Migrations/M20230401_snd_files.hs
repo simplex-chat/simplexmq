@@ -23,7 +23,7 @@ CREATE TABLE snd_files (
   error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+) STRICT;
 
 CREATE INDEX idx_snd_files_user_id ON snd_files(user_id);
 
@@ -36,7 +36,7 @@ CREATE TABLE snd_file_chunks (
   digest BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+) STRICT;
 
 CREATE INDEX idx_snd_file_chunks_snd_file_id ON snd_file_chunks(snd_file_id);
 
@@ -52,7 +52,7 @@ CREATE TABLE snd_file_chunk_replicas (
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+) STRICT;
 
 CREATE INDEX idx_snd_file_chunk_replicas_snd_file_chunk_id ON snd_file_chunk_replicas(snd_file_chunk_id);
 CREATE INDEX idx_snd_file_chunk_replicas_xftp_server_id ON snd_file_chunk_replicas(xftp_server_id);
@@ -64,7 +64,7 @@ CREATE TABLE snd_file_chunk_replica_recipients (
   rcv_replica_key BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+) STRICT;
 
 CREATE INDEX idx_snd_file_chunk_replica_recipients_snd_file_chunk_replica_id ON snd_file_chunk_replica_recipients(snd_file_chunk_replica_id);
 
@@ -79,7 +79,7 @@ CREATE TABLE deleted_snd_chunk_replicas (
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+) STRICT;
 
 CREATE INDEX idx_deleted_snd_chunk_replicas_user_id ON deleted_snd_chunk_replicas(user_id);
 CREATE INDEX idx_deleted_snd_chunk_replicas_xftp_server_id ON deleted_snd_chunk_replicas(xftp_server_id);

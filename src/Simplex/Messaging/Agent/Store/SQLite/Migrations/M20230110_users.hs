@@ -12,7 +12,7 @@ PRAGMA ignore_check_constraints=ON;
 
 CREATE TABLE users (
   user_id INTEGER PRIMARY KEY AUTOINCREMENT
-);
+) STRICT;
 
 INSERT INTO users (user_id) VALUES (1);
 
@@ -37,7 +37,7 @@ PRAGMA ignore_check_constraints=ON;
 
 CREATE TABLE users (
   user_id INTEGER PRIMARY KEY AUTOINCREMENT
-);
+) STRICT;
 
 ALTER TABLE connections ADD COLUMN user_id INTEGER CHECK (user_id NOT NULL)
 REFERENCES users ON DELETE CASCADE;
