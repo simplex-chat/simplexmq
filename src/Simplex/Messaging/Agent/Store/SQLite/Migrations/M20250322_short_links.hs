@@ -33,7 +33,7 @@ CREATE TABLE inv_short_links(
   snd_private_key BLOB NOT NULL,
   snd_id BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
-) STRICT;
+);
 
 CREATE UNIQUE INDEX idx_inv_short_links_link_id ON inv_short_links(host, port, link_id);
   |]

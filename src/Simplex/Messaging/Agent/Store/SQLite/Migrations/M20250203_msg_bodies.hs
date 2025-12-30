@@ -15,7 +15,7 @@ ALTER TABLE snd_messages ADD COLUMN padded_msg_len INTEGER;
 CREATE TABLE snd_message_bodies (
   snd_message_body_id INTEGER PRIMARY KEY,
   agent_msg BLOB NOT NULL DEFAULT x''
-) STRICT;
+);
 ALTER TABLE snd_messages ADD COLUMN snd_message_body_id INTEGER REFERENCES snd_message_bodies ON DELETE SET NULL;
 CREATE INDEX idx_snd_messages_snd_message_body_id ON snd_messages(snd_message_body_id);
 |]

@@ -17,7 +17,7 @@ CREATE TABLE servers_stats(
   started_at TEXT NOT NULL DEFAULT(datetime('now')),
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-) STRICT;
+);
 
 INSERT INTO servers_stats (servers_stats_id) VALUES (1);
 |]

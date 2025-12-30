@@ -16,7 +16,7 @@ CREATE TABLE xftp_servers (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(xftp_host, xftp_port, xftp_key_hash)
-) STRICT;
+);
 
 CREATE TABLE rcv_files (
   rcv_file_id INTEGER PRIMARY KEY,
@@ -36,7 +36,7 @@ CREATE TABLE rcv_files (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(rcv_file_entity_id)
-) STRICT;
+);
 
 CREATE INDEX idx_rcv_files_user_id ON rcv_files(user_id);
 
@@ -49,7 +49,7 @@ CREATE TABLE rcv_file_chunks (
   tmp_path TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT;
+);
 
 CREATE INDEX idx_rcv_file_chunks_rcv_file_id ON rcv_file_chunks(rcv_file_id);
 
@@ -65,7 +65,7 @@ CREATE TABLE rcv_file_chunk_replicas (
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT;
+);
 
 CREATE INDEX idx_rcv_file_chunk_replicas_rcv_file_chunk_id ON rcv_file_chunk_replicas(rcv_file_chunk_id);
 CREATE INDEX idx_rcv_file_chunk_replicas_xftp_server_id ON rcv_file_chunk_replicas(xftp_server_id);

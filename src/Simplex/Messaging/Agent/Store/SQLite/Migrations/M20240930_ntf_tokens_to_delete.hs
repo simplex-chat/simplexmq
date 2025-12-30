@@ -17,7 +17,7 @@ CREATE TABLE ntf_tokens_to_delete (
   tkn_priv_key BLOB NOT NULL, -- client's private key to sign token commands,
   del_failed INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT;
+);
 |]
 
 down_m20240930_ntf_tokens_to_delete :: Query

@@ -13,7 +13,7 @@ CREATE TABLE servers (
   port TEXT NOT NULL,
   key_hash BLOB NOT NULL,
   PRIMARY KEY (host, port)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE connections (
   conn_id BLOB NOT NULL PRIMARY KEY,
@@ -25,7 +25,7 @@ CREATE TABLE connections (
   last_rcv_msg_hash BLOB NOT NULL DEFAULT x'',
   last_snd_msg_hash BLOB NOT NULL DEFAULT x'',
   smp_agent_version INTEGER NOT NULL DEFAULT 1
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE rcv_queues (
   host TEXT NOT NULL,
@@ -45,7 +45,7 @@ CREATE TABLE rcv_queues (
   FOREIGN KEY (host, port) REFERENCES servers
     ON DELETE RESTRICT ON UPDATE CASCADE,
   UNIQUE (host, port, snd_id)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE snd_queues (
   host TEXT NOT NULL,
@@ -60,7 +60,7 @@ CREATE TABLE snd_queues (
   PRIMARY KEY (host, port, snd_id),
   FOREIGN KEY (host, port) REFERENCES servers
     ON DELETE RESTRICT ON UPDATE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE messages (
   conn_id BLOB NOT NULL REFERENCES connections (conn_id)
@@ -76,7 +76,7 @@ CREATE TABLE messages (
     ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   FOREIGN KEY (conn_id, internal_snd_id) REFERENCES snd_messages
     ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE rcv_messages (
   conn_id BLOB NOT NULL,
@@ -91,7 +91,7 @@ CREATE TABLE rcv_messages (
   PRIMARY KEY (conn_id, internal_rcv_id),
   FOREIGN KEY (conn_id, internal_id) REFERENCES messages
     ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE snd_messages (
   conn_id BLOB NOT NULL,
@@ -102,7 +102,7 @@ CREATE TABLE snd_messages (
   PRIMARY KEY (conn_id, internal_snd_id),
   FOREIGN KEY (conn_id, internal_id) REFERENCES messages
     ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE conn_confirmations (
   confirmation_id BLOB NOT NULL PRIMARY KEY,
@@ -114,7 +114,7 @@ CREATE TABLE conn_confirmations (
   accepted INTEGER NOT NULL,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE conn_invitations (
   invitation_id BLOB NOT NULL PRIMARY KEY,
@@ -124,7 +124,7 @@ CREATE TABLE conn_invitations (
   accepted INTEGER NOT NULL DEFAULT 0,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE ratchets (
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
@@ -135,7 +135,7 @@ CREATE TABLE ratchets (
   -- ratchet is initially empty on the receiving side (the side offering the connection)
   ratchet_state BLOB,
   e2e_version INTEGER NOT NULL DEFAULT 1
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE skipped_messages (
   skipped_message_id INTEGER PRIMARY KEY,
@@ -144,5 +144,5 @@ CREATE TABLE skipped_messages (
   header_key BLOB NOT NULL,
   msg_n INTEGER NOT NULL,
   msg_key BLOB NOT NULL
-) STRICT;
+);
 |]

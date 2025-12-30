@@ -18,7 +18,7 @@ CREATE TABLE server_certs(
   priv_key BLOB NOT NULL,
   service_id BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT,
-) STRICT;
+);
 
 CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON server_certs(user_id, host, port);
 

@@ -15,7 +15,7 @@ CREATE TABLE ntf_servers (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (ntf_host, ntf_port)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 
 CREATE TABLE ntf_tokens (
   provider TEXT NOT NULL, -- apns
@@ -35,5 +35,5 @@ CREATE TABLE ntf_tokens (
   PRIMARY KEY (provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY (ntf_host, ntf_port) REFERENCES ntf_servers
     ON DELETE RESTRICT ON UPDATE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID;
 |]

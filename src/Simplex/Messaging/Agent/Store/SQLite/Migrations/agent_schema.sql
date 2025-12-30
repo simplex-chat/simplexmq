@@ -2,13 +2,13 @@ CREATE TABLE migrations(
   name TEXT NOT NULL PRIMARY KEY,
   ts TEXT NOT NULL,
   down TEXT
-);
+) STRICT;
 CREATE TABLE servers(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   key_hash BLOB NOT NULL,
   PRIMARY KEY(host, port)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE connections(
   conn_id BLOB NOT NULL PRIMARY KEY,
   conn_mode TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE connections(
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
   deleted_at_wait_delivery TEXT,
   pq_support INTEGER NOT NULL DEFAULT 0
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE rcv_queues(
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
   UNIQUE(host, port, snd_id)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE snd_queues(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
@@ -89,7 +89,7 @@ CREATE TABLE snd_queues(
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE messages(
   conn_id BLOB NOT NULL REFERENCES connections(conn_id)
   ON DELETE CASCADE,
@@ -106,7 +106,7 @@ CREATE TABLE messages(
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   FOREIGN KEY(conn_id, internal_snd_id) REFERENCES snd_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_messages(
   conn_id BLOB NOT NULL,
   internal_rcv_id INTEGER NOT NULL,
@@ -122,7 +122,7 @@ CREATE TABLE rcv_messages(
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE snd_messages(
   conn_id BLOB NOT NULL,
   internal_snd_id INTEGER NOT NULL,
@@ -139,7 +139,7 @@ CREATE TABLE snd_messages(
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE conn_confirmations(
   confirmation_id BLOB NOT NULL PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -153,7 +153,7 @@ CREATE TABLE conn_confirmations(
   ,
   smp_reply_queues BLOB NULL,
   smp_client_version INTEGER
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,
   contact_conn_id BLOB REFERENCES connections ON DELETE SET NULL,
@@ -162,7 +162,7 @@ CREATE TABLE conn_invitations(
   accepted INTEGER NOT NULL DEFAULT 0,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE ratchets(
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
   ON DELETE CASCADE,
@@ -177,7 +177,7 @@ CREATE TABLE ratchets(
   x3dh_pub_key_2 BLOB,
   pq_priv_kem BLOB,
   pq_pub_kem BLOB
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES ratchets
@@ -193,7 +193,7 @@ CREATE TABLE ntf_servers(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   PRIMARY KEY(ntf_host, ntf_port)
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE ntf_tokens(
   provider TEXT NOT NULL, -- apns
   device_token TEXT NOT NULL, -- ! this field is mislabeled and is actually saved as binary
@@ -213,7 +213,7 @@ tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   PRIMARY KEY(provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE ntf_subscriptions(
   conn_id BLOB NOT NULL,
   smp_host TEXT NULL,
@@ -237,7 +237,7 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-) STRICT, WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE commands(
   command_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,

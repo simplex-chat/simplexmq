@@ -22,7 +22,7 @@ CREATE TABLE processed_ratchet_key_hashes(
   hash BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-) STRICT;
+);
 
 CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(conn_id, hash);
 |]
