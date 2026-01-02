@@ -285,7 +285,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.Common
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), BoolInt (..), FromField (..), ToField (..), SQLError, blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Client (SMPTransportSession)
 import qualified Simplex.Messaging.Crypto as C
@@ -308,11 +308,11 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
 import Data.List (sortOn)
-import Database.PostgreSQL.Simple (In (..), Only (..), Query, SqlError, (:.) (..))
+import Database.PostgreSQL.Simple (In (..), Only (..), Query, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else
-import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), SQLError, ToRow (..), field, (:.) (..))
+import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), ToRow (..), field, (:.) (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 #endif
@@ -320,16 +320,15 @@ import Database.SQLite.Simple.QQ (sql)
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
 checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
 
+handleSQLError :: StoreError -> SQLError -> StoreError
 #if defined(dbPostgres)
-handleSQLError :: StoreError -> SqlError -> StoreError
 handleSQLError err e = case constraintViolation e of
   Just _ -> err
-  Nothing -> SEInternal $ bshow e
+  Nothing -> seInternal $ bshow e
 #else
-handleSQLError :: StoreError -> SQLError -> StoreError
 handleSQLError err e
   | SQL.sqlError e == SQL.ErrorConstraint = err
-  | otherwise = SEInternal $ bshow e
+  | otherwise = seInternal $ bshow e
 #endif
 
 createUserRecord :: DB.Connection -> IO UserId
@@ -978,7 +977,7 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
               WHERE m.conn_id = ? AND m.internal_id = ?
             |]
             (connId, msgId)
-        err = SEInternal $ "msg delivery " <> bshow msgId <> " returned []"
+        err = seInternal $ "msg delivery " <> bshow msgId <> " returned []"
         pendingMsgData :: (AgentMessageType, Maybe MsgFlags, MsgBody, PQEncryption, InternalTs, InternalSndId, PrevSndMsgHash, Maybe Int64, Maybe Int64, Maybe CR.MsgEncryptKeyX448, Maybe Int, Maybe AMessage) -> Either StoreError PendingMsgData
         pendingMsgData (msgType, msgFlags_, msgBody, pqEncryption, internalTs, internalSndId, prevMsgHash, riSlow_, riFast_, encryptKey_, paddedLen_, sndMsgBody_) = do
           let msgFlags = fromMaybe SMP.noMsgFlags msgFlags_
@@ -987,7 +986,7 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
            in result <$> case (encryptKey_, paddedLen_, sndMsgBody_) of
                 (Nothing, Nothing, Nothing) -> Right Nothing
                 (Just encryptKey, Just paddedLen, Just sndMsgBody) -> Right $ Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody}
-                _ -> Left $ SEInternal "unexpected snd msg data"
+                _ -> Left $ seInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
 getWorkItem :: (Show i, AnyStoreError e) => String -> IO (Maybe i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e (Maybe a))
@@ -1398,7 +1397,7 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
           |]
           (Only cmdId)
       where
-        err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
+        err = seInternal $ "command  " <> bshow cmdId <> " returned []"
         pendingCommand (corrId, userId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
     markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
 
@@ -1471,7 +1470,7 @@ updateDeviceToken db NtfToken {deviceToken = DeviceToken provider token, ntfServ
       SET provider = ?, device_token = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
-    (toProvider, toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, Binary token, host, port)
+    (toProvider, Binary toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, Binary token, host, port)
 
 updateNtfMode :: DB.Connection -> NtfToken -> NotificationsMode -> IO ()
 updateNtfMode db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} ntfMode = do
@@ -1548,7 +1547,7 @@ getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
           |]
           (Only tknDbId)
       where
-        err = SEInternal $ "ntf token to delete " <> bshow tknDbId <> " returned []"
+        err = seInternal $ "ntf token to delete " <> bshow tknDbId <> " returned []"
         ntfTokenToDelete (tknPrivKey, tknId) = (tknDbId, tknPrivKey, tknId)
 
 markNtfTokenToDeleteFailed_ :: DB.Connection -> Int64 -> IO ()
@@ -1746,7 +1745,7 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
           |]
           (Only connId)
       where
-        err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
+        err = seInternal $ "ntf subscription " <> bshow connId <> " returned []"
         ntfSubAction (userId, smpHost, smpPort, smpKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, actionTs, action) =
           let smpServer = SMPServer smpHost smpPort smpKeyHash
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
@@ -1790,7 +1789,7 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
           |]
           (Only connId)
       where
-        err = SEInternal $ "ntf subscription " <> bshow connId <> " returned []"
+        err = seInternal $ "ntf subscription " <> bshow connId <> " returned []"
         ntfSubAction (userId, ntfHost, ntfPort, ntfKeyHash, ntfQueueId, ntfSubId, ntfSubStatus, action) =
           let ntfServer = NtfServer ntfHost ntfPort ntfKeyHash
               ntfSubscription = NtfSubscription {userId, connId, smpServer, ntfQueueId, ntfServer, ntfSubId, ntfSubStatus}
@@ -2288,7 +2287,7 @@ getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnD
 getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . getConnData False db
 
 handleDBError :: E.SomeException -> IO (Either StoreError a)
-handleDBError = pure . Left . SEInternal . bshow
+handleDBError = pure . Left . seInternal . bshow
 #endif
 
 getConnData :: Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
@@ -2622,11 +2621,11 @@ createWithRandomId' gVar create = tryCreate 3
 #if defined(dbPostgres)
     handleErr n e = case constraintViolation e of
       Just _ -> tryCreate (n - 1)
-      Nothing -> pure . Left . SEInternal $ bshow e
+      Nothing -> pure . Left . seInternal $ bshow e
 #else
     handleErr n e
       | SQL.sqlError e == SQL.ErrorConstraint = tryCreate (n - 1)
-      | otherwise = pure . Left . SEInternal $ bshow e
+      | otherwise = pure . Left . seInternal $ bshow e
 #endif
 
 randomId :: TVar ChaChaDRG -> Int -> IO ByteString
@@ -2661,7 +2660,7 @@ createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file
   pure rcvFileEntityId
 
 createRcvFileRedirect :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
-createRcvFileRedirect _ _ _ FileDescription {redirect = Nothing} _ _ _ _ _ _ = pure $ Left $ SEInternal "createRcvFileRedirect called without redirect"
+createRcvFileRedirect _ _ _ FileDescription {redirect = Nothing} _ _ _ _ _ _ = pure $ Left $ seInternal "createRcvFileRedirect called without redirect"
 createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redirectChunks, redirect = Just RedirectFileInfo {size, digest}} prefixPath redirectPath redirectFile dstPath dstFile approvedRelays = runExceptT $ do
   (dstEntityId, dstId) <- ExceptT $ insertRcvFile db gVar userId dummyDst prefixPath dstPath dstFile Nothing Nothing approvedRelays
   (_, redirectId) <- ExceptT $ insertRcvFile db gVar userId redirectFd prefixPath redirectPath redirectFile (Just dstId) (Just dstEntityId) approvedRelays

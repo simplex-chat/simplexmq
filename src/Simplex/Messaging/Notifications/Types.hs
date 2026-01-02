@@ -13,8 +13,10 @@ import Simplex.Messaging.Agent.Protocol (ConnId, NotificationsMode (..), UserId)
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Protocol (NotifierId, NtfServer, SMPServer)
+import Simplex.Messaging.Util (eitherToMaybe)
 
 data NtfTknAction
   = NTARegister
@@ -101,42 +103,40 @@ data NtfSubNTFAction
   | NSARotate -- deprecated
   deriving (Show)
 
-instance Encoding NtfSubNTFAction where
-  smpEncode = \case
+instance TextEncoding NtfSubNTFAction where
+  textEncode = \case
     NSACreate -> "N"
     NSACheck -> "C"
     NSADelete -> "D"
     NSARotate -> "R"
-  smpP =
-    A.anyChar >>= \case
-      'N' -> pure NSACreate
-      'C' -> pure NSACheck
-      'D' -> pure NSADelete
-      'R' -> pure NSARotate
-      _ -> fail "bad NtfSubNTFAction"
+  textDecode = \case
+    "N" -> Just NSACreate
+    "C" -> Just NSACheck
+    "D" -> Just NSADelete
+    "R" -> Just NSARotate
+    _ -> Nothing
 
-instance FromField NtfSubNTFAction where fromField = blobFieldDecoder smpDecode
+instance FromField NtfSubNTFAction where fromField = fromTextField_ textDecode
 
-instance ToField NtfSubNTFAction where toField = toField . Binary . smpEncode
+instance ToField NtfSubNTFAction where toField = toField . textEncode
 
 data NtfSubSMPAction
   = NSASmpKey
   | NSASmpDelete
   deriving (Show)
 
-instance Encoding NtfSubSMPAction where
-  smpEncode = \case
+instance TextEncoding NtfSubSMPAction where
+  textEncode = \case
     NSASmpKey -> "K"
     NSASmpDelete -> "D"
-  smpP =
-    A.anyChar >>= \case
-      'K' -> pure NSASmpKey
-      'D' -> pure NSASmpDelete
-      _ -> fail "bad NtfSubSMPAction"
+  textDecode = \case
+    "K" -> Just NSASmpKey
+    "D" -> Just NSASmpDelete
+    _ -> Nothing
 
-instance FromField NtfSubSMPAction where fromField = blobFieldDecoder smpDecode
+instance FromField NtfSubSMPAction where fromField = fromTextField_ textDecode
 
-instance ToField NtfSubSMPAction where toField = toField . Binary . smpEncode
+instance ToField NtfSubSMPAction where toField = toField . textEncode
 
 data NtfAgentSubStatus
   = -- | subscription started
@@ -171,7 +171,7 @@ instance Encoding NtfAgentSubStatus where
       "DELETED" -> pure NASDeleted
       _ -> fail "bad NtfAgentSubStatus"
 
-instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ either (const Nothing) Just . smpDecode . encodeUtf8
+instance FromField NtfAgentSubStatus where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
 instance ToField NtfAgentSubStatus where toField = toField . decodeLatin1 . smpEncode
 

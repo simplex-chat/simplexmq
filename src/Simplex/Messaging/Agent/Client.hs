@@ -219,7 +219,6 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
@@ -241,6 +240,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore (getClientNotices, updateClientNotices)
 import Simplex.Messaging.Agent.Store.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
@@ -2125,7 +2125,9 @@ withWork_ c doWork getWork action =
       | otherwise -> notifyErr INTERNAL e
   where
     noWork = liftIO $ noWorkToDo doWork
-    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
+    notifyErr err e = do
+      logError $ "withWork_ error: " <> tshow e
+      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
 withWorkItems :: (AnyStoreError e', MonadIO m) => AgentClient -> TMVar () -> ExceptT e m (Either e' [Either e' a]) -> (NonEmpty a -> ExceptT e m ()) -> ExceptT e m ()
 withWorkItems c doWork getWork action = do
@@ -2244,24 +2246,19 @@ withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
 withStore c action = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catches` handleDBErrors
+    withTransaction st action `E.catch` handleDBErrors
   where
+    handleDBErrors :: E.SomeException -> IO (Either StoreError a)
+    handleDBErrors e = pure $ Left $ case E.fromException e of
+      Just (e' :: SQLError) ->
 #if defined(dbPostgres)
-    -- TODO [postgres] postgres specific error handling
-    handleDBErrors :: [E.Handler IO (Either StoreError a)]
-    handleDBErrors =
-      [ E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
-      ]
+        seInternal $ bshow e'
 #else
-    handleDBErrors :: [E.Handler IO (Either StoreError a)]
-    handleDBErrors =
-      [ E.Handler $ \(e :: SQL.SQLError) ->
-          let se = SQL.sqlError e
-              busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
-           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ encodeUtf8 $ T.intercalate ", " [tshow se, SQL.sqlErrorDetails e, SQL.sqlErrorContext e],
-        E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
-      ]
+        let se = SQL.sqlError e'
+            busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
+         in (if busy then SEDatabaseBusy else seInternal) $ bshow e'
 #endif
+      Nothing -> seInternal $ bshow e
 
 unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
 unsafeWithStore c action = do

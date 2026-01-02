@@ -16,7 +16,8 @@
 
 module Simplex.Messaging.Agent.Store where
 
-import Control.Exception (Exception)
+import Debug.Trace
+import Control.Exception (Exception (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
@@ -31,6 +32,7 @@ import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Common
+import Simplex.Messaging.Agent.Store.DB (SQLError)
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
@@ -752,7 +754,9 @@ data StoreError
   deriving (Eq, Show, Exception)
 
 instance AnyError StoreError where
-  fromSomeException = SEInternal . bshow
+  fromSomeException e = seInternal $ case fromException e of
+    Just (e' :: SQLError) -> bshow e'
+    Nothing -> bshow e
 
 class (Show e, AnyError e) => AnyStoreError e where
   isWorkItemError :: e -> Bool
@@ -763,3 +767,7 @@ instance AnyStoreError StoreError where
     SEWorkItemError {} -> True
     _ -> False
   mkWorkItemError errContext = SEWorkItemError {errContext}
+
+seInternal :: ByteString -> StoreError
+seInternal e = traceShow e $ SEInternal e
+{-# INLINE seInternal #-}

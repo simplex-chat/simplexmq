@@ -10,6 +10,10 @@ m20251230_strict_tables =
   [sql|
 UPDATE ntf_tokens SET ntf_mode = CAST(ntf_mode as TEXT);
 
+UPDATE ntf_subscriptions
+SET ntf_sub_action = CAST(ntf_sub_action as TEXT),
+    ntf_sub_smp_action = CAST(ntf_sub_smp_action as TEXT);
+
 PRAGMA writable_schema=1;
 
 UPDATE sqlite_master
@@ -47,4 +51,8 @@ WHERE type = 'table' AND name = 'ntf_tokens';
 PRAGMA writable_schema=0;
 
 UPDATE ntf_tokens SET ntf_mode = CAST(ntf_mode as BLOB);
+
+UPDATE ntf_subscriptions
+SET ntf_sub_action = CAST(ntf_sub_action as BLOB),
+    ntf_sub_smp_action = CAST(ntf_sub_smp_action as BLOB);
 |]

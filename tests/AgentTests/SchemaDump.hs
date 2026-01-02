@@ -92,8 +92,8 @@ testSchemaMigrations = do
 testVerifyStrict :: IO ()
 testVerifyStrict = do
   Right st <- createDBStore (DBOpts testDB [] "" False True TQOff) appMigrations (MigrationConfig MCConsole Nothing)
-  withTransaction' st (`SQL.query_` "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' AND sql NOT LIKE '% STRICT'")
-    `shouldReturn` ([] :: [(Text, Text)])
+  withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' AND sql NOT LIKE '% STRICT'")
+    `shouldReturn` ([] :: [Only Text])
 
 testUsersMigrationNew :: IO ()
 testUsersMigrationNew = do
