@@ -8,6 +8,8 @@ import Database.SQLite.Simple.QQ (sql)
 m20251230_strict_tables :: Query
 m20251230_strict_tables =
   [sql|
+UPDATE ntf_tokens SET ntf_mode = CAST(ntf_mode as TEXT);
+
 PRAGMA writable_schema=1;
 
 UPDATE sqlite_master
@@ -17,6 +19,10 @@ SET sql = CASE
   ELSE sql
 END
 WHERE type = 'table' AND name != 'sqlite_sequence';
+
+UPDATE sqlite_master
+SET sql = replace(sql, 'device_token TEXT NOT NULL', 'device_token BLOB NOT NULL')
+WHERE type = 'table' AND name = 'ntf_tokens';
 
 PRAGMA writable_schema=0;
 |]
@@ -34,5 +40,11 @@ SET sql = CASE
 END
 WHERE type = 'table' AND name != 'sqlite_sequence';
 
+UPDATE sqlite_master
+SET sql = replace(sql, 'device_token BLOB NOT NULL', 'device_token TEXT NOT NULL')
+WHERE type = 'table' AND name = 'ntf_tokens';
+
 PRAGMA writable_schema=0;
+
+UPDATE ntf_tokens SET ntf_mode = CAST(ntf_mode as BLOB);
 |]

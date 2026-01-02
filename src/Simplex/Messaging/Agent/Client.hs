@@ -219,6 +219,7 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
@@ -2257,7 +2258,7 @@ withStore c action = do
       [ E.Handler $ \(e :: SQL.SQLError) ->
           let se = SQL.sqlError e
               busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
-           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ bshow se,
+           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ encodeUtf8 $ T.intercalate ", " [tshow se, SQL.sqlErrorDetails e, SQL.sqlErrorContext e],
         E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
       ]
 #endif

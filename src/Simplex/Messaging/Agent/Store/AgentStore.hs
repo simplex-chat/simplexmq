@@ -1428,7 +1428,7 @@ createNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
       INSERT INTO ntf_tokens
         (provider, device_token, ntf_host, ntf_port, tkn_id, tkn_pub_key, tkn_priv_key, tkn_pub_dh_key, tkn_priv_dh_key, tkn_dh_secret, tkn_status, tkn_action, ntf_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     |]
-    ((provider, token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode))
+    ((provider, Binary token, host, port, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode))
 
 getSavedNtfToken :: DB.Connection -> IO (Maybe NtfToken)
 getSavedNtfToken db = do
@@ -1443,7 +1443,7 @@ getSavedNtfToken db = do
         JOIN ntf_servers s USING (ntf_host, ntf_port)
       |]
   where
-    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
+    ntfToken ((host, port, keyHash) :. (provider, Binary dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
       let ntfServer = NtfServer host port keyHash
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
           ntfMode = fromMaybe NMPeriodic ntfMode_
@@ -1459,7 +1459,7 @@ updateNtfTokenRegistration db NtfToken {deviceToken = DeviceToken provider token
       SET tkn_id = ?, tkn_dh_secret = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
-    (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
+    (tknId, ntfDhSecret, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, Binary token, host, port)
 
 updateDeviceToken :: DB.Connection -> NtfToken -> DeviceToken -> IO ()
 updateDeviceToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} (DeviceToken toProvider toToken) = do
@@ -1471,7 +1471,7 @@ updateDeviceToken db NtfToken {deviceToken = DeviceToken provider token, ntfServ
       SET provider = ?, device_token = ?, tkn_status = ?, tkn_action = ?, updated_at = ?
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
-    (toProvider, toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, token, host, port)
+    (toProvider, toToken, NTRegistered, Nothing :: Maybe NtfTknAction, updatedAt, provider, Binary token, host, port)
 
 updateNtfMode :: DB.Connection -> NtfToken -> NotificationsMode -> IO ()
 updateNtfMode db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} ntfMode = do
@@ -1483,7 +1483,7 @@ updateNtfMode db NtfToken {deviceToken = DeviceToken provider token, ntfServer =
       SET ntf_mode = ?, updated_at = ?
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
-    (ntfMode, updatedAt, provider, token, host, port)
+    (ntfMode, updatedAt, provider, Binary token, host, port)
 
 updateNtfToken :: DB.Connection -> NtfToken -> NtfTknStatus -> Maybe NtfTknAction -> IO ()
 updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} tknStatus tknAction = do
@@ -1495,7 +1495,7 @@ updateNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
       SET tkn_status = ?, tkn_action = ?, updated_at = ?
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
-    (tknStatus, tknAction, updatedAt, provider, token, host, port)
+    (tknStatus, tknAction, updatedAt, provider, Binary token, host, port)
 
 removeNtfToken :: DB.Connection -> NtfToken -> IO ()
 removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer = ProtocolServer {host, port}} =
@@ -1505,7 +1505,7 @@ removeNtfToken db NtfToken {deviceToken = DeviceToken provider token, ntfServer 
       DELETE FROM ntf_tokens
       WHERE provider = ? AND device_token = ? AND ntf_host = ? AND ntf_port = ?
     |]
-    (provider, token, host, port)
+    (provider, Binary token, host, port)
 
 addNtfTokenToDelete :: DB.Connection -> NtfServer -> C.APrivateAuthKey -> NtfTokenId -> IO ()
 addNtfTokenToDelete db ProtocolServer {host, port, keyHash} ntfPrivKey tknId =
@@ -1819,7 +1819,7 @@ getActiveNtfToken db =
       |]
       (Only NTActive)
   where
-    ntfToken ((host, port, keyHash) :. (provider, dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
+    ntfToken ((host, port, keyHash) :. (provider, Binary dt, ntfTokenId, ntfPubKey, ntfPrivKey, ntfDhPubKey, ntfDhPrivKey, ntfDhSecret) :. (ntfTknStatus, ntfTknAction, ntfMode_)) =
       let ntfServer = NtfServer host port keyHash
           ntfDhKeys = (ntfDhPubKey, ntfDhPrivKey)
           ntfMode = fromMaybe NMPeriodic ntfMode_

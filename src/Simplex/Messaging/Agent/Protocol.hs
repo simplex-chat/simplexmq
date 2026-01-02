@@ -698,9 +698,9 @@ instance ToJSON NotificationsMode where
 instance FromJSON NotificationsMode where
   parseJSON = strParseJSON "NotificationsMode"
 
-instance ToField NotificationsMode where toField = toField . strEncode
+instance ToField NotificationsMode where toField = toField . decodeLatin1 . strEncode
 
-instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
+instance FromField NotificationsMode where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 data NotificationInfo = NotificationInfo
   { ntfConnId :: ConnId,
