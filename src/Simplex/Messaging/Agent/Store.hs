@@ -16,7 +16,6 @@
 
 module Simplex.Messaging.Agent.Store where
 
-import Debug.Trace
 import Control.Exception (Exception (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
@@ -754,7 +753,7 @@ data StoreError
   deriving (Eq, Show, Exception)
 
 instance AnyError StoreError where
-  fromSomeException e = seInternal $ case fromException e of
+  fromSomeException e = SEInternal $ case fromException e of
     Just (e' :: SQLError) -> bshow e'
     Nothing -> bshow e
 
@@ -767,7 +766,3 @@ instance AnyStoreError StoreError where
     SEWorkItemError {} -> True
     _ -> False
   mkWorkItemError errContext = SEWorkItemError {errContext}
-
-seInternal :: ByteString -> StoreError
-seInternal e = traceShow e $ SEInternal e
-{-# INLINE seInternal #-}

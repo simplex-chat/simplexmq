@@ -2252,13 +2252,13 @@ withStore c action = do
     handleDBErrors e = pure $ Left $ case E.fromException e of
       Just (e' :: SQLError) ->
 #if defined(dbPostgres)
-        seInternal $ bshow e'
+        SEInternal $ bshow e'
 #else
         let se = SQL.sqlError e'
             busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
-         in (if busy then SEDatabaseBusy else seInternal) $ bshow e'
+         in (if busy then SEDatabaseBusy else SEInternal) $ bshow e'
 #endif
-      Nothing -> seInternal $ bshow e
+      Nothing -> SEInternal $ bshow e
 
 unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
 unsafeWithStore c action = do
