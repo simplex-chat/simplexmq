@@ -36,6 +36,7 @@ import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
 import qualified Data.Set as S
+import qualified Data.Text as T
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock (diffUTCTime)
 import Simplex.Messaging.Agent.Client
@@ -46,13 +47,13 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import qualified Simplex.Messaging.Agent.Store.DB as DB
-import Simplex.Messaging.Client (NetworkRequestMode (..))
+import Simplex.Messaging.Client (NetworkRequestMode (..), nonBlockingWriteTBQueue)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (catchAllErrors, diffToMicroseconds, threadDelay', tryAllErrors, tshow, whenM)
+import Simplex.Messaging.Util (catchAllErrors, catchAllErrors', diffToMicroseconds, threadDelay', tryAllErrors, tshow, whenM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -66,19 +67,15 @@ runNtfSupervisor c = do
     Right _ -> pure ()
   forever $ do
     cmd <- atomically . readTBQueue $ ntfSubQ ns
-    handleErr . agentOperationBracket c AONtfNetwork waitUntilActive $
-      runExceptT (processNtfCmd c cmd) >>= \case
-        Left e -> notifyErr e
-        Right _ -> return ()
+    handleErr $ agentOperationBracket c AONtfNetwork waitUntilActive $
+      processNtfCmd c cmd `catchAllErrors'` notifyErr
   where
     startTknDelete :: AM ()
     startTknDelete = do
       pendingDelServers <- withStore' c getPendingDelTknServers
       lift . forM_ pendingDelServers $ getNtfTknDelWorker True c
     handleErr :: AM' () -> AM' ()
-    handleErr = E.handle $ \(e :: E.SomeException) -> do
-      logError $ "runNtfSupervisor error " <> tshow e
-      notifyErr e
+    handleErr = E.handle $ \(e :: E.SomeException) -> notifyErr e
     notifyErr e = notifyInternalError' c $ "runNtfSupervisor error " <> show e
 
 partitionErrs :: (a -> ConnId) -> [a] -> [Either AgentErrorType b] -> ([(ConnId, AgentErrorType)], [b])
@@ -505,16 +502,18 @@ workerInternalError c connId internalErrStr = do
 
 -- TODO change error
 notifyInternalError :: MonadIO m => AgentClient -> ConnId -> String -> m ()
-notifyInternalError AgentClient {subQ} connId internalErrStr = atomically $ writeTBQueue subQ ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
-{-# INLINE notifyInternalError #-}
+notifyInternalError AgentClient {subQ} connId internalErrStr = do
+  logError $ T.pack internalErrStr
+  liftIO $ nonBlockingWriteTBQueue subQ ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
 
 notifyInternalError' :: MonadIO m => AgentClient -> String -> m ()
-notifyInternalError' AgentClient {subQ} internalErrStr = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
+notifyInternalError' c = notifyInternalError c ""
 {-# INLINE notifyInternalError' #-}
 
 notifyErrs :: MonadIO m => AgentClient -> [(ConnId, AgentErrorType)] -> m ()
-notifyErrs c = mapM_ (notifySub c . ERRS) . L.nonEmpty
-{-# INLINE notifyErrs #-}
+notifyErrs c errs_ = forM_ (L.nonEmpty errs_) $ \errs -> do
+  logError $ "notifyErrs: " <> tshow errs
+  notifySub c $ ERRS errs
 
 getNtfToken :: AM' (Maybe NtfToken)
 getNtfToken = do

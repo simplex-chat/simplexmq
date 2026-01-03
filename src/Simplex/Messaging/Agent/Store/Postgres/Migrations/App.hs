@@ -10,6 +10,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250322_short_links
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250702_conn_invitations_remove_cascade_delete
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251009_queue_to_subscribe
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251010_client_notices
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251230_strict_tables
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Text, Maybe Text)]
@@ -19,7 +20,8 @@ schemaMigrations =
     ("20250322_short_links", m20250322_short_links, Just down_m20250322_short_links),
     ("20250702_conn_invitations_remove_cascade_delete", m20250702_conn_invitations_remove_cascade_delete, Just down_m20250702_conn_invitations_remove_cascade_delete),
     ("20251009_queue_to_subscribe", m20251009_queue_to_subscribe, Just down_m20251009_queue_to_subscribe),
-    ("20251010_client_notices", m20251010_client_notices, Just down_m20251010_client_notices)
+    ("20251010_client_notices", m20251010_client_notices, Just down_m20251010_client_notices),
+    ("20251230_strict_tables", m20251230_strict_tables, Just down_m20251230_strict_tables)
   ]
 
 -- | The list of migrations in ascending order by date

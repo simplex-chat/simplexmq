@@ -6,6 +6,7 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
     PSQL.Connection,
     FromField (..),
     ToField (..),
+    SQLError,
     PSQL.connect,
     PSQL.close,
     execute,
@@ -32,6 +33,8 @@ import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Database.PostgreSQL.Simple.TypeInfo.Static (textOid, varcharOid)
 
 newtype BoolInt = BI {unBI :: Bool}
+
+type SQLError = PSQL.SqlError
 
 instance FromField BoolInt where
   fromField field dat = BI . (/= (0 :: Int)) <$> fromField field dat
