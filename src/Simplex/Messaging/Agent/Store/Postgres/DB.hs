@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.DB
@@ -12,29 +13,32 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
     execute,
     execute_,
     executeMany,
-    PSQL.query,
-    PSQL.query_,
+    query,
+    query_,
     blobFieldDecoder,
     fromTextField_,
   )
 where
 
+import qualified Control.Exception as E
 import Control.Monad (void)
+import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
-import Database.PostgreSQL.Simple (ResultError (..))
+import Database.PostgreSQL.Simple (Connection, ResultError (..), SqlError (..), FromRow, ToRow)
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.FromField (Field (..), FieldParser, FromField (..), returnError)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Database.PostgreSQL.Simple.TypeInfo.Static (textOid, varcharOid)
+import Database.PostgreSQL.Simple.Types (Query (..))
 
 newtype BoolInt = BI {unBI :: Bool}
 
-type SQLError = PSQL.SqlError
+type SQLError = SqlError
 
 instance FromField BoolInt where
   fromField field dat = BI . (/= (0 :: Int)) <$> fromField field dat
@@ -44,17 +48,29 @@ instance ToField BoolInt where
   toField (BI b) = toField ((if b then 1 else 0) :: Int)
   {-# INLINE toField #-}
 
-execute :: PSQL.ToRow q => PSQL.Connection -> PSQL.Query -> q -> IO ()
-execute db q qs = void $ PSQL.execute db q qs
+execute :: ToRow q => PSQL.Connection -> Query -> q -> IO ()
+execute db q qs = void $ PSQL.execute db q qs `E.catch` addSql q
 {-# INLINE execute #-}
 
-execute_ :: PSQL.Connection -> PSQL.Query -> IO ()
-execute_ db q = void $ PSQL.execute_ db q
+execute_ :: PSQL.Connection -> Query -> IO ()
+execute_ db q = void $ PSQL.execute_ db q `E.catch` addSql q
 {-# INLINE execute_ #-}
 
-executeMany :: PSQL.ToRow q => PSQL.Connection -> PSQL.Query -> [q] -> IO ()
-executeMany db q qs = void $ PSQL.executeMany db q qs
+executeMany :: ToRow q => PSQL.Connection -> Query -> [q] -> IO ()
+executeMany db q qs = void $ PSQL.executeMany db q qs `E.catch` addSql q
 {-# INLINE executeMany #-}
+
+query :: (ToRow q, FromRow r) => PSQL.Connection -> Query -> q -> IO [r]
+query db q qs = PSQL.query db q qs `E.catch` addSql q
+{-# INLINE query #-}
+
+query_ :: FromRow r => Connection -> Query -> IO [r]
+query_ db q = PSQL.query_ db q `E.catch` addSql q
+{-# INLINE query_ #-}
+
+addSql :: Query -> SqlError -> IO r
+addSql q e@SqlError {sqlErrorHint = hint} =
+  E.throwIO e {sqlErrorHint = if B.null hint then fromQuery q else hint <> ", " <> fromQuery q}
 
 -- orphan instances
 

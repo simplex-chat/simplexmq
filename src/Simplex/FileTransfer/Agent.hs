@@ -223,6 +223,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       agentXFTPDownloadChunk c userId digest replica chunkSpec
       liftIO $ waitUntilForeground c
       (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
+        liftIO $ lockRcvFileForUpdate db rcvFileId
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
         RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
         let rcvd = receivedSize chunks
@@ -413,6 +414,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
             withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
             (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
             withStore c $ \db -> do
+              lockSndFileForUpdate db sndFileId
               updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
               getSndFile db sndFileId
           else pure sndFile
@@ -530,6 +532,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       liftIO $ waitUntilForeground c
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
+        lockSndFileForUpdate db sndFileId
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
         getSndFile db sndFileId
       let uploaded = uploadedSize chunks
