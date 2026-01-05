@@ -218,6 +218,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251009_queue_to_subscribe
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251010_client_notices
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251230_strict_tables
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251231_strict_tables_2
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:

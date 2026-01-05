@@ -47,6 +47,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250702_conn_invitation
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251009_queue_to_subscribe
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251010_client_notices
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251230_strict_tables
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251231_strict_tables_2
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Query, Maybe Query)]
@@ -93,7 +94,8 @@ schemaMigrations =
     ("m20250702_conn_invitations_remove_cascade_delete", m20250702_conn_invitations_remove_cascade_delete, Just down_m20250702_conn_invitations_remove_cascade_delete),
     ("m20251009_queue_to_subscribe", m20251009_queue_to_subscribe, Just down_m20251009_queue_to_subscribe),
     ("m20251010_client_notices", m20251010_client_notices, Just down_m20251010_client_notices),
-    ("m20251230_strict_tables", m20251230_strict_tables, Just down_m20251230_strict_tables)
+    ("m20251230_strict_tables", m20251230_strict_tables, Just down_m20251230_strict_tables),
+    ("m20251231_strict_tables_2", m20251231_strict_tables_2, Just down_m20251231_strict_tables_2)
   ]
 
 -- | The list of migrations in ascending order by date

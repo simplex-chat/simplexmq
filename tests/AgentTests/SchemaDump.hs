@@ -80,7 +80,7 @@ testSchemaMigrations = do
       schema <- getSchema testDB testSchema
       Migrations.run st Nothing True $ MTRUp [m]
       schema' <- getSchema testDB testSchema
-      schema' `shouldNotBe` schema
+      unless (name m `elem` noSchemaChange) $ schema' `shouldNotBe` schema
       Migrations.run st Nothing True $ MTRDown [downMigr]
       unless (name m `elem` skipComparisonForDownMigrations) $ do
         schema'' <- getSchema testDB testSchema
@@ -113,6 +113,11 @@ testUsersMigrationOld = do
   withTransaction' st' (`SQL.query_` "SELECT user_id FROM users;")
     `shouldReturn` ([Only (1 :: Int)])
   closeDBStore st'
+
+noSchemaChange :: [String]
+noSchemaChange =
+  [ "m20251230_strict_tables"
+  ]
 
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =
