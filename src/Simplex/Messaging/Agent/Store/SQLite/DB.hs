@@ -14,6 +14,7 @@ module Simplex.Messaging.Agent.Store.SQLite.DB
     TrackQueries (..),
     FromField (..),
     ToField (..),
+    SQLError,
     open,
     close,
     execute,
@@ -38,7 +39,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (diffUTCTime, getCurrentTime)
 import Data.Typeable (Typeable)
-import Database.SQLite.Simple (FromRow, ResultError (..), Query, SQLData (..), ToRow)
+import Database.SQLite.Simple (FromRow, ResultError (..), Query, SQLData (..), SQLError, ToRow)
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.FromField (FieldParser, FromField (..), returnError)
 import Database.SQLite.Simple.Internal (Field (..))

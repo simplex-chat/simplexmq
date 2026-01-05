@@ -1,7 +1,7 @@
 cabal-version: 1.12
 
 name:           simplexmq
-version:        6.5.0.4
+version:        6.5.0.6
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -167,6 +167,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20250702_conn_invitations_remove_cascade_delete
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251009_queue_to_subscribe
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251010_client_notices
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251230_strict_tables
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -216,6 +217,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20250702_conn_invitations_remove_cascade_delete
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251009_queue_to_subscribe
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251010_client_notices
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251230_strict_tables
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:

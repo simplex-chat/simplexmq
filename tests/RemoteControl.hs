@@ -9,7 +9,7 @@ import AgentTests.FunctionalAPITests (runRight)
 import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
-import Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))

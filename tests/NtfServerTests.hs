@@ -53,7 +53,7 @@ ntfServerTests :: (ASrvTransport, AStoreType) -> Spec
 ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
-  -- describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
+  describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
 
 ntfSyntaxTests :: ASrvTransport -> Spec
@@ -109,8 +109,9 @@ testNotificationSubscription (ATransport t, msType) createQueue =
     (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let tkn = DeviceToken PPApnsTest "abcd"
     withAPNSMockServer $ \apns ->
-      smpTest2 t msType $ \rh sh ->
-        ntfTest t $ \nh -> do
+      ntfTest t $ \nh -> do
+        v <- newEmptyTMVarIO
+        smpTest2 t msType $ \rh sh -> do
           ((sId, rId, rKey, rcvDhSecret), nId, rcvNtfDhSecret) <- createQueue rh sPub nPub
           -- register and verify token
           RespNtf "1" NoEntity (NRTknId tId ntfDh) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
@@ -181,6 +182,52 @@ testNotificationSubscription (ATransport t, msType) createQueue =
               PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer3, notifierId = notifierId3}} = L.last pnMsgs2
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
+          Resp "" _ (MSG RcvMessage {msgId = mId2, msgBody = EncRcvMsgBody body2}) <- tGet1 rh
+          Right ClientRcvMsgBody {msgBody = "hello 2"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId2) body2)
+          Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId2)
+
+          q2 <- createQueue rh sPub nPub
+          atomically $ putTMVar v (sId, rId, rKey, nId, dhSecret, rcvDhSecret, tId, tkn', srv, q2)
+
+        (sId, rId, rKey, nId, dhSecret, rcvDhSecret, tId, tkn', srv, q2) <- atomically $ readTMVar v
+        let ((sId', rId', rKey', rcvDhSecret'), nId', _rcvNtfDhSecret') = q2
+
+        RespNtf "11" _ (NRSubId _subId) <- signSendRecvNtf nh tknKey ("11", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId') nKey)
+        threadDelay 250000
+
+        smpTest2 t msType $ \rh sh -> do
+          Resp "12" _ (SOK Nothing) <- signSendRecv rh rKey ("12", rId, SUB)
+          Resp "12.1" _ (SOK Nothing) <- signSendRecv rh rKey' ("12.1", rId', SUB)
+          -- deliver to queue with ntf sub created while SMP was online
+          Resp "14" _ OK <- signSendRecv sh sKey ("14", sId, _SEND' "hello 3")
+          APNSMockRequest {notification = notification4} <- getMockNotification apns tkn'
+          let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData4} = notification4
+              Right nonce4 = C.cbNonce <$> ntfData4 .-> "nonce"
+              Right message4 = ntfData4 .-> "message"
+              Right ntfDataDecrypted4 = C.cbDecrypt dhSecret nonce4 message4
+              Right pnMsgs4 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted4
+              PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer4, notifierId = notifierId4}} = L.last pnMsgs4
+          smpServer4 `shouldBe` srv
+          notifierId4 `shouldBe` nId
+          Resp "" _ (MSG RcvMessage {msgId = mId3, msgBody = EncRcvMsgBody body3}) <- tGet1 rh
+          Right ClientRcvMsgBody {msgBody = "hello 3"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId3) body3)
+          Resp "15" _ OK <- signSendRecv rh rKey ("15", rId, ACK mId3)
+
+          -- deliver to queue with ntf sub created while SMP was offline
+          Resp "16" _ OK <- signSendRecv sh sKey ("16", sId', _SEND' "hello 4")
+          APNSMockRequest {notification = notification5} <- getMockNotification apns tkn'
+          let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData5} = notification5
+              Right nonce5 = C.cbNonce <$> ntfData5 .-> "nonce"
+              Right message5 = ntfData5 .-> "message"
+              Right ntfDataDecrypted5 = C.cbDecrypt dhSecret nonce5 message5
+              Right pnMsgs5 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted5
+              PNMessageData {smpQueue = SMPQueueNtf {smpServer = smpServer5, notifierId = notifierId5}} = L.last pnMsgs5
+          smpServer5 `shouldBe` srv
+          notifierId5 `shouldBe` nId'
+          Resp "" _ (MSG RcvMessage {msgId = mId4, msgBody = EncRcvMsgBody body4}) <- tGet1 rh
+          Right ClientRcvMsgBody {msgBody = "hello 4"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret' (C.cbNonce mId4) body4)
+          Resp "17" _ OK <- signSendRecv rh rKey' ("17", rId', ACK mId4)
+          pure ()
 
 testRetriedNtfSubscription :: (ASrvTransport, AStoreType) -> Spec
 testRetriedNtfSubscription (ATransport t, msType) =
@@ -250,18 +297,17 @@ registerToken nh apns token = do
   let code = decryptCode ntfData
   pure (tknKey, dhSecret, tId, code)
 
--- TODO [notifications]
--- createNtfQueueNEW :: CreateQueueFunc
--- createNtfQueueNEW h sPub nPub = do
---   g <- C.newRandom
---   (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
---   (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
---   (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
---   let cmd = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) (Just (NewNtfCreds nPub rcvNtfPubDhKey)))
---   Resp "abcd" NoEntity (IDS (QIK rId sId srvDh _sndSecure _linkId (Just (ServerNtfCreds nId rcvNtfSrvPubDhKey)))) <-
---     signSendRecv h rKey ("abcd", NoEntity, cmd)
---   let dhShared = C.dh' srvDh dhPriv
---   Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
---   (rId', rId) #== "same queue ID"
---   let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
---   pure ((sId, rId, rKey, dhShared), nId, rcvNtfDhSecret)
+createNtfQueueNEW :: CreateQueueFunc
+createNtfQueueNEW h sPub nPub = do
+  g <- C.newRandom
+  (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  (rcvNtfPubDhKey, rcvNtfPrivDhKey) <- atomically $ C.generateKeyPair g
+  let cmd = NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just (QRMessaging Nothing)) (Just (NewNtfCreds nPub rcvNtfPubDhKey)))
+  Resp "abcd" NoEntity (IDS (QIK rId sId srvDh _sndSecure _linkId _serviceId (Just (ServerNtfCreds nId rcvNtfSrvPubDhKey)))) <-
+    signSendRecv h rKey ("abcd", NoEntity, cmd)
+  let dhShared = C.dh' srvDh dhPriv
+  Resp "dabc" rId' OK <- signSendRecv h rKey ("dabc", rId, KEY sPub)
+  (rId', rId) #== "same queue ID"
+  let rcvNtfDhSecret = C.dh' rcvNtfSrvPubDhKey rcvNtfPrivDhKey
+  pure ((sId, rId, rKey, dhShared), nId, rcvNtfDhSecret)

@@ -778,14 +778,15 @@ testGetNextSndFileToPrepare st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextSndFileToPrepare db 86400
 
-    Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
-    DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
+    -- Can't test it with strict tables
+    -- Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
+    -- DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
     Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     DB.execute_ db "UPDATE snd_files SET status = 'new' WHERE snd_file_id = 2"
 
-    Left e <- getNextSndFileToPrepare db 86400
-    show e `shouldContain` "ConversionFailed"
-    DB.query_ db "SELECT snd_file_id FROM snd_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+    -- Left e <- getNextSndFileToPrepare db 86400
+    -- show e `shouldContain` "ConversionFailed"
+    -- DB.query_ db "SELECT snd_file_id FROM snd_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
 
     Right (Just SndFile {sndFileEntityId}) <- getNextSndFileToPrepare db 86400
     sndFileEntityId `shouldBe` fId2
@@ -808,16 +809,17 @@ testGetNextSndChunkToUpload st = do
     -- create file 1
     Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     updateSndFileEncrypted db 1 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
-    createSndFileReplica_ db 1 newSndChunkReplica1
-    DB.execute_ db "UPDATE snd_files SET num_recipients = 'bad' WHERE snd_file_id = 1"
+    -- Can't test it with strict tables
+    -- createSndFileReplica_ db 1 newSndChunkReplica1
+    -- DB.execute_ db "UPDATE snd_files SET num_recipients = 'bad' WHERE snd_file_id = 1"
     -- create file 2
     Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     updateSndFileEncrypted db 2 (FileDigest "abc") [(XFTPChunkSpec "filepath" 1 1, FileDigest "ghi")]
     createSndFileReplica_ db 2 newSndChunkReplica1
 
-    Left e <- getNextSndChunkToUpload db xftpServer1 86400
-    show e `shouldContain` "ConversionFailed"
-    DB.query_ db "SELECT snd_file_id FROM snd_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+    -- Left e <- getNextSndChunkToUpload db xftpServer1 86400
+    -- show e `shouldContain` "ConversionFailed"
+    -- DB.query_ db "SELECT snd_file_id FROM snd_files WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
 
     Right (Just SndFileChunk {sndFileEntityId}) <- getNextSndChunkToUpload db xftpServer1 86400
     sndFileEntityId `shouldBe` fId2
@@ -827,16 +829,17 @@ testGetNextDeletedSndChunkReplica st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextDeletedSndChunkReplica db xftpServer1 86400
 
-    createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId $ EntityId "abc") testFileReplicaKey) (FileDigest "ghi")
-    DB.execute_ db "UPDATE deleted_snd_chunk_replicas SET delay = 'bad' WHERE deleted_snd_chunk_replica_id = 1"
+    -- Can't test it with strict tables
+    -- createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId $ EntityId "abc") testFileReplicaKey) (FileDigest "ghi")
+    -- DB.execute_ db "UPDATE deleted_snd_chunk_replicas SET delay = 'bad' WHERE deleted_snd_chunk_replica_id = 1"
     createDeletedSndChunkReplica db 1 (FileChunkReplica xftpServer1 (ChunkReplicaId $ EntityId "abc") testFileReplicaKey) (FileDigest "ghi")
 
-    Left e <- getNextDeletedSndChunkReplica db xftpServer1 86400
-    show e `shouldContain` "ConversionFailed"
-    DB.query_ db "SELECT deleted_snd_chunk_replica_id FROM deleted_snd_chunk_replicas WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
+    -- Left e <- getNextDeletedSndChunkReplica db xftpServer1 86400
+    -- show e `shouldContain` "ConversionFailed"
+    -- DB.query_ db "SELECT deleted_snd_chunk_replica_id FROM deleted_snd_chunk_replicas WHERE failed = 1" `shouldReturn` [Only (1 :: Int)]
 
     Right (Just DeletedSndChunkReplica {deletedSndChunkReplicaId}) <- getNextDeletedSndChunkReplica db xftpServer1 86400
-    deletedSndChunkReplicaId `shouldBe` 2
+    deletedSndChunkReplicaId `shouldBe` 1
 
 testMarkNtfSubActionNtfFailed :: DBStore -> Expectation
 testMarkNtfSubActionNtfFailed st = do

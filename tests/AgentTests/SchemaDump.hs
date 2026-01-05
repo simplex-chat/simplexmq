@@ -7,6 +7,7 @@ import Control.DeepSeq
 import Control.Monad (unless, void)
 import Data.List (dropWhileEnd)
 import Data.Maybe (fromJust, isJust)
+import Data.Text (Text)
 import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQL
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
@@ -44,6 +45,7 @@ schemaDumpTest = do
   it "verify and overwrite schema dump" testVerifySchemaDump
   it "verify .lint fkey-indexes" testVerifyLintFKeyIndexes
   it "verify schema down migrations" testSchemaMigrations
+  it "verify strict tables" testVerifyStrict
   it "should NOT create user record for new database" testUsersMigrationNew
   it "should create user record for old database" testUsersMigrationOld
 
@@ -86,6 +88,12 @@ testSchemaMigrations = do
       Migrations.run st Nothing True $ MTRUp [m]
       schema''' <- getSchema testDB testSchema
       schema''' `shouldBe` schema'
+
+testVerifyStrict :: IO ()
+testVerifyStrict = do
+  Right st <- createDBStore (DBOpts testDB [] "" False True TQOff) appMigrations (MigrationConfig MCConsole Nothing)
+  withTransaction' st (`SQL.query_` "SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' AND sql NOT LIKE '% STRICT'")
+    `shouldReturn` ([] :: [Only Text])
 
 testUsersMigrationNew :: IO ()
 testUsersMigrationNew = do

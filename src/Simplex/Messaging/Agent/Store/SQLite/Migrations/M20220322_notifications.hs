@@ -19,7 +19,7 @@ CREATE TABLE ntf_servers (
 
 CREATE TABLE ntf_tokens (
   provider TEXT NOT NULL, -- apns
-  device_token TEXT NOT NULL, -- ! this field is mislabeled and is actually saved as binary
+  device_token TEXT NOT NULL,
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   tkn_id BLOB, -- token ID assigned by notifications server
