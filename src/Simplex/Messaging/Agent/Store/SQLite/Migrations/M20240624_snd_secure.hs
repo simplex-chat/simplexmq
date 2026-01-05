@@ -17,7 +17,7 @@ UPDATE sqlite_master
 SET sql = replace(sql, 'sender_key BLOB NOT NULL,', 'sender_key BLOB,')
 WHERE name = 'conn_confirmations' AND type = 'table';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]
 
 down_m20240624_snd_secure :: Query
@@ -32,5 +32,5 @@ UPDATE sqlite_master
 SET sql = replace(sql, 'sender_key BLOB,', 'sender_key BLOB NOT NULL,')
 WHERE name = 'conn_confirmations' AND type = 'table';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]
