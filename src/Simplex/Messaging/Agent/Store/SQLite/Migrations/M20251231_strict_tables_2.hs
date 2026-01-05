@@ -22,7 +22,7 @@ SET sql = CASE
 END
 WHERE type = 'table' AND name != 'sqlite_sequence';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]
 
 down_m20251231_strict_tables_2 :: Query
@@ -42,5 +42,5 @@ UPDATE sqlite_master
 SET sql = replace(sql, 'device_token BLOB NOT NULL', 'device_token TEXT NOT NULL')
 WHERE type = 'table' AND name = 'ntf_tokens';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]
