@@ -28,7 +28,7 @@ UPDATE sqlite_master
 SET sql = replace(sql, 'device_token TEXT NOT NULL', 'device_token BLOB NOT NULL')
 WHERE type = 'table' AND name = 'ntf_tokens';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]
 
 down_m20251230_strict_tables :: Query
@@ -48,7 +48,7 @@ UPDATE sqlite_master
 SET sql = replace(sql, 'device_token BLOB NOT NULL', 'device_token TEXT NOT NULL')
 WHERE type = 'table' AND name = 'ntf_tokens';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 
 UPDATE ntf_tokens SET ntf_mode = CAST(ntf_mode as BLOB);
 
