@@ -1779,8 +1779,7 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
     InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, userData)
-    ContactLinkData vr UserContactData {direct, owners, relays, userData} ->
-      B.concat [smpEncode (CMContact, vr, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+    ContactLinkData vr cd -> smpEncode (CMContact, vr, cd)
   smpP = (\(ACLD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1793,18 +1792,13 @@ instance Encoding AConnLinkData where
         (vr, userData) <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
       CMContact -> do
-        (vr, direct) <- smpP
-        owners <- smpListP
-        relays <- smpListP
-        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-        let cd = UserContactData {direct, owners, relays, userData}
+        (vr, cd) <- smpP
         pure $ ACLD SCMContact $ ContactLinkData vr cd
 
 instance ConnectionModeI c => Encoding (UserConnLinkData c) where
   smpEncode = \case
     UserInvLinkData userData -> smpEncode (CMInvitation, userData)
-    UserContactLinkData UserContactData {direct, owners, relays, userData} ->
-      B.concat [smpEncode (CMContact, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+    UserContactLinkData cd -> smpEncode (CMContact, cd)
   smpP = (\(AUCLD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1816,19 +1810,24 @@ instance Encoding AUserConnLinkData where
       CMInvitation -> do
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ AUCLD SCMInvitation $ UserInvLinkData userData
-      CMContact -> do
-        direct <- smpP
-        owners <- smpListP
-        relays <- smpListP
-        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-        let cd = UserContactData {direct, owners, relays, userData}
-        pure $ AUCLD SCMContact $ UserContactLinkData cd
+      CMContact ->
+        AUCLD SCMContact . UserContactLinkData <$> smpP
 
 instance StrEncoding AUserConnLinkData where
   strEncode = smpEncode
   {-# INLINE strEncode #-}
   strP = smpP
   {-# INLINE strP #-}
+
+instance Encoding UserContactData where
+  smpEncode UserContactData {direct, owners, relays, userData} =
+    B.concat [smpEncode direct, smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+  smpP = do
+    direct <- smpP
+    owners <- smpListP
+    relays <- smpListP
+    userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    pure UserContactData {direct, owners, relays, userData}
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
