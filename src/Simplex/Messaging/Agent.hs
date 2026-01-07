@@ -1673,10 +1673,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             (CCLink cReq _, service) <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq) service
-        LSET (AUCLD cMode userLinkData) clientData ->
+        LSET auData@(AUCLD cMode userLinkData) clientData ->
           withServer' . tryCommand $ do
             link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
-            notify $ LINK (ACSL cMode link)
+            notify $ LINK (ACSL cMode link) auData
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do

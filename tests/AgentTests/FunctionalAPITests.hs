@@ -2644,12 +2644,13 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let updatedData = UserLinkData "updated user data"
         updatedCtData = UserContactData {direct = False, owners = [], relays = [], userData = updatedData}
     setConnShortLinkAsync alice "1" cId SCMContact (UserContactLinkData updatedCtData) Nothing
-    ("1", cId', LINK (ACSL SCMContact shortLink')) <- get alice
+    ("1", cId', LINK (ACSL SCMContact shortLink') (AUCLD SCMContact (UserContactLinkData updatedCtData'))) <- get alice
     liftIO $ cId' `shouldBe` cId
     liftIO $ shortLink' `shouldBe` shortLink
-    -- verify updated link data
-    (_, ContactLinkData _ updatedCtData') <- getConnShortLink bob 1 shortLink'
     liftIO $ updatedCtData' `shouldBe` updatedCtData
+    -- verify updated link data
+    (_, ContactLinkData _ updatedCtData'') <- getConnShortLink bob 1 shortLink'
+    liftIO $ updatedCtData'' `shouldBe` updatedCtData
     -- complete connection via contact address
     (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice

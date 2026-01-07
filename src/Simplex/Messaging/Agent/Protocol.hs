@@ -383,7 +383,7 @@ type SndQueueSecured = Bool
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> Maybe ClientServiceId -> AEvent AEConn
-  LINK :: AConnShortLink -> AEvent AEConn
+  LINK :: AConnShortLink -> AUserConnLinkData -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -514,7 +514,7 @@ aCommandTag = \case
 aEventTag :: AEvent e -> AEventTag e
 aEventTag = \case
   INV {} -> INV_
-  LINK _ -> LINK_
+  LINK {} -> LINK_
   CONF {} -> CONF_
   REQ {} -> REQ_
   INFO {} -> INFO_
