@@ -452,6 +452,8 @@ functionalAPITests ps = do
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
+    it "should add short link data using async agent command" $
+      testSetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
     describe "accept connection using async command" $
@@ -2627,6 +2629,38 @@ testAsyncCommands sqSecured alice bob baseId =
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId
+
+testSetConnShortLinkAsync :: (ASrvTransport, AStoreType) -> IO ()
+testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
+  withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+    let userData = UserLinkData "test user data"
+        userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+        newLinkData = UserContactLinkData userCtData
+    (cId, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    -- verify initial link data
+    (_, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    liftIO $ userCtData' `shouldBe` userCtData
+    -- update link data async
+    let updatedData = UserLinkData "updated user data"
+        updatedCtData = UserContactData {direct = False, owners = [], relays = [], userData = updatedData}
+    setConnShortLinkAsync alice "1" cId SCMContact (UserContactLinkData updatedCtData) Nothing
+    ("1", cId', LINK (ACSL SCMContact shortLink') (AUCLD SCMContact (UserContactLinkData updatedCtData'))) <- get alice
+    liftIO $ cId' `shouldBe` cId
+    liftIO $ shortLink' `shouldBe` shortLink
+    liftIO $ updatedCtData' `shouldBe` updatedCtData
+    -- verify updated link data
+    (_, ContactLinkData _ updatedCtData'') <- getConnShortLink bob 1 shortLink'
+    liftIO $ updatedCtData'' `shouldBe` updatedCtData
+    -- complete connection via contact address
+    (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+    ("", _, REQ invId _ "bob's connInfo") <- get alice
+    bobId <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+    (_, Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    ("", _, CONF confId _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, INFO "bob's connInfo")
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, CON)
 
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
 testAsyncCommandsRestore ps = do

@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent
     deleteUser,
     connRequestPQSupport,
     createConnectionAsync,
+    setConnShortLinkAsync,
     joinConnectionAsync,
     allowConnectionAsync,
     acceptContactAsync,
@@ -344,6 +345,11 @@ deleteUser c = withAgentEnv c .: deleteUser' c
 createConnectionAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AE ConnId
 createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAsync c userId aCorrId enableNtfs
 {-# INLINE createConnectionAsync #-}
+
+-- | Create or update user's contact connection short link (LSET command) asynchronously, no synchronous response
+setConnShortLinkAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE ()
+setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
+{-# INLINE setConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
 joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
@@ -885,6 +891,16 @@ checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAu
       forM_ (M.lookup srvKey notices) $ \expires_ ->
         when (maybe True (ts <) expires_) $
           throwError NOTICE {server = safeDecodeUtf8 $ strEncode $ L.head host, preset = isNothing srvKey, expiresAt = roundedToUTCTime <$> expires_}
+
+setConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM ()
+setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
+  withConnLock c connId "setConnShortLinkAsync" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    srv <- case (conn, cMode, userLinkData) of
+      (ContactConnection _ RcvQueue {server}, SCMContact, UserContactLinkData {}) -> pure server
+      (RcvConnection _ RcvQueue {server}, SCMInvitation, UserInvLinkData {}) -> pure server
+      _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
+    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData =
@@ -1657,6 +1673,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             (CCLink cReq _, service) <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq) service
+        LSET auData@(AUCLD cMode userLinkData) clientData ->
+          withServer' . tryCommand $ do
+            link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
+            notify $ LINK (ACSL cMode link) auData
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
