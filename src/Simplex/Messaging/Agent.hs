@@ -1940,7 +1940,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
         withRetryLock2 ri' qLock $ \riState loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
-          resp <- tryError $ case msgType of
+          resp <- tryAllErrors $ case msgType of
             AM_CONN_INFO -> sendConfirmation c NRMBackground sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c NRMBackground sq msgBody
             _ -> case pendingMsgPrepData_ of
