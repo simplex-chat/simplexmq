@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -219,6 +220,9 @@ pattern SENT msgId = A.SENT msgId Nothing
 pattern Rcvd :: AgentMsgId -> AEvent 'AEConn
 pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMsgId, msgRcptStatus = MROk}]
 
+pattern Rcvd' :: AgentMsgId -> AgentMsgId -> AEvent 'AEConn
+pattern Rcvd' aMsgId rcvdMsgId <- RCVD MsgMeta {integrity = MsgOk, recipient = (aMsgId, _)} [MsgReceipt {agentMsgId = rcvdMsgId, msgRcptStatus = MROk}]
+
 pattern INV :: AConnectionRequestUri -> AEvent 'AEConn
 pattern INV cReq = A.INV cReq Nothing
 
@@ -331,8 +335,8 @@ functionalAPITests ps = do
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
     xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
-    describe "two way concurrently (50)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 25
-    xdescribe "two way concurrently (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 500
+    describe "two way concurrently (50)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 50
+    xdescribe "two way concurrently (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 1000
   describe "Establishing duplex connection, different PQ settings" $ do
     testPQMatrix2 ps $ runAgentClientTestPQ False True
   describe "Establishing duplex connection v2, different Ratchet versions" $
@@ -784,36 +788,64 @@ runAgentClientStressTestOneWay n pqSupport sqSecured viaProxy alice bob baseId =
 
 runAgentClientStressTestConc :: HasCallStack => Int64 -> PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = runRight_ $ do
-  let pqEnc = PQEncryption $ supportPQ pqSupport
   (aliceId, bobId) <- makeConnection_ pqSupport sqSecured alice bob
-  let proxySrv = if viaProxy then Just testSMPServer else Nothing
-      message i = "message " <> bshow i
-      loop a bId mIdVar i = do
-        when (i <= n) $ do
-          mId <- msgId <$> A.sendMessage a bId pqEnc SMP.noMsgFlags (message i)
-          liftIO $ mId >= i `shouldBe` True
-        let getEvent = do
-              get a >>= \case
-                ("", c, A.SENT _ srv) -> liftIO $ c == bId && srv == proxySrv `shouldBe` True
-                ("", c, QCONT) -> do
-                  liftIO $ c == bId `shouldBe` True
-                  getEvent
-                ("", c, Msg' mId pq msg) -> do
-                  -- tests that mId increases
-                  liftIO $ (mId >) <$> atomically (swapTVar mIdVar mId) `shouldReturn` True
-                  liftIO $ c == bId && pq == pqEnc && ("message " `B.isPrefixOf` msg) `shouldBe` True
-                  ackMessage a bId mId Nothing
-                r -> liftIO $ expectationFailure $ "wrong message: " <> show r
-        getEvent
   amId <- newTVarIO 0
   bmId <- newTVarIO 0
-  concurrently_
-    (forM_ ([1 .. n * 2] :: [Int64]) $ loop alice bobId amId)
-    (forM_ ([1 .. n * 2] :: [Int64]) $ loop bob aliceId bmId)
+  let n2 = n `div` 2
+  mapConcurrently_ id
+    ( [ send alice bobId [1 .. n2],
+        send alice bobId [n2 + 1 .. n],
+        send bob aliceId [1 .. n2],
+        send bob aliceId [n2 + 1 .. n],
+        receive alice bobId amId (n, n, n, 2 * n),
+        receive bob aliceId bmId (n, n, n, 2 * n)
+      ] :: [ExceptT AgentErrorType IO ()]
+    )
   liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
   liftIO $ noMessagesIngoreQCONT bob "nothing else should be delivered to bob"
   where
     msgId = subtract baseId . fst
+    pqEnc = PQEncryption $ supportPQ pqSupport
+    proxySrv = if viaProxy then Just testSMPServer else Nothing
+    message i = "message " <> bshow i
+    send :: AgentClient -> ConnId -> [Int64] -> ExceptT AgentErrorType IO ()
+    send a bId = mapM_ $ \i -> void $ A.sendMessage a bId pqEnc SMP.noMsgFlags (message i)
+    receive :: AgentClient -> ConnId -> TVar AgentMsgId -> (Int64, Int64, Int64, Int64) -> ExceptT AgentErrorType IO ()
+    receive a bId mIdVar acc' = loop acc' >> liftIO drain
+      where
+        drain =
+          timeout 50000 (get a)
+            >>= mapM_ (\case ("", _, QCONT) -> drain; r -> expectationFailure $ "unexpected: " <> show r)
+        loop (0, 0, 0, 0) = pure ()
+        loop acc@(!s, !m, !r, !o) =
+          timeout 3000000 (get a) >>= \case
+            Nothing -> error $ "timeout " <> show acc
+            Just evt -> case evt of
+              ("", c, A.SENT mId srv) -> do
+                liftIO $ c == bId && srv == proxySrv `shouldBe` True
+                unless (s > 0) $ error "unexpected SENT"
+                loop (s - 1, m, r, o)
+              ("", c, QCONT) -> do
+                liftIO $ c == bId `shouldBe` True
+                loop  (s, m, r, o)
+              ("", c, Msg' mId pq msg) -> do
+                -- tests that mId increases
+                liftIO $ (mId >) <$> atomically (swapTVar mIdVar mId) `shouldReturn` True
+                liftIO $ c == bId && pq == pqEnc && ("message " `B.isPrefixOf` msg) `shouldBe` True
+                ackMessageAsync a "123" bId mId (Just "")
+                unless (m > 0) $ error "unexpected MSG"
+                loop (s, m - 1, r, o)
+              ("", c, Rcvd' mId rcvdMsgId) -> do
+                liftIO $ (mId >) <$> atomically (swapTVar mIdVar mId) `shouldReturn` True
+                liftIO $ c == bId `shouldBe` True
+                ackMessageAsync a "123" bId mId Nothing
+                unless (r > 0) $ error "unexpected RCVD"
+                loop (s, m, r - 1, o)
+              ("123", c, OK) -> do
+                liftIO $ c == bId `shouldBe` True
+                unless (o > 0) $ error "unexpected OK"
+                loop (s, m, r, o - 1)
+              _ -> liftIO $ expectationFailure $ "unexpected: " <> show r
 
 testEnablePQEncryption :: HasCallStack => IO ()
 testEnablePQEncryption =
@@ -1001,10 +1033,10 @@ noMessages_ :: Bool -> HasCallStack => AgentClient -> String -> Expectation
 noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
   where
     tryGet =
-      10000 `timeout` get c >>= \case
+      50000 `timeout` get c >>= \case
         Just (_, _, QCONT) | ingoreQCONT -> noMessages_ ingoreQCONT c err
         Just msg -> error $ err <> ": " <> show msg
-        _ -> return ()
+        Nothing -> return ()
 
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
@@ -3713,7 +3745,15 @@ getSMPAgentClient' clientId cfg' initServers dbPath = do
 
 #if defined(dbPostgres)
 createStore :: String -> IO (Either MigrationError DBStore)
-createStore schema = createAgentStore (DBOpts testDBConnstr (B.pack schema) 1 True) (MigrationConfig MCError Nothing)
+createStore schema = createAgentStore dbOpts $ MigrationConfig MCError Nothing
+  where
+    dbOpts =
+      DBOpts
+        { connstr = testDBConnstr,
+          schema = B.pack schema,
+          poolSize = 10,
+          createSchema = True
+        }
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")

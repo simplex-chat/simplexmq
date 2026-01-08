@@ -52,6 +52,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getConnSubs,
     getDeletedConns,
     getConnsData,
+    lockConnForUpdate,
     setConnDeleted,
     setConnUserId,
     setConnAgentVersion,
@@ -140,6 +141,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchet,
     deleteRatchet,
     getRatchet,
+    getRatchetForUpdate,
     getSkippedMsgKeys,
     updateRatchet,
     -- Async commands
@@ -187,6 +189,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- Rcv files
     createRcvFile,
     createRcvFileRedirect,
+    lockRcvFileForUpdate,
     getRcvFile,
     getRcvFileByEntityId,
     getRcvFileRedirects,
@@ -207,6 +210,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getRcvFilesExpired,
     -- Snd files
     createSndFile,
+    lockSndFileForUpdate,
     getSndFile,
     getSndFileByEntityId,
     getNextSndFileToPrepare,
@@ -405,7 +409,7 @@ createNewConn db gVar cData cMode = do
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
 updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
 updateNewConnRcv db connId rq subMode =
-  getConn db connId $>>= \case
+  getConnForUpdate db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn _ RcvConnection {}) -> updateConn -- to allow retries
     (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnRcv" $ connType c
@@ -415,7 +419,7 @@ updateNewConnRcv db connId rq subMode =
 
 updateNewConnSnd :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 updateNewConnSnd db connId sq =
-  getConn db connId $>>= \case
+  getConnForUpdate db connId $>>= \case
     (SomeConn _ NewConnection {}) -> updateConn
     (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnSnd" $ connType c
   where
@@ -449,7 +453,11 @@ checkConfirmedSndQueueExists_ db SndQueue {server, sndId} =
   maybeFirstRow' False fromOnlyBI $
     DB.query
       db
-      "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
+      ( "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
+#if defined(dpPostgres)
+          <> " FOR UPDATE"
+#endif
+      )
       (host server, port server, sndId, New)
 
 getRcvConn :: DB.Connection -> SMPServer -> SMP.RecipientId -> IO (Either StoreError (RcvQueue, SomeConn))
@@ -488,14 +496,14 @@ deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
 
 upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 upgradeRcvConnToDuplex db connId sq =
-  getConn db connId $>>= \case
+  getConnForUpdate db connId $>>= \case
     (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
     (SomeConn c _) -> pure . Left . SEBadConnType "upgradeRcvConnToDuplex" $ connType c
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
 upgradeSndConnToDuplex db connId rq subMode =
-  getConn db connId >>= \case
+  getConnForUpdate db connId >>= \case
     Right (SomeConn _ SndConnection {}) -> Right <$> addConnRcvQueue_ db connId rq subMode
     Right (SomeConn c _) -> pure . Left . SEBadConnType "upgradeSndConnToDuplex" $ connType c
     _ -> pure $ Left SEConnNotFound
@@ -503,7 +511,7 @@ upgradeSndConnToDuplex db connId rq subMode =
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
 addConnRcvQueue :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
 addConnRcvQueue db connId rq subMode =
-  getConn db connId >>= \case
+  getConnForUpdate db connId >>= \case
     Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnRcvQueue_ db connId rq subMode
     Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnRcvQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
@@ -515,7 +523,7 @@ addConnRcvQueue_ db connId rq@RcvQueue {server} subMode = do
 
 addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 addConnSndQueue db connId sq =
-  getConn db connId >>= \case
+  getConnForUpdate db connId >>= \case
     Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnSndQueue_ db connId sq
     Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnSndQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
@@ -1048,7 +1056,14 @@ setMsgUserAck :: DB.Connection -> ConnId -> InternalId -> IO (Either StoreError 
 setMsgUserAck db connId agentMsgId = runExceptT $ do
   (dbRcvId, srvMsgId) <-
     ExceptT . firstRow id (SEMsgNotFound "setMsgUserAck") $
-      DB.query db "SELECT rcv_queue_id, broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?" (connId, agentMsgId)
+      DB.query
+        db
+        ( "SELECT rcv_queue_id, broker_id FROM rcv_messages WHERE conn_id = ? AND internal_id = ?"
+#if defined(dbPostgres)
+            <> " FOR UPDATE"
+#endif
+        )
+        (connId, agentMsgId)
   rq <- ExceptT $ getRcvQueueById db connId dbRcvId
   liftIO $ DB.execute db "UPDATE rcv_messages SET user_ack = ? WHERE conn_id = ? AND internal_id = ?" (BI True, connId, agentMsgId)
   pure (rq, srvMsgId)
@@ -1120,6 +1135,9 @@ deleteMsgContent db connId msgId = do
 
 deleteDeliveredSndMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteDeliveredSndMsg db connId msgId = do
+#if defined(dbPostgres)
+  _ :: [Only Int] <- DB.query db "SELECT 1 FROM messages WHERE conn_id = ? AND internal_id = ? FOR UPDATE" (connId, msgId)
+#endif
   cnt <- countPendingSndDeliveries_ db connId msgId
   when (cnt == 0) $ deleteMsg db connId msgId
 
@@ -1138,11 +1156,15 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
       maybeFirstRow id $
         DB.query
           db
-          [sql|
-            SELECT rcpt_status, snd_message_body_id FROM snd_messages
-            WHERE NOT EXISTS (SELECT 1 FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ? AND failed = 0)
-              AND conn_id = ? AND internal_id = ?
-          |]
+          ( [sql|
+              SELECT rcpt_status, snd_message_body_id FROM snd_messages
+              WHERE NOT EXISTS (SELECT 1 FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ? AND failed = 0)
+                AND conn_id = ? AND internal_id = ?
+            |]
+#if defined(dbPostgres)
+              <> " FOR UPDATE"
+#endif
+          )
           (connId, msgId, connId, msgId)
     deleteMsgAndBody :: (Maybe MsgReceiptStatus, Maybe Int64) -> IO ()
     deleteMsgAndBody (rcptStatus_, sndMsgBodyId_) = do
@@ -1151,9 +1173,11 @@ deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
             Just MROk -> deleteMsg
             _ -> if keepForReceipt then deleteMsgContent else deleteMsg
       del db connId msgId
-      forM_ sndMsgBodyId_ $ \bodyId ->
-        -- Delete message body if it is not used by any snd message.
-        -- The current snd message is already deleted by deleteMsg or cleared by deleteMsgContent.
+      forM_ sndMsgBodyId_ $ \bodyId -> do
+#if defined(dbPostgres)
+        -- lock for concurrent deletion of different records in snd_messages pointing to the same record in snd_message_bodies
+        _ :: [Only Int] <- DB.query db "SELECT 1 FROM snd_message_bodies WHERE snd_message_body_id = ? FOR UPDATE" (Only bodyId)
+#endif
         DB.execute
           db
           [sql|
@@ -1260,9 +1284,25 @@ deleteRatchet :: DB.Connection -> ConnId -> IO ()
 deleteRatchet db connId =
   DB.execute db "DELETE FROM ratchets WHERE conn_id = ?" (Only connId)
 
+getRatchetForUpdate :: DB.Connection -> ConnId -> IO (Either StoreError RatchetX448)
+getRatchetForUpdate =
+#if defined(dbPostgres)
+  getRatchet_ (ratchetQuery <> " FOR UPDATE")
+#else
+  getRatchet_ ratchetQuery
+#endif
+{-# INLINE getRatchetForUpdate #-}
+
 getRatchet :: DB.Connection -> ConnId -> IO (Either StoreError RatchetX448)
-getRatchet db connId =
-  firstRow' ratchet SERatchetNotFound $ DB.query db "SELECT ratchet_state FROM ratchets WHERE conn_id = ?" (Only connId)
+getRatchet = getRatchet_ ratchetQuery
+{-# INLINE getRatchet #-}
+
+ratchetQuery :: Query
+ratchetQuery = "SELECT ratchet_state FROM ratchets WHERE conn_id = ?"
+
+getRatchet_ :: Query -> DB.Connection -> ConnId -> IO (Either StoreError RatchetX448)
+getRatchet_ q db connId =
+  firstRow' ratchet SERatchetNotFound $ DB.query db q (Only connId)
   where
     ratchet = maybe (Left SERatchetNotFound) Right . fromOnly
 
@@ -1963,13 +2003,15 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 
 -- | Creates a new server, if it doesn't exist, and returns the passed key hash if it is different from stored.
 createServer_ :: DB.Connection -> SMPServer -> IO (Maybe C.KeyHash)
-createServer_ db newSrv@ProtocolServer {host, port, keyHash} =
-  getServerKeyHash_ db newSrv >>= \case
-    Right keyHash_ -> pure keyHash_
-    Left _ -> insertNewServer_ $> Nothing
+createServer_ db newSrv@ProtocolServer {host, port, keyHash} = do
+  r <- insertNewServer_
+  if null r
+    then getServerKeyHash_ db newSrv >>= either E.throwIO pure
+    else pure Nothing
   where
+    insertNewServer_ :: IO [Only Int]
     insertNewServer_ =
-      DB.execute db "INSERT INTO servers (host, port, key_hash) VALUES (?,?,?)" (host, port, keyHash)
+      DB.query db "INSERT INTO servers (host, port, key_hash) VALUES (?,?,?) ON CONFLICT (host, port) DO NOTHING RETURNING 1" (host, port, keyHash)
 
 -- | Returns the passed server key hash if it is different from the stored one, or the error if the server does not exist.
 getServerKeyHash_ :: DB.Connection -> SMPServer -> IO (Either StoreError (Maybe C.KeyHash))
@@ -2166,23 +2208,27 @@ getConnIds :: DB.Connection -> IO [ConnId]
 getConnIds db = map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted = 0"
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConn = getAnyConn False
+getConn = getAnyConn False False
 {-# INLINE getConn #-}
 
+getConnForUpdate :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
+getConnForUpdate = getAnyConn False True
+{-# INLINE getConnForUpdate #-}
+
 getDeletedConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getDeletedConn = getAnyConn True
+getDeletedConn = getAnyConn True False
 {-# INLINE getDeletedConn #-}
 
-getAnyConn :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
+getAnyConn :: Bool -> Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getAnyConn = getAnyConn_ getRcvQueuesByConnId_ getSndQueuesByConnId_
 {-# INLINE getAnyConn #-}
 
 getAnyConn_ ::
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty rq))) ->
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty sq))) ->
-  (Bool -> DB.Connection -> ConnId -> IO (Either StoreError (SomeConn' rq sq)))
-getAnyConn_ getRQs getSQs deleted' db connId =
-  getConnData deleted' db connId >>= \case
+  (Bool -> Bool -> DB.Connection -> ConnId -> IO (Either StoreError (SomeConn' rq sq)))
+getAnyConn_ getRQs getSQs deleted' forUpdate db connId =
+  getConnData deleted' forUpdate db connId >>= \case
     Just (cData, cMode) -> do
       rQ <- getRQs db connId
       sQ <- getSQs db connId
@@ -2281,27 +2327,38 @@ getAnyConns_ ::
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty rq))) ->
   (DB.Connection -> ConnId -> IO (Maybe (NonEmpty sq))) ->
   (Bool -> DB.Connection -> [ConnId] -> IO [Either StoreError (SomeConn' rq sq)])
-getAnyConns_ getRQs getSQs deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn_ getRQs getSQs deleted' db
+getAnyConns_ getRQs getSQs deleted' db connIds = forM connIds $ E.handle handleDBError . getAnyConn_ getRQs getSQs deleted' False db
 
 getConnsData :: DB.Connection -> [ConnId] -> IO [Either StoreError (Maybe (ConnData, ConnectionMode))]
-getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . getConnData False db
+getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . getConnData False False db
 
 handleDBError :: E.SomeException -> IO (Either StoreError a)
 handleDBError = pure . Left . SEInternal . bshow
 #endif
 
-getConnData :: Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
-getConnData deleted' db connId' =
+getConnData :: Bool -> Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
+getConnData deleted' forUpdate db connId' =
   maybeFirstRow rowToConnData $
     DB.query
       db
-      [sql|
-        SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
-        FROM connections
-        WHERE conn_id = ? AND deleted = ?
-      |]
+      ( [sql|
+          SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
+            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
+          FROM connections
+          WHERE conn_id = ? AND deleted = ?
+        |]
+#if defined(dbPostgres)
+          <> (if forUpdate then " FOR UPDATE" else "")
+#endif
+      )
       (connId', BI deleted')
+
+lockConnForUpdate :: DB.Connection -> ConnId -> IO ()
+lockConnForUpdate db connId = do
+#if defined(dbPostgres)
+  _ :: [Only Int] <- DB.query db "SELECT 1 FROM connections WHERE conn_id = ? FOR UPDATE" (Only connId)
+#endif
+  pure ()
 
 rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport) -> (ConnData, ConnectionMode)
 rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport) =
@@ -2347,7 +2404,11 @@ checkRatchetKeyHashExists db connId hash =
   maybeFirstRow' False fromOnlyBI $
     DB.query
       db
-      "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
+      ( "SELECT 1 FROM processed_ratchet_key_hashes WHERE conn_id = ? AND hash = ? LIMIT 1"
+#if defined(dbPostgres)
+        <> " FOR UPDATE"
+#endif
+      )
       (connId, Binary hash)
 
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
@@ -2471,11 +2532,15 @@ retrieveLastIdsAndHashRcv_ dbConn connId = do
   [(lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)] <-
     DB.query
       dbConn
-      [sql|
-        SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
-        FROM connections
-        WHERE conn_id = ?
-      |]
+      ( [sql|
+          SELECT last_internal_msg_id, last_internal_rcv_msg_id, last_external_snd_msg_id, last_rcv_msg_hash
+          FROM connections
+          WHERE conn_id = ?
+        |]
+#if defined(dbPostgres)
+          <> " FOR UPDATE"
+#endif
+      )
       (Only connId)
   return (lastInternalId, lastInternalRcvId, lastExternalSndId, lastRcvHash)
 
@@ -2542,11 +2607,15 @@ retrieveLastIdsAndHashSnd_ dbConn connId = do
   firstRow id SEConnNotFound $
     DB.query
       dbConn
-      [sql|
-        SELECT last_internal_msg_id, last_internal_snd_msg_id, last_snd_msg_hash
-        FROM connections
-        WHERE conn_id = ?
-      |]
+      ( [sql|
+          SELECT last_internal_msg_id, last_internal_snd_msg_id, last_snd_msg_hash
+          FROM connections
+          WHERE conn_id = ?
+        |]
+#if defined(dbPostgres)
+          <> " FOR UPDATE"
+#endif
+      )
       (Only connId)
 
 updateLastIdsSnd_ :: DB.Connection -> ConnId -> InternalId -> InternalSndId -> IO ()
@@ -2636,19 +2705,19 @@ ntfSubAndSMPAction (NSANtf action) = (Just action, Nothing)
 ntfSubAndSMPAction (NSASMP action) = (Nothing, Just action)
 
 createXFTPServer_ :: DB.Connection -> XFTPServer -> IO Int64
-createXFTPServer_ db newSrv@ProtocolServer {host, port, keyHash} =
-  getXFTPServerId_ db newSrv >>= \case
-    Right srvId -> pure srvId
-    Left _ -> insertNewServer_
-  where
-    insertNewServer_ = do
-      DB.execute db "INSERT INTO xftp_servers (xftp_host, xftp_port, xftp_key_hash) VALUES (?,?,?)" (host, port, keyHash)
-      insertedRowId db
-
-getXFTPServerId_ :: DB.Connection -> XFTPServer -> IO (Either StoreError Int64)
-getXFTPServerId_ db ProtocolServer {host, port, keyHash} = do
-  firstRow fromOnly SEXFTPServerNotFound $
-    DB.query db "SELECT xftp_server_id FROM xftp_servers WHERE xftp_host = ? AND xftp_port = ? AND xftp_key_hash = ?" (host, port, keyHash)
+createXFTPServer_ db ProtocolServer {host, port, keyHash} = do
+  Only serverId : _ <-
+    DB.query
+      db
+      [sql|
+        INSERT INTO xftp_servers (xftp_host, xftp_port, xftp_key_hash)
+        VALUES (?, ?, ?)
+        ON CONFLICT (xftp_host, xftp_port, xftp_key_hash)
+        DO UPDATE SET xftp_host = EXCLUDED.xftp_host
+        RETURNING xftp_server_id
+      |]
+      (host, port, keyHash)
+  pure serverId
 
 createRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
 createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file approvedRelays = runExceptT $ do
@@ -2728,6 +2797,13 @@ getRcvFileRedirects db rcvFileId = do
   redirects <- fromOnly <$$> DB.query db "SELECT rcv_file_id FROM rcv_files WHERE redirect_id = ?" (Only rcvFileId)
   fmap catMaybes . forM redirects $ getRcvFile db >=> either (const $ pure Nothing) (pure . Just)
 
+lockRcvFileForUpdate :: DB.Connection -> DBRcvFileId -> IO ()
+lockRcvFileForUpdate db rcvFileId = do
+#if defined(dbPostgres)
+  _ :: [Only Int] <- DB.query db "SELECT 1 FROM rcv_files WHERE rcv_file_id = ? FOR UPDATE" (Only rcvFileId)
+#endif
+  pure ()
+
 getRcvFile :: DB.Connection -> DBRcvFileId -> IO (Either StoreError RcvFile)
 getRcvFile db rcvFileId = runExceptT $ do
   f@RcvFile {rcvFileEntityId, userId, tmpPath} <- ExceptT getFile
@@ -2739,11 +2815,15 @@ getRcvFile db rcvFileId = runExceptT $ do
       firstRow toFile SEFileNotFound $
         DB.query
           db
-          [sql|
-            SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, deleted, redirect_id, redirect_entity_id, redirect_size, redirect_digest
-            FROM rcv_files
-            WHERE rcv_file_id = ?
-          |]
+          ( [sql|
+              SELECT rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, deleted, redirect_id, redirect_entity_id, redirect_size, redirect_digest
+              FROM rcv_files
+              WHERE rcv_file_id = ?
+            |]
+#if defined(dbPostgres)
+              <> " FOR UPDATE"
+#endif
+          )
           (Only rcvFileId)
       where
         toFile :: (RcvFileId, UserId, FileSize Int64, FileDigest, C.SbKey, C.CbNonce, FileSize Word32, FilePath, Maybe FilePath) :. (FilePath, Maybe C.SbKey, Maybe C.CbNonce, RcvFileStatus, BoolInt, Maybe DBRcvFileId, Maybe RcvFileId, Maybe (FileSize Int64), Maybe FileDigest) -> RcvFile
@@ -3004,6 +3084,13 @@ getSndFileIdByEntityId_ db sndFileEntityId =
   firstRow fromOnly SEFileNotFound $
     DB.query db "SELECT snd_file_id FROM snd_files WHERE snd_file_entity_id = ?" (Only (Binary sndFileEntityId))
 
+lockSndFileForUpdate :: DB.Connection -> DBSndFileId -> IO ()
+lockSndFileForUpdate db sndFileId = do
+#if defined(dbPostgres)
+  _ :: [Only Int] <- DB.query db "SELECT 1 FROM snd_files WHERE snd_file_id = ? FOR UPDATE" (Only sndFileId)
+#endif
+  pure ()
+
 getSndFile :: DB.Connection -> DBSndFileId -> IO (Either StoreError SndFile)
 getSndFile db sndFileId = runExceptT $ do
   f@SndFile {sndFileEntityId, userId, numRecipients, prefixPath} <- ExceptT getFile
@@ -3015,11 +3102,15 @@ getSndFile db sndFileId = runExceptT $ do
       firstRow toFile SEFileNotFound $
         DB.query
           db
-          [sql|
-            SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, digest, prefix_path, key, nonce, status, deleted, redirect_size, redirect_digest
-            FROM snd_files
-            WHERE snd_file_id = ?
-          |]
+          ( [sql|
+              SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, digest, prefix_path, key, nonce, status, deleted, redirect_size, redirect_digest
+              FROM snd_files
+              WHERE snd_file_id = ?
+            |]
+#if defined(dbPostgres)
+              <> " FOR UPDATE"
+#endif
+          )
           (Only sndFileId)
       where
         toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest) -> SndFile
