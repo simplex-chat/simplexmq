@@ -2208,16 +2208,12 @@ getConnIds :: DB.Connection -> IO [ConnId]
 getConnIds db = map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted = 0"
 
 getConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConn = getConn_ False
+getConn = getAnyConn False False
 {-# INLINE getConn #-}
 
 getConnForUpdate :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConnForUpdate = getConn_ True
+getConnForUpdate = getAnyConn False True
 {-# INLINE getConnForUpdate #-}
-
-getConn_ :: Bool -> DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
-getConn_ forUpdate = getAnyConn False forUpdate
-{-# INLINE getConn_ #-}
 
 getDeletedConn :: DB.Connection -> ConnId -> IO (Either StoreError SomeConn)
 getDeletedConn = getAnyConn True False
