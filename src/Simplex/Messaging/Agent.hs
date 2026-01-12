@@ -2754,37 +2754,53 @@ subscriber c@AgentClient {msgQ} = forever $ do
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
   delay <- asks (initialCleanupDelay . config)
-  liftIO $ threadDelay' delay
   int <- asks (cleanupInterval . config)
   ttl <- asks $ storedMsgDataTTL . config
-  forever $ waitActive $ do
-    run ERR deleteConns
-    run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
-    run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
-    run ERR $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
-    run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
-    run RFERR deleteRcvFilesExpired
-    run RFERR deleteRcvFilesDeleted
-    run RFERR deleteRcvFilesTmpPaths
-    run SFERR deleteSndFilesExpired
-    run SFERR deleteSndFilesDeleted
-    run SFERR deleteSndFilesPrefixPaths
-    run SFERR deleteExpiredReplicasForDeletion
+  liftIO $ putStrLn $ "cleanupManager: starting, initial delay " <> show delay <> ", interval " <> show int <> ", TTL " <> show ttl
+  liftIO $ threadDelay' delay
+  liftIO $ putStrLn "cleanupManager: initial delay passed, starting cleanup loop"
+  forever $ waitActive "cleanup loop" $ do
+    liftIO $ putStrLn "cleanupManager: cleanup loop iteration started"
+    run ERR "deleteConns" deleteConns
+    run ERR "deleteRcvMsgHashesExpired" $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
+    run ERR "deleteSndMsgsExpired" $ withStore' c (`deleteSndMsgsExpired` ttl)
+    run ERR "deleteRatchetKeyHashesExpired" $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
+    run ERR "deleteExpiredNtfTokensToDelete" $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
+    run RFERR "deleteRcvFilesExpired" deleteRcvFilesExpired
+    run RFERR "deleteRcvFilesDeleted" deleteRcvFilesDeleted
+    run RFERR "deleteRcvFilesTmpPaths" deleteRcvFilesTmpPaths
+    run SFERR "deleteSndFilesExpired" deleteSndFilesExpired
+    run SFERR "deleteSndFilesDeleted" deleteSndFilesDeleted
+    run SFERR "deleteSndFilesPrefixPaths" deleteSndFilesPrefixPaths
+    run SFERR "deleteExpiredReplicasForDeletion" deleteExpiredReplicasForDeletion
+    liftIO $ putStrLn "cleanupManager: cleanup loop iteration completed, waiting for next interval"
     liftIO $ threadDelay' int
   where
-    run :: forall e. AEntityI e => (AgentErrorType -> AEvent e) -> AM () -> AM' ()
-    run err a = do
-      waitActive . runExceptT $ a `catchAllErrors` (notify "" . err)
+    run :: forall e. AEntityI e => (AgentErrorType -> AEvent e) -> String -> AM () -> AM' ()
+    run err name a = do
+      liftIO $ putStrLn $ "cleanupManager: running " <> name
+      waitActive name . runExceptT $ a `catchAllErrors` \e -> do
+        liftIO $ putStrLn $ "cleanupManager: " <> name <> " error: " <> show e
+        notify "" $ err e
+      liftIO $ putStrLn $ "cleanupManager: " <> name <> " completed"
       step <- asks $ cleanupStepInterval . config
       liftIO $ threadDelay step
     -- we are catching it to avoid CRITICAL errors in tests when this is the only remaining handle to active
-    waitActive :: ReaderT Env IO a -> AM' ()
-    waitActive a = liftIO (E.tryAny $ waitUntilActive c) >>= either (\_ -> pure ()) (\_ -> void a)
+    waitActive :: String -> ReaderT Env IO a -> AM' ()
+    waitActive name a = liftIO (E.tryAny $ waitUntilActive c) >>= either (\e -> liftIO $ putStrLn $ "cleanupManager: waitActive skipped " <> name <> ": " <> show e) (\_ -> void a)
     deleteConns =
       withLock (deleteLock c) "cleanupManager" $ do
-        void $ withStore' c getDeletedConnIds >>= deleteDeletedConns c
-        void $ withStore' c getDeletedWaitingDeliveryConnIds >>= deleteDeletedWaitingDeliveryConns c
+        liftIO $ putStrLn "deleteConns: getting deleted conn IDs"
+        deletedConnIds <- withStore' c getDeletedConnIds
+        liftIO $ putStrLn $ "deleteConns: found " <> show (length deletedConnIds) <> " deleted conns"
+        void $ deleteDeletedConns c deletedConnIds
+        liftIO $ putStrLn "deleteConns: getting deleted waiting delivery conn IDs"
+        deletedWaitingIds <- withStore' c getDeletedWaitingDeliveryConnIds
+        liftIO $ putStrLn $ "deleteConns: found " <> show (length deletedWaitingIds) <> " deleted waiting delivery conns"
+        void $ deleteDeletedWaitingDeliveryConns c deletedWaitingIds
+        liftIO $ putStrLn "deleteConns: deleting users without conns"
         withStore' c deleteUsersWithoutConns >>= mapM_ (notify "" . DEL_USER)
+        liftIO $ putStrLn "deleteConns: done"
     deleteRcvFilesExpired = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       rcvExpired <- withStore' c (`getRcvFilesExpired` rcvFilesTTL)
