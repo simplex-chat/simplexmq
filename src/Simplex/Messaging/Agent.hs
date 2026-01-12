@@ -2753,7 +2753,7 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
-  AgentConfig {initialCleanupDelay, cleanupInterval= int, storedMsgDataTTL = ttl, cleanupBatchSize = limit} <-
+  AgentConfig {initialCleanupDelay, cleanupInterval = int, storedMsgDataTTL = ttl, cleanupBatchSize = limit} <-
     asks config
   liftIO $ threadDelay' initialCleanupDelay
   forever $ waitActive $ do
