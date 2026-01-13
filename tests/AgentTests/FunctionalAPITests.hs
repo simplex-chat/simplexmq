@@ -814,7 +814,7 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
     receive a bId mIdVar acc' = loop acc' >> liftIO drain
       where
         drain =
-          timeout 50000 (get a)
+          timeout 100000 (get a)
             >>= mapM_ (\case ("", _, QCONT) -> drain; r -> expectationFailure $ "unexpected: " <> show r)
         loop (0, 0, 0, 0) = pure ()
         loop acc@(!s, !m, !r, !o) =
