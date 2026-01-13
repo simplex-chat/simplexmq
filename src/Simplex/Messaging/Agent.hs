@@ -2753,15 +2753,14 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
-  delay <- asks (initialCleanupDelay . config)
-  liftIO $ threadDelay' delay
-  int <- asks (cleanupInterval . config)
-  ttl <- asks $ storedMsgDataTTL . config
+  AgentConfig {initialCleanupDelay, cleanupInterval = int, storedMsgDataTTL = ttl, cleanupBatchSize = limit} <-
+    asks config
+  liftIO $ threadDelay' initialCleanupDelay
   forever $ waitActive $ do
     run ERR deleteConns
-    run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
-    run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
-    run ERR $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
+    run ERR $ withStore' c $ \db -> deleteRcvMsgHashesExpired db ttl limit
+    run ERR $ withStore' c $ \db -> deleteSndMsgsExpired db ttl limit
+    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl limit
     run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted

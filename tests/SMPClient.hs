@@ -214,7 +214,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
   ServerConfig
     { transports = [],
       smpHandshakeTimeout = 60000000,
-      tbqSize = 1,
+      tbqSize = 4,
       msgQueueQuota = 4,
       maxJournalMsgCount = 5,
       maxJournalStateLines = 2,

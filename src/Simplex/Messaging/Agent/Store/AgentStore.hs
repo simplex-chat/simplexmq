@@ -1192,18 +1192,39 @@ countPendingSndDeliveries_ db connId msgId = do
   (Only cnt : _) <- DB.query db "SELECT count(*) FROM snd_message_deliveries WHERE conn_id = ? AND internal_id = ? AND failed = 0" (connId, msgId)
   pure cnt
 
-deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
-deleteRcvMsgHashesExpired db ttl = do
-  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  DB.execute db "DELETE FROM encrypted_rcv_message_hashes WHERE created_at < ?" (Only cutoffTs)
-
-deleteSndMsgsExpired :: DB.Connection -> NominalDiffTime -> IO ()
-deleteSndMsgsExpired db ttl = do
+deleteRcvMsgHashesExpired :: DB.Connection -> NominalDiffTime -> Int -> IO ()
+deleteRcvMsgHashesExpired db ttl limit = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute
     db
-    "DELETE FROM messages WHERE internal_ts < ? AND internal_snd_id IS NOT NULL"
-    (Only cutoffTs)
+    [sql|
+      DELETE FROM encrypted_rcv_message_hashes
+      WHERE encrypted_rcv_message_hash_id IN (
+        SELECT encrypted_rcv_message_hash_id
+        FROM encrypted_rcv_message_hashes
+        WHERE created_at < ?
+        ORDER BY created_at ASC
+        LIMIT ?
+      )
+    |]
+    (cutoffTs, limit)
+
+deleteSndMsgsExpired :: DB.Connection -> NominalDiffTime -> Int -> IO ()
+deleteSndMsgsExpired db ttl limit = do
+  cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+  DB.execute
+    db
+    [sql|
+      DELETE FROM messages
+      WHERE (conn_id, internal_id) IN (
+        SELECT conn_id, internal_id
+        FROM messages
+        WHERE internal_ts < ? AND internal_snd_id IS NOT NULL
+        ORDER BY internal_ts ASC
+        LIMIT ?
+      )
+    |]
+    (cutoffTs, limit)
 
 createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
 createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
@@ -2411,10 +2432,22 @@ checkRatchetKeyHashExists db connId hash =
       )
       (connId, Binary hash)
 
-deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> IO ()
-deleteRatchetKeyHashesExpired db ttl = do
+deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> Int -> IO ()
+deleteRatchetKeyHashesExpired db ttl limit = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
-  DB.execute db "DELETE FROM processed_ratchet_key_hashes WHERE created_at < ?" (Only cutoffTs)
+  DB.execute
+    db
+    [sql|
+      DELETE FROM processed_ratchet_key_hashes
+      WHERE processed_ratchet_key_hash_id IN (
+        SELECT processed_ratchet_key_hash_id
+        FROM processed_ratchet_key_hashes
+        WHERE created_at < ?
+        ORDER BY created_at ASC
+        LIMIT ?
+      )
+    |]
+    (cutoffTs, limit)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

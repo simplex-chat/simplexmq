@@ -475,7 +475,7 @@ functionalAPITests ps = do
         testWaitDelivery ps
       it "should delete connection if message can'ps be delivered due to AUTH error" $
         testWaitDeliveryAUTHErr ps
-      it "should delete connection by timeout even if message wasn'ps delivered" $
+      it "should delete connection by timeout even if message wasn't delivered" $
         testWaitDeliveryTimeout ps
       it "should delete connection by timeout, message in progress can be delivered" $
         testWaitDeliveryTimeout2 ps
@@ -814,7 +814,7 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
     receive a bId mIdVar acc' = loop acc' >> liftIO drain
       where
         drain =
-          timeout 50000 (get a)
+          timeout 100000 (get a)
             >>= mapM_ (\case ("", _, QCONT) -> drain; r -> expectationFailure $ "unexpected: " <> show r)
         loop (0, 0, 0, 0) = pure ()
         loop acc@(!s, !m, !r, !o) =

@@ -153,6 +153,7 @@ data AgentConfig = AgentConfig
     persistErrorInterval :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
+    cleanupBatchSize :: Int,
     initialLogStatsDelay :: Int64,
     logStatsInterval :: Int64,
     cleanupStepInterval :: Int,
@@ -224,7 +225,8 @@ defaultAgentConfig =
       quotaExceededTimeout = 7 * nominalDay,
       persistErrorInterval = 3, -- seconds
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
-      cleanupInterval = 30 * 60 * 1000000, -- 30 minutes
+      cleanupInterval = 5 * 60 * 1000000, -- 5 minutes
+      cleanupBatchSize = 10000,
       initialLogStatsDelay = 10 * 1000000, -- 10 seconds
       logStatsInterval = 10 * 1000000, -- 10 seconds
       cleanupStepInterval = 200000, -- 200ms
