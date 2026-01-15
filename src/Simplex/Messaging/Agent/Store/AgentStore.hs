@@ -394,17 +394,18 @@ deleteUsersWithoutConns db = do
   pure userIds
 
 createConn_ ::
+  DB.Connection ->
   TVar ChaChaDRG ->
   ConnData ->
   (ConnId -> IO a) ->
   IO (Either StoreError (ConnId, a))
-createConn_ gVar cData create = checkConstraint SEConnDuplicate $ case cData of
-  ConnData {connId = ""} -> createWithRandomId' gVar create
+createConn_ db gVar cData create = checkConstraint SEConnDuplicate $ case cData of
+  ConnData {connId = ""} -> createWithRandomId' db gVar create
   ConnData {connId} -> Right . (connId,) <$> create connId
 
 createNewConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> SConnectionMode c -> IO (Either StoreError ConnId)
 createNewConn db gVar cData cMode = do
-  fst <$$> createConn_ gVar cData (\connId -> createConnRecord db connId cData cMode)
+  fst <$$> createConn_ db gVar cData (\connId -> createConnRecord db connId cData cMode)
 
 -- TODO [certs rcv] store clientServiceId from NewRcvQueue
 updateNewConnRcv :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
@@ -430,7 +431,7 @@ createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> I
 createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
-    createConn_ gVar cData $ \connId -> do
+    createConn_ db gVar cData $ \connId -> do
       serverKeyHash_ <- createServer_ db server
       createConnRecord db connId cData SCMInvitation
       insertSndQueue_ db connId q serverKeyHash_
@@ -677,7 +678,7 @@ smpConfirmation (senderKey, e2ePubKey, connInfo, smpReplyQueues_, smpClientVersi
 
 createConfirmation :: DB.Connection -> TVar ChaChaDRG -> NewConfirmation -> IO (Either StoreError ConfirmationId)
 createConfirmation db gVar NewConfirmation {connId, senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues, smpClientVersion}, ratchetState} =
-  createWithRandomId gVar $ \confirmationId ->
+  createWithRandomId db gVar $ \confirmationId ->
     DB.execute
       db
       [sql|
@@ -749,7 +750,7 @@ removeConfirmations db connId =
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
 createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
-  createWithRandomId gVar $ \invitationId ->
+  createWithRandomId db gVar $ \invitationId ->
     DB.execute
       db
       [sql|
@@ -2707,17 +2708,17 @@ updateSndMsgHash db connId internalSndId internalHash =
     (Binary internalHash, connId, internalSndId)
 
 -- create record with a random ID
-createWithRandomId :: TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
-createWithRandomId gVar create = fst <$$> createWithRandomId' gVar create
+createWithRandomId :: DB.Connection -> TVar ChaChaDRG -> (ByteString -> IO ()) -> IO (Either StoreError ByteString)
+createWithRandomId db gVar create = fst <$$> createWithRandomId' db gVar create
 
-createWithRandomId' :: forall a. TVar ChaChaDRG -> (ByteString -> IO a) -> IO (Either StoreError (ByteString, a))
-createWithRandomId' gVar create = tryCreate 3
+createWithRandomId' :: forall a. DB.Connection -> TVar ChaChaDRG -> (ByteString -> IO a) -> IO (Either StoreError (ByteString, a))
+createWithRandomId' db gVar create = tryCreate 3
   where
     tryCreate :: Int -> IO (Either StoreError (ByteString, a))
     tryCreate 0 = pure $ Left SEUniqueID
     tryCreate n = do
       id' <- randomId gVar 12
-      E.try (create id') >>= \case
+      withSavepoint db "create_random_id" (create id') >>= \case
         Right r -> pure $ Right (id', r)
         Left e -> handleErr n e
 #if defined(dbPostgres)
@@ -2791,7 +2792,7 @@ insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSiz
         Just RedirectFileInfo {digest = d, size = s} -> (Just d, Just s)
         Nothing -> (Nothing, Nothing)
   rcvFileEntityId <- ExceptT $
-    createWithRandomId gVar $ \rcvFileEntityId ->
+    createWithRandomId db gVar $ \rcvFileEntityId ->
       DB.execute
         db
         "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, redirect_id, redirect_entity_id, redirect_digest, redirect_size, approved_relays) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
@@ -3096,7 +3097,7 @@ getRcvFilesExpired db ttl = do
 
 createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> IO (Either StoreError SndFileId)
 createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ =
-  createWithRandomId gVar $ \sndFileEntityId ->
+  createWithRandomId db gVar $ \sndFileEntityId ->
     DB.execute
       db
       "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
