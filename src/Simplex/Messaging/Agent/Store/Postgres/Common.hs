@@ -15,6 +15,7 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
     withTransaction,
     withTransaction',
     withTransactionPriority,
+    withSavepoint,
   )
 where
 
@@ -91,3 +92,17 @@ withTransactionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
 withTransactionPriority st priority action = withConnectionPriority st priority transaction
   where
     transaction conn = PSQL.withTransaction conn $ action conn
+
+-- Execute an action within a savepoint.
+-- On success, releases the savepoint. On error, rolls back to the savepoint
+-- to restore the transaction to a usable state before returning the error.
+withSavepoint :: PSQL.Connection -> PSQL.Query -> IO a -> IO (Either PSQL.SqlError a)
+withSavepoint db name action = do
+  PSQL.execute_ db $ "SAVEPOINT " <> name
+  E.try action >>= \case
+    Right r -> do
+      PSQL.execute_ db $ "RELEASE SAVEPOINT " <> name
+      pure $ Right r
+    Left e -> do
+      PSQL.execute_ db $ "ROLLBACK TO SAVEPOINT " <> name
+      pure $ Left e
