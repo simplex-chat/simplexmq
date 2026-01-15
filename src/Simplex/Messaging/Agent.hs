@@ -50,6 +50,7 @@ module Simplex.Messaging.Agent
     setUserService,
     connRequestPQSupport,
     createConnectionAsync,
+    setConnShortLinkAsync,
     joinConnectionAsync,
     allowConnectionAsync,
     acceptContactAsync,
@@ -355,6 +356,11 @@ setUserService c = withAgentEnv c .: setUserService' c
 createConnectionAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AE ConnId
 createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAsync c userId aCorrId enableNtfs
 {-# INLINE createConnectionAsync #-}
+
+-- | Create or update user's contact connection short link (LSET command) asynchronously, no synchronous response
+setConnShortLinkAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE ()
+setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
+{-# INLINE setConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
 joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
@@ -926,6 +932,16 @@ checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAu
         when (maybe True (ts <) expires_) $
           throwError NOTICE {server = safeDecodeUtf8 $ strEncode $ L.head host, preset = isNothing srvKey, expiresAt = roundedToUTCTime <$> expires_}
 
+setConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM ()
+setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
+  withConnLock c connId "setConnShortLinkAsync" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    srv <- case (conn, cMode, userLinkData) of
+      (ContactConnection _ RcvQueue {server}, SCMContact, UserContactLinkData {}) -> pure server
+      (RcvConnection _ RcvQueue {server}, SCMInvitation, UserInvLinkData {}) -> pure server
+      _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
+    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
+
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData =
   withConnLock c connId "setConnShortLink" $ do
@@ -1169,7 +1185,8 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       case sq_ of
         Just sq@SndQueue {e2ePubKey = Just _k} -> do
-          e2eSndParams <- withStore c $ \db ->
+          e2eSndParams <- withStore c $ \db -> do
+            lockConnForUpdate db connId
             getSndRatchet db connId v >>= \case
               Right r -> pure $ Right $ snd r
               Left e -> do
@@ -1183,6 +1200,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
               sndKey_ = snd <$> invLink_
           (q, _) <- lift $ newSndQueue userId "" qInfo sndKey_
           withStore c $ \db -> runExceptT $ do
+            liftIO $ lockConnForUpdate db connId
             e2eSndParams <- createRatchet_ db g maxSupported pqSupport e2eRcvParams
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
             pure (cData, sq', e2eSndParams, lnkId_)
@@ -1261,7 +1279,8 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
           AgentConfig {smpClientVRange = vr, smpAgentVRange, e2eEncryptVRange = e2eVR} <- asks config
           let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMMessaging}
               crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] Nothing
-          e2eRcvParams <- withStore' c $ \db ->
+          e2eRcvParams <- withStore' c $ \db -> do
+            lockConnForUpdate db connId
             getRatchetX3dhKeys db connId >>= \case
               Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eVR) keys
               Left e -> do
@@ -1727,6 +1746,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             CCLink cReq _ <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq)
+        LSET auData@(AUCLD cMode userLinkData) clientData ->
+          withServer' . tryCommand $ do
+            link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
+            notify $ LINK (ACSL cMode link) auData
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
@@ -2007,7 +2030,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
         withRetryLock2 ri' qLock $ \riState loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
-          resp <- tryError $ case msgType of
+          resp <- tryAllErrors $ case msgType of
             AM_CONN_INFO -> sendConfirmation c NRMBackground sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c NRMBackground sq msgBody
             _ -> case pendingMsgPrepData_ of
@@ -2147,10 +2170,12 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
     notifyDelMsgs :: InternalId -> AgentErrorType -> UTCTime -> AM ()
     notifyDelMsgs msgId err expireTs = do
       notifyDel msgId $ MERR (unId msgId) err
-      msgIds_ <- withStore' c $ \db -> getExpiredSndMessages db connId sq expireTs
+      msgIds_ <- withStore' c $ \db -> do
+        msgIds_ <- getExpiredSndMessages db connId sq expireTs
+        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
+        pure msgIds_
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
-        withStore' c $ \db -> forM_ msgIds $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
       atomically $ incSMPServerStat' c userId server sentExpiredErrs (length msgIds_ + 1)
     delMsg :: InternalId -> AM ()
     delMsg = delMsgKeep False
@@ -2798,15 +2823,14 @@ subscriber c@AgentClient {msgQ} = forever $ do
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
-  delay <- asks (initialCleanupDelay . config)
-  liftIO $ threadDelay' delay
-  int <- asks (cleanupInterval . config)
-  ttl <- asks $ storedMsgDataTTL . config
+  AgentConfig {initialCleanupDelay, cleanupInterval = int, storedMsgDataTTL = ttl, cleanupBatchSize = limit} <-
+    asks config
+  liftIO $ threadDelay' initialCleanupDelay
   forever $ waitActive $ do
     run ERR deleteConns
-    run ERR $ withStore' c (`deleteRcvMsgHashesExpired` ttl)
-    run ERR $ withStore' c (`deleteSndMsgsExpired` ttl)
-    run ERR $ withStore' c (`deleteRatchetKeyHashesExpired` ttl)
+    run ERR $ withStore' c $ \db -> deleteRcvMsgHashesExpired db ttl limit
+    run ERR $ withStore' c $ \db -> deleteSndMsgsExpired db ttl limit
+    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl limit
     run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted
@@ -3084,7 +3108,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                               throwE e
                           agentClientMsg :: TVar ChaChaDRG -> ByteString -> AM (Maybe (InternalId, MsgMeta, AMessage, CR.RatchetX448))
                           agentClientMsg g encryptedMsgHash = withStore c $ \db -> runExceptT $ do
-                            rc <- ExceptT $ getRatchet db connId -- ratchet state pre-decryption - required for processing EREADY
+                            liftIO $ lockConnForUpdate db connId
+                            rc <- ExceptT $ getRatchetForUpdate db connId -- ratchet state pre-decryption - required for processing EREADY
                             (agentMsgBody, pqEncryption) <- agentRatchetDecrypt' g db connId rc encAgentMessage
                             liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
                               agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
@@ -3331,6 +3356,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                       Just sqs' -> do
                         (sq_@SndQueue {sndPrivateKey}, dhPublicKey) <- lift $ newSndQueue userId connId qInfo Nothing
                         sq2 <- withStore c $ \db -> do
+                          lockConnForUpdate db connId
                           liftIO $ mapM_ (deleteConnSndQueue db connId) delSqs
                           addConnSndQueue db connId (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
                         logServer "<--" c srv rId $ "MSG <QADD>:" <> logSecret' srvMsgId <> " " <> logSecret (senderId queueAddress)
@@ -3635,7 +3661,7 @@ agentRatchetEncrypt db cData msg getPaddedLen pqEnc_ currentE2EVersion = do
 
 agentRatchetEncryptHeader :: DB.Connection -> ConnData -> (VersionSMPA -> PQSupport -> Int) -> Maybe PQEncryption -> CR.VersionE2E -> ExceptT StoreError IO (CR.MsgEncryptKeyX448, Int, PQEncryption)
 agentRatchetEncryptHeader db ConnData {connId, connAgentVersion = v, pqSupport} getPaddedLen pqEnc_ currentE2EVersion = do
-  rc <- ExceptT $ getRatchet db connId
+  rc <- ExceptT $ getRatchetForUpdate db connId
   let paddedLen = getPaddedLen v pqSupport
   (mek, rc') <- withExceptT (SEAgentError . cryptoError) $ CR.rcEncryptHeader rc pqEnc_ currentE2EVersion
   liftIO $ updateRatchet db connId rc' CR.SMDNoChange
@@ -3644,7 +3670,7 @@ agentRatchetEncryptHeader db ConnData {connId, connAgentVersion = v, pqSupport} 
 -- encoded EncAgentMessage -> encoded AgentMessage
 agentRatchetDecrypt :: TVar ChaChaDRG -> DB.Connection -> ConnId -> ByteString -> ExceptT StoreError IO (ByteString, PQEncryption)
 agentRatchetDecrypt g db connId encAgentMsg = do
-  rc <- ExceptT $ getRatchet db connId
+  rc <- ExceptT $ getRatchetForUpdate db connId
   agentRatchetDecrypt' g db connId rc encAgentMsg
 
 agentRatchetDecrypt' :: TVar ChaChaDRG -> DB.Connection -> ConnId -> CR.RatchetX448 -> ByteString -> ExceptT StoreError IO (ByteString, PQEncryption)

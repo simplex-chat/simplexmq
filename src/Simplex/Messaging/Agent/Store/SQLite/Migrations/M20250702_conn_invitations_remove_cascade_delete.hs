@@ -18,7 +18,7 @@ SET sql = replace(
           )
 WHERE name = 'conn_invitations' AND type = 'table';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]
 
 down_m20250702_conn_invitations_remove_cascade_delete :: Query
@@ -34,5 +34,5 @@ SET sql = replace(
           )
 WHERE name = 'conn_invitations' AND type = 'table';
 
-PRAGMA writable_schema=0;
+PRAGMA writable_schema=RESET;
 |]

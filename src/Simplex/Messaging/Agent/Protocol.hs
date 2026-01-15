@@ -112,6 +112,7 @@ module Simplex.Messaging.Agent.Protocol
     ServiceScheme,
     FixedLinkData (..),
     ConnLinkData (..),
+    AUserConnLinkData (..),
     UserConnLinkData (..),
     UserContactData (..),
     UserLinkData (..),
@@ -380,6 +381,7 @@ type SndQueueSecured = Bool
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> AEvent AEConn
+  LINK :: AConnShortLink -> AUserConnLinkData -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -437,6 +439,7 @@ deriving instance Show AEvtTag
 
 data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
+  | LSET AUserConnLinkData (Maybe CRClientData) -- response LINK
   | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
@@ -446,6 +449,7 @@ data ACommand
 
 data ACommandTag
   = NEW_
+  | LSET_
   | JOIN_
   | LET_
   | ACK_
@@ -455,6 +459,7 @@ data ACommandTag
 
 data AEventTag (e :: AEntity) where
   INV_ :: AEventTag AEConn
+  LINK_ :: AEventTag AEConn
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
@@ -505,6 +510,7 @@ deriving instance Show (AEventTag e)
 aCommandTag :: ACommand -> ACommandTag
 aCommandTag = \case
   NEW {} -> NEW_
+  LSET {} -> LSET_
   JOIN {} -> JOIN_
   LET {} -> LET_
   ACK {} -> ACK_
@@ -514,6 +520,7 @@ aCommandTag = \case
 aEventTag :: AEvent e -> AEventTag e
 aEventTag = \case
   INV {} -> INV_
+  LINK {} -> LINK_
   CONF {} -> CONF_
   REQ {} -> REQ_
   INFO {} -> INFO_
@@ -708,9 +715,9 @@ instance ToJSON NotificationsMode where
 instance FromJSON NotificationsMode where
   parseJSON = strParseJSON "NotificationsMode"
 
-instance ToField NotificationsMode where toField = toField . strEncode
+instance ToField NotificationsMode where toField = toField . decodeLatin1 . strEncode
 
-instance FromField NotificationsMode where fromField = blobFieldDecoder $ parseAll strP
+instance FromField NotificationsMode where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 data NotificationInfo = NotificationInfo
   { ntfConnId :: ConnId,
@@ -1713,14 +1720,29 @@ data UserContactData = UserContactData
     relays :: [ConnShortLink 'CMContact],
     userData :: UserLinkData
   }
+  deriving (Eq, Show)
 
 newtype UserLinkData = UserLinkData ByteString
+  deriving (Eq, Show)
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
 
 data UserConnLinkData c where
   UserInvLinkData :: UserLinkData -> UserConnLinkData 'CMInvitation
   UserContactLinkData :: UserContactData -> UserConnLinkData 'CMContact
+
+deriving instance Eq (UserConnLinkData m)
+
+deriving instance Show (UserConnLinkData m)
+
+data AUserConnLinkData = forall m. ConnectionModeI m => AUCLD (SConnectionMode m) (UserConnLinkData m)
+
+instance Eq AUserConnLinkData where
+  AUCLD m d == AUCLD m' d' = case testEquality m m' of
+    Just Refl -> d == d'
+    Nothing -> False
+
+deriving instance Show AUserConnLinkData
 
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
@@ -1748,6 +1770,7 @@ data OwnerAuth = OwnerAuth
     -- Owner validation should detect and reject loops.
     authOwnerSig :: C.Signature 'C.Ed25519
   }
+  deriving (Eq, Show)
 
 instance Encoding OwnerAuth where
   smpEncode OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig} =
@@ -1766,8 +1789,7 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
     InvitationLinkData vr userData -> smpEncode (CMInvitation, vr, userData)
-    ContactLinkData vr UserContactData {direct, owners, relays, userData} ->
-      B.concat [smpEncode (CMContact, vr, direct), smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+    ContactLinkData vr cd -> smpEncode (CMContact, vr, cd)
   smpP = (\(ACLD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1780,12 +1802,42 @@ instance Encoding AConnLinkData where
         (vr, userData) <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
         pure $ ACLD SCMInvitation $ InvitationLinkData vr userData
       CMContact -> do
-        (vr, direct) <- smpP
-        owners <- smpListP
-        relays <- smpListP
-        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-        let cd = UserContactData {direct, owners, relays, userData}
+        (vr, cd) <- smpP
         pure $ ACLD SCMContact $ ContactLinkData vr cd
+
+instance ConnectionModeI c => Encoding (UserConnLinkData c) where
+  smpEncode = \case
+    UserInvLinkData userData -> smpEncode (CMInvitation, userData)
+    UserContactLinkData cd -> smpEncode (CMContact, cd)
+  smpP = (\(AUCLD _ d) -> checkConnMode d) <$?> smpP
+  {-# INLINE smpP #-}
+
+instance Encoding AUserConnLinkData where
+  smpEncode (AUCLD _ d) = smpEncode d
+  {-# INLINE smpEncode #-}
+  smpP =
+    smpP >>= \case
+      CMInvitation -> do
+        userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+        pure $ AUCLD SCMInvitation $ UserInvLinkData userData
+      CMContact ->
+        AUCLD SCMContact . UserContactLinkData <$> smpP
+
+instance StrEncoding AUserConnLinkData where
+  strEncode = smpEncode
+  {-# INLINE strEncode #-}
+  strP = smpP
+  {-# INLINE strP #-}
+
+instance Encoding UserContactData where
+  smpEncode UserContactData {direct, owners, relays, userData} =
+    B.concat [smpEncode direct, smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+  smpP = do
+    direct <- smpP
+    owners <- smpListP
+    relays <- smpListP
+    userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    pure UserContactData {direct, owners, relays, userData}
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)
@@ -1976,6 +2028,7 @@ instance StrEncoding ACommandTag where
   strP =
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NEW_
+      "LSET" -> pure LSET_
       "JOIN" -> pure JOIN_
       "LET" -> pure LET_
       "ACK" -> pure ACK_
@@ -1984,6 +2037,7 @@ instance StrEncoding ACommandTag where
       _ -> fail "bad ACommandTag"
   strEncode = \case
     NEW_ -> "NEW"
+    LSET_ -> "LSET"
     JOIN_ -> "JOIN"
     LET_ -> "LET"
     ACK_ -> "ACK"
@@ -1995,6 +2049,7 @@ commandP binaryP =
   strP
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
+      LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
       JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
@@ -2012,6 +2067,7 @@ commandP binaryP =
 serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
+  LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_

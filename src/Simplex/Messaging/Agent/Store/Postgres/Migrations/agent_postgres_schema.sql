@@ -333,8 +333,8 @@ CREATE TABLE smp_agent_test_protocol_schema.ntf_subscriptions (
     ntf_port text NOT NULL,
     ntf_sub_id bytea,
     ntf_sub_status text NOT NULL,
-    ntf_sub_action bytea,
-    ntf_sub_smp_action bytea,
+    ntf_sub_action text,
+    ntf_sub_smp_action text,
     ntf_sub_action_ts timestamp with time zone,
     updated_by_supervisor smallint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -348,7 +348,7 @@ CREATE TABLE smp_agent_test_protocol_schema.ntf_subscriptions (
 
 CREATE TABLE smp_agent_test_protocol_schema.ntf_tokens (
     provider text NOT NULL,
-    device_token text NOT NULL,
+    device_token bytea NOT NULL,
     ntf_host text NOT NULL,
     ntf_port text NOT NULL,
     tkn_id bytea,
@@ -361,7 +361,7 @@ CREATE TABLE smp_agent_test_protocol_schema.ntf_tokens (
     tkn_action bytea,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    ntf_mode bytea
+    ntf_mode text
 );
 
 

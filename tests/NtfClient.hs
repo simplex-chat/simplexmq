@@ -87,7 +87,7 @@ ntfTestStoreDBOpts =
   DBOpts
     { connstr = ntfTestServerDBConnstr,
       schema = "ntf_server",
-      poolSize = 3,
+      poolSize = 10,
       createSchema = True
     }
 

@@ -2,13 +2,13 @@ CREATE TABLE migrations(
   name TEXT NOT NULL PRIMARY KEY,
   ts TEXT NOT NULL,
   down TEXT
-);
+) STRICT;
 CREATE TABLE servers(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
   key_hash BLOB NOT NULL,
   PRIMARY KEY(host, port)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE connections(
   conn_id BLOB NOT NULL PRIMARY KEY,
   conn_mode TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE connections(
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
   deleted_at_wait_delivery TEXT,
   pq_support INTEGER NOT NULL DEFAULT 0
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
@@ -68,7 +68,7 @@ CREATE TABLE rcv_queues(
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE,
   UNIQUE(host, port, snd_id)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE snd_queues(
   host TEXT NOT NULL,
   port TEXT NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE snd_queues(
   PRIMARY KEY(host, port, snd_id),
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE messages(
   conn_id BLOB NOT NULL REFERENCES connections(conn_id)
   ON DELETE CASCADE,
@@ -107,7 +107,7 @@ CREATE TABLE messages(
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   FOREIGN KEY(conn_id, internal_snd_id) REFERENCES snd_messages
   ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_messages(
   conn_id BLOB NOT NULL,
   internal_rcv_id INTEGER NOT NULL,
@@ -123,7 +123,7 @@ CREATE TABLE rcv_messages(
   PRIMARY KEY(conn_id, internal_rcv_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE snd_messages(
   conn_id BLOB NOT NULL,
   internal_snd_id INTEGER NOT NULL,
@@ -140,7 +140,7 @@ CREATE TABLE snd_messages(
   PRIMARY KEY(conn_id, internal_snd_id),
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages
   ON DELETE CASCADE
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE conn_confirmations(
   confirmation_id BLOB NOT NULL PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -154,7 +154,7 @@ CREATE TABLE conn_confirmations(
   ,
   smp_reply_queues BLOB NULL,
   smp_client_version INTEGER
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE conn_invitations(
   invitation_id BLOB NOT NULL PRIMARY KEY,
   contact_conn_id BLOB REFERENCES connections ON DELETE SET NULL,
@@ -163,7 +163,7 @@ CREATE TABLE conn_invitations(
   accepted INTEGER NOT NULL DEFAULT 0,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE ratchets(
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
   ON DELETE CASCADE,
@@ -178,7 +178,7 @@ CREATE TABLE ratchets(
   x3dh_pub_key_2 BLOB,
   pq_priv_kem BLOB,
   pq_pub_kem BLOB
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES ratchets
@@ -186,7 +186,7 @@ CREATE TABLE skipped_messages(
   header_key BLOB NOT NULL,
   msg_n INTEGER NOT NULL,
   msg_key BLOB NOT NULL
-);
+) STRICT;
 CREATE TABLE ntf_servers(
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
@@ -194,10 +194,10 @@ CREATE TABLE ntf_servers(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   PRIMARY KEY(ntf_host, ntf_port)
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE ntf_tokens(
   provider TEXT NOT NULL, -- apns
-  device_token TEXT NOT NULL, -- ! this field is mislabeled and is actually saved as binary
+  device_token BLOB NOT NULL,
   ntf_host TEXT NOT NULL,
   ntf_port TEXT NOT NULL,
   tkn_id BLOB, -- token ID assigned by notifications server
@@ -214,7 +214,7 @@ tkn_dh_secret BLOB, -- DH secret for e2e encryption of notifications
   PRIMARY KEY(provider, device_token, ntf_host, ntf_port),
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE ntf_subscriptions(
   conn_id BLOB NOT NULL,
   smp_host TEXT NULL,
@@ -238,7 +238,7 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE SET NULL ON UPDATE CASCADE,
   FOREIGN KEY(ntf_host, ntf_port) REFERENCES ntf_servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-) WITHOUT ROWID;
+) WITHOUT ROWID, STRICT;
 CREATE TABLE commands(
   command_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -253,7 +253,7 @@ CREATE TABLE commands(
   failed INTEGER DEFAULT 0,
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
-);
+) STRICT;
 CREATE TABLE snd_message_deliveries(
   snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -261,13 +261,13 @@ CREATE TABLE snd_message_deliveries(
   internal_id INTEGER NOT NULL,
   failed INTEGER DEFAULT 0,
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
-);
+) STRICT;
 CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE users(
   user_id INTEGER PRIMARY KEY AUTOINCREMENT
   ,
   deleted INTEGER DEFAULT 0 CHECK(deleted NOT NULL)
-);
+) STRICT;
 CREATE TABLE xftp_servers(
   xftp_server_id INTEGER PRIMARY KEY,
   xftp_host TEXT NOT NULL,
@@ -276,7 +276,7 @@ CREATE TABLE xftp_servers(
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now')),
   UNIQUE(xftp_host, xftp_port, xftp_key_hash)
-);
+) STRICT;
 CREATE TABLE rcv_files(
   rcv_file_id INTEGER PRIMARY KEY,
   rcv_file_entity_id BLOB NOT NULL,
@@ -303,7 +303,7 @@ CREATE TABLE rcv_files(
   redirect_digest BLOB,
   approved_relays INTEGER NOT NULL DEFAULT 0,
   UNIQUE(rcv_file_entity_id)
-);
+) STRICT;
 CREATE TABLE rcv_file_chunks(
   rcv_file_chunk_id INTEGER PRIMARY KEY,
   rcv_file_id INTEGER NOT NULL REFERENCES rcv_files ON DELETE CASCADE,
@@ -313,7 +313,7 @@ CREATE TABLE rcv_file_chunks(
   tmp_path TEXT,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE rcv_file_chunk_replicas(
   rcv_file_chunk_replica_id INTEGER PRIMARY KEY,
   rcv_file_chunk_id INTEGER NOT NULL REFERENCES rcv_file_chunks ON DELETE CASCADE,
@@ -326,7 +326,7 @@ CREATE TABLE rcv_file_chunk_replicas(
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE snd_files(
   snd_file_id INTEGER PRIMARY KEY,
   snd_file_entity_id BLOB NOT NULL,
@@ -348,7 +348,7 @@ CREATE TABLE snd_files(
   failed INTEGER DEFAULT 0,
   redirect_size INTEGER,
   redirect_digest BLOB
-);
+) STRICT;
 CREATE TABLE snd_file_chunks(
   snd_file_chunk_id INTEGER PRIMARY KEY,
   snd_file_id INTEGER NOT NULL REFERENCES snd_files ON DELETE CASCADE,
@@ -358,7 +358,7 @@ CREATE TABLE snd_file_chunks(
   digest BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE snd_file_chunk_replicas(
   snd_file_chunk_replica_id INTEGER PRIMARY KEY,
   snd_file_chunk_id INTEGER NOT NULL REFERENCES snd_file_chunks ON DELETE CASCADE,
@@ -371,7 +371,7 @@ CREATE TABLE snd_file_chunk_replicas(
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE snd_file_chunk_replica_recipients(
   snd_file_chunk_replica_recipient_id INTEGER PRIMARY KEY,
   snd_file_chunk_replica_id INTEGER NOT NULL REFERENCES snd_file_chunk_replicas ON DELETE CASCADE,
@@ -379,7 +379,7 @@ CREATE TABLE snd_file_chunk_replica_recipients(
   rcv_replica_key BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE deleted_snd_chunk_replicas(
   deleted_snd_chunk_replica_id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
@@ -393,28 +393,28 @@ CREATE TABLE deleted_snd_chunk_replicas(
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
   ,
   failed INTEGER DEFAULT 0
-);
+) STRICT;
 CREATE TABLE encrypted_rcv_message_hashes(
   encrypted_rcv_message_hash_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   hash BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE processed_ratchet_key_hashes(
   processed_ratchet_key_hash_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   hash BLOB NOT NULL,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE servers_stats(
   servers_stats_id INTEGER PRIMARY KEY,
   servers_stats TEXT,
   started_at TEXT NOT NULL DEFAULT(datetime('now')),
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE ntf_tokens_to_delete(
   ntf_token_to_delete_id INTEGER PRIMARY KEY,
   ntf_host TEXT NOT NULL,
@@ -424,11 +424,11 @@ CREATE TABLE ntf_tokens_to_delete(
   tkn_priv_key BLOB NOT NULL, -- client's private key to sign token commands,
 del_failed INTEGER DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT(datetime('now'))
-);
+) STRICT;
 CREATE TABLE snd_message_bodies(
   snd_message_body_id INTEGER PRIMARY KEY,
   agent_msg BLOB NOT NULL DEFAULT x''
-);
+) STRICT;
 CREATE TABLE inv_short_links(
   inv_short_link_id INTEGER PRIMARY KEY AUTOINCREMENT,
   host TEXT NOT NULL,
@@ -439,7 +439,7 @@ CREATE TABLE inv_short_links(
   snd_private_key BLOB NOT NULL,
   snd_id BLOB,
   FOREIGN KEY(host, port) REFERENCES servers ON DELETE RESTRICT ON UPDATE CASCADE
-);
+) STRICT;
 CREATE TABLE client_notices(
   client_notice_id INTEGER PRIMARY KEY AUTOINCREMENT,
   protocol TEXT NOT NULL,
@@ -450,7 +450,7 @@ CREATE TABLE client_notices(
   notice_ttl INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-);
+) STRICT;
 CREATE TABLE client_services(
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   host TEXT NOT NULL,
@@ -463,7 +463,7 @@ CREATE TABLE client_services(
   service_queue_count INTEGER NOT NULL DEFAULT 0,
   service_queue_ids_hash BLOB NOT NULL DEFAULT x'00000000000000000000000000000000',
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
-);
+) STRICT;
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);

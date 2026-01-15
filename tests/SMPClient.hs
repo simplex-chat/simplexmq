@@ -98,7 +98,7 @@ testStoreDBOpts =
   DBOpts
     { connstr = testServerDBConnstr,
       schema = "smp_server",
-      poolSize = 3,
+      poolSize = 10,
       createSchema = True
     }
 
@@ -238,7 +238,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
   ServerConfig
     { transports = [],
       smpHandshakeTimeout = 60000000,
-      tbqSize = 1,
+      tbqSize = 4,
       msgQueueQuota = 4,
       maxJournalMsgCount = 5,
       maxJournalStateLines = 2,

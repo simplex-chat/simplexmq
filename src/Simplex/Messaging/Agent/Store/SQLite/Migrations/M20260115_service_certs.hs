@@ -1,12 +1,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251020_service_certs where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260115_service_certs where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20251020_service_certs :: Query
-m20251020_service_certs =
+m20260115_service_certs :: Query
+m20260115_service_certs =
   [sql|
 CREATE TABLE client_services(
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
@@ -20,7 +20,7 @@ CREATE TABLE client_services(
   service_queue_count INTEGER NOT NULL DEFAULT 0,
   service_queue_ids_hash BLOB NOT NULL DEFAULT x'00000000000000000000000000000000',
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
-);
+) STRICT;
 
 CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(user_id, host, port, server_key_hash);
 CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
@@ -76,8 +76,8 @@ BEGIN
 END;
   |]
 
-down_m20251020_service_certs :: Query
-down_m20251020_service_certs =
+down_m20260115_service_certs :: Query
+down_m20260115_service_certs =
   [sql|
 DROP TRIGGER tr_rcv_queue_insert;
 DROP TRIGGER tr_rcv_queue_delete;

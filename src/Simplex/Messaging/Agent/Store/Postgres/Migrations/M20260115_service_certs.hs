@@ -1,14 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251020_service_certs where
+module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260115_service_certs where
 
 import Data.Text (Text)
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
 import Text.RawString.QQ (r)
 
-m20251020_service_certs :: Text
-m20251020_service_certs =
+m20260115_service_certs :: Text
+m20260115_service_certs =
   createXorHashFuncs <> [r|
 CREATE TABLE client_services(
   user_id BIGINT NOT NULL REFERENCES users ON UPDATE RESTRICT ON DELETE CASCADE,
@@ -92,8 +92,8 @@ AFTER UPDATE ON rcv_queues
 FOR EACH ROW EXECUTE PROCEDURE on_rcv_queue_update();
     |]
 
-down_m20251020_service_certs :: Text
-down_m20251020_service_certs =
+down_m20260115_service_certs :: Text
+down_m20260115_service_certs =
   [r|
 DROP TRIGGER tr_rcv_queue_insert ON rcv_queues;
 DROP TRIGGER tr_rcv_queue_delete ON rcv_queues;

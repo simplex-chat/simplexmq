@@ -244,6 +244,7 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
@@ -2231,39 +2232,46 @@ withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (
 withWork c doWork = withWork_ c doWork . withStore' c
 {-# INLINE withWork #-}
 
+-- setting doWork flag to "no work" before getWork rather than after prevents race condition when flag is set to "has work" by another thread after getWork call.
 withWork_ :: (AnyStoreError e', MonadIO m) => AgentClient -> TMVar () -> ExceptT e m (Either e' (Maybe a)) -> (a -> ExceptT e m ()) -> ExceptT e m ()
 withWork_ c doWork getWork action =
-  getWork >>= \case
-    Right (Just r) -> action r
-    Right Nothing -> noWork
-    -- worker is stopped here (noWork) because the next iteration is likely to produce the same result
+  noWork >> getWork >>= \case
+    Right (Just r) -> hasWork >> action r
+    Right Nothing -> pure ()
     Left e
-      | isWorkItemError e -> noWork >> notifyErr (CRITICAL False) e
-      | otherwise -> notifyErr INTERNAL e
+      | isWorkItemError e -> notifyErr (CRITICAL False) e -- worker remains stopped here because the next iteration is likely to produce the same result
+      | otherwise -> hasWork >> notifyErr INTERNAL e
   where
+    hasWork = atomically $ hasWorkToDo' doWork
     noWork = liftIO $ noWorkToDo doWork
-    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
+    notifyErr err e = do
+      logError $ "withWork_ error: " <> tshow e
+      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
 withWorkItems :: (AnyStoreError e', MonadIO m) => AgentClient -> TMVar () -> ExceptT e m (Either e' [Either e' a]) -> (NonEmpty a -> ExceptT e m ()) -> ExceptT e m ()
 withWorkItems c doWork getWork action = do
-  getWork >>= \case
-    Right [] -> noWork
+  noWork >> getWork >>= \case
+    Right [] -> pure ()
     Right rs -> do
       let (errs, items) = partitionEithers rs
       case L.nonEmpty items of
-        Just items' -> action items'
+        Just items' -> hasWork >> action items'
         Nothing -> do
-          let criticalErr = find isWorkItemError errs
-          forM_ criticalErr $ \err -> do
-            notifyErr (CRITICAL False) err
-            when (all isWorkItemError errs) noWork
+          case find isWorkItemError errs of
+            Nothing -> hasWork
+            Just err -> do
+              notifyErr (CRITICAL False) err
+              unless (all isWorkItemError errs) hasWork
       forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (\e -> ("", INTERNAL $ show e))
     Left e
-      | isWorkItemError e -> noWork >> notifyErr (CRITICAL False) e
-      | otherwise -> notifyErr INTERNAL e
+      | isWorkItemError e -> notifyErr (CRITICAL False) e
+      | otherwise -> hasWork >> notifyErr INTERNAL e
   where
+    hasWork = atomically $ hasWorkToDo' doWork
     noWork = liftIO $ noWorkToDo doWork
-    notifyErr err e = atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
+    notifyErr err e = do
+      logError $ "withWorkItems error: " <> tshow e
+      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
 noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
@@ -2361,25 +2369,19 @@ withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
 withStore c action = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catches` handleDBErrors
+    withTransaction st action `E.catch` handleDBErrors
   where
+    handleDBErrors :: E.SomeException -> IO (Either StoreError a)
+    handleDBErrors e = pure $ Left $ case E.fromException e of
+      Just (e' :: SQLError) ->
 #if defined(dbPostgres)
-    -- TODO [postgres] postgres specific error handling
-    handleDBErrors :: [E.Handler IO (Either StoreError a)]
-    handleDBErrors =
-      [ E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
-      ]
+        SEInternal $ bshow e'
 #else
-    handleDBErrors :: [E.Handler IO (Either StoreError a)]
-    handleDBErrors =
-      [ E.Handler $ \(e :: SQL.SQLError) ->
-          let se = SQL.sqlError e
-              busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
-              err = tshow se <> ": " <> SQL.sqlErrorDetails e <> ", " <> SQL.sqlErrorContext e
-           in pure . Left . (if busy then SEDatabaseBusy else SEInternal) $ encodeUtf8 err,
-        E.Handler $ \(E.SomeException e) -> pure . Left $ SEInternal $ bshow e
-      ]
+        let se = SQL.sqlError e'
+            busy = se == SQL.ErrorBusy || se == SQL.ErrorLocked
+         in (if busy then SEDatabaseBusy else SEInternal) $ bshow e'
 #endif
+      Nothing -> SEInternal $ bshow e
 
 unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
 unsafeWithStore c action = do
