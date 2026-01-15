@@ -102,6 +102,7 @@ withTransactionPriority st priority action = withConnectionPriority st priority 
 -- This provides a consistent interface with the PostgreSQL version.
 withSavepoint :: DB.Connection -> SQL.Query -> IO a -> IO (Either SQLError a)
 withSavepoint _ _ = E.try
+{-# INLINE withSavepoint #-}
 
 dbBusyLoop :: forall a. IO a -> IO a
 dbBusyLoop action = loop 500 3000000

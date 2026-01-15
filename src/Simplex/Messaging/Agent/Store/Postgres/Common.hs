@@ -22,7 +22,9 @@ where
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import qualified Control.Exception as E
+import Data.Bitraversable (bimapM)
 import Data.ByteString (ByteString)
+import Data.Functor (($>))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Store.Postgres.Options
@@ -99,10 +101,7 @@ withTransactionPriority st priority action = withConnectionPriority st priority 
 withSavepoint :: PSQL.Connection -> PSQL.Query -> IO a -> IO (Either PSQL.SqlError a)
 withSavepoint db name action = do
   PSQL.execute_ db $ "SAVEPOINT " <> name
-  E.try action >>= \case
-    Right r -> do
-      PSQL.execute_ db $ "RELEASE SAVEPOINT " <> name
-      pure $ Right r
-    Left e -> do
-      PSQL.execute_ db $ "ROLLBACK TO SAVEPOINT " <> name
-      pure $ Left e
+  E.try action
+    >>= bimapM
+      (PSQL.execute_ db ("ROLLBACK TO SAVEPOINT " <> name) $>)
+      (PSQL.execute_ db ("RELEASE SAVEPOINT " <> name) $>)
