@@ -98,7 +98,7 @@ withTransactionPriority st priority action = withConnectionPriority st priority 
   where
     transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
 
--- Execute an action within a savepoint (no-op for SQLite, just tries the action).
+-- No-op for SQLite, just tries the action.
 -- This provides a consistent interface with the PostgreSQL version.
 withSavepoint :: DB.Connection -> SQL.Query -> IO a -> IO (Either SQLError a)
 withSavepoint _ _ = E.try
