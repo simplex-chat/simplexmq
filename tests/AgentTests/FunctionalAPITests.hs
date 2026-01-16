@@ -458,7 +458,7 @@ functionalAPITests ps = do
       testBasicMatrix2 ps testAsyncCommands
     it "should add short link data using async agent command" $
       testSetConnShortLinkAsync ps
-    fit "should get short link data and join connection using async agent commands" $
+    it "should get short link data and join connection using async agent commands" $
       testGetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
@@ -2710,7 +2710,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     liftIO $ qInfo' `shouldBe` qInfo
     liftIO $ userCtData' `shouldBe` userCtData
     -- join connection async using connId from getConnShortLinkAsync
-    aliceId <- joinConnectionAsync bob 1 "2" (Just newId) True qInfo' "bob's connInfo" PQSupportOff SMSubscribe
+    aliceId <- joinConnectionAsync bob 1 "2" (Just newId) True qInfo' "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ aliceId `shouldBe` newId
     ("2", aliceId', JOINED False) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
