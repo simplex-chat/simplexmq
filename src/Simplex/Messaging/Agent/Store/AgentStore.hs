@@ -58,6 +58,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
+    updateNewConnJoin,
     getDeletedConnIds,
     getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
@@ -2406,6 +2407,10 @@ setConnAgentVersion db connId aVersion =
 setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
 setConnPQSupport db connId pqSupport =
   DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
+
+updateNewConnJoin :: DB.Connection -> ConnId -> VersionSMPA -> PQSupport -> Bool -> IO ()
+updateNewConnJoin db connId aVersion pqSupport enableNtfs =
+  DB.execute db "UPDATE connections SET smp_agent_version = ?, pq_support = ?, enable_ntfs = ? WHERE conn_id = ?" (aVersion, pqSupport, BI enableNtfs, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only (BI True))

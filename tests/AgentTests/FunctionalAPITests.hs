@@ -458,7 +458,7 @@ functionalAPITests ps = do
       testBasicMatrix2 ps testAsyncCommands
     it "should add short link data using async agent command" $
       testSetConnShortLinkAsync ps
-    it "should get short link data using async agent command" $
+    fit "should get short link data and join connection using async agent commands" $
       testGetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
@@ -1419,7 +1419,7 @@ testInvitationShortLinkAsync viaProxy a b = do
   connReq' `shouldBe` connReq
   linkUserData connData' `shouldBe` userData
   runRight $ do
-    aId <- A.joinConnectionAsync b 1 "123" True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    aId <- A.joinConnectionAsync b 1 "123" Nothing True connReq "bob's connInfo" PQSupportOn SMSubscribe
     get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
     ("", _, CONF confId _ "bob's connInfo") <- get a
     allowConnection a bId confId "alice's connInfo"
@@ -2619,7 +2619,7 @@ testAsyncCommands sqSecured alice bob baseId =
     bobId <- createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
-    aliceId <- joinConnectionAsync bob 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    aliceId <- joinConnectionAsync bob 1 "2" Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
       aliceId' `shouldBe` aliceId
@@ -2703,12 +2703,26 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
         newLinkData = UserContactLinkData userCtData
     (_, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
-    -- get link data async
-    bobConnId <- getConnShortLinkAsync bob 1 "1" True shortLink
-    ("1", bobConnId', LDATA (ACR SCMContact qInfo') (ACLD SCMContact (ContactLinkData _ userCtData'))) <- get bob
-    liftIO $ bobConnId' `shouldBe` bobConnId
+    -- get link data async - creates new connection for bob
+    newId <- getConnShortLinkAsync bob 1 "1" True shortLink
+    ("1", newId', LDATA (ACR SCMContact qInfo') (ACLD SCMContact (ContactLinkData _ userCtData'))) <- get bob
+    liftIO $ newId' `shouldBe` newId
     liftIO $ qInfo' `shouldBe` qInfo
     liftIO $ userCtData' `shouldBe` userCtData
+    -- join connection async using connId from getConnShortLinkAsync
+    aliceId <- joinConnectionAsync bob 1 "2" (Just newId) True qInfo' "bob's connInfo" PQSupportOff SMSubscribe
+    liftIO $ aliceId `shouldBe` newId
+    ("2", aliceId', JOINED False) <- get bob
+    liftIO $ aliceId' `shouldBe` aliceId
+    -- complete connection
+    ("", _, REQ invId _ "bob's connInfo") <- get alice
+    bobId <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+    (_, Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    ("", _, CONF confId _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, INFO "bob's connInfo")
+    get alice ##> ("", bobId, CON)
+    get bob ##> ("", aliceId, CON)
 
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
 testAsyncCommandsRestore ps = do
@@ -3003,7 +3017,7 @@ testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
         bId <- createConnectionAsync a 1 "1" True SCMInvitation IKPQOn SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
-        aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        aId <- joinConnectionAsync b 1 "2" Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
@@ -3048,7 +3062,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
         bId <- createConnectionAsync a 1 "1" True SCMInvitation IKPQOn SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
-        aId <- joinConnectionAsync b 1 "2" True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        aId <- joinConnectionAsync b 1 "2" Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
