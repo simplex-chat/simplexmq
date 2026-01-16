@@ -205,8 +205,9 @@ checkNtfToken c = A.checkNtfToken c NRMInteractive
 verifyNtfToken :: AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
 verifyNtfToken c = A.verifyNtfToken c NRMInteractive
 
-runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> AServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
-runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
+runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> AServerConfig -> IO NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
+runNtfTestCfg (t, msType) baseId smpCfg ntfCfg' aCfg bCfg runTest = do
+  ntfCfg <- ntfCfg'
   ASSCfg qt mt serverStoreCfg <- pure $ testServerStoreConfig msType
   let smpCfg' = withServerCfg smpCfg $ \cfg_ -> ASrvCfg qt mt cfg_ {serverStoreCfg}
   withSmpServerConfigOn t smpCfg' testPort $ \_ ->
@@ -931,7 +932,8 @@ testMigrateToServiceSubscriptions :: HasCallStack => (ASrvTransport, AStoreType)
 testMigrateToServiceSubscriptions ps@(t, msType) = withAgentClients2 $ \a b -> do
   (c1, c2, c3) <- withSmpServerConfigOn t cfgNoService testPort $ \_ -> do
     (c1, c2) <- withAPNSMockServer $ \apns -> do
-      withNtfServerCfg ntfCfgNoService $ \_ -> runRight $ do
+      cfg' <- ntfCfgNoService
+      withNtfServerCfg cfg' $ \_ -> runRight $ do
         _tkn <- registerTestToken a "abcd" NMInstant apns
         -- create 2 connections with ntfs, test delivery
         c1 <- testConnectMsg apns a b "hello"
@@ -970,27 +972,31 @@ testMigrateToServiceSubscriptions ps@(t, msType) = withAgentClients2 $ \a b -> d
   serverDOWN a b 5
 
   -- Ntf server does not use server, subscriptions downgrade
-  c6 <- withAPNSMockServer $ \apns -> withSmpServer ps $ withNtfServerCfg ntfCfgNoService $ \_ -> do
-    serverUP a b 5
-    runRight $ do
-      testSendMsg apns a b c1 "msg 1"
-      testSendMsg apns a b c2 "msg 2"
-      testSendMsg apns a b c3 "msg 3"
-      testSendMsg apns a b c4 "msg 4"
-      testSendMsg apns a b c5 "msg 5"
-      testConnectMsg apns a b "msg 6"
+  c6 <- withAPNSMockServer $ \apns -> do
+    cfg' <- ntfCfgNoService
+    withSmpServer ps $ withNtfServerCfg cfg' $ \_ -> do
+      serverUP a b 5
+      runRight $ do
+        testSendMsg apns a b c1 "msg 1"
+        testSendMsg apns a b c2 "msg 2"
+        testSendMsg apns a b c3 "msg 3"
+        testSendMsg apns a b c4 "msg 4"
+        testSendMsg apns a b c5 "msg 5"
+        testConnectMsg apns a b "msg 6"
   serverDOWN a b 6
 
-  withAPNSMockServer $ \apns -> withSmpServerConfigOn t cfgNoService testPort $ \_ -> withNtfServerCfg ntfCfgNoService $ \_ -> do
-    serverUP a b 6
-    runRight_ $ do
-      testSendMsg apns a b c1 "1"
-      testSendMsg apns a b c2 "2"
-      testSendMsg apns a b c3 "3"
-      testSendMsg apns a b c4 "4"
-      testSendMsg apns a b c5 "5"
-      testSendMsg apns a b c6 "6"
-      void $ testConnectMsg apns a b "7"
+  withAPNSMockServer $ \apns -> do
+    cfg' <- ntfCfgNoService
+    withSmpServerConfigOn t cfgNoService testPort $ \_ -> withNtfServerCfg cfg' $ \_ -> do
+      serverUP a b 6
+      runRight_ $ do
+        testSendMsg apns a b c1 "1"
+        testSendMsg apns a b c2 "2"
+        testSendMsg apns a b c3 "3"
+        testSendMsg apns a b c4 "4"
+        testSendMsg apns a b c5 "5"
+        testSendMsg apns a b c6 "6"
+        void $ testConnectMsg apns a b "7"
   serverDOWN a b 7
   where
     testConnectMsg apns a b msg = do
@@ -1013,7 +1019,9 @@ testMigrateToServiceSubscriptions ps@(t, msType) = withAgentClients2 $ \a b -> d
     cfgNoService = updateCfg (cfgMS msType) $ \(cfg' :: ServerConfig s) ->
       let ServerConfig {transportConfig} = cfg'
        in cfg' {transportConfig = transportConfig {askClientCert = False}} :: ServerConfig s
-    ntfCfgNoService = ntfServerCfg {useServiceCreds = False, transports = [(ntfTestPort, t, False)]}
+    ntfCfgNoService = do
+      cfg' <- ntfServerCfg
+      pure cfg' {useServiceCreds = False, transports = [(ntfTestPort, t, False)]}
 
 testMessage_ :: HasCallStack => APNSMockServer -> AgentClient -> ConnId -> AgentClient -> ConnId -> SMP.MsgBody -> ExceptT AgentErrorType IO ()
 testMessage_ apns a aId b bId msg = do

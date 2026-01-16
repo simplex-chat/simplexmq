@@ -61,6 +61,8 @@ import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 import Control.Exception (throwIO)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushConfig(..))
+import Simplex.Messaging.Notifications.Server.Main (getVapidKey)
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
@@ -125,9 +127,10 @@ testNtfClient client = do
       Right th -> client th
       Left e -> error $ show e
 
-ntfServerCfg :: NtfServerConfig
-ntfServerCfg =
-  NtfServerConfig
+ntfServerCfg :: IO NtfServerConfig
+ntfServerCfg = do
+  vapidKey <- getVapidKey "tests/fixtures/vapid.privkey"
+  pure NtfServerConfig
     { transports = [],
       controlPort = Nothing,
       controlPortUserAuth = Nothing,
@@ -142,6 +145,7 @@ ntfServerCfg =
           { apnsPort = apnsTestPort,
             caStoreFile = "tests/fixtures/ca.crt"
           },
+      wpConfig = WebPushConfig {vapidKey},
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       dbStoreConfig = ntfTestDBCfg,
@@ -160,20 +164,24 @@ ntfServerCfg =
       startOptions = defaultStartOptions
     }
 
-ntfServerCfgVPrev :: NtfServerConfig
-ntfServerCfgVPrev =
-  ntfServerCfg
-    { ntfServerVRange = prevRange $ ntfServerVRange ntfServerCfg,
+ntfServerCfgVPrev :: IO NtfServerConfig
+ntfServerCfgVPrev = ntfServerCfg >>=
+  \cfg -> pure $ ntfServerCfgVPrev' cfg
+
+ntfServerCfgVPrev' :: NtfServerConfig -> NtfServerConfig
+ntfServerCfgVPrev' cfg =
+  cfg
+    { ntfServerVRange = prevRange $ ntfServerVRange cfg,
       smpAgentCfg = smpAgentCfg' {smpCfg = smpCfg' {serverVRange = prevRange serverVRange'}}
     }
   where
-    smpAgentCfg' = smpAgentCfg ntfServerCfg
+    smpAgentCfg' = smpAgentCfg cfg
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
 withNtfServerThreadOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' dbStoreConfig =
-  withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
+withNtfServerThreadOn t port' dbStoreConfig a = ntfServerCfg >>= \cfg ->
+  withNtfServerCfg cfg {transports = [(port', t, False)], dbStoreConfig} a
 
 withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg cfg@NtfServerConfig {transports} =

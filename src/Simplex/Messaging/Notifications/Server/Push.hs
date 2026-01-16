@@ -12,6 +12,8 @@ module Simplex.Messaging.Notifications.Server.Push where
 
 import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.ECDSA as EC
+import qualified Crypto.PubKey.ECC.Types as ECT
+import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding (DER (..))
 import Data.ASN1.Encoding
 import Data.ASN1.Types
@@ -25,6 +27,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Time.Clock.System
+import qualified Data.X509 as X
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Transport.HTTP2.Client (HTTP2ClientError)
@@ -36,14 +39,21 @@ import Control.Monad.Except (ExceptT)
 import GHC.Exception (SomeException)
 
 data JWTHeader = JWTHeader
-  { alg :: Text, -- key algorithm, ES256 for APNS
-    kid :: Text -- key ID
+  { typ :: Text, -- "JWT"
+    alg :: Text, -- key algorithm, ES256 for APNS
+    kid :: Maybe Text -- key ID
   }
   deriving (Show)
 
+mkJWTHeader :: Text -> Maybe Text -> JWTHeader
+mkJWTHeader alg kid = JWTHeader { typ = "JWT", alg, kid }
+
 data JWTClaims = JWTClaims
-  { iss :: Text, -- issuer, team ID for APNS
-    iat :: Int64 -- issue time, seconds from epoch
+  { iss :: Maybe Text, -- issuer, team ID for APNS
+    iat :: Maybe Int64, -- issue time, seconds from epoch for APNS
+    exp :: Maybe Int64, -- expired time, seconds from epoch for web push
+    aud :: Maybe Text, -- audience, for web push
+    sub :: Maybe Text -- subject, to be inform if there is an issue, for web push
   }
   deriving (Show)
 
@@ -53,7 +63,15 @@ data JWTToken = JWTToken JWTHeader JWTClaims
 mkJWTToken :: JWTHeader -> Text -> IO JWTToken
 mkJWTToken hdr iss = do
   iat <- systemSeconds <$> getSystemTime
-  pure $ JWTToken hdr JWTClaims {iss, iat}
+  pure $ JWTToken hdr $ jwtClaims iat
+  where
+    jwtClaims iat = JWTClaims
+      { iss = Just iss,
+        iat = Just iat,
+        exp = Nothing,
+        aud = Nothing,
+        sub = Nothing
+      }
 
 type SignedJWTToken = ByteString
 
@@ -70,6 +88,12 @@ signedJWTToken pk (JWTToken hdr claims) = do
     jwtEncode :: ToJSON a => a -> ByteString
     jwtEncode = U.encodeUnpadded . LB.toStrict . J.encode
     serialize sig = U.encodeUnpadded $ encodeASN1' DER [Start Sequence, IntVal (EC.sign_r sig), IntVal (EC.sign_s sig), End Sequence]
+
+readECPrivateKey :: FilePath -> IO EC.PrivateKey
+readECPrivateKey f = do
+  -- this pattern match is specific to APNS key type, it may need to be extended for other push providers
+  [PK.Unprotected (X.PrivKeyEC X.PrivKeyEC_Named {privkeyEC_name, privkeyEC_priv})] <- PK.readKeyFile f
+  pure EC.PrivateKey {private_curve = ECT.getCurveByName privkeyEC_name, private_d = privkeyEC_priv}
 
 data PushNotification
   = PNVerification NtfRegCode
