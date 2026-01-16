@@ -352,7 +352,7 @@ setConnShortLinkAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -
 setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
--- | Get and verify data from short link (LGET command, uses SMP LGET/LKEY) asynchronously, synchronous response is new connection id
+-- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new connection id
 getConnShortLinkAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> ConnShortLink c -> AE ConnId
 getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
