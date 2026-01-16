@@ -458,7 +458,7 @@ functionalAPITests ps = do
       testBasicMatrix2 ps testAsyncCommands
     it "should add short link data using async agent command" $
       testSetConnShortLinkAsync ps
-    fit "should get short link data using async agent command" $
+    it "should get short link data using async agent command" $
       testGetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
