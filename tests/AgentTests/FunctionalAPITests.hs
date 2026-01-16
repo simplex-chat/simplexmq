@@ -458,6 +458,8 @@ functionalAPITests ps = do
       testBasicMatrix2 ps testAsyncCommands
     it "should add short link data using async agent command" $
       testSetConnShortLinkAsync ps
+    fit "should get short link data using async agent command" $
+      testGetConnShortLinkAsync ps
     it "should restore and complete async commands on restart" $
       testAsyncCommandsRestore ps
     describe "accept connection using async command" $
@@ -2693,6 +2695,20 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     get alice ##> ("", bobId, INFO "bob's connInfo")
     get alice ##> ("", bobId, CON)
     get bob ##> ("", aliceId, CON)
+
+testGetConnShortLinkAsync :: (ASrvTransport, AStoreType) -> IO ()
+testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
+  withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+    let userData = UserLinkData "test user data"
+        userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+        newLinkData = UserContactLinkData userCtData
+    (_, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    -- get link data async
+    bobConnId <- getConnShortLinkAsync bob 1 "1" True shortLink
+    ("1", bobConnId', LDATA (ACR SCMContact qInfo') (ACLD SCMContact (ContactLinkData _ userCtData'))) <- get bob
+    liftIO $ bobConnId' `shouldBe` bobConnId
+    liftIO $ qInfo' `shouldBe` qInfo
+    liftIO $ userCtData' `shouldBe` userCtData
 
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
 testAsyncCommandsRestore ps = do

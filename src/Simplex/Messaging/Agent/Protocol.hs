@@ -111,6 +111,7 @@ module Simplex.Messaging.Agent.Protocol
     CRClientData,
     ServiceScheme,
     FixedLinkData (..),
+    AConnLinkData (..),
     ConnLinkData (..),
     AUserConnLinkData (..),
     UserConnLinkData (..),
@@ -384,6 +385,7 @@ type SndQueueSecured = Bool
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> Maybe ClientServiceId -> AEvent AEConn
   LINK :: AConnShortLink -> AUserConnLinkData -> AEvent AEConn
+  LDATA :: AConnectionRequestUri -> AConnLinkData -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -438,6 +440,7 @@ deriving instance Show AEvtTag
 data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
   | LSET AUserConnLinkData (Maybe CRClientData) -- response LINK
+  | LGET AConnShortLink -- response LDATA
   | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
@@ -448,6 +451,7 @@ data ACommand
 data ACommandTag
   = NEW_
   | LSET_
+  | LGET_
   | JOIN_
   | LET_
   | ACK_
@@ -458,6 +462,7 @@ data ACommandTag
 data AEventTag (e :: AEntity) where
   INV_ :: AEventTag AEConn
   LINK_ :: AEventTag AEConn
+  LDATA_ :: AEventTag AEConn
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
@@ -505,6 +510,7 @@ aCommandTag :: ACommand -> ACommandTag
 aCommandTag = \case
   NEW {} -> NEW_
   LSET {} -> LSET_
+  LGET _ -> LGET_
   JOIN {} -> JOIN_
   LET {} -> LET_
   ACK {} -> ACK_
@@ -515,6 +521,7 @@ aEventTag :: AEvent e -> AEventTag e
 aEventTag = \case
   INV {} -> INV_
   LINK {} -> LINK_
+  LDATA {} -> LDATA_
   CONF {} -> CONF_
   REQ {} -> REQ_
   INFO {} -> INFO_
@@ -1701,6 +1708,10 @@ data ConnLinkData c where
   InvitationLinkData :: VersionRangeSMPA -> UserLinkData -> ConnLinkData 'CMInvitation
   ContactLinkData :: VersionRangeSMPA -> UserContactData -> ConnLinkData 'CMContact
 
+deriving instance Eq (ConnLinkData c)
+
+deriving instance Show (ConnLinkData c)
+
 data UserContactData = UserContactData
   { -- direct connection via connReq in fixed data is allowed.
     direct :: Bool,
@@ -1716,6 +1727,13 @@ newtype UserLinkData = UserLinkData ByteString
   deriving (Eq, Show)
 
 data AConnLinkData = forall m. ConnectionModeI m => ACLD (SConnectionMode m) (ConnLinkData m)
+
+instance Eq AConnLinkData where
+  ACLD m d == ACLD m' d' = case testEquality m m' of
+    Just Refl -> d == d'
+    Nothing -> False
+
+deriving instance Show AConnLinkData
 
 data UserConnLinkData c where
   UserInvLinkData :: UserLinkData -> UserConnLinkData 'CMInvitation
@@ -2029,6 +2047,7 @@ instance StrEncoding ACommandTag where
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NEW_
       "LSET" -> pure LSET_
+      "LGET" -> pure LGET_
       "JOIN" -> pure JOIN_
       "LET" -> pure LET_
       "ACK" -> pure ACK_
@@ -2038,6 +2057,7 @@ instance StrEncoding ACommandTag where
   strEncode = \case
     NEW_ -> "NEW"
     LSET_ -> "LSET"
+    LGET_ -> "LGET"
     JOIN_ -> "JOIN"
     LET_ -> "LET"
     ACK_ -> "ACK"
@@ -2050,6 +2070,7 @@ commandP binaryP =
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
       LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
+      LGET_ -> s (LGET <$> strP)
       JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
@@ -2068,6 +2089,7 @@ serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
   LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
+  LGET sl -> s (LGET_, sl)
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_

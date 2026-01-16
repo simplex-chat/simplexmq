@@ -50,6 +50,7 @@ module Simplex.Messaging.Agent
     connRequestPQSupport,
     createConnectionAsync,
     setConnShortLinkAsync,
+    getConnShortLinkAsync,
     joinConnectionAsync,
     allowConnectionAsync,
     acceptContactAsync,
@@ -350,6 +351,11 @@ createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAs
 setConnShortLinkAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE ()
 setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
+
+-- | Get and verify data from short link (LGET command) asynchronously, synchronous response is new connection id
+getConnShortLinkAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> ConnShortLink c -> AE ConnId
+getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
+{-# INLINE getConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
 joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
@@ -901,6 +907,33 @@ setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
       (RcvConnection _ RcvQueue {server}, SCMInvitation, UserInvLinkData {}) -> pure server
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
     enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
+
+getConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> ConnShortLink c -> AM ConnId
+getConnShortLinkAsync' c userId corrId enableNtfs shortLink = do
+  g <- asks random
+  connId <- withStore c $ \db -> do
+    -- server is created so the command is processed in server queue,
+    -- not blocking other "no server" commands
+    void $ createServer db srv
+    prepareNewConn db g
+  enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LGET (ACSL (sConnectionMode @c) shortLink)
+  pure connId
+  where
+    srv = case shortLink of
+      CSLInvitation _ s _ _ -> s
+      CSLContact _ _ s _ -> s
+    prepareNewConn db g = do
+      let cData = ConnData
+            { userId,
+              connId = "",
+              connAgentVersion = currentSMPAgentVersion,
+              enableNtfs,
+              lastExternalSndId = 0,
+              deleted = False,
+              ratchetSyncState = RSOk,
+              pqSupport = PQSupportOff
+            }
+      createNewConn db g cData SCMInvitation
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData =
@@ -1680,6 +1713,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           withServer' . tryCommand $ do
             link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
             notify $ LINK (ACSL cMode link) auData
+        LGET (ACSL cMode shortLink) ->
+          withServer' . tryCommand $ do
+            (connReq, linkData) <- getConnShortLink' c NRMBackground userId shortLink
+            notify $ LDATA (ACR cMode connReq) (ACLD cMode linkData)
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do

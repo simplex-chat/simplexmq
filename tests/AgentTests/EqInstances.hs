@@ -28,10 +28,6 @@ deriving instance Eq ClientNtfCreds
 
 deriving instance Eq ShortLinkCreds
 
-deriving instance Show (ConnLinkData c)
-
-deriving instance Eq (ConnLinkData c)
-
 deriving instance Show ProxiedRelay
 
 deriving instance Eq ProxiedRelay
