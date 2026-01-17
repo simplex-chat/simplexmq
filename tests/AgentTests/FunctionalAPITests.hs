@@ -122,6 +122,8 @@ import XFTPClient (testXFTPServer)
 
 #if defined(dbPostgres)
 import Fixtures
+import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -786,7 +788,7 @@ runAgentClientStressTestOneWay n pqSupport sqSecured viaProxy alice bob baseId =
     msgId = subtract baseId . fst
 
 runAgentClientStressTestConc :: HasCallStack => Int64 -> PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = runRight_ $ do
+runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob _baseId = runRight_ $ do
   (aliceId, bobId) <- makeConnection_ pqSupport sqSecured alice bob
   amId <- newTVarIO 0
   bmId <- newTVarIO 0
@@ -803,7 +805,6 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
   liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
   liftIO $ noMessagesIngoreQCONT bob "nothing else should be delivered to bob"
   where
-    msgId = subtract baseId . fst
     pqEnc = PQEncryption $ supportPQ pqSupport
     proxySrv = if viaProxy then Just testSMPServer else Nothing
     message i = "message " <> bshow i
@@ -816,11 +817,11 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
           timeout 100000 (get a)
             >>= mapM_ (\case ("", _, QCONT) -> drain; r -> expectationFailure $ "unexpected: " <> show r)
         loop (0, 0, 0, 0) = pure ()
-        loop acc@(!s, !m, !r, !o) =
+        loop acc@(s, !m, !r, !o) =
           timeout 3000000 (get a) >>= \case
             Nothing -> error $ "timeout " <> show acc
             Just evt -> case evt of
-              ("", c, A.SENT mId srv) -> do
+              ("", c, A.SENT _mId srv) -> do
                 liftIO $ c == bId && srv == proxySrv `shouldBe` True
                 unless (s > 0) $ error "unexpected SENT"
                 loop (s - 1, m, r, o)
@@ -834,7 +835,7 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
                 ackMessageAsync a "123" bId mId (Just "")
                 unless (m > 0) $ error "unexpected MSG"
                 loop (s, m - 1, r, o)
-              ("", c, Rcvd' mId rcvdMsgId) -> do
+              ("", c, Rcvd' mId _rcvdMsgId) -> do
                 liftIO $ (mId >) <$> atomically (swapTVar mIdVar mId) `shouldReturn` True
                 liftIO $ c == bId `shouldBe` True
                 ackMessageAsync a "123" bId mId Nothing

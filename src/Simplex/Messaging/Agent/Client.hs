@@ -1545,9 +1545,8 @@ processSubResults c tSess@(userId, srv, _) sessId serviceId_ rs = do
       (Map SMP.RecipientId SMPClientError, ([RcvQueueSub], [RcvQueueSub]), [(RcvQueueSub, Maybe ClientNotice)], Int)
     partitionResults pendingSubs (rq@RcvQueueSub {rcvId, clientNoticeId}, r) acc@(failed, subscribed@(qs, sQs), notices, ignored) = case r of
       Left e -> case smpErrorClientNotice e of
-        Just notice_ -> (failed', subscribed, (rq, notice_) : notices, ignored)
+        Just notice_ -> (failed', subscribed, notices', ignored)
           where
-            -- TODO [certs rcv] not used?
             notices' = if isJust notice_ || isJust clientNoticeId then (rq, notice_) : notices else notices
         Nothing
           | temporaryClientError e -> acc
