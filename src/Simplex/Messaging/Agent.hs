@@ -897,10 +897,12 @@ setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
   withConnLock c connId "setConnShortLinkAsync" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     srv <- case (conn, cMode, userLinkData) of
-      (ContactConnection _ RcvQueue {server}, SCMContact, UserContactLinkData {}) -> pure server
+      (ContactConnection _ RcvQueue {server, shortLink}, SCMContact, UserContactLinkData d) -> do
+        liftEitherWith (CMD PROHIBITED . ("setConnShortLinkAsync: " <> )) $ validateOwners shortLink d
+        pure server
       (RcvConnection _ RcvQueue {server}, SCMInvitation, UserInvLinkData {}) -> pure server
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
-    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
+    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AULD cMode userLinkData) clientData
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData =
@@ -914,7 +916,8 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
     pure sl
   where
     prepareContactLinkData :: RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
-    prepareContactLinkData rq@RcvQueue {shortLink} ud = do
+    prepareContactLinkData rq@RcvQueue {shortLink} ud@(UserContactLinkData d') = do
+      liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <> )) $ validateOwners shortLink d'
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
       let cslContact = CSLContact SLSServer CCTContact (qServer rq)
@@ -931,7 +934,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
               (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq ud
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
-          let slCreds = ShortLinkCreds linkId linkKey privSigKey (fst srvData)
+          let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing (fst srvData)
           withStore' c $ \db -> updateShortLinkCreds db rq slCreds
           pure (rq, linkId, cslContact linkKey, srvData)
     prepareInvLinkData :: RcvQueue -> UserConnLinkData 'CMInvitation -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMInvitation, QueueLinkData)
@@ -1676,7 +1679,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             (CCLink cReq _, service) <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq) service
-        LSET auData@(AUCLD cMode userLinkData) clientData ->
+        LSET auData@(AULD cMode userLinkData) clientData ->
           withServer' . tryCommand $ do
             link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
             notify $ LINK (ACSL cMode link) auData

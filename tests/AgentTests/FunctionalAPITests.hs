@@ -2676,7 +2676,7 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let updatedData = UserLinkData "updated user data"
         updatedCtData = UserContactData {direct = False, owners = [], relays = [], userData = updatedData}
     setConnShortLinkAsync alice "1" cId SCMContact (UserContactLinkData updatedCtData) Nothing
-    ("1", cId', LINK (ACSL SCMContact shortLink') (AUCLD SCMContact (UserContactLinkData updatedCtData'))) <- get alice
+    ("1", cId', LINK (ACSL SCMContact shortLink') (AULD SCMContact (UserContactLinkData updatedCtData'))) <- get alice
     liftIO $ cId' `shouldBe` cId
     liftIO $ shortLink' `shouldBe` shortLink
     liftIO $ updatedCtData' `shouldBe` updatedCtData

@@ -107,6 +107,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionModeI (..),
     ConnectionRequestUri (..),
     AConnectionRequestUri (..),
+    ShortLinkCreds (..),
     ConnReqUriData (..),
     CRClientData,
     ServiceScheme,
@@ -130,6 +131,8 @@ module Simplex.Messaging.Agent.Protocol
     StoredClientService (..),
     ClientService,
     ClientServiceId,
+    validateOwners,
+    validateLinkOwners,
     sameConnReqContact,
     sameShortLinkContact,
     simplexChat,
@@ -198,7 +201,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -1439,6 +1442,15 @@ instance Eq AConnectionRequestUri where
 
 deriving instance Show AConnectionRequestUri
 
+data ShortLinkCreds = ShortLinkCreds
+  { shortLinkId :: SMP.LinkId,
+    shortLinkKey :: LinkKey,
+    linkPrivSigKey :: C.PrivateKeyEd25519,
+    linkRootSigKey :: Maybe C.PublicKeyEd25519, -- in case the current user is not the original owner, and the root key is different from linkPrivSigKey
+    linkEncFixedData :: SMP.EncFixedDataBytes
+  }
+  deriving (Show)
+
 data ShortLinkScheme = SLSSimplex | SLSServer deriving (Eq, Show)
 
 data ConnShortLink (m :: ConnectionMode) where
@@ -1694,7 +1706,8 @@ type CRClientData = Text
 data FixedLinkData c = FixedLinkData
   { agentVRange :: VersionRangeSMPA,
     rootKey :: C.PublicKeyEd25519,
-    connReq :: ConnectionRequestUri c
+    connReq :: ConnectionRequestUri c,
+    linkEntityId :: Maybe ByteString
   }
 
 data ConnLinkData c where
@@ -1725,10 +1738,10 @@ deriving instance Eq (UserConnLinkData m)
 
 deriving instance Show (UserConnLinkData m)
 
-data AUserConnLinkData = forall m. ConnectionModeI m => AUCLD (SConnectionMode m) (UserConnLinkData m)
+data AUserConnLinkData = forall m. ConnectionModeI m => AULD (SConnectionMode m) (UserConnLinkData m)
 
 instance Eq AUserConnLinkData where
-  AUCLD m d == AUCLD m' d' = case testEquality m m' of
+  AULD m d == AULD m' d' = case testEquality m m' of
     Just Refl -> d == d'
     Nothing -> False
 
@@ -1749,32 +1762,54 @@ type OwnerId = ByteString
 data OwnerAuth = OwnerAuth
   { ownerId :: OwnerId, -- unique in the list, application specific - e.g., MemberId
     ownerKey :: C.PublicKeyEd25519,
-    -- sender ID signed with ownerKey,
-    -- confirms that the owner accepts being the owner.
-    -- sender ID is used here as it is immutable for the queue, link data can be removed.
-    ownerSig :: C.Signature 'C.Ed25519,
-    -- null for root key authorization
-    authOwnerId :: OwnerId,
-    -- owner authorization, sig(ownerId || ownerKey, key(authOwnerId)),
-    -- where authOwnerId is either null for a root key or some other owner authorized by root key, etc.
-    -- Owner validation should detect and reject loops.
+    -- owner authorization by root or any previous owner, sig(ownerId || ownerKey, prevOwnerKey),
     authOwnerSig :: C.Signature 'C.Ed25519
   }
   deriving (Eq, Show)
 
 instance Encoding OwnerAuth where
-  smpEncode OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig} =
-    smpEncode (ownerId, ownerKey, C.signatureBytes ownerSig, authOwnerId, C.signatureBytes authOwnerSig)
+  smpEncode OwnerAuth {ownerId, ownerKey, authOwnerSig} =
+    -- It is additionally encoded as ByteString to have known length and allow OwnerAuth extension
+    smpEncode $ smpEncode (ownerId, ownerKey, C.signatureBytes authOwnerSig)
   smpP = do
-    (ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig) <- smpP
-    pure OwnerAuth {ownerId, ownerKey, ownerSig, authOwnerId, authOwnerSig}
+    -- parseOnly ignores any unused extension
+    (ownerId, ownerKey, authOwnerSig) <- A.parseOnly smpP <$?> smpP
+    pure OwnerAuth {ownerId, ownerKey, authOwnerSig}
+
+validateOwners :: Maybe ShortLinkCreds -> UserContactData -> Either String ()
+validateOwners shortLink_ UserContactData {owners} = case (shortLink_, owners) of
+  (_, []) -> Right ()
+  (Nothing, _) -> Left "no root key with additional owner(s)"
+  (Just ShortLinkCreds {linkPrivSigKey, linkRootSigKey}, _)
+    | hasOwner -> validateLinkOwners (fromMaybe k linkRootSigKey) owners
+    | otherwise -> Left "no current owner in link data"
+    where
+      hasOwner = isNothing linkRootSigKey || any ((k ==) . ownerKey) owners
+      k = C.publicKey linkPrivSigKey
+          
+validateLinkOwners :: C.PublicKeyEd25519 -> [OwnerAuth] -> Either String ()
+validateLinkOwners rootKey = go []
+  where   
+    go _ [] = Right ()
+    go prev (o : os) = validOwner o >> go (o : prev) os
+      where
+        validOwner OwnerAuth {ownerId = oId, ownerKey = k, authOwnerSig = sig}
+          | k == rootKey = Left $ "owner key for ID " <> idStr <> " matches root key"
+          | any duplicate prev = Left $ "duplicate owner key or ID " <> idStr
+          | signedBy rootKey || any (signedBy . ownerKey) prev = Right ()
+          | otherwise = Left $ "invalid authorization of owner ID " <> idStr
+          where
+            duplicate OwnerAuth {ownerId, ownerKey} = oId == ownerId || k == ownerKey
+            idStr = B.unpack $ B64.encodeUnpadded oId
+            signedBy k' = C.verify' k' sig (oId <> C.encodePubKey k)
 
 instance ConnectionModeI c => Encoding (FixedLinkData c) where
-  smpEncode FixedLinkData {agentVRange, rootKey, connReq} =
-    smpEncode (agentVRange, rootKey, connReq)
+  smpEncode FixedLinkData {agentVRange, rootKey, connReq, linkEntityId} =
+    smpEncode (agentVRange, rootKey, connReq) <> maybe "" smpEncode linkEntityId
   smpP = do
     (agentVRange, rootKey, connReq) <- smpP
-    pure FixedLinkData {agentVRange, rootKey, connReq}
+    linkEntityId <- (smpP <|> pure Nothing) <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    pure FixedLinkData {agentVRange, rootKey, connReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
@@ -1799,19 +1834,19 @@ instance ConnectionModeI c => Encoding (UserConnLinkData c) where
   smpEncode = \case
     UserInvLinkData userData -> smpEncode (CMInvitation, userData)
     UserContactLinkData cd -> smpEncode (CMContact, cd)
-  smpP = (\(AUCLD _ d) -> checkConnMode d) <$?> smpP
+  smpP = (\(AULD _ d) -> checkConnMode d) <$?> smpP
   {-# INLINE smpP #-}
 
 instance Encoding AUserConnLinkData where
-  smpEncode (AUCLD _ d) = smpEncode d
+  smpEncode (AULD _ d) = smpEncode d
   {-# INLINE smpEncode #-}
   smpP =
     smpP >>= \case
       CMInvitation -> do
         userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-        pure $ AUCLD SCMInvitation $ UserInvLinkData userData
+        pure $ AULD SCMInvitation $ UserInvLinkData userData
       CMContact ->
-        AUCLD SCMContact . UserContactLinkData <$> smpP
+        AULD SCMContact . UserContactLinkData <$> smpP
 
 instance StrEncoding AUserConnLinkData where
   strEncode = smpEncode

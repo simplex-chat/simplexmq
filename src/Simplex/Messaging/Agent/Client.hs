@@ -1448,12 +1448,12 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
       (CQRMessaging ld, Just QMMessaging) ->
         withLinkData ld $ \lnkId CQRData {linkKey, privSigKey, srvReq = (sndId', d)} ->
           if sndId == sndId'
-            then pure $ Just $ ShortLinkCreds lnkId linkKey privSigKey (fst d)
+            then pure $ Just $ ShortLinkCreds lnkId linkKey privSigKey Nothing (fst d)
             else newErr "different sender ID"
       (CQRContact ld, Just QMContact) ->
         withLinkData ld $ \lnkId CQRData {linkKey, privSigKey, srvReq = (lnkId', (sndId', d))} ->
           if sndId == sndId' && lnkId == lnkId'
-            then pure $ Just $ ShortLinkCreds lnkId linkKey privSigKey (fst d)
+            then pure $ Just $ ShortLinkCreds lnkId linkKey privSigKey Nothing (fst d)
             else newErr "different sender or link IDs"
       (_, Nothing) -> case linkId of
         Nothing | v < sndAuthKeySMPVersion -> pure Nothing

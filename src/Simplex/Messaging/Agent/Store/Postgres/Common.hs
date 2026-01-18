@@ -19,6 +19,7 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
   )
 where
 
+import Control.Monad (void)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import qualified Control.Exception as E
@@ -100,7 +101,7 @@ withTransactionPriority st priority action = withConnectionPriority st priority 
 -- to restore the transaction to a usable state before returning the error.
 withSavepoint :: PSQL.Connection -> PSQL.Query -> IO a -> IO (Either PSQL.SqlError a)
 withSavepoint db name action = do
-  PSQL.execute_ db $ "SAVEPOINT " <> name
+  void $ PSQL.execute_ db $ "SAVEPOINT " <> name
   E.try action
     >>= bimapM
       (PSQL.execute_ db ("ROLLBACK TO SAVEPOINT " <> name) $>)
