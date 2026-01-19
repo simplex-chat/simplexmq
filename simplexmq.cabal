@@ -266,6 +266,7 @@ library
               Simplex.Messaging.Notifications.Server.Prometheus
               Simplex.Messaging.Notifications.Server.Push
               Simplex.Messaging.Notifications.Server.Push.APNS
+              Simplex.Messaging.Notifications.Server.Push.WebPush
               Simplex.Messaging.Notifications.Server.Push.APNS.Internal
               Simplex.Messaging.Notifications.Server.Stats
               Simplex.Messaging.Notifications.Server.Store
@@ -298,6 +299,7 @@ library
     , attoparsec ==0.14.*
     , base >=4.14 && <5
     , base64-bytestring >=1.0 && <1.3
+    , binary ==0.8.*
     , composition ==1.0.*
     , constraints >=0.12 && <0.14
     , containers ==0.6.*
@@ -310,6 +312,7 @@ library
     , directory ==1.3.*
     , filepath ==1.4.*
     , hourglass ==0.2.*
+    , http-client ==0.7.*
     , http-types ==0.12.*
     , http2 >=4.2.2 && <4.3
     , iproute ==1.7.*
@@ -341,6 +344,7 @@ library
         case-insensitive ==1.2.*
       , hashable ==1.4.*
       , ini ==0.4.1
+      , http-client-tls ==0.3.6.*
       , optparse-applicative >=0.15 && <0.17
       , process ==1.6.*
       , temporary ==1.3.*
@@ -510,6 +514,7 @@ test-suite simplexmq-test
           AgentTests.NotificationTests
           NtfClient
           NtfServerTests
+          NtfWPTests
           PostgresSchemaDump
   hs-source-dirs:
       tests

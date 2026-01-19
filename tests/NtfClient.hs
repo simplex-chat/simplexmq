@@ -16,6 +16,7 @@
 module NtfClient where
 
 import Control.Concurrent.STM (retry)
+import Control.Exception (throwIO)
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class
@@ -44,8 +45,10 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfResponse)
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
 import Simplex.Messaging.Notifications.Server.Env
+import Simplex.Messaging.Notifications.Server.Main (getVapidKey)
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushConfig (..))
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -124,55 +127,64 @@ testNtfClient client = do
       Right th -> client th
       Left e -> error $ show e
 
-ntfServerCfg :: NtfServerConfig
-ntfServerCfg =
-  NtfServerConfig
-    { transports = [],
-      controlPort = Nothing,
-      controlPortUserAuth = Nothing,
-      controlPortAdminAuth = Nothing,
-      subIdBytes = 24,
-      regCodeBytes = 32,
-      clientQSize = 2,
-      pushQSize = 2,
-      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
-      apnsConfig =
-        defaultAPNSPushClientConfig
-          { apnsPort = apnsTestPort,
-            caStoreFile = "tests/fixtures/ca.crt"
-          },
-      subsBatchSize = 900,
-      inactiveClientExpiration = Just defaultInactiveClientExpiration,
-      dbStoreConfig = ntfTestDBCfg,
-      ntfCredentials = ntfTestServerCredentials,
-      useServiceCreds = True,
-      periodicNtfsInterval = 1,
-      -- stats config
-      logStatsInterval = Nothing,
-      logStatsStartTime = 0,
-      serverStatsLogFile = "tests/ntf-server-stats.daily.log",
-      serverStatsBackupFile = Nothing,
-      prometheusInterval = Nothing,
-      prometheusMetricsFile = ntfTestPrometheusMetricsFile,
-      ntfServerVRange = supportedServerNTFVRange,
-      transportConfig = mkTransportServerConfig True (Just alpnSupportedNTFHandshakes) False,
-      startOptions = defaultStartOptions
-    }
+ntfServerCfg :: IO NtfServerConfig
+ntfServerCfg = do
+  vapidKey <- getVapidKey "tests/fixtures/vapid.privkey"
+  pure
+    NtfServerConfig
+      { transports = [],
+        controlPort = Nothing,
+        controlPortUserAuth = Nothing,
+        controlPortAdminAuth = Nothing,
+        subIdBytes = 24,
+        regCodeBytes = 32,
+        clientQSize = 2,
+        pushQSize = 2,
+        smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 0},
+        apnsConfig =
+          defaultAPNSPushClientConfig
+            { apnsPort = apnsTestPort,
+              caStoreFile = "tests/fixtures/ca.crt"
+            },
+        wpConfig = WebPushConfig {vapidKey, paddedNtfLength = 3072},
+        subsBatchSize = 900,
+        inactiveClientExpiration = Just defaultInactiveClientExpiration,
+        dbStoreConfig = ntfTestDBCfg,
+        ntfCredentials = ntfTestServerCredentials,
+        useServiceCreds = True,
+        periodicNtfsInterval = 1,
+        -- stats config
+        logStatsInterval = Nothing,
+        logStatsStartTime = 0,
+        serverStatsLogFile = "tests/ntf-server-stats.daily.log",
+        serverStatsBackupFile = Nothing,
+        prometheusInterval = Nothing,
+        prometheusMetricsFile = ntfTestPrometheusMetricsFile,
+        ntfServerVRange = supportedServerNTFVRange,
+        transportConfig = mkTransportServerConfig True (Just alpnSupportedNTFHandshakes) False,
+        startOptions = defaultStartOptions
+      }
 
-ntfServerCfgVPrev :: NtfServerConfig
+ntfServerCfgVPrev :: IO NtfServerConfig
 ntfServerCfgVPrev =
   ntfServerCfg
-    { ntfServerVRange = prevRange $ ntfServerVRange ntfServerCfg,
+    >>= \cfg -> pure $ ntfServerCfgVPrev' cfg
+
+ntfServerCfgVPrev' :: NtfServerConfig -> NtfServerConfig
+ntfServerCfgVPrev' cfg =
+  cfg
+    { ntfServerVRange = prevRange $ ntfServerVRange cfg,
       smpAgentCfg = smpAgentCfg' {smpCfg = smpCfg' {serverVRange = prevRange serverVRange'}}
     }
   where
-    smpAgentCfg' = smpAgentCfg ntfServerCfg
+    smpAgentCfg' = smpAgentCfg cfg
     smpCfg' = smpCfg smpAgentCfg'
     serverVRange' = serverVRange smpCfg'
 
 withNtfServerThreadOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
-withNtfServerThreadOn t port' dbStoreConfig =
-  withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
+withNtfServerThreadOn t port' dbStoreConfig a =
+  ntfServerCfg >>= \cfg ->
+    withNtfServerCfg cfg {transports = [(port', t, False)], dbStoreConfig} a
 
 withNtfServerCfg :: HasCallStack => NtfServerConfig -> (ThreadId -> IO a) -> IO a
 withNtfServerCfg cfg@NtfServerConfig {transports} =
@@ -293,7 +305,8 @@ getAPNSMockServer config@HTTP2ServerConfig {qSize} = do
           sendApnsResponse $ APNSRespError N.badRequest400 "bad_request_body"
 
 getMockNotification :: MonadIO m => APNSMockServer -> DeviceToken -> m APNSMockRequest
-getMockNotification APNSMockServer {notifications} (DeviceToken _ token) = do
+getMockNotification _ (WPDeviceToken _ _) = liftIO . throwIO $ userError "Invalid pusher"
+getMockNotification APNSMockServer {notifications} (APNSDeviceToken _ token) = do
   atomically $ TM.lookup token notifications >>= maybe retry readTBQueue
 
 getAnyMockNotification :: MonadIO m => APNSMockServer -> m APNSMockRequest

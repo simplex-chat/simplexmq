@@ -11,7 +11,7 @@
 module Simplex.Messaging.Notifications.Server.Main where
 
 import Control.Logger.Simple (setLogLevel)
-import Control.Monad ((<$!>))
+import Control.Monad (unless, void, (<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -31,9 +31,10 @@ import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClie
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
-import Simplex.Messaging.Notifications.Server (runNtfServer, restoreServerLastNtfs)
+import Simplex.Messaging.Notifications.Server (restoreServerLastNtfs, runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (VapidKey (..), WebPushConfig (..), mkVapid)
 import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres (exportNtfDbStore, importNtfSTMStore, newNtfDbStore)
 import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
@@ -55,6 +56,7 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
+import System.Process (readCreateProcess, shell)
 import Text.Read (readMaybe)
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
@@ -146,6 +148,7 @@ ntfServerCLI cfgPath logPath =
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
       createDirectoryIfMissing True logPath
+      _ <- genVapidKey vapidKeyPath
       let x509cfg = defaultX509Config {commonName = fromMaybe ip fqdn, signAlgorithm}
       fp <- createServerX509 cfgPath x509cfg
       let host = fromMaybe (if ip == "127.0.0.1" then "<hostnames>" else ip) fqdn
@@ -212,11 +215,13 @@ ntfServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
+      vapidKey@VapidKey {fp = vapidFp} <- getVapidKey vapidKeyPath
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
-          cfg@NtfServerConfig {transports} = serverConfig
+          cfg@NtfServerConfig {transports} = serverConfig vapidKey
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
+      B.putStrLn $ "VAPID: " <> vapidFp
       printNtfServerConfig transports dbStoreConfig
       runNtfServer cfg
       where
@@ -230,7 +235,7 @@ ntfServerCLI cfgPath logPath =
               confirmMigrations = MCYesUp,
               deletedTTL = iniDeletedTTL ini
             }
-        serverConfig =
+        serverConfig vapidKey =
           NtfServerConfig
             { transports = iniTransports ini,
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
@@ -258,6 +263,11 @@ ntfServerCLI cfgPath logPath =
                     persistErrorInterval = 0 -- seconds
                   },
               apnsConfig = defaultAPNSPushClientConfig,
+              wpConfig =
+                WebPushConfig
+                  { vapidKey,
+                    paddedNtfLength = 3072
+                  },
               subsBatchSize = 900,
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
@@ -294,6 +304,7 @@ ntfServerCLI cfgPath logPath =
       putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
       putStrLn "Configure notification server storage."
       exitFailure
+    vapidKeyPath = combine cfgPath "vapid.privkey"
 
 printNtfServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> PostgresStoreCfg -> IO ()
 printNtfServerConfig transports PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}, dbStoreLogPath} = do
@@ -350,18 +361,21 @@ cliCommandP cfgPath logPath iniFile =
     skipTokensP =
       option
         strParse
-          ( long "skip-tokens"
-              <> help "Skip tokens during import"
-              <> value S.empty
-          )
+        ( long "skip-tokens"
+            <> help "Skip tokens during import"
+            <> value S.empty
+        )
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-
-        flag' False
+        flag'
+          False
           ( long "disable-store-log"
               <> help "Disable store log for persistence (enabled by default)"
           )
-          <|> flag True True
+          <|> flag
+            True
+            True
             ( long "store-log"
                 <> short 'l'
                 <> help "Enable store log for persistence (DEPRECATED, enabled by default)"
@@ -395,3 +409,19 @@ cliCommandP cfgPath logPath iniFile =
               <> metavar "FQDN"
           )
       pure InitOptions {enableStoreLog, dbOptions, signAlgorithm, ip, fqdn}
+
+genVapidKey :: FilePath -> IO VapidKey
+genVapidKey file = do
+  cfgExists <- doesFileExist file
+  unless cfgExists $ run $ "openssl ecparam -name prime256v1 -genkey -noout -out " <> file
+  key <- C.readECPrivateKey file
+  pure $ mkVapid key
+  where
+    run cmd = void $ readCreateProcess (shell cmd) ""
+
+getVapidKey :: FilePath -> IO VapidKey
+getVapidKey file = do
+  cfgExists <- doesFileExist file
+  unless cfgExists $ error $ "VAPID key not found: " <> file
+  key <- C.readECPrivateKey file
+  pure $ mkVapid key

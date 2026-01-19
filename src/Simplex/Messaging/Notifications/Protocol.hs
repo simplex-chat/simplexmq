@@ -12,6 +12,7 @@
 module Simplex.Messaging.Notifications.Protocol where
 
 import Control.Applicative (optional, (<|>))
+import qualified Crypto.PubKey.ECC.Types as ECC
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Encoding as JE
@@ -27,6 +28,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System
 import Data.Type.Equality
 import Data.Word (Word16)
+import Network.HTTP.Client (Request, parseUrlThrow)
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -372,14 +374,35 @@ instance StrEncoding SMPQueueNtf where
     notifierId <- A.char '/' *> strP
     pure SMPQueueNtf {smpServer, notifierId}
 
-data PushProvider
+data PushProvider = PPAPNS APNSProvider | PPWP WPProvider
+  deriving (Eq, Ord, Show)
+
+data APNSProvider
   = PPApnsDev -- provider for Apple development environment
   | PPApnsProd -- production environment, including TestFlight
   | PPApnsTest -- used for tests, to use APNS mock server
   | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
 
+newtype WPSrvLoc = WPSrvLoc SrvLoc
+  deriving (Eq, Ord, Show)
+
+newtype WPProvider = WPP WPSrvLoc
+  deriving (Eq, Ord, Show)
+
+wpAud :: WPProvider -> B.ByteString
+wpAud (WPP (WPSrvLoc (SrvLoc aud _))) = B.pack aud
+
 instance Encoding PushProvider where
+  smpEncode = \case
+    PPAPNS p -> smpEncode p
+    PPWP p -> smpEncode p
+  smpP =
+    A.peekChar' >>= \case
+      'A' -> PPAPNS <$> smpP
+      _ -> PPWP <$> smpP
+
+instance Encoding APNSProvider where
   smpEncode = \case
     PPApnsDev -> "AD"
     PPApnsProd -> "AP"
@@ -391,9 +414,18 @@ instance Encoding PushProvider where
       "AP" -> pure PPApnsProd
       "AT" -> pure PPApnsTest
       "AN" -> pure PPApnsNull
-      _ -> fail "bad PushProvider"
+      _ -> fail "bad APNSProvider"
 
 instance StrEncoding PushProvider where
+  strEncode = \case
+    PPAPNS p -> strEncode p
+    PPWP p -> strEncode p
+  strP =
+    A.peekChar' >>= \case
+      'a' -> PPAPNS <$> strP
+      _ -> PPWP <$> strP
+
+instance StrEncoding APNSProvider where
   strEncode = \case
     PPApnsDev -> "apns_dev"
     PPApnsProd -> "apns_prod"
@@ -405,38 +437,194 @@ instance StrEncoding PushProvider where
       "apns_prod" -> pure PPApnsProd
       "apns_test" -> pure PPApnsTest
       "apns_null" -> pure PPApnsNull
-      _ -> fail "bad PushProvider"
+      _ -> fail "bad APNSProvider"
+
+instance Encoding WPSrvLoc where
+  smpEncode (WPSrvLoc srv) = smpEncode srv
+  smpP = WPSrvLoc <$> smpP
+
+instance StrEncoding WPSrvLoc where
+  strEncode (WPSrvLoc srv) = "https://" <> strEncode srv
+  strP = WPSrvLoc <$> ("https://" *> strP)
+
+instance Encoding WPProvider where
+  smpEncode (WPP srv) = "WP" <> smpEncode srv
+  smpP = WPP <$> ("WP" *> smpP)
+
+instance StrEncoding WPProvider where
+  strEncode (WPP srv) = "webpush " <> strEncode srv
+  strP = WPP <$> ("webpush " *> strP)
 
 instance FromField PushProvider where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
-data DeviceToken = DeviceToken PushProvider ByteString
+newtype WPAuth = WPAuth {unWPAuth :: ByteString} deriving (Eq, Ord, Show)
+
+toWPAuth :: ByteString -> Either String WPAuth
+toWPAuth s
+  | B.length s == 16 = Right $ WPAuth s
+  | otherwise = Left "bad WPAuth"
+
+newtype WPP256dh = WPP256dh ECC.PublicPoint
+  deriving (Eq, Show)
+
+-- This Ord instance for ECC point is quite arbitrary, it is needed because token is used as Map key
+instance Ord WPP256dh where
+  compare (WPP256dh p1) (WPP256dh p2) = case (p1, p2) of
+    (ECC.PointO, ECC.PointO) -> EQ
+    (ECC.PointO, _) -> GT
+    (_, ECC.PointO) -> LT
+    (ECC.Point x1 y1, ECC.Point x2 y2) -> compare (x1, y1) (x2, y2)
+
+data WPKey = WPKey
+  { wpAuth :: WPAuth,
+    wpP256dh :: WPP256dh
+  }
   deriving (Eq, Ord, Show)
 
+uncompressEncode :: WPP256dh -> ByteString
+uncompressEncode (WPP256dh p) = C.uncompressEncodePoint p
+{-# INLINE uncompressEncode #-}
+
+uncompressDecode :: ByteString -> Either String WPP256dh
+uncompressDecode bs = WPP256dh <$> C.uncompressDecodePoint bs
+{-# INLINE uncompressDecode #-}
+
+data WPTokenParams = WPTokenParams
+  { wpPath :: ByteString,
+    wpKey :: WPKey
+  }
+  deriving (Eq, Ord, Show)
+
+instance Encoding WPAuth where
+  smpEncode = smpEncode . unWPAuth
+  smpP = toWPAuth <$?> smpP
+
+instance StrEncoding WPAuth where
+  strEncode = strEncode . unWPAuth
+  strP = toWPAuth <$?> strP
+
+instance Encoding WPP256dh where
+  smpEncode = smpEncode . uncompressEncode
+  {-# INLINE smpEncode #-}
+  smpP = uncompressDecode <$?> smpP
+  {-# INLINE smpP #-}
+
+instance StrEncoding WPP256dh where
+  strEncode = strEncode . uncompressEncode
+  {-# INLINE strEncode #-}
+  strP = uncompressDecode <$?> strP
+  {-# INLINE strP #-}
+
+instance Encoding WPKey where
+  smpEncode WPKey {wpAuth, wpP256dh} = smpEncode (wpAuth, wpP256dh)
+  smpP = do
+    wpAuth <- smpP
+    wpP256dh <- smpP
+    pure WPKey {wpAuth, wpP256dh}
+
+instance StrEncoding WPKey where
+  strEncode WPKey {wpAuth, wpP256dh} = strEncode (wpAuth, wpP256dh)
+  strP = do
+    (wpAuth, wpP256dh) <- strP
+    pure WPKey {wpAuth, wpP256dh}
+
+instance Encoding WPTokenParams where
+  smpEncode WPTokenParams {wpPath, wpKey} = smpEncode (wpPath, wpKey)
+  smpP = do
+    wpPath <- smpP
+    wpKey <- smpP
+    pure WPTokenParams {wpPath, wpKey}
+
+instance StrEncoding WPTokenParams where
+  strEncode WPTokenParams {wpPath, wpKey} = wpPath <> " " <> strEncode wpKey
+  strP = do
+    wpPath <- A.takeWhile (/= ' ')
+    _ <- A.char ' '
+    wpKey <- strP
+    pure WPTokenParams {wpPath, wpKey}
+
+data DeviceToken
+  = APNSDeviceToken APNSProvider ByteString
+  | WPDeviceToken WPProvider WPTokenParams
+  deriving (Eq, Ord, Show)
+
+tokenPushProvider :: DeviceToken -> PushProvider
+tokenPushProvider = \case
+  APNSDeviceToken pp _ -> PPAPNS pp
+  WPDeviceToken pp _ -> PPWP pp
+
 instance Encoding DeviceToken where
-  smpEncode (DeviceToken p t) = smpEncode (p, t)
-  smpP = DeviceToken <$> smpP <*> smpP
+  smpEncode token = case token of
+    APNSDeviceToken p t -> smpEncode (p, t)
+    WPDeviceToken p t -> smpEncode (p, t)
+  smpP =
+    smpP >>= \case
+      PPAPNS p -> APNSDeviceToken p <$> smpP
+      PPWP p -> WPDeviceToken p <$> smpP
 
 instance StrEncoding DeviceToken where
-  strEncode (DeviceToken p t) = strEncode p <> " " <> t
-  strP = nullToken <|> hexToken
+  strEncode token = case token of
+    APNSDeviceToken p t -> strEncode p <> " " <> t
+    -- We don't do strEncode (p, t), because we don't want any space between
+    -- p (e.g. webpush https://localhost) and t.wpPath (e.g /random)
+    WPDeviceToken p t -> strEncode p <> strEncode t
+  strP = nullToken <|> deviceToken
     where
-      nullToken = "apns_null test_ntf_token" $> DeviceToken PPApnsNull "test_ntf_token"
-      hexToken = DeviceToken <$> strP <* A.space <*> hexStringP
-      hexStringP =
+      nullToken = "apns_null test_ntf_token" $> APNSDeviceToken PPApnsNull "test_ntf_token"
+      deviceToken =
+        strP >>= \case
+          PPAPNS p -> APNSDeviceToken p <$> hexStringP
+          PPWP p -> do
+            t <- WPDeviceToken p <$> strP
+            _ <- wpRequest t
+            pure t
+      hexStringP = do
+        _ <- A.space
         A.takeWhile (`B.elem` "0123456789abcdef") >>= \s ->
           if even (B.length s) then pure s else fail "odd number of hex characters"
 
 instance ToJSON DeviceToken where
-  toEncoding (DeviceToken pp t) = J.pairs $ "pushProvider" .= decodeLatin1 (strEncode pp) <> "token" .= decodeLatin1 t
-  toJSON (DeviceToken pp t) = J.object ["pushProvider" .= decodeLatin1 (strEncode pp), "token" .= decodeLatin1 t]
+  toEncoding token = case token of
+    APNSDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= decodeLatin1 t
+    -- ToJSON/FromJSON isn't used for WPDeviceToken, we just include the pushProvider so it can fail properly if used to decrypt
+    WPDeviceToken p _ -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p)
+
+  -- WPDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= toJSON t
+  toJSON token = case token of
+    APNSDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= decodeLatin1 t]
+    -- ToJSON/FromJSON isn't used for WPDeviceToken, we just include the pushProvider so it can fail properly if used to decrypt
+    WPDeviceToken p _ -> J.object ["pushProvider" .= decodeLatin1 (strEncode p)]
+
+-- WPDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= toJSON t]
 
 instance FromJSON DeviceToken where
-  parseJSON = J.withObject "DeviceToken" $ \o -> do
-    pp <- strDecode . encodeUtf8 <$?> o .: "pushProvider"
-    t <- encodeUtf8 <$> o .: "token"
-    pure $ DeviceToken pp t
+  parseJSON = J.withObject "DeviceToken" $ \o ->
+    (strDecode . encodeUtf8 <$?> o .: "pushProvider") >>= \case
+      PPAPNS p -> APNSDeviceToken p . encodeUtf8 <$> (o .: "token")
+      PPWP _ -> fail "FromJSON not implemented for WPDeviceToken"
+
+-- | Returns fields for the device token (pushProvider, token)
+-- TODO [webpush] save token as separate fields
+deviceTokenFields :: DeviceToken -> (PushProvider, ByteString)
+deviceTokenFields dt = case dt of
+  APNSDeviceToken p t -> (PPAPNS p, t)
+  WPDeviceToken p t -> (PPWP p, strEncode t)
+
+-- | Returns the device token from the fields (pushProvider, token)
+deviceToken' :: PushProvider -> ByteString -> DeviceToken
+deviceToken' pp t = case pp of
+  PPAPNS p -> APNSDeviceToken p t
+  PPWP p -> WPDeviceToken p <$> either error id $ strDecode t
+
+wpRequest :: MonadFail m => DeviceToken -> m Request
+wpRequest (APNSDeviceToken _ _) = fail "Invalid device token"
+wpRequest (WPDeviceToken (WPP s) param) = do
+  let endpoint = strEncode s <> wpPath param
+  case parseUrlThrow $ B.unpack endpoint of
+    Left _ -> fail "Invalid URL"
+    Right r -> pure r
 
 -- List of PNMessageData uses semicolon-separated encoding instead of strEncode,
 -- because strEncode of NonEmpty list uses comma for separator,

@@ -1,8 +1,8 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -12,12 +12,15 @@ import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
+import Data.IORef (newIORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import qualified Data.X509.Validation as XV
+import Network.HTTP.Client (Manager, ManagerSettings (..), Request (..), newManager)
+import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
@@ -25,7 +28,9 @@ import Simplex.Messaging.Client (ProtocolClientConfig (..))
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Push
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushClient (..), WebPushConfig, wpPushProviderClient)
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres
@@ -45,7 +50,6 @@ import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, Transport
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import Simplex.Messaging.Notifications.Server.Push (PushNotification, PushProviderClient)
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
@@ -58,6 +62,7 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    wpConfig :: WebPushConfig,
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     dbStoreConfig :: PostgresStoreCfg,
@@ -97,7 +102,7 @@ data NtfEnv = NtfEnv
   }
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds, startOptions} = do
+newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, wpConfig, dbStoreConfig, ntfCredentials, useServiceCreds, startOptions} = do
   when (compactLog startOptions) $ compactDbStoreLog $ dbStoreLogPath dbStoreConfig
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
@@ -113,7 +118,7 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
         pure smpAgentCfg {smpCfg = (smpCfg smpAgentCfg) {serviceCredentials = Just service}}
       else pure smpAgentCfg
   subscriber <- newNtfSubscriber smpAgentCfg' random
-  pushServer <- newNtfPushServer pushQSize apnsConfig
+  pushServer <- newNtfPushServer pushQSize apnsConfig wpConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where
@@ -150,22 +155,50 @@ data SMPSubscriber = SMPSubscriber
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (Maybe T.Text, NtfTknRec, PushNotification), -- Maybe Text is a hostname of "own" server
     pushClients :: TMap PushProvider PushProviderClient,
-    apnsConfig :: APNSPushClientConfig
+    apnsConfig :: APNSPushClientConfig,
+    wpConfig :: WebPushConfig
   }
 
-newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
-newNtfPushServer qSize apnsConfig = do
+newNtfPushServer :: Natural -> APNSPushClientConfig -> WebPushConfig -> IO NtfPushServer
+newNtfPushServer qSize apnsConfig wpConfig = do
   pushQ <- newTBQueueIO qSize
   pushClients <- TM.emptyIO
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  pure NtfPushServer {pushQ, pushClients, apnsConfig, wpConfig}
 
 newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
-  c <- case apnsProviderHost pp of
+newPushClient s pp = do
+  c <- case pp of
+    PPWP p -> newWPPushClient s p
+    PPAPNS p -> newAPNSPushClient s p
+  atomically $ TM.insert pp c $ pushClients s
+  pure c
+
+newAPNSPushClient :: NtfPushServer -> APNSProvider -> IO PushProviderClient
+newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
+  case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
-  atomically $ TM.insert pp c pushClients
-  pure c
+
+newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
+newWPPushClient NtfPushServer {wpConfig, pushClients} pp = do
+  logDebug "New WP Client requested"
+  -- We use one http manager per push server (which may be used by different clients)
+  manager <- wpHTTPManager
+  cache <- newIORef Nothing
+  random <- C.newRandom
+  let client = WebPushClient {wpConfig, cache, manager, random}
+  pure $ wpPushProviderClient client
+
+wpHTTPManager :: IO Manager
+wpHTTPManager =
+  newManager
+    tlsManagerSettings
+      { -- Ideally, we should be able to override the domain resolution to
+        -- disable requests to non-public IPs. The risk is very limited as
+        -- we allow https only, and the body is encrypted. Disabling redirections
+        -- avoids cross-protocol redir (https => http/unix)
+        managerModifyRequest = \r -> pure r {redirectCount = 0}
+      }
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 getPushClient s@NtfPushServer {pushClients} pp =

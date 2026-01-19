@@ -124,7 +124,7 @@ data APNSPushClientConfig = APNSPushClientConfig
     caStoreFile :: FilePath
   }
 
-apnsProviderHost :: PushProvider -> Maybe HostName
+apnsProviderHost :: APNSProvider -> Maybe HostName
 apnsProviderHost = \case
   PPApnsNull -> Nothing
   PPApnsTest -> Just "localhost"
@@ -160,9 +160,9 @@ createAPNSPushClient :: HostName -> APNSPushClientConfig -> IO APNSPushClient
 createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
   void $ connectHTTPS2 apnsHost apnsCfg https2Client
-  privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
+  privateKey <- C.readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
-  let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
+  let jwtHeader = mkJWTHeader authKeyAlg (Just authKeyId)
   jwtToken <- newTVarIO =<< mkApnsJWTToken appTeamId jwtHeader privateKey
   nonceDrg <- C.newRandom
   pure APNSPushClient {https2Client, privateKey, jwtHeader, jwtToken, nonceDrg, apnsHost, apnsCfg}
@@ -178,7 +178,8 @@ getApnsJWTToken APNSPushClient {apnsCfg = APNSPushClientConfig {appTeamId, token
       atomically $ writeTVar jwtToken t
       pure signedJWT'
   where
-    jwtTokenAge (JWTToken _ JWTClaims {iat}) = subtract iat . systemSeconds <$> getSystemTime
+    jwtTokenAge (JWTToken _ JWTClaims {iat = Just iat}) = subtract iat . systemSeconds <$> getSystemTime
+    jwtTokenAge (JWTToken _ JWTClaims {iat = Nothing}) = pure maxBound :: IO Int64
 
 mkApnsJWTToken :: Text -> JWTHeader -> EC.PrivateKey -> IO (JWTToken, SignedJWTToken)
 mkApnsJWTToken appTeamId jwtHeader privateKey = do
@@ -255,8 +256,10 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
+-- TODO [webpush] change type accept token components so it only allows APNS token
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = DeviceToken _ tknStr} pn = do
+apnsPushProviderClient _ NtfTknRec {token = WPDeviceToken _ _} _ = throwE PPInvalidPusher
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = APNSDeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn

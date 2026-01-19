@@ -87,6 +87,7 @@ module Simplex.Messaging.Crypto
     signatureKeyPair,
     publicToX509,
     encodeASNObj,
+    readECPrivateKey,
 
     -- * key encoding/decoding
     encodePubKey,
@@ -94,6 +95,10 @@ module Simplex.Messaging.Crypto
     encodePrivKey,
     decodePrivKey,
     pubKeyBytes,
+    encodeBigInt,
+    uncompressEncodePoint,
+    uncompressDecodePoint,
+    uncompressDecodePrivateNumber,
 
     -- * sign/verify
     Signature (..),
@@ -128,6 +133,7 @@ module Simplex.Messaging.Crypto
     encryptAEAD,
     decryptAEAD,
     encryptAESNoPad,
+    encryptAES128NoPad,
     decryptAESNoPad,
     authTagSize,
     randomAesKey,
@@ -210,24 +216,29 @@ import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Crypto.Cipher.AES (AES256)
+import Crypto.Cipher.AES (AES128, AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, SHA256 (..), SHA3_256, SHA3_384, SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
 import Crypto.Random (ChaChaDRG, MonadPseudoRandom, drgNew, randomBytesGenerate, withDRG)
+import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import qualified Data.Binary as Bin
+import qualified Data.Bits as Bits
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
@@ -235,13 +246,14 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
+import qualified Data.ByteString.Lazy as LB
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import qualified Data.List.NonEmpty as L
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
@@ -1039,9 +1051,20 @@ encryptAESNoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag
 encryptAESNoPad key iv = encryptAEADNoPad key iv ""
 {-# INLINE encryptAESNoPad #-}
 
+-- Used to encrypt WebPush notifications
+-- This function requires 12 bytes IV, it does not transform IV.
+encryptAES128NoPad :: Key -> GCMIV -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAES128NoPad key iv = encryptAEAD128NoPad key iv ""
+{-# INLINE encryptAES128NoPad #-}
+
 encryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
 encryptAEADNoPad aesKey ivBytes ad msg = do
-  aead <- initAEADGCM aesKey ivBytes
+  aead <- initAEADGCM @AES256 aesKey ivBytes
+  pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
+
+encryptAEAD128NoPad :: Key -> GCMIV -> ByteString -> ByteString -> ExceptT CryptoError IO (AuthTag, ByteString)
+encryptAEAD128NoPad aesKey ivBytes ad msg = do
+  aead <- initAEADGCM @AES128 aesKey ivBytes
   pure . first AuthTag $ AES.aeadSimpleEncrypt aead ad msg authTagSize
 
 -- | AEAD-GCM decryption with associated data.
@@ -1063,7 +1086,7 @@ decryptAESNoPad key iv = decryptAEADNoPad key iv ""
 
 decryptAEADNoPad :: Key -> GCMIV -> ByteString -> ByteString -> AuthTag -> ExceptT CryptoError IO ByteString
 decryptAEADNoPad aesKey iv ad msg (AuthTag tag) = do
-  aead <- initAEADGCM aesKey iv
+  aead <- initAEADGCM @AES256 aesKey iv
   maybeError AESDecryptError (AES.aeadSimpleDecrypt aead ad msg tag)
 
 maxMsgLen :: Int
@@ -1138,7 +1161,7 @@ initAEAD (Key aesKey) (IV ivBytes) = do
     AES.aeadInit AES.AEAD_GCM cipher iv
 
 -- this function requires 12 bytes IV, it does not transforms IV.
-initAEADGCM :: Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD AES256)
+initAEADGCM :: forall c. AES.BlockCipher c => Key -> GCMIV -> ExceptT CryptoError IO (AES.AEAD c)
 initAEADGCM (Key aesKey) (GCMIV ivBytes) = cryptoFailable $ do
   cipher <- AES.cipherInit aesKey
   AES.aeadInit AES.AEAD_GCM cipher ivBytes
@@ -1240,11 +1263,11 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
 newtype SignedObject a = SignedObject {getSignedExact :: X.SignedExact a}
 
-instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a)
 #if defined(dbPostgres)
-  fromField f dat = SignedObject <$> blobFieldDecoder X.decodeSignedObject f dat
+  where fromField f dat = SignedObject <$> blobFieldDecoder X.decodeSignedObject f dat
 #else
-  fromField = fmap SignedObject . blobFieldDecoder X.decodeSignedObject
+  where fromField = fmap SignedObject . blobFieldDecoder X.decodeSignedObject
 #endif
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
@@ -1530,3 +1553,54 @@ keyError :: (a, [ASN1]) -> Either String b
 keyError = \case
   (_, []) -> Left "unknown key algorithm"
   _ -> Left "more than one key"
+
+readECPrivateKey :: FilePath -> IO ECDSA.PrivateKey
+readECPrivateKey f = do
+  -- this pattern match is specific to APNS key type, it may need to be extended for other push providers
+  [PK.Unprotected (X.PrivKeyEC X.PrivKeyEC_Named {privkeyEC_name, privkeyEC_priv})] <- PK.readKeyFile f
+  pure ECDSA.PrivateKey {private_curve = ECC.getCurveByName privkeyEC_name, private_d = privkeyEC_priv}
+
+-- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
+-- | as required by RFC8291
+-- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
+uncompressEncodePoint :: ECC.Point -> ByteString
+uncompressEncodePoint (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
+uncompressEncodePoint ECC.PointO = "\0"
+
+uncompressDecodePoint :: ByteString -> Either String ECC.Point
+uncompressDecodePoint "\0" = pure ECC.PointO
+uncompressDecodePoint s
+  | B.take 1 s /= prefix = Left "PointFormatUnsupported"
+  | B.length s /= 65 = Left "KeySizeInvalid"
+  | otherwise = do
+      let s' = B.drop 1 s
+      x <- decodeBigInt $ B.take 32 s'
+      y <- decodeBigInt $ B.drop 32 s'
+      pure $ ECC.Point x y
+  where
+    prefix = "\x04" :: ByteString
+
+-- Used to test encryption against the RFC8291 Example - which gives the AS private key
+uncompressDecodePrivateNumber :: ByteString -> Either String ECC.PrivateNumber
+uncompressDecodePrivateNumber s
+  | B.length s /= 32 = Left "KeySizeInvalid"
+  | otherwise = decodeBigInt s
+
+encodeBigInt :: Integer -> ByteString
+encodeBigInt i =
+  let s1 = Bits.shiftR i 64
+      s2 = Bits.shiftR s1 64
+      s3 = Bits.shiftR s2 64
+   in LB.toStrict $ Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
+  where
+    w64 :: Integer -> Word64
+    w64 = fromIntegral
+
+decodeBigInt :: ByteString -> Either String Integer
+decodeBigInt s
+  | B.length s /= 32 = Left "PointSizeInvalid"
+  | otherwise =
+      let (w3, w2, w1, w0) = Bin.decode (LB.fromStrict s) :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64)
+       in Right $ shift 3 w3 + shift 2 w2 + shift 1 w1 + fromIntegral w0
+  where
+    shift i w = Bits.shiftL (fromIntegral w) (64 * i)
