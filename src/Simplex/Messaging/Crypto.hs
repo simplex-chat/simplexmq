@@ -95,6 +95,7 @@ module Simplex.Messaging.Crypto
     encodePrivKey,
     decodePrivKey,
     pubKeyBytes,
+    encodeBigInt,
     uncompressEncodePoint,
     uncompressDecodePoint,
     uncompressDecodePrivateNumber,

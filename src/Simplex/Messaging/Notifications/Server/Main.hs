@@ -11,7 +11,7 @@
 module Simplex.Messaging.Notifications.Server.Main where
 
 import Control.Logger.Simple (setLogLevel)
-import Control.Monad ( (<$!>), unless, void )
+import Control.Monad (unless, void, (<$!>))
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -31,9 +31,10 @@ import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClie
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
-import Simplex.Messaging.Notifications.Server (runNtfServer, restoreServerLastNtfs)
+import Simplex.Messaging.Notifications.Server (restoreServerLastNtfs, runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (VapidKey (..), WebPushConfig (..), mkVapid)
 import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres (exportNtfDbStore, importNtfSTMStore, newNtfDbStore)
 import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
@@ -55,9 +56,8 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
-import Text.Read (readMaybe)
 import System.Process (readCreateProcess, shell)
-import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushConfig(..), VapidKey, mkVapid)
+import Text.Read (readMaybe)
 
 ntfServerCLI :: FilePath -> FilePath -> IO ()
 ntfServerCLI cfgPath logPath =
@@ -215,12 +215,13 @@ ntfServerCLI cfgPath logPath =
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
-      vapidKey <- getVapidKey vapidKeyPath
+      vapidKey@VapidKey {fp = vapidFp} <- getVapidKey vapidKeyPath
       let host = either (const "<hostnames>") T.unpack $ lookupValue "TRANSPORT" "host" ini
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           cfg@NtfServerConfig {transports} = serverConfig vapidKey
           srv = ProtoServerWithAuth (NtfServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
+      B.putStrLn $ "VAPID: " <> vapidFp
       printNtfServerConfig transports dbStoreConfig
       runNtfServer cfg
       where
@@ -360,18 +361,21 @@ cliCommandP cfgPath logPath iniFile =
     skipTokensP =
       option
         strParse
-          ( long "skip-tokens"
-              <> help "Skip tokens during import"
-              <> value S.empty
-          )
+        ( long "skip-tokens"
+            <> help "Skip tokens during import"
+            <> value S.empty
+        )
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-
-        flag' False
+        flag'
+          False
           ( long "disable-store-log"
               <> help "Disable store log for persistence (enabled by default)"
           )
-          <|> flag True True
+          <|> flag
+            True
+            True
             ( long "store-log"
                 <> short 'l'
                 <> help "Enable store log for persistence (DEPRECATED, enabled by default)"
