@@ -127,14 +127,6 @@ rcvQueueSub :: RcvQueue -> RcvQueueSub
 rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
   RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
-data ShortLinkCreds = ShortLinkCreds
-  { shortLinkId :: SMP.LinkId,
-    shortLinkKey :: LinkKey,
-    linkPrivSigKey :: C.PrivateKeyEd25519,
-    linkEncFixedData :: SMP.EncFixedDataBytes
-  }
-  deriving (Show)
-
 clientServiceId :: RcvQueue -> Maybe ClientServiceId
 clientServiceId = fmap dbServiceId . clientService
 {-# INLINE clientServiceId #-}
