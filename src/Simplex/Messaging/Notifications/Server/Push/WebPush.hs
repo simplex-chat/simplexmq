@@ -129,7 +129,7 @@ mkVapidHeader VapidKey {key, fp} uriAuthority expire = do
             sub = Just "https://github.com/simplex-chat/simplexmq/"
           }
       jwt = JWTToken jwtHeader jwtClaims
-  signedToken <- signedJWTTokenRawSign key jwt
+  signedToken <- signedJWTTokenRaw key jwt
   pure $ "vapid t=" <> signedToken <> ",k=" <> fp
 
 wpPushProviderClient :: WebPushClient -> PushProviderClient
