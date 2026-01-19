@@ -1777,10 +1777,11 @@ instance Encoding OwnerAuth where
     pure OwnerAuth {ownerId, ownerKey, authOwnerSig}
 
 validateOwners :: Maybe ShortLinkCreds -> UserContactData -> Either String ()
-validateOwners shortLink_ UserContactData {owners} = case (shortLink_, owners) of
-  (_, []) -> Right ()
-  (Nothing, _) -> Left "no root key with additional owner(s)"
-  (Just ShortLinkCreds {linkPrivSigKey, linkRootSigKey}, _)
+validateOwners shortLink_ UserContactData {owners} = case shortLink_ of
+  Nothing
+    | null owners -> Right ()
+    | otherwise -> Left "no link credentials with additional owners"
+  Just ShortLinkCreds {linkPrivSigKey, linkRootSigKey}
     | hasOwner -> validateLinkOwners (fromMaybe k linkRootSigKey) owners
     | otherwise -> Left "no current owner in link data"
     where
