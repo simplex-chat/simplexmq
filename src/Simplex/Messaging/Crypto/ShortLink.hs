@@ -21,6 +21,7 @@ module Simplex.Messaging.Crypto.ShortLink
 where
 
 import Control.Concurrent.STM
+import Control.Monad (unless)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
@@ -51,7 +52,7 @@ invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
 encodeSignLinkData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
 encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
-  let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq}
+  let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq, linkEntityId = Nothing}
       md = smpEncode $ connLinkData agentVRange userData
    in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
 
@@ -87,11 +88,16 @@ decryptLinkData linkKey k (encFD, encMD) = do
   (sig2, md) <- decrypt encMD
   FixedLinkData {rootKey, connReq} <- decode fd
   md' <- decode @(ConnLinkData c) md
+  let signedBy k' = C.verify' k' sig2 md
   if
     | LinkKey (C.sha3_256 fd) /= linkKey -> linkErr "link data hash"
     | not (C.verify' rootKey sig1 fd) -> linkErr "link data signature"
-    | not (C.verify' rootKey sig2 md) -> linkErr "user data signature"
-    | otherwise -> Right (connReq, md')
+    | otherwise -> case md' of
+        InvitationLinkData {} -> unless (signedBy rootKey) $ linkErr "user data signature"
+        ContactLinkData _ UserContactData {owners} -> do
+          first (AGENT . A_LINK) $ validateLinkOwners rootKey owners
+          unless (signedBy rootKey || any (signedBy . ownerKey) owners) $ linkErr "user data signature"
+  Right (connReq, md')
   where
     decrypt (EncDataBytes d) = do
       (nonce, Tail ct) <- decode d
@@ -100,4 +106,5 @@ decryptLinkData linkKey k (encFD, encMD) = do
     decode :: Encoding a => ByteString -> Either AgentErrorType a
     decode = msgErr . smpDecode
     msgErr = first (const $ AGENT A_MESSAGE)
+    linkErr :: String -> Either AgentErrorType ()
     linkErr = Left . AGENT . A_LINK
