@@ -353,8 +353,8 @@ setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
 -- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new connection id
-getConnShortLinkAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> ConnShortLink c -> AE ConnId
-getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
+getConnShortLinkAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> ConnShortLink c -> AE ConnId
+getConnShortLinkAsync c = withAgentEnv c .:. getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id.
@@ -924,8 +924,8 @@ setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
     enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
 
-getConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> ConnShortLink c -> AM ConnId
-getConnShortLinkAsync' c userId corrId enableNtfs shortLink = do
+getConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> UserId -> ACorrId -> ConnShortLink c -> AM ConnId
+getConnShortLinkAsync' c userId corrId shortLink = do
   g <- asks random
   connId <- withStore c $ \db -> do
     -- server is created so the command is processed in server queue,
@@ -943,7 +943,7 @@ getConnShortLinkAsync' c userId corrId enableNtfs shortLink = do
             { userId,
               connId = "",
               connAgentVersion = currentSMPAgentVersion,
-              enableNtfs,
+              enableNtfs = False,
               lastExternalSndId = 0,
               deleted = False,
               ratchetSyncState = RSOk,
