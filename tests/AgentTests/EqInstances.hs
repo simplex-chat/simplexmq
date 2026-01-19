@@ -5,7 +5,7 @@
 module AgentTests.EqInstances where
 
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Protocol (ConnLinkData (..), ShortLinkCreds (..))
+import Simplex.Messaging.Agent.Protocol (ShortLinkCreds (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client (ProxiedRelay (..))
 
