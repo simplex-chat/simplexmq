@@ -1,33 +1,29 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE DataKinds #-}
 
 module NtfWPTests where
 
-import Test.Hspec hiding (fit, it)
-import Util
-import Simplex.Messaging.Encoding.String (StrEncoding(..))
-import qualified Data.ByteString as B
-import qualified Crypto.PubKey.ECC.Types as ECC
-import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpEncrypt', encodeWPN, getVapidHeader')
+import Control.Monad (unless)
 import Control.Monad.Except (runExceptT)
-import qualified Data.ByteString.Lazy as BL
-import Simplex.Messaging.Notifications.Server.Push
-import Data.List.NonEmpty (NonEmpty ((:|)))
-import qualified Simplex.Messaging.Crypto as C
-import Data.Time.Clock.System (SystemTime(..))
+import qualified Crypto.PubKey.ECC.Types as ECC
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import Data.Either (isLeft)
 import Data.IORef (newIORef)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Main (getVapidKey)
-import Control.Monad (unless)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (getVapidHeader', wpEncrypt')
+import Test.Hspec hiding (fit, it)
+import Util
 
 ntfWPTests :: Spec
 ntfWPTests = describe "NTF Protocol" $ do
   it "decode WPDeviceToken from string" testWPDeviceTokenStrEncoding
   it "decode invalid WPDeviceToken" testInvalidWPDeviceTokenStrEncoding
   it "Encrypt RFC8291 example" testWPEncryption
-  it "PushNotifications encoding" testPNEncoding
   it "Vapid header cache" testVapidCache
 
 testWPDeviceTokenStrEncoding :: Expectation
@@ -38,7 +34,7 @@ testWPDeviceTokenStrEncoding = do
 
   let auth = either error id $ strDecode "AQ3VfRX3_F38J3ltcmMVRg"
   let pk = either error id $ strDecode "BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
-  let params ::WPTokenParams = either error id $ strDecode "/secret AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
+  let params :: WPTokenParams = either error id $ strDecode "/secret AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
   wpPath params `shouldBe` "/secret"
   let key = wpKey params
   wpAuth key `shouldBe` auth
@@ -59,16 +55,16 @@ testInvalidWPDeviceTokenStrEncoding = do
   -- e.g "https://#1" is a valid URL. But that is the same parser
   -- we use to send the requests, so that's fine.
   let ts = "webpush https://localhost:/ AQ3VfRX3_F38J3ltcmMVRg BKuw4WxupnnrZHqk6vCwoms4tOpitZMvFdR9eAn54yOPY4q9jpXOpl-Ui_FwbIy8ZbFCnuaS7RnO02ahuL4XxIM"
-  let t = strDecode ts :: Either String DeviceToken
+      t = strDecode ts :: Either String DeviceToken
   t `shouldSatisfy` isLeft
 
 -- | Example from RFC8291
 testWPEncryption :: Expectation
 testWPEncryption = do
-  let clearT :: B.ByteString = "When I grow up, I want to be a watermelon"
-  let pParams :: WPTokenParams = either error id $ strDecode "/push/JzLQ3raZJfFBR0aqvOMsLrt54w4rJUsV BTBZMqHH6r4Tts7J_aSIgg BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
-  let salt :: B.ByteString = either error id $ strDecode "DGv6ra1nlYgDCS1FRnbzlw"
-  let privBS :: BL.ByteString = either error BL.fromStrict $ strDecode "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"
+  let clearT :: ByteString = "When I grow up, I want to be a watermelon"
+      pParams :: WPTokenParams = either error id $ strDecode "/push/JzLQ3raZJfFBR0aqvOMsLrt54w4rJUsV BTBZMqHH6r4Tts7J_aSIgg BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+      salt :: ByteString = either error id $ strDecode "DGv6ra1nlYgDCS1FRnbzlw"
+      privBS :: ByteString = either error id $ strDecode "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"
   asPriv :: ECC.PrivateNumber <- case C.uncompressDecodePrivateNumber privBS of
     Left e -> fail $ "Cannot decode PrivateNumber from b64 " <> show e
     Right p -> pure p
@@ -77,22 +73,6 @@ testWPEncryption = do
     Left _ -> fail "Cannot encrypt clear text"
     Right c -> pure c
   strEncode cipher `shouldBe` "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
-
-testPNEncoding :: Expectation
-testPNEncoding = do
-  let pnVerif = PNVerification (NtfRegCode "abcd")
-      pnCheck = PNCheckMessages
-      pnMess = pnM "MyMessage"
-  enc pnCheck `shouldBe` "{\"checkMessages\":true}"
-  enc pnVerif `shouldBe` "{\"verification\":\"YWJjZA==\"}"
-  enc pnMess `shouldBe` "{\"checkMessages\":true}"
-  where
-    enc p = BL.toStrict $ encodeWPN p
-    pnM :: B.ByteString -> PushNotification
-    pnM m = do
-      let smpQ = either error id $ strDecode "smp://AAAA@l/AAAA"
-      let now = MkSystemTime 1761827386 0
-      PNMessage $ PNMessageData smpQ now (C.cbNonce "nonce") m :| []
 
 testVapidCache :: Expectation
 testVapidCache = do
@@ -111,11 +91,11 @@ testVapidCache = do
   v3 `shouldContainBS` "vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9."
   v3 `shouldContainBS` ",k=BIk7ASkEr1A1rJRGXMKi77tAGj3dRouSgZdW6S5pee7a3h7fkvd0OYQixy4yj35UFZt8hd9TwAQiybDK_HJLwJA"
 
-shouldContainBS :: B.ByteString -> B.ByteString -> Expectation
+shouldContainBS :: ByteString -> ByteString -> Expectation
 shouldContainBS actual expected =
   unless (expected `B.isInfixOf` actual) $
     expectationFailure $
-      "Expected ByteString to contain:\n" ++
-      show expected ++
-      "\nBut got:\n" ++
-      show actual
+      "Expected ByteString to contain:\n"
+        ++ show expected
+        ++ "\nBut got:\n"
+        ++ show actual

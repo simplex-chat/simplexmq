@@ -262,7 +262,11 @@ ntfServerCLI cfgPath logPath =
                     persistErrorInterval = 0 -- seconds
                   },
               apnsConfig = defaultAPNSPushClientConfig,
-              wpConfig = WebPushConfig {vapidKey},
+              wpConfig =
+                WebPushConfig
+                  { vapidKey,
+                    paddedNtfLength = 3072
+                  },
               subsBatchSize = 900,
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini

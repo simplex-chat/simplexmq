@@ -28,6 +28,7 @@ import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System
 import Data.Type.Equality
 import Data.Word (Word16)
+import Network.HTTP.Client (Request, parseUrlThrow)
 import Simplex.Messaging.Agent.Protocol (updateSMPServerHosts)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -36,11 +37,6 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, invalidReasonNTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.Binary as Bin
-import qualified Crypto.Error as CE
-import qualified Data.Bits as Bits
-import Network.HTTP.Client (Request, parseUrlThrow)
 
 data NtfEntity = Token | Subscription
   deriving (Show)
@@ -487,11 +483,13 @@ data WPKey = WPKey
   }
   deriving (Eq, Ord, Show)
 
-uncompressEncode :: WPP256dh -> BL.ByteString
+uncompressEncode :: WPP256dh -> ByteString
 uncompressEncode (WPP256dh p) = C.uncompressEncodePoint p
+{-# INLINE uncompressEncode #-}
 
-uncompressDecode :: BL.ByteString -> Either CE.CryptoError WPP256dh
+uncompressDecode :: ByteString -> Either String WPP256dh
 uncompressDecode bs = WPP256dh <$> C.uncompressDecodePoint bs
+{-# INLINE uncompressDecode #-}
 
 data WPTokenParams = WPTokenParams
   { wpPath :: ByteString,
@@ -508,18 +506,16 @@ instance StrEncoding WPAuth where
   strP = toWPAuth <$?> strP
 
 instance Encoding WPP256dh where
-  smpEncode p = smpEncode . BL.toStrict $ uncompressEncode p
-  smpP = smpP >>= \bs ->
-    case uncompressDecode (BL.fromStrict bs) of
-      Left _ -> fail "Invalid p256dh key"
-      Right res -> pure res
+  smpEncode = smpEncode . uncompressEncode
+  {-# INLINE smpEncode #-}
+  smpP = uncompressDecode <$?> smpP
+  {-# INLINE smpP #-}
 
 instance StrEncoding WPP256dh where
-  strEncode p = strEncode . BL.toStrict $ uncompressEncode p
-  strP = strP >>= \bs ->
-    case uncompressDecode (BL.fromStrict bs) of
-      Left _ -> fail "Invalid p256dh key"
-      Right res -> pure res
+  strEncode = strEncode . uncompressEncode
+  {-# INLINE strEncode #-}
+  strP = uncompressDecode <$?> strP
+  {-# INLINE strP #-}
 
 instance Encoding WPKey where
   smpEncode WPKey {wpAuth, wpP256dh} = smpEncode (wpAuth, wpP256dh)
@@ -594,12 +590,14 @@ instance ToJSON DeviceToken where
     APNSDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= decodeLatin1 t
     -- ToJSON/FromJSON isn't used for WPDeviceToken, we just include the pushProvider so it can fail properly if used to decrypt
     WPDeviceToken p _ -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p)
-    -- WPDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= toJSON t
+
+  -- WPDeviceToken p t -> J.pairs $ "pushProvider" .= decodeLatin1 (strEncode p) <> "token" .= toJSON t
   toJSON token = case token of
     APNSDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= decodeLatin1 t]
     -- ToJSON/FromJSON isn't used for WPDeviceToken, we just include the pushProvider so it can fail properly if used to decrypt
     WPDeviceToken p _ -> J.object ["pushProvider" .= decodeLatin1 (strEncode p)]
-    -- WPDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= toJSON t]
+
+-- WPDeviceToken p t -> J.object ["pushProvider" .= decodeLatin1 (strEncode p), "token" .= toJSON t]
 
 instance FromJSON DeviceToken where
   parseJSON = J.withObject "DeviceToken" $ \o ->
