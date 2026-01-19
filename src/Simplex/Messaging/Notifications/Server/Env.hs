@@ -1,8 +1,8 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -12,12 +12,15 @@ import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
+import Data.IORef (newIORef)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import qualified Data.X509.Validation as XV
+import Network.HTTP.Client (Manager, ManagerSettings (..), Request (..), newManager)
+import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
@@ -27,6 +30,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushClient (..), WebPushConfig, wpPushProviderClient)
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres
@@ -46,10 +50,6 @@ import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, Transport
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
-import Simplex.Messaging.Notifications.Server.Push.WebPush (wpPushProviderClient, WebPushConfig)
-import Network.HTTP.Client (newManager, ManagerSettings (..), Request (..), Manager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
-import Data.IORef (newIORef)
 
 data NtfServerConfig = NtfServerConfig
   { transports :: [(ServiceName, ASrvTransport, AddHTTP)],
@@ -185,16 +185,20 @@ newWPPushClient NtfPushServer {wpConfig, pushClients} pp = do
   -- We use one http manager per push server (which may be used by different clients)
   manager <- wpHTTPManager
   cache <- newIORef Nothing
-  pure $ wpPushProviderClient wpConfig cache manager
+  random <- C.newRandom
+  let client = WebPushClient {wpConfig, cache, manager, random}
+  pure $ wpPushProviderClient client
 
 wpHTTPManager :: IO Manager
-wpHTTPManager = newManager tlsManagerSettings {
-    -- Ideally, we should be able to override the domain resolution to
-    -- disable requests to non-public IPs. The risk is very limited as
-    -- we allow https only, and the body is encrypted. Disabling redirections
-    -- avoids cross-protocol redir (https => http/unix)
-    managerModifyRequest = \r -> pure r {redirectCount = 0}
-  }
+wpHTTPManager =
+  newManager
+    tlsManagerSettings
+      { -- Ideally, we should be able to override the domain resolution to
+        -- disable requests to non-public IPs. The risk is very limited as
+        -- we allow https only, and the body is encrypted. Disabling redirections
+        -- avoids cross-protocol redir (https => http/unix)
+        managerModifyRequest = \r -> pure r {redirectCount = 0}
+      }
 
 getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
 getPushClient s@NtfPushServer {pushClients} pp =

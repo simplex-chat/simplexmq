@@ -215,24 +215,29 @@ import Control.Exception (Exception)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
-import Crypto.Cipher.AES (AES256, AES128)
+import Crypto.Cipher.AES (AES128, AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, SHA256 (..), SHA3_256, SHA3_384, SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Curve448 as X448
+import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
+import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
 import Crypto.Random (ChaChaDRG, MonadPseudoRandom, drgNew, randomBytesGenerate, withDRG)
+import qualified Crypto.Store.PKCS8 as PK
 import Data.ASN1.BinaryEncoding
 import Data.ASN1.Encoding
 import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import qualified Data.Binary as Bin
+import qualified Data.Bits as Bits
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode, encode)
@@ -240,13 +245,14 @@ import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
+import qualified Data.ByteString.Lazy as LB
 import Data.Constraint (Dict (..))
 import Data.Kind (Constraint, Type)
 import qualified Data.List.NonEmpty as L
 import Data.String
 import Data.Type.Equality
 import Data.Typeable (Proxy (Proxy), Typeable)
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import GHC.TypeLits (ErrorMessage (..), KnownNat, Nat, TypeError, natVal, type (+))
@@ -256,12 +262,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Util ((<$?>))
-import qualified Crypto.PubKey.ECC.ECDSA as ECDSA
-import qualified Crypto.Store.PKCS8 as PK
-import qualified Crypto.PubKey.ECC.Types as ECC
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.Binary as Bin
-import qualified Data.Bits as Bits
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -1262,11 +1262,11 @@ instance SignatureAlgorithmX509 pk => SignatureAlgorithmX509 (a, pk) where
 -- | A wrapper to marshall signed ASN1 objects, like certificates.
 newtype SignedObject a = SignedObject {getSignedExact :: X.SignedExact a}
 
-instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
+instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a)
 #if defined(dbPostgres)
-  fromField f dat = SignedObject <$> blobFieldDecoder X.decodeSignedObject f dat
+  where fromField f dat = SignedObject <$> blobFieldDecoder X.decodeSignedObject f dat
 #else
-  fromField = fmap SignedObject . blobFieldDecoder X.decodeSignedObject
+  where fromField = fmap SignedObject . blobFieldDecoder X.decodeSignedObject
 #endif
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
@@ -1562,46 +1562,44 @@ readECPrivateKey f = do
 -- | Elliptic-Curve-Point-to-Octet-String Conversion without compression
 -- | as required by RFC8291
 -- | https://www.secg.org/sec1-v2.pdf#subsubsection.2.3.3
-uncompressEncodePoint :: ECC.Point -> BL.ByteString
+uncompressEncodePoint :: ECC.Point -> ByteString
 uncompressEncodePoint (ECC.Point x y) = "\x04" <> encodeBigInt x <> encodeBigInt y
 uncompressEncodePoint ECC.PointO = "\0"
 
-uncompressDecodePoint :: BL.ByteString -> Either CE.CryptoError ECC.Point
+uncompressDecodePoint :: ByteString -> Either String ECC.Point
 uncompressDecodePoint "\0" = pure ECC.PointO
 uncompressDecodePoint s
-  | BL.take 1 s /= prefix = Left CE.CryptoError_PointFormatUnsupported
-  | BL.length s /= 65 = Left CE.CryptoError_KeySizeInvalid
+  | B.take 1 s /= prefix = Left "PointFormatUnsupported"
+  | B.length s /= 65 = Left "KeySizeInvalid"
   | otherwise = do
-    let s' = BL.drop 1 s
-    x <- decodeBigInt $ BL.take 32 s'
-    y <- decodeBigInt $ BL.drop 32 s'
-    pure $ ECC.Point x y
+      let s' = B.drop 1 s
+      x <- decodeBigInt $ B.take 32 s'
+      y <- decodeBigInt $ B.drop 32 s'
+      pure $ ECC.Point x y
   where
-    prefix = "\x04" :: BL.ByteString
+    prefix = "\x04" :: ByteString
 
 -- Used to test encryption against the RFC8291 Example - which gives the AS private key
-uncompressDecodePrivateNumber :: BL.ByteString -> Either CE.CryptoError ECC.PrivateNumber
+uncompressDecodePrivateNumber :: ByteString -> Either String ECC.PrivateNumber
 uncompressDecodePrivateNumber s
-  | BL.length s /= 32 = Left CE.CryptoError_KeySizeInvalid
-  | otherwise = do
-    decodeBigInt s
+  | B.length s /= 32 = Left "KeySizeInvalid"
+  | otherwise = decodeBigInt s
 
-encodeBigInt :: Integer -> BL.ByteString
-encodeBigInt i = do
+encodeBigInt :: Integer -> ByteString
+encodeBigInt i =
   let s1 = Bits.shiftR i 64
       s2 = Bits.shiftR s1 64
       s3 = Bits.shiftR s2 64
-  Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
+   in LB.toStrict $ Bin.encode (w64 s3, w64 s2, w64 s1, w64 i)
   where
-    w64 :: Integer -> Bin.Word64
+    w64 :: Integer -> Word64
     w64 = fromIntegral
 
-decodeBigInt :: BL.ByteString -> Either CE.CryptoError Integer
+decodeBigInt :: ByteString -> Either String Integer
 decodeBigInt s
-  | BL.length s /= 32 = Left CE.CryptoError_PointSizeInvalid
-  | otherwise = do
-      let (w3, w2, w1, w0) = Bin.decode s :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64 )
-      pure $ shift 3 w3 + shift 2 w2 + shift 1 w1 + shift 0 w0
+  | B.length s /= 32 = Left "PointSizeInvalid"
+  | otherwise =
+      let (w3, w2, w1, w0) = Bin.decode (LB.fromStrict s) :: (Bin.Word64, Bin.Word64, Bin.Word64, Bin.Word64)
+       in Right $ shift 3 w3 + shift 2 w2 + shift 1 w1 + fromIntegral w0
   where
     shift i w = Bits.shiftL (fromIntegral w) (64 * i)
-
