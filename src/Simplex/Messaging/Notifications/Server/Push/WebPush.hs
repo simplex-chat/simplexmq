@@ -38,10 +38,17 @@ import Data.Time.Clock.System (getSystemTime, systemSeconds)
 import Network.HTTP.Client
 import qualified Network.HTTP.Types as N
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfRegCode (..), WPAuth (..), WPKey (..), WPP256dh (..), WPTokenParams (..), encodePNMessages, wpAud, wpRequest)
+import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfRegCode (..), WPAuth (..), WPKey (..), WPP256dh (..), WPTokenParams (..), WPProvider (..), encodePNMessages, wpAud, wpRequest)
 import Simplex.Messaging.Notifications.Server.Push
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Util (liftError', safeDecodeUtf8, tshow)
+import Simplex.Messaging.Transport.HTTP2.Client (HTTP2Client, getHTTP2Client, defaultHTTP2ClientConfig, HTTP2ClientError, sendRequest, HTTP2Response (..))
+import Network.Socket (ServiceName, HostName)
+import System.X509.Unix
+import qualified Network.HTTP2.Client as H2
+import Data.ByteString.Builder (lazyByteString)
+import Simplex.Messaging.Encoding.String (StrEncoding(..))
+import Data.Bifunctor (first)
 import UnliftIO.STM
 
 -- | Vapid
@@ -61,7 +68,6 @@ mkVapid key = VapidKey {key, fp}
 data WebPushClient = WebPushClient
   { wpConfig :: WebPushConfig,
     cache :: IORef (Maybe WPCache),
-    manager :: Manager,
     random :: TVar ChaChaDRG
   }
 
@@ -132,26 +138,60 @@ mkVapidHeader VapidKey {key, fp} uriAuthority expire = do
   signedToken <- signedJWTTokenRaw key jwt
   pure $ "vapid t=" <> signedToken <> ",k=" <> fp
 
-wpPushProviderClient :: WebPushClient -> PushProviderClient
-wpPushProviderClient _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
-wpPushProviderClient c@WebPushClient {wpConfig, cache, manager} tkn@NtfTknRec {token = token@(WPDeviceToken pp params)} pn = do
+wpHTTP2Client :: HostName -> ServiceName -> IO (Either HTTP2ClientError HTTP2Client)
+wpHTTP2Client h p = do
+  caStore <- Just <$> getSystemCertificateStore
+  let config = defaultHTTP2ClientConfig
+  getHTTP2Client h p caStore config nop
+  where
+    nop = pure ()
+
+wpHeaders :: B.ByteString -> [N.Header]
+wpHeaders vapidH = [
+  -- Why http2-client doesn't accept TTL AND Urgency?
+  -- Keeping Urgency for now, the TTL should be around 30 days by default on the push servers
+  -- ("TTL", "2592000"), -- 30 days
+  ("Urgency", "high"),
+  ("Content-Encoding", "aes128gcm"),
+  ("Authorization", vapidH)
+  -- TODO: topic for pings and interval
+  ]
+
+wpHTTP2Req :: B.ByteString -> [(N.HeaderName, B.ByteString)] -> LB.ByteString -> H2.Request
+wpHTTP2Req path headers s =  H2.requestBuilder N.methodPost path headers (lazyByteString s)
+
+wpPushProviderClientH2 :: WebPushClient -> HTTP2Client -> PushProviderClient
+wpPushProviderClientH2 _ _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
+wpPushProviderClientH2 c@WebPushClient {wpConfig, cache} http2 tkn@NtfTknRec {token = (WPDeviceToken pp@(WPP p) params)} pn = do
+  -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
+  -- parsing will happen in DeviceToken parser, so it won't fail here
+  encBody <- body
+  vapidH <- liftError' toPPWPError $ try $ getVapidHeader (vapidKey wpConfig) cache $ wpAud pp
+  let req = wpHTTP2Req (wpPath params) (wpHeaders vapidH) $ LB.fromStrict encBody
+  logDebug $ "HTTP/2 Request to " <> tshow (strEncode p)
+  HTTP2Response {response} <- liftHTTPS2 $ sendRequest http2 req Nothing
+  let status = H2.responseStatus response
+  if status >= Just N.ok200 && status < Just N.status300
+  then pure ()
+  else throwError $ fromStatusCode status
+  where
+    body :: ExceptT PushProviderError IO B.ByteString
+    body = withExceptT PPCryptoError $ wpEncrypt c tkn params pn
+    liftHTTPS2 a = ExceptT $ first PPConnection <$> a
+
+wpPushProviderClientH1 :: WebPushClient -> Manager -> PushProviderClient
+wpPushProviderClientH1 _ _ NtfTknRec {token = APNSDeviceToken _ _} _ = throwE PPInvalidPusher
+wpPushProviderClientH1 c@WebPushClient {wpConfig, cache} manager tkn@NtfTknRec {token = token@(WPDeviceToken pp params)} pn = do
   -- TODO [webpush] this function should accept type that is restricted to WP token (so, possibly WPProvider and WPTokenParams)
   -- parsing will happen in DeviceToken parser, so it won't fail here
   r <- wpRequest token
   vapidH <- liftError' toPPWPError $ try $ getVapidHeader (vapidKey wpConfig) cache $ wpAud pp
   logDebug $ "Web Push request to " <> tshow (host r)
   encBody <- withExceptT PPCryptoError $ wpEncrypt c tkn params pn
-  let requestHeaders =
-        [ ("TTL", "2592000"), -- 30 days
-          ("Urgency", "high"),
-          ("Content-Encoding", "aes128gcm"),
-          ("Authorization", vapidH)
-          -- TODO: topic for pings and interval
-        ]
-      req =
+  let req =
         r
           { method = "POST",
-            requestHeaders,
+            requestHeaders = wpHeaders vapidH,
             requestBody = RequestBodyBS encBody,
             redirectCount = 0
           }
@@ -213,13 +253,14 @@ wpEncrypt' WPKey {wpAuth, wpP256dh = WPP256dh uaPubK} asPrivK salt clearT = do
 toPPWPError :: SomeException -> PushProviderError
 toPPWPError e = case fromException e of
   Just (InvalidUrlException _ _) -> PPWPInvalidUrl
-  Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (responseStatus resp) ("" :: String)
+  Just (HttpExceptionRequest _ (StatusCodeException resp _)) -> fromStatusCode (Just $ responseStatus resp)
   _ -> PPWPOtherError e
-  where
-    fromStatusCode status reason
-      | status == N.status200 = PPWPRemovedEndpoint
-      | status == N.status410 = PPWPRemovedEndpoint
-      | status == N.status413 = PPWPRequestTooLong
-      | status == N.status429 = PPRetryLater
-      | status >= N.status500 = PPRetryLater
-      | otherwise = PPResponseError (Just status) (tshow reason)
+
+fromStatusCode :: Maybe N.Status -> PushProviderError
+fromStatusCode status
+  | status == Just N.status404 = PPWPRemovedEndpoint
+  | status == Just N.status410 = PPWPRemovedEndpoint
+  | status == Just N.status413 = PPWPRequestTooLong
+  | status == Just N.status429 = PPRetryLater
+  | status >= Just N.status500 = PPRetryLater
+  | otherwise = PPResponseError status "Invalid response"

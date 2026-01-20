@@ -30,20 +30,21 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Push
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushClient (..), WebPushConfig, wpPushProviderClient)
+import Simplex.Messaging.Notifications.Server.Push.WebPush (WebPushClient (..), WebPushConfig, wpPushProviderClientH1, wpPushProviderClientH2, wpHTTP2Client)
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), Transmission, SrvLoc (..))
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
+import Simplex.Messaging.Util (tshow)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceCredentials (..), THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
@@ -180,14 +181,18 @@ newAPNSPushClient NtfPushServer {apnsConfig, pushClients} pp = do
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
 
 newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
-newWPPushClient NtfPushServer {wpConfig, pushClients} pp = do
+newWPPushClient NtfPushServer {wpConfig, pushClients} (WPP (WPSrvLoc (SrvLoc h p))) = do
   logDebug "New WP Client requested"
   -- We use one http manager per push server (which may be used by different clients)
-  manager <- wpHTTPManager
   cache <- newIORef Nothing
   random <- C.newRandom
-  let client = WebPushClient {wpConfig, cache, manager, random}
-  pure $ wpPushProviderClient client
+  let client = WebPushClient {wpConfig, cache, random}
+  r <- wpHTTP2Client h p
+  case r of
+    Right h2Client -> pure $ wpPushProviderClientH2 client h2Client
+    Left e -> do
+      logError $ "Error connecting to H2 WP: " <> tshow e
+      wpPushProviderClientH1 client <$> wpHTTPManager
 
 wpHTTPManager :: IO Manager
 wpHTTPManager =

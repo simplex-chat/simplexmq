@@ -305,6 +305,7 @@ library
     , containers ==0.6.*
     , crypton ==0.34.*
     , crypton-x509 ==1.7.*
+    , crypton-x509-system ==1.6.*
     , crypton-x509-store ==1.6.*
     , crypton-x509-validation ==1.6.*
     , cryptostore ==0.3.*
