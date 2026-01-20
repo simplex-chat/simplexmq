@@ -12,12 +12,12 @@ import AgentTests.EqInstances ()
 import Control.Concurrent.STM
 import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
-import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64.URL as B64
-import Simplex.Messaging.Encoding.String
+import qualified Data.ByteString.Char8 as B
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EncFixedDataBytes)
 import Test.Hspec hiding (fit, it)
 import Util
@@ -48,7 +48,7 @@ testInvShortLink = do
       k = SL.invShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
-  Right (connReq, connData') <- pure $ SL.decryptLinkData linkKey k srvData
+  Right (FixedLinkData {linkConnReq = connReq}, connData') <- pure $ SL.decryptLinkData linkKey k srvData
   connReq `shouldBe` invConnRequest
   linkUserData connData' `shouldBe` userData
 
@@ -86,7 +86,7 @@ testContactShortLink = do
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
-  Right (connReq, ContactLinkData _ userCtData') <- pure $ SL.decryptLinkData @'CMContact linkKey k srvData
+  Right (FixedLinkData {linkConnReq = connReq}, ContactLinkData _ userCtData') <- pure $ SL.decryptLinkData @'CMContact linkKey k srvData
   connReq `shouldBe` contactConnRequest
   userCtData' `shouldBe` userCtData
 
@@ -108,7 +108,7 @@ testUpdateContactShortLink = do
       signed = SL.encodeSignUserData SCMContact (snd sigKeys) supportedSMPAgentVRange userLinkData'
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
-  Right (connReq, ContactLinkData _ userCtData'') <- pure $ SL.decryptLinkData @'CMContact linkKey k (fd, ud')
+  Right (FixedLinkData {linkConnReq = connReq}, ContactLinkData _ userCtData'') <- pure $ SL.decryptLinkData @'CMContact linkKey k (fd, ud')
   connReq `shouldBe` contactConnRequest
   userCtData'' `shouldBe` userCtData'
 
@@ -148,7 +148,7 @@ testContactShortLinkBadSignature = do
   -- decryption fails
   SL.decryptLinkData @'CMContact linkKey k (fd, ud')
     `shouldBe` Left (AGENT (A_LINK "user data signature"))
-    
+
 testContactShortLinkOwner :: IO ()
 testContactShortLinkOwner = do
   -- encrypt
@@ -183,7 +183,7 @@ testEncDec :: TVar ChaChaDRG -> C.PrivateKeyEd25519 -> (EncFixedDataBytes, LinkK
 testEncDec g pk (fd, linkKey, k) ctData = do
   let signed = SL.encodeSignUserData SCMContact pk supportedSMPAgentVRange $ UserContactLinkData ctData
   Right ud <- runExceptT $ SL.encryptUserData g k signed
-  Right (connReq', ContactLinkData _ ctData') <- pure $ SL.decryptLinkData @'CMContact linkKey k (fd, ud)
+  Right (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ ctData') <- pure $ SL.decryptLinkData @'CMContact linkKey k (fd, ud)
   connReq' `shouldBe` contactConnRequest
   ctData' `shouldBe` ctData
 

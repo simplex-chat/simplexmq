@@ -20,8 +20,8 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+{-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 -- |
 -- Module      : Simplex.Messaging.Agent.Protocol
@@ -112,6 +112,7 @@ module Simplex.Messaging.Agent.Protocol
     CRClientData,
     ServiceScheme,
     FixedLinkData (..),
+    AConnLinkData (..),
     ConnLinkData (..),
     AUserConnLinkData (..),
     UserConnLinkData (..),
@@ -255,10 +256,10 @@ import Simplex.Messaging.Protocol
     legacyStrEncodeServer,
     noAuthSrv,
     sameSrvAddr,
+    senderCanSecure,
+    shortLinksSMPClientVersion,
     sndAuthKeySMPClientVersion,
     srvHostnamesSMPClientVersion,
-    shortLinksSMPClientVersion,
-    senderCanSecure,
     pattern ProtoServerWithAuth,
     pattern SMPServer,
   )
@@ -386,7 +387,8 @@ type SndQueueSecured = Bool
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> Maybe ClientServiceId -> AEvent AEConn
-  LINK :: AConnShortLink -> AUserConnLinkData -> AEvent AEConn
+  LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
+  LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -440,7 +442,8 @@ deriving instance Show AEvtTag
 
 data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
-  | LSET AUserConnLinkData (Maybe CRClientData) -- response LINK
+  | LSET (UserConnLinkData 'CMContact) (Maybe CRClientData) -- response LINK
+  | LGET (ConnShortLink 'CMContact) -- response LDATA
   | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
@@ -451,6 +454,7 @@ data ACommand
 data ACommandTag
   = NEW_
   | LSET_
+  | LGET_
   | JOIN_
   | LET_
   | ACK_
@@ -461,6 +465,7 @@ data ACommandTag
 data AEventTag (e :: AEntity) where
   INV_ :: AEventTag AEConn
   LINK_ :: AEventTag AEConn
+  LDATA_ :: AEventTag AEConn
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
@@ -508,6 +513,7 @@ aCommandTag :: ACommand -> ACommandTag
 aCommandTag = \case
   NEW {} -> NEW_
   LSET {} -> LSET_
+  LGET _ -> LGET_
   JOIN {} -> JOIN_
   LET {} -> LET_
   ACK {} -> ACK_
@@ -518,6 +524,7 @@ aEventTag :: AEvent e -> AEventTag e
 aEventTag = \case
   INV {} -> INV_
   LINK {} -> LINK_
+  LDATA {} -> LDATA_
   CONF {} -> CONF_
   REQ {} -> REQ_
   INFO {} -> INFO_
@@ -1706,13 +1713,18 @@ type CRClientData = Text
 data FixedLinkData c = FixedLinkData
   { agentVRange :: VersionRangeSMPA,
     rootKey :: C.PublicKeyEd25519,
-    connReq :: ConnectionRequestUri c,
+    linkConnReq :: ConnectionRequestUri c,
     linkEntityId :: Maybe ByteString
   }
+  deriving (Eq, Show)
 
 data ConnLinkData c where
   InvitationLinkData :: VersionRangeSMPA -> UserLinkData -> ConnLinkData 'CMInvitation
   ContactLinkData :: VersionRangeSMPA -> UserContactData -> ConnLinkData 'CMContact
+
+deriving instance Eq (ConnLinkData c)
+
+deriving instance Show (ConnLinkData c)
 
 data UserContactData = UserContactData
   { -- direct connection via connReq in fixed data is allowed.
@@ -1739,13 +1751,6 @@ deriving instance Eq (UserConnLinkData m)
 deriving instance Show (UserConnLinkData m)
 
 data AUserConnLinkData = forall m. ConnectionModeI m => AULD (SConnectionMode m) (UserConnLinkData m)
-
-instance Eq AUserConnLinkData where
-  AULD m d == AULD m' d' = case testEquality m m' of
-    Just Refl -> d == d'
-    Nothing -> False
-
-deriving instance Show AUserConnLinkData
 
 linkUserData :: ConnLinkData c -> UserLinkData
 linkUserData = \case
@@ -1787,10 +1792,10 @@ validateOwners shortLink_ UserContactData {owners} = case shortLink_ of
     where
       hasOwner = isNothing linkRootSigKey || any ((k ==) . ownerKey) owners
       k = C.publicKey linkPrivSigKey
-          
+
 validateLinkOwners :: C.PublicKeyEd25519 -> [OwnerAuth] -> Either String ()
 validateLinkOwners rootKey = go []
-  where   
+  where
     go _ [] = Right ()
     go prev (o : os) = validOwner o >> go (o : prev) os
       where
@@ -1805,12 +1810,12 @@ validateLinkOwners rootKey = go []
             signedBy k' = C.verify' k' sig (oId <> C.encodePubKey k)
 
 instance ConnectionModeI c => Encoding (FixedLinkData c) where
-  smpEncode FixedLinkData {agentVRange, rootKey, connReq, linkEntityId} =
-    smpEncode (agentVRange, rootKey, connReq) <> maybe "" smpEncode linkEntityId
+  smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId} =
+    smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
   smpP = do
-    (agentVRange, rootKey, connReq) <- smpP
+    (agentVRange, rootKey, linkConnReq) <- smpP
     linkEntityId <- (smpP <|> pure Nothing) <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-    pure FixedLinkData {agentVRange, rootKey, connReq, linkEntityId}
+    pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
   smpEncode = \case
@@ -1849,7 +1854,7 @@ instance Encoding AUserConnLinkData where
       CMContact ->
         AULD SCMContact . UserContactLinkData <$> smpP
 
-instance StrEncoding AUserConnLinkData where
+instance ConnectionModeI c => StrEncoding (UserConnLinkData c) where
   strEncode = smpEncode
   {-# INLINE strEncode #-}
   strP = smpP
@@ -2065,6 +2070,7 @@ instance StrEncoding ACommandTag where
     A.takeTill (== ' ') >>= \case
       "NEW" -> pure NEW_
       "LSET" -> pure LSET_
+      "LGET" -> pure LGET_
       "JOIN" -> pure JOIN_
       "LET" -> pure LET_
       "ACK" -> pure ACK_
@@ -2074,6 +2080,7 @@ instance StrEncoding ACommandTag where
   strEncode = \case
     NEW_ -> "NEW"
     LSET_ -> "LSET"
+    LGET_ -> "LGET"
     JOIN_ -> "JOIN"
     LET_ -> "LET"
     ACK_ -> "ACK"
@@ -2086,6 +2093,7 @@ commandP binaryP =
     >>= \case
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
       LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
+      LGET_ -> s (LGET <$> strP)
       JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
@@ -2104,6 +2112,7 @@ serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
   LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
+  LGET sl -> s (LGET_, sl)
   JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
