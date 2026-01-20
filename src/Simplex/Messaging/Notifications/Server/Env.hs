@@ -184,16 +184,15 @@ newWPPushClient :: NtfPushServer -> WPProvider -> IO PushProviderClient
 newWPPushClient NtfPushServer {wpConfig, pushClients} (WPP (WPSrvLoc (SrvLoc h p))) = do
   logDebug "New WP Client requested"
   -- We use one http manager per push server (which may be used by different clients)
-  manager <- wpHTTPManager
   cache <- newIORef Nothing
   random <- C.newRandom
-  let client = WebPushClient {wpConfig, cache, manager, random}
+  let client = WebPushClient {wpConfig, cache, random}
   r <- wpHTTP2Client h p
   case r of
-    Right client -> pure $ wpPushProviderClientH2 client
+    Right h2Client -> pure $ wpPushProviderClientH2 client h2Client
     Left e -> do
       logError $ "Error connecting to H2 WP: " <> tshow e
-      wpPushProviderClientH1 client
+      wpPushProviderClientH1 client <$> wpHTTPManager
 
 wpHTTPManager :: IO Manager
 wpHTTPManager =
