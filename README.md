@@ -174,8 +174,8 @@ On Linux, you can build smp server using Docker.
    git clone https://github.com/simplex-chat/simplexmq
    cd simplexmq
    git checkout stable
-   DOCKER_BUILDKIT=1 docker build -t local/smp-server --build-arg APP="smp-server" --build-arg APP_PORT="5223" . # For xmp-server
-   DOCKER_BUILDKIT=1 docker build -t local/xftp-server --build-arg APP="xftp-server" --build-arg APP_PORT="443" . # For xftp-server
+   DOCKER_BUILDKIT=1 docker build --network=host -t local/smp-server --build-arg APP="smp-server" --build-arg APP_PORT="5223" . # For smp-server
+   DOCKER_BUILDKIT=1 docker build --network=host -t local/xftp-server --build-arg APP="xftp-server" --build-arg APP_PORT="443" . # For xftp-server
    ```
 
 2. Create directories for persistent Docker configuration:
