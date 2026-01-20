@@ -256,7 +256,7 @@ data APNSErrorResponse = APNSErrorResponse {reason :: Text}
 $(JQ.deriveFromJSON defaultJSON ''APNSErrorResponse)
 
 apnsPushProviderClient :: APNSPushClient -> PushProviderClient
-apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = DeviceToken _ tknStr} pn = do
+apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token = APNSDeviceToken _ tknStr} pn = do
   http2 <- liftHTTPS2 $ getApnsHTTP2Client c
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn

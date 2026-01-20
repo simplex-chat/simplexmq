@@ -266,6 +266,7 @@ library
               Simplex.Messaging.Notifications.Server.Prometheus
               Simplex.Messaging.Notifications.Server.Push
               Simplex.Messaging.Notifications.Server.Push.APNS
+              Simplex.Messaging.Notifications.Server.Push
               Simplex.Messaging.Notifications.Server.Push.APNS.Internal
               Simplex.Messaging.Notifications.Server.Stats
               Simplex.Messaging.Notifications.Server.Store
