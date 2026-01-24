@@ -67,7 +67,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, isSuffixOf, nub)
+import Data.List (find, isPrefixOf, isSuffixOf, nub)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -86,7 +86,7 @@ import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteCo
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
-import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT, INV, JOINED)
+import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
 import Simplex.Messaging.Agent.Store.AgentStore (getConn)
@@ -114,7 +114,7 @@ import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
-import System.Directory (copyFile, renameFile)
+import System.Directory (copyFile, removeFile, renameFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
@@ -122,15 +122,18 @@ import XFTPClient (testXFTPServer)
 
 #if defined(dbPostgres)
 import Fixtures
+import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
-import Simplex.Messaging.Agent.Store (Connection' (..), StoredRcvQueue (..), SomeConn' (..))
-import Simplex.Messaging.Agent.Store.AgentStore (getConn)
+import qualified Simplex.Messaging.Agent.Store.Postgres as Postgres
+import qualified Simplex.Messaging.Agent.Store.Postgres.Common as Postgres
 import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresQueue)
 import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres
+import Simplex.Messaging.Server.QueueStore.Postgres.Migrations
 import Simplex.Messaging.Server.QueueStore.Types (QueueStoreClass (..))
 #endif
 
@@ -223,12 +226,6 @@ pattern Rcvd agentMsgId <- RCVD MsgMeta {integrity = MsgOk} [MsgReceipt {agentMs
 pattern Rcvd' :: AgentMsgId -> AgentMsgId -> AEvent 'AEConn
 pattern Rcvd' aMsgId rcvdMsgId <- RCVD MsgMeta {integrity = MsgOk, recipient = (aMsgId, _)} [MsgReceipt {agentMsgId = rcvdMsgId, msgRcptStatus = MROk}]
 
-pattern INV :: AConnectionRequestUri -> AEvent 'AEConn
-pattern INV cReq = A.INV cReq Nothing
-
-pattern JOINED :: SndQueueSecured -> AEvent 'AEConn
-pattern JOINED sndSecure = A.JOINED sndSecure Nothing
-
 smpCfgVPrev :: ProtocolClientConfig SMPVersion
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
@@ -286,16 +283,16 @@ inAnyOrder g rs = withFrozenCallStack $ do
 
 createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
 createConnection c userId enableNtfs cMode clientData subMode = do
-  (connId, (CCLink cReq _, Nothing)) <- A.createConnection c NRMInteractive userId enableNtfs True cMode Nothing clientData IKPQOn subMode
+  (connId, CCLink cReq _) <- A.createConnection c NRMInteractive userId enableNtfs True cMode Nothing clientData IKPQOn subMode
   pure (connId, cReq)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
 joinConnection c userId enableNtfs cReq connInfo subMode = do
   connId <- A.prepareConnectionToJoin c userId enableNtfs cReq PQSupportOn
-  (sndSecure, Nothing) <- A.joinConnection c NRMInteractive userId connId enableNtfs cReq connInfo PQSupportOn subMode
+  sndSecure <- A.joinConnection c NRMInteractive userId connId enableNtfs cReq connInfo PQSupportOn subMode
   pure (connId, sndSecure)
 
-acceptContact :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE (SndQueueSecured, Maybe ClientServiceId)
+acceptContact :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
 acceptContact c = A.acceptContact c NRMInteractive
 
 subscribeConnection :: AgentClient -> ConnId -> AE ()
@@ -490,6 +487,10 @@ functionalAPITests ps = do
       testUsersNoServer ps
     it "should connect two users and switch session mode" $
       withSmpServer ps testTwoUsers
+  describe "Client service certificates" $ do
+    it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
+    it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
+    it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -716,9 +717,9 @@ runAgentClientTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing aPQ SMSubscribe
+    (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    (sqSecured', Nothing) <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
+    sqSecured' <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` CR.connPQEncryption aPQ
@@ -789,7 +790,7 @@ runAgentClientStressTestOneWay n pqSupport sqSecured viaProxy alice bob baseId =
     msgId = subtract baseId . fst
 
 runAgentClientStressTestConc :: HasCallStack => Int64 -> PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
-runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = runRight_ $ do
+runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob _baseId = runRight_ $ do
   (aliceId, bobId) <- makeConnection_ pqSupport sqSecured alice bob
   amId <- newTVarIO 0
   bmId <- newTVarIO 0
@@ -806,7 +807,6 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
   liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
   liftIO $ noMessagesIngoreQCONT bob "nothing else should be delivered to bob"
   where
-    msgId = subtract baseId . fst
     pqEnc = PQEncryption $ supportPQ pqSupport
     proxySrv = if viaProxy then Just testSMPServer else Nothing
     message i = "message " <> bshow i
@@ -819,11 +819,11 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
           timeout 100000 (get a)
             >>= mapM_ (\case ("", _, QCONT) -> drain; r -> expectationFailure $ "unexpected: " <> show r)
         loop (0, 0, 0, 0) = pure ()
-        loop acc@(!s, !m, !r, !o) =
+        loop acc@(s, !m, !r, !o) =
           timeout 3000000 (get a) >>= \case
             Nothing -> error $ "timeout " <> show acc
             Just evt -> case evt of
-              ("", c, A.SENT mId srv) -> do
+              ("", c, A.SENT _mId srv) -> do
                 liftIO $ c == bId && srv == proxySrv `shouldBe` True
                 unless (s > 0) $ error "unexpected SENT"
                 loop (s - 1, m, r, o)
@@ -837,7 +837,7 @@ runAgentClientStressTestConc n pqSupport sqSecured viaProxy alice bob baseId = r
                 ackMessageAsync a "123" bId mId (Just "")
                 unless (m > 0) $ error "unexpected MSG"
                 loop (s, m - 1, r, o)
-              ("", c, Rcvd' mId rcvdMsgId) -> do
+              ("", c, Rcvd' mId _rcvdMsgId) -> do
                 liftIO $ (mId >) <$> atomically (swapTVar mIdVar mId) `shouldReturn` True
                 liftIO $ c == bId `shouldBe` True
                 ackMessageAsync a "123" bId mId Nothing
@@ -946,14 +946,14 @@ runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientContactTestPQ :: HasCallStack => SndQueueSecured -> Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (_, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ SMSubscribe
+    (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    (sqSecuredJoin, Nothing) <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
+    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
-    (sqSecured', Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+    sqSecured' <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get bob
     liftIO $ pqSup'' `shouldBe` bPQ
@@ -990,7 +990,7 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
-  (_, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ SMSubscribe
+  (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ SMSubscribe
   (bAliceId, bobId, abPQEnc) <- connectViaContact bob bPQ qInfo
   sentMessages abPQEnc alice bobId bob bAliceId
   (tAliceId, tomId, atPQEnc) <- connectViaContact tom tPQ qInfo
@@ -999,12 +999,12 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
     msgId = subtract baseId . fst
     connectViaContact b pq qInfo = do
       aId <- A.prepareConnectionToJoin b 1 True qInfo pq
-      (sqSecuredJoin, Nothing) <- A.joinConnection b NRMInteractive 1 aId True qInfo "bob's connInfo" pq SMSubscribe
+      sqSecuredJoin <- A.joinConnection b NRMInteractive 1 aId True qInfo "bob's connInfo" pq SMSubscribe
       liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
       ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
       bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
-      (sqSecuredAccept, Nothing) <- acceptContact alice 1 bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
+      sqSecuredAccept <- acceptContact alice 1 bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
       liftIO $ sqSecuredAccept `shouldBe` False -- agent cfg is v8
       ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get b
       liftIO $ pqSup'' `shouldBe` pq
@@ -1043,9 +1043,9 @@ noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (_addrConnId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    (_addrConnId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    (sqSecured, Nothing) <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
     rejectContact alice invId
@@ -1055,10 +1055,10 @@ testUpdateConnectionUserId :: HasCallStack => IO ()
 testUpdateConnectionUserId =
   withAgentClients2 $ \alice bob -> runRight_ $ do
     (connId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
-    newUserId <- createUser alice [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    newUserId <- createUser alice False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     _ <- changeConnectionUser alice 1 connId newUserId
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    (sqSecured', Nothing) <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    sqSecured' <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured' `shouldBe` True
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -1242,7 +1242,7 @@ testInvitationErrors ps restart = do
     threadDelay 200000
     let loopConfirm n =
           runExceptT (A.joinConnection b' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
-            Right (True, Nothing) -> pure n
+            Right True -> pure n
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
     n <- loopConfirm 1
@@ -1304,7 +1304,7 @@ testContactErrors ps restart = do
     let loopSend = do
           -- sends the invitation to testPort
           runExceptT (A.joinConnection b'' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
-            Right (False, Nothing) -> pure ()
+            Right False -> pure ()
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
     loopSend
@@ -1333,7 +1333,7 @@ testContactErrors ps restart = do
     ("", "", UP _ [_]) <- nGet b''
     let loopConfirm n =
           runExceptT (acceptContact a' 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe) >>= \case
-            Right (True, Nothing) -> pure n
+            Right True -> pure n
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying accept confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
     n <- loopConfirm 1
@@ -1370,7 +1370,7 @@ testInvitationShortLink viaProxy a b =
   withAgent 3 agentCfg initAgentServers testDB3 $ \c -> do
     let userData = UserLinkData "some user data"
         newLinkData = UserInvLinkData userData
-    (bId, (CCLink connReq (Just shortLink), Nothing)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMSubscribe
+    (bId, CCLink connReq (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMSubscribe
     (FixedLinkData {linkConnReq = connReq'}, connData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
@@ -1392,7 +1392,7 @@ testInvitationShortLink viaProxy a b =
 testJoinConn_ :: Bool -> Bool -> AgentClient -> ConnId -> AgentClient -> ConnectionRequestUri c -> ExceptT AgentErrorType IO ()
 testJoinConn_ viaProxy sndSecure a bId b connReq = do
   aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
-  (sndSecure', Nothing) <- A.joinConnection b NRMInteractive 1 aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+  sndSecure' <- A.joinConnection b NRMInteractive 1 aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
   liftIO $ sndSecure' `shouldBe` sndSecure
   ("", _, CONF confId _ "bob's connInfo") <- get a
   allowConnection a bId confId "alice's connInfo"
@@ -1406,14 +1406,14 @@ testInvitationShortLinkPrev viaProxy sndSecure a b = runRight_ $ do
   let userData = UserLinkData "some user data"
       newLinkData = UserInvLinkData userData
   -- can't create short link with previous version
-  (bId, (CCLink connReq Nothing, Nothing)) <- A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
+  (bId, CCLink connReq Nothing) <- A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
   testJoinConn_ viaProxy sndSecure a bId b connReq
 
 testInvitationShortLinkAsync :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testInvitationShortLinkAsync viaProxy a b = do
   let userData = UserLinkData "some user data"
       newLinkData = UserInvLinkData userData
-  (bId, (CCLink connReq (Just shortLink), Nothing)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMSubscribe
+  (bId, CCLink connReq (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMSubscribe
   (FixedLinkData {linkConnReq = connReq'}, connData') <- runRight $ getConnShortLink b 1 shortLink
   strDecode (strEncode shortLink) `shouldBe` Right shortLink
   connReq' `shouldBe` connReq
@@ -1440,7 +1440,7 @@ testContactShortLink viaProxy a b =
     let userData = UserLinkData "some user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
         newLinkData = UserContactLinkData userCtData
-    (contactId, (CCLink connReq0 (Just shortLink), Nothing)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
+    (contactId, CCLink connReq0 (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
     Right connReq <- pure $ smpDecode (smpEncode connReq0)
     (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
@@ -1459,7 +1459,7 @@ testContactShortLink viaProxy a b =
       liftIO $ sndSecure `shouldBe` False
       ("", _, REQ invId _ "bob's connInfo") <- get a
       bId <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
-      (sndSecure', Nothing) <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      sndSecure' <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
       liftIO $ sndSecure' `shouldBe` True
       ("", _, CONF confId  _ "alice's connInfo") <- get b
       allowConnection b aId confId "bob's connInfo"
@@ -1487,7 +1487,7 @@ testContactShortLink viaProxy a b =
 testAddContactShortLink :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testAddContactShortLink viaProxy a b =
   withAgent 3 agentCfg initAgentServers testDB3 $ \c -> do
-    (contactId, (CCLink connReq0 Nothing, Nothing)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMSubscribe
+    (contactId, CCLink connReq0 Nothing) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMSubscribe
     Right connReq <- pure $ smpDecode (smpEncode connReq0) --
     let userData = UserLinkData "some user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
@@ -1510,7 +1510,7 @@ testAddContactShortLink viaProxy a b =
       liftIO $ sndSecure `shouldBe` False
       ("", _, REQ invId _ "bob's connInfo") <- get a
       bId <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
-      (sndSecure', Nothing) <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      sndSecure' <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
       liftIO $ sndSecure' `shouldBe` True
       ("", _, CONF confId  _ "alice's connInfo") <- get b
       allowConnection b aId confId "bob's connInfo"
@@ -1532,7 +1532,7 @@ testInvitationShortLinkRestart :: HasCallStack => (ASrvTransport, AStoreType) ->
 testInvitationShortLinkRestart ps = withAgentClients2 $ \a b -> do
   let userData = UserLinkData "some user data"
       newLinkData = UserInvLinkData userData
-  (bId, (CCLink connReq (Just shortLink), Nothing)) <- withSmpServer ps $
+  (bId, CCLink connReq (Just shortLink)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMOnlyCreate
   withSmpServer ps $ do
     runRight_ $ subscribeConnection a bId
@@ -1546,7 +1546,7 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
   let userData = UserLinkData "some user data"
       userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
       newLinkData = UserContactLinkData userCtData
-  (contactId, (CCLink connReq0 (Just shortLink), Nothing)) <- withSmpServer ps $
+  (contactId, CCLink connReq0 (Just shortLink)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn SMOnlyCreate
   Right connReq <- pure $ smpDecode (smpEncode connReq0)
   let updatedData = UserLinkData "updated user data"
@@ -1570,7 +1570,7 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
   let userData = UserLinkData "some user data"
       userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
       newLinkData = UserContactLinkData userCtData
-  ((contactId, (CCLink connReq0 Nothing, Nothing)), shortLink) <- withSmpServer ps $ runRight $ do
+  ((contactId, CCLink connReq0 Nothing), shortLink) <- withSmpServer ps $ runRight $ do
     r@(contactId, _) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
     (r,) <$> setConnShortLink a contactId SCMContact newLinkData Nothing
   Right connReq <- pure $ smpDecode (smpEncode connReq0)
@@ -1592,7 +1592,7 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
 
 testOldContactQueueShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
-  (contactId, (CCLink connReq Nothing, Nothing)) <- withSmpServer ps $ runRight $
+  (contactId, CCLink connReq Nothing) <- withSmpServer ps $ runRight $
     A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
   -- make it an "old" queue
   let updateStoreLog f = replaceSubstringInFile f " queue_mode=C" ""
@@ -2337,9 +2337,9 @@ makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn True
 
 makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
-  (bobId, (CCLink qInfo Nothing, Nothing)) <- A.createConnection alice NRMInteractive aliceUserId True True SCMInvitation Nothing Nothing (IKLinkPQ pqSupport) SMSubscribe
+  (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive aliceUserId True True SCMInvitation Nothing Nothing (IKLinkPQ pqSupport) SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
-  (sqSecured', Nothing) <- A.joinConnection bob NRMInteractive bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
+  sqSecured' <- A.joinConnection bob NRMInteractive bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
   liftIO $ sqSecured' `shouldBe` sqSecured
   ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
   liftIO $ pqSup' `shouldBe` pqSupport
@@ -2670,7 +2670,7 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let userData = UserLinkData "test user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
         newLinkData = UserContactLinkData userCtData
-    (cId, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    (cId, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
     -- verify initial link data
     (_, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
     liftIO $ userCtData' `shouldBe` userCtData
@@ -2689,7 +2689,7 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
-    (_, Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    _ <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -2702,7 +2702,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let userData = UserLinkData "test user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
         newLinkData = UserContactLinkData userCtData
-    (_, (CCLink qInfo (Just shortLink), _)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    (_, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
     -- get link data async - creates new connection for bob
     newId <- getConnShortLinkAsync bob 1 "1" shortLink
     ("1", newId', LDATA FixedLinkData {linkConnReq = qInfo'} (ContactLinkData _ userCtData')) <- get bob
@@ -2717,7 +2717,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     -- complete connection
     ("", _, REQ invId _ "bob's connInfo") <- get alice
     bobId <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
-    (_, Nothing) <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    _ <- acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, INFO "bob's connInfo")
@@ -3098,7 +3098,7 @@ testUsers =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
-    auId <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    auId <- createUser a False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     deleteUser a auId True
@@ -3113,7 +3113,7 @@ testDeleteUserQuietly =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
-    auId <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    auId <- createUser a False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     deleteUser a auId False
@@ -3125,7 +3125,7 @@ testUsersNoServer ps = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
   (aId, bId, auId, _aId', bId') <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
-    auId <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    auId <- createUser a False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId', bId') <- makeConnectionForUsers a auId b 1
     exchangeGreetings a bId' b aId'
     pure (aId, bId, auId, aId', bId')
@@ -3707,7 +3707,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetings a bId1' b aId1'
     a `hasClients` 1
     b `hasClients` 1
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
+    setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", UP _ _) <- nGet a
@@ -3717,7 +3717,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 4 a bId1 b aId1
     exchangeGreetingsMsgId 4 a bId1' b aId1'
     liftIO $ threadDelay 250000
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
+    setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -3725,14 +3725,14 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     ("", "", UP _ _) <- nGet a
     a `hasClients` 1
 
-    aUserId2 <- createUser a [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    aUserId2 <- createUser a False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     (aId2, bId2) <- makeConnectionForUsers a aUserId2 b 1
     exchangeGreetings a bId2 b aId2
     (aId2', bId2') <- makeConnectionForUsers a aUserId2 b 1
     exchangeGreetings a bId2' b aId2'
     a `hasClients` 2
     b `hasClients` 1
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMEntity}
+    setNetworkConfig a nc {sessionMode = TSMEntity}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -3746,7 +3746,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 4 a bId2 b aId2
     exchangeGreetingsMsgId 4 a bId2' b aId2'
     liftIO $ threadDelay 250000
-    liftIO $ setNetworkConfig a nc {sessionMode = TSMUser}
+    setNetworkConfig a nc {sessionMode = TSMUser}
     liftIO $ threadDelay 250000
     ("", "", DOWN _ _) <- nGet a
     ("", "", DOWN _ _) <- nGet a
@@ -3766,10 +3766,265 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     hasClients :: HasCallStack => AgentClient -> Int -> ExceptT AgentErrorType IO ()
     hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
 
+testClientServiceConnection :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testClientServiceConnection ps = do
+  ((sId, uId), qIdHash) <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+    conns@(sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+      liftIO $ threadDelay 250000
+      [(_, Right (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash)))] <- M.toList <$> subscribeClientServices service 1
+      ("", "", SERVICE_ALL _) <- nGet service
+      subscribeConnection user sId
+      exchangeGreetingsMsgId 4 service uId user sId
+      pure (conns, qIdHash)
+  (uId', sId') <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash')))) -> qIdHash' == qIdHash; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      subscribeConnection user sId
+      exchangeGreetingsMsgId 6 service uId user sId
+    ("", "", DOWN _ [_]) <- nGet user
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 qIdHash')) <- nGet service
+    qIdHash' `shouldBe` qIdHash
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      ("", "", UP _ [_]) <- nGet user
+      -- Nothing in ServiceSubResult confirms that both counts and IDs hash match
+      -- SERVICE_ALL may be deliverd before SERVICE_UP event in case there are no messages to deliver
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 qIdHash'')))) -> qIdHash'' == qIdHash; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      exchangeGreetingsMsgId 8 service uId user sId
+      conns'@(uId', sId') <- makeConnection user service -- opposite direction
+      exchangeGreetings user sId' service uId'
+      pure conns'
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 2 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      -- TODO [certs rcv] test message delivery during subscription
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_, _]) <- nGet user
+      exchangeGreetingsMsgId 4 user sId' service uId'
+      exchangeGreetingsMsgId 10 service uId user sId
+
+testClientServiceIDChange :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testClientServiceIDChange ps@(_, ASType qs _) = do
+  (sId, uId) <- withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    conns <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 1 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    pure conns
+  _ :: () <- case qs of
+    SQSPostgres -> do
+#if defined(dbServerPostgres)
+      st <- either (error . show) pure =<< Postgres.createDBStore testStoreDBOpts serverMigrations (MigrationConfig MCError Nothing)
+      void $ Postgres.withTransaction st (`PSQL.execute_` "DELETE FROM services")
+#else
+      pure ()
+#endif
+    SQSMemory -> do
+      s <- readFile testStoreLogFile
+      removeFile testStoreLogFile
+      writeFile testStoreLogFile $ unlines $ filter (not . ("NEW_SERVICE" `isPrefixOf`)) $ lines s
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult (Just (SMP.SSErrorQueueCount 1 0)) (SMP.ServiceSub _ 0 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (UP _ [_])) -> True; _ -> False
+        ]
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 4 service uId user sId
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 1 _)) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    pure ()
+  -- disable service in the client
+  withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      subscribeAllConnections notService False Nothing
+      ("", "", UP _ [_]) <- nGet notService
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 6 notService uId user sId
+
+testMigrateConnectionsToService :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testMigrateConnectionsToService ps = do
+  (((sId1, uId1), (uId2, sId2)), ((sId3, uId3), (uId4, sId4)), ((sId5, uId5), (uId6, sId6))) <-
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      -- starting without service
+      cs12@((sId1, uId1), (uId2, sId2)) <-
+        withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user ->
+          runRight $ (,) <$> makeConnection notService user <*> makeConnection user notService
+      -- migrating to service
+      cs34@((sId3, uId3), (uId4, sId4)) <-
+        withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+          subscribeAllConnections service False Nothing
+          service `up` 2
+          subscribeAllConnections user False Nothing
+          user `up` 2
+          exchangeGreetingsMsgId 2 service uId1 user sId1
+          exchangeGreetingsMsgId 2 service uId2 user sId2
+          (,) <$> makeConnection service user <*> makeConnection user service
+      -- starting as service
+      cs56 <-
+        withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> runRight $ do
+          subscribeAllConnections service False Nothing
+          liftIO $ getInAnyOrder service
+            [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 4 _)))) -> True; _ -> False,
+              \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+            ]
+          subscribeAllConnections user False Nothing
+          user `up` 4
+          exchangeGreetingsMsgId 4 service uId1 user sId1
+          exchangeGreetingsMsgId 4 service uId2 user sId2
+          exchangeGreetingsMsgId 2 service uId3 user sId3
+          exchangeGreetingsMsgId 2 service uId4 user sId4
+          (,) <$> makeConnection service user <*> makeConnection user service
+      pure (cs12, cs34, cs56)
+  -- server reconnecting resubscribes service
+  let testSendMessages6 s u n = do
+        exchangeGreetingsMsgId (n + 4) s uId1 u sId1
+        exchangeGreetingsMsgId (n + 4) s uId2 u sId2
+        exchangeGreetingsMsgId (n + 2) s uId3 u sId3
+        exchangeGreetingsMsgId (n + 2) s uId4 u sId4
+        exchangeGreetingsMsgId n s uId5 u sId5
+        exchangeGreetingsMsgId n s uId6 u sId6
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 6 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      subscribeAllConnections user False Nothing
+      user `up` 6
+      testSendMessages6 service user 2
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 6 _)) <- nGet service
+    user `down` 6
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 6 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      user `up` 6
+      testSendMessages6 service user 4
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 6 _)) <- nGet service
+    user `down` 6
+  -- disabling service and adding connections
+  ((sId7, uId7), (uId8, sId8)) <-
+    withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers) $ \notService user -> do
+      cs78@((sId7, uId7), (uId8, sId8)) <-
+        withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+          subscribeAllConnections notService False Nothing
+          notService `up` 6
+          subscribeAllConnections user False Nothing
+          user `up` 6
+          testSendMessages6 notService user 6
+          (,) <$> makeConnection notService user <*> makeConnection user notService
+      notService `down` 8
+      user `down` 8
+      withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+        notService `up` 8
+        user `up` 8
+        testSendMessages6 notService user 8
+        exchangeGreetingsMsgId 2 notService uId7 user sId7
+        exchangeGreetingsMsgId 2 notService uId8 user sId8
+      notService `down` 8
+      user `down` 8
+      pure cs78
+  let testSendMessages8 s u n = do
+        testSendMessages6 s u (n + 8)
+        exchangeGreetingsMsgId (n + 2) s uId7 u sId7
+        exchangeGreetingsMsgId (n + 2) s uId8 u sId8
+  -- re-enabling service and adding connections
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      subscribeAllConnections service False Nothing
+      service `up` 8
+      subscribeAllConnections user False Nothing
+      user `up` 8
+      testSendMessages8 service user 2
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 8 _)) <- nGet service
+    user `down` 8
+    -- re-connect to server
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 8 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      user `up` 8
+      testSendMessages8 service user 4
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ _ _)) <- nGet service -- should be 8 here
+    user `down` 8
+  -- restart agents
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      subscribeAllConnections service False Nothing
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 8 _)))) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      subscribeAllConnections user False Nothing
+      user `up` 8
+      testSendMessages8 service user 6
+    ("", "", SERVICE_DOWN _ (SMP.ServiceSub _ 8 _)) <- nGet service
+    user `down` 8
+    runRight_ $ do
+      void $ sendMessage user sId7 SMP.noMsgFlags "hello 1"
+      void $ sendMessage user sId8 SMP.noMsgFlags "hello 2"
+    -- re-connect to server
+    withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ (SMP.ServiceSubResult Nothing (SMP.ServiceSub _ 8 _)))) -> True; _ -> False,
+          \case ("", c, AEvt SAEConn (Msg "hello 1")) -> c == uId7; _ -> False,
+          \case ("", c, AEvt SAEConn (Msg "hello 2")) -> c == uId8; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      liftIO $ getInAnyOrder user
+        [ \case ("", "", AEvt SAENone (UP _ [_, _, _, _, _, _, _, _])) -> True; _ -> False,
+          \case ("", c, AEvt SAEConn (SENT 10)) -> c == sId7; _ -> False,
+          \case ("", c, AEvt SAEConn (SENT 10)) -> c == sId8; _ -> False
+        ]
+      testSendMessages6 service user 16
+  where
+    up c n = do
+      ("", "", UP _ conns) <- nGet c
+      liftIO $ length conns `shouldBe` n
+    down c n = do
+      ("", "", DOWN _ conns) <- nGet c
+      liftIO $ length conns `shouldBe` n
+
 getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO AgentClient
 getSMPAgentClient' clientId cfg' initServers dbPath = do
   Right st <- liftIO $ createStore dbPath
-  c <- getSMPAgentClient_ clientId cfg' initServers st False
+  Right c <- runExceptT $ getSMPAgentClient_ clientId cfg' initServers st False
   when (dbNew st) $ insertUser st
   pure c
 

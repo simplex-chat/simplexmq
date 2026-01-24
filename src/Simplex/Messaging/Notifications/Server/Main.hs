@@ -17,42 +17,32 @@ import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
-import Data.Set (Set)
-import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.IO as T
 import Network.Socket (HostName, ServiceName)
 import Options.Applicative
-import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SMPWebPortServers (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Notifications.Protocol (NtfTokenId)
-import Simplex.Messaging.Notifications.Server (runNtfServer, restoreServerLastNtfs)
+import Simplex.Messaging.Notifications.Server (runNtfServer)
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..), defaultInactiveClientExpiration)
 import Simplex.Messaging.Notifications.Server.Push.APNS (defaultAPNSPushClientConfig)
-import Simplex.Messaging.Notifications.Server.Store (newNtfSTMStore)
-import Simplex.Messaging.Notifications.Server.Store.Postgres (exportNtfDbStore, importNtfSTMStore, newNtfDbStore)
-import Simplex.Messaging.Notifications.Server.StoreLog (readWriteNtfSTMStore)
 import Simplex.Messaging.Notifications.Transport (alpnSupportedNTFHandshakes, supportedServerNTFVRange)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern NtfServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.Main (strParse)
 import Simplex.Messaging.Server.Main.Init (iniDbOpts)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
-import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 import Simplex.Messaging.Transport (ASrvTransport)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials (..), mkTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM, tshow)
-import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
-import System.Exit (exitFailure)
+import Simplex.Messaging.Util (eitherToMaybe, tshow)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
@@ -73,69 +63,11 @@ ntfServerCLI cfgPath logPath =
       deleteDirIfExists cfgPath
       deleteDirIfExists logPath
       putStrLn "Deleted configuration and log files"
-    Database cmd dbOpts@DBOpts {connstr, schema} -> withIniFile $ \ini -> do
-      schemaExists <- checkSchemaExists connstr schema
-      storeLogExists <- doesFileExist storeLogFilePath
-      lastNtfsExists <- doesFileExist defaultLastNtfsFile
-      case cmd of
-        SCImport skipTokens
-          | schemaExists && (storeLogExists || lastNtfsExists) -> exitConfigureNtfStore connstr schema
-          | schemaExists -> do
-              putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
-              exitFailure
-          | not storeLogExists -> do
-              putStrLn $ storeLogFilePath <> " file does not exist."
-              exitFailure
-          | not lastNtfsExists -> do
-              putStrLn $ defaultLastNtfsFile <> " file does not exist."
-              exitFailure
-          | otherwise -> do
-              storeLogFile <- getRequiredStoreLogFile ini
-              confirmOrExit
-                ("WARNING: store log file " <> storeLogFile <> " will be compacted and imported to PostrgreSQL database: " <> B.unpack connstr <> ", schema: " <> B.unpack schema)
-                "Notification server store not imported"
-              stmStore <- newNtfSTMStore
-              sl <- readWriteNtfSTMStore True storeLogFile stmStore
-              closeStoreLog sl
-              restoreServerLastNtfs stmStore defaultLastNtfsFile
-              let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
-              ps <- newNtfDbStore storeCfg
-              (tCnt, sCnt, nCnt, serviceCnt) <- importNtfSTMStore ps stmStore skipTokens
-              renameFile storeLogFile $ storeLogFile <> ".bak"
-              putStrLn $ "Import completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show serviceCnt <> " service associations, " <> show nCnt <> " last token notifications."
-              putStrLn "Configure database options in INI file."
-        SCExport
-          | schemaExists && storeLogExists -> exitConfigureNtfStore connstr schema
-          | not schemaExists -> do
-              putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
-              exitFailure
-          | storeLogExists -> do
-              putStrLn $ storeLogFilePath <> " file already exists."
-              exitFailure
-          | lastNtfsExists -> do
-              putStrLn $ defaultLastNtfsFile <> " file already exists."
-              exitFailure
-          | otherwise -> do
-              confirmOrExit
-                ("WARNING: PostrgreSQL database schema " <> B.unpack schema <> " (database: " <> B.unpack connstr <> ") will be exported to store log file " <> storeLogFilePath)
-                "Notification server store not imported"
-              let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Just storeLogFilePath, confirmMigrations = MCConsole, deletedTTL = iniDeletedTTL ini}
-              st <- newNtfDbStore storeCfg
-              (tCnt, sCnt, nCnt) <- exportNtfDbStore st defaultLastNtfsFile
-              putStrLn $ "Export completed: " <> show tCnt <> " tokens, " <> show sCnt <> " subscriptions, " <> show nCnt <> " last token notifications."
   where
     withIniFile a =
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError a
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    getRequiredStoreLogFile ini = do
-      case enableStoreLog' ini $> storeLogFilePath of
-        Just storeLogFile -> do
-          ifM
-            (doesFileExist storeLogFile)
-            (pure storeLogFile)
-            (putStrLn ("Store log file " <> storeLogFile <> " not found") >> exitFailure)
-        Nothing -> putStrLn "Store log disabled, see `[STORE_LOG] enable`" >> exitFailure
     iniFile = combine cfgPath "ntf-server.ini"
     serverVersion = "SMP notifications server v" <> simplexmqVersionCommit
     defaultServerPort = "443"
@@ -289,11 +221,6 @@ ntfServerCLI cfgPath logPath =
               startOptions
             }
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
-    defaultLastNtfsFile = combine logPath "ntf-server-last-notifications.log"
-    exitConfigureNtfStore connstr schema = do
-      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
-      putStrLn "Configure notification server storage."
-      exitFailure
 
 printNtfServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> PostgresStoreCfg -> IO ()
 printNtfServerConfig transports PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}, dbStoreLogPath} = do
@@ -305,9 +232,6 @@ data CliCommand
   | OnlineCert CertOptions
   | Start StartOptions
   | Delete
-  | Database StoreCmd DBOpts
-
-data StoreCmd = SCImport (Set NtfTokenId) | SCExport
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -338,22 +262,8 @@ cliCommandP cfgPath logPath iniFile =
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (Start <$> startOptionsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
-        <> command "database" (info (Database <$> databaseCmdP <*> dbOptsP defaultNtfDBOpts) (progDesc "Import/export notifications server store to/from PostgreSQL database"))
     )
   where
-    databaseCmdP =
-      hsubparser
-        ( command "import" (info (SCImport <$> skipTokensP) (progDesc $ "Import store logs into a new PostgreSQL database schema"))
-            <> command "export" (info (pure SCExport) (progDesc $ "Export PostgreSQL database schema to store logs"))
-        )
-    skipTokensP :: Parser (Set NtfTokenId)
-    skipTokensP =
-      option
-        strParse
-          ( long "skip-tokens"
-              <> help "Skip tokens during import"
-              <> value S.empty
-          )
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-

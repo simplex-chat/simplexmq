@@ -65,6 +65,7 @@ initAgentServers =
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
       netCfg = defaultNetworkConfig {tcpTimeout = NetworkTimeout 500000 500000, tcpConnectTimeout = NetworkTimeout 500000 500000},
+      useServices = M.empty,
       presetDomains = [],
       presetServers = []
     }
@@ -81,6 +82,9 @@ initAgentServersProxy_ smpProxyMode smpProxyFallback =
 
 initAgentServersProxy2 :: InitialAgentServers
 initAgentServersProxy2 = initAgentServersProxy {smp = userServers [testSMPServer2]}
+
+initAgentServersClientService :: InitialAgentServers
+initAgentServersClientService = initAgentServers {useServices = M.fromList [(1, True)]}
 
 agentCfg :: AgentConfig
 agentCfg =

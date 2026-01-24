@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE MonadComprehensions #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -15,6 +16,7 @@ import qualified Data.Aeson as J
 import Data.Bifunctor (first, second)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.ByteString.Internal (toForeignPtr, unsafeCreate)
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.IORef
 import Data.Int (Int64)
@@ -29,6 +31,9 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Time (NominalDiffTime)
 import Data.Tuple (swap)
+import Data.Word (Word8)
+import Foreign.ForeignPtr (withForeignPtr)
+import Foreign.Storable (peekByteOff, pokeByteOff)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
 import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
@@ -155,6 +160,27 @@ mapAccumLM_NonEmpty
 {-# INLINE mapAccumLM_NonEmpty #-}
 mapAccumLM_NonEmpty f s (x :| xs) =
   [(s2, x' :| xs') | (s1, x') <- f s x, (s2, xs') <- mapAccumLM_List f s1 xs]
+
+-- | Optimized from bytestring package for GHC 8.10.7 compatibility
+packZipWith :: (Word8 -> Word8 -> Word8) -> ByteString -> ByteString -> ByteString
+packZipWith f s1 s2 =
+  unsafeCreate len $ \r ->
+    withForeignPtr fp1 $ \p1 ->
+      withForeignPtr fp2 $ \p2 -> zipWith_ p1 p2 r
+  where
+    zipWith_ p1 p2 r = go 0
+      where
+        go :: Int -> IO ()
+        go !n
+          | n >= len = pure ()
+          | otherwise = do
+              x <- peekByteOff p1 (off1 + n)
+              y <- peekByteOff p2 (off2 + n)
+              pokeByteOff r n (f x y)
+              go (n + 1)
+    (fp1, off1, l1) = toForeignPtr s1
+    (fp2, off2, l2) = toForeignPtr s2
+    len = min l1 l2
 
 tryWriteTBQueue :: TBQueue a -> a -> STM Bool
 tryWriteTBQueue q a = do
