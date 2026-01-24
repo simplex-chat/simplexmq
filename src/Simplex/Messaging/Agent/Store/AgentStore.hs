@@ -45,6 +45,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     deleteClientServices,
 
     -- * Queues and connections
+    createServer,
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
@@ -70,6 +71,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
+    updateNewConnJoin,
     getDeletedConnIds,
     getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
@@ -410,7 +412,7 @@ deleteUsersWithoutConns db = do
 
 createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ()
 createClientService db userId srv (kh, (cert, pk)) = do
-  serverKeyHash_ <- createServer_ db srv
+  serverKeyHash_ <- createServer db srv
   DB.execute
     db
     [sql|
@@ -550,7 +552,7 @@ createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
     createConn_ db gVar cData $ \connId -> do
-      serverKeyHash_ <- createServer_ db server
+      serverKeyHash_ <- createServer db server
       createConnRecord db connId cData SCMInvitation
       insertSndQueue_ db connId q serverKeyHash_
 
@@ -635,7 +637,7 @@ addConnRcvQueue db connId rq subMode =
 
 addConnRcvQueue_ :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO RcvQueue
 addConnRcvQueue_ db connId rq@RcvQueue {server} subMode = do
-  serverKeyHash_ <- createServer_ db server
+  serverKeyHash_ <- createServer db server
   insertRcvQueue_ db connId rq subMode serverKeyHash_
 
 addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
@@ -647,7 +649,7 @@ addConnSndQueue db connId sq =
 
 addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO SndQueue
 addConnSndQueue_ db connId sq@SndQueue {server} = do
-  serverKeyHash_ <- createServer_ db server
+  serverKeyHash_ <- createServer db server
   insertSndQueue_ db connId sq serverKeyHash_
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
@@ -945,7 +947,7 @@ deleteInvShortLink db srv lnkId =
 
 createInvShortLink :: DB.Connection -> InvShortLink -> IO ()
 createInvShortLink db InvShortLink {server, linkId, linkKey, sndPrivateKey, sndId} = do
-  serverKeyHash_ <- createServer_ db server
+  serverKeyHash_ <- createServer db server
   DB.execute
     db
     [sql|
@@ -2149,8 +2151,8 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e, ToField f,
 -- * Server helper
 
 -- | Creates a new server, if it doesn't exist, and returns the passed key hash if it is different from stored.
-createServer_ :: DB.Connection -> SMPServer -> IO (Maybe C.KeyHash)
-createServer_ db newSrv@ProtocolServer {host, port, keyHash} = do
+createServer :: DB.Connection -> SMPServer -> IO (Maybe C.KeyHash)
+createServer db newSrv@ProtocolServer {host, port, keyHash} = do
   r <- insertNewServer_
   if null r
     then getServerKeyHash_ db newSrv >>= either E.throwIO pure
@@ -2593,6 +2595,10 @@ setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
 setConnPQSupport db connId pqSupport =
   DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
 
+updateNewConnJoin :: DB.Connection -> ConnId -> VersionSMPA -> PQSupport -> Bool -> IO ()
+updateNewConnJoin db connId aVersion pqSupport enableNtfs =
+  DB.execute db "UPDATE connections SET smp_agent_version = ?, pq_support = ?, enable_ntfs = ? WHERE conn_id = ?" (aVersion, pqSupport, BI enableNtfs, connId)
+
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only (BI True))
 
@@ -2678,7 +2684,7 @@ toRcvQueue
         (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret) -> Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
         _ -> Nothing
       shortLink = case (shortLinkId_, shortLinkKey_, linkPrivSigKey_, linkEncFixedData_) of
-        (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData}
+        (Just shortLinkId, Just shortLinkKey, Just linkPrivSigKey, Just linkEncFixedData) -> Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkRootSigKey = Nothing, linkEncFixedData} -- TODO linkRootSigKey should be stored in a separate field
         _ -> Nothing
       enableNtfs = maybe True unBI enableNtfs_
    in RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, rcvDhSecret, e2ePrivKey, e2eDhSecret, sndId, queueMode, shortLink, rcvServiceAssoc, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId, rcvSwchStatus, smpClientVersion, clientNtfCreds, deleteErrors}

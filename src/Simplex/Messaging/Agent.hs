@@ -51,6 +51,7 @@ module Simplex.Messaging.Agent
     connRequestPQSupport,
     createConnectionAsync,
     setConnShortLinkAsync,
+    getConnShortLinkAsync,
     joinConnectionAsync,
     allowConnectionAsync,
     acceptContactAsync,
@@ -199,8 +200,8 @@ import Simplex.Messaging.Client (NetworkRequestMode (..), ProtocolClientError (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
-import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
@@ -223,8 +224,8 @@ import Simplex.Messaging.Protocol
     SParty (..),
     SProtocolType (..),
     ServiceSub (..),
-    ServiceSubResult (..),
     ServiceSubError (..),
+    ServiceSubResult (..),
     SndPublicAuthKey,
     SubscriptionMode (..),
     UserProtocol,
@@ -358,13 +359,19 @@ createConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:. newConnAs
 {-# INLINE createConnectionAsync #-}
 
 -- | Create or update user's contact connection short link (LSET command) asynchronously, no synchronous response
-setConnShortLinkAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE ()
-setConnShortLinkAsync c = withAgentEnv c .::. setConnShortLinkAsync' c
+setConnShortLinkAsync :: AgentClient -> ACorrId -> ConnId -> UserConnLinkData 'CMContact -> Maybe CRClientData -> AE ()
+setConnShortLinkAsync c = withAgentEnv c .:: setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
--- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id
-joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
-joinConnectionAsync c userId aCorrId enableNtfs = withAgentEnv c .:: joinConnAsync c userId aCorrId enableNtfs
+-- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new connection id
+getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AE ConnId
+getConnShortLinkAsync c = withAgentEnv c .:. getConnShortLinkAsync' c
+{-# INLINE getConnShortLinkAsync #-}
+
+-- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id.
+-- If connId is provided (for contact URIs), it updates the existing connection record created by getConnShortLinkAsync.
+joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
+joinConnectionAsync c userId aCorrId connId_ enableNtfs = withAgentEnv c .:: joinConnAsync c userId aCorrId connId_ enableNtfs
 {-# INLINE joinConnectionAsync #-}
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
@@ -412,7 +419,7 @@ deleteConnShortLink c = withAgentEnv c .:. deleteConnShortLink' c
 {-# INLINE deleteConnShortLink #-}
 
 -- | Get and verify data from short link. For 1-time invitations it preserves the key to allow retries
-getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (ConnectionRequestUri c, ConnLinkData c)
+getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
 
@@ -824,8 +831,9 @@ newConnNoQueues c userId enableNtfs cMode pqSupport = do
 
 -- TODO [short links] TBC, but probably we will need async join for contact addresses as the contact will be created after user confirming the connection,
 -- and join should retry, the same as 1-time invitation joins.
-joinConnAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
-joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
+joinConnAsync :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
+joinConnAsync c userId corrId connId_ enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
+  when (isJust connId_) $ throwE $ CMD PROHIBITED "joinConnAsync: connId not allowed for invitation URI"
   withInvLock c (strEncode cReqUri) "joinConnAsync" $ do
     lift (compatibleInvitationUri cReqUri) >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
@@ -836,8 +844,22 @@ joinConnAsync c userId corrId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup 
         enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
         pure connId
       Nothing -> throwE $ AGENT A_VERSION
-joinConnAsync _c _userId _corrId _enableNtfs (CRContactUri _) _subMode _cInfo _pqEncryption =
-  throwE $ CMD PROHIBITED "joinConnAsync"
+joinConnAsync c userId corrId connId_ enableNtfs cReqUri@(CRContactUri _) cInfo pqSup subMode = do
+  lift (compatibleContactUri cReqUri) >>= \case
+    Just (_, Compatible connAgentVersion) -> do
+      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion Nothing
+      connId <- case connId_ of
+        Just cId -> do
+          -- update connection record created by getConnShortLinkAsync
+          withStore' c $ \db -> updateNewConnJoin db cId connAgentVersion pqSupport enableNtfs
+          pure cId
+        Nothing -> do
+          g <- asks random
+          let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+          withStore c $ \db -> createNewConn db g cData SCMInvitation
+      enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
+      pure connId
+    Nothing -> throwE $ AGENT A_VERSION
 
 allowConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> AM ()
 allowConnectionAsync' c corrId connId confId ownConnInfo =
@@ -856,7 +878,7 @@ acceptContactAsync' :: AgentClient -> UserId -> ACorrId -> Bool -> InvitationId 
 acceptContactAsync' c userId corrId enableNtfs invId ownConnInfo pqSupport subMode = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
   withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-  joinConnAsync c userId corrId enableNtfs connReq ownConnInfo pqSupport subMode `catchAllErrors` \err -> do
+  joinConnAsync c userId corrId Nothing enableNtfs connReq ownConnInfo pqSupport subMode `catchAllErrors` \err -> do
     withStore' c (`unacceptInvitation` invId)
     throwE err
 
@@ -916,8 +938,9 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
   srv <- getSMPServer c userId
   when (checkNotices && connMode cMode == CMContact) $ checkClientNotices c srv
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
-  (connId,) <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys subMode srv
-    `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+  (connId,)
+    <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys subMode srv
+      `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
 checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAuth srv@(ProtocolServer {host}) _) = do
@@ -932,15 +955,41 @@ checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAu
         when (maybe True (ts <) expires_) $
           throwError NOTICE {server = safeDecodeUtf8 $ strEncode $ L.head host, preset = isNothing srvKey, expiresAt = roundedToUTCTime <$> expires_}
 
-setConnShortLinkAsync' :: forall c. ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM ()
-setConnShortLinkAsync' c corrId connId cMode userLinkData clientData =
+setConnShortLinkAsync' :: AgentClient -> ACorrId -> ConnId -> UserConnLinkData 'CMContact -> Maybe CRClientData -> AM ()
+setConnShortLinkAsync' c corrId connId userLinkData clientData =
   withConnLock c connId "setConnShortLinkAsync" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
-    srv <- case (conn, cMode, userLinkData) of
-      (ContactConnection _ RcvQueue {server}, SCMContact, UserContactLinkData {}) -> pure server
-      (RcvConnection _ RcvQueue {server}, SCMInvitation, UserInvLinkData {}) -> pure server
+    srv <- case (conn, userLinkData) of
+      (ContactConnection _ RcvQueue {server, shortLink}, UserContactLinkData d) -> do
+        liftEitherWith (CMD PROHIBITED . ("setConnShortLinkAsync: " <>)) $ validateOwners shortLink d
+        pure server
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
-    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET (AUCLD cMode userLinkData) clientData
+    enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET userLinkData clientData
+
+getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AM ConnId
+getConnShortLinkAsync' c userId corrId shortLink@(CSLContact _ _ srv _) = do
+  g <- asks random
+  connId <- withStore c $ \db -> do
+    -- server is created so the command is processed in server queue,
+    -- not blocking other "no server" commands
+    void $ createServer db srv
+    prepareNewConn db g
+  enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LGET shortLink
+  pure connId
+  where
+    prepareNewConn db g = do
+      let cData =
+            ConnData
+              { userId,
+                connId = "",
+                connAgentVersion = currentSMPAgentVersion,
+                enableNtfs = False,
+                lastExternalSndId = 0,
+                deleted = False,
+                ratchetSyncState = RSOk,
+                pqSupport = PQSupportOff
+              }
+      createNewConn db g cData SCMInvitation
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData =
@@ -954,7 +1003,8 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
     pure sl
   where
     prepareContactLinkData :: RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
-    prepareContactLinkData rq@RcvQueue {shortLink} ud = do
+    prepareContactLinkData rq@RcvQueue {shortLink} ud@(UserContactLinkData d') = do
+      liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink d'
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
       let cslContact = CSLContact SLSServer CCTContact (qServer rq)
@@ -971,7 +1021,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
               (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq ud
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
-          let slCreds = ShortLinkCreds linkId linkKey privSigKey (fst srvData)
+          let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing (fst srvData)
           withStore' c $ \db -> updateShortLinkCreds db rq slCreds
           pure (rq, linkId, cslContact linkKey, srvData)
     prepareInvLinkData :: RcvQueue -> UserConnLinkData 'CMInvitation -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMInvitation, QueueLinkData)
@@ -995,7 +1045,7 @@ deleteConnShortLink' c nm connId cMode =
       _ -> throwE $ CMD PROHIBITED "deleteConnShortLink: not contact address"
 
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
-getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (ConnectionRequestUri c, ConnLinkData c)
+getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (FixedLinkData c, ConnLinkData c)
 getConnShortLink' c nm userId = \case
   CSLInvitation _ srv linkId linkKey -> do
     g <- asks random
@@ -1016,18 +1066,19 @@ getConnShortLink' c nm userId = \case
     ld <- getQueueLink c nm userId srv linkId
     decryptData srv linkKey k ld
   where
-    decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (ConnectionRequestUri c, ConnLinkData c)
+    decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (FixedLinkData c, ConnLinkData c)
     decryptData srv linkKey k (sndId, d) = do
-      r@(cReq, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
-      let (srv', sndId') = qAddress (connReqQueue cReq)
-      unless (srv `sameSrvHost` srv' && sndId == sndId') $
-        throwE $ AGENT $ A_LINK "different address"
-      pure $ if srv' == srv then r else (updateConnReqServer srv cReq, clData)
+      r@(fd, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
+      let (srv', sndId') = qAddress (connReqQueue $ linkConnReq fd)
+      unless (srv `sameSrvHost` srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
+      pure $ if srv' == srv then r else (updateConnReqServer srv fd, clData)
     sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
-    updateConnReqServer :: SMPServer -> ConnectionRequestUri c -> ConnectionRequestUri c
-    updateConnReqServer srv = \case
-      CRInvitationUri crData e2eParams -> CRInvitationUri (updateQueues crData) e2eParams
-      CRContactUri crData -> CRContactUri $ updateQueues crData
+    updateConnReqServer :: SMPServer -> FixedLinkData c -> FixedLinkData c
+    updateConnReqServer srv fd =
+      let connReq' = case linkConnReq fd of
+            CRInvitationUri crData e2eParams -> CRInvitationUri (updateQueues crData) e2eParams
+            CRContactUri crData -> CRContactUri $ updateQueues crData
+       in fd {linkConnReq = connReq'}
       where
         updateQueues crData@(ConnReqUriData {crSmpQueues = SMPQueueUri vr addr :| qs}) =
           crData {crSmpQueues = SMPQueueUri vr addr {smpServer = srv} :| qs}
@@ -1110,7 +1161,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
-        | qUri == qUri'  -> pure $ case cReq of
+        | qUri == qUri' -> pure $ case cReq of
             CRContactUri _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
             CRInvitationUri crData (CR.E2ERatchetParamsUri vr k1 k2 _) ->
               let cReq' = case pqInitKeys of
@@ -1371,7 +1422,7 @@ databaseDiff passed known =
   let passedSet = S.fromList passed
       knownSet = S.fromList known
       missingIds = S.toList $ passedSet `S.difference` knownSet
-      extraIds = S.toList $ knownSet  `S.difference` passedSet
+      extraIds = S.toList $ knownSet `S.difference` passedSet
    in DatabaseDiff {missingIds, extraIds}
 
 -- | Subscribe to receive connection messages (SUB command) in Reader monad
@@ -1405,7 +1456,8 @@ subscribeConnections_ c conns = do
   notifyResultError rs
   pure rs
   where
-    partitionResultsConns :: (ConnId, Either StoreError SomeConnSub) ->
+    partitionResultsConns ::
+      (ConnId, Either StoreError SomeConnSub) ->
       (Map ConnId (Either AgentErrorType ()), [(ConnId, SomeConnSub)]) ->
       (Map ConnId (Either AgentErrorType ()), [(ConnId, SomeConnSub)])
     partitionResultsConns (connId, conn_) (rs, cs) = case conn_ of
@@ -1499,29 +1551,32 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     handleErr = (`catchAllErrors` \e -> notifySub' c "" (ERR e) >> throwE e)
     getService :: DB.Connection -> Map UserId Bool -> (UserId, SMPServer) -> IO ((UserId, SMPServer), Maybe ServiceSub)
     getService db useServices us@(userId, srv) =
-      fmap (us,) $ getSubscriptionService db userId srv >>= \case
-        Just serviceSub -> case M.lookup userId useServices of
-          Just True -> pure $ Just serviceSub
-          _ -> Nothing <$ unassocUserServerRcvQueueSubs' db userId srv
-        _ -> pure Nothing
+      fmap (us,) $
+        getSubscriptionService db userId srv >>= \case
+          Just serviceSub -> case M.lookup userId useServices of
+            Just True -> pure $ Just serviceSub
+            _ -> Nothing <$ unassocUserServerRcvQueueSubs' db userId srv
+          _ -> pure Nothing
     subscribeService :: ((UserId, SMPServer), Maybe ServiceSub) -> AM' ((UserId, SMPServer), ServiceAssoc)
-    subscribeService (us@(userId, srv), serviceSub_) = fmap ((us,) . fromRight False) $ tryAllErrors' $
-      case serviceSub_ of
-        Just serviceSub -> tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
-          Right (ServiceSubResult e _) -> case e of
-            Just SSErrorServiceId {} -> unassocQueues
-            -- Possibly, we should always resubscribe all when expected is greater than subscribed
-            Just SSErrorQueueCount {expectedQueueCount = n, subscribedQueueCount = n'} | n > 0 && n' == 0 -> unassocQueues
-            _ -> pure True
-          Left e -> do
-            atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
-            if clientServiceError e
-              then unassocQueues
-              else pure True
-          where
-            unassocQueues :: AM Bool
-            unassocQueues = False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs' db userId srv)
-        _ -> pure False
+    subscribeService (us@(userId, srv), serviceSub_) = fmap ((us,) . fromRight False) $
+      tryAllErrors' $
+        case serviceSub_ of
+          Just serviceSub ->
+            tryAllErrors (subscribeClientService c True userId srv serviceSub) >>= \case
+              Right (ServiceSubResult e _) -> case e of
+                Just SSErrorServiceId {} -> unassocQueues
+                -- Possibly, we should always resubscribe all when expected is greater than subscribed
+                Just SSErrorQueueCount {expectedQueueCount = n, subscribedQueueCount = n'} | n > 0 && n' == 0 -> unassocQueues
+                _ -> pure True
+              Left e -> do
+                atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
+                if clientServiceError e
+                  then unassocQueues
+                  else pure True
+            where
+              unassocQueues :: AM Bool
+              unassocQueues = False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs' db userId srv)
+          _ -> pure False
     subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
     subscribeUserServer maxPending currPending ((userId, srv), hasService) = do
       atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
@@ -1746,14 +1801,25 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
             CCLink cReq _ <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq)
-        LSET auData@(AUCLD cMode userLinkData) clientData ->
+        LSET userLinkData clientData ->
           withServer' . tryCommand $ do
-            link <- setConnShortLink' c NRMBackground connId cMode userLinkData clientData
-            notify $ LINK (ACSL cMode link) auData
+            link <- setConnShortLink' c NRMBackground connId SCMContact userLinkData clientData
+            notify $ LINK link userLinkData
+        LGET shortLink ->
+          withServer' . tryCommand $ do
+            (fixedData, linkData) <- getConnShortLink' c NRMBackground userId shortLink
+            notify $ LDATA fixedData linkData
         JOIN enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
             sqSecured <- joinConnSrvAsync c userId connId enableNtfs cReq connInfo pqEnc subMode srv
+            notify $ JOINED sqSecured
+        -- TODO TBC using joinConnSrvAsync for contact URIs, with receive queue created asynchronously.
+        -- Currently joinConnSrv is used because even joinConnSrvAsync for invitation URIs creates receive queue synchronously.
+        JOIN enableNtfs (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _})) pqEnc subMode connInfo -> noServer $ do
+          triedHosts <- newTVarIO S.empty
+          tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
+            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv
             notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
@@ -1764,7 +1830,6 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                 switchDuplexConnection c NRMBackground conn replaced >>= notify . SWITCH QDRcv SPStarted
               _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryCommand $ deleteConnection' c NRMBackground connId >> notify OK
-        _ -> notify $ ERR $ INTERNAL $ "unsupported async command " <> show (aCommandTag cmd)
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
         ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
@@ -1928,7 +1993,7 @@ enqueueMessageB c reqs = do
     storeSentMsg db cfg aMessageIds = \case
       Left e -> pure (aMessageIds, Left e)
       Right req@(csqs_, pqEnc_, msgFlags, mbr) -> case mbr of
-        VRValue i_ aMessage -> case  i_ >>= (`IM.lookup` aMessageIds) of
+        VRValue i_ aMessage -> case i_ >>= (`IM.lookup` aMessageIds) of
           Just _ -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg duplicate saved message body")
           Nothing -> do
             (mbId_, r) <- case csqs_ of
@@ -1969,7 +2034,6 @@ enqueueMessageB c reqs = do
             pure (req, internalId, pqEnc)
     handleInternal :: E.SomeException -> IO (Either AgentErrorType b)
     handleInternal = pure . Left . INTERNAL . show
-
 
 encodeAgentMsgStr :: AMessage -> InternalSndId -> PrevSndMsgHash -> ByteString
 encodeAgentMsgStr aMessage internalSndId prevMsgHash = do
@@ -2391,7 +2455,8 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
   pure res
   where
-    partitionResultsConns :: (ConnId, Either StoreError SomeConn) ->
+    partitionResultsConns ::
+      (ConnId, Either StoreError SomeConn) ->
       (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId]) ->
       (Map ConnId (Either AgentErrorType ()), [RcvQueue], [ConnId])
     partitionResultsConns (connId, conn_) (rs, rqs, cIds) = case conn_ of
@@ -2399,7 +2464,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
       Right (SomeConn _ conn) -> case connRcvQueues conn of
         [] -> (M.insert connId (Right ()) rs, rqs, cIds)
         rqs' -> (rs, rqs' ++ rqs, connId : cIds)
-    unsubNtfConnIds :: NonEmpty ConnId ->  AM' ()
+    unsubNtfConnIds :: NonEmpty ConnId -> AM' ()
     unsubNtfConnIds connIds' = do
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')

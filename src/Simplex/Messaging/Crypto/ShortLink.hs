@@ -21,6 +21,7 @@ module Simplex.Messaging.Crypto.ShortLink
 where
 
 import Control.Concurrent.STM
+import Control.Monad (unless)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
@@ -32,7 +33,7 @@ import Simplex.Messaging.Agent.Client (cryptoError)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol (EntityId (..), LinkId, EncDataBytes (..), QueueLinkData)
+import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), LinkId, QueueLinkData)
 import Simplex.Messaging.Util (liftEitherWith)
 
 fixedDataPaddedLength :: Int
@@ -50,8 +51,8 @@ invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
 encodeSignLinkData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
-encodeSignLinkData (rootKey, pk) agentVRange connReq userData =
-  let fd = smpEncode FixedLinkData {agentVRange, rootKey, connReq}
+encodeSignLinkData (rootKey, pk) agentVRange linkConnReq userData =
+  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId = Nothing}
       md = smpEncode $ connLinkData agentVRange userData
    in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
 
@@ -81,17 +82,22 @@ encryptData g k len s = do
   ct <- liftEitherWith cryptoError $ C.sbEncrypt k nonce s len
   pure $ EncDataBytes $ smpEncode nonce <> ct
 
-decryptLinkData :: forall c. ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (ConnectionRequestUri c, ConnLinkData c)
+decryptLinkData :: forall c. ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (FixedLinkData c, ConnLinkData c)
 decryptLinkData linkKey k (encFD, encMD) = do
   (sig1, fd) <- decrypt encFD
   (sig2, md) <- decrypt encMD
-  FixedLinkData {rootKey, connReq} <- decode fd
+  fd'@FixedLinkData {rootKey} <- decode fd
   md' <- decode @(ConnLinkData c) md
+  let signedBy k' = C.verify' k' sig2 md
   if
     | LinkKey (C.sha3_256 fd) /= linkKey -> linkErr "link data hash"
     | not (C.verify' rootKey sig1 fd) -> linkErr "link data signature"
-    | not (C.verify' rootKey sig2 md) -> linkErr "user data signature"
-    | otherwise -> Right (connReq, md')
+    | otherwise -> case md' of
+        InvitationLinkData {} -> unless (signedBy rootKey) $ linkErr "user data signature"
+        ContactLinkData _ UserContactData {owners} -> do
+          first (AGENT . A_LINK) $ validateLinkOwners rootKey owners
+          unless (signedBy rootKey || any (signedBy . ownerKey) owners) $ linkErr "user data signature"
+  Right (fd', md')
   where
     decrypt (EncDataBytes d) = do
       (nonce, Tail ct) <- decode d
@@ -100,4 +106,5 @@ decryptLinkData linkKey k (encFD, encMD) = do
     decode :: Encoding a => ByteString -> Either AgentErrorType a
     decode = msgErr . smpDecode
     msgErr = first (const $ AGENT A_MESSAGE)
+    linkErr :: String -> Either AgentErrorType ()
     linkErr = Left . AGENT . A_LINK
