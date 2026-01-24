@@ -17,6 +17,7 @@ Please discuss the problem you want to solve and your detailed implementation pl
 This files can be used with LLM prompts, e.g. if you use Claude Code you can create CLAUDE.md file in project root importing content from these files:
 
 ```markdown
+@README.md
 @contributing/PROJECT.md
 @contributing/CODE.md
 ```

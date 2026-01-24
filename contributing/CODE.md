@@ -36,6 +36,11 @@ Some files that use CPP language extension cannot be formatted as a whole, so in
 - Do not add comments like "wire format encoding" (Encoding class is always wire format) or "check if X" when the function name already says that
 - Assume a competent Haskell reader
 
+**Diff and refactoring:**
+- Avoid unnecessary changes and code movements
+- Never do refactoring unless it substantially reduces cost of solving the current problem, including the cost of refactoring
+- Aim to minimize the code changes - do what is minimally required to solve users' problems
+
 ### Haskell Extensions
 - `StrictData` enabled by default
 - Use STM for safe concurrency
