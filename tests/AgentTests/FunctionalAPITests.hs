@@ -372,7 +372,7 @@ functionalAPITests ps = do
     describe "Via contact" $ do
       it "should connect after errors" $ testContactErrors ps False
       it "should connect after errors with client restarts" $ testContactErrors ps True
-  fdescribe "Short connection links" $ do
+  describe "Short connection links" $ do
     describe "should connect via 1-time short link" $ testProxyMatrix ps testInvitationShortLink
     describe "should connect via 1-time short link with async join" $ testProxyMatrix ps testInvitationShortLinkAsync
     describe "should connect via contact short link" $ testProxyMatrix ps testContactShortLink
@@ -1654,7 +1654,7 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
       userLinkData = UserContactLinkData userCtData
   runRight $ do
     ((_rootPubKey, _rootPrivKey), ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
-      A.prepareConnectionLink a 1 Nothing
+      A.prepareConnectionLink a 1 Nothing Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
     _ <- A.createConnectionForLink a NRMInteractive 1 True True ccLink preparedParams userLinkData SMSubscribe
     (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink

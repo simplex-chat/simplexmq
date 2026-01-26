@@ -14,6 +14,9 @@ module Simplex.Messaging.Crypto.ShortLink
     invShortLinkKdf,
     encodeSignLinkData,
     encodeSignUserData,
+    encodeSign,
+    connLinkData,
+    newOwnerAuth,
     encryptLinkData,
     encryptUserData,
     decryptLinkData,
@@ -67,6 +70,14 @@ connLinkData vr = \case
 
 encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
 encodeSign pk s = smpEncode (C.sign' pk s) <> s
+
+-- | Generate a new owner key pair and create OwnerAuth signed by the authorizing key.
+-- ownerId is application-specific (e.g., MemberId in chat).
+newOwnerAuth :: TVar ChaChaDRG -> OwnerId -> C.PrivateKeyEd25519 -> IO (C.PrivateKeyEd25519, OwnerAuth)
+newOwnerAuth g ownerId signingKey = do
+  (ownerKey, ownerPrivKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
+  let authOwnerSig = C.sign' signingKey $ ownerId <> C.encodePubKey ownerKey
+  pure (ownerPrivKey, OwnerAuth {ownerId, ownerKey, authOwnerSig})
 
 encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> ExceptT AgentErrorType IO QueueLinkData
 encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)

@@ -403,8 +403,8 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newCo
 -- | Prepare connection link for contact mode (no network call).
 -- Returns root key pair (for signing OwnerAuth), the created link, and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> Maybe CRClientData -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId clientData = withAgentEnv c $ prepareConnectionLink' c userId clientData
+prepareConnectionLink :: AgentClient -> UserId -> Maybe CRClientData -> Maybe ByteString -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId clientData linkEntityId = withAgentEnv c $ prepareConnectionLink' c userId clientData linkEntityId
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
@@ -920,8 +920,8 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 
 -- | Prepare connection link for contact mode (no network, no database).
 -- Generates all cryptographic material and returns the link that will be created.
-prepareConnectionLink' :: AgentClient -> UserId -> Maybe CRClientData -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId clientData = do
+prepareConnectionLink' :: AgentClient -> UserId -> Maybe CRClientData -> Maybe ByteString -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId clientData linkEntityId = do
   g <- asks random
   ProtoServerWithAuth srv _ <- getSMPServer c userId
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
@@ -931,26 +931,28 @@ prepareConnectionLink' c userId clientData = do
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-      fd = smpEncode FixedLinkData {agentVRange = smpAgentVRange, rootKey = rootPubKey, linkConnReq = connReq, linkEntityId = Nothing}
+      fd = smpEncode FixedLinkData {agentVRange = smpAgentVRange, rootKey = rootPubKey, linkConnReq = connReq, linkEntityId}
       linkKey = LinkKey $ C.sha3_256 fd
       shortLink = CSLContact SLSServer CCTContact srv linkKey
       ccLink = CCLink connReq (Just shortLink)
-      params = PreparedLinkParams {plpNonce = nonce, plpE2ePrivKey = e2ePrivKey, plpLinkKey = linkKey, plpRootPrivKey = rootPrivKey}
+      params = PreparedLinkParams {plpNonce = nonce, plpE2ePrivKey = e2ePrivKey, plpLinkKey = linkKey, plpRootPrivKey = rootPrivKey, plpEncodedFixedData = fd}
   pure (sigKeys, ccLink, params)
 
 -- | Create connection for prepared link (single network call).
 createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> SubscriptionMode -> AM ConnId
-createConnectionForLink' c nm userId enableNtfs checkNotices (CCLink connReq _) PreparedLinkParams {plpNonce, plpE2ePrivKey, plpLinkKey, plpRootPrivKey} userLinkData subMode = do
+createConnectionForLink' c nm userId enableNtfs checkNotices (CCLink connReq _) PreparedLinkParams {plpNonce, plpE2ePrivKey, plpLinkKey, plpRootPrivKey, plpEncodedFixedData} userLinkData subMode = do
   g <- asks random
   AgentConfig {smpAgentVRange} <- asks config
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {smpServer = srv, senderId = sndId, dhPublicKey = e2ePubKey} :| _} = connReq
       srvWithAuth = ProtoServerWithAuth srv Nothing
-      sigKeys = (C.publicKey plpRootPrivKey, plpRootPrivKey)
-      (_, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userLinkData
+      signedFD = SL.encodeSign plpRootPrivKey plpEncodedFixedData
+      md = smpEncode $ SL.connLinkData smpAgentVRange userLinkData
+      signedMD = SL.encodeSign plpRootPrivKey md
+      linkData = (signedFD, signedMD)
   when checkNotices $ checkClientNotices c srvWithAuth
-  connId <- newConnNoQueues c userId enableNtfs SCMContact PQSupportOff
   qd <- encryptContactLinkData g plpRootPrivKey plpLinkKey sndId linkData
   let e2eKeys = (e2ePubKey, plpE2ePrivKey)
+  connId <- newConnNoQueues c userId enableNtfs SCMContact PQSupportOff
   (_, qUri) <-
     createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just plpNonce) qd e2eKeys
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e

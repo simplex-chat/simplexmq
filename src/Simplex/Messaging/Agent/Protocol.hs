@@ -1487,7 +1487,8 @@ data PreparedLinkParams = PreparedLinkParams
   { plpNonce :: C.CbNonce,              -- ^ Correlation ID / determines sender ID
     plpE2ePrivKey :: C.PrivateKeyX25519, -- ^ E2E DH private key (public is in CreatedConnLink)
     plpLinkKey :: LinkKey,              -- ^ For encrypting link data
-    plpRootPrivKey :: C.PrivateKeyEd25519 -- ^ Root signing key (for signing link data)
+    plpRootPrivKey :: C.PrivateKeyEd25519, -- ^ Root signing key (for signing link data)
+    plpEncodedFixedData :: ByteString   -- ^ smpEncode of FixedLinkData (includes linkEntityId)
   }
   deriving (Show)
 
