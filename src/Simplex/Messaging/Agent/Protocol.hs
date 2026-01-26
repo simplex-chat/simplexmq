@@ -1814,7 +1814,7 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
     smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
   smpP = do
     (agentVRange, rootKey, linkConnReq) <- smpP
-    linkEntityId <- (smpP <|> pure Nothing) <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    linkEntityId <- optional smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
     pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
