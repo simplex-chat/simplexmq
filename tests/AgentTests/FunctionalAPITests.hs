@@ -1553,16 +1553,16 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData}
       updatedLinkData = UserContactLinkData updatedCtData
   withSmpServer ps $ do
-    (connReq', ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (fd', ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
-    connReq' `shouldBe` connReq
+    linkConnReq fd' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
     -- update user data
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
   withSmpServer ps $ do
-    (connReq4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
-    connReq4 `shouldBe` connReq
+    (fd4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
+    linkConnReq fd4 `shouldBe` connReq
     updatedCtData' `shouldBe` updatedCtData
 
 testAddContactShortLinkRestart :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
@@ -1578,16 +1578,16 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData}
       updatedLinkData = UserContactLinkData updatedCtData
   withSmpServer ps $ do
-    (connReq', ContactLinkData _  userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (fd', ContactLinkData _  userCtData') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
-    connReq' `shouldBe` connReq
+    linkConnReq fd' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
     -- update user data
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
   withSmpServer ps $ do
-    (connReq4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
-    connReq4 `shouldBe` connReq
+    (fd4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
+    linkConnReq fd4 `shouldBe` connReq
     updatedCtData' `shouldBe` updatedCtData
 
 testOldContactQueueShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
