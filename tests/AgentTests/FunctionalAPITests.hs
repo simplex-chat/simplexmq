@@ -1652,12 +1652,15 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
   let userData = UserLinkData "test user data"
       userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
       userLinkData = UserContactLinkData userCtData
+  g <- C.newRandom
+  linkEntId <- atomically $ C.randomBytes 32 g
   runRight $ do
     ((_rootPubKey, _rootPrivKey), ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
-      A.prepareConnectionLink a 1 Nothing Nothing
+      A.prepareConnectionLink a 1 (Just linkEntId) True Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
-    _ <- A.createConnectionForLink a NRMInteractive 1 True True ccLink preparedParams userLinkData SMSubscribe
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink
+    _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData CR.IKPQOn SMSubscribe
+    (FixedLinkData {linkConnReq = connReq', linkEntityId}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink
+    liftIO $ Just linkEntId `shouldBe` linkEntityId
     Right connReqDecoded <- pure $ smpDecode (smpEncode connReq)
     liftIO $ connReq' `shouldBe` connReqDecoded
     liftIO $ userCtData' `shouldBe` userCtData

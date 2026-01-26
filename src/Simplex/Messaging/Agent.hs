@@ -403,15 +403,14 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newCo
 -- | Prepare connection link for contact mode (no network call).
 -- Returns root key pair (for signing OwnerAuth), the created link, and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> Maybe CRClientData -> Maybe ByteString -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId clientData linkEntityId = withAgentEnv c $ prepareConnectionLink' c userId clientData linkEntityId
+prepareConnectionLink :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId linkEntityId checkNotices
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
 -- Validates that server response matches the prepared link.
-createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> SubscriptionMode -> AE ConnId
-createConnectionForLink c nm userId enableNtfs checkNotices ccLink params linkData subMode =
-  withAgentEnv c $ createConnectionForLink' c nm userId enableNtfs checkNotices ccLink params linkData subMode
+createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> SubscriptionMode -> AE ConnId
+createConnectionForLink c nm userId enableNtfs = withAgentEnv c .::. createConnectionForLink' c nm userId enableNtfs
 {-# INLINE createConnectionForLink #-}
 
 -- | Create or update user's contact connection short link
@@ -920,41 +919,38 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 
 -- | Prepare connection link for contact mode (no network, no database).
 -- Generates all cryptographic material and returns the link that will be created.
-prepareConnectionLink' :: AgentClient -> UserId -> Maybe CRClientData -> Maybe ByteString -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId clientData linkEntityId = do
+prepareConnectionLink' :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId linkEntityId checkNotices clientData = do
   g <- asks random
-  ProtoServerWithAuth srv _ <- getSMPServer c userId
+  plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
+  when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
-  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
-  sigKeys@(rootPubKey, rootPrivKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  (e2ePubKey, e2ePrivKey) <- atomically $ C.generateKeyPair @'C.X25519 g
+  plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+  sigKeys@(_, plpRootPrivKey) <- atomically $ C.generateKeyPair g
+  plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-      fd = smpEncode FixedLinkData {agentVRange = smpAgentVRange, rootKey = rootPubKey, linkConnReq = connReq, linkEntityId}
-      linkKey = LinkKey $ C.sha3_256 fd
-      shortLink = CSLContact SLSServer CCTContact srv linkKey
-      ccLink = CCLink connReq (Just shortLink)
-      params = PreparedLinkParams {plpNonce = nonce, plpE2ePrivKey = e2ePrivKey, plpLinkKey = linkKey, plpRootPrivKey = rootPrivKey, plpEncodedFixedData = fd}
+      (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData sigKeys smpAgentVRange connReq linkEntityId
+      ccLink = CCLink connReq $ Just $ CSLContact SLSServer CCTContact srv plpLinkKey
+      params = PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth}
   pure (sigKeys, ccLink, params)
 
 -- | Create connection for prepared link (single network call).
-createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> SubscriptionMode -> AM ConnId
-createConnectionForLink' c nm userId enableNtfs checkNotices (CCLink connReq _) PreparedLinkParams {plpNonce, plpE2ePrivKey, plpLinkKey, plpRootPrivKey, plpEncodedFixedData} userLinkData subMode = do
+createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
+createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth} userLinkData pqInitKeys subMode = do
   g <- asks random
   AgentConfig {smpAgentVRange} <- asks config
-  let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {smpServer = srv, senderId = sndId, dhPublicKey = e2ePubKey} :| _} = connReq
-      srvWithAuth = ProtoServerWithAuth srv Nothing
-      signedFD = SL.encodeSign plpRootPrivKey plpEncodedFixedData
-      md = smpEncode $ SL.connLinkData smpAgentVRange userLinkData
-      signedMD = SL.encodeSign plpRootPrivKey md
-      linkData = (signedFD, signedMD)
-  when checkNotices $ checkClientNotices c srvWithAuth
+  case pqInitKeys of
+    CR.IKUsePQ -> throwE $ CMD PROHIBITED "createConnectionForLink"
+    _ -> pure ()
+  connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption pqInitKeys)
+  let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
+      md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData
+      linkData = (plpSignedFixedData, md)
   qd <- encryptContactLinkData g plpRootPrivKey plpLinkKey sndId linkData
-  let e2eKeys = (e2ePubKey, plpE2ePrivKey)
-  connId <- newConnNoQueues c userId enableNtfs SCMContact PQSupportOff
   (_, qUri) <-
-    createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just plpNonce) qd e2eKeys
+    createRcvQueue c nm userId connId plpSrvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
   let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri
   unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
@@ -1057,7 +1053,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
           let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
               connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq ud
+              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing ud
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
           let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing (fst srvData)
@@ -1176,7 +1172,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
       connReq <- createConnReq qUri
-      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userLinkData
+      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing userLinkData
       qd <- case cMode of
         SCMContact -> encryptContactLinkData g privSigKey linkKey sndId linkData
         SCMInvitation -> do

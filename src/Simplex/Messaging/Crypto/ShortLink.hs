@@ -13,9 +13,8 @@ module Simplex.Messaging.Crypto.ShortLink
   ( contactShortLinkKdf,
     invShortLinkKdf,
     encodeSignLinkData,
+    encodeSignFixedData,
     encodeSignUserData,
-    encodeSign,
-    connLinkData,
     newOwnerAuth,
     encryptLinkData,
     encryptUserData,
@@ -53,11 +52,16 @@ contactShortLinkKdf (LinkKey k) =
 invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
-encodeSignLinkData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
-encodeSignLinkData (rootKey, pk) agentVRange linkConnReq userData =
-  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId = Nothing}
-      md = smpEncode $ connLinkData agentVRange userData
-   in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
+encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> Maybe ByteString -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
+encodeSignLinkData keys@(_, pk) agentVRange linkConnReq linkEntityId userData =
+  let (linkKey, fd) = encodeSignFixedData keys agentVRange linkConnReq linkEntityId
+      md = encodeSignUserData (sConnectionMode @c) pk agentVRange userData
+   in (linkKey, (fd, md))
+
+encodeSignFixedData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> Maybe ByteString -> (LinkKey, ByteString)
+encodeSignFixedData (rootKey, pk) agentVRange linkConnReq linkEntityId =
+  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
+   in (LinkKey (C.sha3_256 fd), encodeSign pk fd)
 
 encodeSignUserData :: ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> UserConnLinkData c -> ByteString
 encodeSignUserData _ pk agentVRange userLinkData =

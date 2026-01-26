@@ -1481,14 +1481,19 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
 -- | Parameters for creating a connection with a prepared link.
--- Used by createConnectionForLink to create a connection
--- that matches a previously prepared link (from prepareConnectionLink).
 data PreparedLinkParams = PreparedLinkParams
-  { plpNonce :: C.CbNonce,              -- ^ Correlation ID / determines sender ID
-    plpE2ePrivKey :: C.PrivateKeyX25519, -- ^ E2E DH private key (public is in CreatedConnLink)
-    plpLinkKey :: LinkKey,              -- ^ For encrypting link data
-    plpRootPrivKey :: C.PrivateKeyEd25519, -- ^ Root signing key (for signing link data)
-    plpEncodedFixedData :: ByteString   -- ^ smpEncode of FixedLinkData (includes linkEntityId)
+  { -- | Correlation ID / determines sender ID
+    plpNonce :: C.CbNonce,
+    -- | Queue E2EE DH key pair
+    plpQueueE2EKeys :: C.KeyPairX25519,
+    -- | For encrypting link data
+    plpLinkKey :: LinkKey,
+    -- | Root signing key (for signing link data)
+    plpRootPrivKey :: C.PrivateKeyEd25519,
+    -- | smpEncode of FixedLinkData (includes linkEntityId)
+    plpSignedFixedData :: ByteString,
+    -- | Server with basic auth (not stored in link)
+    plpSrvWithAuth :: SMPServerWithAuth
   }
   deriving (Show)
 
