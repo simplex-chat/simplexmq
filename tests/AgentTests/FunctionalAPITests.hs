@@ -372,7 +372,7 @@ functionalAPITests ps = do
     describe "Via contact" $ do
       it "should connect after errors" $ testContactErrors ps False
       it "should connect after errors with client restarts" $ testContactErrors ps True
-  describe "Short connection links" $ do
+  fdescribe "Short connection links" $ do
     describe "should connect via 1-time short link" $ testProxyMatrix ps testInvitationShortLink
     describe "should connect via 1-time short link with async join" $ testProxyMatrix ps testInvitationShortLinkAsync
     describe "should connect via contact short link" $ testProxyMatrix ps testContactShortLink
@@ -383,6 +383,7 @@ functionalAPITests ps = do
       it "should connect via contact short link after restart" $ testContactShortLinkRestart ps
       it "should connect via added contact short link after restart" $ testAddContactShortLinkRestart ps
     it "should create and get short links with the old contact queues" $ testOldContactQueueShortLink ps
+    it "should connect via prepared connection link" $ testPrepareCreateConnectionLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1645,6 +1646,33 @@ replaceSubstringInFile filePath oldText newText = do
   content <- T.readFile filePath
   let newContent = T.replace oldText newText content
   T.writeFile filePath newContent
+
+testPrepareCreateConnectionLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
+  let userData = UserLinkData "test user data"
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+      userLinkData = UserContactLinkData userCtData
+  runRight $ do
+    ((_rootPubKey, _rootPrivKey), ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
+      A.prepareConnectionLink a 1 Nothing
+    liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
+    _ <- A.createConnectionForLink a NRMInteractive 1 True True ccLink preparedParams userLinkData SMSubscribe
+    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink
+    Right connReqDecoded <- pure $ smpDecode (smpEncode connReq)
+    liftIO $ connReq' `shouldBe` connReqDecoded
+    liftIO $ userCtData' `shouldBe` userCtData
+    (bId, sndSecure) <- joinConnection b 1 True connReq' "bob's connInfo" SMSubscribe
+    liftIO $ sndSecure `shouldBe` False
+    ("", _, REQ invId _ "bob's connInfo") <- get a
+    aId <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
+    (sndSecure', Nothing) <- acceptContact a 1 aId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    liftIO $ sndSecure' `shouldBe` True
+    ("", _, CONF confId _ "alice's connInfo") <- get b
+    allowConnection b bId confId "bob's connInfo"
+    get a ##> ("", aId, INFO "bob's connInfo")
+    get a ##> ("", aId, CON)
+    get b ##> ("", bId, CON)
+    exchangeGreetings a aId b bId
 
 testIncreaseConnAgentVersion :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do

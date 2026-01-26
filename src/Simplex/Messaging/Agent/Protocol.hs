@@ -129,6 +129,7 @@ module Simplex.Messaging.Agent.Protocol
     ContactConnType (..),
     ShortLinkScheme (..),
     LinkKey (..),
+    PreparedLinkParams (..),
     StoredClientService (..),
     ClientService,
     ClientServiceId,
@@ -1478,6 +1479,17 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
   deriving newtype (FromField, StrEncoding)
 
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
+
+-- | Parameters for creating a connection with a prepared link.
+-- Used by createConnectionForLink to create a connection
+-- that matches a previously prepared link (from prepareConnectionLink).
+data PreparedLinkParams = PreparedLinkParams
+  { plpNonce :: C.CbNonce,              -- ^ Correlation ID / determines sender ID
+    plpE2ePrivKey :: C.PrivateKeyX25519, -- ^ E2E DH private key (public is in CreatedConnLink)
+    plpLinkKey :: LinkKey,              -- ^ For encrypting link data
+    plpRootPrivKey :: C.PrivateKeyEd25519 -- ^ Root signing key (for signing link data)
+  }
+  deriving (Show)
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
 
