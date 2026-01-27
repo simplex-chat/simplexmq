@@ -1,4 +1,4 @@
-Version 5, 2024-06-22
+Version 7, 2025-01-24
 
 # SMP agent protocol - duplex communication over SMP protocol
 
@@ -9,6 +9,7 @@ Version 5, 2024-06-22
 - [SMP servers management](#smp-servers-management)
 - [SMP agent protocol scope](#smp-agent-protocol-scope)
 - [Duplex connection procedure](#duplex-connection-procedure)
+- [Fast duplex connection procedure](#fast-duplex-connection-procedure)
 - [Contact addresses](#contact-addresses)
 - [Communication between SMP agents](#communication-between-smp-agents)
   - [Message syntax](#messages-between-smp-agents)
@@ -20,6 +21,14 @@ Version 5, 2024-06-22
     - [Rotating messaging queue](#rotating-messaging-queue)
 - [End-to-end encryption](#end-to-end-encryption)
 - [Connection link: 1-time invitation and contact address](#connection-link-1-time-invitation-and-contact-address)
+  - [Full connection link syntax](#full-connection-link-syntax)
+  - [Short connection link syntax](#short-connection-link-syntax)
+- [Short links](#short-links)
+  - [Short link structure](#short-link-structure)
+  - [Link key derivation](#link-key-derivation)
+  - [Link data encryption](#link-data-encryption)
+  - [Short link resolution](#short-link-resolution)
+  - [Link data management](#link-data-management)
 - [Appendix A: SMP agent API](#smp-agent-api)
   - [API functions](#api-functions)
   - [API events](#api-events)
@@ -36,6 +45,16 @@ It provides:
 - validation of message integrity.
 
 SMP agent API provides no security between the agent and the client - it is assumed that the agent is executed in the trusted and secure environment, via the agent library, when the agent logic is included directly into the client application - [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
+
+This document describes SMP agent protocol version 7. The version history:
+
+- v1: initial version
+- v2: duplex handshake - allows including reply queue(s) in the initial confirmation
+- v3: ratchet sync - supports re-negotiating double ratchet encryption
+- v4: delivery receipts - supports acknowledging message delivery to the sender
+- v5: post-quantum - supports post-quantum key exchange in double ratchet (PQDR)
+- v6: sender auth key - supports sender authentication key in confirmations
+- v7: ratchet on confirmation - initializes double ratchet during confirmation
 
 ## SMP agent
 
@@ -152,7 +171,7 @@ These messages are encrypted with per-queue shared secret using NaCL crypto_box 
 - `agentConfirmation` - used when confirming SMP queues, contains connection information encrypted with double ratchet. This envelope can only contain `agentConnInfo` or `agentConnInfoReply` encrypted with double ratchet.
 - `agentMsgEnvelope` - contains different agent messages encrypted with double ratchet, as defined in `agentMessage`.
 - `agentInvitation` - sent to SMP queue that is used as contact address, does not use double ratchet.
-- `agentRatchetKey` - used to re-negotiate double ratchet encryption - can contain additional information in `agentRatchetKey`.
+- `agentRatchetKey` - used to re-negotiate double ratchet encryption - can contain additional information in `agentRatchetInfo`.
 
 ```abnf
 decryptedSMPClientMessage = agentConfirmation / agentMsgEnvelope / agentInvitation / agentRatchetKey
@@ -182,7 +201,7 @@ Decrypted SMP message client body can be one of 4 types:
 - `agentMessage` - all other agent messages.
 
 `agentMessage` contains these parts:
-- `agentMsgHeader` - agent message header that contains sequential agent message ID for a particular SMP queue, agent timestamp (ISO8601) and the hash of the previous message.
+- `agentMsgHeader` - agent message header that contains sequential agent message ID for a particular SMP queue and the hash of the previous message.
 - `aMessage` - a command/message to the other SMP agent:
   - to confirm the connection (`HELLO`).
   - to send and to confirm reception of user messages (`A_MSG`, `A_RCVD`).
@@ -200,7 +219,9 @@ decryptedAgentMessage = agentConnInfo / agentConnInfoReply / agentRatchetInfo / 
 agentConnInfo = %s"I" connInfo
 connInfo = *OCTET
 agentConnInfoReply = %s"D" smpQueues connInfo
+smpQueues = length 1*newQueueInfo ; NonEmpty list of reply queues
 agentRatchetInfo = %s"R" ratchetInfo
+ratchetInfo = *OCTET
 
 agentMessage = %s"M" agentMsgHeader aMessage msgPadding
 agentMsgHeader = agentMsgId prevMsgHash
@@ -215,8 +236,10 @@ HELLO = %s"H"
 A_MSG = %s"M" userMsgBody
 userMsgBody = *OCTET
 
-A_RCVD = %s"V" msgReceipt
+A_RCVD = %s"V" msgReceipts
+msgReceipts = length 1*msgReceipt ; NonEmpty list
 msgReceipt = agentMsgId msgHash rcptLength rcptInfo
+msgHash = shortString
 
 EREADY = %s"E" agentMsgId
 
@@ -224,14 +247,14 @@ A_QCONT = %s"QC" sndQueueAddr
 
 QADD = %s"QA" sndQueues
 sndQueues = length 1*(newQueueUri replacedSndQueue)
-newQueueUri = clientVRange smpServer senderId dhPublicKey [sndSecure]
+newQueueUri = clientVRange smpServer senderId dhPublicKey [queueMode]
 dhPublicKey = length x509encoded
-sndSecure = "T"
+queueMode = %s"M" / %s"C" ; M - messaging (sender can secure), C - contact
 replacedSndQueue = "0" / "1" sndQueueAddr
 
 QKEY = %s"QK" sndQueueKeys
 sndQueueKeys = length 1*(newQueueInfo senderKey)
-newQueueInfo = version smpServer senderId dhPublicKey [sndSecure]
+newQueueInfo = version smpServer senderId dhPublicKey [queueMode]
 senderKey = length x509encoded
 
 QUSE = %s"QU" sndQueuesReady
@@ -270,7 +293,7 @@ This is the agent envelope used to send client messages once the connection is e
 
 #### A_RCVD message
 
-This message is sent to confirm the client message reception. It includes received message number and message hash.
+This message is sent to confirm the client message reception. It includes a list of message receipts, each containing the received message number, message hash and receipt info.
 
 #### EREADY message
 
@@ -345,30 +368,145 @@ To summarize, the upgrade to DH+KEM secret happens in a sent message that has PQ
 
 Connection links are generated by SMP agent in response to `createConnection` api call, used by another party user with `joinConnection` api, and then another connection link is sent by the agent in `agentConnInfoReply` and used by the first party agent to connect to the reply queue (the second part of the process is invisible to the users).
 
-Connection link syntax:
+### Full connection link syntax
 
 ```
-connectionLink = connectionScheme "/" connLinkType "#/?smp=" smpQueues "&e2e=" e2eEncryption
+connectionLink = connectionScheme "/" connLinkType "#/?v=" versionRange "&smp=" smpQueues ["&e2e=" e2eEncryption] ["&data=" clientData]
 connLinkType = %s"invitation" / %s"contact"
 connectionScheme = (%s"https://" clientAppServer) | %s"simplex:"
 clientAppServer = hostname [ ":" port ]
 ; client app server, e.g. simplex.chat
-e2eEncryption = encryptionScheme ":" publicKey
-encryptionScheme = %s"rsa" ; end-to-end encryption and key exchange protocols,
-                           ; the current hybrid encryption scheme (RSA-OAEP/AES-256-GCM-SHA256)
-                           ; will be replaced with double ratchet protocol and DH key exchange.
-publicKey = <base64url X509 SPKI key encoding>
-smpQueues = smpQueue [ "," 1*smpQueue ] ; SMP queues for the connection
+versionRange = 1*DIGIT / 1*DIGIT "-" 1*DIGIT ; agent version range
+e2eEncryption = <e2e encryption parameters for double ratchet>
+smpQueues = smpQueue *(";" smpQueue) ; SMP queues for the connection (semicolon-separated)
 smpQueue = <URL-encoded queueURI defined in SMP protocol>
+clientData = <URL-encoded application-specific data>
 ```
 
-All parameters are passed via URI hash to avoid sending them to the server (in case "https" scheme is used) - they can be used by the client-side code and processed by the client application. Parameters `smp` and `e2e` can be present in any order, any unknown additional parameters SHOULD be ignored.
+All parameters are passed via URI hash to avoid sending them to the server (in case "https" scheme is used) - they can be used by the client-side code and processed by the client application. Parameters can be present in any order, any unknown additional parameters SHOULD be ignored.
 
 `clientAppServer` is not an SMP server - it is a server that shows the instruction on how to download the client app that will connect using this connection link. This server can also host a mobile or desktop app manifest so that this link is opened directly in the app if it is installed on the device.
 
 "simplex" URI scheme in `connectionProtocol` can be used instead of client app server, to connect without creating any web traffic. Client apps MUST support this URI scheme.
 
 See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for syntax of `queueURI`.
+
+### Short connection link syntax
+
+Short links provide a more compact representation by storing connection data on the server:
+
+```
+shortLink = shortLinkScheme "/" linkType "#" [linkId "/"] linkKey ["?" shortLinkParams]
+shortLinkScheme = %s"simplex:" / (%s"https://" serverHost)
+linkType = %s"i" / contactType ; i - invitation, or contact type
+contactType = %s"a" / %s"c" / %s"g" / %s"r" ; a - contact, c - channel, g - group, r - relay
+linkId = base64url ; only for invitation links
+linkKey = base64url ; SHA3-256 hash of fixed data, used to decrypt link data
+shortLinkParams = hostParam ["&" portParam] ["&" keyHashParam]
+hostParam = %s"h=" hostList
+hostList = host *("," host)
+portParam = %s"p=" port
+keyHashParam = %s"c=" base64url ; server certificate fingerprint
+```
+
+Contact types:
+- `a` (CCTContact) - direct contact connection
+- `c` (CCTChannel) - channel connection
+- `g` (CCTGroup) - group connection
+- `r` (CCTRelay) - relay connection
+
+Short links can use either the `simplex:` scheme or `https://` with a server hostname. When using the simplex scheme, server information is included in query parameters.
+
+## Short links
+
+Short links provide a compact representation of connection links by storing encrypted connection data on the SMP server. The link key in the URI fragment (after `#`) is never sent to the server, ensuring the server cannot decrypt the stored connection data.
+
+### Link key derivation
+
+The link key is derived from the fixed link data using SHA3-256 hash function:
+
+```
+linkKey = SHA3-256(fixedLinkData)
+```
+
+The fixed link data includes:
+- Agent version range
+- Root public key (Ed25519) for signing
+- SMP queue connection request (server, queue IDs, encryption keys)
+- Optional link entity ID
+
+For contact links, the link ID and encryption key are derived from the link key using HKDF:
+
+```
+(linkId, encryptionKey) = HKDF(info="SimpleXContactLink", key=linkKey, outputLen=56)
+; linkId = first 24 bytes, encryptionKey = remaining 32 bytes
+```
+
+For invitation links, the link ID is stored separately (usually included in the URI), and only the encryption key is derived:
+
+```
+encryptionKey = HKDF(info="SimpleXInvLink", key=linkKey, outputLen=32)
+```
+
+### Link data encryption
+
+Link data stored on the server consists of two encrypted parts: fixed data and user data. Both are encrypted using NaCl secret_box (XSalsa20-Poly1305) with the derived encryption key:
+
+```abnf
+queueLinkData = encFixedData encUserData
+encFixedData = largeString ; encrypted padded(signedFixedData, 2008)
+encUserData = largeString ; encrypted padded(signedUserData, 13784)
+
+signedFixedData = signature fixedData
+signedUserData = signature userData
+signature = length 64*64 OCTET ; Ed25519 signature
+
+fixedData = agentVersionRange rootKey linkConnReq [linkEntityId]
+agentVersionRange = version version ; min and max agent protocol version
+version = 2*2 OCTET
+rootKey = length x509encoded ; Ed25519 public key
+linkEntityId = shortString
+userData = invitationLinkData / contactLinkData
+invitationLinkData = %s"I" agentVersionRange connInfo
+contactLinkData = %s"C" agentVersionRange userContactData
+largeString = 2*2 OCTET *OCTET ; Word16 length prefix
+length = 1*1 OCTET
+shortString = length *OCTET
+```
+
+The fixed data is signed with the root key and its hash becomes the link key. The user data is signed either with the root key (for invitations) or with an owner key (for contact addresses).
+
+### Short link resolution
+
+When a user receives a short link, the agent resolves it as follows:
+
+1. Extract the link key from the URI fragment
+2. Send `LGET` command to the SMP server with the link ID
+3. Receive encrypted link data from the server
+4. Decrypt the link data using the link key
+5. Extract the full connection information (SMP queue URI, encryption keys, profile)
+6. Proceed with the standard connection procedure using `joinConnection`
+
+For invitation links, the `LKEY` command is used to set the sender key when getting link data. Repeated `LKEY` would require using the same key.
+
+### Link data management
+
+The recipient who created the queue can manage the short link data:
+
+- **LSET** - Set or update the link data associated with a queue. This is used when creating a short link or updating the user data (e.g., profile changes).
+- **LDEL** - Delete the link data from the server. This effectively invalidates the short link.
+
+Short links support different connection modes:
+- **invitation** - One-time invitation links that can only be used once
+- **contact** - Reusable contact address links that can be used multiple times
+
+For contact addresses, the link data includes additional information about the contact type:
+- **contact** - Direct contact connection
+- **channel** - Channel connection
+- **group** - Group connection
+- **relay** - Relay connection
+
+The agent maintains the link data and updates it when connection parameters change, ensuring short links remain valid and reflect current connection information.
 
 ## Appendix A: SMP agent API
 
