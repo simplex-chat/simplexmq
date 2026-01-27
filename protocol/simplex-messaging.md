@@ -1,4 +1,4 @@
-Version 9, 2024-06-22
+Version 19, 2025-01-24
 
 # Simplex Messaging Protocol (SMP)
 
@@ -18,6 +18,10 @@ Version 9, 2024-06-22
 - [Simplex queue IDs](#simplex-queue-ids)
 - [Server security requirements](#server-security-requirements)
 - [Message delivery notifications](#message-delivery-notifications)
+- [Client services](#client-services)
+  - [Service roles](#service-roles)
+  - [Service certificates](#service-certificates)
+  - [Service subscriptions](#service-subscriptions)
 - [SMP Transmission and transport block structure](#smp-transmission-and-transport-block-structure)
 - [SMP commands](#smp-commands)
   - [Correlating responses with commands](#correlating-responses-with-commands)
@@ -26,7 +30,11 @@ Version 9, 2024-06-22
   - [Recipient commands](#recipient-commands)
     - [Create queue command](#create-queue-command)
     - [Subscribe to queue](#subscribe-to-queue)
+    - [Subscribe to multiple queues](#subscribe-to-multiple-queues)
     - [Secure queue by recipient](#secure-queue-by-recipient)
+    - [Set queue recipient keys](#set-queue-recipient-keys)
+    - [Set short link](#set-short-link)
+    - [Delete short link](#delete-short-link)
     - [Enable notifications command](#enable-notifications-command)
     - [Disable notifications command](#disable-notifications-command)
     - [Get message command](#get-message-command)
@@ -41,12 +49,22 @@ Version 9, 2024-06-22
     - [Request proxied session](#request-proxied-session)
     - [Send command via proxy](#send-command-via-proxy)
     - [Forward command to destination server](#forward-command-to-destination-server)
+  - [Short link commands](#short-link-commands)
+    - [Set link key](#set-link-key)
+    - [Get link data](#get-link-data)
   - [Notifier commands](#notifier-commands)
     - [Subscribe to queue notifications](#subscribe-to-queue-notifications)
+    - [Subscribe to multiple queue notifications](#subscribe-to-multiple-queue-notifications)
   - [Server messages](#server-messages)
+    - [Link response](#link-response)
+    - [Queue subscription response](#queue-subscription-response)
+    - [Service subscription response](#service-subscription-response)
+    - [All service messages received](#all-service-messages-received)
     - [Deliver queue message](#deliver-queue-message)
     - [Deliver message notification](#deliver-message-notification)
     - [Subscription END notification](#subscription-end-notification)
+    - [Service subscription END notification](#service-subscription-end-notification)
+    - [Queue deleted notification](#queue-deleted-notification)
     - [Error responses](#error-responses)
     - [OK response](#ok-response)
 - [Transport connection with the SMP server](#transport-connection-with-the-SMP-server)
@@ -65,7 +83,26 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol versions 6 and 7, the previous versions are discontinued.
+This document describes SMP protocol version 19. Versions 1-5 are discontinued. The version history:
+
+- v1: binary protocol encoding
+- v2: message flags (used to control notifications)
+- v3: encrypt message timestamp and flags together with the body when delivered to recipient
+- v4: support command batching
+- v5: basic auth for SMP servers
+- v6: allow creating queues without subscribing (current minimum version)
+- v7: support authenticated encryption to verify senders' commands
+- v8: SMP proxy for sender commands (PRXY, PFWD, RFWD, PKEY, PRES, RRES)
+- v9: faster handshake with SKEY command for sender to secure queue
+- v10: DELD event to subscriber when queue is deleted via another connection
+- v11: additional encryption of transport blocks with forward secrecy
+- v12: BLOCKED error for blocked queues
+- v14: proxyServer handshake property to disable transport encryption between server and proxy
+- v15: short links with associated data passed in NEW or LSET command
+- v16: service certificates
+- v17: create notification credentials with NEW command
+- v18: support client notices in BLOCKED error
+- v19: service subscriptions to messages (SUBS, SOKS, ENDS commands)
 
 ## Introduction
 
@@ -395,12 +432,51 @@ To protect the privacy of the recipients, there are several commands in SMP prot
 
 The clients can optionally instruct a dedicated push notification server to subscribe to notifications and deliver push notifications to the device, which can then retrieve the messages in the background and send local notifications to the user - this is out of scope of SMP protocol. The commands that SMP protocol provides to allow it:
 
-- `enableNotifications` (`"NKEY"`) with `notifierId` (`"NID"`) response - see [Enable notifications command](#enable-notifications-command).
+- `enableNotifications` (`"NKEY"`) with `notifierIdResp` (`"NID"`) response - see [Enable notifications command](#enable-notifications-command).
 - `disableNotifications` (`"NDEL"`) - see [Disable notifications command](#disable-notifications-command).
 - `subscribeNotifications` (`"NSUB"`) - see [Subscribe to queue notifications](#subscribe-to-queue-notifications).
 - `messageNotification` (`"NMSG"`) - see [Deliver message notification](#deliver-message-notification).
 
 [`SEND` command](#send-message) includes the notification flag to instruct SMP server whether to send the notification - this flag is forwarded to the recipient inside encrypted envelope, together with the timestamp and the message body, so even if TLS is compromised this flag cannot be used for traffic correlation.
+
+## Client services
+
+SMP protocol supports client services - high capacity clients that act as services. Client services allow scalable message and notification delivery services.
+
+### Service roles
+
+A client service can have one of two roles:
+
+- **Messaging** - Message receiver service that subscribes to and receives messages from multiple SMP queues with a single command.
+
+- **Notifications** - Notification service that subscribes to queue notifications and delivers push notifications to user devices.
+
+Service role is identified in the transport handshake and determines what commands the service is authorized to send.
+
+### Service certificates
+
+To send service commands, services should authenticate themselves to SMP servers using service certificates. This provides:
+
+- **Service identity** - The server assigns a unique service ID based on the service certificate, allowing associating multiple SMP queues with a service.
+- **Subscription management** - Services can efficiently manage subscriptions across reconnections without re-subscribing to individual queues.
+- **Rate limiting** - Servers can apply rate limits per service identity rather than per connection.
+
+Service certificates are included in the client handshake and verified by the server. The service receives a service ID in the handshake response, which is then used as entity ID in service transmissions.
+
+```abnf
+clientHandshakeService = serviceRole serviceCertKey
+serviceRole = %s"M" / %s"N" ; Messaging / Notifier
+serviceCertKey = certChainPubKey
+```
+
+### Service subscriptions
+
+Services use batch subscription commands to subscribe to multiple queues:
+
+- **SUBS** - Subscribe to messages from all associated SMP queues at once. The service provides a count and hash of queue IDs, and receives `SOKS` response with the service ID.
+- **NSUBS** - Subscribe to notifications from all associated SMP queues. Similar to SUBS.
+- **SOKS** - Server response confirming batch subscription success.
+- **ENDS** - Server notification when batch subscriptions are terminated (e.g., when another instance of service connects).
 
 ## SMP Transmission and transport block structure
 
@@ -455,15 +531,19 @@ Commands syntax below is provided using [ABNF][8] with [case-sensitive strings e
 
 ```abnf
 smpCommand = ping / recipientCmd / senderCommand /
-             proxyCommand / subscribeNotifications / serverMsg
-recipientCmd = create / subscribe / rcvSecure /
+             proxyCommand / notifierCommand / linkCommand / serverMsg
+recipientCmd = create / subscribe / subscribeMultiple / rcvSecure / recipientKeys /
                enableNotifications / disableNotifications / getMessage
-               acknowledge / suspend / delete / getQueueInfo
+               acknowledge / suspend / delete / getQueueInfo / setShortLink / deleteShortLink
 senderCommand = send / sndSecure
-proxyCommand = proxySession / proxyCommand / relayCommand
-serverMsg = queueIds / message / notifierId / messageNotification /
-            proxySessionKey / proxyResponse / relayResponse
-            unsubscribed / queueInfo/ ok / error
+linkCommand = setLinkKey / getLinkData
+proxyCommand = proxySession / proxyForward / relayForward
+notifierCommand = subscribeNotifications / subscribeNotificationsMultiple
+serverMsg = queueIds / linkResponse / serviceOk / serviceOkMultiple /
+            message / allReceived / notifierIdResp / messageNotification /
+            proxySessionKey / proxyResponse / relayResponse /
+            unsubscribed / serviceUnsubscribed / deleted /
+            queueInfo / ok / error / pong
 ```
 
 The syntax of specific commands and responses is defined below.
@@ -480,13 +560,14 @@ SMP servers must verify all transmissions (excluding `ping` and initial `send` c
 
 ### Keep-alive command
 
-To keep the transport connection alive and to generate noise traffic the clients should use `ping` command to which the server responds with `ok` response. This command should be sent unsigned and without queue ID.
+To keep the transport connection alive and to generate noise traffic the clients should use `ping` command to which the server responds with `pong` response. This command should be sent unsigned and without queue ID.
 
 ```abnf
 ping = %s"PING"
+pong = %s"PONG"
 ```
 
-This command is always send unsigned.
+This command is always sent unsigned.
 
 ### Recipient commands
 
@@ -501,30 +582,54 @@ Servers SHOULD support basic auth with this command, to allow only server owners
 The syntax is:
 
 ```abnf
-create = %s"NEW " recipientAuthPublicKey recipientDhPublicKey basicAuth subscribe sndSecure
+create = %s"NEW " recipientAuthPublicKey recipientDhPublicKey optBasicAuth subscribeMode optQueueReqData optNtfCreds
 recipientAuthPublicKey = length x509encoded
 ; the recipient's Ed25519 or X25519 public key to verify commands for this queue
 recipientDhPublicKey = length x509encoded
 ; the recipient's Curve25519 key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies
 ; using [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
-basicAuth = "0" / "1" shortString ; server password
+optBasicAuth = %s"0" / (%s"1" shortString) ; optional server password
 subscribeMode = %s"S" / %s"C" ; S - create and subscribe, C - only create
-sndSecure = %s"T" / %s"F" ; T - sender can secure the queue, from v9
+optQueueReqData = %s"0" / (%s"1" queueReqData) ; optional queue request data
+queueReqData = queueReqMessaging / queueReqContact
+queueReqMessaging = %s"M" optMessagingLinkData
+queueReqContact = %s"C" optContactLinkData
+optMessagingLinkData = %s"0" / (%s"1" senderId encFixedData encUserData)
+optContactLinkData = %s"0" / (%s"1" linkId senderId encFixedData encUserData)
+senderId = shortString ; first 24 bytes of SHA3-384(corrId)
+linkId = shortString
+encFixedData = largeString ; encrypted fixed link data
+encUserData = largeString ; encrypted user data
+optNtfCreds = %s"0" / (%s"1" ntfKey ntfDhKey) ; optional notification credentials
+ntfKey = length x509encoded
+ntfDhKey = length x509encoded
 
 x509encoded = <binary X509 key encoding>
+shortString = length *OCTET
+largeString = length2 *OCTET
 length = 1*1 OCTET
+length2 = 2*2 OCTET ; Word16, network byte order
 ```
 
 If the queue is created successfully, the server must send `queueIds` response with the recipient's and sender's queue IDs and public key to encrypt delivered message bodies:
 
 ```abnf
-queueIds = %s"IDS " recipientId senderId srvDhPublicKey sndSecure
-serverDhPublicKey = length x509encoded
+queueIds = %s"IDS " recipientId senderId srvDhPublicKey optQueueMode optLinkId optServiceId optServerNtfCreds
+srvDhPublicKey = length x509encoded
 ; the server's Curve25519 key for DH exchange to derive the secret
 ; that the server will use to encrypt delivered message bodies to the recipient
 recipientId = shortString ; 16-24 bytes
 senderId = shortString ; 16-24 bytes
+optQueueMode = %s"0" / (%s"1" queueMode)
+queueMode = %s"M" / %s"C" ; M - messaging (sender can secure), C - contact
+optLinkId = %s"0" / (%s"1" linkId)
+linkId = shortString
+optServiceId = %s"0" / (%s"1" serviceId)
+serviceId = shortString
+optServerNtfCreds = %s"0" / (%s"1" srvNtfId srvNtfDhKey)
+srvNtfId = shortString
+srvNtfDhKey = length x509encoded
 ```
 
 Once the queue is created, depending on `subscribeMode` parameter of `NEW` command the recipient gets automatically subscribed to receive the messages from that queue, until the transport connection is closed. To start receiving the messages from the existing queue when the new transport connection is opened the client must use `subscribe` command.
@@ -541,11 +646,23 @@ When the simplex queue was not created in the current transport connection, the 
 subscribe = %s"SUB"
 ```
 
-If subscription is successful the server must respond with the first available message or with `ok` response if no messages are available. The recipient will continue receiving the messages from this queue until the transport connection is closed or until another transport connection subscribes to the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
+If subscription is successful the server must respond with the first available message or with [queue subscription response](#queue-subscription-response) (`SOK`) if no messages are available. The recipient will continue receiving the messages from this queue until the transport connection is closed or until another transport connection subscribes to the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
 
 The first message will be delivered either immediately or as soon as it is available; to receive the following message the recipient must acknowledge the reception of the message (see [Acknowledge message delivery](#acknowledge-message-delivery)).
 
 This transmission and its response MUST be signed.
+
+#### Subscribe to multiple queues
+
+This command is used by recipient services to subscribe to multiple queues at once:
+
+```abnf
+subscribeMultiple = %s"SUBS " count idsHash
+count = 8*8 OCTET ; Int64, network byte order (big-endian)
+idsHash = 16*16 OCTET ; XOR of MD5 hashes of all queue IDs
+```
+
+The count and idsHash allow the server to detect subscription drift. The server responds with `serviceOkMultiple` (`SOKS`) response.
 
 #### Secure queue by recipient
 
@@ -565,6 +682,44 @@ Once the queue is secured only authorized messages can be sent to it.
 
 This command MUST be used in transmission with recipient queue ID.
 
+#### Set queue recipient keys
+
+This command is used to set additional recipient keys to support shared management of the queue:
+
+```abnf
+recipientKeys = %s"RKEY " recipientKeysList
+recipientKeysList = count 1*recipientKey ; non-empty list
+count = 1*1 OCTET ; number of keys (1-255)
+recipientKey = length x509encoded
+```
+
+This command added to allow multiple group owners manage data of the same queue link.
+
+#### Set short link
+
+This command is used to associate a short link with the queue:
+
+```abnf
+setShortLink = %s"LSET " linkId encFixedData encUserData
+linkId = shortString
+encFixedData = largeString ; encrypted fixed link data
+encUserData = largeString ; encrypted user data (e.g., profile)
+largeString = length2 *OCTET
+length2 = 2*2 OCTET ; Word16, network byte order (big-endian)
+```
+
+The server responds with `OK` response if successful.
+
+#### Delete short link
+
+This command is used to remove a short link association from the queue:
+
+```abnf
+deleteShortLink = %s"LDEL"
+```
+
+The server responds with `OK` or `ERR`
+
 #### Enable notifications command
 
 This command is sent by the recipient to the server to add notifier's key to the queue, to allow push notifications server to receive notifications when the message arrives, via a separate queue ID, without receiving message content.
@@ -580,10 +735,10 @@ recipientNotificationDhPublicKey = length x509encoded
 ; using [NaCl crypto_box][16] encryption scheme (curve25519xsalsa20poly1305).
 ```
 
-The server will respond with `notifierId` response if notifications were enabled and the notifier's key was successfully added to the queue:
+The server will respond with `NID` response if notifications were enabled and the notifier's key was successfully added to the queue:
 
 ```abnf
-notifierId = %s"NID " notifierId srvNotificationDhPublicKey
+notifierIdResponse = %s"NID " notifierId srvNotificationDhPublicKey
 notifierId = shortString ; 16-24 bytes
 srvNotificationDhPublicKey = length x509encoded
 ; the server's Curve25519 key for DH exchange to derive the secret
@@ -1001,6 +1156,35 @@ The shared secret for encrypting transmission bodies between proxy server and de
 relayResponse = %s"RRES" SP <encrypted(responseTransmission)>
 ```
 
+### Short link commands
+
+These commands are used by senders to access queues via short links (added in v8).
+
+#### Set link key
+
+This command is used to set the sender key and to get link data associated with a "messaging" queue:
+
+```abnf
+setLinkKey = %s"LKEY " senderAuthPublicKey
+senderAuthPublicKey = length x509encoded
+```
+
+The server secures the queue with the provided key and responds with `LNK` response containing the sender ID and encrypted link data.
+
+Once this command is used, the queue is secured, and the command can only be repeated with the same key.
+
+#### Get link data
+
+This command is used to retrieve the link data associated with a "contact" queue:
+
+```abnf
+getLinkData = %s"LGET"
+```
+
+The server responds with `LNK` response containing the sender ID and encrypted link data.
+
+This command may be repeated multiple times.
+
 ### Notifier commands
 
 #### Subscribe to queue notifications
@@ -1011,15 +1195,68 @@ The push notifications server (notifier) must use this command to start receivin
 subscribeNotifications = %s"NSUB"
 ```
 
-If subscription is successful the server must respond with `ok` response if no messages are available. The notifier will be receiving the message notifications from this queue until the transport connection is closed or until another transport connection subscribes to notifications from the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
+If subscription is successful the server must respond with [queue subscription response](#queue-subscription-response) (`SOK`). The notifier will be receiving the message notifications from this queue until the transport connection is closed or until another transport connection subscribes to notifications from the same simplex queue - in this case the first subscription should be cancelled and [subscription END notification](#subscription-end-notification) delivered.
 
 The first message notification will be delivered either immediately or as soon as the message is available.
+
+#### Subscribe to multiple queue notifications
+
+This command is used by notifier services to subscribe to multiple queues at once:
+
+```abnf
+subscribeNotificationsMultiple = %s"NSUBS " count idsHash
+count = 8*8 OCTET ; Int64, network byte order (big-endian)
+idsHash = 16*16 OCTET ; XOR of MD5 hashes of all queue IDs
+```
+
+The server responds with `serviceOkMultiple` (`SOKS`) response.
 
 ### Server messages
 
 This section includes server events and generic command responses used for several commands.
 
 The syntax for command-specific responses is shown together with the commands.
+
+#### Link response
+
+Sent in response to `LKEY` and `LGET` commands:
+
+```abnf
+linkResponse = %s"LNK " senderId encFixedData encUserData
+senderId = shortString ; the sender ID for the queue
+encFixedData = largeString ; encrypted fixed link data
+encUserData = largeString ; encrypted user data
+```
+
+#### Queue subscription response
+
+Sent in response to `SUB` and `NSUB` commands:
+
+```abnf
+serviceOk = %s"SOK " optServiceId
+optServiceId = %s"0" / (%s"1" serviceId)
+serviceId = shortString
+```
+
+If response contains `serviceId`, it means that queue is associated with the service.
+
+#### Service subscription response
+
+Sent in response to `SUBS` or `NSUBS` commands:
+
+```abnf
+serviceOkMultiple = %s"SOKS " count idsHash
+count = 8*8 OCTET ; Int64, network byte order (big-endian)
+idsHash = 16*16 OCTET ; XOR of MD5 hashes of all subscribed queue IDs
+```
+
+#### All service messages received
+
+Sent to indicate all messages have been delivered from all queues associated with the service:
+
+```abnf
+allReceived = %s"ALLS"
+```
 
 #### Deliver queue message
 
@@ -1077,6 +1314,24 @@ unsubscribed = %s"END"
 
 No further messages should be delivered to unsubscribed transport connection.
 
+#### Service subscription END notification
+
+Sent when service subscription is terminated (can be sent when service re-connects):
+
+```abnf
+serviceUnsubscribed = %s"ENDS " count idsHash
+count = 8*8 OCTET ; Int64, network byte order (big-endian)
+idsHash = 16*16 OCTET ; XOR of MD5 hashes of terminated queue IDs
+```
+
+#### Queue deleted notification
+
+Sent when a queue has been deleted via another connection:
+
+```abnf
+deleted = %s"DELD"
+```
+
 #### Error responses
 
 - incorrect block format, encoding or authorization size (`BLOCK`).
@@ -1100,6 +1355,7 @@ No further messages should be delivered to unsubscribed transport connection.
     - `NETWORK` - network error.
     - `TIMEOUT` - command response timeout.
     - `HOST` - no compatible server host (e.g. onion when public is required, or vice versa)
+    - `NO_SERVICE` - service unavailable client-side.
     - `TRANSPORT` - handshake or other transport error:
       - `BLOCK` - error parsing transport block.
       - `VERSION` - incompatible client or server version.
@@ -1111,25 +1367,42 @@ No further messages should be delivered to unsubscribed transport connection.
         - `IDENTITY` - incorrect server identity (certificate fingerprint does not match server address).
         - `BAD_AUTH` - incorrect or missing server credentials in handshake.
 - authentication error (`AUTH`) - incorrect authorization, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
+- blocked entity error (`BLOCKED`) - the entity (queue or message) was blocked due to policy violation (added in v17). Contains blocking information:
+  - `reason` - blocking reason (`spam` or `content`).
+  - `notice` - optional client notice with additional information.
+- service error (`SERVICE`) - service-related error.
+- crypto error (`CRYPTO`) - cryptographic operation failed.
 - message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
+- store error (`STORE`) - server storage error with error message.
+- message expired (`EXPIRED`) - message has expired.
+- no message (`NO_MSG`) - no message available or message ID mismatch.
 - sent message is too large (> 16064) to be delivered (`LARGE_MSG`).
 - internal server error (`INTERNAL`).
+- duplicate error (`DUPLICATE_`) - internal duplicate detection error (not returned by server).
 
 The syntax for error responses:
 
 ```abnf
 error = %s"ERR " errorType
-errorType = %s"BLOCK" / %s"SESSION" / %s"CMD" SP cmdError / %s"PROXY" proxyError /
-            %s"AUTH" / %s"QUOTA" / %s"LARGE_MSG" / %s"INTERNAL"
-cmdError = %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_ENTITY"
+errorType = %s"BLOCK" / %s"SESSION" / %s"CMD" SP cmdError / %s"PROXY" SP proxyError /
+            %s"AUTH" / %s"BLOCKED" SP blockingInfo / %s"SERVICE" / %s"CRYPTO" /
+            %s"QUOTA" / %s"STORE" SP storeError / %s"EXPIRED" / %s"NO_MSG" /
+            %s"LARGE_MSG" / %s"INTERNAL" / %s"DUPLICATE_"
+cmdError = %s"UNKNOWN" / %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_ENTITY"
 proxyError = %s"PROTOCOL" SP errorType / %s"BROKER" SP brokerError /
              %s"BASIC_AUTH" / %s"NO_SESSION"
 brokerError = %s"RESPONSE" SP shortString / %s"UNEXPECTED" SP shortString /
-              %s"NETWORK" / %s"TIMEOUT" / %s"HOST" /
+              %s"NETWORK" [SP networkError] / %s"TIMEOUT" / %s"HOST" / %s"NO_SERVICE" /
               %s"TRANSPORT" SP transportError
+networkError = %s"CONNECT" SP shortString / %s"TLS" SP shortString /
+               %s"UNKNOWNCA" / %s"FAILED" / %s"TIMEOUT" / %s"SUBSCRIBE" SP shortString
 transportError = %s"BLOCK" / %s"VERSION" / %s"LARGE_MSG" / %s"SESSION" / %s"NO_AUTH" /
                  %s"HANDSHAKE" SP handshakeError
-handshakeError = %s"PARSE" / %s"IDENTITY" / %s"BAD_AUTH"
+handshakeError = %s"PARSE" / %s"IDENTITY" / %s"BAD_AUTH" / %s"BAD_SERVICE"
+blockingInfo = %s"reason=" blockingReason ["," %s"notice=" jsonNotice]
+blockingReason = %s"spam" / %s"content"
+jsonNotice = <JSON-encoded client notice>
+storeError = *OCTET
 ```
 
 Server implementations must aim to respond within the same time for each command in all cases when `"ERR AUTH"` response is required to prevent timing attacks (e.g., the server should verify authorization even when the queue does not exist on the server or the authorization of different type is sent, using any dummy key compatible with the used authorization).
@@ -1218,7 +1491,7 @@ The first block sent by the server should be `paddedServerHello` and the client 
 
 ```abnf
 paddedServerHello = <padded(serverHello, 16384)>
-serverHello = smpVersionRange sessionIdentifier [serverCert signedServerKey] ignoredPart
+serverHello = smpVersionRange sessionIdentifier [serverCertKey] ignoredPart
 smpVersionRange = minSmpVersion maxSmpVersion
 minSmpVersion = smpVersion
 maxSmpVersion = smpVersion
@@ -1226,24 +1499,38 @@ sessionIdentifier = shortString
 ; unique session identifier derived from transport connection handshake
 ; it should be included in authorized part of all SMP transmissions sent in this transport connection,
 ; but it must not be sent as part of the transmission in the current protocol version.
-serverCert = originalLength x509encoded
-signedServerKey = originalLength x509encoded ; signed by server certificate
+serverCertKey = certChain signedServerKey
+certChain = count 1*cert ; 2-4 certificates
+cert = originalLength x509encoded
+signedServerKey = originalLength x509encoded ; X25519 key signed by server certificate
 
 paddedClientHello = <padded(clientHello, 16384)>
-clientHello = smpVersion [clientKey] ignoredPart
+clientHello = smpVersion keyHash [clientKey] proxyServer optClientService ignoredPart
 ; chosen SMP protocol version - it must be the maximum supported version
 ; within the range offered by the server
-clientKey = length x509encoded
+keyHash = shortString ; server identity - CA certificate fingerprint
+clientKey = length x509encoded ; X25519 public key for session encryption - only present if needed
+proxyServer = %s"T" / %s"F" ; true if connecting client is a proxy server
+optClientService = %s"0" / (%s"1" clientService) ; optional service client credentials
+clientService = serviceRole serviceCertKey
+serviceRole = %s"M" / %s"N" ; Messaging / Notifier
+serviceCertKey = certChain signedServiceKey
+signedServiceKey = originalLength x509encoded ; Ed25519 key signed by service certificate
 
 smpVersion = 2*2OCTET ; Word16 version number
 originalLength = 2*2OCTET
+count = 1*1OCTET
 ignoredPart = *OCTET
 pad = *OCTET
 ```
 
-`signedServerKey` is used to compute a shared secret to authorize client transmission - it is combined with the per-queue key that was used when the queue was created.
+`signedServerKey` is used to compute a shared secret to authorize client transmissions - it is combined with the per-queue key that was used when the queue was created.
 
 `clientKey` is used only by SMP proxy server when it connects to the destination server to agree shared secret for the additional encryption layer, end user clients do not use this key.
+
+`proxyServer` flag (v14+) disables additional transport encryption inside TLS for proxy connections, since proxy server connection already has additional encryption.
+
+`clientService` (v16+) provides long-term service client certificate for high-volume services using SMP server (chat relays, notification servers, high traffic bots). The server responds with a third handshake message containing the assigned service ID.
 
 `ignoredPart` in handshake allows to add additional parameters in handshake without changing protocol version - the client and servers must ignore any extra bytes within the original block length.
 
