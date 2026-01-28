@@ -40,10 +40,8 @@ decompress1 :: Int -> Compressed -> Either String ByteString
 decompress1 limit = \case
   Passthrough bs -> Right bs
   Compressed (Large bs) -> case Z1.decompressedSize bs of
-    Nothing -> Left "no compressed size specified"
-    Just sz
-      | sz > limit -> Left $ "compressed size exceeds " <> show limit
-      | otherwise -> case Z1.decompress bs of
-          Z1.Error e -> Left e
-          Z1.Skip -> Right mempty
-          Z1.Decompress bs' -> Right bs'
+    Just sz | sz <= limit -> case Z1.decompress bs of
+      Z1.Error e -> Left e
+      Z1.Skip -> Right mempty
+      Z1.Decompress bs' -> Right bs'
+    _ -> Left $ "compressed size not specified or exceeds " <> show limit
