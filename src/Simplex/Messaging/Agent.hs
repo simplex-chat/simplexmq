@@ -2870,10 +2870,13 @@ getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {msgQ} = forever $ do
+subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
     processSMPTransmissions c t
+  where
+    run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
+    notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
@@ -3194,7 +3197,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               ackDel :: InternalId -> AM ACKd
               ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> ACKd
               handleNotifyAck :: AM ACKd -> AM ACKd
-              handleNotifyAck m = m `catchAllErrors` \e -> notify (ERR e) >> ack
+              handleNotifyAck m = m `catchAllOwnErrors` \e -> notify (ERR e) >> ack
           SMP.END ->
             atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c tSess connId rq $> True) (pure False))
               >>= notifyEnd
