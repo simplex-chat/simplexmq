@@ -3,7 +3,7 @@
 module CoreTests.UtilTests where
 
 import AgentTests.FunctionalAPITests ()
-import Control.Exception (Exception, SomeException, throwIO)
+import Control.Exception (AllocationLimitExceeded (..), AsyncException (..), Exception, SomeException, throwIO)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Data.IORef
@@ -71,11 +71,43 @@ utilTests = do
       runExceptT (throwTestException `allFinally` final) `shouldReturn` Left (TestException "user error (error)")
     it "and should not throw if there are no exceptions" $ withFinal $ \final ->
       runExceptT (noErrors `allFinally` final) `shouldReturn` Right "no errors"
+  describe "tryAllOwnErrors" $ do
+    it "should return ExceptT error as Left" $
+      runExceptT (tryAllOwnErrors throwTestError) `shouldReturn` Right (Left (TestError "error"))
+    it "should return SomeException as Left" $
+      runExceptT (tryAllOwnErrors throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
+    it "should catch StackOverflow" $
+      runExceptT (tryAllOwnErrors $ throwAsync StackOverflow) `shouldReturn` Right (Left (TestException "stack overflow"))
+    it "should catch HeapOverflow" $
+      runExceptT (tryAllOwnErrors $ throwAsync HeapOverflow) `shouldReturn` Right (Left (TestException "heap overflow"))
+    it "should catch AllocationLimitExceeded" $
+      runExceptT (tryAllOwnErrors $ throwAsync AllocationLimitExceeded) `shouldReturn` Right (Left (TestException "allocation limit exceeded"))
+    it "should rethrow ThreadKilled" $
+      runExceptT (tryAllOwnErrors $ throwAsync ThreadKilled) `shouldThrow` (\e -> e == ThreadKilled)
+    it "should return no errors as Right" $
+      runExceptT (tryAllOwnErrors noErrors) `shouldReturn` Right (Right "no errors")
+  describe "catchAllOwnErrors" $ do
+    it "should catch ExceptT error" $
+      runExceptT (throwTestError `catchAllOwnErrors` handleCatch) `shouldReturn` Right "caught TestError \"error\""
+    it "should catch SomeException" $
+      runExceptT (throwTestException `catchAllOwnErrors` handleCatch) `shouldReturn` Right "caught TestException \"user error (error)\""
+    it "should catch StackOverflow" $
+      runExceptT (throwAsync StackOverflow `catchAllOwnErrors` handleCatch) `shouldReturn` Right "caught TestException \"stack overflow\""
+    it "should catch HeapOverflow" $
+      runExceptT (throwAsync HeapOverflow `catchAllOwnErrors` handleCatch) `shouldReturn` Right "caught TestException \"heap overflow\""
+    it "should catch AllocationLimitExceeded" $
+      runExceptT (throwAsync AllocationLimitExceeded `catchAllOwnErrors` handleCatch) `shouldReturn` Right "caught TestException \"allocation limit exceeded\""
+    it "should rethrow ThreadKilled" $
+      runExceptT (throwAsync ThreadKilled `catchAllOwnErrors` handleCatch) `shouldThrow` (\e -> e == ThreadKilled)
+    it "should not throw if there are no errors" $
+      runExceptT (noErrors `catchAllOwnErrors` throwError) `shouldReturn` Right "no errors"
   where
     throwTestError :: ExceptT TestError IO String
     throwTestError = throwError $ TestError "error"
     throwTestException :: ExceptT TestError IO String
     throwTestException = liftIO $ throwIO $ userError "error"
+    throwAsync :: Exception e => e -> ExceptT TestError IO String
+    throwAsync = liftIO . throwIO
     noErrors :: ExceptT TestError IO String
     noErrors = pure "no errors"
     handleCatch :: TestError -> ExceptT TestError IO String

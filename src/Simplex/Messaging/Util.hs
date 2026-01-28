@@ -4,6 +4,7 @@
 
 module Simplex.Messaging.Util where
 
+import Control.Exception (AllocationLimitExceeded (..), AsyncException (..))
 import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Except
@@ -21,9 +22,9 @@ import Data.Int (Int64)
 import Data.List (groupBy, sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (listToMaybe)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
@@ -93,7 +94,7 @@ anyM :: Monad m => [m Bool] -> m Bool
 anyM = foldM (\r a -> if r then pure r else (r ||) <$!> a) False
 {-# INLINE anyM #-}
 
-infixl 1  $>>, $>>=
+infixl 1 $>>, $>>=
 
 ($>>=) :: (Monad m, Monad f, Traversable f) => m (f a) -> (a -> m (f b)) -> m (f b)
 f $>>= g = f >>= fmap join . mapM g
@@ -115,15 +116,19 @@ forME :: (Monad m, Traversable t) => t (Either e a) -> (a -> m (Either e b)) -> 
 forME = flip mapME
 {-# INLINE forME #-}
 
-
 -- | Monadic version of mapAccumL
 -- Copied from ghc-9.6.3 package: https://hackage.haskell.org/package/ghc-9.12.1/docs/GHC-Utils-Monad.html#v:mapAccumLM
 -- for backward compatibility with 8.10.7.
-mapAccumLM :: (Monad m, Traversable t)
-            => (acc -> x -> m (acc, y)) -- ^ combining function
-            -> acc                      -- ^ initial state
-            -> t x                      -- ^ inputs
-            -> m (acc, t y)             -- ^ final state, outputs
+mapAccumLM ::
+  (Monad m, Traversable t) =>
+  -- | combining function
+  (acc -> x -> m (acc, y)) ->
+  -- | initial state
+  acc ->
+  -- | inputs
+  t x ->
+  -- | final state, outputs
+  m (acc, t y)
 {-# INLINE [1] mapAccumLM #-}
 -- INLINE pragma.  mapAccumLM is called in inner loops.  Like 'map',
 -- we inline it so that we can take advantage of knowing 'f'.
@@ -132,26 +137,31 @@ mapAccumLM :: (Monad m, Traversable t)
 mapAccumLM f s = fmap swap . flip runStateT s . traverse f'
   where
     f' = StateT . (fmap . fmap) swap . flip f
+
 {-# RULES "mapAccumLM/List" mapAccumLM = mapAccumLM_List #-}
 {-# RULES "mapAccumLM/NonEmpty" mapAccumLM = mapAccumLM_NonEmpty #-}
 
-mapAccumLM_List
- :: Monad m
- => (acc -> x -> m (acc, y))
- -> acc -> [x] -> m (acc, [y])
+mapAccumLM_List ::
+  Monad m =>
+  (acc -> x -> m (acc, y)) ->
+  acc ->
+  [x] ->
+  m (acc, [y])
 {-# INLINE mapAccumLM_List #-}
 mapAccumLM_List f = go
   where
     go s (x : xs) = do
-      (s1, x')  <- f s x
+      (s1, x') <- f s x
       (s2, xs') <- go s1 xs
-      return    (s2, x' : xs')
+      return (s2, x' : xs')
     go s [] = return (s, [])
 
-mapAccumLM_NonEmpty
- :: Monad m
- => (acc -> x -> m (acc, y))
- -> acc -> NonEmpty x -> m (acc, NonEmpty y)
+mapAccumLM_NonEmpty ::
+  Monad m =>
+  (acc -> x -> m (acc, y)) ->
+  acc ->
+  NonEmpty x ->
+  m (acc, NonEmpty y)
 {-# INLINE mapAccumLM_NonEmpty #-}
 mapAccumLM_NonEmpty f s (x :| xs) =
   [(s2, x' :| xs') | (s1, x') <- f s x, (s2, xs') <- mapAccumLM_List f s1 xs]
@@ -196,6 +206,47 @@ action `catchThrow` err = ExceptT $ runExceptT action `UE.catch` (pure . Left . 
 allFinally :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m b -> ExceptT e m a
 allFinally action final = tryAllErrors action >>= \r -> final >> except r
 {-# INLINE allFinally #-}
+
+isOwnException :: E.SomeException -> Bool
+isOwnException e = case E.fromException e of
+  Just StackOverflow -> True
+  Just HeapOverflow -> True
+  _ -> case E.fromException e of
+    Just AllocationLimitExceeded -> True
+    _ -> False
+{-# INLINE isOwnException #-}
+
+isAsyncCancellation :: E.SomeException -> Bool
+isAsyncCancellation e = case E.fromException e of
+  Just (_ :: SomeAsyncException) -> not $ isOwnException e
+  Nothing -> False
+{-# INLINE isAsyncCancellation #-}
+
+catchOwn' :: IO a -> (E.SomeException -> IO a) -> IO a
+catchOwn' action handleInternal = action `E.catch` \e -> if isAsyncCancellation e then E.throwIO e else handleInternal e
+{-# INLINE catchOwn' #-}
+
+catchOwn :: MonadUnliftIO m => m a -> (E.SomeException -> m a) -> m a
+catchOwn action handleInternal =
+  withRunInIO $ \run ->
+    run action `E.catch` \e -> if isAsyncCancellation e then E.throwIO e else run (handleInternal e)
+{-# INLINE catchOwn #-}
+
+tryAllOwnErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m (Either e a)
+tryAllOwnErrors action = ExceptT $ Right <$> runExceptT action `catchOwn` (pure . Left . fromSomeException)
+{-# INLINE tryAllOwnErrors #-}
+
+tryAllOwnErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> m (Either e a)
+tryAllOwnErrors' action = runExceptT action `catchOwn` (pure . Left . fromSomeException)
+{-# INLINE tryAllOwnErrors' #-}
+
+catchAllOwnErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> ExceptT e m a) -> ExceptT e m a
+catchAllOwnErrors action handler = tryAllOwnErrors action >>= either handler pure
+{-# INLINE catchAllOwnErrors #-}
+
+catchAllOwnErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> m a) -> m a
+catchAllOwnErrors' action handler = tryAllOwnErrors' action >>= either handler pure
+{-# INLINE catchAllOwnErrors' #-}
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
