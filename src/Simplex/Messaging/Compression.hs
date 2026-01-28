@@ -36,10 +36,12 @@ compress1 bs
   | B.length bs <= maxLengthPassthrough = Passthrough bs
   | otherwise = Compressed . Large $ Z1.compress compressionLevel bs
 
-decompress1 :: Compressed -> Either String ByteString
-decompress1 = \case
+decompress1 :: Int -> Compressed -> Either String ByteString
+decompress1 limit = \case
   Passthrough bs -> Right bs
-  Compressed (Large bs) -> case Z1.decompress bs of
-    Z1.Error e -> Left e
-    Z1.Skip -> Right mempty
-    Z1.Decompress bs' -> Right bs'
+  Compressed (Large bs) -> case Z1.decompressedSize bs of
+    Just sz | sz <= limit -> case Z1.decompress bs of
+      Z1.Error e -> Left e
+      Z1.Skip -> Right mempty
+      Z1.Decompress bs' -> Right bs'
+    _ -> Left $ "compressed size not specified or exceeds " <> show limit

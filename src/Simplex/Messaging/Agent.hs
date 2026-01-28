@@ -180,14 +180,15 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import Simplex.Messaging.Client (NetworkRequestMode (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, nonBlockingWriteTBQueue, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
-import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
@@ -217,7 +218,6 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import Simplex.Messaging.Agent.Store.Entity
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion)
 import Simplex.Messaging.Util
@@ -833,8 +833,9 @@ newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> B
 newConn c nm userId enableNtfs cMode userData_ clientData pqInitKeys subMode = do
   srv <- getSMPServer c userId
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
-  (connId,) <$> newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
-    `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+  (connId,)
+    <$> newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKeys subMode srv
+      `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserLinkData -> Maybe CRClientData -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userData clientData =
@@ -914,8 +915,7 @@ getConnShortLink' c nm userId = \case
     decryptData srv linkKey k (sndId, d) = do
       r@(cReq, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
       let (srv', sndId') = qAddress (connReqQueue cReq)
-      unless (srv `sameSrvHost` srv' && sndId == sndId') $
-        throwE $ AGENT $ A_LINK "different address"
+      unless (srv `sameSrvHost` srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
       pure $ if srv' == srv then r else (updateConnReqServer srv cReq, clData)
     sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
     updateConnReqServer :: SMPServer -> ConnectionRequestUri c -> ConnectionRequestUri c
@@ -1004,7 +1004,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userData_ clientData pqInitKey
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
-        | qUri == qUri'  -> pure $ case cReq of
+        | qUri == qUri' -> pure $ case cReq of
             CRContactUri _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
             CRInvitationUri crData (CR.E2ERatchetParamsUri vr k1 k2 _) ->
               let cReq' = case pqInitKeys of
@@ -1682,7 +1682,7 @@ enqueueMessageB c reqs = do
     storeSentMsg db cfg aMessageIds = \case
       Left e -> pure (aMessageIds, Left e)
       Right req@(csqs_, pqEnc_, msgFlags, mbr) -> case mbr of
-        VRValue i_ aMessage -> case  i_ >>= (`IM.lookup` aMessageIds) of
+        VRValue i_ aMessage -> case i_ >>= (`IM.lookup` aMessageIds) of
           Just _ -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg duplicate saved message body")
           Nothing -> do
             (mbId_, r) <- case csqs_ of
@@ -1723,7 +1723,6 @@ enqueueMessageB c reqs = do
             pure (req, internalId, pqEnc)
     handleInternal :: E.SomeException -> IO (Either AgentErrorType b)
     handleInternal = pure . Left . INTERNAL . show
-
 
 encodeAgentMsgStr :: AMessage -> InternalSndId -> PrevSndMsgHash -> ByteString
 encodeAgentMsgStr aMessage internalSndId prevMsgHash = do
@@ -2536,10 +2535,13 @@ getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {msgQ} = forever $ do
+subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
     processSMPTransmissions c t
+  where
+    run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
+    notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
@@ -2848,7 +2850,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
               ackDel :: InternalId -> AM ACKd
               ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> ACKd
               handleNotifyAck :: AM ACKd -> AM ACKd
-              handleNotifyAck m = m `catchAllErrors` \e -> notify (ERR e) >> ack
+              handleNotifyAck m = m `catchAllOwnErrors` \e -> notify (ERR e) >> ack
           SMP.END ->
             atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c connId $> True) (pure False))
               >>= notifyEnd
