@@ -497,6 +497,7 @@ test-suite simplexmq-test
       XFTPCLI
       XFTPClient
       XFTPServerTests
+      XFTPWebTests
       Static
       Static.Embedded
       Paths_simplexmq
