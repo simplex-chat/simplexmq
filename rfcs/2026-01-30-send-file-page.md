@@ -577,7 +577,7 @@ describe "crypto/padding" $ do
 
 **Test execution:** Tests live in `tests/XFTPWebTests.hs` in the simplexmq repo, skipped by default (require compiled TS project path). Run with:
 ```bash
-cabal test --test-option=--match="/XFTP Web Client/"
+cabal test --ghc-options -O0 --test-option=--match="/XFTP Web Client/"
 ```
 
 **Random inputs:** Haskell tests can use QuickCheck to generate random inputs each run, not just hardcoded values. This catches edge cases that fixed test vectors miss.
@@ -1019,7 +1019,7 @@ Download orchestration — the top-level flow.
 
 **Development workflow:**
 1. Implement `encodeWord16` in `src/protocol/encoding.ts`
-2. Run `cabal test --test-option=--match="/XFTP Web Client/encoding/encodeWord16"`
+2. Run `cabal test --ghc-options -O0 --test-option=--match="/XFTP Web Client/encoding/encodeWord16"`
 3. If it fails: Haskell says `expected 002a, got 2a00` → immediately know it's an endianness bug
 4. Fix → rerun → passes → move to `encodeWord32`
 5. Repeat until all per-function tests pass

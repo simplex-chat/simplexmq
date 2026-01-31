@@ -150,7 +150,7 @@ main = do
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
           describe "XFTP agent" xftpAgentTests
-        xftpWebTests
+        describe "XFTP Web Client" xftpWebTests
         describe "XRCP" remoteControlTests
         describe "Server CLIs" cliTests
 

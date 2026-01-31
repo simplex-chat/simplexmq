@@ -9,19 +9,25 @@
 -- Run: cabal test --test-option=--match="/XFTP Web Client/"
 module XFTPWebTests (xftpWebTests) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Monad (when)
+import Crypto.Error (throwCryptoError)
+import qualified Crypto.PubKey.Curve25519 as X25519
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as NE
 import Data.Word (Word16, Word32)
-import Crypto.Error (throwCryptoError)
-import qualified Crypto.PubKey.Curve25519 as X25519
-import qualified Crypto.PubKey.Ed25519 as Ed25519
-import qualified Data.ByteArray as BA
+import Simplex.FileTransfer.Client (prepareChunkSizes)
+import Simplex.FileTransfer.Description (FileSize (..))
+import Simplex.FileTransfer.Types (FileHeader (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (strEncode)
 import System.Directory (doesDirectoryExist)
 import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, waitForProcess)
@@ -34,15 +40,21 @@ xftpWebDir = "xftp-web"
 -- | Run an inline ES module script via node, return stdout as ByteString.
 callNode :: String -> IO B.ByteString
 callNode script = do
-  (_, Just hout, _, ph) <-
+  (_, Just hout, Just herr, ph) <-
     createProcess
       (proc "node" ["--input-type=module", "-e", script])
         { std_out = CreatePipe,
+          std_err = CreatePipe,
           cwd = Just xftpWebDir
         }
+  errVar <- newEmptyMVar
+  _ <- forkIO $ B.hGetContents herr >>= putMVar errVar
   out <- B.hGetContents hout
+  err <- takeMVar errVar
   ec <- waitForProcess ph
-  ec `shouldBe` ExitSuccess
+  when (ec /= ExitSuccess) $
+    expectationFailure $
+      "node " <> show ec <> "\nstderr: " <> map (toEnum . fromIntegral) (B.unpack err)
   pure out
 
 -- | Format a ByteString as a JS Uint8Array constructor.
@@ -50,7 +62,7 @@ jsUint8 :: B.ByteString -> String
 jsUint8 bs = "new Uint8Array([" <> intercalate "," (map show (B.unpack bs)) <> "])"
 
 -- Import helpers for inline scripts.
-impEnc, impPad, impDig, impKey :: String
+impEnc, impPad, impDig, impKey, impSb :: String
 impEnc = "import * as E from './dist/protocol/encoding.js';"
 impPad = "import * as P from './dist/crypto/padding.js';"
 impDig =
@@ -61,13 +73,66 @@ impKey =
   "import sodium from 'libsodium-wrappers-sumo';"
     <> "import * as K from './dist/crypto/keys.js';"
     <> "await sodium.ready;"
+impSb =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as S from './dist/crypto/secretbox.js';"
+    <> "await sodium.ready;"
+impFile :: String
+impFile =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as F from './dist/crypto/file.js';"
+    <> "await sodium.ready;"
+impCmd :: String
+impCmd =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as E from './dist/protocol/encoding.js';"
+    <> "import * as Cmd from './dist/protocol/commands.js';"
+    <> "await sodium.ready;"
+impTx :: String
+impTx =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as E from './dist/protocol/encoding.js';"
+    <> "import * as K from './dist/crypto/keys.js';"
+    <> "import * as Tx from './dist/protocol/transmission.js';"
+    <> "await sodium.ready;"
+impHs :: String
+impHs =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as E from './dist/protocol/encoding.js';"
+    <> "import * as K from './dist/crypto/keys.js';"
+    <> "import * as Hs from './dist/protocol/handshake.js';"
+    <> "await sodium.ready;"
+impDesc :: String
+impDesc = "import * as Desc from './dist/protocol/description.js';"
+impChk :: String
+impChk =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as Desc from './dist/protocol/description.js';"
+    <> "import * as Chk from './dist/protocol/chunks.js';"
+    <> "await sodium.ready;"
+impCli :: String
+impCli =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as K from './dist/crypto/keys.js';"
+    <> "import * as Cli from './dist/protocol/client.js';"
+    <> "await sodium.ready;"
+impDl :: String
+impDl =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as K from './dist/crypto/keys.js';"
+    <> "import * as F from './dist/crypto/file.js';"
+    <> "import * as Cli from './dist/protocol/client.js';"
+    <> "import * as Dl from './dist/download.js';"
+    <> "import * as Cmd from './dist/protocol/commands.js';"
+    <> "import * as Tx from './dist/protocol/transmission.js';"
+    <> "await sodium.ready;"
 
 -- | Wrap expression in process.stdout.write(Buffer.from(...)).
 jsOut :: String -> String
 jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
 
 xftpWebTests :: Spec
-xftpWebTests = describe "XFTP Web Client" $ do
+xftpWebTests = do
   distExists <- runIO $ doesDirectoryExist (xftpWebDir <> "/dist")
   if distExists
     then do
@@ -75,6 +140,15 @@ xftpWebTests = describe "XFTP Web Client" $ do
       tsPaddingTests
       tsDigestTests
       tsKeyTests
+      tsSecretboxTests
+      tsFileCryptoTests
+      tsCommandTests
+      tsTransmissionTests
+      tsHandshakeTests
+      tsDescriptionTests
+      tsChunkTests
+      tsClientTests
+      tsDownloadTests
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
@@ -630,3 +704,1514 @@ tsKeyTests = describe "crypto/keys" $ do
             <> ");"
             <> jsOut "K.keyHash(der)"
       actual `shouldBe` expectedHash
+
+-- ── crypto/secretbox ──────────────────────────────────────────────
+
+tsSecretboxTests :: Spec
+tsSecretboxTests = describe "crypto/secretbox" $ do
+  let key32 = B.pack [1 .. 32]
+      nonce24 = B.pack [1 .. 24]
+      cbNonceVal = C.cbNonce nonce24
+      sbKeyVal = C.unsafeSbKey key32
+
+  describe "NaCl secretbox (tag prepended)" $ do
+    it "cbEncrypt matches Haskell sbEncrypt_" $ do
+      let msg = "hello NaCl secretbox" :: B.ByteString
+          paddedLen = 256 :: Int
+          hsResult = either (error . show) id $ C.sbEncrypt_ key32 cbNonceVal msg paddedLen
+      tsResult <-
+        callNode $
+          impSb <> jsOut ("S.cbEncrypt(" <> jsUint8 key32 <> "," <> jsUint8 nonce24 <> "," <> jsUint8 msg <> "," <> show paddedLen <> ")")
+      tsResult `shouldBe` hsResult
+
+    it "Haskell sbEncrypt_ -> TS cbDecrypt" $ do
+      let msg = "cross-language decrypt" :: B.ByteString
+          paddedLen = 128 :: Int
+          cipher = either (error . show) id $ C.sbEncrypt_ key32 cbNonceVal msg paddedLen
+      tsResult <-
+        callNode $
+          impSb <> jsOut ("S.cbDecrypt(" <> jsUint8 key32 <> "," <> jsUint8 nonce24 <> "," <> jsUint8 cipher <> ")")
+      tsResult `shouldBe` msg
+
+    it "TS cbEncrypt -> Haskell sbDecrypt_" $ do
+      let msg = "ts-to-haskell NaCl" :: B.ByteString
+          paddedLen = 64 :: Int
+      tsCipher <-
+        callNode $
+          impSb <> jsOut ("S.cbEncrypt(" <> jsUint8 key32 <> "," <> jsUint8 nonce24 <> "," <> jsUint8 msg <> "," <> show paddedLen <> ")")
+      let hsResult = either (error . show) id $ C.sbDecrypt_ key32 cbNonceVal tsCipher
+      hsResult `shouldBe` msg
+
+  describe "streaming tail-tag" $ do
+    it "sbEncryptTailTag matches Haskell" $ do
+      let msg = "hello streaming" :: B.ByteString
+          msgLen = fromIntegral (B.length msg) :: Int64
+          paddedLen = 64 :: Int64
+          hsResult =
+            either (error . show) id $
+              LC.sbEncryptTailTag sbKeyVal cbNonceVal (LB.fromStrict msg) msgLen paddedLen
+      tsResult <-
+        callNode $
+          impSb
+            <> jsOut
+              ( "S.sbEncryptTailTag("
+                  <> jsUint8 key32
+                  <> ","
+                  <> jsUint8 nonce24
+                  <> ","
+                  <> jsUint8 msg
+                  <> ","
+                  <> show msgLen
+                  <> "n,"
+                  <> show paddedLen
+                  <> "n)"
+              )
+      tsResult `shouldBe` LB.toStrict hsResult
+
+    it "Haskell encrypt -> TS decrypt (tail tag)" $ do
+      let msg = "haskell-to-ts streaming" :: B.ByteString
+          msgLen = fromIntegral (B.length msg) :: Int64
+          paddedLen = 128 :: Int64
+          cipher =
+            either (error . show) id $
+              LC.sbEncryptTailTag sbKeyVal cbNonceVal (LB.fromStrict msg) msgLen paddedLen
+      tsResult <-
+        callNode $
+          impSb
+            <> "const r = S.sbDecryptTailTag("
+            <> jsUint8 key32
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> show paddedLen
+            <> "n,"
+            <> jsUint8 (LB.toStrict cipher)
+            <> ");"
+            <> jsOut "new Uint8Array([r.valid ? 1 : 0, ...r.content])"
+      let (validByte, content) = B.splitAt 1 tsResult
+      validByte `shouldBe` B.pack [1]
+      content `shouldBe` msg
+
+    it "TS encrypt -> Haskell decrypt (tail tag)" $ do
+      let msg = "ts-to-haskell streaming" :: B.ByteString
+          msgLen = fromIntegral (B.length msg) :: Int64
+          paddedLen = 64 :: Int64
+      tsCipher <-
+        callNode $
+          impSb
+            <> jsOut
+              ( "S.sbEncryptTailTag("
+                  <> jsUint8 key32
+                  <> ","
+                  <> jsUint8 nonce24
+                  <> ","
+                  <> jsUint8 msg
+                  <> ","
+                  <> show msgLen
+                  <> "n,"
+                  <> show paddedLen
+                  <> "n)"
+              )
+      let (valid, plaintext) =
+            either (error . show) id $
+              LC.sbDecryptTailTag sbKeyVal cbNonceVal paddedLen (LB.fromStrict tsCipher)
+      valid `shouldBe` True
+      LB.toStrict plaintext `shouldBe` msg
+
+    it "tag tampering detection" $ do
+      let msg = "tamper test" :: B.ByteString
+          msgLen = fromIntegral (B.length msg) :: Int64
+          paddedLen = 64 :: Int64
+      tsResult <-
+        callNode $
+          impSb
+            <> "const enc = S.sbEncryptTailTag("
+            <> jsUint8 key32
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 msg
+            <> ","
+            <> show msgLen
+            <> "n,"
+            <> show paddedLen
+            <> "n);"
+            <> "enc[enc.length - 1] ^= 1;"
+            <> "const r = S.sbDecryptTailTag("
+            <> jsUint8 key32
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> show paddedLen
+            <> "n, enc);"
+            <> jsOut "new Uint8Array([r.valid ? 1 : 0])"
+      tsResult `shouldBe` B.pack [0]
+
+  describe "internal consistency" $ do
+    it "streaming matches NaCl secretbox (TS-only)" $ do
+      let msg = "salsa20 validation" :: B.ByteString
+          msgLen = fromIntegral (B.length msg) :: Int64
+          paddedLen = 64 :: Int64
+      tsResult <-
+        callNode $
+          impPad
+            <> impSb
+            <> "const msg = "
+            <> jsUint8 msg
+            <> ";"
+            <> "const key = "
+            <> jsUint8 key32
+            <> ";"
+            <> "const nonce = "
+            <> jsUint8 nonce24
+            <> ";"
+            <> "const padded = P.padLazy(msg, "
+            <> show msgLen
+            <> "n, "
+            <> show paddedLen
+            <> "n);"
+            <> "const nacl = S.cryptoBox(key, nonce, padded);"
+            <> "const stream = S.sbEncryptTailTag(key, nonce, msg, "
+            <> show msgLen
+            <> "n, "
+            <> show paddedLen
+            <> "n);"
+            <> "const naclTag = nacl.subarray(0, 16);"
+            <> "const naclCipher = nacl.subarray(16);"
+            <> "const streamCipher = stream.subarray(0, "
+            <> show paddedLen
+            <> ");"
+            <> "const streamTag = stream.subarray("
+            <> show paddedLen
+            <> ");"
+            <> "const cipherMatch = naclCipher.length === streamCipher.length && naclCipher.every((b,i) => b === streamCipher[i]);"
+            <> "const tagMatch = naclTag.length === streamTag.length && naclTag.every((b,i) => b === streamTag[i]);"
+            <> jsOut "new Uint8Array([cipherMatch ? 1 : 0, tagMatch ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1, 1]
+
+    it "multi-chunk matches single-shot (TS-only)" $ do
+      let msg = B.pack [1 .. 200]
+      tsResult <-
+        callNode $
+          impSb
+            <> "const key = "
+            <> jsUint8 key32
+            <> ";"
+            <> "const nonce = "
+            <> jsUint8 nonce24
+            <> ";"
+            <> "const msg = "
+            <> jsUint8 msg
+            <> ";"
+            <> "const st1 = S.sbInit(key, nonce);"
+            <> "const c1 = S.sbEncryptChunk(st1, msg);"
+            <> "const t1 = S.sbAuth(st1);"
+            <> "const st2 = S.sbInit(key, nonce);"
+            <> "const parts = [msg.subarray(0,50), msg.subarray(50,100), msg.subarray(100,150), msg.subarray(150)];"
+            <> "const c2parts = parts.map(p => S.sbEncryptChunk(st2, p));"
+            <> "const c2 = new Uint8Array(200); let off = 0; c2parts.forEach(p => { c2.set(p, off); off += p.length; });"
+            <> "const t2 = S.sbAuth(st2);"
+            <> "const cipherMatch = c1.length === c2.length && c1.every((b,i) => b === c2[i]);"
+            <> "const tagMatch = t1.length === t2.length && t1.every((b,i) => b === t2[i]);"
+            <> jsOut "new Uint8Array([cipherMatch ? 1 : 0, tagMatch ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1, 1]
+
+-- ── crypto/file ─────────────────────────────────────────────────
+
+tsFileCryptoTests :: Spec
+tsFileCryptoTests = describe "crypto/file" $ do
+  let key32 = B.pack [1 .. 32]
+      nonce24 = B.pack [1 .. 24]
+      cbNonceVal = C.cbNonce nonce24
+      sbKeyVal = C.unsafeSbKey key32
+
+  describe "FileHeader encoding" $ do
+    it "encodeFileHeader matches Haskell" $ do
+      let hdr = FileHeader "test.txt" Nothing
+          hsEncoded = smpEncode hdr
+      tsEncoded <- callNode $ impFile <> jsOut "F.encodeFileHeader({fileName: 'test.txt', fileExtra: null})"
+      tsEncoded `shouldBe` hsEncoded
+
+    it "encodeFileHeader with fileExtra" $ do
+      let hdr = FileHeader "document.pdf" (Just "v2")
+          hsEncoded = smpEncode hdr
+      tsEncoded <- callNode $ impFile <> jsOut "F.encodeFileHeader({fileName: 'document.pdf', fileExtra: 'v2'})"
+      tsEncoded `shouldBe` hsEncoded
+
+    it "Haskell encode -> TS parseFileHeader" $ do
+      let hdr = FileHeader "photo.jpg" (Just "extra")
+          encoded = smpEncode hdr
+          trailing = B.pack [10, 20, 30, 40, 50]
+          input = encoded <> trailing
+      tsResult <-
+        callNode $
+          impFile
+            <> "const r = F.parseFileHeader("
+            <> jsUint8 input
+            <> ");"
+            <> "const hdrBytes = F.encodeFileHeader(r.header);"
+            <> jsOut "new Uint8Array([...hdrBytes, ...r.rest])"
+      tsResult `shouldBe` input
+
+  describe "file encryption" $ do
+    it "encryptFile matches Haskell" $ do
+      let source = "Hello, this is test file content!" :: B.ByteString
+          hdr = FileHeader "test.txt" Nothing
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 256 :: Int64
+          sb = either (error . show) id $ LC.sbInit sbKeyVal cbNonceVal
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          tag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          hsEncrypted = B.concat [hdrEnc, srcEnc, padEnc, tag]
+      tsEncrypted <-
+        callNode $
+          impFile
+            <> "const source = "
+            <> jsUint8 source
+            <> ";"
+            <> "const fileHdr = F.encodeFileHeader({fileName: 'test.txt', fileExtra: null});"
+            <> jsOut
+              ( "F.encryptFile(source, fileHdr, "
+                  <> jsUint8 key32
+                  <> ","
+                  <> jsUint8 nonce24
+                  <> ","
+                  <> show fileSize'
+                  <> "n,"
+                  <> show encSize
+                  <> "n)"
+              )
+      tsEncrypted `shouldBe` hsEncrypted
+
+    it "Haskell encrypt -> TS decryptChunks" $ do
+      let source = "cross-language file test data" :: B.ByteString
+          hdr = FileHeader "data.bin" (Just "meta")
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 128 :: Int64
+          sb = either (error . show) id $ LC.sbInit sbKeyVal cbNonceVal
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          tag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          encrypted = B.concat [hdrEnc, srcEnc, padEnc, tag]
+      tsResult <-
+        callNode $
+          impFile
+            <> "const r = F.decryptChunks("
+            <> show encSize
+            <> "n, ["
+            <> jsUint8 encrypted
+            <> "], "
+            <> jsUint8 key32
+            <> ","
+            <> jsUint8 nonce24
+            <> ");"
+            <> "const hdrBytes = F.encodeFileHeader(r.header);"
+            <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
+      tsResult `shouldBe` (fileHdr <> source)
+
+    it "TS encryptFile -> Haskell decrypt" $ do
+      let source = "ts-to-haskell file" :: B.ByteString
+          hdr = FileHeader "note.txt" Nothing
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 128 :: Int64
+          paddedLen = encSize - 16
+      tsEncrypted <-
+        callNode $
+          impFile
+            <> "const source = "
+            <> jsUint8 source
+            <> ";"
+            <> "const fileHdr = F.encodeFileHeader({fileName: 'note.txt', fileExtra: null});"
+            <> jsOut
+              ( "F.encryptFile(source, fileHdr, "
+                  <> jsUint8 key32
+                  <> ","
+                  <> jsUint8 nonce24
+                  <> ","
+                  <> show fileSize'
+                  <> "n,"
+                  <> show encSize
+                  <> "n)"
+              )
+      let (valid, plaintext) =
+            either (error . show) id $
+              LC.sbDecryptTailTag sbKeyVal cbNonceVal paddedLen (LB.fromStrict tsEncrypted)
+      valid `shouldBe` True
+      LB.toStrict plaintext `shouldBe` (fileHdr <> source)
+
+    it "multi-chunk decrypt" $ do
+      let source = "multi-chunk file content" :: B.ByteString
+          hdr = FileHeader "multi.bin" Nothing
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 128 :: Int64
+          sb = either (error . show) id $ LC.sbInit sbKeyVal cbNonceVal
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          tag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          encrypted = B.concat [hdrEnc, srcEnc, padEnc, tag]
+          (chunk1, rest) = B.splitAt 50 encrypted
+          (chunk2, chunk3) = B.splitAt 50 rest
+      tsResult <-
+        callNode $
+          impFile
+            <> "const r = F.decryptChunks("
+            <> show encSize
+            <> "n, ["
+            <> jsUint8 chunk1
+            <> ","
+            <> jsUint8 chunk2
+            <> ","
+            <> jsUint8 chunk3
+            <> "], "
+            <> jsUint8 key32
+            <> ","
+            <> jsUint8 nonce24
+            <> ");"
+            <> "const hdrBytes = F.encodeFileHeader(r.header);"
+            <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
+      tsResult `shouldBe` (fileHdr <> source)
+
+    it "auth tag tampering detection" $ do
+      let source = "tamper detection file" :: B.ByteString
+          hdr = FileHeader "secret.dat" Nothing
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 128 :: Int64
+          sb = either (error . show) id $ LC.sbInit sbKeyVal cbNonceVal
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          tag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          encrypted = B.concat [hdrEnc, srcEnc, padEnc, tag]
+      tsResult <-
+        callNode $
+          impFile
+            <> "const enc = "
+            <> jsUint8 encrypted
+            <> ";"
+            <> "enc[enc.length - 1] ^= 1;"
+            <> "let ok = 0;"
+            <> "try { F.decryptChunks("
+            <> show encSize
+            <> "n, [enc], "
+            <> jsUint8 key32
+            <> ","
+            <> jsUint8 nonce24
+            <> "); ok = 1; } catch(e) { ok = 0; }"
+            <> jsOut "new Uint8Array([ok])"
+      tsResult `shouldBe` B.pack [0]
+
+-- ── protocol/commands ────────────────────────────────────────────
+
+tsCommandTests :: Spec
+tsCommandTests = describe "protocol/commands" $ do
+  let sndKey = B.pack [1 .. 8]
+      rcvKey1 = B.pack [11 .. 18]
+      rcvKey2 = B.pack [21 .. 28]
+      digest = B.pack [31 .. 38]
+      size32 = 12345 :: Word32
+      authKey = B.pack [41 .. 48]
+      dhKey = B.pack [51 .. 58]
+
+  describe "encode" $ do
+    it "encodeFileInfo" $ do
+      let expected = smpEncode sndKey <> smpEncode size32 <> smpEncode digest
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const fi = {sndKey: "
+            <> jsUint8 sndKey
+            <> ", size: "
+            <> show size32
+            <> ", digest: "
+            <> jsUint8 digest
+            <> "};"
+            <> jsOut "Cmd.encodeFileInfo(fi)"
+      tsResult `shouldBe` expected
+
+    it "encodeFNEW with auth" $ do
+      let fileInfo = smpEncode sndKey <> smpEncode size32 <> smpEncode digest
+          rcvKeys = smpEncodeList [rcvKey1, rcvKey2]
+          auth = B.singleton 0x31 <> smpEncode authKey
+          expected = "FNEW " <> fileInfo <> rcvKeys <> auth
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const fi = {sndKey: "
+            <> jsUint8 sndKey
+            <> ", size: "
+            <> show size32
+            <> ", digest: "
+            <> jsUint8 digest
+            <> "};"
+            <> "const rks = ["
+            <> jsUint8 rcvKey1
+            <> ","
+            <> jsUint8 rcvKey2
+            <> "];"
+            <> jsOut ("Cmd.encodeFNEW(fi, rks, " <> jsUint8 authKey <> ")")
+      tsResult `shouldBe` expected
+
+    it "encodeFNEW without auth" $ do
+      let fileInfo = smpEncode sndKey <> smpEncode size32 <> smpEncode digest
+          rcvKeys = smpEncodeList [rcvKey1]
+          expected = "FNEW " <> fileInfo <> rcvKeys <> "0"
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const fi = {sndKey: "
+            <> jsUint8 sndKey
+            <> ", size: "
+            <> show size32
+            <> ", digest: "
+            <> jsUint8 digest
+            <> "};"
+            <> "const rks = ["
+            <> jsUint8 rcvKey1
+            <> "];"
+            <> jsOut "Cmd.encodeFNEW(fi, rks, null)"
+      tsResult `shouldBe` expected
+
+    it "encodeFADD" $ do
+      let expected = "FADD " <> smpEncodeList [rcvKey1, rcvKey2]
+      tsResult <-
+        callNode $
+          impCmd
+            <> jsOut ("Cmd.encodeFADD([" <> jsUint8 rcvKey1 <> "," <> jsUint8 rcvKey2 <> "])")
+      tsResult `shouldBe` expected
+
+    it "encodeFPUT" $ do
+      tsResult <- callNode $ impCmd <> jsOut "Cmd.encodeFPUT()"
+      tsResult `shouldBe` "FPUT"
+
+    it "encodeFDEL" $ do
+      tsResult <- callNode $ impCmd <> jsOut "Cmd.encodeFDEL()"
+      tsResult `shouldBe` "FDEL"
+
+    it "encodeFGET" $ do
+      let expected = "FGET " <> smpEncode dhKey
+      tsResult <-
+        callNode $
+          impCmd <> jsOut ("Cmd.encodeFGET(" <> jsUint8 dhKey <> ")")
+      tsResult `shouldBe` expected
+
+    it "encodeFACK" $ do
+      tsResult <- callNode $ impCmd <> jsOut "Cmd.encodeFACK()"
+      tsResult `shouldBe` "FACK"
+
+    it "encodePING" $ do
+      tsResult <- callNode $ impCmd <> jsOut "Cmd.encodePING()"
+      tsResult `shouldBe` "PING"
+
+  describe "decode" $ do
+    it "decodeResponse OK" $ do
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 ("OK" :: B.ByteString)
+            <> ");"
+            <> jsOut "new Uint8Array([r.type === 'FROk' ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "decodeResponse PONG" $ do
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 ("PONG" :: B.ByteString)
+            <> ");"
+            <> jsOut "new Uint8Array([r.type === 'FRPong' ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "decodeResponse ERR AUTH" $ do
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 ("ERR AUTH" :: B.ByteString)
+            <> ");"
+            <> jsOut "new Uint8Array([r.type === 'FRErr' && r.err.type === 'AUTH' ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "decodeResponse ERR CMD SYNTAX" $ do
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 ("ERR CMD SYNTAX" :: B.ByteString)
+            <> ");"
+            <> jsOut "new Uint8Array([r.type === 'FRErr' && r.err.type === 'CMD' && r.err.cmdErr === 'SYNTAX' ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "decodeResponse SIDS" $ do
+      let senderId = B.pack [1 .. 24]
+          rId1 = B.pack [25 .. 48]
+          rId2 = B.pack [49 .. 72]
+          sidsBytes = "SIDS " <> smpEncode senderId <> smpEncodeList [rId1, rId2]
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 sidsBytes
+            <> ");"
+            <> "if (r.type !== 'FRSndIds') throw new Error('wrong type');"
+            <> jsOut "E.concatBytes(r.senderId, ...r.recipientIds)"
+      tsResult `shouldBe` (senderId <> rId1 <> rId2)
+
+    it "decodeResponse RIDS" $ do
+      let rId1 = B.pack [1 .. 16]
+          rId2 = B.pack [17 .. 32]
+          ridsBytes = "RIDS " <> smpEncodeList [rId1, rId2]
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 ridsBytes
+            <> ");"
+            <> "if (r.type !== 'FRRcvIds') throw new Error('wrong type');"
+            <> jsOut "E.concatBytes(...r.recipientIds)"
+      tsResult `shouldBe` (rId1 <> rId2)
+
+    it "decodeResponse FILE" $ do
+      let rawPub = B.pack [1 .. 32]
+          x25519Der = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          derKey = x25519Der <> rawPub
+          nonce = B.pack [201 .. 224]
+          fileBytes = "FILE " <> smpEncode derKey <> nonce
+      tsResult <-
+        callNode $
+          impCmd
+            <> "const r = Cmd.decodeResponse("
+            <> jsUint8 fileBytes
+            <> ");"
+            <> "if (r.type !== 'FRFile') throw new Error('wrong type: ' + r.type);"
+            <> jsOut "E.concatBytes(r.rcvDhKey, r.nonce)"
+      tsResult `shouldBe` (rawPub <> nonce)
+
+-- ── protocol/transmission ──────────────────────────────────────────
+
+tsTransmissionTests :: Spec
+tsTransmissionTests = describe "protocol/transmission" $ do
+  describe "blockPad / blockUnpad" $ do
+    it "blockPad matches C.pad" $ do
+      let msg = "hello pad test" :: B.ByteString
+          blockSize = 256 :: Int
+          hsPadded = either (error . show) id $ C.pad msg blockSize
+      tsPadded <-
+        callNode $
+          impTx <> jsOut ("Tx.blockPad(" <> jsUint8 msg <> ", " <> show blockSize <> ")")
+      tsPadded `shouldBe` hsPadded
+
+    it "Haskell C.pad -> TS blockUnpad" $ do
+      let msg = "cross-language unpad" :: B.ByteString
+          blockSize = 128 :: Int
+          hsPadded = either (error . show) id $ C.pad msg blockSize
+      tsResult <-
+        callNode $
+          impTx <> jsOut ("Tx.blockUnpad(" <> jsUint8 hsPadded <> ")")
+      tsResult `shouldBe` msg
+
+    it "TS blockPad -> Haskell C.unPad" $ do
+      let msg = "ts-to-haskell pad" :: B.ByteString
+          blockSize = 128 :: Int
+      tsPadded <-
+        callNode $
+          impTx <> jsOut ("Tx.blockPad(" <> jsUint8 msg <> ", " <> show blockSize <> ")")
+      let hsResult = either (error . show) id $ C.unPad tsPadded
+      hsResult `shouldBe` msg
+
+  describe "transmission encoding" $ do
+    it "encodeTransmission unsigned (PING)" $ do
+      let corrId = "abc" :: B.ByteString
+          entityId = "" :: B.ByteString
+          cmdBytes = "PING" :: B.ByteString
+          tInner = smpEncode corrId <> smpEncode entityId <> cmdBytes
+          authenticator = smpEncode ("" :: B.ByteString)
+          encoded = authenticator <> tInner
+          batch = B.singleton 1 <> smpEncode (Large encoded)
+          expected = either (error . show) id $ C.pad batch 16384
+      tsResult <-
+        callNode $
+          impTx
+            <> jsOut
+              ( "Tx.encodeTransmission("
+                  <> jsUint8 corrId
+                  <> ", "
+                  <> jsUint8 entityId
+                  <> ", "
+                  <> jsUint8 cmdBytes
+                  <> ")"
+              )
+      tsResult `shouldBe` expected
+
+    it "encodeAuthTransmission signed" $ do
+      let seed = B.pack [1 .. 32]
+          sk = throwCryptoError $ Ed25519.secretKey seed
+          pk = Ed25519.toPublic sk
+          sessionId = B.pack [101 .. 132]
+          corrId = "xyz" :: B.ByteString
+          entityId = B.pack [1 .. 24]
+          cmdBytes = "FPUT" :: B.ByteString
+          tInner = smpEncode corrId <> smpEncode entityId <> cmdBytes
+          tForAuth = smpEncode sessionId <> tInner
+          sig = Ed25519.sign sk pk tForAuth
+          rawSig = BA.convert sig :: B.ByteString
+          authenticator = smpEncode rawSig
+          encoded = authenticator <> tInner
+          batch = B.singleton 1 <> smpEncode (Large encoded)
+          expected = either (error . show) id $ C.pad batch 16384
+      tsResult <-
+        callNode $
+          impTx
+            <> "const kp = K.ed25519KeyPairFromSeed("
+            <> jsUint8 seed
+            <> ");"
+            <> jsOut
+              ( "Tx.encodeAuthTransmission("
+                  <> jsUint8 sessionId
+                  <> ", "
+                  <> jsUint8 corrId
+                  <> ", "
+                  <> jsUint8 entityId
+                  <> ", "
+                  <> jsUint8 cmdBytes
+                  <> ", kp.privateKey)"
+              )
+      tsResult `shouldBe` expected
+
+    it "decodeTransmission" $ do
+      let corrId = "r01" :: B.ByteString
+          entityId = B.pack [1 .. 16]
+          cmdBytes = "OK" :: B.ByteString
+          tInner = smpEncode corrId <> smpEncode entityId <> cmdBytes
+          authenticator = smpEncode ("" :: B.ByteString)
+          encoded = authenticator <> tInner
+          batch = B.singleton 1 <> smpEncode (Large encoded)
+          block = either (error . show) id $ C.pad batch 256
+      tsResult <-
+        callNode $
+          impTx
+            <> "const t = Tx.decodeTransmission("
+            <> jsUint8 block
+            <> ");"
+            <> jsOut "E.concatBytes(t.corrId, t.entityId, t.command)"
+      tsResult `shouldBe` (corrId <> entityId <> cmdBytes)
+
+-- ── protocol/handshake ────────────────────────────────────────────
+
+tsHandshakeTests :: Spec
+tsHandshakeTests = describe "protocol/handshake" $ do
+  describe "version range" $ do
+    it "encodeVersionRange" $ do
+      let expected = smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+      tsResult <-
+        callNode $
+          impHs
+            <> jsOut "Hs.encodeVersionRange({minVersion: 1, maxVersion: 3})"
+      tsResult `shouldBe` expected
+
+    it "decodeVersionRange" $ do
+      let vrBytes = smpEncode (2 :: Word16) <> smpEncode (5 :: Word16)
+      tsResult <-
+        callNode $
+          impHs
+            <> "const d = new E.Decoder(" <> jsUint8 vrBytes <> ");"
+            <> "const vr = Hs.decodeVersionRange(d);"
+            <> jsOut "E.concatBytes(E.encodeWord16(vr.minVersion), E.encodeWord16(vr.maxVersion))"
+      tsResult `shouldBe` vrBytes
+
+    it "compatibleVRange (compatible)" $ do
+      -- intersection of [1,3] and [2,5] = [2,3]
+      let expected = smpEncode (2 :: Word16) <> smpEncode (3 :: Word16)
+      tsResult <-
+        callNode $
+          impHs
+            <> "const r = Hs.compatibleVRange({minVersion:1,maxVersion:3},{minVersion:2,maxVersion:5});"
+            <> "if (!r) throw new Error('expected compatible');"
+            <> jsOut "Hs.encodeVersionRange(r)"
+      tsResult `shouldBe` expected
+
+    it "compatibleVRange (incompatible)" $ do
+      tsResult <-
+        callNode $
+          impHs
+            <> "const r = Hs.compatibleVRange({minVersion:1,maxVersion:2},{minVersion:3,maxVersion:5});"
+            <> jsOut "new Uint8Array([r === null ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+  describe "client handshake" $ do
+    it "encodeClientHandshake" $ do
+      let kh = B.pack [1 .. 32]
+          body = smpEncode (3 :: Word16) <> smpEncode kh
+          expected = either (error . show) id $ C.pad body 16384
+      tsResult <-
+        callNode $
+          impHs
+            <> jsOut ("Hs.encodeClientHandshake({xftpVersion:3,keyHash:" <> jsUint8 kh <> "})")
+      tsResult `shouldBe` expected
+
+  describe "server handshake" $ do
+    it "decodeServerHandshake" $ do
+      let sessId = B.pack [1 .. 32]
+          cert1 = B.pack [101 .. 200] -- 100 bytes
+          cert2 = B.pack [201 .. 232] -- 32 bytes
+          signedKeyBytes = B.pack [1 .. 120]
+          -- Encode server handshake body matching Haskell wire format:
+          -- smpEncode (versionRange, sessionId, certChainPubKey)
+          -- where certChainPubKey = (NonEmpty Large certChain, Large signedKey)
+          body =
+            smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+              <> smpEncode sessId
+              <> smpEncode (NE.fromList [Large cert1, Large cert2])
+              <> smpEncode (Large signedKeyBytes)
+          serverBlock = either (error . show) id $ C.pad body 16384
+      tsResult <-
+        callNode $
+          impHs
+            <> "const hs = Hs.decodeServerHandshake(" <> jsUint8 serverBlock <> ");"
+            <> jsOut
+              ( "E.concatBytes("
+                  <> "E.encodeWord16(hs.xftpVersionRange.minVersion),"
+                  <> "E.encodeWord16(hs.xftpVersionRange.maxVersion),"
+                  <> "hs.sessionId,"
+                  <> "...hs.certChainDer,"
+                  <> "hs.signedKeyDer)"
+              )
+      -- Expected: vmin(2) + vmax(2) + sessId(32) + cert1(100) + cert2(32) + signedKey(120) = 288 bytes
+      tsResult
+        `shouldBe` ( smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+                       <> sessId
+                       <> cert1
+                       <> cert2
+                       <> signedKeyBytes
+                   )
+
+  describe "certificate utilities" $ do
+    it "caFingerprint" $ do
+      let cert1 = B.pack [101 .. 200]
+          cert2 = B.pack [201 .. 232]
+          expected = C.sha256Hash cert2
+      tsResult <-
+        callNode $
+          impHs
+            <> "const chain = [" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "];"
+            <> jsOut "Hs.caFingerprint(chain)"
+      tsResult `shouldBe` expected
+
+  describe "SignedExact parsing" $ do
+    it "extractSignedKey" $ do
+      -- Generate signing key (Ed25519)
+      let signSeed = B.pack [1 .. 32]
+          signSk = throwCryptoError $ Ed25519.secretKey signSeed
+          signPk = Ed25519.toPublic signSk
+          signPkRaw = BA.convert signPk :: B.ByteString
+          -- Generate DH key (X25519)
+          dhSeed = B.pack [41 .. 72]
+          dhSk = throwCryptoError $ X25519.secretKey dhSeed
+          dhPk = X25519.toPublic dhSk
+          dhPkRaw = BA.convert dhPk :: B.ByteString
+          -- SubjectPublicKeyInfo DER for X25519 (44 bytes)
+          x25519Prefix = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          spkiDer = x25519Prefix <> dhPkRaw
+          -- Sign the SPKI with Ed25519
+          sig = Ed25519.sign signSk signPk spkiDer
+          sigRaw = BA.convert sig :: B.ByteString
+          -- AlgorithmIdentifier for Ed25519 (7 bytes)
+          algId = B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]
+          -- BIT STRING wrapper (3 + 64 = 67 bytes)
+          bitString = B.pack [0x03, 0x41, 0x00] <> sigRaw
+          -- Outer SEQUENCE: content = 44 + 7 + 67 = 118 = 0x76
+          content = spkiDer <> algId <> bitString
+          signedExactDer = B.pack [0x30, 0x76] <> content
+      tsResult <-
+        callNode $
+          impHs
+            <> "const sk = Hs.extractSignedKey(" <> jsUint8 signedExactDer <> ");"
+            <> jsOut "E.concatBytes(sk.dhKey, sk.signature)"
+      -- dhKey (32) + signature (64) = 96 bytes
+      tsResult `shouldBe` (dhPkRaw <> sigRaw)
+
+    it "extractSignedKey signature verifies" $ do
+      let signSeed = B.pack [1 .. 32]
+          signSk = throwCryptoError $ Ed25519.secretKey signSeed
+          signPk = Ed25519.toPublic signSk
+          signPkRaw = BA.convert signPk :: B.ByteString
+          dhSeed = B.pack [41 .. 72]
+          dhSk = throwCryptoError $ X25519.secretKey dhSeed
+          dhPk = X25519.toPublic dhSk
+          dhPkRaw = BA.convert dhPk :: B.ByteString
+          x25519Prefix = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          spkiDer = x25519Prefix <> dhPkRaw
+          sig = Ed25519.sign signSk signPk spkiDer
+          sigRaw = BA.convert sig :: B.ByteString
+          algId = B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]
+          bitString = B.pack [0x03, 0x41, 0x00] <> sigRaw
+          content = spkiDer <> algId <> bitString
+          signedExactDer = B.pack [0x30, 0x76] <> content
+      tsResult <-
+        callNode $
+          impHs
+            <> "const sk = Hs.extractSignedKey(" <> jsUint8 signedExactDer <> ");"
+            <> "const ok = K.verify(" <> jsUint8 signPkRaw <> ", sk.signature, sk.objectDer);"
+            <> jsOut "new Uint8Array([ok ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+-- ── protocol/description ──────────────────────────────────────────
+
+tsDescriptionTests :: Spec
+tsDescriptionTests = describe "protocol/description" $ do
+  describe "base64url" $ do
+    it "encode matches Haskell strEncode" $ do
+      let bs = B.pack [0 .. 31]
+      tsResult <-
+        callNode $
+          impDesc
+            <> jsOut ("new TextEncoder().encode(Desc.base64urlEncode(" <> jsUint8 bs <> "))")
+      tsResult `shouldBe` strEncode bs
+
+    it "decode recovers original" $ do
+      let bs = B.pack [0 .. 31]
+          encoded = strEncode bs
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const s = new TextDecoder().decode(" <> jsUint8 encoded <> ");"
+            <> jsOut "Desc.base64urlDecode(s)"
+      tsResult `shouldBe` bs
+
+    it "round-trip 256 bytes" $ do
+      let bs = B.pack [0 .. 255]
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const data = " <> jsUint8 bs <> ";"
+            <> "const encoded = Desc.base64urlEncode(data);"
+            <> jsOut "Desc.base64urlDecode(encoded)"
+      tsResult `shouldBe` bs
+
+  describe "FileSize" $ do
+    it "encodeFileSize" $ do
+      let sizes = [500, 1024, 2048, 1048576, 8388608, 1073741824, 27262976 :: Int64]
+          expected = B.intercalate "," $ map (strEncode . FileSize) sizes
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const sizes = [500, 1024, 2048, 1048576, 8388608, 1073741824, 27262976];"
+            <> jsOut "new TextEncoder().encode(sizes.map(Desc.encodeFileSize).join(','))"
+      tsResult `shouldBe` expected
+
+    it "decodeFileSize" $ do
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const strs = ['500','1kb','2kb','1mb','8mb','1gb'];"
+            <> jsOut "new TextEncoder().encode(strs.map(s => String(Desc.decodeFileSize(s))).join(','))"
+      tsResult `shouldBe` "500,1024,2048,1048576,8388608,1073741824"
+
+  describe "FileDescription" $ do
+    it "fixture YAML round-trip" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "const reEncoded = Desc.encodeFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(reEncoded)"
+      tsResult `shouldBe` fixture
+
+    it "fixture parsed structure" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "const r = ["
+            <> "fd.party,"
+            <> "String(fd.size),"
+            <> "String(fd.chunkSize),"
+            <> "String(fd.chunks.length),"
+            <> "String(fd.chunks[0].replicas.length),"
+            <> "String(fd.chunks[3].chunkSize),"
+            <> "fd.redirect === null ? 'null' : 'redirect'"
+            <> "].join(',');"
+            <> jsOut "new TextEncoder().encode(r)"
+      tsResult `shouldBe` "recipient,27262976,8388608,4,2,2097152,null"
+
+    it "encode with redirect round-trips" $ do
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const fd = {"
+            <> "  party: 'sender',"
+            <> "  size: 1024,"
+            <> "  digest: new Uint8Array([1,2,3]),"
+            <> "  key: new Uint8Array(32),"
+            <> "  nonce: new Uint8Array(24),"
+            <> "  chunkSize: 1024,"
+            <> "  chunks: [{chunkNo: 1, chunkSize: 1024, digest: new Uint8Array([4,5,6]),"
+            <> "    replicas: [{server: 'xftp://abc=@example.com', replicaId: new Uint8Array([7,8,9]),"
+            <> "      replicaKey: new Uint8Array([10,11,12])}]}],"
+            <> "  redirect: {size: 512, digest: new Uint8Array([13,14,15])}"
+            <> "};"
+            <> "const yaml = Desc.encodeFileDescription(fd);"
+            <> "const fd2 = Desc.decodeFileDescription(yaml);"
+            <> "const r = ["
+            <> "fd2.party,"
+            <> "String(fd2.redirect !== null),"
+            <> "String(fd2.redirect?.size),"
+            <> "Desc.base64urlEncode(fd2.redirect?.digest || new Uint8Array())"
+            <> "].join(',');"
+            <> jsOut "new TextEncoder().encode(r)"
+      tsResult `shouldBe` "sender,true,512,DQ4P"
+
+    it "fdSeparator" $ do
+      tsResult <-
+        callNode $
+          impDesc
+            <> jsOut "new TextEncoder().encode(Desc.fdSeparator)"
+      tsResult `shouldBe` "################################\n"
+
+  describe "validation" $ do
+    it "valid description" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "const r = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(r === null ? 'ok' : r)"
+      tsResult `shouldBe` "ok"
+
+    it "non-sequential chunks" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "fd.chunks[1].chunkNo = 5;"
+            <> "const r = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(r || 'ok')"
+      tsResult `shouldBe` "chunk numbers are not sequential"
+
+    it "mismatched size" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "fd.size = 999;"
+            <> "const r = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(r || 'ok')"
+      tsResult `shouldBe` "chunks total size is different than file size"
+
+-- ── protocol/chunks ───────────────────────────────────────────────
+
+tsChunkTests :: Spec
+tsChunkTests = describe "protocol/chunks" $ do
+  describe "prepareChunkSizes" $ do
+    it "matches Haskell for various sizes" $ do
+      let sizes = [100, 65536, 130000, 200000, 500000, 800000, 5000000, 27262976 :: Int64]
+          hsResults = map prepareChunkSizes sizes
+          expected = B.intercalate "|" $ map (\cs -> B.intercalate "," $ map (strEncode . FileSize) cs) hsResults
+      tsResult <-
+        callNode $
+          impChk
+            <> "const sizes = [100, 65536, 130000, 200000, 500000, 800000, 5000000, 27262976];"
+            <> "const results = sizes.map(s => Chk.prepareChunkSizes(s).map(Desc.encodeFileSize).join(','));"
+            <> jsOut "new TextEncoder().encode(results.join('|'))"
+      tsResult `shouldBe` expected
+
+    it "zero size" $ do
+      tsResult <-
+        callNode $
+          impChk
+            <> jsOut "new TextEncoder().encode(Chk.prepareChunkSizes(0).join(','))"
+      tsResult `shouldBe` ""
+
+  describe "singleChunkSize" $ do
+    it "finds smallest fitting chunk size" $ do
+      tsResult <-
+        callNode $
+          impChk
+            <> "const sizes = [100, 65536, 262144, 300000, 1048576, 4194304, 5000000];"
+            <> "const results = sizes.map(s => {"
+            <> "  const r = Chk.singleChunkSize(s);"
+            <> "  return r === null ? 'null' : Desc.encodeFileSize(r);"
+            <> "});"
+            <> jsOut "new TextEncoder().encode(results.join(','))"
+      tsResult `shouldBe` "64kb,64kb,256kb,1mb,1mb,4mb,null"
+
+  describe "prepareChunkSpecs" $ do
+    it "generates correct offsets" $ do
+      tsResult <-
+        callNode $
+          impChk
+            <> "const specs = Chk.prepareChunkSpecs([4194304, 4194304, 1048576]);"
+            <> "const r = specs.map(s => s.chunkOffset + ':' + s.chunkSize).join(',');"
+            <> jsOut "new TextEncoder().encode(r)"
+      tsResult `shouldBe` "0:4194304,4194304:4194304,8388608:1048576"
+
+  describe "getChunkDigest" $ do
+    it "matches Haskell sha256Hash" $ do
+      let chunk = B.pack [0 .. 63]
+          expected = C.sha256Hash chunk
+      tsResult <-
+        callNode $
+          impChk
+            <> jsOut ("Chk.getChunkDigest(" <> jsUint8 chunk <> ")")
+      tsResult `shouldBe` expected
+
+  describe "constants" $ do
+    it "serverChunkSizes" $ do
+      tsResult <-
+        callNode $
+          impChk
+            <> jsOut "new TextEncoder().encode(Chk.serverChunkSizes.map(Desc.encodeFileSize).join(','))"
+      tsResult `shouldBe` "64kb,256kb,1mb,4mb"
+
+    it "fileSizeLen and authTagSize" $ do
+      tsResult <-
+        callNode $
+          impChk
+            <> jsOut "new TextEncoder().encode(Chk.fileSizeLen + ',' + Chk.authTagSize)"
+      tsResult `shouldBe` "8,16"
+
+-- ── protocol/client ─────────────────────────────────────────────
+
+tsClientTests :: Spec
+tsClientTests = describe "protocol/client" $ do
+  -- Fixed X25519 key pairs for deterministic tests
+  let privARaw = B.pack [1 .. 32]
+      privA = throwCryptoError $ X25519.secretKey privARaw
+      pubA = X25519.toPublic privA
+      pubARaw = BA.convert pubA :: B.ByteString
+      privBRaw = B.pack [33 .. 64]
+      privB = throwCryptoError $ X25519.secretKey privBRaw
+      pubB = X25519.toPublic privB
+      pubBRaw = BA.convert pubB :: B.ByteString
+      nonce24 = B.pack [0 .. 23]
+
+  describe "cbAuthenticate" $ do
+    it "matches Haskell output" $ do
+      let msg = "hello world authenticator test"
+          C.CbAuthenticator expected =
+            C.cbAuthenticate
+              (C.PublicKeyX25519 pubA)
+              (C.PrivateKeyX25519 privB)
+              (C.cbNonce nonce24)
+              msg
+      tsResult <-
+        callNode $
+          impCli
+            <> "const auth = Cli.cbAuthenticate("
+            <> jsUint8 pubARaw <> "," <> jsUint8 privBRaw <> ","
+            <> jsUint8 nonce24 <> "," <> jsUint8 msg <> ");"
+            <> jsOut "auth"
+      tsResult `shouldBe` expected
+
+    it "is 80 bytes" $ do
+      let msg = "size test"
+          C.CbAuthenticator expected =
+            C.cbAuthenticate
+              (C.PublicKeyX25519 pubA)
+              (C.PrivateKeyX25519 privB)
+              (C.cbNonce nonce24)
+              msg
+      B.length expected `shouldBe` 80
+
+  describe "cbVerify" $ do
+    it "validates Haskell authenticator" $ do
+      let msg = "test message for verify"
+          C.CbAuthenticator authBytes_ =
+            C.cbAuthenticate
+              (C.PublicKeyX25519 pubA)
+              (C.PrivateKeyX25519 privB)
+              (C.cbNonce nonce24)
+              msg
+      tsResult <-
+        callNode $
+          impCli
+            <> "const valid = Cli.cbVerify("
+            <> jsUint8 pubBRaw <> "," <> jsUint8 privARaw <> ","
+            <> jsUint8 nonce24 <> "," <> jsUint8 authBytes_ <> ","
+            <> jsUint8 msg <> ");"
+            <> jsOut "new Uint8Array([valid ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "rejects wrong message" $ do
+      let msg = "correct message"
+          wrongMsg = "wrong message"
+          C.CbAuthenticator authBytes_ =
+            C.cbAuthenticate
+              (C.PublicKeyX25519 pubA)
+              (C.PrivateKeyX25519 privB)
+              (C.cbNonce nonce24)
+              msg
+      tsResult <-
+        callNode $
+          impCli
+            <> "const valid = Cli.cbVerify("
+            <> jsUint8 pubBRaw <> "," <> jsUint8 privARaw <> ","
+            <> jsUint8 nonce24 <> "," <> jsUint8 authBytes_ <> ","
+            <> jsUint8 wrongMsg <> ");"
+            <> jsOut "new Uint8Array([valid ? 1 : 0])"
+      tsResult `shouldBe` B.pack [0]
+
+    it "round-trip: TS authenticate, Haskell verify" $ do
+      let msg = "round trip test"
+      tsAuth <-
+        callNode $
+          impCli
+            <> "const auth = Cli.cbAuthenticate("
+            <> jsUint8 pubARaw <> "," <> jsUint8 privBRaw <> ","
+            <> jsUint8 nonce24 <> "," <> jsUint8 msg <> ");"
+            <> jsOut "auth"
+      let hsValid =
+            C.cbVerify
+              (C.PublicKeyX25519 pubB)
+              (C.PrivateKeyX25519 privA)
+              (C.cbNonce nonce24)
+              (C.CbAuthenticator tsAuth)
+              msg
+      hsValid `shouldBe` True
+
+  describe "transport chunk encryption" $ do
+    let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+        dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+
+    it "encryptTransportChunk matches Haskell" $ do
+      let plaintext = B.pack [100 .. 199]
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (cipher, state1) = LC.sbEncryptChunk state0 plaintext
+          tag = BA.convert $ LC.sbAuth state1 :: B.ByteString
+          expected = cipher <> tag
+      tsResult <-
+        callNode $
+          impCli
+            <> "const enc = Cli.encryptTransportChunk("
+            <> jsUint8 dhSecretBytes <> ","
+            <> jsUint8 nonce24 <> ","
+            <> jsUint8 plaintext <> ");"
+            <> jsOut "enc"
+      tsResult `shouldBe` expected
+
+    it "decryptTransportChunk decrypts Haskell-encrypted data" $ do
+      let plaintext = B.pack ([200 .. 255] <> [0 .. 99])
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (cipher, state1) = LC.sbEncryptChunk state0 plaintext
+          tag = BA.convert $ LC.sbAuth state1 :: B.ByteString
+          encData = cipher <> tag
+      tsResult <-
+        callNode $
+          impCli
+            <> "const r = Cli.decryptTransportChunk("
+            <> jsUint8 dhSecretBytes <> ","
+            <> jsUint8 nonce24 <> ","
+            <> jsUint8 encData <> ");"
+            <> "if (!r.valid) throw new Error('invalid');"
+            <> jsOut "r.content"
+      tsResult `shouldBe` plaintext
+
+    it "round-trip encrypt then decrypt" $ do
+      let plaintext = B.pack [42, 42, 42, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      tsResult <-
+        callNode $
+          impCli
+            <> "const plain = " <> jsUint8 plaintext <> ";"
+            <> "const enc = Cli.encryptTransportChunk("
+            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ",plain);"
+            <> "const r = Cli.decryptTransportChunk("
+            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ",enc);"
+            <> "if (!r.valid) throw new Error('invalid');"
+            <> jsOut "r.content"
+      tsResult `shouldBe` plaintext
+
+    it "rejects tampered ciphertext" $ do
+      let plaintext = B.pack [10 .. 40]
+      tsResult <-
+        callNode $
+          impCli
+            <> "const enc = Cli.encryptTransportChunk("
+            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ","
+            <> jsUint8 plaintext <> ");"
+            <> "enc[0] ^= 0xff;"
+            <> "const r = Cli.decryptTransportChunk("
+            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ",enc);"
+            <> jsOut "new Uint8Array([r.valid ? 1 : 0])"
+      tsResult `shouldBe` B.pack [0]
+
+  describe "constants" $ do
+    it "cbAuthenticatorSize" $ do
+      tsResult <-
+        callNode $
+          impCli <> jsOut "new TextEncoder().encode(String(Cli.cbAuthenticatorSize))"
+      tsResult `shouldBe` "80"
+
+-- ── download (integration) ──────────────────────────────────────────
+
+tsDownloadTests :: Spec
+tsDownloadTests = describe "download" $ do
+  -- Fixed X25519 key pairs (same as client tests)
+  let privARaw = B.pack [1 .. 32]
+      privA = throwCryptoError $ X25519.secretKey privARaw
+      pubA = X25519.toPublic privA
+      pubARaw = BA.convert pubA :: B.ByteString
+      privBRaw = B.pack [33 .. 64]
+      privB = throwCryptoError $ X25519.secretKey privBRaw
+      pubB = X25519.toPublic privB
+      pubBRaw = BA.convert pubB :: B.ByteString
+      nonce24 = B.pack [0 .. 23]
+      -- File-level key/nonce (different from transport)
+      fileKey32 = B.pack [1 .. 32]
+      fileNonce24 = B.pack [1 .. 24]
+      fileCbNonce = C.cbNonce fileNonce24
+      fileSbKey = C.unsafeSbKey fileKey32
+
+  describe "processFileResponse" $ do
+    it "derives DH secret matching Haskell" $ do
+      -- Simulate: client has privA, server sends pubB
+      let hsDhSecret = C.dh' (C.PublicKeyX25519 pubB) (C.PrivateKeyX25519 privA)
+          hsDhBytes = case hsDhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+      tsDhSecret <-
+        callNode $
+          impDl
+            <> "const dh = Dl.processFileResponse("
+            <> jsUint8 privARaw <> "," <> jsUint8 pubBRaw <> ");"
+            <> jsOut "dh"
+      tsDhSecret `shouldBe` hsDhBytes
+
+  describe "decryptReceivedChunk" $ do
+    it "transport decrypt with digest verification" $ do
+      -- Haskell: transport-encrypt a chunk
+      let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+          dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+          chunkData = B.pack [50 .. 149]
+          chunkDigest = C.sha256Hash chunkData
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (cipher, state1) = LC.sbEncryptChunk state0 chunkData
+          tag = BA.convert (LC.sbAuth state1) :: B.ByteString
+          encData = cipher <> tag
+      tsResult <-
+        callNode $
+          impDl
+            <> "const r = Dl.decryptReceivedChunk("
+            <> jsUint8 dhSecretBytes <> ","
+            <> jsUint8 nonce24 <> ","
+            <> jsUint8 encData <> ","
+            <> jsUint8 chunkDigest <> ");"
+            <> jsOut "r"
+      tsResult `shouldBe` chunkData
+
+    it "rejects wrong digest" $ do
+      let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+          dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+          chunkData = B.pack [50 .. 149]
+          wrongDigest = B.replicate 32 0xff
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (cipher, state1) = LC.sbEncryptChunk state0 chunkData
+          tag = BA.convert (LC.sbAuth state1) :: B.ByteString
+          encData = cipher <> tag
+      tsResult <-
+        callNode $
+          impDl
+            <> "let ok = false; try { Dl.decryptReceivedChunk("
+            <> jsUint8 dhSecretBytes <> ","
+            <> jsUint8 nonce24 <> ","
+            <> jsUint8 encData <> ","
+            <> jsUint8 wrongDigest <> "); } catch(e) { ok = e.message.includes('digest'); }"
+            <> jsOut "new Uint8Array([ok ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "allows null digest (skip verification)" $ do
+      let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+          dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+          chunkData = B.pack [10 .. 50]
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (cipher, state1) = LC.sbEncryptChunk state0 chunkData
+          tag = BA.convert (LC.sbAuth state1) :: B.ByteString
+          encData = cipher <> tag
+      tsResult <-
+        callNode $
+          impDl
+            <> "const r = Dl.decryptReceivedChunk("
+            <> jsUint8 dhSecretBytes <> ","
+            <> jsUint8 nonce24 <> ","
+            <> jsUint8 encData <> ",null);"
+            <> jsOut "r"
+      tsResult `shouldBe` chunkData
+
+  describe "full pipeline" $ do
+    it "Haskell file-encrypt + transport-encrypt -> TS transport-decrypt + file-decrypt" $ do
+      -- Step 1: file-level encryption (matches Haskell encryptFile)
+      let source = "Integration test: full download pipeline!" :: B.ByteString
+          hdr = FileHeader "pipeline.txt" Nothing
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 256 :: Int64
+          sb = either (error . show) id $ LC.sbInit fileSbKey fileCbNonce
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          fileTag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          fileEncrypted = B.concat [hdrEnc, srcEnc, padEnc, fileTag]
+      -- Step 2: transport-level encryption (simulates server sending chunk)
+      let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+          dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+          ts0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (transportCipher, ts1) = LC.sbEncryptChunk ts0 fileEncrypted
+          transportTag = BA.convert (LC.sbAuth ts1) :: B.ByteString
+          transportEncData = transportCipher <> transportTag
+      -- Step 3: TS decrypts transport, then file-level
+      tsResult <-
+        callNode $
+          impDl
+            <> "const chunk = Dl.decryptReceivedChunk("
+            <> jsUint8 dhSecretBytes <> ","
+            <> jsUint8 nonce24 <> ","
+            <> jsUint8 transportEncData <> ",null);"
+            <> "const r = F.decryptChunks("
+            <> show encSize <> "n,[chunk],"
+            <> jsUint8 fileKey32 <> ","
+            <> jsUint8 fileNonce24 <> ");"
+            <> "const hdrBytes = F.encodeFileHeader(r.header);"
+            <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
+      tsResult `shouldBe` (fileHdr <> source)
+
+    it "multi-chunk file: Haskell encrypt -> TS decrypt" $ do
+      -- File content that spans two chunks when file-encrypted
+      let source = B.pack (take 200 $ cycle [0 .. 255])
+          hdr = FileHeader "multi.bin" Nothing
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 512 :: Int64
+          sb = either (error . show) id $ LC.sbInit fileSbKey fileCbNonce
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          fileTag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          fileEncrypted = B.concat [hdrEnc, srcEnc, padEnc, fileTag]
+      -- Split file-encrypted data into two "chunks" and transport-encrypt each
+      let splitPt = B.length fileEncrypted `div` 2
+          fileChunk1 = B.take splitPt fileEncrypted
+          fileChunk2 = B.drop splitPt fileEncrypted
+          -- Transport encrypt chunk 1 (with separate DH / nonce per chunk)
+          dhSecret1 = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+          dhSecret1Bytes = case dhSecret1 of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+          nonce1 = nonce24
+          t1s0 = either (error . show) id $ LC.cbInit dhSecret1 (C.cbNonce nonce1)
+          (t1cipher, t1s1) = LC.sbEncryptChunk t1s0 fileChunk1
+          t1tag = BA.convert (LC.sbAuth t1s1) :: B.ByteString
+          transportEnc1 = t1cipher <> t1tag
+          -- Transport encrypt chunk 2 (different nonce)
+          nonce2 = B.pack [24 .. 47]
+          dhSecret2 = C.dh' (C.PublicKeyX25519 pubB) (C.PrivateKeyX25519 privA)
+          dhSecret2Bytes = case dhSecret2 of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
+          t2s0 = either (error . show) id $ LC.cbInit dhSecret2 (C.cbNonce nonce2)
+          (t2cipher, t2s1) = LC.sbEncryptChunk t2s0 fileChunk2
+          t2tag = BA.convert (LC.sbAuth t2s1) :: B.ByteString
+          transportEnc2 = t2cipher <> t2tag
+      -- TS: transport-decrypt each chunk, then file-level decrypt the concatenation
+      tsResult <-
+        callNode $
+          impDl
+            <> "const c1 = Dl.decryptReceivedChunk("
+            <> jsUint8 dhSecret1Bytes <> "," <> jsUint8 nonce1 <> ","
+            <> jsUint8 transportEnc1 <> ",null);"
+            <> "const c2 = Dl.decryptReceivedChunk("
+            <> jsUint8 dhSecret2Bytes <> "," <> jsUint8 nonce2 <> ","
+            <> jsUint8 transportEnc2 <> ",null);"
+            <> "const r = F.decryptChunks("
+            <> show encSize <> "n,[c1,c2],"
+            <> jsUint8 fileKey32 <> ","
+            <> jsUint8 fileNonce24 <> ");"
+            <> "const hdrBytes = F.encodeFileHeader(r.header);"
+            <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
+      tsResult `shouldBe` (fileHdr <> source)
+
+  describe "FGET + FRFile round-trip" $ do
+    it "encode FGET -> decode FRFile -> process -> transport decrypt" $ do
+      -- Client side: generate FGET command
+      let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
+          chunkData = "FGET round-trip test data" :: B.ByteString
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          (cipher, state1) = LC.sbEncryptChunk state0 chunkData
+          tag = BA.convert (LC.sbAuth state1) :: B.ByteString
+          encData = cipher <> tag
+          -- Simulate server response: FILE <serverPubKey> <nonce>
+          -- Server sends pubA (client has privB to do DH)
+          serverPubDer = C.encodePubKey (C.PublicKeyX25519 pubA)
+          fileResponseBytes = "FILE " <> smpEncode serverPubDer <> nonce24
+      -- TS: parse FRFile response, derive DH secret, decrypt transport chunk
+      tsResult <-
+        callNode $
+          impDl
+            <> "const resp = Cmd.decodeResponse("
+            <> jsUint8 fileResponseBytes <> ");"
+            <> "if (resp.type !== 'FRFile') throw new Error('expected FRFile');"
+            <> "const dhSecret = Dl.processFileResponse("
+            <> jsUint8 privBRaw <> ",resp.rcvDhKey);"
+            <> "const r = Dl.decryptReceivedChunk(dhSecret,"
+            <> "resp.nonce," <> jsUint8 encData <> ",null);"
+            <> jsOut "r"
+      tsResult `shouldBe` chunkData
+
+  describe "processDownloadedFile" $ do
+    it "decrypts file from transport-decrypted chunks" $ do
+      let source = "processDownloadedFile test" :: B.ByteString
+          hdr = FileHeader "download.txt" (Just "v1")
+          fileHdr = smpEncode hdr
+          fileSize' = fromIntegral (B.length fileHdr + B.length source) :: Int64
+          encSize = 256 :: Int64
+          sb = either (error . show) id $ LC.sbInit fileSbKey fileCbNonce
+          lenStr = smpEncode fileSize'
+          (hdrEnc, sb1) = LC.sbEncryptChunk sb (lenStr <> fileHdr)
+          (srcEnc, sb2) = LC.sbEncryptChunk sb1 source
+          padLen = encSize - 16 - fileSize' - 8
+          padding = B.replicate (fromIntegral padLen) 0x23
+          (padEnc, sb3) = LC.sbEncryptChunk sb2 padding
+          fileTag = BA.convert (LC.sbAuth sb3) :: B.ByteString
+          fileEncrypted = B.concat [hdrEnc, srcEnc, padEnc, fileTag]
+      -- TS: call processDownloadedFile with a minimal FileDescription-like object
+      tsResult <-
+        callNode $
+          impDl
+            <> "const fd = {size: " <> show encSize <> ","
+            <> "key: " <> jsUint8 fileKey32 <> ","
+            <> "nonce: " <> jsUint8 fileNonce24 <> "};"
+            <> "const r = Dl.processDownloadedFile(fd, ["
+            <> jsUint8 fileEncrypted <> "]);"
+            <> "const hdrBytes = F.encodeFileHeader(r.header);"
+            <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
+      tsResult `shouldBe` (fileHdr <> source)
