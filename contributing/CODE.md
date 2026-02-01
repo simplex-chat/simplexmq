@@ -8,6 +8,10 @@ When designing code and planning implementations:
 - Apply adversarial thinking, and consider what may happen if one of the communicating parties is malicious.
 - Formulate an explicit threat model for each change - who can do which undesirable things and under which circumstances.
 
+## Code Quality Standards
+
+Haskell client and server code serves as system specification, not just implementation — we use type-driven design to reflect the business domain in types. Quality, conciseness, and clarity of Haskell code are critical.
+
 ## Code Style, Formatting and Approaches
 
 The project uses **fourmolu** for Haskell code formatting. Configuration is in `fourmolu.yaml`.

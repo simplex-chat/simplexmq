@@ -17,6 +17,7 @@ import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Transport (supportedFileServerVRange, alpnSupportedXFTPhandshakes)
 import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
 
@@ -125,6 +126,7 @@ testXFTPServerConfig =
             privateKeyFile = "tests/fixtures/server.key",
             certificateFile = "tests/fixtures/server.crt"
           },
+      httpCredentials = Nothing,
       xftpServerVRange = supportedFileServerVRange,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
@@ -148,3 +150,21 @@ testXFTPClientWith cfg client = do
   getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e
+
+testXFTPServerConfigSNI :: XFTPServerConfig
+testXFTPServerConfigSNI =
+  testXFTPServerConfig
+    { httpCredentials =
+        Just
+          ServerCredentials
+            { caCertificateFile = Nothing,
+              privateKeyFile = "tests/fixtures/web.key",
+              certificateFile = "tests/fixtures/web.crt"
+            },
+      transportConfig =
+        (mkTransportServerConfig True (Just $ alpnSupportedXFTPhandshakes <> httpALPN) False)
+          {addCORSHeaders = True}
+    }
+
+withXFTPServerSNI :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerSNI = withXFTPServerCfg testXFTPServerConfigSNI

@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -13,12 +14,18 @@ import Control.Exception (SomeException)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
+import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.List (isInfixOf)
+import qualified Data.CaseInsensitive as CI
+import Data.List (find, isInfixOf)
 import Data.Time.Clock (getCurrentTime)
+import qualified Data.X509 as X
+import Data.X509.Validation (Fingerprint (..))
+import Network.HPACK.Token (tokenKey)
+import qualified Network.HTTP2.Client as H2
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
@@ -30,6 +37,11 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Transport (TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
+import Simplex.Messaging.Transport.HTTP2 ()
+import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
+import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
@@ -39,10 +51,8 @@ import XFTPClient
 
 xftpServerTests :: Spec
 xftpServerTests =
-  before_ (createDirectoryIfMissing False xftpServerFiles)
-    . after_ (removeDirectoryRecursive xftpServerFiles)
-    . describe "XFTP file chunk delivery"
-    $ do
+  before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $ do
+    describe "XFTP file chunk delivery" $ do
       it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
       it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
       it "should create, add recipients, upload and receive file chunk" testFileChunkDeliveryAddRecipients
@@ -63,6 +73,13 @@ xftpServerTests =
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
+    describe "XFTP SNI and CORS" $ do
+      it "should select web certificate when SNI is used" testSNICertSelection
+      it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
+      it "should add CORS headers when SNI is used" testCORSHeaders
+      it "should respond to OPTIONS preflight with CORS headers" testCORSPreflight
+      it "should not add CORS headers without SNI" testNoCORSWithoutSNI
+      it "should upload and receive file chunk through SNI-enabled server" testFileChunkDeliverySNI
 
 chSize :: Integral a => a
 chSize = kb 128
@@ -395,3 +412,87 @@ testFileSkipCommitted =
         uploadXFTPChunk c spKey sId chunkSpec -- upload again to get FROk without getting stuck
         downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk" chSize digest
         liftIO $ B.readFile "tests/tmp/received_chunk" `shouldReturn` bytes -- new chunk content got ignored
+
+-- SNI and CORS tests
+
+lookupResponseHeader :: B.ByteString -> H2.Response -> Maybe B.ByteString
+lookupResponseHeader name resp =
+  snd <$> find (\(t, _) -> tokenKey t == CI.mk name) (fst $ H2.responseHeaders resp)
+
+getCerts :: TLS 'TClient -> [X.Certificate]
+getCerts tls =
+  let X.CertificateChain cc = tlsPeerCert tls
+   in map (X.signedObject . X.getSigned) cc
+
+testSNICertSelection :: Expectation
+testSNICertSelection =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let caHTTP = C.KeyHash fpHTTP
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
+      tlsALPN tls `shouldBe` Just "h2"
+      case getCerts tls of
+        X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ -> RSA.public_size rsa `shouldSatisfy` (> 0)
+        leaf : _ -> expectationFailure $ "Expected RSA cert, got: " <> show (X.certPubKey leaf)
+        [] -> expectationFailure "Empty certificate chain"
+
+testNoSNICertSelection :: Expectation
+testNoSNICertSelection =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let caXFTP = C.KeyHash fpXFTP
+        cfg = defaultTransportClientConfig {clientALPN = Just ["xftp/1"], useSNI = False}
+    runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just caXFTP) $ \(tls :: TLS 'TClient) -> do
+      tlsALPN tls `shouldBe` Just "xftp/1"
+      case getCerts tls of
+        X.Certificate {X.certPubKey = X.PubKeyEd448 _} : _ -> pure ()
+        leaf : _ -> expectationFailure $ "Expected Ed448 cert, got: " <> show (X.certPubKey leaf)
+        [] -> expectationFailure "Empty certificate chain"
+
+testCORSHeaders :: Expectation
+testCORSHeaders =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let caHTTP = C.KeyHash fpHTTP
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      let req = H2.requestNoBody "POST" "/" []
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
+      lookupResponseHeader "access-control-expose-headers" response `shouldBe` Just "*"
+
+testCORSPreflight :: Expectation
+testCORSPreflight =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let caHTTP = C.KeyHash fpHTTP
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      let req = H2.requestNoBody "OPTIONS" "/" []
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
+      lookupResponseHeader "access-control-allow-methods" response `shouldBe` Just "POST, OPTIONS"
+      lookupResponseHeader "access-control-allow-headers" response `shouldBe` Just "*"
+      lookupResponseHeader "access-control-max-age" response `shouldBe` Just "86400"
+
+testNoCORSWithoutSNI :: Expectation
+testNoCORSWithoutSNI =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let caXFTP = C.KeyHash fpXFTP
+        cfg = defaultTransportClientConfig {clientALPN = Just ["xftp/1"], useSNI = False}
+    runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just caXFTP) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      let req = H2.requestNoBody "POST" "/" []
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      lookupResponseHeader "access-control-allow-origin" response `shouldBe` Nothing
+
+testFileChunkDeliverySNI :: Expectation
+testFileChunkDeliverySNI =
+  withXFTPServerSNI $ \_ -> testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c

@@ -527,6 +527,7 @@ test-suite simplexmq-test
     , async
     , base64-bytestring
     , bytestring
+    , case-insensitive ==1.2.*
     , containers
     , crypton
     , crypton-x509

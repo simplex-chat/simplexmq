@@ -57,6 +57,7 @@ data XFTPServerConfig = XFTPServerConfig
     -- | time after which inactive clients can be disconnected and check interval, seconds
     inactiveClientExpiration :: Maybe ExpirationConfig,
     xftpCredentials :: ServerCredentials,
+    httpCredentials :: Maybe ServerCredentials,
     -- | XFTP client-server protocol version range
     xftpServerVRange :: VersionRangeXFTP,
     -- stats config - see SMP server config
@@ -84,6 +85,7 @@ data XFTPEnv = XFTPEnv
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerCreds :: T.Credential,
+    httpServerCreds :: Maybe T.Credential,
     serverStats :: FileServerStats
   }
 
@@ -98,7 +100,7 @@ defaultFileExpiration =
     }
 
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials} = do
+newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
   store <- newFileStore
   storeLog <- mapM (`readWriteFileStore` store) storeLogFile
@@ -108,9 +110,10 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
   tlsServerCreds <- loadServerCredential xftpCredentials
+  httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, storeLog, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 countUsedStorage :: M.Map k FileRec -> Int64
 countUsedStorage = M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0
