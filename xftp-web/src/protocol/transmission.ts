@@ -43,13 +43,8 @@ export function blockUnpad(block: Uint8Array): Uint8Array {
 // ── Transmission encoding (client -> server) ──────────────────────
 
 // Encode an authenticated XFTP command as a padded block.
-// Matches xftpEncodeAuthTransmission (implySessId = True).
-//
-//   sessionId:  TLS session ID (typically 32 bytes)
-//   corrId:     correlation ID (ByteString)
-//   entityId:   file entity ID (ByteString, empty for FNEW/PING)
-//   cmdBytes:   encoded command (from encodeFNEW, encodeFGET, etc.)
-//   privateKey: Ed25519 private key (64-byte libsodium format)
+// Matches xftpEncodeAuthTransmission with implySessId = False:
+// sessionId is included in both signed data AND wire data.
 export function encodeAuthTransmission(
   sessionId: Uint8Array,
   corrId: Uint8Array,
@@ -59,29 +54,25 @@ export function encodeAuthTransmission(
 ): Uint8Array {
   // t' = encodeTransmission_ v t = smpEncode (corrId, entityId) <> cmdBytes
   const tInner = concatBytes(encodeBytes(corrId), encodeBytes(entityId), cmdBytes)
-  // tForAuth = smpEncode sessionId <> t' (implySessId = True)
+  // tForAuth = smpEncode sessionId <> t'
   const tForAuth = concatBytes(encodeBytes(sessionId), tInner)
-  // Ed25519 sign (nonce ignored for Ed25519 in Haskell sign')
   const signature = sign(privateKey, tForAuth)
-  // tEncodeAuth False (Just (TASignature sig, Nothing)) = smpEncode (signatureBytes sig)
   const authenticator = encodeBytes(signature)
-  // tEncode False (auth, tToSend) = authenticator <> tToSend
-  // tToSend = t' (since implySessId = True, no sessionId in wire)
-  const encoded = concatBytes(authenticator, tInner)
-  // tEncodeBatch1 False = \x01 + encodeLarge(encoded)
+  // implySessId = False: tToSend = tForAuth (sessionId on wire)
+  const encoded = concatBytes(authenticator, tForAuth)
   const batch = concatBytes(new Uint8Array([1]), encodeLarge(encoded))
-  // pad to blockSize
   return blockPad(batch)
 }
 
 // Encode an unsigned XFTP command (e.g. PING) as a padded block.
-// Matches xftpEncodeTransmission (implySessId = True).
+// Matches xftpEncodeTransmission with implySessId = False: sessionId on wire.
 export function encodeTransmission(
+  sessionId: Uint8Array,
   corrId: Uint8Array,
   entityId: Uint8Array,
   cmdBytes: Uint8Array
 ): Uint8Array {
-  const tInner = concatBytes(encodeBytes(corrId), encodeBytes(entityId), cmdBytes)
+  const tInner = concatBytes(encodeBytes(sessionId), encodeBytes(corrId), encodeBytes(entityId), cmdBytes)
   // No auth: tEncodeAuth False Nothing = smpEncode B.empty = \x00
   const authenticator = encodeBytes(new Uint8Array(0))
   const encoded = concatBytes(authenticator, tInner)
@@ -99,23 +90,23 @@ export interface DecodedTransmission {
 
 // Decode a server response block into raw parts.
 // Call decodeResponse(command) from commands.ts to parse the response.
-// Matches xftpDecodeTClient (implySessId = True).
-export function decodeTransmission(block: Uint8Array): DecodedTransmission {
-  // unPad
+// Matches xftpDecodeTClient with implySessId = False: reads and verifies sessionId from wire.
+export function decodeTransmission(sessionId: Uint8Array, block: Uint8Array): DecodedTransmission {
   const raw = blockUnpad(block)
   const d = new Decoder(raw)
-  // Read batch count (must be 1)
   const count = d.anyByte()
   if (count !== 1) throw new Error("decodeTransmission: expected batch count 1, got " + count)
-  // Read Large-encoded transmission
   const transmission = decodeLarge(d)
   const td = new Decoder(transmission)
   // Skip authenticator (server responses have empty auth)
   decodeBytes(td)
-  // Read corrId and entityId
+  // implySessId = False: read sessionId from wire and verify
+  const sessId = decodeBytes(td)
+  if (sessId.length !== sessionId.length || !sessId.every((b, i) => b === sessionId[i])) {
+    throw new Error("decodeTransmission: session ID mismatch")
+  }
   const corrId = decodeBytes(td)
   const entityId = decodeBytes(td)
-  // Remaining bytes are the response command
   const command = td.takeAll()
   return {corrId, entityId, command}
 }

@@ -112,30 +112,24 @@ These estimates are preliminary and may be incorrect.
 ```
 xftp-web/src/                      # Separate npm project (see §12.19)
 ├── protocol/
-│   ├── encoding.ts        # Binary encoding/decoding matching Haskell Encoding module
-│   ├── commands.ts         # XFTP command types (FNEW, FPUT, FGET, etc.)
-│   ├── responses.ts        # XFTP response types (FRSndIds, FRFile, etc.)
-│   └── transmission.ts     # Transmission framing, signing, padding
+│   ├── encoding.ts        # Binary encoding/decoding ← Simplex.Messaging.Encoding          ✓
+│   ├── commands.ts         # XFTP commands + responses ← Simplex.FileTransfer.Protocol      ✓
+│   ├── transmission.ts     # Transmission framing, signing, padding                          ✓
+│   ├── handshake.ts        # XFTP handshake (standard + web) ← FileTransfer.Transport       ✓
+│   ├── address.ts          # XFTP server address parser ← Simplex.Messaging.Protocol        ✓
+│   ├── chunks.ts           # Chunk sizes + splitting ← FileTransfer.Chunks + Client.hs      ✓
+│   ├── client.ts           # Transport crypto (cbAuthenticate, transit encrypt/decrypt)      ✓
+│   └── description.ts      # Types, YAML, validation, base64url ← FileTransfer.Description  ✓
 ├── crypto/
-│   ├── secretbox.ts        # XSalsa20-Poly1305 streaming encryption/decryption
-│   ├── file.ts             # File-level encryption/decryption (encryptFile, decryptChunks)
-│   ├── keys.ts             # Ed25519, X25519 key generation and operations
-│   ├── digest.ts           # SHA-256/SHA-512 hashing
-│   └── padding.ts          # Block padding/unpadding (2-byte length prefix + '#' fill)
-├── transport/
-│   ├── client.ts           # HTTP/2 client via fetch(), streaming body
-│   ├── handshake.ts        # XFTP handshake (standard + web variant)
-│   └── cors.ts             # CORS-aware request handling
-├── description/
-│   ├── types.ts            # FileDescription, FileChunk, FileChunkReplica types
-│   ├── yaml.ts             # YAML serialization/deserialization
-│   ├── uri.ts              # URL encoding/decoding with compression
-│   └── validation.ts       # Description validation (sequential chunks, size match)
-├── agent/
-│   ├── upload.ts           # Full upload orchestration
-│   ├── download.ts         # Full download orchestration
-│   └── chunking.ts         # File splitting, chunk size selection
-└── index.ts                # Public API
+│   ├── secretbox.ts        # XSalsa20-Poly1305 streaming encryption/decryption               ✓
+│   ├── file.ts             # File-level encryption/decryption (encryptFile, decryptChunks)    ✓
+│   ├── keys.ts             # Ed25519, X25519, Ed448 key generation and operations             ✓
+│   ├── digest.ts           # SHA-256/SHA-512 hashing                                          ✓
+│   ├── padding.ts          # Block padding/unpadding (2-byte length prefix + '#' fill)        ✓
+│   └── identity.ts         # Web handshake identity proof verification (Ed25519/Ed448)        ✓
+├── download.ts             # Download helper functions (DH, transit-decrypt, file-decrypt)    ✓
+├── client.ts               # HTTP/2 XFTP client ← Simplex.FileTransfer.Client
+└── agent.ts                # Upload/download orchestration + URI ← FileTransfer.Client.Main
 ```
 
 ### 5.2 Binary Encoding
@@ -471,47 +465,59 @@ The web page should display a brief, non-technical security summary explaining t
 
 ## 9. Implementation Plan
 
-### Phase 1: TypeScript XFTP Client Core
+### Phase 1: TypeScript XFTP Building Blocks — DONE
 
-**Goal:** A Node.js-runnable XFTP client that can upload and download files against a real Haskell XFTP server.
+**Goal:** All per-function building blocks implemented and tested via Haskell-driven unit tests.
 
-1. **Binary encoding module** — Implement `Encoding` equivalent: length-prefixed bytestrings, padding, SMP-style encoding for all XFTP types.
-2. **Crypto module** — Wrapper around libsodium.js for: key generation (Ed25519, X25519), signing, XSalsa20-Poly1305 streaming encryption/decryption, SHA-256/SHA-512 hashing.
-3. **Protocol module** — XFTP command encoding (FNEW, FADD, FPUT, FDEL, FGET, FACK, PING) and response decoding (FRSndIds, FRRcvIds, FRFile, FROk, FRErr, FRPong). Transmission framing with signing and padding.
-4. **Transport module** — HTTP/2 client using `fetch()` (Node.js 18+ built-in or `undici`). Handshake implementation (standard XFTP handshake first, web variant later).
-5. **File description module** — YAML serialization/deserialization matching Haskell's `StrEncoding` for `FileDescription`. Validation.
-6. **Agent module** — Upload orchestration (encrypt → chunk → register → upload → build description). Download orchestration (parse description → download → transit-decrypt → file-decrypt).
+**Completed** (164 tests passing across 16 test groups):
+1. Binary encoding (protocol/encoding.ts) — 23 tests
+2. Crypto: secretbox, keys, file, padding, digest (crypto/*.ts) — 72 tests
+3. Protocol: commands, transmission (protocol/commands.ts, transmission.ts) — 40 tests
+4. Handshake encoding/decoding (protocol/handshake.ts) — 18 tests
+5. Identity proof verification (crypto/identity.ts) — 15 tests
+6. File descriptions: types, YAML, validation (protocol/description.ts) — 13 tests
+7. Chunk sizing: prepareChunkSizes, singleChunkSize, etc. (protocol/chunks.ts) — 4 tests
+8. Transport crypto: cbAuthenticate/cbVerify, transit encrypt/decrypt (protocol/client.ts) — 10 tests
+9. Server address parsing (protocol/address.ts) — 3 tests
+10. Download helpers: DH, transit-decrypt, file-decrypt (download.ts) — 11 tests
 
-### Phase 2: Integration Testing
+### Phase 2: XFTP Server Changes — DONE
+
+**Goal:** XFTP servers support web client connections.
+
+**Completed** (7 Haskell integration tests passing):
+1. SNI certificate switching — `TLSServerCredential` mechanism for XFTP
+2. CORS headers — OPTIONS handler + CORS response headers
+3. Web handshake — challenge-response identity proof (Ed25519 + Ed448)
+4. Integration tests — Ed25519 and Ed448 web handshake round-trips
+
+### Phase 3: HTTP/2 Client + Agent Orchestration
+
+**Goal:** Complete XFTP client that can upload and download files against a real Haskell XFTP server.
+
+1. **`client.ts`** ← `Simplex.FileTransfer.Client` — HTTP/2 client via `fetch()` / `node:http2`: connect + handshake, sendCommand, createChunk, uploadChunk, downloadChunk, deleteChunk, ackChunk, ping.
+2. **`agent.ts`** ← `Simplex.FileTransfer.Client.Main` — Upload orchestration (encrypt → chunk → register → upload → build description), download orchestration (parse → download → verify → decrypt → ack), URL encoding with DEFLATE compression (§4.1).
+
+### Phase 4: Integration Testing
 
 **Goal:** Prove the TypeScript client is wire-compatible with the Haskell server.
 
-1. **Test harness** — Node.js test (`xftp-web/test/integration.test.ts`) spawns `xftp-server` and `xftp` CLI as subprocesses.
+1. **Test harness** — Haskell-driven tests in `XFTPWebTests.hs` (same pattern as per-function tests).
 2. **Upload test** — TypeScript uploads file → Haskell client downloads it → verify contents match.
 3. **Download test** — Haskell client uploads file → TypeScript downloads it → verify contents match.
 4. **Round-trip test** — TypeScript upload → TypeScript download → verify.
 5. **Edge cases** — Single chunk, many chunks, exactly-sized chunks, redirect descriptions.
 
-### Phase 3: XFTP Server Changes
-
-**Goal:** XFTP servers support web client connections.
-
-1. **SNI certificate switching** — Port SMP server's `TLSServerCredential` mechanism to XFTP server.
-2. **CORS headers** — Add OPTIONS handler and CORS response headers when Origin is present.
-3. **Web handshake** — Detect web client (SNI-based), include identity proof (cert chain + signed challenge) in handshake response.
-4. **Configuration** — Add `[WEB]` section to `file-server.ini` for HTTPS cert paths and web mode toggle.
-
-### Phase 4: Web Page
+### Phase 5: Web Page
 
 **Goal:** Static HTML page with upload/download UX.
 
 1. **Bundle TypeScript** — Compile to ES module bundle with libsodium.js WASM included.
 2. **Upload UI** — Drag-drop zone, file picker, progress circle, link display.
 3. **Download UI** — Parse URL, show file info, download button, progress circle.
-4. **URL encoding** — DEFLATE compression + base64url for file description in hash fragment.
-5. **App install CTA** — Banner/messaging promoting SimpleX app for larger files.
+4. **App install CTA** — Banner/messaging promoting SimpleX app for larger files.
 
-### Phase 5: Server-Hosted Page (Optional)
+### Phase 6: Server-Hosted Page (Optional)
 
 **Goal:** XFTP servers can optionally serve the web page themselves.
 
@@ -880,118 +886,115 @@ XFTP handshake types and encoding.
 | `XFTP_VERSION_RANGE` | `supportedFileServerVRange` | 101 | Version 1..3 |
 | `CURRENT_XFTP_VERSION` | `currentXFTPVersion` | 98 | Version 3 |
 
-### 12.10 `transport/client.ts` ← `Simplex/FileTransfer/Client.hs`
+### 12.10 `protocol/client.ts` ← `Simplex/FileTransfer/Client.hs` (crypto primitives) — DONE
 
-HTTP/2 client, command sending, chunk upload/download.
+Transport-level crypto for command authentication and chunk encryption/decryption.
 
-| TypeScript function | Haskell function | Line | Description |
+| TypeScript function | Haskell function | Description | Status |
 |---|---|---|---|
-| `connectXFTP(server, config)` | `getXFTPClient` | 111 | Establish HTTP/2 connection + handshake |
-| `xftpHandshakeV1(vRange, keyHash, http2)` | `xftpClientHandshakeV1` | 137 | Two-stage handshake over HTTP/2 |
-| `sendCommand(client, key, fileId, cmd, chunk?)` | `sendXFTPCommand` | 199 | Encode + sign + send + parse response |
-| `createChunk(client, key, info, rcvKeys, auth?)` | `createXFTPChunk` | 231 | FNEW → (senderId, recipientIds) |
-| `addRecipients(client, key, fileId, rcvKeys)` | `addXFTPRecipients` | 243 | FADD → recipientIds |
-| `uploadChunk(client, key, fileId, spec)` | `uploadXFTPChunk` | 249 | FPUT with streaming body |
-| `downloadChunk(rng, client, key, fileId, spec)` | `downloadXFTPChunk` | 253 | FGET → transit-decrypt → save |
-| `deleteChunk(client, key, senderId)` | `deleteXFTPChunk` | 285 | FDEL |
-| `ackChunk(client, key, recipientId)` | `ackXFTPChunk` | 288 | FACK |
-| `ping(client)` | `pingXFTP` | 291 | PING → PONG |
+| `cbAuthenticate(peerPub, ownPriv, nonce, msg)` | `C.cbAuthenticate` | 80-byte crypto_box authenticator | ✓ |
+| `cbVerify(peerPub, ownPriv, nonce, auth, msg)` | `C.cbVerify` | Verify authenticator | ✓ |
+| `encryptTransportChunk(dhSecret, nonce, plain)` | `sendEncFile` | Encrypt chunk (tag appended) | ✓ |
+| `decryptTransportChunk(dhSecret, nonce, enc)` | `receiveEncFile` | Decrypt chunk (tag verified) | ✓ |
 
-### 12.11 `agent/chunking.ts` ← `Simplex/FileTransfer/Client.hs` + `Simplex/FileTransfer/Chunks.hs`
+### 12.11 `protocol/chunks.ts` ← `Simplex/FileTransfer/Chunks.hs` + `Client.hs` — DONE
 
 Chunk size selection and file splitting.
 
-| TypeScript function/constant | Haskell function/constant | File | Line | Description |
-|---|---|---|---|---|
-| `CHUNK_SIZE_64K` | `chunkSize0` | Chunks.hs | 9 | 65536 |
-| `CHUNK_SIZE_256K` | `chunkSize1` | Chunks.hs | 13 | 262144 |
-| `CHUNK_SIZE_1M` | `chunkSize2` | Chunks.hs | 17 | 1048576 |
-| `CHUNK_SIZE_4M` | `chunkSize3` | Chunks.hs | 21 | 4194304 |
-| `SERVER_CHUNK_SIZES` | `serverChunkSizes` | Chunks.hs | 5 | `[64K, 256K, 1M, 4M]` |
-| `singleChunkSize(fileSize)` | `singleChunkSize` | Client.hs | 315 | Smallest chunk size ≥ fileSize, or Nothing |
-| `prepareChunkSizes(fileSize)` | `prepareChunkSizes` | Client.hs | 321 | Split file into chunk sizes |
-| `prepareChunkSpecs(path, sizes)` | `prepareChunkSpecs` | Client.hs | 338 | Create offset-based chunk specs |
-| `getChunkDigest(spec)` | `getChunkDigest` | Client.hs | 346 | SHA-256 of chunk data |
+| TypeScript function/constant | Haskell equivalent | Status |
+|---|---|---|
+| `chunkSize0..3` | `chunkSize0..3` (Chunks.hs) | ✓ |
+| `serverChunkSizes` | `serverChunkSizes` | ✓ |
+| `prepareChunkSizes(size)` | `prepareChunkSizes` (Client.hs:322) | ✓ |
+| `singleChunkSize(size)` | `singleChunkSize` (Client.hs:316) | ✓ |
+| `prepareChunkSpecs(sizes)` | `prepareChunkSpecs` (Client.hs:339) | ✓ |
+| `getChunkDigest(chunk)` | `getChunkDigest` (Client.hs:347) | ✓ |
 
-### 12.12 `description/types.ts` ← `Simplex/FileTransfer/Description.hs`
+### 12.12–12.14 `protocol/description.ts` ← `Simplex/FileTransfer/Description.hs` — DONE
 
-File description types matching the YAML format.
+Types, YAML encode/decode, base64url, FileSize, replica grouping/folding, validation — all in one file.
 
-| TypeScript type | Haskell type | Line | Description |
-|---|---|---|---|
-| `FileDescription` | `FileDescription p` | 81 | `{party, size, digest, key, nonce, chunkSize, chunks, redirect?}` |
-| `RedirectFileInfo` | `RedirectFileInfo` | 93 | `{size, digest}` |
-| `FileDigest` | `FileDigest` | 114 | Newtype over ByteString (base64url encoded in YAML via `StrEncoding`) |
-| `FileSize` | `FileSize a` | 186 | Newtype wrapper; human-readable `StrEncoding` ("26mb", "8mb", "100kb", "1gb") |
-| `FileChunk` | `FileChunk` | 132 | `{chunkNo, chunkSize, digest, replicas}` |
-| `FileChunkReplica` | `FileChunkReplica` | 140 | `{server, replicaId, replicaKey}` |
-| `ChunkReplicaId` | `ChunkReplicaId` | 147 | Newtype over XFTPFileId |
-| `FileDescriptionURI` | `FileDescriptionURI` | 243 | `{scheme, description, clientData?}` — Haskell format (`simplex:/file#/?desc=...`); web client uses different URL format (§4.1) |
+| TypeScript function/type | Haskell equivalent | Status |
+|---|---|---|
+| `FileDescription`, `FileChunk`, `FileChunkReplica`, `RedirectFileInfo` | Matching record types | ✓ |
+| `base64urlEncode/Decode` | `strEncode`/`strDecode` for `ByteString` | ✓ |
+| `encodeFileSize/decodeFileSize` | `StrEncoding (FileSize a)` | ✓ |
+| `encodeFileDescription(fd)` | `encodeFileDescription` (line 230) | ✓ |
+| `decodeFileDescription(yaml)` | `decodeFileDescription` (line 356) | ✓ |
+| `validateFileDescription(fd)` | `validateFileDescription` (line 221) | ✓ |
+| `fdSeparator` | `fdSeparator` (line 111) | ✓ |
+| Internal: `unfoldChunksToReplicas`, `foldReplicasToChunks`, `encodeFileReplicas` | Matching functions | ✓ |
 
-**Size constants:**
-- `qrSizeLimit` (line 269): 1002 bytes
-- `maxFileSize` (line 273): 1 GB
-- `fileSizeLen` (line 283): 8 bytes
+### 12.15 `client.ts` ← `Simplex/FileTransfer/Client.hs` (HTTP/2 operations)
 
-### 12.13 `description/yaml.ts` ← `Simplex/FileTransfer/Description.hs`
-
-YAML serialization via `Data.Yaml` (aeson) through intermediate `YAMLFileDescription` type (line 158).
+HTTP/2 XFTP client using `node:http2` (Node.js) or `fetch()` (browser). Transpilation of `Client.hs` network operations.
 
 | TypeScript function | Haskell function | Line | Description |
 |---|---|---|---|
-| `encodeFileDescription(desc)` | `encodeFileDescription` | 230 | `FileDescription` → `YAMLFileDescription` → YAML bytes |
-| `decodeFileDescription(yaml)` | `strDecode` instance | — | YAML bytes → `YAMLFileDescription` → `FileDescription` |
-| `fileDescriptionURI(desc)` | `fileDescriptionURI` | 252 | Wrap in URI format |
+| `connectXFTP(server, config)` | `getXFTPClient` | 111 | HTTP/2 connect + handshake → XFTPClient state |
+| `sendXFTPCommand(client, key, fileId, cmd, chunk?)` | `sendXFTPCommand` | 200 | Encode auth transmission + POST + parse response |
+| `createXFTPChunk(client, spKey, info, rcvKeys, auth?)` | `createXFTPChunk` | 232 | FNEW → (SenderId, RecipientId[]) |
+| `addXFTPRecipients(client, spKey, fileId, rcvKeys)` | `addXFTPRecipients` | 244 | FADD → RecipientId[] |
+| `uploadXFTPChunk(client, spKey, fileId, chunkData)` | `uploadXFTPChunk` | 250 | FPUT with streaming body |
+| `downloadXFTPChunk(client, rpKey, fileId, chunkSize)` | `downloadXFTPChunk` | 254 | FGET → DH → transit-decrypt → Uint8Array |
+| `deleteXFTPChunk(client, spKey, senderId)` | `deleteXFTPChunk` | 286 | FDEL |
+| `ackXFTPChunk(client, rpKey, recipientId)` | `ackXFTPChunk` | 289 | FACK |
+| `pingXFTP(client)` | `pingXFTP` | 292 | PING → FRPong |
 
-**Intermediate YAML types:**
-- `YAMLFileDescription` (line 158): `{party, size :: String, digest, key, nonce, chunkSize :: String, replicas :: [YAMLServerReplicas], redirect :: Maybe RedirectFileInfo}` — `size` and `chunkSize` use human-readable `StrEncoding` format.
-- `YAMLServerReplicas` (line 170): `{server :: XFTPServer, chunks :: [String]}` — replicas grouped by server.
-- Binary fields (`digest`, `key`, `nonce`) are base64url-encoded via `StrEncoding` / `strToJSON`.
-- Chunk replica string format: `chunkNo:replicaId:replicaKey[:digest][:chunkSize]`
+**XFTPClient state** (returned by `connectXFTP`):
+- HTTP/2 session (node: `ClientHttp2Session`, browser: base URL for fetch)
+- `thParams`: `{sessionId, blockSize, thVersion, thAuth}` from handshake
+- Server address for reconnection
 
-### 12.14 `description/validation.ts` ← `Simplex/FileTransfer/Description.hs`
+**sendXFTPCommand wire format:**
+1. `xftpEncodeAuthTransmission(thParams, pKey, (corrId, fId, cmd))` → padded 16KB block
+2. POST to "/" with body = block + optional chunk data (streaming)
+3. Response: read 16KB `bodyHead`, decode via `xftpDecodeTClient`
+4. For FGET: response also has streaming body (encrypted chunk)
+
+### 12.16 `agent.ts` ← `Simplex/FileTransfer/Client/Main.hs`
+
+Upload/download orchestration and URL encoding. Combines what the RFC originally split across `agent/upload.ts`, `agent/download.ts`, and `description/uri.ts`.
+
+**Upload functions:**
 
 | TypeScript function | Haskell function | Line | Description |
 |---|---|---|---|
-| `validateFileDescription(desc)` | `validateFileDescription` | 221 | Check sequential chunk numbers and total size match |
-
-### 12.15 `agent/upload.ts` ← `Simplex/FileTransfer/Client/Main.hs`
-
-Upload orchestration — the top-level flow.
-
-| TypeScript function | Haskell function | Line | Description |
-|---|---|---|---|
-| `encryptFileForUpload(file)` | `encryptFileForUpload` | 264 | Generate key/nonce, encrypt, compute digest, split |
-| `uploadFile(chunks, servers)` | `uploadFile` | 285 | Parallel upload (8 concurrent) |
-| `uploadFileChunk(agent, chunk, server)` | `uploadFileChunk` | 301 | FNEW + FPUT for one chunk |
-| `createRcvFileDescriptions(desc, sentChunks)` | `createRcvFileDescriptions` | 329 | Build recipient descriptions |
+| `encryptFileForUpload(file, fileName)` | `encryptFileForUpload` | 264 | key/nonce → encrypt → digest → chunk specs |
+| `uploadFile(client, chunkSpecs, servers, numRcps)` | `uploadFile` | 285 | Parallel upload (up to 16 concurrent) |
+| `uploadFileChunk(client, chunkNo, spec, server)` | `uploadFileChunk` | 301 | FNEW + FPUT for one chunk |
+| `createRcvFileDescriptions(fd, sentChunks)` | `createRcvFileDescriptions` | 329 | Build per-recipient descriptions |
+| `createSndFileDescription(fd, sentChunks)` | `createSndFileDescription` | 361 | Build sender (deletion) description |
 
 **Upload call sequence** (`cliSendFileOpts`, line 243):
-1. `encryptFileForUpload` (line 264) — `C.randomSbKey` + `C.randomCbNonce` → `encryptFile` → `sha512Hash` digest → `prepareChunkSpecs`
-2. `uploadFile` (line 285) — `pooledForConcurrentlyN 16 chunks uploadFileChunk`
-3. `uploadFileChunk` (line 301) — `getChunkDigest` (line 306) → `createXFTPChunk` → `uploadXFTPChunk`
-4. `createRcvFileDescriptions` (line 329) — assembles `FileDescription 'FRecipient` from sent chunks
-5. `writeFileDescriptions` (line 376) — serializes to YAML files
+1. `encryptFileForUpload` — `randomSbKey` + `randomCbNonce` → `encryptFile` → `sha512Hash` digest → `prepareChunkSpecs`
+2. `uploadFile` — for each chunk: generate sender/recipient key pairs, `createXFTPChunk`, `uploadXFTPChunk`
+3. `createRcvFileDescriptions` — assemble `FileDescription` per recipient from sent chunks
+4. `createSndFileDescription` — assemble sender description with deletion keys
 
-### 12.16 `agent/download.ts` ← `Simplex/FileTransfer/Client/Main.hs`
-
-Download orchestration — the top-level flow.
+**Download functions:**
 
 | TypeScript function | Haskell function | Line | Description |
 |---|---|---|---|
-| `downloadFile(description)` | `cliReceiveFile` | 388 | Full download flow |
-| `downloadFileChunk(rng, agent, path, size, chunk)` | `downloadFileChunk` | 418 | FGET + transit-decrypt one chunk |
-| `ackFileChunk(agent, chunk)` | `acknowledgeFileChunk` | 440 | FACK one chunk |
+| `downloadFile(description)` | `cliReceiveFile` | 388 | Full download: parse → download → verify → decrypt |
+| `downloadFileChunk(client, chunk)` | `downloadFileChunk` | 418 | FGET + transit-decrypt one chunk |
+| `ackFileChunk(client, chunk)` | `acknowledgeFileChunk` | 440 | FACK one chunk |
+| `deleteFile(description)` | `cliDeleteFile` | 455 | FDEL for all chunks |
 
 **Download call sequence** (`cliReceiveFile`, line 388):
 1. Parse and validate `FileDescription` from YAML
-2. Group chunks by server: `groupAllOn srv chunks` (line 402, local `srv` helper extracts first replica's server)
-3. Parallel download: `pooledForConcurrentlyN 16 srvChunks downloadFileChunk`
-4. `downloadFileChunk` (line 418) — calls `downloadXFTPChunk` (`Client.hs:253`) which does FGET → DH → transit-decrypt
-5. `readChunks` (`Crypto.hs:113`) — concatenate chunk files
-6. Verify file digest (SHA-512)
-7. `decryptChunks` (`Crypto.hs:57`) — file-level decrypt with auth tag verification
-8. Parallel acknowledge: `acknowledgeFileChunk` → `ackXFTPChunk`
+2. Group chunks by server
+3. Parallel download: `downloadXFTPChunk` per chunk (up to 16 concurrent)
+4. Verify file digest (SHA-512) over concatenated encrypted chunks
+5. `decryptChunks` — file-level decrypt with auth tag verification
+6. Parallel acknowledge: `ackXFTPChunk` per chunk
+
+**URL encoding (§4.1):**
+
+| TypeScript function | Description |
+|---|---|
+| `encodeDescriptionURI(fd)` | DEFLATE compress YAML → base64url → URL hash fragment |
+| `decodeDescriptionURI(url)` | Parse hash fragment → base64url decode → inflate → YAML parse |
 
 ### 12.17 Transit Encryption Detail ← `Simplex/FileTransfer/Client.hs:253-275`
 
@@ -1039,33 +1042,25 @@ Download orchestration — the top-level flow.
 xftp-web/                          # Separate npm project
 ├── src/
 │   ├── protocol/
-│   │   ├── encoding.ts            # ← Simplex.Messaging.Encoding
-│   │   ├── commands.ts            # ← Simplex.FileTransfer.Protocol (commands)
-│   │   ├── responses.ts           # ← Simplex.FileTransfer.Protocol (responses)
-│   │   └── transmission.ts        # ← Simplex.FileTransfer.Protocol (framing)
+│   │   ├── encoding.ts            # ← Simplex.Messaging.Encoding                        ✓
+│   │   ├── commands.ts            # ← Simplex.FileTransfer.Protocol (commands+responses) ✓
+│   │   ├── transmission.ts        # ← Simplex.FileTransfer.Protocol (framing)            ✓
+│   │   ├── handshake.ts           # ← Simplex.FileTransfer.Transport (handshake)         ✓
+│   │   ├── address.ts             # ← Simplex.Messaging.Protocol (server address)        ✓
+│   │   ├── chunks.ts              # ← Simplex.FileTransfer.Chunks + Client.hs (sizing)   ✓
+│   │   ├── client.ts              # ← Transport crypto (cbAuth, transit encrypt/decrypt)  ✓
+│   │   └── description.ts         # ← Simplex.FileTransfer.Description (types+yaml+val)  ✓
 │   ├── crypto/
-│   │   ├── secretbox.ts           # ← Simplex.Messaging.Crypto + Crypto.Lazy
-│   │   ├── file.ts                # ← Simplex.FileTransfer.Crypto
-│   │   ├── keys.ts                # ← Simplex.Messaging.Crypto (keys, sign, DH)
-│   │   ├── digest.ts              # ← Simplex.Messaging.Crypto (sha256, sha512)
-│   │   └── padding.ts             # ← Simplex.Messaging.Crypto (pad/unPad)
-│   ├── transport/
-│   │   ├── client.ts              # ← Simplex.FileTransfer.Client
-│   │   ├── handshake.ts           # ← Simplex.FileTransfer.Transport
-│   │   └── cors.ts                # CORS-aware request handling
-│   ├── description/
-│   │   ├── types.ts               # ← Simplex.FileTransfer.Description (types)
-│   │   ├── yaml.ts                # ← Simplex.FileTransfer.Description (encoding)
-│   │   ├── uri.ts                 # ← URL encoding/decoding with compression (§4.1)
-│   │   └── validation.ts          # ← Simplex.FileTransfer.Description (validation)
-│   ├── agent/
-│   │   ├── upload.ts              # ← Simplex.FileTransfer.Client.Main (upload)
-│   │   ├── download.ts            # ← Simplex.FileTransfer.Client.Main (download)
-│   │   └── chunking.ts            # ← Simplex.FileTransfer.Client + Chunks
-│   └── index.ts                   # Public API
-├── test/
-│   └── integration.test.ts        # TS-driven: spawns xftp-server, full round-trips
-├── web/                           # Browser UI (Phase 4)
+│   │   ├── secretbox.ts           # ← Simplex.Messaging.Crypto + Crypto.Lazy             ✓
+│   │   ├── file.ts                # ← Simplex.FileTransfer.Crypto                        ✓
+│   │   ├── keys.ts                # ← Simplex.Messaging.Crypto (Ed25519/X25519/Ed448)    ✓
+│   │   ├── digest.ts              # ← Simplex.Messaging.Crypto (sha256, sha512)          ✓
+│   │   ├── padding.ts             # ← Simplex.Messaging.Crypto (pad/unPad)               ✓
+│   │   └── identity.ts            # ← Web handshake identity proof (Ed25519/Ed448)        ✓
+│   ├── download.ts                # Download helpers (DH, transit-decrypt, file-decrypt)  ✓
+│   ├── client.ts                  # ← Simplex.FileTransfer.Client (HTTP/2 operations)
+│   └── agent.ts                   # ← Simplex.FileTransfer.Client.Main (orchestration)
+├── web/                           # Browser UI (Phase 5)
 │   ├── index.html
 │   ├── upload.ts
 │   ├── download.ts
@@ -1074,12 +1069,13 @@ xftp-web/                          # Separate npm project
 └── tsconfig.json
 ```
 
-**Haskell per-function tests (in simplexmq repo):**
+**Haskell tests (in simplexmq repo):**
 ```
 tests/
-└── XFTPWebTests.hs               # Haskell-driven: calls each TS function via node,
-                                   # compares output with Haskell function (see §10.1)
-                                   # ~100 test cases, one per row in §12.1–12.17 tables
+├── XFTPWebTests.hs               # Haskell-driven: calls each TS function via node,
+│                                  # compares output with Haskell function (see §10.1)
+│                                  # 164 test cases across 16 test groups
+└── fixtures/ed25519/              # Ed25519 test certs for web handshake integration tests
 ```
 
 No fixture files, no TS test harness for unit tests. The Haskell test file IS the test — it calls both Haskell and TypeScript functions directly and compares outputs. TS-side integration tests (`test/integration.test.ts`) are separate and only run after all per-function tests pass.

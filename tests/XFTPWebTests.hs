@@ -31,7 +31,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
-import System.Directory (doesDirectoryExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, removeDirectoryRecursive)
 import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, waitForProcess)
 import Test.Hspec hiding (fit, it)
@@ -1361,12 +1361,14 @@ tsTransmissionTests = describe "protocol/transmission" $ do
 
   describe "transmission encoding" $ do
     it "encodeTransmission unsigned (PING)" $ do
-      let corrId = "abc" :: B.ByteString
+      let sessionId = B.pack [201 .. 232]
+          corrId = "abc" :: B.ByteString
           entityId = "" :: B.ByteString
           cmdBytes = "PING" :: B.ByteString
-          tInner = smpEncode corrId <> smpEncode entityId <> cmdBytes
+          -- implySessId = False: sessionId on wire
+          tWire = smpEncode sessionId <> smpEncode corrId <> smpEncode entityId <> cmdBytes
           authenticator = smpEncode ("" :: B.ByteString)
-          encoded = authenticator <> tInner
+          encoded = authenticator <> tWire
           batch = B.singleton 1 <> smpEncode (Large encoded)
           expected = either (error . show) id $ C.pad batch 16384
       tsResult <-
@@ -1374,6 +1376,8 @@ tsTransmissionTests = describe "protocol/transmission" $ do
           impTx
             <> jsOut
               ( "Tx.encodeTransmission("
+                  <> jsUint8 sessionId
+                  <> ", "
                   <> jsUint8 corrId
                   <> ", "
                   <> jsUint8 entityId
@@ -1396,7 +1400,8 @@ tsTransmissionTests = describe "protocol/transmission" $ do
           sig = Ed25519.sign sk pk tForAuth
           rawSig = BA.convert sig :: B.ByteString
           authenticator = smpEncode rawSig
-          encoded = authenticator <> tInner
+          -- implySessId = False: tToSend = tForAuth (sessionId on wire)
+          encoded = authenticator <> tForAuth
           batch = B.singleton 1 <> smpEncode (Large encoded)
           expected = either (error . show) id $ C.pad batch 16384
       tsResult <-
@@ -1419,18 +1424,22 @@ tsTransmissionTests = describe "protocol/transmission" $ do
       tsResult `shouldBe` expected
 
     it "decodeTransmission" $ do
-      let corrId = "r01" :: B.ByteString
+      let sessionId = B.pack [201 .. 232]
+          corrId = "r01" :: B.ByteString
           entityId = B.pack [1 .. 16]
           cmdBytes = "OK" :: B.ByteString
-          tInner = smpEncode corrId <> smpEncode entityId <> cmdBytes
+          -- implySessId = False: sessionId on wire
+          tWire = smpEncode sessionId <> smpEncode corrId <> smpEncode entityId <> cmdBytes
           authenticator = smpEncode ("" :: B.ByteString)
-          encoded = authenticator <> tInner
+          encoded = authenticator <> tWire
           batch = B.singleton 1 <> smpEncode (Large encoded)
           block = either (error . show) id $ C.pad batch 256
       tsResult <-
         callNode $
           impTx
             <> "const t = Tx.decodeTransmission("
+            <> jsUint8 sessionId
+            <> ", "
             <> jsUint8 block
             <> ");"
             <> jsOut "E.concatBytes(t.corrId, t.entityId, t.command)"
@@ -2790,6 +2799,10 @@ tsIntegrationTests = describe "integration" $ do
     webHandshakeTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "web handshake with Ed448 identity verification" $
     webHandshakeTest testXFTPServerConfigSNI "tests/fixtures/ca.crt"
+  it "connectXFTP + pingXFTP" $
+    pingTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "full round-trip: create, upload, download, ack, addRecipients, delete" $
+    fullRoundTripTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
 
 webHandshakeTest :: XFTPServerConfig -> FilePath -> Expectation
 webHandshakeTest cfg caFile = do
@@ -2830,4 +2843,71 @@ webHandshakeTest cfg caFile = do
              \const ack = await readBody(s2);\
              \client.close();"
           <> jsOut "new Uint8Array([idOk ? 1 : 0, ack.length === 0 ? 1 : 0])"
+    result `shouldBe` B.pack [1, 1]
+
+pingTest :: XFTPServerConfig -> FilePath -> Expectation
+pingTest cfg caFile = do
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import {connectXFTP, pingXFTP, closeXFTP} from './dist/client.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const c = await connectXFTP(server);\
+             \await pingXFTP(c);\
+             \closeXFTP(c);"
+          <> jsOut "new Uint8Array([1])"
+    result `shouldBe` B.pack [1]
+
+fullRoundTripTest :: XFTPServerConfig -> FilePath -> Expectation
+fullRoundTripTest cfg caFile = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as K from './dist/crypto/keys.js';\
+        \import {sha256} from './dist/crypto/digest.js';\
+        \import {connectXFTP, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk,\
+        \ ackXFTPChunk, addXFTPRecipients, deleteXFTPChunk, closeXFTP} from './dist/client.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const c = await connectXFTP(server);\
+             \const sndKp = K.generateEd25519KeyPair();\
+             \const rcvKp1 = K.generateEd25519KeyPair();\
+             \const rcvKp2 = K.generateEd25519KeyPair();\
+             \const chunkData = new Uint8Array(crypto.randomBytes(65536));\
+             \const digest = sha256(chunkData);\
+             \const file = {\
+             \  sndKey: K.encodePubKeyEd25519(sndKp.publicKey),\
+             \  size: chunkData.length,\
+             \  digest\
+             \};\
+             \const rcvKeys = [K.encodePubKeyEd25519(rcvKp1.publicKey)];\
+             \const {senderId, recipientIds} = await createXFTPChunk(c, sndKp.privateKey, file, rcvKeys, null);\
+             \await uploadXFTPChunk(c, sndKp.privateKey, senderId, chunkData);\
+             \const dl1 = await downloadXFTPChunk(c, rcvKp1.privateKey, recipientIds[0], digest);\
+             \const match1 = dl1.length === chunkData.length && dl1.every((b, i) => b === chunkData[i]);\
+             \await ackXFTPChunk(c, rcvKp1.privateKey, recipientIds[0]);\
+             \const newIds = await addXFTPRecipients(c, sndKp.privateKey, senderId,\
+             \  [K.encodePubKeyEd25519(rcvKp2.publicKey)]);\
+             \const dl2 = await downloadXFTPChunk(c, rcvKp2.privateKey, newIds[0], digest);\
+             \const match2 = dl2.length === chunkData.length && dl2.every((b, i) => b === chunkData[i]);\
+             \await deleteXFTPChunk(c, sndKp.privateKey, senderId);\
+             \closeXFTP(c);"
+          <> jsOut "new Uint8Array([match1 ? 1 : 0, match2 ? 1 : 0])"
     result `shouldBe` B.pack [1, 1]
