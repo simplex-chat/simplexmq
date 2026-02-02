@@ -1,6 +1,7 @@
-// Key generation, signing, DH — Simplex.Messaging.Crypto (Ed25519/X25519 functions).
+// Key generation, signing, DH — Simplex.Messaging.Crypto (Ed25519/X25519/Ed448 functions).
 
 import sodium from "libsodium-wrappers-sumo"
+import {ed448} from "@noble/curves/ed448"
 import {sha256} from "./digest.js"
 import {concatBytes} from "../protocol/encoding.js"
 
@@ -95,6 +96,35 @@ export function decodePubKeyX25519(der: Uint8Array): Uint8Array {
     if (der[i] !== X25519_PUBKEY_DER_PREFIX[i]) throw new Error("decodePubKeyX25519: invalid DER prefix")
   }
   return der.subarray(12)
+}
+
+// -- DER encoding for Ed448 public keys (RFC 8410, SubjectPublicKeyInfo)
+// SEQUENCE { SEQUENCE { OID 1.3.101.113 } BIT STRING { 0x00 <57 bytes> } }
+
+const ED448_PUBKEY_DER_PREFIX = new Uint8Array([
+  0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x71, 0x03, 0x3a, 0x00,
+])
+
+export function encodePubKeyEd448(rawPubKey: Uint8Array): Uint8Array {
+  return concatBytes(ED448_PUBKEY_DER_PREFIX, rawPubKey)
+}
+
+export function decodePubKeyEd448(der: Uint8Array): Uint8Array {
+  if (der.length !== 69) throw new Error("decodePubKeyEd448: invalid length")
+  for (let i = 0; i < ED448_PUBKEY_DER_PREFIX.length; i++) {
+    if (der[i] !== ED448_PUBKEY_DER_PREFIX[i]) throw new Error("decodePubKeyEd448: invalid DER prefix")
+  }
+  return der.subarray(12)
+}
+
+// -- Ed448 verification via @noble/curves (Crypto.hs:1270 verify')
+
+export function verifyEd448(publicKey: Uint8Array, sig: Uint8Array, msg: Uint8Array): boolean {
+  try {
+    return ed448.verify(sig, msg, publicKey)
+  } catch {
+    return false
+  }
 }
 
 // -- DER encoding for private keys (PKCS8 OneAsymmetricKey, RFC 8410)

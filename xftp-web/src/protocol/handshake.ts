@@ -138,7 +138,7 @@ export interface SignedKey {
   objectDer: Uint8Array   // raw DER of the signed object (SubjectPublicKeyInfo)
   dhKey: Uint8Array       // extracted 32-byte X25519 public key
   algorithm: Uint8Array   // AlgorithmIdentifier DER bytes
-  signature: Uint8Array   // raw Ed25519 signature bytes (64 bytes)
+  signature: Uint8Array   // raw signature bytes (Ed25519: 64, Ed448: 114)
 }
 
 // Parse ASN.1 DER length (short and long form).
@@ -190,8 +190,22 @@ export function extractSignedKey(signedDer: Uint8Array): SignedKey {
   if (unusedBits !== 0) throw new Error("SignedExact: expected 0 unused bits in signature")
   const signature = outer.take(sigLen - 1)
 
-  // Extract X25519 key from SubjectPublicKeyInfo
-  const dhKey = decodePubKeyX25519(objectDer)
+  // Extract X25519 key from the signed object.
+  // objectDer may be the raw SPKI (44 bytes) or a wrapper SEQUENCE
+  // from x509 objectToSignedExact which wraps toASN1 in Start Sequence.
+  const dhKey = decodeX25519Key(objectDer)
 
   return {objectDer, dhKey, algorithm, signature}
+}
+
+// Extract X25519 raw public key from either direct SPKI (44 bytes)
+// or a wrapper SEQUENCE containing the SPKI.
+function decodeX25519Key(der: Uint8Array): Uint8Array {
+  if (der.length === 44) return decodePubKeyX25519(der)
+  if (der[0] !== 0x30) throw new Error("decodeX25519Key: expected SEQUENCE")
+  const d = new Decoder(der)
+  d.anyByte()
+  derLength(d)
+  const inner = derElement(d)
+  return decodePubKeyX25519(inner)
 }

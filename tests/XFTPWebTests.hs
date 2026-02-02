@@ -21,6 +21,7 @@ import Data.Int (Int64)
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as NE
 import Data.Word (Word16, Word32)
+import Data.X509.Validation (Fingerprint (..))
 import Simplex.FileTransfer.Client (prepareChunkSizes)
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Transport (XFTPClientHello (..))
@@ -28,12 +29,15 @@ import Simplex.FileTransfer.Types (FileHeader (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
+import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import System.Directory (doesDirectoryExist)
 import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, waitForProcess)
 import Test.Hspec hiding (fit, it)
 import Util
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig)
+import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpTestPort)
 
 xftpWebDir :: FilePath
 xftpWebDir = "xftp-web"
@@ -135,6 +139,9 @@ impDl =
     <> "import * as Tx from './dist/protocol/transmission.js';"
     <> "await sodium.ready;"
 
+impAddr :: String
+impAddr = "import * as Addr from './dist/protocol/address.js';"
+
 -- | Wrap expression in process.stdout.write(Buffer.from(...)).
 jsOut :: String -> String
 jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
@@ -158,6 +165,8 @@ xftpWebTests = do
       tsChunkTests
       tsClientTests
       tsDownloadTests
+      tsAddressTests
+      tsIntegrationTests
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
@@ -1445,7 +1454,9 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const d = new E.Decoder(" <> jsUint8 vrBytes <> ");"
+            <> "const d = new E.Decoder("
+            <> jsUint8 vrBytes
+            <> ");"
             <> "const vr = Hs.decodeVersionRange(d);"
             <> jsOut "E.concatBytes(E.encodeWord16(vr.minVersion), E.encodeWord16(vr.maxVersion))"
       tsResult `shouldBe` vrBytes
@@ -1508,7 +1519,8 @@ tsHandshakeTests = describe "protocol/handshake" $ do
           -- smpEncode (versionRange, sessionId, certChainPubKey)
           -- where certChainPubKey = (NonEmpty Large certChain, Large signedKey)
           body =
-            smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+            smpEncode (1 :: Word16)
+              <> smpEncode (3 :: Word16)
               <> smpEncode sessId
               <> smpEncode (NE.fromList [Large cert1, Large cert2])
               <> smpEncode (Large signedKeyBytes)
@@ -1516,7 +1528,9 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const hs = Hs.decodeServerHandshake(" <> jsUint8 serverBlock <> ");"
+            <> "const hs = Hs.decodeServerHandshake("
+            <> jsUint8 serverBlock
+            <> ");"
             <> jsOut
               ( "E.concatBytes("
                   <> "E.encodeWord16(hs.xftpVersionRange.minVersion),"
@@ -1527,11 +1541,12 @@ tsHandshakeTests = describe "protocol/handshake" $ do
               )
       -- Expected: vmin(2) + vmax(2) + sessId(32) + cert1(100) + cert2(32) + signedKey(120) = 288 bytes
       tsResult
-        `shouldBe` ( smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
-                       <> sessId
-                       <> cert1
-                       <> cert2
-                       <> signedKeyBytes
+        `shouldBe` ( smpEncode (1 :: Word16)
+                      <> smpEncode (3 :: Word16)
+                      <> sessId
+                      <> cert1
+                      <> cert2
+                      <> signedKeyBytes
                    )
 
     it "decodeServerHandshake with webIdentityProof" $ do
@@ -1541,7 +1556,8 @@ tsHandshakeTests = describe "protocol/handshake" $ do
           signedKeyBytes = B.pack [1 .. 120]
           sigBytes = B.pack [1 .. 64]
           body =
-            smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+            smpEncode (1 :: Word16)
+              <> smpEncode (3 :: Word16)
               <> smpEncode sessId
               <> smpEncode (NE.fromList [Large cert1, Large cert2])
               <> smpEncode (Large signedKeyBytes)
@@ -1550,7 +1566,9 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const hs = Hs.decodeServerHandshake(" <> jsUint8 serverBlock <> ");"
+            <> "const hs = Hs.decodeServerHandshake("
+            <> jsUint8 serverBlock
+            <> ");"
             <> jsOut "hs.webIdentityProof || new Uint8Array(0)"
       tsResult `shouldBe` sigBytes
 
@@ -1560,7 +1578,8 @@ tsHandshakeTests = describe "protocol/handshake" $ do
           cert2 = B.pack [201 .. 232]
           signedKeyBytes = B.pack [1 .. 120]
           body =
-            smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+            smpEncode (1 :: Word16)
+              <> smpEncode (3 :: Word16)
               <> smpEncode sessId
               <> smpEncode (NE.fromList [Large cert1, Large cert2])
               <> smpEncode (Large signedKeyBytes)
@@ -1569,7 +1588,9 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const hs = Hs.decodeServerHandshake(" <> jsUint8 serverBlock <> ");"
+            <> "const hs = Hs.decodeServerHandshake("
+            <> jsUint8 serverBlock
+            <> ");"
             <> jsOut "new Uint8Array([hs.webIdentityProof === null ? 1 : 0])"
       tsResult `shouldBe` B.pack [1]
 
@@ -1581,7 +1602,11 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const chain = [" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "];"
+            <> "const chain = ["
+            <> jsUint8 cert1
+            <> ","
+            <> jsUint8 cert2
+            <> "];"
             <> jsOut "Hs.caFingerprint(chain)"
       tsResult `shouldBe` expected
 
@@ -1593,7 +1618,13 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const chain = [" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "," <> jsUint8 cert3 <> "];"
+            <> "const chain = ["
+            <> jsUint8 cert1
+            <> ","
+            <> jsUint8 cert2
+            <> ","
+            <> jsUint8 cert3
+            <> "];"
             <> jsOut "Hs.caFingerprint(chain)"
       tsResult `shouldBe` expected
 
@@ -1603,7 +1634,11 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const cc = Hs.chainIdCaCerts([" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "]);"
+            <> "const cc = Hs.chainIdCaCerts(["
+            <> jsUint8 cert1
+            <> ","
+            <> jsUint8 cert2
+            <> "]);"
             <> "if (cc.type !== 'valid') throw new Error('expected valid');"
             <> jsOut "E.concatBytes(cc.leafCert, cc.idCert, cc.caCert)"
       tsResult `shouldBe` (cert1 <> cert2 <> cert2)
@@ -1615,7 +1650,13 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const cc = Hs.chainIdCaCerts([" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "," <> jsUint8 cert3 <> "]);"
+            <> "const cc = Hs.chainIdCaCerts(["
+            <> jsUint8 cert1
+            <> ","
+            <> jsUint8 cert2
+            <> ","
+            <> jsUint8 cert3
+            <> "]);"
             <> "if (cc.type !== 'valid') throw new Error('expected valid');"
             <> jsOut "E.concatBytes(cc.leafCert, cc.idCert, cc.caCert)"
       tsResult `shouldBe` (cert1 <> cert2 <> cert3)
@@ -1629,7 +1670,13 @@ tsHandshakeTests = describe "protocol/handshake" $ do
         callNode $
           impHs
             <> "const cc = Hs.chainIdCaCerts(["
-            <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "," <> jsUint8 cert3 <> "," <> jsUint8 cert4
+            <> jsUint8 cert1
+            <> ","
+            <> jsUint8 cert2
+            <> ","
+            <> jsUint8 cert3
+            <> ","
+            <> jsUint8 cert4
             <> "]);"
             <> "if (cc.type !== 'valid') throw new Error('expected valid');"
             <> jsOut "E.concatBytes(cc.leafCert, cc.idCert, cc.caCert)"
@@ -1663,7 +1710,9 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const sk = Hs.extractSignedKey(" <> jsUint8 signedExactDer <> ");"
+            <> "const sk = Hs.extractSignedKey("
+            <> jsUint8 signedExactDer
+            <> ");"
             <> jsOut "E.concatBytes(sk.dhKey, sk.signature)"
       -- dhKey (32) + signature (64) = 96 bytes
       tsResult `shouldBe` (dhPkRaw <> sigRaw)
@@ -1688,8 +1737,12 @@ tsHandshakeTests = describe "protocol/handshake" $ do
       tsResult <-
         callNode $
           impHs
-            <> "const sk = Hs.extractSignedKey(" <> jsUint8 signedExactDer <> ");"
-            <> "const ok = K.verify(" <> jsUint8 signPkRaw <> ", sk.signature, sk.objectDer);"
+            <> "const sk = Hs.extractSignedKey("
+            <> jsUint8 signedExactDer
+            <> ");"
+            <> "const ok = K.verify("
+            <> jsUint8 signPkRaw
+            <> ", sk.signature, sk.objectDer);"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [1]
 
@@ -1733,13 +1786,13 @@ tsIdentityTests = describe "crypto/identity" $ do
             <> jsOut ("Id.extractCertPublicKeyInfo(" <> jsUint8 certDer <> ")")
       tsResult `shouldBe` expectedSpki
 
-    it "extractCertEd25519Key returns raw 32-byte key" $ do
+    it "extractCertPublicKeyInfo + decodePubKey returns raw 32-byte key" $ do
       let pubKey = B.pack [1 .. 32]
           certDer = mkFakeCertDer pubKey
       tsResult <-
         callNode $
           impId
-            <> jsOut ("Id.extractCertEd25519Key(" <> jsUint8 certDer <> ")")
+            <> jsOut ("K.decodePubKeyEd25519(Id.extractCertPublicKeyInfo(" <> jsUint8 certDer <> "))")
       tsResult `shouldBe` pubKey
 
   describe "verifyIdentityProof" $ do
@@ -1772,12 +1825,25 @@ tsIdentityTests = describe "crypto/identity" $ do
         callNode $
           impId
             <> "const ok = Id.verifyIdentityProof({"
-            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
-            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
-            <> "sigBytes: " <> jsUint8 challengeSigRaw <> ","
-            <> "challenge: " <> jsUint8 challenge <> ","
-            <> "sessionId: " <> jsUint8 sessionId <> ","
-            <> "keyHash: " <> jsUint8 keyHash
+            <> "certChainDer: ["
+            <> jsUint8 leafCertDer
+            <> ","
+            <> jsUint8 idCertDer
+            <> "],"
+            <> "signedKeyDer: "
+            <> jsUint8 signedKeyDer
+            <> ","
+            <> "sigBytes: "
+            <> jsUint8 challengeSigRaw
+            <> ","
+            <> "challenge: "
+            <> jsUint8 challenge
+            <> ","
+            <> "sessionId: "
+            <> jsUint8 sessionId
+            <> ","
+            <> "keyHash: "
+            <> jsUint8 keyHash
             <> "});"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [1]
@@ -1810,12 +1876,25 @@ tsIdentityTests = describe "crypto/identity" $ do
         callNode $
           impId
             <> "const ok = Id.verifyIdentityProof({"
-            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
-            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
-            <> "sigBytes: " <> jsUint8 challengeSigRaw <> ","
-            <> "challenge: " <> jsUint8 challenge <> ","
-            <> "sessionId: " <> jsUint8 sessionId <> ","
-            <> "keyHash: " <> jsUint8 wrongKeyHash
+            <> "certChainDer: ["
+            <> jsUint8 leafCertDer
+            <> ","
+            <> jsUint8 idCertDer
+            <> "],"
+            <> "signedKeyDer: "
+            <> jsUint8 signedKeyDer
+            <> ","
+            <> "sigBytes: "
+            <> jsUint8 challengeSigRaw
+            <> ","
+            <> "challenge: "
+            <> jsUint8 challenge
+            <> ","
+            <> "sessionId: "
+            <> jsUint8 sessionId
+            <> ","
+            <> "keyHash: "
+            <> jsUint8 wrongKeyHash
             <> "});"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [0]
@@ -1849,12 +1928,25 @@ tsIdentityTests = describe "crypto/identity" $ do
         callNode $
           impId
             <> "const ok = Id.verifyIdentityProof({"
-            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
-            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
-            <> "sigBytes: " <> jsUint8 wrongSigRaw <> ","
-            <> "challenge: " <> jsUint8 challenge <> ","
-            <> "sessionId: " <> jsUint8 sessionId <> ","
-            <> "keyHash: " <> jsUint8 keyHash
+            <> "certChainDer: ["
+            <> jsUint8 leafCertDer
+            <> ","
+            <> jsUint8 idCertDer
+            <> "],"
+            <> "signedKeyDer: "
+            <> jsUint8 signedKeyDer
+            <> ","
+            <> "sigBytes: "
+            <> jsUint8 wrongSigRaw
+            <> ","
+            <> "challenge: "
+            <> jsUint8 challenge
+            <> ","
+            <> "sessionId: "
+            <> jsUint8 sessionId
+            <> ","
+            <> "keyHash: "
+            <> jsUint8 keyHash
             <> "});"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [0]
@@ -1890,12 +1982,25 @@ tsIdentityTests = describe "crypto/identity" $ do
         callNode $
           impId
             <> "const ok = Id.verifyIdentityProof({"
-            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
-            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
-            <> "sigBytes: " <> jsUint8 challengeSigRaw <> ","
-            <> "challenge: " <> jsUint8 challenge <> ","
-            <> "sessionId: " <> jsUint8 sessionId <> ","
-            <> "keyHash: " <> jsUint8 keyHash
+            <> "certChainDer: ["
+            <> jsUint8 leafCertDer
+            <> ","
+            <> jsUint8 idCertDer
+            <> "],"
+            <> "signedKeyDer: "
+            <> jsUint8 signedKeyDer
+            <> ","
+            <> "sigBytes: "
+            <> jsUint8 challengeSigRaw
+            <> ","
+            <> "challenge: "
+            <> jsUint8 challenge
+            <> ","
+            <> "sessionId: "
+            <> jsUint8 sessionId
+            <> ","
+            <> "keyHash: "
+            <> jsUint8 keyHash
             <> "});"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [0]
@@ -1919,7 +2024,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const s = new TextDecoder().decode(" <> jsUint8 encoded <> ");"
+            <> "const s = new TextDecoder().decode("
+            <> jsUint8 encoded
+            <> ");"
             <> jsOut "Desc.base64urlDecode(s)"
       tsResult `shouldBe` bs
 
@@ -1928,7 +2035,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const data = " <> jsUint8 bs <> ";"
+            <> "const data = "
+            <> jsUint8 bs
+            <> ";"
             <> "const encoded = Desc.base64urlEncode(data);"
             <> jsOut "Desc.base64urlDecode(encoded)"
       tsResult `shouldBe` bs
@@ -1958,7 +2067,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
             <> "const fd = Desc.decodeFileDescription(yaml);"
             <> "const reEncoded = Desc.encodeFileDescription(fd);"
             <> jsOut "new TextEncoder().encode(reEncoded)"
@@ -1969,7 +2080,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
             <> "const fd = Desc.decodeFileDescription(yaml);"
             <> "const r = ["
             <> "fd.party,"
@@ -2023,7 +2136,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
             <> "const fd = Desc.decodeFileDescription(yaml);"
             <> "const r = Desc.validateFileDescription(fd);"
             <> jsOut "new TextEncoder().encode(r === null ? 'ok' : r)"
@@ -2034,7 +2149,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
             <> "const fd = Desc.decodeFileDescription(yaml);"
             <> "fd.chunks[1].chunkNo = 5;"
             <> "const r = Desc.validateFileDescription(fd);"
@@ -2046,7 +2163,9 @@ tsDescriptionTests = describe "protocol/description" $ do
       tsResult <-
         callNode $
           impDesc
-            <> "const yaml = new TextDecoder().decode(" <> jsUint8 fixture <> ");"
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
             <> "const fd = Desc.decodeFileDescription(yaml);"
             <> "fd.size = 999;"
             <> "const r = Desc.validateFileDescription(fd);"
@@ -2153,8 +2272,14 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const auth = Cli.cbAuthenticate("
-            <> jsUint8 pubARaw <> "," <> jsUint8 privBRaw <> ","
-            <> jsUint8 nonce24 <> "," <> jsUint8 msg <> ");"
+            <> jsUint8 pubARaw
+            <> ","
+            <> jsUint8 privBRaw
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 msg
+            <> ");"
             <> jsOut "auth"
       tsResult `shouldBe` expected
 
@@ -2181,9 +2306,16 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const valid = Cli.cbVerify("
-            <> jsUint8 pubBRaw <> "," <> jsUint8 privARaw <> ","
-            <> jsUint8 nonce24 <> "," <> jsUint8 authBytes_ <> ","
-            <> jsUint8 msg <> ");"
+            <> jsUint8 pubBRaw
+            <> ","
+            <> jsUint8 privARaw
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 authBytes_
+            <> ","
+            <> jsUint8 msg
+            <> ");"
             <> jsOut "new Uint8Array([valid ? 1 : 0])"
       tsResult `shouldBe` B.pack [1]
 
@@ -2200,9 +2332,16 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const valid = Cli.cbVerify("
-            <> jsUint8 pubBRaw <> "," <> jsUint8 privARaw <> ","
-            <> jsUint8 nonce24 <> "," <> jsUint8 authBytes_ <> ","
-            <> jsUint8 wrongMsg <> ");"
+            <> jsUint8 pubBRaw
+            <> ","
+            <> jsUint8 privARaw
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 authBytes_
+            <> ","
+            <> jsUint8 wrongMsg
+            <> ");"
             <> jsOut "new Uint8Array([valid ? 1 : 0])"
       tsResult `shouldBe` B.pack [0]
 
@@ -2212,8 +2351,14 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const auth = Cli.cbAuthenticate("
-            <> jsUint8 pubARaw <> "," <> jsUint8 privBRaw <> ","
-            <> jsUint8 nonce24 <> "," <> jsUint8 msg <> ");"
+            <> jsUint8 pubARaw
+            <> ","
+            <> jsUint8 privBRaw
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 msg
+            <> ");"
             <> jsOut "auth"
       let hsValid =
             C.cbVerify
@@ -2238,9 +2383,12 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const enc = Cli.encryptTransportChunk("
-            <> jsUint8 dhSecretBytes <> ","
-            <> jsUint8 nonce24 <> ","
-            <> jsUint8 plaintext <> ");"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 plaintext
+            <> ");"
             <> jsOut "enc"
       tsResult `shouldBe` expected
 
@@ -2254,9 +2402,12 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const r = Cli.decryptTransportChunk("
-            <> jsUint8 dhSecretBytes <> ","
-            <> jsUint8 nonce24 <> ","
-            <> jsUint8 encData <> ");"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 encData
+            <> ");"
             <> "if (!r.valid) throw new Error('invalid');"
             <> jsOut "r.content"
       tsResult `shouldBe` plaintext
@@ -2266,11 +2417,19 @@ tsClientTests = describe "protocol/client" $ do
       tsResult <-
         callNode $
           impCli
-            <> "const plain = " <> jsUint8 plaintext <> ";"
+            <> "const plain = "
+            <> jsUint8 plaintext
+            <> ";"
             <> "const enc = Cli.encryptTransportChunk("
-            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ",plain);"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ",plain);"
             <> "const r = Cli.decryptTransportChunk("
-            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ",enc);"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ",enc);"
             <> "if (!r.valid) throw new Error('invalid');"
             <> jsOut "r.content"
       tsResult `shouldBe` plaintext
@@ -2281,11 +2440,18 @@ tsClientTests = describe "protocol/client" $ do
         callNode $
           impCli
             <> "const enc = Cli.encryptTransportChunk("
-            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ","
-            <> jsUint8 plaintext <> ");"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 plaintext
+            <> ");"
             <> "enc[0] ^= 0xff;"
             <> "const r = Cli.decryptTransportChunk("
-            <> jsUint8 dhSecretBytes <> "," <> jsUint8 nonce24 <> ",enc);"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ",enc);"
             <> jsOut "new Uint8Array([r.valid ? 1 : 0])"
       tsResult `shouldBe` B.pack [0]
 
@@ -2325,7 +2491,10 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "const dh = Dl.processFileResponse("
-            <> jsUint8 privARaw <> "," <> jsUint8 pubBRaw <> ");"
+            <> jsUint8 privARaw
+            <> ","
+            <> jsUint8 pubBRaw
+            <> ");"
             <> jsOut "dh"
       tsDhSecret `shouldBe` hsDhBytes
 
@@ -2344,10 +2513,14 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "const r = Dl.decryptReceivedChunk("
-            <> jsUint8 dhSecretBytes <> ","
-            <> jsUint8 nonce24 <> ","
-            <> jsUint8 encData <> ","
-            <> jsUint8 chunkDigest <> ");"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 encData
+            <> ","
+            <> jsUint8 chunkDigest
+            <> ");"
             <> jsOut "r"
       tsResult `shouldBe` chunkData
 
@@ -2364,10 +2537,14 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "let ok = false; try { Dl.decryptReceivedChunk("
-            <> jsUint8 dhSecretBytes <> ","
-            <> jsUint8 nonce24 <> ","
-            <> jsUint8 encData <> ","
-            <> jsUint8 wrongDigest <> "); } catch(e) { ok = e.message.includes('digest'); }"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 encData
+            <> ","
+            <> jsUint8 wrongDigest
+            <> "); } catch(e) { ok = e.message.includes('digest'); }"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [1]
 
@@ -2383,9 +2560,12 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "const r = Dl.decryptReceivedChunk("
-            <> jsUint8 dhSecretBytes <> ","
-            <> jsUint8 nonce24 <> ","
-            <> jsUint8 encData <> ",null);"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 encData
+            <> ",null);"
             <> jsOut "r"
       tsResult `shouldBe` chunkData
 
@@ -2418,13 +2598,19 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "const chunk = Dl.decryptReceivedChunk("
-            <> jsUint8 dhSecretBytes <> ","
-            <> jsUint8 nonce24 <> ","
-            <> jsUint8 transportEncData <> ",null);"
+            <> jsUint8 dhSecretBytes
+            <> ","
+            <> jsUint8 nonce24
+            <> ","
+            <> jsUint8 transportEncData
+            <> ",null);"
             <> "const r = F.decryptChunks("
-            <> show encSize <> "n,[chunk],"
-            <> jsUint8 fileKey32 <> ","
-            <> jsUint8 fileNonce24 <> ");"
+            <> show encSize
+            <> "n,[chunk],"
+            <> jsUint8 fileKey32
+            <> ","
+            <> jsUint8 fileNonce24
+            <> ");"
             <> "const hdrBytes = F.encodeFileHeader(r.header);"
             <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
       tsResult `shouldBe` (fileHdr <> source)
@@ -2470,15 +2656,26 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "const c1 = Dl.decryptReceivedChunk("
-            <> jsUint8 dhSecret1Bytes <> "," <> jsUint8 nonce1 <> ","
-            <> jsUint8 transportEnc1 <> ",null);"
+            <> jsUint8 dhSecret1Bytes
+            <> ","
+            <> jsUint8 nonce1
+            <> ","
+            <> jsUint8 transportEnc1
+            <> ",null);"
             <> "const c2 = Dl.decryptReceivedChunk("
-            <> jsUint8 dhSecret2Bytes <> "," <> jsUint8 nonce2 <> ","
-            <> jsUint8 transportEnc2 <> ",null);"
+            <> jsUint8 dhSecret2Bytes
+            <> ","
+            <> jsUint8 nonce2
+            <> ","
+            <> jsUint8 transportEnc2
+            <> ",null);"
             <> "const r = F.decryptChunks("
-            <> show encSize <> "n,[c1,c2],"
-            <> jsUint8 fileKey32 <> ","
-            <> jsUint8 fileNonce24 <> ");"
+            <> show encSize
+            <> "n,[c1,c2],"
+            <> jsUint8 fileKey32
+            <> ","
+            <> jsUint8 fileNonce24
+            <> ");"
             <> "const hdrBytes = F.encodeFileHeader(r.header);"
             <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
       tsResult `shouldBe` (fileHdr <> source)
@@ -2501,12 +2698,16 @@ tsDownloadTests = describe "download" $ do
         callNode $
           impDl
             <> "const resp = Cmd.decodeResponse("
-            <> jsUint8 fileResponseBytes <> ");"
+            <> jsUint8 fileResponseBytes
+            <> ");"
             <> "if (resp.type !== 'FRFile') throw new Error('expected FRFile');"
             <> "const dhSecret = Dl.processFileResponse("
-            <> jsUint8 privBRaw <> ",resp.rcvDhKey);"
+            <> jsUint8 privBRaw
+            <> ",resp.rcvDhKey);"
             <> "const r = Dl.decryptReceivedChunk(dhSecret,"
-            <> "resp.nonce," <> jsUint8 encData <> ",null);"
+            <> "resp.nonce,"
+            <> jsUint8 encData
+            <> ",null);"
             <> jsOut "r"
       tsResult `shouldBe` chunkData
 
@@ -2530,11 +2731,103 @@ tsDownloadTests = describe "download" $ do
       tsResult <-
         callNode $
           impDl
-            <> "const fd = {size: " <> show encSize <> ","
-            <> "key: " <> jsUint8 fileKey32 <> ","
-            <> "nonce: " <> jsUint8 fileNonce24 <> "};"
+            <> "const fd = {size: "
+            <> show encSize
+            <> ","
+            <> "key: "
+            <> jsUint8 fileKey32
+            <> ","
+            <> "nonce: "
+            <> jsUint8 fileNonce24
+            <> "};"
             <> "const r = Dl.processDownloadedFile(fd, ["
-            <> jsUint8 fileEncrypted <> "]);"
+            <> jsUint8 fileEncrypted
+            <> "]);"
             <> "const hdrBytes = F.encodeFileHeader(r.header);"
             <> jsOut "new Uint8Array([...hdrBytes, ...r.content])"
       tsResult `shouldBe` (fileHdr <> source)
+
+-- ── protocol/address ──────────────────────────────────────────────
+
+tsAddressTests :: Spec
+tsAddressTests = describe "protocol/address" $ do
+  it "parseXFTPServer with port" $ do
+    let addr = "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" :: String
+        expectedKH :: B.ByteString
+        expectedKH = either error id $ strDecode "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
+    result <-
+      callNode $
+        impAddr
+          <> "const s = Addr.parseXFTPServer('"
+          <> addr
+          <> "');"
+          <> jsOut "new Uint8Array([...s.keyHash, ...new TextEncoder().encode(s.host + ':' + s.port)])"
+    let (kh, hostPort) = B.splitAt 32 result
+    kh `shouldBe` expectedKH
+    hostPort `shouldBe` "localhost:8000"
+
+  it "parseXFTPServer default port" $ do
+    result <-
+      callNode $
+        impAddr
+          <> "const s = Addr.parseXFTPServer('xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@example.com');"
+          <> jsOut "new TextEncoder().encode(s.host + ':' + s.port)"
+    result `shouldBe` "example.com:443"
+
+  it "parseXFTPServer multi-host takes first" $ do
+    result <-
+      callNode $
+        impAddr
+          <> "const s = Addr.parseXFTPServer('xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@host1.com:5000,host2.com');"
+          <> jsOut "new TextEncoder().encode(s.host + ':' + s.port)"
+    result `shouldBe` "host1.com:5000"
+
+-- ── integration ───────────────────────────────────────────────────
+
+tsIntegrationTests :: Spec
+tsIntegrationTests = describe "integration" $ do
+  it "web handshake with Ed25519 identity verification" $
+    webHandshakeTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "web handshake with Ed448 identity verification" $
+    webHandshakeTest testXFTPServerConfigSNI "tests/fixtures/ca.crt"
+
+webHandshakeTest :: XFTPServerConfig -> FilePath -> Expectation
+webHandshakeTest cfg caFile = do
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import http2 from 'node:http2';\
+        \import crypto from 'node:crypto';\
+        \import sodium from 'libsodium-wrappers-sumo';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Hs from './dist/protocol/handshake.js';\
+        \import * as Id from './dist/crypto/identity.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const readBody = s => new Promise((ok, err) => {\
+             \const c = [];\
+             \s.on('data', d => c.push(d));\
+             \s.on('end', () => ok(Buffer.concat(c)));\
+             \s.on('error', err);\
+             \});\
+             \const client = http2.connect('https://' + server.host + ':' + server.port, {rejectUnauthorized: false});\
+             \const challenge = new Uint8Array(crypto.randomBytes(32));\
+             \const s1 = client.request({':method': 'POST', ':path': '/'});\
+             \s1.end(Buffer.from(Hs.encodeClientHello({webChallenge: challenge})));\
+             \const hs = Hs.decodeServerHandshake(new Uint8Array(await readBody(s1)));\
+             \const idOk = hs.webIdentityProof\
+             \ ? Id.verifyIdentityProof({certChainDer: hs.certChainDer, signedKeyDer: hs.signedKeyDer,\
+             \sigBytes: hs.webIdentityProof, challenge, sessionId: hs.sessionId, keyHash: server.keyHash})\
+             \ : false;\
+             \const ver = hs.xftpVersionRange.maxVersion;\
+             \const s2 = client.request({':method': 'POST', ':path': '/'});\
+             \s2.end(Buffer.from(Hs.encodeClientHandshake({xftpVersion: ver, keyHash: server.keyHash})));\
+             \const ack = await readBody(s2);\
+             \client.close();"
+          <> jsOut "new Uint8Array([idOk ? 1 : 0, ack.length === 0 ? 1 : 0])"
+    result `shouldBe` B.pack [1, 1]
