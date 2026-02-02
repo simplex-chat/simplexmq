@@ -6,6 +6,7 @@ import {
   Decoder, concatBytes,
   encodeWord16, decodeWord16,
   encodeBytes, decodeBytes,
+  encodeMaybe,
   decodeLarge, decodeNonEmpty
 } from "./encoding.js"
 import {sha256} from "../crypto/digest.js"
@@ -41,6 +42,18 @@ export function compatibleVRange(a: VersionRange, b: VersionRange): VersionRange
   return {minVersion: min, maxVersion: max}
 }
 
+// ── Client hello ─────────────────────────────────────────────────
+
+export interface XFTPClientHello {
+  webChallenge: Uint8Array | null  // 32 random bytes for web handshake, or null for standard
+}
+
+// Encode client hello (NOT padded — sent as raw POST body).
+// Wire format: smpEncode (Maybe ByteString)
+export function encodeClientHello(hello: XFTPClientHello): Uint8Array {
+  return encodeMaybe(encodeBytes, hello.webChallenge)
+}
+
 // ── Client handshake ───────────────────────────────────────────────
 
 export interface XFTPClientHandshake {
@@ -62,11 +75,13 @@ export interface XFTPServerHandshake {
   sessionId: Uint8Array
   certChainDer: Uint8Array[]    // raw DER certificate blobs (NonEmpty)
   signedKeyDer: Uint8Array      // raw DER SignedExact blob
+  webIdentityProof: Uint8Array | null  // signature bytes, or null if absent/empty
 }
 
 // Decode padded server handshake block.
-// Wire format: unpad(block) → (versionRange, sessionId, certChainPubKey)
+// Wire format: unpad(block) → (versionRange, sessionId, certChainPubKey, sigBytes)
 //   where certChainPubKey = (NonEmpty Large certChain, Large signedKey)
+//         sigBytes = ByteString (1-byte len prefix, empty for Nothing)
 // Trailing bytes (Tail) are ignored for forward compatibility.
 export function decodeServerHandshake(block: Uint8Array): XFTPServerHandshake {
   const raw = blockUnpad(block)
@@ -76,17 +91,44 @@ export function decodeServerHandshake(block: Uint8Array): XFTPServerHandshake {
   // CertChainPubKey: smpEncode (encodeCertChain certChain, SignedObject signedPubKey)
   const certChainDer = decodeNonEmpty(decodeLarge, d)
   const signedKeyDer = decodeLarge(d)
+  // webIdentityProof: 1-byte length-prefixed ByteString (empty = Nothing)
+  let webIdentityProof: Uint8Array | null = null
+  if (d.remaining() > 0) {
+    const sigBytes = decodeBytes(d)
+    webIdentityProof = sigBytes.length === 0 ? null : sigBytes
+  }
   // Remaining bytes are Tail (ignored for forward compatibility)
-  return {xftpVersionRange, sessionId, certChainDer, signedKeyDer}
+  return {xftpVersionRange, sessionId, certChainDer, signedKeyDer, webIdentityProof}
 }
 
 // ── Certificate utilities ──────────────────────────────────────────
 
-// SHA-256 fingerprint of the CA certificate (last cert in chain).
-// Matches Haskell: XV.getFingerprint ca X.HashSHA256
+// Certificate chain decomposition matching Haskell chainIdCaCerts (Transport.Shared).
+export type ChainCertificates =
+  | {type: 'empty'}
+  | {type: 'self'; cert: Uint8Array}
+  | {type: 'valid'; leafCert: Uint8Array; idCert: Uint8Array; caCert: Uint8Array}
+  | {type: 'long'}
+
+export function chainIdCaCerts(certChainDer: Uint8Array[]): ChainCertificates {
+  switch (certChainDer.length) {
+    case 0: return {type: 'empty'}
+    case 1: return {type: 'self', cert: certChainDer[0]}
+    case 2: return {type: 'valid', leafCert: certChainDer[0], idCert: certChainDer[1], caCert: certChainDer[1]}
+    case 3: return {type: 'valid', leafCert: certChainDer[0], idCert: certChainDer[1], caCert: certChainDer[2]}
+    case 4: return {type: 'valid', leafCert: certChainDer[0], idCert: certChainDer[1], caCert: certChainDer[3]}
+    default: return {type: 'long'}
+  }
+}
+
+// SHA-256 fingerprint of the identity certificate.
+// For 2-cert chains: idCert = last cert (same as CA).
+// For 3+ cert chains: idCert = second cert (distinct from CA).
+// Matches Haskell: getFingerprint idCert HashSHA256
 export function caFingerprint(certChainDer: Uint8Array[]): Uint8Array {
-  if (certChainDer.length < 2) throw new Error("caFingerprint: need at least 2 certs (leaf + CA)")
-  return sha256(certChainDer[certChainDer.length - 1])
+  const cc = chainIdCaCerts(certChainDer)
+  if (cc.type !== 'valid') throw new Error("caFingerprint: need valid chain (2-4 certs)")
+  return sha256(cc.idCert)
 }
 
 // ── SignedExact DER parsing ────────────────────────────────────────

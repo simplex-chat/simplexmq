@@ -68,7 +68,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), runLocalTCPServer)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
@@ -90,6 +90,7 @@ data XFTPTransportRequest = XFTPTransportRequest
     reqBody :: HTTP2Body,
     request :: H.Request,
     sendResponse :: H.Response -> IO (),
+    sniUsed :: SNICredentialUsed,
     addCORS :: Bool
   }
 
@@ -151,16 +152,17 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
             let v = VersionXFTP 1
                 thServerVRange = versionToRange v
                 thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
-                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, addCORS = addCORS'}
+                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, sniUsed, addCORS = addCORS'}
             flip runReaderT env $ case sessionALPN of
               Nothing -> processRequest req0
-              Just alpn | alpn == xftpALPNv1 || alpn == httpALPN11 ->
-                xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
-                  Nothing -> pure ()
-                  Just thParams -> processRequest req0 {thParams}
-              _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
+              Just alpn
+                | alpn == xftpALPNv1 || alpn == httpALPN11 || (sniUsed && alpn == "h2") ->
+                    xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
+                      Nothing -> pure ()
+                      Just thParams -> processRequest req0 {thParams}
+                | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
-    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse, addCORS} = do
+    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
         Nothing -> processHello
@@ -169,11 +171,18 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       either sendError pure r
       where
         processHello = do
-          unless (B.null bodyHead) $ throwE HANDSHAKE
+          challenge_ <-
+            if
+              | B.null bodyHead -> pure Nothing
+              | sniUsed -> do
+                  XFTPClientHello {webChallenge} <- liftHS $ smpDecode bodyHead
+                  pure webChallenge
+              | otherwise -> throwE HANDSHAKE
           (k, pk) <- atomically . C.generateKeyPair =<< asks random
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
           let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
-          let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
+              webIdentityProof = C.sign serverSignKey . (<> sessionId) <$> challenge_
+          let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey, webIdentityProof}
           shs <- encodeXftp hs
 #ifdef slow_servers
           lift randomDelay

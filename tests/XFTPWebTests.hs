@@ -23,6 +23,7 @@ import qualified Data.List.NonEmpty as NE
 import Data.Word (Word16, Word32)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
 import Simplex.FileTransfer.Description (FileSize (..))
+import Simplex.FileTransfer.Transport (XFTPClientHello (..))
 import Simplex.FileTransfer.Types (FileHeader (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -102,6 +103,13 @@ impHs =
     <> "import * as K from './dist/crypto/keys.js';"
     <> "import * as Hs from './dist/protocol/handshake.js';"
     <> "await sodium.ready;"
+impId :: String
+impId =
+  "import sodium from 'libsodium-wrappers-sumo';"
+    <> "import * as E from './dist/protocol/encoding.js';"
+    <> "import * as K from './dist/crypto/keys.js';"
+    <> "import * as Id from './dist/crypto/identity.js';"
+    <> "await sodium.ready;"
 impDesc :: String
 impDesc = "import * as Desc from './dist/protocol/description.js';"
 impChk :: String
@@ -145,6 +153,7 @@ xftpWebTests = do
       tsCommandTests
       tsTransmissionTests
       tsHandshakeTests
+      tsIdentityTests
       tsDescriptionTests
       tsChunkTests
       tsClientTests
@@ -1471,6 +1480,24 @@ tsHandshakeTests = describe "protocol/handshake" $ do
             <> jsOut ("Hs.encodeClientHandshake({xftpVersion:3,keyHash:" <> jsUint8 kh <> "})")
       tsResult `shouldBe` expected
 
+  describe "client hello" $ do
+    it "encodeClientHello (Nothing)" $ do
+      let expected = smpEncode (XFTPClientHello {webChallenge = Nothing})
+      tsResult <-
+        callNode $
+          impHs
+            <> jsOut "Hs.encodeClientHello({webChallenge: null})"
+      tsResult `shouldBe` expected
+
+    it "encodeClientHello (Just challenge)" $ do
+      let challenge = B.pack [1 .. 32]
+          expected = smpEncode (XFTPClientHello {webChallenge = Just challenge})
+      tsResult <-
+        callNode $
+          impHs
+            <> jsOut ("Hs.encodeClientHello({webChallenge:" <> jsUint8 challenge <> "})")
+      tsResult `shouldBe` expected
+
   describe "server handshake" $ do
     it "decodeServerHandshake" $ do
       let sessId = B.pack [1 .. 32]
@@ -1507,6 +1534,45 @@ tsHandshakeTests = describe "protocol/handshake" $ do
                        <> signedKeyBytes
                    )
 
+    it "decodeServerHandshake with webIdentityProof" $ do
+      let sessId = B.pack [1 .. 32]
+          cert1 = B.pack [101 .. 200]
+          cert2 = B.pack [201 .. 232]
+          signedKeyBytes = B.pack [1 .. 120]
+          sigBytes = B.pack [1 .. 64]
+          body =
+            smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+              <> smpEncode sessId
+              <> smpEncode (NE.fromList [Large cert1, Large cert2])
+              <> smpEncode (Large signedKeyBytes)
+              <> smpEncode sigBytes
+          serverBlock = either (error . show) id $ C.pad body 16384
+      tsResult <-
+        callNode $
+          impHs
+            <> "const hs = Hs.decodeServerHandshake(" <> jsUint8 serverBlock <> ");"
+            <> jsOut "hs.webIdentityProof || new Uint8Array(0)"
+      tsResult `shouldBe` sigBytes
+
+    it "decodeServerHandshake without webIdentityProof" $ do
+      let sessId = B.pack [1 .. 32]
+          cert1 = B.pack [101 .. 200]
+          cert2 = B.pack [201 .. 232]
+          signedKeyBytes = B.pack [1 .. 120]
+          body =
+            smpEncode (1 :: Word16) <> smpEncode (3 :: Word16)
+              <> smpEncode sessId
+              <> smpEncode (NE.fromList [Large cert1, Large cert2])
+              <> smpEncode (Large signedKeyBytes)
+              <> smpEncode ("" :: B.ByteString)
+          serverBlock = either (error . show) id $ C.pad body 16384
+      tsResult <-
+        callNode $
+          impHs
+            <> "const hs = Hs.decodeServerHandshake(" <> jsUint8 serverBlock <> ");"
+            <> jsOut "new Uint8Array([hs.webIdentityProof === null ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
   describe "certificate utilities" $ do
     it "caFingerprint" $ do
       let cert1 = B.pack [101 .. 200]
@@ -1518,6 +1584,56 @@ tsHandshakeTests = describe "protocol/handshake" $ do
             <> "const chain = [" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "];"
             <> jsOut "Hs.caFingerprint(chain)"
       tsResult `shouldBe` expected
+
+    it "caFingerprint 3 certs" $ do
+      let cert1 = B.pack [1 .. 10]
+          cert2 = B.pack [11 .. 20]
+          cert3 = B.pack [21 .. 30]
+          expected = C.sha256Hash cert2
+      tsResult <-
+        callNode $
+          impHs
+            <> "const chain = [" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "," <> jsUint8 cert3 <> "];"
+            <> jsOut "Hs.caFingerprint(chain)"
+      tsResult `shouldBe` expected
+
+    it "chainIdCaCerts 2 certs" $ do
+      let cert1 = B.pack [1 .. 10]
+          cert2 = B.pack [11 .. 20]
+      tsResult <-
+        callNode $
+          impHs
+            <> "const cc = Hs.chainIdCaCerts([" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "]);"
+            <> "if (cc.type !== 'valid') throw new Error('expected valid');"
+            <> jsOut "E.concatBytes(cc.leafCert, cc.idCert, cc.caCert)"
+      tsResult `shouldBe` (cert1 <> cert2 <> cert2)
+
+    it "chainIdCaCerts 3 certs" $ do
+      let cert1 = B.pack [1 .. 10]
+          cert2 = B.pack [11 .. 20]
+          cert3 = B.pack [21 .. 30]
+      tsResult <-
+        callNode $
+          impHs
+            <> "const cc = Hs.chainIdCaCerts([" <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "," <> jsUint8 cert3 <> "]);"
+            <> "if (cc.type !== 'valid') throw new Error('expected valid');"
+            <> jsOut "E.concatBytes(cc.leafCert, cc.idCert, cc.caCert)"
+      tsResult `shouldBe` (cert1 <> cert2 <> cert3)
+
+    it "chainIdCaCerts 4 certs" $ do
+      let cert1 = B.pack [1 .. 10]
+          cert2 = B.pack [11 .. 20]
+          cert3 = B.pack [21 .. 30]
+          cert4 = B.pack [31 .. 40]
+      tsResult <-
+        callNode $
+          impHs
+            <> "const cc = Hs.chainIdCaCerts(["
+            <> jsUint8 cert1 <> "," <> jsUint8 cert2 <> "," <> jsUint8 cert3 <> "," <> jsUint8 cert4
+            <> "]);"
+            <> "if (cc.type !== 'valid') throw new Error('expected valid');"
+            <> jsOut "E.concatBytes(cc.leafCert, cc.idCert, cc.caCert)"
+      tsResult `shouldBe` (cert1 <> cert2 <> cert4)
 
   describe "SignedExact parsing" $ do
     it "extractSignedKey" $ do
@@ -1576,6 +1692,213 @@ tsHandshakeTests = describe "protocol/handshake" $ do
             <> "const ok = K.verify(" <> jsUint8 signPkRaw <> ", sk.signature, sk.objectDer);"
             <> jsOut "new Uint8Array([ok ? 1 : 0])"
       tsResult `shouldBe` B.pack [1]
+
+-- ── crypto/identity ──────────────────────────────────────────────
+
+-- Construct a minimal X.509 certificate DER with an Ed25519 public key.
+-- Structurally valid for DER navigation but not a real certificate.
+mkFakeCertDer :: B.ByteString -> B.ByteString
+mkFakeCertDer pubKey32 =
+  let spki = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00] <> pubKey32
+      tbsContents =
+        B.concat
+          [ B.pack [0xa0, 0x03, 0x02, 0x01, 0x02],
+            B.pack [0x02, 0x01, 0x01],
+            B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70],
+            B.pack [0x30, 0x00],
+            B.pack [0x30, 0x00],
+            B.pack [0x30, 0x00],
+            spki
+          ]
+      tbs = B.pack [0x30, fromIntegral $ B.length tbsContents] <> tbsContents
+      certContents =
+        B.concat
+          [ tbs,
+            B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70],
+            B.pack [0x03, 0x41, 0x00] <> B.replicate 64 0
+          ]
+      certLen = B.length certContents
+   in B.pack [0x30, 0x81, fromIntegral certLen] <> certContents
+
+tsIdentityTests :: Spec
+tsIdentityTests = describe "crypto/identity" $ do
+  describe "extractCertPublicKeyInfo" $ do
+    it "extracts SPKI from X.509 DER" $ do
+      let pubKey = B.pack [1 .. 32]
+          certDer = mkFakeCertDer pubKey
+          expectedSpki = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00] <> pubKey
+      tsResult <-
+        callNode $
+          impId
+            <> jsOut ("Id.extractCertPublicKeyInfo(" <> jsUint8 certDer <> ")")
+      tsResult `shouldBe` expectedSpki
+
+    it "extractCertEd25519Key returns raw 32-byte key" $ do
+      let pubKey = B.pack [1 .. 32]
+          certDer = mkFakeCertDer pubKey
+      tsResult <-
+        callNode $
+          impId
+            <> jsOut ("Id.extractCertEd25519Key(" <> jsUint8 certDer <> ")")
+      tsResult `shouldBe` pubKey
+
+  describe "verifyIdentityProof" $ do
+    it "valid proof returns true" $ do
+      let signSeed = B.pack [1 .. 32]
+          signSk = throwCryptoError $ Ed25519.secretKey signSeed
+          signPk = Ed25519.toPublic signSk
+          signPkRaw = BA.convert signPk :: B.ByteString
+          leafCertDer = mkFakeCertDer signPkRaw
+          idCertDer = B.pack [1 .. 50]
+          keyHash = C.sha256Hash idCertDer
+          -- DH key SignedExact
+          dhSeed = B.pack [41 .. 72]
+          dhSk = throwCryptoError $ X25519.secretKey dhSeed
+          dhPk = X25519.toPublic dhSk
+          dhPkRaw = BA.convert dhPk :: B.ByteString
+          x25519Prefix = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          spkiDer = x25519Prefix <> dhPkRaw
+          dhSig = Ed25519.sign signSk signPk spkiDer
+          dhSigRaw = BA.convert dhSig :: B.ByteString
+          algId = B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]
+          bitString = B.pack [0x03, 0x41, 0x00] <> dhSigRaw
+          signedKeyDer = B.pack [0x30, 0x76] <> spkiDer <> algId <> bitString
+          -- Challenge signature
+          challenge = B.pack [101 .. 132]
+          sessionId = B.pack [201 .. 232]
+          challengeSig = Ed25519.sign signSk signPk (challenge <> sessionId)
+          challengeSigRaw = BA.convert challengeSig :: B.ByteString
+      tsResult <-
+        callNode $
+          impId
+            <> "const ok = Id.verifyIdentityProof({"
+            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
+            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
+            <> "sigBytes: " <> jsUint8 challengeSigRaw <> ","
+            <> "challenge: " <> jsUint8 challenge <> ","
+            <> "sessionId: " <> jsUint8 sessionId <> ","
+            <> "keyHash: " <> jsUint8 keyHash
+            <> "});"
+            <> jsOut "new Uint8Array([ok ? 1 : 0])"
+      tsResult `shouldBe` B.pack [1]
+
+    it "wrong keyHash returns false" $ do
+      let signSeed = B.pack [1 .. 32]
+          signSk = throwCryptoError $ Ed25519.secretKey signSeed
+          signPk = Ed25519.toPublic signSk
+          signPkRaw = BA.convert signPk :: B.ByteString
+          leafCertDer = mkFakeCertDer signPkRaw
+          idCertDer = B.pack [1 .. 50]
+          wrongKeyHash = B.replicate 32 0xff
+          -- DH key SignedExact
+          dhSeed = B.pack [41 .. 72]
+          dhSk = throwCryptoError $ X25519.secretKey dhSeed
+          dhPk = X25519.toPublic dhSk
+          dhPkRaw = BA.convert dhPk :: B.ByteString
+          x25519Prefix = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          spkiDer = x25519Prefix <> dhPkRaw
+          dhSig = Ed25519.sign signSk signPk spkiDer
+          dhSigRaw = BA.convert dhSig :: B.ByteString
+          algId = B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]
+          bitString = B.pack [0x03, 0x41, 0x00] <> dhSigRaw
+          signedKeyDer = B.pack [0x30, 0x76] <> spkiDer <> algId <> bitString
+          challenge = B.pack [101 .. 132]
+          sessionId = B.pack [201 .. 232]
+          challengeSig = Ed25519.sign signSk signPk (challenge <> sessionId)
+          challengeSigRaw = BA.convert challengeSig :: B.ByteString
+      tsResult <-
+        callNode $
+          impId
+            <> "const ok = Id.verifyIdentityProof({"
+            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
+            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
+            <> "sigBytes: " <> jsUint8 challengeSigRaw <> ","
+            <> "challenge: " <> jsUint8 challenge <> ","
+            <> "sessionId: " <> jsUint8 sessionId <> ","
+            <> "keyHash: " <> jsUint8 wrongKeyHash
+            <> "});"
+            <> jsOut "new Uint8Array([ok ? 1 : 0])"
+      tsResult `shouldBe` B.pack [0]
+
+    it "wrong challenge sig returns false" $ do
+      let signSeed = B.pack [1 .. 32]
+          signSk = throwCryptoError $ Ed25519.secretKey signSeed
+          signPk = Ed25519.toPublic signSk
+          signPkRaw = BA.convert signPk :: B.ByteString
+          leafCertDer = mkFakeCertDer signPkRaw
+          idCertDer = B.pack [1 .. 50]
+          keyHash = C.sha256Hash idCertDer
+          -- DH key SignedExact
+          dhSeed = B.pack [41 .. 72]
+          dhSk = throwCryptoError $ X25519.secretKey dhSeed
+          dhPk = X25519.toPublic dhSk
+          dhPkRaw = BA.convert dhPk :: B.ByteString
+          x25519Prefix = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          spkiDer = x25519Prefix <> dhPkRaw
+          dhSig = Ed25519.sign signSk signPk spkiDer
+          dhSigRaw = BA.convert dhSig :: B.ByteString
+          algId = B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]
+          bitString = B.pack [0x03, 0x41, 0x00] <> dhSigRaw
+          signedKeyDer = B.pack [0x30, 0x76] <> spkiDer <> algId <> bitString
+          challenge = B.pack [101 .. 132]
+          sessionId = B.pack [201 .. 232]
+          wrongChallenge = B.pack [1 .. 32]
+          wrongSig = Ed25519.sign signSk signPk (wrongChallenge <> sessionId)
+          wrongSigRaw = BA.convert wrongSig :: B.ByteString
+      tsResult <-
+        callNode $
+          impId
+            <> "const ok = Id.verifyIdentityProof({"
+            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
+            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
+            <> "sigBytes: " <> jsUint8 wrongSigRaw <> ","
+            <> "challenge: " <> jsUint8 challenge <> ","
+            <> "sessionId: " <> jsUint8 sessionId <> ","
+            <> "keyHash: " <> jsUint8 keyHash
+            <> "});"
+            <> jsOut "new Uint8Array([ok ? 1 : 0])"
+      tsResult `shouldBe` B.pack [0]
+
+    it "wrong DH key sig returns false" $ do
+      let signSeed = B.pack [1 .. 32]
+          signSk = throwCryptoError $ Ed25519.secretKey signSeed
+          signPk = Ed25519.toPublic signSk
+          signPkRaw = BA.convert signPk :: B.ByteString
+          leafCertDer = mkFakeCertDer signPkRaw
+          idCertDer = B.pack [1 .. 50]
+          keyHash = C.sha256Hash idCertDer
+          -- DH key signed by a DIFFERENT key
+          otherSeed = B.pack [51 .. 82]
+          otherSk = throwCryptoError $ Ed25519.secretKey otherSeed
+          otherPk = Ed25519.toPublic otherSk
+          dhSeed = B.pack [41 .. 72]
+          dhSk = throwCryptoError $ X25519.secretKey dhSeed
+          dhPk = X25519.toPublic dhSk
+          dhPkRaw = BA.convert dhPk :: B.ByteString
+          x25519Prefix = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00]
+          spkiDer = x25519Prefix <> dhPkRaw
+          dhSig = Ed25519.sign otherSk otherPk spkiDer
+          dhSigRaw = BA.convert dhSig :: B.ByteString
+          algId = B.pack [0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70]
+          bitString = B.pack [0x03, 0x41, 0x00] <> dhSigRaw
+          signedKeyDer = B.pack [0x30, 0x76] <> spkiDer <> algId <> bitString
+          challenge = B.pack [101 .. 132]
+          sessionId = B.pack [201 .. 232]
+          challengeSig = Ed25519.sign signSk signPk (challenge <> sessionId)
+          challengeSigRaw = BA.convert challengeSig :: B.ByteString
+      tsResult <-
+        callNode $
+          impId
+            <> "const ok = Id.verifyIdentityProof({"
+            <> "certChainDer: [" <> jsUint8 leafCertDer <> "," <> jsUint8 idCertDer <> "],"
+            <> "signedKeyDer: " <> jsUint8 signedKeyDer <> ","
+            <> "sigBytes: " <> jsUint8 challengeSigRaw <> ","
+            <> "challenge: " <> jsUint8 challenge <> ","
+            <> "sessionId: " <> jsUint8 sessionId <> ","
+            <> "keyHash: " <> jsUint8 keyHash
+            <> "});"
+            <> jsOut "new Uint8Array([ok ? 1 : 0])"
+      tsResult `shouldBe` B.pack [0]
 
 -- ── protocol/description ──────────────────────────────────────────
 

@@ -16,6 +16,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.ByteString.Base64.URL as B64
+import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -23,25 +24,27 @@ import qualified Data.CaseInsensitive as CI
 import Data.List (find, isInfixOf)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
-import Data.X509.Validation (Fingerprint (..))
+import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPRcvChunkSpec (..))
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 ()
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
@@ -80,6 +83,7 @@ xftpServerTests =
       it "should respond to OPTIONS preflight with CORS headers" testCORSPreflight
       it "should not add CORS headers without SNI" testNoCORSWithoutSNI
       it "should upload and receive file chunk through SNI-enabled server" testFileChunkDeliverySNI
+      it "should complete web handshake with challenge-response" testWebHandshake
 
 chSize :: Integral a => a
 chSize = kb 128
@@ -496,3 +500,43 @@ testNoCORSWithoutSNI =
 testFileChunkDeliverySNI :: Expectation
 testFileChunkDeliverySNI =
   withXFTPServerSNI $ \_ -> testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
+
+testWebHandshake :: Expectation
+testWebHandshake =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let keyHash = C.KeyHash fp
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just keyHash) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      -- Send web challenge as XFTPClientHello
+      g <- C.newRandom
+      challenge <- atomically $ C.randomBytes 32 g
+      let helloBody = smpEncode (XFTPClientHello {webChallenge = Just challenge})
+          helloReq = H2.requestBuilder "POST" "/" [] $ byteString helloBody
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000)
+      let serverHsBody = bodyHead (HC.respBody resp1)
+      -- Decode server handshake
+      serverHsDecoded <- either (error . show) pure $ C.unPad serverHsBody
+      XFTPServerHandshake {sessionId, authPubKey = CertChainPubKey {certChain, signedPubKey}, webIdentityProof} <-
+        either error pure $ smpDecode serverHsDecoded
+      sig <- maybe (error "expected webIdentityProof") pure webIdentityProof
+      -- Verify cert chain identity
+      (leafCert, idCert) <- case chainIdCaCerts certChain of
+        CCValid {leafCert, idCert} -> pure (leafCert, idCert)
+        _ -> error "expected CCValid chain"
+      let Fingerprint idCertFP = getFingerprint idCert X.HashSHA256
+      C.KeyHash idCertFP `shouldBe` keyHash
+      -- Verify challenge signature (identity proof)
+      leafPubKey <- either error pure $ C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leafCert
+      C.verify leafPubKey sig (challenge <> sessionId) `shouldBe` True
+      -- Verify signedPubKey (DH key auth)
+      void $ either error pure $ C.verifyX509 leafPubKey signedPubKey
+      -- Send client handshake with echoed challenge
+      let clientHs = XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash}
+      clientHsPadded <- either (error . show) pure $ C.pad (smpEncode clientHs) xftpBlockSize
+      let clientHsReq = H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000)
+      let ackBody = bodyHead (HC.respBody resp2)
+      B.length ackBody `shouldBe` 0
