@@ -72,7 +72,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("enable: " <> onOff enableStoreLog <> "\n\n")
     <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
         \# `memory` - in-memory persistence, with optional append-only log (`enable: on`).\n\
-        \# `database`- PostgreSQL databass (requires `store_messages: journal`).\n\
+        \# `database`- PostgreSQL database (requires `store_messages: journal`).\n\
         \store_queues: memory\n\n\
         \# Database connection settings for PostgreSQL database (`store_queues: database`).\n"
     <> iniDbOpts dbOptions defaultDBOpts
