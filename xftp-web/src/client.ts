@@ -2,9 +2,9 @@
 //
 // Connects to XFTP server via HTTP/2, performs web handshake,
 // sends authenticated commands, receives responses.
+//
+// Uses node:http2 in Node.js (tests), fetch() in browsers.
 
-import http2 from "node:http2"
-import crypto from "node:crypto"
 import {
   encodeAuthTransmission, encodeTransmission, decodeTransmission,
   XFTP_BLOCK_SIZE, initialXFTPVersion, currentXFTPVersion
@@ -21,85 +21,108 @@ import {
 } from "./protocol/commands.js"
 import {decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
+import {concatBytes} from "./protocol/encoding.js"
 
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface XFTPClient {
-  session: http2.ClientHttp2Session
+  baseUrl: string
   sessionId: Uint8Array
   xftpVersion: number
+  transport: Transport
 }
 
-// ── HTTP/2 helpers ────────────────────────────────────────────────
+interface Transport {
+  post(body: Uint8Array): Promise<Uint8Array>
+  close(): void
+}
 
-function h2Request(
-  session: http2.ClientHttp2Session,
-  body: Uint8Array,
-  extraBody?: Uint8Array
-): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const stream = session.request({":method": "POST", ":path": "/"})
-    const chunks: Buffer[] = []
-    stream.on("data", (d: Buffer) => chunks.push(d))
-    stream.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
-    stream.on("error", reject)
-    if (extraBody) {
-      stream.write(Buffer.from(body))
-      stream.end(Buffer.from(extraBody))
-    } else {
-      stream.end(Buffer.from(body))
+// ── Transport implementations ─────────────────────────────────────
+
+const isNode = typeof globalThis.process !== "undefined" && globalThis.process.versions?.node
+
+async function createTransport(baseUrl: string): Promise<Transport> {
+  if (isNode) {
+    return createNodeTransport(baseUrl)
+  } else {
+    return createBrowserTransport(baseUrl)
+  }
+}
+
+async function createNodeTransport(baseUrl: string): Promise<Transport> {
+  const http2 = await import("node:http2")
+  const session = http2.connect(baseUrl, {rejectUnauthorized: false})
+  return {
+    async post(body: Uint8Array): Promise<Uint8Array> {
+      return new Promise((resolve, reject) => {
+        const req = session.request({":method": "POST", ":path": "/"})
+        const chunks: Buffer[] = []
+        req.on("data", (chunk: Buffer) => chunks.push(chunk))
+        req.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
+        req.on("error", reject)
+        req.end(Buffer.from(body))
+      })
+    },
+    close() {
+      session.close()
     }
-  })
+  }
 }
 
-function readBody(stream: http2.ClientHttp2Stream): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    stream.on("data", (d: Buffer) => chunks.push(d))
-    stream.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
-    stream.on("error", reject)
-  })
+function createBrowserTransport(baseUrl: string): Transport {
+  return {
+    async post(body: Uint8Array): Promise<Uint8Array> {
+      const resp = await fetch(baseUrl, {
+        method: "POST",
+        body,
+        duplex: "half",
+      } as RequestInit)
+      if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`)
+      return new Uint8Array(await resp.arrayBuffer())
+    },
+    close() {}
+  }
 }
 
 // ── Connect + handshake ───────────────────────────────────────────
 
 export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
-  const session = http2.connect(
-    "https://" + server.host + ":" + server.port,
-    {rejectUnauthorized: false}
-  )
+  const baseUrl = "https://" + server.host + ":" + server.port
+  const transport = await createTransport(baseUrl)
 
-  // Step 1: send client hello with web challenge
-  const challenge = new Uint8Array(crypto.randomBytes(32))
-  const s1 = session.request({":method": "POST", ":path": "/"})
-  s1.end(Buffer.from(encodeClientHello({webChallenge: challenge})))
-  const shsBody = await readBody(s1)
+  try {
+    // Step 1: send client hello with web challenge
+    const challenge = new Uint8Array(32)
+    crypto.getRandomValues(challenge)
+    const shsBody = await transport.post(encodeClientHello({webChallenge: challenge}))
 
-  // Step 2: decode + verify server handshake
-  const hs = decodeServerHandshake(shsBody)
-  if (!hs.webIdentityProof) throw new Error("connectXFTP: no web identity proof")
-  const idOk = verifyIdentityProof({
-    certChainDer: hs.certChainDer,
-    signedKeyDer: hs.signedKeyDer,
-    sigBytes: hs.webIdentityProof,
-    challenge,
-    sessionId: hs.sessionId,
-    keyHash: server.keyHash
-  })
-  if (!idOk) throw new Error("connectXFTP: identity verification failed")
+    // Step 2: decode + verify server handshake
+    const hs = decodeServerHandshake(shsBody)
+    if (!hs.webIdentityProof) throw new Error("connectXFTP: no web identity proof")
+    const idOk = verifyIdentityProof({
+      certChainDer: hs.certChainDer,
+      signedKeyDer: hs.signedKeyDer,
+      sigBytes: hs.webIdentityProof,
+      challenge,
+      sessionId: hs.sessionId,
+      keyHash: server.keyHash
+    })
+    if (!idOk) throw new Error("connectXFTP: identity verification failed")
 
-  // Step 3: version negotiation
-  const vr = compatibleVRange(hs.xftpVersionRange, {minVersion: initialXFTPVersion, maxVersion: currentXFTPVersion})
-  if (!vr) throw new Error("connectXFTP: incompatible version")
-  const xftpVersion = vr.maxVersion
+    // Step 3: version negotiation
+    const vr = compatibleVRange(hs.xftpVersionRange, {minVersion: initialXFTPVersion, maxVersion: currentXFTPVersion})
+    if (!vr) throw new Error("connectXFTP: incompatible version")
+    const xftpVersion = vr.maxVersion
 
-  // Step 4: send client handshake
-  const s2 = session.request({":method": "POST", ":path": "/"})
-  s2.end(Buffer.from(encodeClientHandshake({xftpVersion, keyHash: server.keyHash})))
-  const ack = await readBody(s2)
-  if (ack.length !== 0) throw new Error("connectXFTP: non-empty handshake ack")
+    // Step 4: send client handshake
+    const ack = await transport.post(encodeClientHandshake({xftpVersion, keyHash: server.keyHash}))
+    if (ack.length !== 0) throw new Error("connectXFTP: non-empty handshake ack")
 
-  return {session, sessionId: hs.sessionId, xftpVersion}
+    return {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
+  } catch (e) {
+    transport.close()
+    throw e
+  }
 }
 
 // ── Send command ──────────────────────────────────────────────────
@@ -113,7 +136,8 @@ async function sendXFTPCommand(
 ): Promise<{response: FileResponse, body: Uint8Array}> {
   const corrId = new Uint8Array(0)
   const block = encodeAuthTransmission(client.sessionId, corrId, entityId, cmdBytes, privateKey)
-  const fullResp = await h2Request(client.session, block, chunkData)
+  const reqBody = chunkData ? concatBytes(block, chunkData) : block
+  const fullResp = await client.transport.post(reqBody)
   if (fullResp.length < XFTP_BLOCK_SIZE) throw new Error("sendXFTPCommand: response too short")
   const respBlock = fullResp.subarray(0, XFTP_BLOCK_SIZE)
   const body = fullResp.subarray(XFTP_BLOCK_SIZE)
@@ -177,7 +201,7 @@ export async function ackXFTPChunk(
 export async function pingXFTP(c: XFTPClient): Promise<void> {
   const corrId = new Uint8Array(0)
   const block = encodeTransmission(c.sessionId, corrId, new Uint8Array(0), encodePING())
-  const fullResp = await h2Request(c.session, block)
+  const fullResp = await c.transport.post(block)
   if (fullResp.length < XFTP_BLOCK_SIZE) throw new Error("pingXFTP: response too short")
   const {command} = decodeTransmission(c.sessionId, fullResp.subarray(0, XFTP_BLOCK_SIZE))
   const response = decodeResponse(command)
@@ -187,5 +211,5 @@ export async function pingXFTP(c: XFTPClient): Promise<void> {
 // ── Close ─────────────────────────────────────────────────────────
 
 export function closeXFTP(c: XFTPClient): void {
-  c.session.close()
+  c.transport.close()
 }

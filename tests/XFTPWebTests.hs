@@ -38,6 +38,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, removeDirectoryRecursive)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, waitForProcess)
 import Test.Hspec hiding (fit, it)
@@ -57,12 +58,15 @@ xftpWebDir = "xftp-web"
 -- | Run an inline ES module script via node, return stdout as ByteString.
 callNode :: String -> IO B.ByteString
 callNode script = do
+  baseEnv <- getEnvironment
+  let nodeEnv = ("NODE_TLS_REJECT_UNAUTHORIZED", "0") : baseEnv
   (_, Just hout, Just herr, ph) <-
     createProcess
       (proc "node" ["--input-type=module", "-e", script])
         { std_out = CreatePipe,
           std_err = CreatePipe,
-          cwd = Just xftpWebDir
+          cwd = Just xftpWebDir,
+          env = Just nodeEnv
         }
   errVar <- newEmptyMVar
   _ <- forkIO $ B.hGetContents herr >>= putMVar errVar
