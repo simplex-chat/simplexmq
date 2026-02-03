@@ -133,6 +133,7 @@ import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Network.TLS.Internal as TI
 import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -374,7 +375,7 @@ getTLS cfg tlsCertSent tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS
 withTlsUnique :: forall c p. TransportPeerI p => T.Context -> (ByteString -> IO (c p)) -> IO (c p)
 withTlsUnique cxt f =
   cxtFinished cxt
-    >>= maybe (closeTLS cxt >> ioe_EOF) f
+    >>= maybe (closeTLS cxt >> ioe_EOF) (\(TI.VerifyData d) -> f d)
   where
     cxtFinished = case sTransportPeer @p of
       STServer -> T.getPeerFinished
