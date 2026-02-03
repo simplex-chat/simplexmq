@@ -56,7 +56,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Control
 import Simplex.Messaging.Notifications.Server.Env
 import Simplex.Messaging.Notifications.Server.Prometheus
-import Simplex.Messaging.Notifications.Server.Push.APNS (PushNotification (..), PushProviderError (..))
+import Simplex.Messaging.Notifications.Server.Push (PushNotification(..), PushProviderError(..))
 import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessageRecord (..), stmStoreTokenLastNtf)
 import Simplex.Messaging.Notifications.Server.Store.Postgres
