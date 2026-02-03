@@ -1,9 +1,11 @@
-// XFTP server address parsing — Simplex.Messaging.Protocol (ProtocolServer)
+// XFTP server address parsing/formatting — Simplex.Messaging.Protocol (ProtocolServer)
 //
-// Parses server address strings of the form:
+// Parses/formats server address strings of the form:
 //   xftp://<keyhash>@<host>[,<host2>,...][:<port>]
 //
 // KeyHash is base64url-encoded SHA-256 fingerprint of the identity certificate.
+
+import {base64urlEncode} from "./description.js"
 
 export interface XFTPServer {
   keyHash: Uint8Array  // 32-byte SHA-256 fingerprint (decoded from base64url)
@@ -44,4 +46,9 @@ export function parseXFTPServer(address: string): XFTPServer {
     port = "443"
   }
   return {keyHash, host, port}
+}
+
+// Format an XFTPServer back to its URI string representation.
+export function formatXFTPServer(srv: XFTPServer): string {
+  return "xftp://" + base64urlEncode(srv.keyHash) + "@" + srv.host + ":" + srv.port
 }

@@ -1,4 +1,8 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Per-function tests for the xftp-web TypeScript XFTP client library.
@@ -10,7 +14,7 @@
 module XFTPWebTests (xftpWebTests) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (when)
+import Control.Monad (replicateM, when)
 import Crypto.Error (throwCryptoError)
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -20,10 +24,12 @@ import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (intercalate)
 import qualified Data.List.NonEmpty as NE
-import Data.Word (Word16, Word32)
+import Data.Word (Word8, Word16, Word32)
+import System.Random (randomIO)
 import Data.X509.Validation (Fingerprint (..))
 import Simplex.FileTransfer.Client (prepareChunkSizes)
-import Simplex.FileTransfer.Description (FileSize (..))
+import Simplex.FileTransfer.Description (FileDescription (..), FileSize (..), ValidFileDescription, pattern ValidFileDescription)
+import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Transport (XFTPClientHello (..))
 import Simplex.FileTransfer.Types (FileHeader (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -38,6 +44,12 @@ import Test.Hspec hiding (fit, it)
 import Util
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig)
 import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpTestPort)
+import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAgent)
+import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent.Protocol (AEvent (..))
+import SMPAgentClient (agentCfg, initAgentServers, testDB)
+import XFTPCLI (recipientFiles, senderFiles)
+import qualified Simplex.Messaging.Crypto.File as CF
 
 xftpWebDir :: FilePath
 xftpWebDir = "xftp-web"
@@ -2803,6 +2815,19 @@ tsIntegrationTests = describe "integration" $ do
     pingTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "full round-trip: create, upload, download, ack, addRecipients, delete" $
     fullRoundTripTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent URI round-trip" agentURIRoundTripTest
+  it "agent upload + download round-trip" $
+    agentUploadDownloadTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent delete + verify gone" $
+    agentDeleteTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent redirect: upload with redirect, download" $
+    agentRedirectTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "cross-language: TS upload, Haskell download" $
+    tsUploadHaskellDownloadTest testXFTPServerConfigSNI "tests/fixtures/ca.crt"
+  it "cross-language: TS upload with redirect, Haskell download" $
+    tsUploadRedirectHaskellDownloadTest testXFTPServerConfigSNI "tests/fixtures/ca.crt"
+  it "cross-language: Haskell upload, TS download" $
+    haskellUploadTsDownloadTest testXFTPServerConfigSNI
 
 webHandshakeTest :: XFTPServerConfig -> FilePath -> Expectation
 webHandshakeTest cfg caFile = do
@@ -2911,3 +2936,275 @@ fullRoundTripTest cfg caFile = do
              \closeXFTP(c);"
           <> jsOut "new Uint8Array([match1 ? 1 : 0, match2 ? 1 : 0])"
     result `shouldBe` B.pack [1, 1]
+
+agentURIRoundTripTest :: Expectation
+agentURIRoundTripTest = do
+  result <-
+    callNode $
+      "import sodium from 'libsodium-wrappers-sumo';\
+      \import * as Agent from './dist/agent.js';\
+      \import * as Desc from './dist/protocol/description.js';\
+      \await sodium.ready;\
+      \const fd = {\
+      \  party: 'recipient',\
+      \  size: 65536,\
+      \  digest: new Uint8Array(64).fill(0xab),\
+      \  key: new Uint8Array(32).fill(0x01),\
+      \  nonce: new Uint8Array(24).fill(0x02),\
+      \  chunkSize: 65536,\
+      \  chunks: [{\
+      \    chunkNo: 1,\
+      \    chunkSize: 65536,\
+      \    digest: new Uint8Array(32).fill(0xcd),\
+      \    replicas: [{\
+      \      server: 'xftp://AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=@example.com:443',\
+      \      replicaId: new Uint8Array([1,2,3]),\
+      \      replicaKey: new Uint8Array([48,46,2,1,0,48,5,6,3,43,101,112,4,34,4,32,\
+      \        1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32])\
+      \    }]\
+      \  }],\
+      \  redirect: null\
+      \};\
+      \const uri = Agent.encodeDescriptionURI(fd);\
+      \const fd2 = Agent.decodeDescriptionURI(uri);\
+      \const yaml1 = Desc.encodeFileDescription(fd);\
+      \const yaml2 = Desc.encodeFileDescription(fd2);\
+      \const match = yaml1 === yaml2 ? 1 : 0;"
+        <> jsOut "new Uint8Array([match])"
+  result `shouldBe` B.pack [1]
+
+agentUploadDownloadTest :: XFTPServerConfig -> FilePath -> Expectation
+agentUploadDownloadTest cfg caFile = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Agent from './dist/agent.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const originalData = new Uint8Array(crypto.randomBytes(50000));\
+             \const encrypted = Agent.encryptFileForUpload(originalData, 'test-file.bin');\
+             \const {rcvDescription, sndDescription, uri} = await Agent.uploadFile(server, encrypted);\
+             \const fd = Agent.decodeDescriptionURI(uri);\
+             \const {header, content} = await Agent.downloadFile(fd);\
+             \const nameMatch = header.fileName === 'test-file.bin' ? 1 : 0;\
+             \const sizeMatch = content.length === originalData.length ? 1 : 0;\
+             \let dataMatch = 1;\
+             \for (let i = 0; i < content.length; i++) {\
+             \  if (content[i] !== originalData[i]) { dataMatch = 0; break; }\
+             \};"
+          <> jsOut "new Uint8Array([nameMatch, sizeMatch, dataMatch])"
+    result `shouldBe` B.pack [1, 1, 1]
+
+agentDeleteTest :: XFTPServerConfig -> FilePath -> Expectation
+agentDeleteTest cfg caFile = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Agent from './dist/agent.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const originalData = new Uint8Array(crypto.randomBytes(50000));\
+             \const encrypted = Agent.encryptFileForUpload(originalData, 'del-test.bin');\
+             \const {rcvDescription, sndDescription} = await Agent.uploadFile(server, encrypted);\
+             \await Agent.deleteFile(sndDescription);\
+             \let deleted = 0;\
+             \try {\
+             \  await Agent.downloadFile(rcvDescription);\
+             \} catch (e) {\
+             \  deleted = 1;\
+             \};"
+          <> jsOut "new Uint8Array([deleted])"
+    result `shouldBe` B.pack [1]
+
+agentRedirectTest :: XFTPServerConfig -> FilePath -> Expectation
+agentRedirectTest cfg caFile = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Agent from './dist/agent.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const originalData = new Uint8Array(crypto.randomBytes(100000));\
+             \const encrypted = Agent.encryptFileForUpload(originalData, 'redirect-test.bin');\
+             \const {rcvDescription, uri} = await Agent.uploadFile(server, encrypted, null, 50);\
+             \const fd = Agent.decodeDescriptionURI(uri);\
+             \const hasRedirect = fd.redirect !== null ? 1 : 0;\
+             \const {header, content} = await Agent.downloadFile(fd);\
+             \const nameMatch = header.fileName === 'redirect-test.bin' ? 1 : 0;\
+             \const sizeMatch = content.length === originalData.length ? 1 : 0;\
+             \let dataMatch = 1;\
+             \for (let i = 0; i < content.length; i++) {\
+             \  if (content[i] !== originalData[i]) { dataMatch = 0; break; }\
+             \};"
+          <> jsOut "new Uint8Array([hasRedirect, nameMatch, sizeMatch, dataMatch])"
+    result `shouldBe` B.pack [1, 1, 1, 1]
+
+tsUploadHaskellDownloadTest :: XFTPServerConfig -> FilePath -> Expectation
+tsUploadHaskellDownloadTest cfg caFile = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  createDirectoryIfMissing False recipientFiles
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    (yamlDesc, originalData) <-
+      callNode2 $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Agent from './dist/agent.js';\
+        \import {encodeFileDescription} from './dist/protocol/description.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const originalData = new Uint8Array(crypto.randomBytes(50000));\
+             \const encrypted = Agent.encryptFileForUpload(originalData, 'ts-to-hs.bin');\
+             \const {rcvDescription} = await Agent.uploadFile(server, encrypted);\
+             \const yaml = encodeFileDescription(rcvDescription);"
+          <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"
+    let vfd :: ValidFileDescription 'FRecipient = either error id $ strDecode yamlDesc
+    withAgent 1 agentCfg initAgentServers testDB $ \rcp -> do
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
+      _ <- runRight $ xftpReceiveFile rcp 1 vfd Nothing True
+      rfProgress rcp 50000
+      (_, _, RFDONE outPath) <- rfGet rcp
+      downloadedData <- B.readFile outPath
+      downloadedData `shouldBe` originalData
+
+tsUploadRedirectHaskellDownloadTest :: XFTPServerConfig -> FilePath -> Expectation
+tsUploadRedirectHaskellDownloadTest cfg caFile = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  createDirectoryIfMissing False recipientFiles
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    (yamlDesc, originalData) <-
+      callNode2 $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Agent from './dist/agent.js';\
+        \import {encodeFileDescription} from './dist/protocol/description.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const originalData = new Uint8Array(crypto.randomBytes(100000));\
+             \const encrypted = Agent.encryptFileForUpload(originalData, 'ts-redirect-to-hs.bin');\
+             \const {rcvDescription} = await Agent.uploadFile(server, encrypted, null, 50);\
+             \const yaml = encodeFileDescription(rcvDescription);"
+          <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"
+    let vfd@(ValidFileDescription fd) :: ValidFileDescription 'FRecipient = either error id $ strDecode yamlDesc
+    redirect fd `shouldSatisfy` (/= Nothing)
+    withAgent 1 agentCfg initAgentServers testDB $ \rcp -> do
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
+      _ <- runRight $ xftpReceiveFile rcp 1 vfd Nothing True
+      outPath <- waitRfDone rcp
+      downloadedData <- B.readFile outPath
+      downloadedData `shouldBe` originalData
+
+haskellUploadTsDownloadTest :: XFTPServerConfig -> Expectation
+haskellUploadTsDownloadTest cfg = do
+  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
+  createDirectoryIfMissing False senderFiles
+  let filePath = senderFiles <> "/hs-to-ts.bin"
+  originalData <- B.pack <$> replicateM 50000 (randomIO :: IO Word8)
+  B.writeFile filePath originalData
+  withXFTPServerCfg cfg $ \_ -> do
+    vfd <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+      runRight_ $ xftpStartWorkers sndr (Just senderFiles)
+      _ <- runRight $ xftpSendFile sndr 1 (CF.plain filePath) 1
+      sfProgress sndr 50000
+      (_, _, SFDONE _ [rfd]) <- sfGet sndr
+      pure rfd
+    let yamlDesc = strEncode vfd
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import * as Agent from './dist/agent.js';\
+        \import {decodeFileDescription, validateFileDescription} from './dist/protocol/description.js';\
+        \await sodium.ready;\
+        \const yaml = Buffer.from("
+          <> jsUint8 yamlDesc
+          <> ").toString();\
+             \const fd = decodeFileDescription(yaml);\
+             \const err = validateFileDescription(fd);\
+             \if (err) throw new Error(err);\
+             \const {header, content} = await Agent.downloadFile(fd);\
+             \const nameMatch = header.fileName === 'hs-to-ts.bin' ? 1 : 0;\
+             \const sizeMatch = content.length === 50000 ? 1 : 0;\
+             \const expected = "
+          <> jsUint8 originalData
+          <> ";\
+             \let dataMatch = 1;\
+             \for (let i = 0; i < content.length; i++) {\
+             \  if (content[i] !== expected[i]) { dataMatch = 0; break; }\
+             \};"
+          <> jsOut "new Uint8Array([nameMatch, sizeMatch, dataMatch])"
+    result `shouldBe` B.pack [1, 1, 1]
+
+rfProgress :: AgentClient -> Int64 -> IO ()
+rfProgress c _expected = loop 0
+  where
+    loop prev = do
+      (_, _, RFPROG rcvd total) <- rfGet c
+      when (rcvd < total && rcvd > prev) $ loop rcvd
+
+sfProgress :: AgentClient -> Int64 -> IO ()
+sfProgress c _expected = loop 0
+  where
+    loop prev = do
+      (_, _, SFPROG sent total) <- sfGet c
+      when (sent < total && sent > prev) $ loop sent
+
+waitRfDone :: AgentClient -> IO FilePath
+waitRfDone c = do
+  ev <- rfGet c
+  case ev of
+    (_, _, RFDONE outPath) -> pure outPath
+    (_, _, RFPROG _ _) -> waitRfDone c
+    (_, _, RFERR e) -> error $ "RFERR: " <> show e
+    _ -> error $ "Unexpected event: " <> show ev
+
+callNode2 :: String -> IO (B.ByteString, B.ByteString)
+callNode2 script = do
+  out <- callNode script
+  let (len1Bytes, rest1) = B.splitAt 4 out
+      len1 = fromIntegral (B.index len1Bytes 0) + fromIntegral (B.index len1Bytes 1) * 256 + fromIntegral (B.index len1Bytes 2) * 65536 + fromIntegral (B.index len1Bytes 3) * 16777216
+      (data1, rest2) = B.splitAt len1 rest1
+      (len2Bytes, rest3) = B.splitAt 4 rest2
+      len2 = fromIntegral (B.index len2Bytes 0) + fromIntegral (B.index len2Bytes 1) * 256 + fromIntegral (B.index len2Bytes 2) * 65536 + fromIntegral (B.index len2Bytes 3) * 16777216
+      data2 = B.take len2 rest3
+  pure (data1, data2)
+
+jsOut2 :: String -> String -> String
+jsOut2 a b = "const __a = " <> a <> "; const __b = " <> b <> "; const __buf = Buffer.alloc(8 + __a.length + __b.length); __buf.writeUInt32LE(__a.length, 0); __a.copy(__buf, 4); __buf.writeUInt32LE(__b.length, 4 + __a.length); __b.copy(__buf, 8 + __a.length); process.stdout.write(__buf);"
