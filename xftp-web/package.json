@@ -8,15 +8,21 @@
   "scripts": {
     "postinstall": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs",
     "build": "tsc",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test:browser": "vitest"
   },
   "devDependencies": {
     "@types/libsodium-wrappers-sumo": "^0.7.8",
     "@types/node": "^20.0.0",
-    "typescript": "^5.4.0"
+    "@types/pako": "^2.0.3",
+    "@vitest/browser": "^3.0.0",
+    "playwright": "^1.50.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",
-    "libsodium-wrappers-sumo": "^0.7.13"
+    "libsodium-wrappers-sumo": "^0.7.13",
+    "pako": "^2.1.0"
   }
 }

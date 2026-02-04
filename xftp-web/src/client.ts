@@ -86,8 +86,19 @@ function createBrowserTransport(baseUrl: string): Transport {
 
 // ── Connect + handshake ───────────────────────────────────────────
 
+// Browser HTTP/2 connections are pooled per origin — the server binds a session
+// to the TLS connection, so a second handshake on the same connection fails.
+// Cache clients by baseUrl in browser environments to reuse the session.
+const browserClients = new Map<string, XFTPClient>()
+
 export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
   const baseUrl = "https://" + server.host + ":" + server.port
+
+  if (!isNode) {
+    const cached = browserClients.get(baseUrl)
+    if (cached) return cached
+  }
+
   const transport = await createTransport(baseUrl)
 
   try {
@@ -118,7 +129,9 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
     const ack = await transport.post(encodeClientHandshake({xftpVersion, keyHash: server.keyHash}))
     if (ack.length !== 0) throw new Error("connectXFTP: non-empty handshake ack")
 
-    return {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
+    const client = {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
+    if (!isNode) browserClients.set(baseUrl, client)
+    return client
   } catch (e) {
     transport.close()
     throw e
@@ -211,5 +224,7 @@ export async function pingXFTP(c: XFTPClient): Promise<void> {
 // ── Close ─────────────────────────────────────────────────────────
 
 export function closeXFTP(c: XFTPClient): void {
-  c.transport.close()
+  // In the browser, HTTP/2 connections are pooled per origin — closing is
+  // a no-op since the connection persists and the session must stay cached.
+  if (isNode) c.transport.close()
 }

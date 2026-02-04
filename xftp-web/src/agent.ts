@@ -3,8 +3,7 @@
 // Combines all building blocks: encryption, chunking, XFTP client commands,
 // file descriptions, and DEFLATE-compressed URI encoding.
 
-import crypto from "node:crypto"
-import zlib from "node:zlib"
+import pako from "pako"
 import {encryptFile, encodeFileHeader} from "./crypto/file.js"
 import {generateEd25519KeyPair, encodePubKeyEd25519, encodePrivKeyEd25519, decodePrivKeyEd25519, ed25519KeyPairFromSeed} from "./crypto/keys.js"
 import {sha512} from "./crypto/digest.js"
@@ -61,13 +60,13 @@ export interface DownloadResult {
 
 export function encodeDescriptionURI(fd: FileDescription): string {
   const yaml = encodeFileDescription(fd)
-  const compressed = zlib.deflateRawSync(Buffer.from(yaml))
-  return base64urlEncode(new Uint8Array(compressed))
+  const compressed = pako.deflateRaw(new TextEncoder().encode(yaml))
+  return base64urlEncode(compressed)
 }
 
 export function decodeDescriptionURI(fragment: string): FileDescription {
   const compressed = base64urlDecode(fragment)
-  const yaml = zlib.inflateRawSync(Buffer.from(compressed)).toString()
+  const yaml = new TextDecoder().decode(pako.inflateRaw(compressed))
   const fd = decodeFileDescription(yaml)
   const err = validateFileDescription(fd)
   if (err) throw new Error("decodeDescriptionURI: " + err)
@@ -77,8 +76,10 @@ export function decodeDescriptionURI(fragment: string): FileDescription {
 // ── Upload ──────────────────────────────────────────────────────
 
 export function encryptFileForUpload(source: Uint8Array, fileName: string): EncryptedFileInfo {
-  const key = new Uint8Array(crypto.randomBytes(32))
-  const nonce = new Uint8Array(crypto.randomBytes(24))
+  const key = new Uint8Array(32)
+  const nonce = new Uint8Array(24)
+  crypto.getRandomValues(key)
+  crypto.getRandomValues(nonce)
   const fileHdr = encodeFileHeader({fileName, fileExtra: null})
   const fileSize = BigInt(fileHdr.length + source.length)
   const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
