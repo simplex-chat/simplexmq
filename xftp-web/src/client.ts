@@ -84,21 +84,44 @@ function createBrowserTransport(baseUrl: string): Transport {
   }
 }
 
-// ── Connect + handshake ───────────────────────────────────────────
+// ── Client agent (connection pool) ───────────────────────────────
 
-// Browser HTTP/2 connections are pooled per origin — the server binds a session
-// to the TLS connection, so a second handshake on the same connection fails.
-// Cache clients by baseUrl in browser environments to reuse the session.
-const browserClients = new Map<string, XFTPClient>()
+export interface XFTPClientAgent {
+  clients: Map<string, XFTPClient>
+}
+
+export function newXFTPAgent(): XFTPClientAgent {
+  return {clients: new Map()}
+}
+
+export async function getXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): Promise<XFTPClient> {
+  const key = "https://" + server.host + ":" + server.port
+  let c = agent.clients.get(key)
+  if (!c) {
+    c = await connectXFTP(server)
+    agent.clients.set(key, c)
+  }
+  return c
+}
+
+export function closeXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): void {
+  const key = "https://" + server.host + ":" + server.port
+  const c = agent.clients.get(key)
+  if (c) {
+    agent.clients.delete(key)
+    c.transport.close()
+  }
+}
+
+export function closeXFTPAgent(agent: XFTPClientAgent): void {
+  for (const c of agent.clients.values()) c.transport.close()
+  agent.clients.clear()
+}
+
+// ── Connect + handshake ───────────────────────────────────────────
 
 export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
   const baseUrl = "https://" + server.host + ":" + server.port
-
-  if (!isNode) {
-    const cached = browserClients.get(baseUrl)
-    if (cached) return cached
-  }
-
   const transport = await createTransport(baseUrl)
 
   try {
@@ -129,9 +152,7 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
     const ack = await transport.post(encodeClientHandshake({xftpVersion, keyHash: server.keyHash}))
     if (ack.length !== 0) throw new Error("connectXFTP: non-empty handshake ack")
 
-    const client = {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
-    if (!isNode) browserClients.set(baseUrl, client)
-    return client
+    return {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
   } catch (e) {
     transport.close()
     throw e
@@ -224,7 +245,5 @@ export async function pingXFTP(c: XFTPClient): Promise<void> {
 // ── Close ─────────────────────────────────────────────────────────
 
 export function closeXFTP(c: XFTPClient): void {
-  // In the browser, HTTP/2 connections are pooled per origin — closing is
-  // a no-op since the connection persists and the session must stay cached.
-  if (isNode) c.transport.close()
+  c.transport.close()
 }
