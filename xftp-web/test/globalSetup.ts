@@ -11,24 +11,74 @@ const LOCK_FILE = join(tmpdir(), 'xftp-test-server.pid')
 let server: ChildProcess | null = null
 let isOwner = false
 
+// Kill any process listening on the given port (cross-platform)
+function killProcessOnPort(port: number): void {
+  try {
+    // Try lsof first (common on Mac/Linux)
+    execSync(`lsof -ti :${port} | xargs kill -9 2>/dev/null`, {stdio: 'ignore'})
+    return
+  } catch (_) {}
+  try {
+    // Fallback: use netstat + awk (works on most systems)
+    const cmd = process.platform === 'darwin'
+      ? `netstat -anv -p tcp | awk '$4 ~ /:${port}$/ && $6 == "LISTEN" {print $9}' | xargs kill -9 2>/dev/null`
+      : `ss -tlnp 'sport = :${port}' | awk 'NR>1 {match($0, /pid=([0-9]+)/, a); print a[1]}' | xargs kill -9 2>/dev/null`
+    execSync(cmd, {stdio: 'ignore'})
+  } catch (_) {}
+}
+
+// Check if port is currently in use
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = createConnection({port, host: 'localhost'}, () => {
+      sock.destroy()
+      resolve(true)
+    })
+    sock.on('error', () => {
+      sock.destroy()
+      resolve(false)
+    })
+  })
+}
+
 export async function setup() {
-  // Vitest browser mode calls globalSetup twice; only the first should start the server
+  // Always check if port is in use first, regardless of lock file state
+  if (await isPortInUse(XFTP_PORT)) {
+    // Check if we have a valid lock file owner
+    if (existsSync(LOCK_FILE)) {
+      const pid = parseInt(readFileSync(LOCK_FILE, 'utf-8').trim(), 10)
+      try {
+        process.kill(pid, 0) // check if process exists
+        // Lock owner is alive and port is in use — likely a valid running server
+        await waitForPort(XFTP_PORT)
+        return
+      } catch (_) {
+        // Lock owner is dead but port is in use — orphaned process
+      }
+    }
+    // Port in use but no valid lock owner — kill the orphaned process
+    console.log('[globalSetup] Port in use without valid lock, killing orphaned process...')
+    killProcessOnPort(XFTP_PORT)
+    await new Promise(r => setTimeout(r, 500))
+    // Verify port is now free
+    if (await isPortInUse(XFTP_PORT)) {
+      throw new Error(`Port ${XFTP_PORT} still in use after cleanup attempt`)
+    }
+  }
+
+  // Clean up stale lock file if it exists
   if (existsSync(LOCK_FILE)) {
     const pid = parseInt(readFileSync(LOCK_FILE, 'utf-8').trim(), 10)
     try {
-      process.kill(pid, 0) // check if process exists
+      process.kill(pid, 0)
+      // Process exists and port wasn't in use — wait for it
+      await waitForPort(XFTP_PORT)
+      return
     } catch (_) {
-      // Stale lock from a crashed run — clean up
       unlinkSync(LOCK_FILE)
-      // Kill any orphaned xftp-server on our port
-      try { execSync(`kill $(lsof -ti :${XFTP_PORT}) 2>/dev/null`, {stdio: 'ignore'}) } catch (_) {}
-      await new Promise(r => setTimeout(r, 500))
     }
   }
-  if (existsSync(LOCK_FILE)) {
-    await waitForPort(XFTP_PORT)
-    return
-  }
+
   writeFileSync(LOCK_FILE, String(process.pid))
   isOwner = true
 
