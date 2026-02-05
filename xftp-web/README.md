@@ -33,10 +33,7 @@ npx playwright install-deps chromium
 
 ```bash
 # Browser round-trip test (vitest + Playwright headless Chromium)
-npm run test:browser -- --run
-
-# Unit tests (Jest, Node.js)
-npm test
+npm run test
 ```
 
 The browser test automatically starts an `xftp-server` instance on port 7000 via `globalSetup`, using certs from `tests/fixtures/`.

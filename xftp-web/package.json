@@ -6,10 +6,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "postinstall": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs",
+    "postinstall": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs && npx playwright install chromium",
     "build": "tsc",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
-    "test:browser": "vitest --run",
+    "test": "vitest",
     "dev": "vite --mode development",
     "build:local": "vite build --mode development",
     "build:prod": "vite build --mode production",
