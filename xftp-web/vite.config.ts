@@ -2,6 +2,7 @@ import {defineConfig, type Plugin} from 'vite'
 import {readFileSync} from 'fs'
 import {createHash} from 'crypto'
 import presets from './web/servers.json'
+import {PORT_FILE} from './test/globalSetup'
 
 function parseHost(addr: string): string {
   const m = addr.match(/@(.+)$/)
@@ -35,7 +36,9 @@ export default defineConfig(({mode}) => {
     const der = Buffer.from(pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, ''), 'base64')
     const fp = createHash('sha256').update(der).digest('base64')
       .replace(/\+/g, '-').replace(/\//g, '_')
-    servers = [`xftp://${fp}@localhost:7000`]
+    // PORT_FILE is written by globalSetup before vite build runs
+    const port = readFileSync(PORT_FILE, 'utf-8').trim()
+    servers = [`xftp://${fp}@localhost:${port}`]
     define['__XFTP_SERVERS__'] = JSON.stringify(servers)
   } else {
     servers = [...presets.simplex, ...presets.flux]

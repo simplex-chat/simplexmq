@@ -1,19 +1,33 @@
-import {defineConfig} from 'vitest/config'
+import {defineConfig, type Plugin} from 'vitest/config'
 import {readFileSync} from 'fs'
 import {createHash} from 'crypto'
+import {PORT_FILE} from './test/globalSetup'
 
 // Compute fingerprint from ca.crt (SHA-256 of DER, same as Haskell's loadFileFingerprint)
 const pem = readFileSync('../tests/fixtures/ca.crt', 'utf-8')
 const der = Buffer.from(pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, ''), 'base64')
 const fingerprint = createHash('sha256').update(der).digest('base64').replace(/\+/g, '-').replace(/\//g, '_')
-const serverAddr = `xftp://${fingerprint}@localhost:7000`
+
+// Plugin to inject XFTP_SERVER at transform time (after globalSetup writes PORT_FILE)
+function xftpServerPlugin(): Plugin {
+  let serverAddr: string | null = null
+  return {
+    name: 'xftp-server-define',
+    transform(code, id) {
+      if (!code.includes('import.meta.env.XFTP_SERVER')) return null
+      if (!serverAddr) {
+        const port = readFileSync(PORT_FILE, 'utf-8').trim()
+        serverAddr = `xftp://${fingerprint}@localhost:${port}`
+      }
+      return code.replace(/import\.meta\.env\.XFTP_SERVER/g, JSON.stringify(serverAddr))
+    }
+  }
+}
 
 export default defineConfig({
   esbuild: {target: 'esnext'},
   optimizeDeps: {esbuildOptions: {target: 'esnext'}},
-  define: {
-    'import.meta.env.XFTP_SERVER': JSON.stringify(serverAddr)
-  },
+  plugins: [xftpServerPlugin()],
   test: {
     include: ['test/**/*.test.ts'],
     browser: {
