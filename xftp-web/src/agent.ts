@@ -15,11 +15,11 @@ import {
 } from "./protocol/description.js"
 import type {FileInfo} from "./protocol/commands.js"
 import {
-  getXFTPServerClient, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk,
+  getXFTPServerClient, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk, downloadXFTPChunkRaw,
   ackXFTPChunk, deleteXFTPChunk, type XFTPClientAgent
 } from "./client.js"
 export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent} from "./client.js"
-import {processDownloadedFile} from "./download.js"
+import {processDownloadedFile, decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
 import {formatXFTPServer, parseXFTPServer} from "./protocol/address.js"
 import {concatBytes} from "./protocol/encoding.js"
@@ -38,12 +38,15 @@ interface SentChunk {
   server: XFTPServer
 }
 
-export interface EncryptedFileInfo {
-  encData: Uint8Array
+export interface EncryptedFileMetadata {
   digest: Uint8Array          // SHA-512 of encData
   key: Uint8Array             // 32B SbKey
   nonce: Uint8Array           // 24B CbNonce
   chunkSizes: number[]
+}
+
+export interface EncryptedFileInfo extends EncryptedFileMetadata {
+  encData: Uint8Array
 }
 
 export interface UploadResult {
@@ -93,13 +96,25 @@ export function encryptFileForUpload(source: Uint8Array, fileName: string): Encr
 
 const DEFAULT_REDIRECT_THRESHOLD = 400
 
+export interface UploadOptions {
+  onProgress?: (uploaded: number, total: number) => void
+  redirectThreshold?: number
+  readChunk?: (offset: number, size: number) => Promise<Uint8Array>
+}
+
 export async function uploadFile(
   agent: XFTPClientAgent,
   server: XFTPServer,
-  encrypted: EncryptedFileInfo,
-  onProgress?: (uploaded: number, total: number) => void,
-  redirectThreshold?: number
+  encrypted: EncryptedFileMetadata,
+  options?: UploadOptions
 ): Promise<UploadResult> {
+  const {onProgress, redirectThreshold, readChunk: readChunkOpt} = options ?? {}
+  const readChunk: (offset: number, size: number) => Promise<Uint8Array> = readChunkOpt
+    ? readChunkOpt
+    : ('encData' in encrypted
+        ? (off, sz) => Promise.resolve((encrypted as EncryptedFileInfo).encData.subarray(off, off + sz))
+        : () => { throw new Error("uploadFile: readChunk required when encData is absent") })
+  const total = encrypted.chunkSizes.reduce((a, b) => a + b, 0)
   const specs = prepareChunkSpecs(encrypted.chunkSizes)
   const client = await getXFTPServerClient(agent, server)
   const sentChunks: SentChunk[] = []
@@ -109,7 +124,7 @@ export async function uploadFile(
     const chunkNo = i + 1
     const sndKp = generateEd25519KeyPair()
     const rcvKp = generateEd25519KeyPair()
-    const chunkData = encrypted.encData.subarray(spec.chunkOffset, spec.chunkOffset + spec.chunkSize)
+    const chunkData = await readChunk(spec.chunkOffset, spec.chunkSize)
     const chunkDigest = getChunkDigest(chunkData)
     const fileInfo: FileInfo = {
       sndKey: encodePubKeyEd25519(sndKp.publicKey),
@@ -126,7 +141,7 @@ export async function uploadFile(
       chunkSize: spec.chunkSize, digest: chunkDigest, server
     })
     uploaded += spec.chunkSize
-    onProgress?.(uploaded, encrypted.encData.length)
+    onProgress?.(uploaded, total)
   }
   const rcvDescription = buildDescription("recipient", encrypted, sentChunks)
   const sndDescription = buildDescription("sender", encrypted, sentChunks)
@@ -142,7 +157,7 @@ export async function uploadFile(
 
 function buildDescription(
   party: "recipient" | "sender",
-  enc: EncryptedFileInfo,
+  enc: EncryptedFileMetadata,
   chunks: SentChunk[]
 ): FileDescription {
   const defChunkSize = enc.chunkSizes[0]
@@ -223,61 +238,111 @@ async function uploadRedirectDescription(
 
 // ── Download ────────────────────────────────────────────────────
 
+export interface RawDownloadedChunk {
+  chunkNo: number
+  dhSecret: Uint8Array
+  nonce: Uint8Array
+  body: Uint8Array
+  digest: Uint8Array
+}
+
+export interface DownloadRawOptions {
+  onProgress?: (downloaded: number, total: number) => void
+  concurrency?: number
+}
+
+export async function downloadFileRaw(
+  agent: XFTPClientAgent,
+  fd: FileDescription,
+  onRawChunk: (chunk: RawDownloadedChunk) => Promise<void>,
+  options?: DownloadRawOptions
+): Promise<FileDescription> {
+  const err = validateFileDescription(fd)
+  if (err) throw new Error("downloadFileRaw: " + err)
+  const {onProgress, concurrency = 1} = options ?? {}
+  // Resolve redirect on main thread (redirect data is small)
+  if (fd.redirect !== null) {
+    fd = await resolveRedirect(agent, fd)
+  }
+  const resolvedFd = fd
+  // Pre-connect to avoid race condition under concurrency
+  const servers = new Set(resolvedFd.chunks.map(c => c.replicas[0]?.server).filter(Boolean) as string[])
+  for (const s of servers) {
+    await getXFTPServerClient(agent, parseXFTPServer(s))
+  }
+  // Sliding-window parallel download
+  let downloaded = 0
+  const queue = resolvedFd.chunks.slice()
+  let idx = 0
+  async function worker() {
+    while (idx < queue.length) {
+      const i = idx++
+      const chunk = queue[i]
+      const replica = chunk.replicas[0]
+      if (!replica) throw new Error("downloadFileRaw: chunk has no replicas")
+      const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
+      const seed = decodePrivKeyEd25519(replica.replicaKey)
+      const kp = ed25519KeyPairFromSeed(seed)
+      const raw = await downloadXFTPChunkRaw(client, kp.privateKey, replica.replicaId)
+      await onRawChunk({
+        chunkNo: chunk.chunkNo,
+        dhSecret: raw.dhSecret,
+        nonce: raw.nonce,
+        body: raw.body,
+        digest: chunk.digest
+      })
+      downloaded += chunk.chunkSize
+      onProgress?.(downloaded, resolvedFd.size)
+    }
+  }
+  const workers = Array.from({length: Math.min(concurrency, queue.length)}, () => worker())
+  await Promise.all(workers)
+  return resolvedFd
+}
+
+export async function ackFileChunks(
+  agent: XFTPClientAgent, fd: FileDescription
+): Promise<void> {
+  for (const chunk of fd.chunks) {
+    const replica = chunk.replicas[0]
+    if (!replica) continue
+    try {
+      const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
+      const seed = decodePrivKeyEd25519(replica.replicaKey)
+      const kp = ed25519KeyPairFromSeed(seed)
+      await ackXFTPChunk(client, kp.privateKey, replica.replicaId)
+    } catch (_) {}
+  }
+}
+
 export async function downloadFile(
   agent: XFTPClientAgent,
   fd: FileDescription,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<DownloadResult> {
-  const err = validateFileDescription(fd)
-  if (err) throw new Error("downloadFile: " + err)
-  if (fd.redirect !== null) {
-    return downloadWithRedirect(agent, fd, onProgress)
-  }
-  const plaintextChunks: Uint8Array[] = new Array(fd.chunks.length)
-  let downloaded = 0
-  for (const chunk of fd.chunks) {
-    const replica = chunk.replicas[0]
-    if (!replica) throw new Error("downloadFile: chunk has no replicas")
-    const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
-    const seed = decodePrivKeyEd25519(replica.replicaKey)
-    const kp = ed25519KeyPairFromSeed(seed)
-    const data = await downloadXFTPChunk(client, kp.privateKey, replica.replicaId, chunk.digest)
-    plaintextChunks[chunk.chunkNo - 1] = data
-    downloaded += chunk.chunkSize
-    onProgress?.(downloaded, fd.size)
-  }
-  // Verify file size
-  const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0)
-  if (totalSize !== fd.size) throw new Error("downloadFile: file size mismatch")
-  // Verify file digest (SHA-512 of encrypted file data)
-  const combined = plaintextChunks.length === 1 ? plaintextChunks[0] : concatBytes(...plaintextChunks)
+  const chunks: Uint8Array[] = []
+  const resolvedFd = await downloadFileRaw(agent, fd, async (raw) => {
+    chunks[raw.chunkNo - 1] = decryptReceivedChunk(
+      raw.dhSecret, raw.nonce, raw.body, raw.digest
+    )
+  }, {onProgress})
+  const combined = chunks.length === 1 ? chunks[0] : concatBytes(...chunks)
+  if (combined.length !== resolvedFd.size) throw new Error("downloadFile: file size mismatch")
   const digest = sha512(combined)
-  if (!digestEqual(digest, fd.digest)) throw new Error("downloadFile: file digest mismatch")
-  // Decrypt
-  const result = processDownloadedFile(fd, plaintextChunks)
-  // ACK all chunks (best-effort)
-  for (const chunk of fd.chunks) {
-    const replica = chunk.replicas[0]
-    if (!replica) continue
-    try {
-      const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
-      const seed = decodePrivKeyEd25519(replica.replicaKey)
-      const kp = ed25519KeyPairFromSeed(seed)
-      await ackXFTPChunk(client, kp.privateKey, replica.replicaId)
-    } catch (_) {}
-  }
+  if (!digestEqual(digest, resolvedFd.digest)) throw new Error("downloadFile: file digest mismatch")
+  const result = processDownloadedFile(resolvedFd, chunks)
+  await ackFileChunks(agent, resolvedFd)
   return result
 }
 
-async function downloadWithRedirect(
+async function resolveRedirect(
   agent: XFTPClientAgent,
-  fd: FileDescription,
-  onProgress?: (downloaded: number, total: number) => void
-): Promise<DownloadResult> {
+  fd: FileDescription
+): Promise<FileDescription> {
   const plaintextChunks: Uint8Array[] = new Array(fd.chunks.length)
   for (const chunk of fd.chunks) {
     const replica = chunk.replicas[0]
-    if (!replica) throw new Error("downloadWithRedirect: chunk has no replicas")
+    if (!replica) throw new Error("resolveRedirect: chunk has no replicas")
     const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
     const seed = decodePrivKeyEd25519(replica.replicaKey)
     const kp = ed25519KeyPairFromSeed(seed)
@@ -285,28 +350,19 @@ async function downloadWithRedirect(
     plaintextChunks[chunk.chunkNo - 1] = data
   }
   const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0)
-  if (totalSize !== fd.size) throw new Error("downloadWithRedirect: redirect file size mismatch")
+  if (totalSize !== fd.size) throw new Error("resolveRedirect: redirect file size mismatch")
   const combined = plaintextChunks.length === 1 ? plaintextChunks[0] : concatBytes(...plaintextChunks)
   const digest = sha512(combined)
-  if (!digestEqual(digest, fd.digest)) throw new Error("downloadWithRedirect: redirect file digest mismatch")
+  if (!digestEqual(digest, fd.digest)) throw new Error("resolveRedirect: redirect file digest mismatch")
   const {content: yamlBytes} = processDownloadedFile(fd, plaintextChunks)
   const innerFd = decodeFileDescription(new TextDecoder().decode(yamlBytes))
   const innerErr = validateFileDescription(innerFd)
-  if (innerErr) throw new Error("downloadWithRedirect: inner description invalid: " + innerErr)
-  if (innerFd.size !== fd.redirect!.size) throw new Error("downloadWithRedirect: redirect size mismatch")
-  if (!digestEqual(innerFd.digest, fd.redirect!.digest)) throw new Error("downloadWithRedirect: redirect digest mismatch")
+  if (innerErr) throw new Error("resolveRedirect: inner description invalid: " + innerErr)
+  if (innerFd.size !== fd.redirect!.size) throw new Error("resolveRedirect: redirect size mismatch")
+  if (!digestEqual(innerFd.digest, fd.redirect!.digest)) throw new Error("resolveRedirect: redirect digest mismatch")
   // ACK redirect chunks (best-effort)
-  for (const chunk of fd.chunks) {
-    const replica = chunk.replicas[0]
-    if (!replica) continue
-    try {
-      const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
-      const seed = decodePrivKeyEd25519(replica.replicaKey)
-      const kp = ed25519KeyPairFromSeed(seed)
-      await ackXFTPChunk(client, kp.privateKey, replica.replicaId)
-    } catch (_) {}
-  }
-  return downloadFile(agent, innerFd, onProgress)
+  await ackFileChunks(agent, fd)
+  return innerFd
 }
 
 // ── Delete ──────────────────────────────────────────────────────

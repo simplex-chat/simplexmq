@@ -1,0 +1,103 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#app {
+  width: 100%;
+  max-width: 480px;
+  padding: 16px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 32px 24px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.1);
+  text-align: center;
+}
+
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 24px;
+}
+
+.stage { margin-top: 16px; }
+
+/* Drop zone */
+.drop-zone {
+  border: 2px dashed #ccc;
+  border-radius: 8px;
+  padding: 32px 16px;
+  transition: border-color .15s, background .15s;
+}
+.drop-zone.drag-over {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+/* Buttons */
+.btn {
+  display: inline-block;
+  padding: 10px 24px;
+  border: none;
+  border-radius: 6px;
+  background: #3b82f6;
+  color: #fff;
+  font-size: .9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn:hover { background: #2563eb; }
+.btn-secondary { background: #6b7280; }
+.btn-secondary:hover { background: #4b5563; }
+
+/* Hints */
+.hint { color: #999; font-size: .85rem; margin-top: 8px; }
+.expiry { margin-top: 12px; }
+
+/* Progress */
+.progress-ring { display: block; margin: 0 auto 12px; }
+#upload-status, #dl-status { font-size: .9rem; color: #666; margin-bottom: 12px; }
+
+/* Share link row */
+.link-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.link-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: .85rem;
+  background: #f9fafb;
+}
+
+/* Messages */
+.success { color: #16a34a; font-weight: 600; }
+.error { color: #dc2626; font-weight: 500; margin-bottom: 12px; }
+
+/* Security note */
+.security-note {
+  margin-top: 20px;
+  padding: 12px;
+  background: #f0fdf4;
+  border-radius: 6px;
+  font-size: .8rem;
+  color: #555;
+  text-align: left;
+}
+.security-note p + p { margin-top: 6px; }
+.security-note a { color: #3b82f6; text-decoration: none; }
+.security-note a:hover { text-decoration: underline; }

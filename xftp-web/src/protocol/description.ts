@@ -91,7 +91,7 @@ export type FileParty = "recipient" | "sender"
 export interface FileDescription {
   party: FileParty
   size: number           // total file size in bytes
-  digest: Uint8Array     // SHA-256 file digest
+  digest: Uint8Array     // SHA-512 file digest
   key: Uint8Array        // SbKey (32 bytes)
   nonce: Uint8Array      // CbNonce (24 bytes)
   chunkSize: number      // default chunk size in bytes

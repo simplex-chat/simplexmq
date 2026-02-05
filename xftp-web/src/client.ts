@@ -207,15 +207,28 @@ export async function uploadXFTPChunk(
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 
-export async function downloadXFTPChunk(
-  c: XFTPClient, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
-): Promise<Uint8Array> {
+export interface RawChunkResponse {
+  dhSecret: Uint8Array
+  nonce: Uint8Array
+  body: Uint8Array
+}
+
+export async function downloadXFTPChunkRaw(
+  c: XFTPClient, rpKey: Uint8Array, fId: Uint8Array
+): Promise<RawChunkResponse> {
   const {publicKey, privateKey} = generateX25519KeyPair()
   const cmd = encodeFGET(encodePubKeyX25519(publicKey))
   const {response, body} = await sendXFTPCommand(c, rpKey, fId, cmd)
   if (response.type !== "FRFile") throw new Error("unexpected response: " + response.type)
   const dhSecret = dh(response.rcvDhKey, privateKey)
-  return decryptReceivedChunk(dhSecret, response.nonce, body, digest ?? null)
+  return {dhSecret, nonce: response.nonce, body}
+}
+
+export async function downloadXFTPChunk(
+  c: XFTPClient, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
+): Promise<Uint8Array> {
+  const {dhSecret, nonce, body} = await downloadXFTPChunkRaw(c, rpKey, fId)
+  return decryptReceivedChunk(dhSecret, nonce, body, digest ?? null)
 }
 
 export async function deleteXFTPChunk(

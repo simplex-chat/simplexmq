@@ -9,6 +9,8 @@ const fingerprint = createHash('sha256').update(der).digest('base64').replace(/\
 const serverAddr = `xftp://${fingerprint}@localhost:7000`
 
 export default defineConfig({
+  esbuild: {target: 'esnext'},
+  optimizeDeps: {esbuildOptions: {target: 'esnext'}},
   define: {
     'import.meta.env.XFTP_SERVER': JSON.stringify(serverAddr)
   },

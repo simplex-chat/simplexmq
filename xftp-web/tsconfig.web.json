@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "types": [],
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["web/**/*.ts", "src/**/*.ts"],
+  "exclude": ["web/crypto.worker.ts"]
+}
