@@ -1,8 +1,11 @@
 import {defineConfig, type Plugin} from 'vite'
 import {readFileSync} from 'fs'
 import {createHash} from 'crypto'
+import {resolve} from 'path'
 import presets from './web/servers.json'
 import {PORT_FILE} from './test/globalSetup'
+
+const __dirname = import.meta.dirname
 
 function parseHost(addr: string): string {
   const m = addr.match(/@(.+)$/)
@@ -46,7 +49,8 @@ export default defineConfig(({mode}) => {
 
   return {
     root: 'web',
-    build: {outDir: '../dist-web', target: 'esnext'},
+    build: {outDir: resolve(__dirname, 'dist-web'), target: 'esnext'},
+    preview: {host: true},
     define,
     worker: {format: 'es' as const},
     plugins: [cspPlugin(servers)],

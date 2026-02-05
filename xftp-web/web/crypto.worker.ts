@@ -182,6 +182,7 @@ async function handleCleanup(id: number) {
 // ── Message dispatch ────────────────────────────────────────────
 
 self.onmessage = async (e: MessageEvent) => {
+  await initPromise
   const msg = e.data
   try {
     switch (msg.type) {
@@ -219,7 +220,7 @@ function digestEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 // ── Init ────────────────────────────────────────────────────────
 
-;(async () => {
+const initPromise = (async () => {
   await sodium.ready
   await sweepStale()
 })()
