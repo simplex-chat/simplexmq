@@ -41,6 +41,10 @@ interface Transport {
 
 const isNode = typeof globalThis.process !== "undefined" && globalThis.process.versions?.node
 
+// In development mode, use HTTP proxy to avoid self-signed cert issues in browser
+// __XFTP_PROXY_PORT__ is injected by vite build (null in production)
+declare const __XFTP_PROXY_PORT__: string | null
+
 async function createTransport(baseUrl: string): Promise<Transport> {
   if (isNode) {
     return createNodeTransport(baseUrl)
@@ -70,13 +74,17 @@ async function createNodeTransport(baseUrl: string): Promise<Transport> {
 }
 
 function createBrowserTransport(baseUrl: string): Transport {
+  // In dev mode, route through /xftp-proxy to avoid self-signed cert rejection
+  // __XFTP_PROXY_PORT__ is 'proxy' in dev mode (uses relative path), null in production
+  const effectiveUrl = typeof __XFTP_PROXY_PORT__ !== 'undefined' && __XFTP_PROXY_PORT__
+    ? '/xftp-proxy'
+    : baseUrl
   return {
     async post(body: Uint8Array): Promise<Uint8Array> {
-      const resp = await fetch(baseUrl, {
+      const resp = await fetch(effectiveUrl, {
         method: "POST",
         body,
-        duplex: "half",
-      } as RequestInit)
+      })
       if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`)
       return new Uint8Array(await resp.arrayBuffer())
     },

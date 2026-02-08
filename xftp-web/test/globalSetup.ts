@@ -1,11 +1,16 @@
 import {spawn, execSync, ChildProcess} from 'child_process'
 import {createHash} from 'crypto'
 import {createConnection, createServer} from 'net'
-import {resolve, join} from 'path'
+import {resolve, join, dirname} from 'path'
+import {fileURLToPath} from 'url'
 import {readFileSync, mkdtempSync, writeFileSync, copyFileSync, existsSync, unlinkSync} from 'fs'
 import {tmpdir} from 'os'
 
-const LOCK_FILE = join(tmpdir(), 'xftp-test-server.pid')
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
+const LOCK_FILE = join(tmpdir(), 'xftp-test-server.lock')
+const SERVER_PID_FILE = join(tmpdir(), 'xftp-test-server.pid')
 export const PORT_FILE = join(tmpdir(), 'xftp-test-server.port')
 
 // Find a free port by binding to port 0
@@ -28,19 +33,21 @@ function findFreePort(): Promise<number> {
 let server: ChildProcess | null = null
 let isOwner = false
 
-export async function setup() {
-  // Check if another test process owns the server
-  if (existsSync(LOCK_FILE) && existsSync(PORT_FILE)) {
-    const pid = parseInt(readFileSync(LOCK_FILE, 'utf-8').trim(), 10)
+async function setup() {
+  // Check if an xftp-server is already running from a previous test
+  if (existsSync(SERVER_PID_FILE) && existsSync(PORT_FILE)) {
+    const serverPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf-8').trim(), 10)
     const port = parseInt(readFileSync(PORT_FILE, 'utf-8').trim(), 10)
     try {
-      process.kill(pid, 0) // check if process exists
-      // Lock owner is alive — wait for server to be ready
+      process.kill(serverPid, 0) // check if server process exists
+      // Server is alive — wait for it to be ready and reuse
       await waitForPort(port)
+      console.log('[runSetup] Reusing existing xftp-server on port', port)
       return
     } catch (_) {
-      // Lock owner is dead — clean up
+      // Server is dead — clean up stale files
       try { unlinkSync(LOCK_FILE) } catch (_) {}
+      try { unlinkSync(SERVER_PID_FILE) } catch (_) {}
       try { unlinkSync(PORT_FILE) } catch (_) {}
     }
   }
@@ -91,14 +98,15 @@ key: ${join(fixtures, 'web.key')}
   // Resolve binary path once (avoids cabal rebuild check on every run)
   const serverBin = execSync('cabal -v0 list-bin xftp-server', {encoding: 'utf-8'}).trim()
 
-  // Spawn xftp-server directly
+  // Spawn xftp-server as detached process so runSetup.ts can exit
   server = spawn(serverBin, ['start'], {
     env: {
       ...process.env,
       XFTP_SERVER_CFG_PATH: cfgDir,
       XFTP_SERVER_LOG_PATH: logDir
     },
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true
   })
 
   server.stderr?.on('data', (data: Buffer) => {
@@ -107,20 +115,32 @@ key: ${join(fixtures, 'web.key')}
 
   // Poll-connect until the server is actually listening
   await waitForServerReady(server, xftpPort)
+
+  // Store server PID for teardown
+  writeFileSync(SERVER_PID_FILE, String(server.pid))
+
+  // Detach stdio so the setup process can exit
+  server.stdout?.destroy()
+  server.stderr?.destroy()
+  server.unref()
 }
 
 export async function teardown() {
-  if (isOwner) {
-    try { unlinkSync(LOCK_FILE) } catch (_) {}
-    try { unlinkSync(PORT_FILE) } catch (_) {}
-    if (server) {
-      server.kill('SIGTERM')
-      await new Promise<void>(resolve => {
-        server!.on('exit', () => resolve())
-        setTimeout(resolve, 3000)
-      })
+  // Kill the xftp-server if it's running
+  if (existsSync(SERVER_PID_FILE)) {
+    try {
+      const serverPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf-8').trim(), 10)
+      process.kill(serverPid, 'SIGTERM')
+      // Wait a bit for graceful shutdown
+      await new Promise(r => setTimeout(r, 500))
+    } catch (_) {
+      // Server already dead
     }
   }
+  // Clean up files
+  try { unlinkSync(LOCK_FILE) } catch (_) {}
+  try { unlinkSync(SERVER_PID_FILE) } catch (_) {}
+  try { unlinkSync(PORT_FILE) } catch (_) {}
 }
 
 function waitForServerReady(proc: ChildProcess, port: number): Promise<void> {
@@ -168,3 +188,5 @@ function waitForPort(port: number): Promise<void> {
     poll()
   })
 }
+
+export default setup

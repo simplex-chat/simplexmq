@@ -84,6 +84,7 @@ xftpServerTests =
       it "should not add CORS headers without SNI" testNoCORSWithoutSNI
       it "should upload and receive file chunk through SNI-enabled server" testFileChunkDeliverySNI
       it "should complete web handshake with challenge-response" testWebHandshake
+      it "should re-handshake on same connection with xftp-web-hello header" testWebReHandshake
 
 chSize :: Integral a => a
 chSize = kb 128
@@ -540,3 +541,33 @@ testWebHandshake =
       resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000)
       let ackBody = bodyHead (HC.respBody resp2)
       B.length ackBody `shouldBe` 0
+
+testWebReHandshake :: Expectation
+testWebReHandshake =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let keyHash = C.KeyHash fp
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just keyHash) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      g <- C.newRandom
+      -- First handshake
+      challenge1 <- atomically $ C.randomBytes 32 g
+      let helloReq1 = H2.requestBuilder "POST" "/" [] $ byteString (smpEncode (XFTPClientHello {webChallenge = Just challenge1}))
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000)
+      serverHs1 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
+      XFTPServerHandshake {sessionId = sid1} <- either error pure $ smpDecode serverHs1
+      clientHsPadded <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash})) xftpBlockSize
+      resp1b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      B.length (bodyHead (HC.respBody resp1b)) `shouldBe` 0
+      -- Re-handshake on same connection with xftp-web-hello header
+      challenge2 <- atomically $ C.randomBytes 32 g
+      let helloReq2 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString (smpEncode (XFTPClientHello {webChallenge = Just challenge2}))
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 helloReq2 (Just 5000000)
+      serverHs2 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp2))
+      XFTPServerHandshake {sessionId = sid2} <- either error pure $ smpDecode serverHs2
+      sid2 `shouldBe` sid1
+      -- Complete re-handshake
+      resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      B.length (bodyHead (HC.respBody resp2b)) `shouldBe` 0

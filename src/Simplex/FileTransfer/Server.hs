@@ -40,6 +40,7 @@ import GHC.IO.Handle (hSetNewlineMode)
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import qualified Network.HTTP.Types as N
+import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import Simplex.FileTransfer.Protocol
@@ -162,15 +163,18 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                       Just thParams -> processRequest req0 {thParams}
                 | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
-    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
+    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, request, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
-        Nothing -> processHello
+        Nothing -> processHello Nothing
         Just (HandshakeSent pk) -> processClientHandshake pk
-        Just (HandshakeAccepted thParams) -> pure $ Just thParams
+        Just (HandshakeAccepted thParams)
+          | webHello -> processHello (serverPrivKey <$> thAuth thParams)
+          | otherwise -> pure $ Just thParams
       either sendError pure r
       where
-        processHello = do
+        webHello = sniUsed && any (\(t, _) -> tokenKey t == "xftp-web-hello") (fst $ H.requestHeaders request)
+        processHello pk_ = do
           challenge_ <-
             if
               | B.null bodyHead -> pure Nothing
@@ -178,7 +182,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                   XFTPClientHello {webChallenge} <- liftHS $ smpDecode bodyHead
                   pure webChallenge
               | otherwise -> throwE HANDSHAKE
-          (k, pk) <- atomically . C.generateKeyPair =<< asks random
+          (k, pk) <- maybe
+            (atomically . C.generateKeyPair =<< asks random)
+            (\pk -> pure (C.publicKey pk, pk))
+            pk_
           atomically $ TM.insert sessionId (HandshakeSent pk) sessions
           let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
               webIdentityProof = C.sign serverSignKey . (<> sessionId) <$> challenge_

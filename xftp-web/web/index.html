@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src __CSP_CONNECT_SRC__;">
+    content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' __CSP_CONNECT_SRC__;">
   <title>SimpleX File Transfer</title>
   <link rel="stylesheet" href="./style.css">
 </head>
