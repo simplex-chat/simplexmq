@@ -1,4 +1,4 @@
-// XFTP transmission framing — Simplex.Messaging.Transport + FileTransfer.Protocol
+// XFTP transmission framing -- Simplex.Messaging.Transport + FileTransfer.Protocol
 //
 // Handles block-level pad/unpad, batch encoding, and Ed25519 auth signing.
 
@@ -9,7 +9,7 @@ import {
 } from "./encoding.js"
 import {sign} from "../crypto/keys.js"
 
-// ── Constants ─────────────────────────────────────────────────────
+// -- Constants
 
 export const XFTP_BLOCK_SIZE = 16384
 
@@ -19,7 +19,7 @@ export const authCmdsXFTPVersion = 2
 export const blockedFilesXFTPVersion = 3
 export const currentXFTPVersion = 3
 
-// ── Block-level pad/unpad (Crypto.hs:pad/unPad, strict ByteString) ──
+// -- Block-level pad/unpad (Crypto.hs:pad/unPad, strict ByteString)
 
 export function blockPad(msg: Uint8Array, blockSize: number = XFTP_BLOCK_SIZE): Uint8Array {
   const len = msg.length
@@ -40,7 +40,7 @@ export function blockUnpad(block: Uint8Array): Uint8Array {
   return block.subarray(2, 2 + len)
 }
 
-// ── Transmission encoding (client -> server) ──────────────────────
+// -- Transmission encoding (client -> server)
 
 // Encode an authenticated XFTP command as a padded block.
 // Matches xftpEncodeAuthTransmission with implySessId = False:
@@ -80,7 +80,7 @@ export function encodeTransmission(
   return blockPad(batch)
 }
 
-// ── Transmission decoding (server -> client) ──────────────────────
+// -- Transmission decoding (server -> client)
 
 export interface DecodedTransmission {
   corrId: Uint8Array

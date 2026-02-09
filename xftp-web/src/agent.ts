@@ -1,4 +1,4 @@
-// XFTP upload/download orchestration + URI encoding — Simplex.FileTransfer.Client.Main
+// XFTP upload/download orchestration + URI encoding -- Simplex.FileTransfer.Client.Main
 //
 // Combines all building blocks: encryption, chunking, XFTP client commands,
 // file descriptions, and DEFLATE-compressed URI encoding.
@@ -25,7 +25,7 @@ import {formatXFTPServer, parseXFTPServer} from "./protocol/address.js"
 import {concatBytes} from "./protocol/encoding.js"
 import type {FileHeader} from "./crypto/file.js"
 
-// ── Types ───────────────────────────────────────────────────────
+// -- Types
 
 interface SentChunk {
   chunkNo: number
@@ -60,7 +60,7 @@ export interface DownloadResult {
   content: Uint8Array
 }
 
-// ── URI encoding/decoding (RFC §4.1: DEFLATE + base64url) ───────
+// -- URI encoding/decoding (RFC section 4.1: DEFLATE + base64url)
 
 export function encodeDescriptionURI(fd: FileDescription): string {
   const yaml = encodeFileDescription(fd)
@@ -77,7 +77,7 @@ export function decodeDescriptionURI(fragment: string): FileDescription {
   return fd
 }
 
-// ── Upload ──────────────────────────────────────────────────────
+// -- Upload
 
 export function encryptFileForUpload(source: Uint8Array, fileName: string): EncryptedFileInfo {
   const key = new Uint8Array(32)
@@ -131,8 +131,9 @@ export async function uploadFile(
       size: spec.chunkSize,
       digest: chunkDigest
     }
+    const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
     const {senderId, recipientIds} = await createXFTPChunk(
-      client, sndKp.privateKey, fileInfo, [encodePubKeyEd25519(rcvKp.publicKey)]
+      client, sndKp.privateKey, fileInfo, rcvKeysForChunk
     )
     await uploadXFTPChunk(client, sndKp.privateKey, senderId, chunkData)
     sentChunks.push({
@@ -205,8 +206,9 @@ async function uploadRedirectDescription(
       size: spec.chunkSize,
       digest: chunkDigest
     }
+    const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
     const {senderId, recipientIds} = await createXFTPChunk(
-      client, sndKp.privateKey, fileInfo, [encodePubKeyEd25519(rcvKp.publicKey)]
+      client, sndKp.privateKey, fileInfo, rcvKeysForChunk
     )
     await uploadXFTPChunk(client, sndKp.privateKey, senderId, chunkData)
     sentChunks.push({
@@ -236,7 +238,7 @@ async function uploadRedirectDescription(
   }
 }
 
-// ── Download ────────────────────────────────────────────────────
+// -- Download
 
 export interface RawDownloadedChunk {
   chunkNo: number
@@ -355,7 +357,8 @@ async function resolveRedirect(
   const digest = sha512(combined)
   if (!digestEqual(digest, fd.digest)) throw new Error("resolveRedirect: redirect file digest mismatch")
   const {content: yamlBytes} = processDownloadedFile(fd, plaintextChunks)
-  const innerFd = decodeFileDescription(new TextDecoder().decode(yamlBytes))
+  const yamlStr = new TextDecoder().decode(yamlBytes)
+  const innerFd = decodeFileDescription(yamlStr)
   const innerErr = validateFileDescription(innerFd)
   if (innerErr) throw new Error("resolveRedirect: inner description invalid: " + innerErr)
   if (innerFd.size !== fd.redirect!.size) throw new Error("resolveRedirect: redirect size mismatch")
@@ -365,7 +368,7 @@ async function resolveRedirect(
   return innerFd
 }
 
-// ── Delete ──────────────────────────────────────────────────────
+// -- Delete
 
 export async function deleteFile(agent: XFTPClientAgent, sndDescription: FileDescription): Promise<void> {
   for (const chunk of sndDescription.chunks) {
@@ -378,7 +381,7 @@ export async function deleteFile(agent: XFTPClientAgent, sndDescription: FileDes
   }
 }
 
-// ── Internal ────────────────────────────────────────────────────
+// -- Internal
 
 function digestEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false

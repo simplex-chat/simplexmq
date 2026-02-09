@@ -1,4 +1,4 @@
-// XFTP handshake encoding/decoding — Simplex.FileTransfer.Transport
+// XFTP handshake encoding/decoding -- Simplex.FileTransfer.Transport
 //
 // Handles XFTP client/server handshake messages and version negotiation.
 
@@ -13,7 +13,7 @@ import {sha256} from "../crypto/digest.js"
 import {decodePubKeyX25519} from "../crypto/keys.js"
 import {blockPad, blockUnpad, XFTP_BLOCK_SIZE} from "./transmission.js"
 
-// ── Version types ──────────────────────────────────────────────────
+// -- Version types
 
 export interface VersionRange {
   minVersion: number  // Word16
@@ -42,22 +42,22 @@ export function compatibleVRange(a: VersionRange, b: VersionRange): VersionRange
   return {minVersion: min, maxVersion: max}
 }
 
-// ── Client hello ─────────────────────────────────────────────────
+// -- Client hello
 
 export interface XFTPClientHello {
   webChallenge: Uint8Array | null  // 32 random bytes for web handshake, or null for standard
 }
 
-// Encode client hello (NOT padded — sent as raw POST body).
+// Encode client hello (NOT padded -- sent as raw POST body).
 // Wire format: smpEncode (Maybe ByteString)
 export function encodeClientHello(hello: XFTPClientHello): Uint8Array {
   return encodeMaybe(encodeBytes, hello.webChallenge)
 }
 
-// ── Client handshake ───────────────────────────────────────────────
+// -- Client handshake
 
 export interface XFTPClientHandshake {
-  xftpVersion: number    // Word16 — negotiated version
+  xftpVersion: number    // Word16 -- negotiated version
   keyHash: Uint8Array    // SHA-256 CA certificate fingerprint (32 bytes)
 }
 
@@ -68,7 +68,7 @@ export function encodeClientHandshake(ch: XFTPClientHandshake): Uint8Array {
   return blockPad(body, XFTP_BLOCK_SIZE)
 }
 
-// ── Server handshake ───────────────────────────────────────────────
+// -- Server handshake
 
 export interface XFTPServerHandshake {
   xftpVersionRange: VersionRange
@@ -79,7 +79,7 @@ export interface XFTPServerHandshake {
 }
 
 // Decode padded server handshake block.
-// Wire format: unpad(block) → (versionRange, sessionId, certChainPubKey, sigBytes)
+// Wire format: unpad(block) -> (versionRange, sessionId, certChainPubKey, sigBytes)
 //   where certChainPubKey = (NonEmpty Large certChain, Large signedKey)
 //         sigBytes = ByteString (1-byte len prefix, empty for Nothing)
 // Trailing bytes (Tail) are ignored for forward compatibility.
@@ -101,7 +101,7 @@ export function decodeServerHandshake(block: Uint8Array): XFTPServerHandshake {
   return {xftpVersionRange, sessionId, certChainDer, signedKeyDer, webIdentityProof}
 }
 
-// ── Certificate utilities ──────────────────────────────────────────
+// -- Certificate utilities
 
 // Certificate chain decomposition matching Haskell chainIdCaCerts (Transport.Shared).
 export type ChainCertificates =
@@ -131,7 +131,7 @@ export function caFingerprint(certChainDer: Uint8Array[]): Uint8Array {
   return sha256(cc.idCert)
 }
 
-// ── SignedExact DER parsing ────────────────────────────────────────
+// -- SignedExact DER parsing
 
 // Parsed components of an X.509 SignedExact structure.
 export interface SignedKey {
@@ -166,9 +166,9 @@ function derElement(d: Decoder): Uint8Array {
 // Extract components from a SignedExact X.PubKey DER structure.
 // ASN.1 layout:
 //   SEQUENCE {
-//     SubjectPublicKeyInfo (SEQUENCE)  — the signed object
-//     AlgorithmIdentifier  (SEQUENCE)  — signature algorithm
-//     BIT STRING                       — signature
+//     SubjectPublicKeyInfo (SEQUENCE)  -- the signed object
+//     AlgorithmIdentifier  (SEQUENCE)  -- signature algorithm
+//     BIT STRING                       -- signature
 //   }
 export function extractSignedKey(signedDer: Uint8Array): SignedKey {
   const outer = new Decoder(signedDer)

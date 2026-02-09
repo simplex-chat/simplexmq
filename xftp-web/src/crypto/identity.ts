@@ -9,7 +9,7 @@ import {sha256} from "./digest.js"
 import {verify, decodePubKeyEd25519, verifyEd448, decodePubKeyEd448} from "./keys.js"
 import {chainIdCaCerts, extractSignedKey} from "../protocol/handshake.js"
 
-// ── ASN.1 DER helpers (minimal, for X.509 parsing) ─────────────────
+// -- ASN.1 DER helpers (minimal, for X.509 parsing)
 
 function derLen(d: Decoder): number {
   const first = d.anyByte()
@@ -33,11 +33,11 @@ function derReadElement(d: Decoder): Uint8Array {
   return d.buf.subarray(start, d.offset())
 }
 
-// ── X.509 certificate public key extraction ─────────────────────────
+// -- X.509 certificate public key extraction
 
 // Extract SubjectPublicKeyInfo DER from a full X.509 certificate DER.
-// Navigates: Certificate → TBSCertificate → skip version, serialNumber,
-//   signatureAlg, issuer, validity, subject → SubjectPublicKeyInfo.
+// Navigates: Certificate -> TBSCertificate -> skip version, serialNumber,
+//   signatureAlg, issuer, validity, subject -> SubjectPublicKeyInfo.
 export function extractCertPublicKeyInfo(certDer: Uint8Array): Uint8Array {
   const d = new Decoder(certDer)
   if (d.anyByte() !== 0x30) throw new Error("X.509: expected Certificate SEQUENCE")
@@ -76,7 +76,7 @@ function verifySig(alg: CertKeyAlgorithm, key: Uint8Array, sig: Uint8Array, msg:
   return alg === 'ed25519' ? verify(key, sig, msg) : verifyEd448(key, sig, msg)
 }
 
-// ── Identity proof verification ─────────────────────────────────────
+// -- Identity proof verification
 
 export interface IdentityVerification {
   certChainDer: Uint8Array[]

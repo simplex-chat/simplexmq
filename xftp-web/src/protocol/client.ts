@@ -1,4 +1,4 @@
-// XFTP client protocol operations — Simplex.FileTransfer.Client + Crypto
+// XFTP client protocol operations -- Simplex.FileTransfer.Client + Crypto
 //
 // CbAuthenticator-based command authentication and transport-level
 // chunk encryption/decryption for XFTP downloads.
@@ -10,11 +10,11 @@ import {
   cbInit, sbEncryptChunk, sbDecryptChunk, sbAuth, cryptoBox
 } from "../crypto/secretbox.js"
 
-// ── Constants ───────────────────────────────────────────────────
+// -- Constants
 
 export const cbAuthenticatorSize = 80 // SHA512 (64) + authTag (16)
 
-// ── CbAuthenticator (Crypto.hs:cbAuthenticate) ─────────────────
+// -- CbAuthenticator (Crypto.hs:cbAuthenticate)
 
 // Create crypto_box authenticator for a message.
 // Encrypts sha512(msg) with NaCl crypto_box using DH(peerPubKey, ownPrivKey).
@@ -51,7 +51,7 @@ export function cbVerify(
   return constantTimeEqual(plaintext, expectedHash)
 }
 
-// ── Transport-level chunk encryption/decryption ─────────────────
+// -- Transport-level chunk encryption/decryption
 
 // Encrypt a chunk for transport (tag-appended format).
 // Matches sendEncFile in FileTransfer.Transport:
@@ -74,18 +74,18 @@ export function decryptTransportChunk(
   dhSecret: Uint8Array,
   cbNonce: Uint8Array,
   encData: Uint8Array
-): {valid: boolean, content: Uint8Array} {
-  if (encData.length < 16) return {valid: false, content: new Uint8Array(0)}
+): {valid: boolean, content: Uint8Array, computedTag: Uint8Array} {
+  if (encData.length < 16) return {valid: false, content: new Uint8Array(0), computedTag: new Uint8Array(0)}
   const cipher = encData.subarray(0, encData.length - 16)
   const providedTag = encData.subarray(encData.length - 16)
   const state = cbInit(dhSecret, cbNonce)
   const plaintext = sbDecryptChunk(state, cipher)
   const computedTag = sbAuth(state)
   const valid = constantTimeEqual(providedTag, computedTag)
-  return {valid, content: plaintext}
+  return {valid, content: plaintext, computedTag}
 }
 
-// ── Internal ────────────────────────────────────────────────────
+// -- Internal
 
 function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false

@@ -1,4 +1,4 @@
-// Protocol commands and responses — Simplex.FileTransfer.Protocol
+// Protocol commands and responses -- Simplex.FileTransfer.Protocol
 //
 // Commands (client -> server): FNEW, FADD, FPUT, FDEL, FGET, FACK, PING
 // Responses (server -> client): SIDS, RIDS, FILE, OK, ERR, PONG
@@ -12,7 +12,7 @@ import {
 } from "./encoding.js"
 import {decodePubKeyX25519} from "../crypto/keys.js"
 
-// ── Types ─────────────────────────────────────────────────────────
+// -- Types
 
 export interface FileInfo {
   sndKey: Uint8Array   // DER-encoded Ed25519 public key (44 bytes)
@@ -39,14 +39,14 @@ export type FileResponse =
   | {type: "FRErr", err: XFTPErrorType}
   | {type: "FRPong"}
 
-// ── FileInfo encoding ─────────────────────────────────────────────
+// -- FileInfo encoding
 
 // smpEncode FileInfo {sndKey, size, digest} = smpEncode (sndKey, size, digest)
 export function encodeFileInfo(fi: FileInfo): Uint8Array {
   return concatBytes(encodeBytes(fi.sndKey), encodeWord32(fi.size), encodeBytes(fi.digest))
 }
 
-// ── Command encoding (encodeProtocol) ─────────────────────────────
+// -- Command encoding (encodeProtocol)
 
 const SPACE = new Uint8Array([0x20])
 
@@ -81,7 +81,7 @@ export function encodeFACK(): Uint8Array { return ascii("FACK") }
 
 export function encodePING(): Uint8Array { return ascii("PING") }
 
-// ── Response decoding ─────────────────────────────────────────────
+// -- Response decoding
 
 function readTag(d: Decoder): string {
   const start = d.offset()
@@ -138,7 +138,8 @@ export function decodeResponse(data: Uint8Array): FileResponse {
   switch (tagStr) {
     case "SIDS": {
       readSpace(d)
-      return {type: "FRSndIds", senderId: decodeBytes(d), recipientIds: decodeNonEmpty(decodeBytes, d)}
+      const senderId = decodeBytes(d)
+      return {type: "FRSndIds", senderId, recipientIds: decodeNonEmpty(decodeBytes, d)}
     }
     case "RIDS": {
       readSpace(d)

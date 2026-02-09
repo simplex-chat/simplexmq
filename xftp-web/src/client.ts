@@ -1,4 +1,4 @@
-// XFTP HTTP/2 client — Simplex.FileTransfer.Client
+// XFTP HTTP/2 client -- Simplex.FileTransfer.Client
 //
 // Connects to XFTP server via HTTP/2, performs web handshake,
 // sends authenticated commands, receives responses.
@@ -23,7 +23,7 @@ import {decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
 import {concatBytes} from "./protocol/encoding.js"
 
-// ── Types ─────────────────────────────────────────────────────────
+// -- Types
 
 export interface XFTPClient {
   baseUrl: string
@@ -33,11 +33,11 @@ export interface XFTPClient {
 }
 
 interface Transport {
-  post(body: Uint8Array): Promise<Uint8Array>
+  post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array>
   close(): void
 }
 
-// ── Transport implementations ─────────────────────────────────────
+// -- Transport implementations
 
 const isNode = typeof globalThis.process !== "undefined" && globalThis.process.versions?.node
 
@@ -57,9 +57,9 @@ async function createNodeTransport(baseUrl: string): Promise<Transport> {
   const http2 = await import("node:http2")
   const session = http2.connect(baseUrl, {rejectUnauthorized: false})
   return {
-    async post(body: Uint8Array): Promise<Uint8Array> {
+    async post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array> {
       return new Promise((resolve, reject) => {
-        const req = session.request({":method": "POST", ":path": "/"})
+        const req = session.request({":method": "POST", ":path": "/", ...headers})
         const chunks: Buffer[] = []
         req.on("data", (chunk: Buffer) => chunks.push(chunk))
         req.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
@@ -80,9 +80,10 @@ function createBrowserTransport(baseUrl: string): Transport {
     ? '/xftp-proxy'
     : baseUrl
   return {
-    async post(body: Uint8Array): Promise<Uint8Array> {
+    async post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array> {
       const resp = await fetch(effectiveUrl, {
         method: "POST",
+        headers,
         body,
       })
       if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`)
@@ -92,7 +93,7 @@ function createBrowserTransport(baseUrl: string): Transport {
   }
 }
 
-// ── Client agent (connection pool) ───────────────────────────────
+// -- Client agent (connection pool)
 
 export interface XFTPClientAgent {
   clients: Map<string, XFTPClient>
@@ -126,7 +127,7 @@ export function closeXFTPAgent(agent: XFTPClientAgent): void {
   agent.clients.clear()
 }
 
-// ── Connect + handshake ───────────────────────────────────────────
+// -- Connect + handshake
 
 export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
   const baseUrl = "https://" + server.host + ":" + server.port
@@ -136,7 +137,8 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
     // Step 1: send client hello with web challenge
     const challenge = new Uint8Array(32)
     crypto.getRandomValues(challenge)
-    const shsBody = await transport.post(encodeClientHello({webChallenge: challenge}))
+    const clientHelloBytes = encodeClientHello({webChallenge: challenge})
+    const shsBody = await transport.post(clientHelloBytes, {"xftp-web-hello": "1"})
 
     // Step 2: decode + verify server handshake
     const hs = decodeServerHandshake(shsBody)
@@ -167,7 +169,7 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
   }
 }
 
-// ── Send command ──────────────────────────────────────────────────
+// -- Send command
 
 async function sendXFTPCommand(
   client: XFTPClient,
@@ -189,7 +191,7 @@ async function sendXFTPCommand(
   return {response, body}
 }
 
-// ── Command wrappers ──────────────────────────────────────────────
+// -- Command wrappers
 
 export async function createXFTPChunk(
   c: XFTPClient, spKey: Uint8Array, file: FileInfo,
@@ -263,7 +265,7 @@ export async function pingXFTP(c: XFTPClient): Promise<void> {
   if (response.type !== "FRPong") throw new Error("unexpected response: " + response.type)
 }
 
-// ── Close ─────────────────────────────────────────────────────────
+// -- Close
 
 export function closeXFTP(c: XFTPClient): void {
   c.transport.close()

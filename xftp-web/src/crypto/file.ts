@@ -6,7 +6,7 @@ import {sbInit, sbEncryptChunk, sbDecryptTailTag, sbAuth} from "./secretbox.js"
 
 const AUTH_TAG_SIZE = 16n
 
-// ── FileHeader ──────────────────────────────────────────────────
+// -- FileHeader
 
 export interface FileHeader {
   fileName: string
@@ -37,17 +37,17 @@ export function parseFileHeader(data: Uint8Array): {header: FileHeader, rest: Ui
   }
 }
 
-// ── Encryption (FileTransfer.Crypto:encryptFile) ────────────────
+// -- Encryption (FileTransfer.Crypto:encryptFile)
 
 // Encrypt file content with streaming XSalsa20-Poly1305.
 // Output format: encrypted(Int64 fileSize | fileHdr | source | '#' padding) | 16-byte auth tag
 //
-//   source   — raw file content
-//   fileHdr  — pre-encoded FileHeader bytes (from encodeFileHeader)
-//   key      — 32-byte symmetric key
-//   nonce    — 24-byte nonce
-//   fileSize — BigInt(fileHdr.length + source.length)
-//   encSize  — total output size (including 16-byte auth tag)
+//   source   -- raw file content
+//   fileHdr  -- pre-encoded FileHeader bytes (from encodeFileHeader)
+//   key      -- 32-byte symmetric key
+//   nonce    -- 24-byte nonce
+//   fileSize -- BigInt(fileHdr.length + source.length)
+//   encSize  -- total output size (including 16-byte auth tag)
 export function encryptFile(
   source: Uint8Array,
   fileHdr: Uint8Array,
@@ -69,15 +69,15 @@ export function encryptFile(
   return concatBytes(hdr, encSource, encPad, tag)
 }
 
-// ── Decryption (FileTransfer.Crypto:decryptChunks) ──────────────
+// -- Decryption (FileTransfer.Crypto:decryptChunks)
 
 // Decrypt one or more XFTP chunks into a FileHeader and file content.
 // Chunks are concatenated, then decrypted as a single stream.
 //
-//   encSize — total encrypted size (including 16-byte auth tag)
-//   chunks  — downloaded XFTP chunk data (concatenated = full encrypted file)
-//   key     — 32-byte symmetric key
-//   nonce   — 24-byte nonce
+//   encSize -- total encrypted size (including 16-byte auth tag)
+//   chunks  -- downloaded XFTP chunk data (concatenated = full encrypted file)
+//   key     -- 32-byte symmetric key
+//   nonce   -- 24-byte nonce
 export function decryptChunks(
   encSize: bigint,
   chunks: Uint8Array[],

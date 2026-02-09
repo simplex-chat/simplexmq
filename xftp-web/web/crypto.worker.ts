@@ -87,6 +87,9 @@ async function handleDecryptAndStore(
   body: ArrayBuffer, chunkDigest: Uint8Array, chunkNo: number
 ) {
   const bodyArr = new Uint8Array(body)
+  console.error(`[WORKER] chunkNo=${chunkNo} dhSecret=${Array.from(dhSecret).map(b => b.toString(16).padStart(2, '0')).join('')}`)
+  console.error(`[WORKER] chunkNo=${chunkNo} nonce=${Array.from(nonce).map(b => b.toString(16).padStart(2, '0')).join('')}`)
+  console.error(`[WORKER] chunkNo=${chunkNo} body.length=${bodyArr.length} first16=${Array.from(bodyArr.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('')} last16=${Array.from(bodyArr.slice(-16)).map(b => b.toString(16).padStart(2, '0')).join('')}`)
   const decrypted = decryptReceivedChunk(dhSecret, nonce, bodyArr, chunkDigest)
 
   if (!downloadWriteHandle) {

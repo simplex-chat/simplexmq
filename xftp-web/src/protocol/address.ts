@@ -1,4 +1,4 @@
-// XFTP server address parsing/formatting — Simplex.Messaging.Protocol (ProtocolServer)
+// XFTP server address parsing/formatting -- Simplex.Messaging.Protocol (ProtocolServer)
 //
 // Parses/formats server address strings of the form:
 //   xftp://<keyhash>@<host>[,<host2>,...][:<port>]
@@ -13,7 +13,7 @@ export interface XFTPServer {
   port: string         // port number (default "443")
 }
 
-// Decode base64url (RFC 4648 §5) to Uint8Array.
+// Decode base64url (RFC 4648 section 5) to Uint8Array.
 function base64urlDecode(s: string): Uint8Array {
   // Convert base64url to standard base64
   let b64 = s.replace(/-/g, '+').replace(/_/g, '/')

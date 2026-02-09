@@ -1,7 +1,7 @@
 import {test, expect, createTestContent, createTextContent} from './fixtures'
 import {UploadPage} from './pages/upload-page'
 import {DownloadPage} from './pages/download-page'
-import {readFileSync} from 'fs'
+import {readFileSync, statSync} from 'fs'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Upload Flow Tests
@@ -318,7 +318,7 @@ test.describe('Slow Tests', () => {
 
     const path = await download.path()
     if (path) {
-      const stat = require('fs').statSync(path)
+      const stat = statSync(path)
       expect(stat.size).toBe(5 * 1024 * 1024)
     }
   })

@@ -6,7 +6,7 @@ import {encodeWord16, decodeWord16, encodeInt64, decodeInt64, Decoder} from "../
 
 const HASH = 0x23 // '#'
 
-// -- Strict pad/unPad (protocol messages) — Crypto.hs:1077
+// -- Strict pad/unPad (protocol messages) -- Crypto.hs:1077
 
 export function pad(msg: Uint8Array, paddedLen: number): Uint8Array {
   const len = msg.length
@@ -29,7 +29,7 @@ export function unPad(padded: Uint8Array): Uint8Array {
   return padded.subarray(2, 2 + len)
 }
 
-// -- Lazy pad/unPad (file encryption) — Crypto/Lazy.hs:70
+// -- Lazy pad/unPad (file encryption) -- Crypto/Lazy.hs:70
 
 export function padLazy(msg: Uint8Array, msgLen: bigint, padLen: bigint): Uint8Array {
   const fillLen = padLen - msgLen - 8n
@@ -47,7 +47,7 @@ export function unPadLazy(padded: Uint8Array): Uint8Array {
   return splitLen(padded).content
 }
 
-// splitLen: extract 8-byte Int64 length and content — Crypto/Lazy.hs:96
+// splitLen: extract 8-byte Int64 length and content -- Crypto/Lazy.hs:96
 // Does not fail if content is shorter than declared length (for chunked decryption).
 export function splitLen(data: Uint8Array): {len: bigint; content: Uint8Array} {
   if (data.length < 8) throw new Error("splitLen: input too short")

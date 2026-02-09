@@ -1,4 +1,4 @@
-// Key generation, signing, DH — Simplex.Messaging.Crypto (Ed25519/X25519/Ed448 functions).
+// Key generation, signing, DH -- Simplex.Messaging.Crypto (Ed25519/X25519/Ed448 functions).
 
 import sodium from "libsodium-wrappers-sumo"
 import {ed448} from "@noble/curves/ed448"

@@ -4,7 +4,13 @@ import {initDownload} from './download.js'
 
 async function main() {
   await sodium.ready
+  initApp()
 
+  // Handle hash changes (SPA navigation)
+  window.addEventListener('hashchange', initApp)
+}
+
+function initApp() {
   const app = document.getElementById('app')!
   const hash = window.location.hash.slice(1)
 

@@ -1,4 +1,4 @@
-// XFTP chunk sizing — Simplex.FileTransfer.Chunks + Client
+// XFTP chunk sizing -- Simplex.FileTransfer.Chunks + Client
 //
 // Computes chunk sizes for file uploads, chunk specifications with offsets,
 // and per-chunk SHA-256 digests.
@@ -6,7 +6,7 @@
 import {kb, mb} from "./description.js"
 import {sha256} from "../crypto/digest.js"
 
-// ── Chunk size constants (Simplex.FileTransfer.Chunks) ──────────
+// -- Chunk size constants (Simplex.FileTransfer.Chunks)
 
 export const chunkSize0 = kb(64)   // 65536
 export const chunkSize1 = kb(256)  // 262144
@@ -15,12 +15,12 @@ export const chunkSize3 = mb(4)    // 4194304
 
 export const serverChunkSizes = [chunkSize0, chunkSize1, chunkSize2, chunkSize3]
 
-// ── Size constants ──────────────────────────────────────────────
+// -- Size constants
 
 export const fileSizeLen = 8     // 64-bit file size prefix (padLazy)
 export const authTagSize = 16   // Poly1305 authentication tag
 
-// ── Chunk sizing (Simplex.FileTransfer.Client.prepareChunkSizes) ─
+// -- Chunk sizing (Simplex.FileTransfer.Client.prepareChunkSizes)
 
 function size34(sz: number): number {
   return Math.floor((sz * 3) / 4)
@@ -60,7 +60,7 @@ export function singleChunkSize(payloadSize: number): number | null {
   return null
 }
 
-// ── Chunk specs ─────────────────────────────────────────────────
+// -- Chunk specs
 
 export interface ChunkSpec {
   chunkOffset: number
@@ -79,7 +79,7 @@ export function prepareChunkSpecs(chunkSizes: number[]): ChunkSpec[] {
   return specs
 }
 
-// ── Chunk digest ────────────────────────────────────────────────
+// -- Chunk digest
 
 export function getChunkDigest(chunk: Uint8Array): Uint8Array {
   return sha256(chunk)

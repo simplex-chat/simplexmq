@@ -71,6 +71,9 @@ export function initDownload(app: HTMLElement, hash: string) {
 
     try {
       const resolvedFd = await downloadFileRaw(agent, fd, async (raw) => {
+        console.error(`[MAIN THREAD] chunkNo=${raw.chunkNo} dhSecret=${Array.from(raw.dhSecret).map(b => b.toString(16).padStart(2, '0')).join('')}`)
+        console.error(`[MAIN THREAD] chunkNo=${raw.chunkNo} nonce=${Array.from(raw.nonce).map(b => b.toString(16).padStart(2, '0')).join('')}`)
+        console.error(`[MAIN THREAD] chunkNo=${raw.chunkNo} body.length=${raw.body.length} first16=${Array.from(raw.body.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join('')} last16=${Array.from(raw.body.slice(-16)).map(b => b.toString(16).padStart(2, '0')).join('')}`)
         await backend.decryptAndStoreChunk(
           raw.dhSecret, raw.nonce, raw.body, raw.digest, raw.chunkNo
         )
@@ -78,7 +81,7 @@ export function initDownload(app: HTMLElement, hash: string) {
         onProgress: (downloaded, total) => {
           ring.update(downloaded / total * 0.8)
         },
-        concurrency: 3
+        concurrency: 1  // Disabled concurrency for debugging
       })
 
       statusText.textContent = 'Decrypting…'

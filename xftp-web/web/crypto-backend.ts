@@ -82,9 +82,14 @@ class WorkerBackend implements CryptoBackend {
     dhSecret: Uint8Array, nonce: Uint8Array,
     body: Uint8Array, digest: Uint8Array, chunkNo: number
   ): Promise<void> {
+    // Copy arrays to ensure clean ArrayBuffer separation before worker transfer
+    // nonce/dhSecret may be subarrays sharing buffer with body
+    const dhSecretCopy = new Uint8Array(dhSecret)
+    const nonceCopy = new Uint8Array(nonce)
+    const digestCopy = new Uint8Array(digest)
     const buf = this.toTransferable(body)
     await this.send(
-      {type: 'decryptAndStoreChunk', dhSecret, nonce, body: buf, chunkDigest: digest, chunkNo},
+      {type: 'decryptAndStoreChunk', dhSecret: dhSecretCopy, nonce: nonceCopy, body: buf, chunkDigest: digestCopy, chunkNo},
       [buf]
     )
   }

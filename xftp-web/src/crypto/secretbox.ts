@@ -1,4 +1,4 @@
-// Streaming XSalsa20-Poly1305 — Simplex.Messaging.Crypto / Crypto.Lazy
+// Streaming XSalsa20-Poly1305 -- Simplex.Messaging.Crypto / Crypto.Lazy
 //
 // Libsodium-wrappers-sumo does not expose crypto_stream_xsalsa20_xor_ic,
 // so the Salsa20/20 stream cipher core is implemented here.
@@ -14,7 +14,7 @@ const _sodium = sodium as unknown as {
   crypto_core_hsalsa20(input: Uint8Array, key: Uint8Array, constant?: Uint8Array): Uint8Array
 } & typeof sodium
 
-// ── Salsa20/20 stream cipher core ───────────────────────────────
+// -- Salsa20/20 stream cipher core
 
 function readU32LE(buf: Uint8Array, off: number): number {
   return ((buf[off] | (buf[off + 1] << 8) | (buf[off + 2] << 16) | (buf[off + 3] << 24)) >>> 0)
@@ -86,7 +86,7 @@ function salsa20Block(key: Uint8Array, nonce8: Uint8Array, counter: number): Uin
   return out
 }
 
-// ── Streaming state ─────────────────────────────────────────────
+// -- Streaming state
 
 export interface SbState {
   _subkey: Uint8Array
@@ -132,7 +132,7 @@ export function sbAuth(state: SbState): Uint8Array {
   return sodium.crypto_onetimeauth_final(state._authState)
 }
 
-// ── High-level: tail tag (tag appended) ─────────────────────────
+// -- High-level: tail tag (tag appended)
 
 export function sbEncryptTailTag(
   key: Uint8Array, nonce: Uint8Array,
@@ -160,7 +160,7 @@ export function sbDecryptTailTag(
   return {valid, content}
 }
 
-// ── Tag-prepended secretbox (Haskell Crypto.hs:cryptoBox) ───────
+// -- Tag-prepended secretbox (Haskell Crypto.hs:cryptoBox)
 
 export function cryptoBox(key: Uint8Array, nonce: Uint8Array, msg: Uint8Array): Uint8Array {
   const state = sbInit(key, nonce)
@@ -189,7 +189,7 @@ export function cbDecrypt(
   return unPad(plaintext)
 }
 
-// ── Internal ────────────────────────────────────────────────────
+// -- Internal
 
 function xorKeystream(state: SbState, data: Uint8Array): Uint8Array {
   const result = new Uint8Array(data.length)

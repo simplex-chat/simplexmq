@@ -1,9 +1,9 @@
-// XFTP file description encoding/decoding — Simplex.FileTransfer.Description
+// XFTP file description encoding/decoding -- Simplex.FileTransfer.Description
 //
 // Handles YAML-encoded file descriptions matching Haskell Data.Yaml output format.
 // Base64url encoding matches Haskell Data.ByteString.Base64.URL.encode (with padding).
 
-// ── Base64url (RFC 4648 §5) with '=' padding ───────────────────
+// -- Base64url (RFC 4648 section 5) with '=' padding
 
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 const B64_DECODE = new Uint8Array(128)
@@ -61,7 +61,7 @@ export function base64urlDecode(s: string): Uint8Array {
   return out
 }
 
-// ── FileSize encoding/decoding ──────────────────────────────────
+// -- FileSize encoding/decoding
 
 export const kb = (n: number): number => n * 1024
 export const mb = (n: number): number => n * 1048576
@@ -84,7 +84,7 @@ export function decodeFileSize(s: string): number {
   return parseInt(s)
 }
 
-// ── Types ───────────────────────────────────────────────────────
+// -- Types
 
 export type FileParty = "recipient" | "sender"
 
@@ -117,7 +117,7 @@ export interface FileChunkReplica {
   replicaKey: Uint8Array // DER-encoded private key
 }
 
-// ── Internal: flat server replica ───────────────────────────────
+// -- Internal: flat server replica
 
 interface FileServerReplica {
   chunkNo: number
@@ -128,7 +128,7 @@ interface FileServerReplica {
   chunkSize: number | null
 }
 
-// ── Server replica colon-separated format ───────────────────────
+// -- Server replica colon-separated format
 
 function encodeServerReplica(r: FileServerReplica): string {
   let s = r.chunkNo + ":" + base64urlEncode(r.replicaId) + ":" + base64urlEncode(r.replicaKey)
@@ -150,7 +150,7 @@ function decodeServerReplica(server: string, s: string): FileServerReplica {
   }
 }
 
-// ── Unfold chunks to flat replicas ──────────────────────────────
+// -- Unfold chunks to flat replicas
 
 function unfoldChunksToReplicas(defChunkSize: number, chunks: FileChunk[]): FileServerReplica[] {
   const result: FileServerReplica[] = []
@@ -169,14 +169,14 @@ function unfoldChunksToReplicas(defChunkSize: number, chunks: FileChunk[]): File
   return result
 }
 
-// ── Group replicas by server (for YAML encoding) ────────────────
+// -- Group replicas by server (for YAML encoding)
 
 function encodeFileReplicas(
   defChunkSize: number, chunks: FileChunk[]
 ): {server: string, chunks: string[]}[] {
   const flat = unfoldChunksToReplicas(defChunkSize, chunks)
   // Sort by server URI string (matches Haskell Ord for ProtocolServer when
-  // all servers share the same scheme and keyHash — true for typical use).
+  // all servers share the same scheme and keyHash -- true for typical use).
   flat.sort((a, b) => a.server < b.server ? -1 : a.server > b.server ? 1 : 0)
   const groups: {server: string, chunks: string[]}[] = []
   for (const r of flat) {
@@ -189,7 +189,7 @@ function encodeFileReplicas(
   return groups
 }
 
-// ── Fold flat replicas back into FileChunks ─────────────────────
+// -- Fold flat replicas back into FileChunks
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false
@@ -233,7 +233,7 @@ function foldReplicasToChunks(defChunkSize: number, replicas: FileServerReplica[
   return Array.from(chunkMap.values()).sort((a, b) => a.chunkNo - b.chunkNo)
 }
 
-// ── YAML encoding (matching Data.Yaml key ordering) ─────────────
+// -- YAML encoding (matching Data.Yaml key ordering)
 
 export function encodeFileDescription(fd: FileDescription): string {
   const lines: string[] = []
@@ -261,7 +261,7 @@ export function encodeFileDescription(fd: FileDescription): string {
   return lines.join("\n") + "\n"
 }
 
-// ── YAML decoding ───────────────────────────────────────────────
+// -- YAML decoding
 
 export function decodeFileDescription(yaml: string): FileDescription {
   const lines = yaml.split("\n")
@@ -348,7 +348,7 @@ function parseReplicaField(
   return nextIdx
 }
 
-// ── Validation ──────────────────────────────────────────────────
+// -- Validation
 
 export function validateFileDescription(fd: FileDescription): string | null {
   for (let i = 0; i < fd.chunks.length; i++) {
