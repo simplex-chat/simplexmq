@@ -194,7 +194,8 @@ test.describe('Edge Cases', () => {
     await downloadPage.gotoWithLink(link)
     const download = await downloadPage.clickDownload()
 
-    expect(download.suggestedFilename()).toBe(fileName)
+    // Browser download attribute uses encodeURIComponent for non-ASCII filenames
+    expect(download.suggestedFilename()).toBe(encodeURIComponent(fileName))
   })
 
   test('upload and download file with spaces', async ({uploadPage, downloadPage}) => {
@@ -206,7 +207,8 @@ test.describe('Edge Cases', () => {
     await downloadPage.gotoWithLink(link)
     const download = await downloadPage.clickDownload()
 
-    expect(download.suggestedFilename()).toBe(fileName)
+    // Browser download attribute uses encodeURIComponent for the filename
+    expect(download.suggestedFilename()).toBe(encodeURIComponent(fileName))
   })
 
   test('filename with path separators is sanitized', async ({uploadPage, downloadPage}) => {
@@ -245,8 +247,8 @@ test.describe('Edge Cases', () => {
     // Intercept and abort server requests after encryption starts
     await uploadPage.page.route('**/*', route => {
       const url = route.request().url()
-      // Only abort XFTP server requests, not the web page
-      if (url.includes(':443') && route.request().method() !== 'GET') {
+      // Only abort XFTP server requests (HTTPS), not the web page (HTTP)
+      if (url.startsWith('https://') && route.request().method() !== 'GET') {
         route.abort('failed')
       } else {
         route.continue()
@@ -267,7 +269,7 @@ test.describe('Edge Cases', () => {
     const link = await upload.waitForShareLink()
     const hash = upload.getHashFromLink(link)
 
-    // Open two tabs and download concurrently
+    // Open two tabs and download concurrently (shared HTTP/2 connection)
     const page2 = await context.newPage()
     const page3 = await context.newPage()
     const dl2 = new DownloadPage(page2)

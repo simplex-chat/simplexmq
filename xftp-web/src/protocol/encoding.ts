@@ -157,24 +157,18 @@ export function decodeBool(d: Decoder): boolean {
   throw new Error("decodeBool: invalid tag " + byte)
 }
 
-// -- String: encode as ByteString via Latin-1 (Encoding.hs:159)
-// Haskell's B.pack converts String (list of Char) to ByteString using Latin-1.
+// -- String/Text: encode as UTF-8 ByteString (Encoding.hs)
+// Matches Haskell's Encoding Text instance: encodeUtf8/decodeUtf8.
+
+const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 
 export function encodeString(s: string): Uint8Array {
-  const bytes = new Uint8Array(s.length)
-  for (let i = 0; i < s.length; i++) {
-    bytes[i] = s.charCodeAt(i) & 0xFF
-  }
-  return encodeBytes(bytes)
+  return encodeBytes(textEncoder.encode(s))
 }
 
 export function decodeString(d: Decoder): string {
-  const bs = decodeBytes(d)
-  let s = ""
-  for (let i = 0; i < bs.length; i++) {
-    s += String.fromCharCode(bs[i])
-  }
-  return s
+  return textDecoder.decode(decodeBytes(d))
 }
 
 // -- Maybe: '0' for Nothing, '1' + encoded value for Just (Encoding.hs:114)

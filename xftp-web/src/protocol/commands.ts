@@ -77,8 +77,6 @@ export function encodeFGET(rcvDhKey: Uint8Array): Uint8Array {
   return concatBytes(ascii("FGET"), SPACE, encodeBytes(rcvDhKey))
 }
 
-export function encodeFACK(): Uint8Array { return ascii("FACK") }
-
 export function encodePING(): Uint8Array { return ascii("PING") }
 
 // -- Response decoding

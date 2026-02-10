@@ -22,6 +22,6 @@ export default defineConfig({
     // Run setup script first (starts XFTP server + proxy), then build, then preview
     command: 'npx tsx test/runSetup.ts && npx vite build --mode development && npx vite preview --mode development',
     url: 'http://localhost:4173',
-    reuseExistingServer: !process.env.CI
+    reuseExistingServer: false
   },
 })

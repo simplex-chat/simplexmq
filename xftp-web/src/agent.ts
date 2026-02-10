@@ -16,7 +16,7 @@ import {
 import type {FileInfo} from "./protocol/commands.js"
 import {
   getXFTPServerClient, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk, downloadXFTPChunkRaw,
-  ackXFTPChunk, deleteXFTPChunk, type XFTPClientAgent
+  deleteXFTPChunk, type XFTPClientAgent
 } from "./client.js"
 export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent} from "./client.js"
 import {processDownloadedFile, decryptReceivedChunk} from "./download.js"
@@ -302,21 +302,6 @@ export async function downloadFileRaw(
   return resolvedFd
 }
 
-export async function ackFileChunks(
-  agent: XFTPClientAgent, fd: FileDescription
-): Promise<void> {
-  for (const chunk of fd.chunks) {
-    const replica = chunk.replicas[0]
-    if (!replica) continue
-    try {
-      const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
-      const seed = decodePrivKeyEd25519(replica.replicaKey)
-      const kp = ed25519KeyPairFromSeed(seed)
-      await ackXFTPChunk(client, kp.privateKey, replica.replicaId)
-    } catch (_) {}
-  }
-}
-
 export async function downloadFile(
   agent: XFTPClientAgent,
   fd: FileDescription,
@@ -332,9 +317,7 @@ export async function downloadFile(
   if (combined.length !== resolvedFd.size) throw new Error("downloadFile: file size mismatch")
   const digest = sha512(combined)
   if (!digestEqual(digest, resolvedFd.digest)) throw new Error("downloadFile: file digest mismatch")
-  const result = processDownloadedFile(resolvedFd, chunks)
-  await ackFileChunks(agent, resolvedFd)
-  return result
+  return processDownloadedFile(resolvedFd, chunks)
 }
 
 async function resolveRedirect(
@@ -363,8 +346,6 @@ async function resolveRedirect(
   if (innerErr) throw new Error("resolveRedirect: inner description invalid: " + innerErr)
   if (innerFd.size !== fd.redirect!.size) throw new Error("resolveRedirect: redirect size mismatch")
   if (!digestEqual(innerFd.digest, fd.redirect!.digest)) throw new Error("resolveRedirect: redirect digest mismatch")
-  // ACK redirect chunks (best-effort)
-  await ackFileChunks(agent, fd)
   return innerFd
 }
 

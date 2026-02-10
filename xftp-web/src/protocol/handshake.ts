@@ -48,10 +48,11 @@ export interface XFTPClientHello {
   webChallenge: Uint8Array | null  // 32 random bytes for web handshake, or null for standard
 }
 
-// Encode client hello (NOT padded -- sent as raw POST body).
-// Wire format: smpEncode (Maybe ByteString)
+// Encode client hello (padded to XFTP_BLOCK_SIZE for web clients).
+// Wire format: smpEncode (Maybe ByteString), padded when webChallenge present
 export function encodeClientHello(hello: XFTPClientHello): Uint8Array {
-  return encodeMaybe(encodeBytes, hello.webChallenge)
+  const body = encodeMaybe(encodeBytes, hello.webChallenge)
+  return hello.webChallenge ? blockPad(body, XFTP_BLOCK_SIZE) : body
 }
 
 // -- Client handshake

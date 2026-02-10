@@ -16,7 +16,7 @@ import {
 import {verifyIdentityProof} from "./crypto/identity.js"
 import {generateX25519KeyPair, encodePubKeyX25519, dh} from "./crypto/keys.js"
 import {
-  encodeFNEW, encodeFADD, encodeFPUT, encodeFGET, encodeFDEL, encodeFACK, encodePING,
+  encodeFNEW, encodeFADD, encodeFPUT, encodeFGET, encodeFDEL, encodePING,
   decodeResponse, type FileResponse, type FileInfo
 } from "./protocol/commands.js"
 import {decryptReceivedChunk} from "./download.js"
@@ -159,7 +159,7 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
     const xftpVersion = vr.maxVersion
 
     // Step 4: send client handshake
-    const ack = await transport.post(encodeClientHandshake({xftpVersion, keyHash: server.keyHash}))
+    const ack = await transport.post(encodeClientHandshake({xftpVersion, keyHash: server.keyHash}), {"xftp-handshake": "1"})
     if (ack.length !== 0) throw new Error("connectXFTP: non-empty handshake ack")
 
     return {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
@@ -245,13 +245,6 @@ export async function deleteXFTPChunk(
   c: XFTPClient, spKey: Uint8Array, sId: Uint8Array
 ): Promise<void> {
   const {response} = await sendXFTPCommand(c, spKey, sId, encodeFDEL())
-  if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
-}
-
-export async function ackXFTPChunk(
-  c: XFTPClient, rpKey: Uint8Array, rId: Uint8Array
-): Promise<void> {
-  const {response} = await sendXFTPCommand(c, rpKey, rId, encodeFACK())
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 

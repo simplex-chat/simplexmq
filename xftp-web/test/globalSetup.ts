@@ -3,7 +3,7 @@ import {createHash} from 'crypto'
 import {createConnection, createServer} from 'net'
 import {resolve, join, dirname} from 'path'
 import {fileURLToPath} from 'url'
-import {readFileSync, mkdtempSync, writeFileSync, copyFileSync, existsSync, unlinkSync} from 'fs'
+import {readFileSync, mkdtempSync, writeFileSync, copyFileSync, existsSync, unlinkSync, openSync} from 'fs'
 import {tmpdir} from 'os'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -34,22 +34,16 @@ let server: ChildProcess | null = null
 let isOwner = false
 
 async function setup() {
-  // Check if an xftp-server is already running from a previous test
-  if (existsSync(SERVER_PID_FILE) && existsSync(PORT_FILE)) {
-    const serverPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf-8').trim(), 10)
-    const port = parseInt(readFileSync(PORT_FILE, 'utf-8').trim(), 10)
+  // Kill any stale server from a previous run
+  if (existsSync(SERVER_PID_FILE)) {
     try {
-      process.kill(serverPid, 0) // check if server process exists
-      // Server is alive — wait for it to be ready and reuse
-      await waitForPort(port)
-      console.log('[runSetup] Reusing existing xftp-server on port', port)
-      return
-    } catch (_) {
-      // Server is dead — clean up stale files
-      try { unlinkSync(LOCK_FILE) } catch (_) {}
-      try { unlinkSync(SERVER_PID_FILE) } catch (_) {}
-      try { unlinkSync(PORT_FILE) } catch (_) {}
-    }
+      const serverPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf-8').trim(), 10)
+      process.kill(serverPid, 'SIGTERM')
+      await new Promise(r => setTimeout(r, 500))
+    } catch (_) {}
+    try { unlinkSync(LOCK_FILE) } catch (_) {}
+    try { unlinkSync(SERVER_PID_FILE) } catch (_) {}
+    try { unlinkSync(PORT_FILE) } catch (_) {}
   }
 
   // Find a free port dynamically
@@ -98,6 +92,11 @@ key: ${join(fixtures, 'web.key')}
   // Resolve binary path once (avoids cabal rebuild check on every run)
   const serverBin = execSync('cabal -v0 list-bin xftp-server', {encoding: 'utf-8'}).trim()
 
+  // Redirect server stderr to file so logs survive after setup exits
+  const serverLogPath = join(tmpdir(), 'xftp-test-server.log')
+  const stderrFd = openSync(serverLogPath, 'w')
+  console.log('[runSetup] Server log:', serverLogPath)
+
   // Spawn xftp-server as detached process so runSetup.ts can exit
   server = spawn(serverBin, ['start'], {
     env: {
@@ -105,12 +104,8 @@ key: ${join(fixtures, 'web.key')}
       XFTP_SERVER_CFG_PATH: cfgDir,
       XFTP_SERVER_LOG_PATH: logDir
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'ignore', stderrFd],
     detached: true
-  })
-
-  server.stderr?.on('data', (data: Buffer) => {
-    console.error('[xftp-server]', data.toString())
   })
 
   // Poll-connect until the server is actually listening
@@ -119,9 +114,6 @@ key: ${join(fixtures, 'web.key')}
   // Store server PID for teardown
   writeFileSync(SERVER_PID_FILE, String(server.pid))
 
-  // Detach stdio so the setup process can exit
-  server.stdout?.destroy()
-  server.stderr?.destroy()
   server.unref()
 }
 
