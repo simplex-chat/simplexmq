@@ -6,6 +6,7 @@ import {tmpdir} from 'os'
 import presets from './web/servers.json'
 
 const PORT_FILE = join(tmpdir(), 'xftp-test-server.port')
+const FIXTURES = resolve(import.meta.dirname, '../tests/fixtures')
 
 const __dirname = import.meta.dirname
 
@@ -34,7 +35,7 @@ function cspPlugin(servers: string[], isDev: boolean): Plugin {
 
 // Compute fingerprint from ca.crt (SHA-256 of DER)
 function getFingerprint(): string {
-  const pem = readFileSync('../tests/fixtures/ca.crt', 'utf-8')
+  const pem = readFileSync(join(FIXTURES, 'ca.crt'), 'utf-8')
   const der = Buffer.from(pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, ''), 'base64')
   return createHash('sha256').update(der).digest('base64')
     .replace(/\+/g, '-').replace(/\//g, '_')
@@ -77,10 +78,16 @@ export default defineConfig(({mode}) => {
 
   plugins.push(cspPlugin(servers, mode === 'development'))
 
+  const httpsConfig = mode === 'development' ? {
+    key: readFileSync(join(FIXTURES, 'server.key')),
+    cert: readFileSync(join(FIXTURES, 'server.crt')),
+  } : undefined
+
   return {
     root: 'web',
     build: {outDir: resolve(__dirname, 'dist-web'), target: 'esnext'},
-    preview: {host: true},
+    server: httpsConfig ? {https: httpsConfig} : {},
+    preview: {host: true, https: httpsConfig},
     define,
     worker: {format: 'es' as const},
     plugins,
