@@ -9,10 +9,11 @@
     "postinstall": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs && npx playwright install chromium",
     "build": "tsc",
     "test": "vitest",
-    "dev": "vite --mode development",
-    "build:local": "vite build --mode development",
+    "dev": "npx tsx test/runSetup.ts && vite --mode development",
+    "build:local": "npx tsx test/runSetup.ts && vite build --mode development",
     "build:prod": "vite build --mode production",
     "preview": "vite preview",
+    "preview:local": "npm run build:local && vite preview",
     "preview:prod": "vite build --mode production && vite preview",
     "check:web": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test:page": "playwright test test/page.spec.ts"
