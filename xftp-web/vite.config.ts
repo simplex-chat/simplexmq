@@ -79,15 +79,15 @@ export default defineConfig(({mode}) => {
   plugins.push(cspPlugin(servers, mode === 'development'))
 
   const httpsConfig = mode === 'development' ? {
-    key: readFileSync(join(FIXTURES, 'server.key')),
-    cert: readFileSync(join(FIXTURES, 'server.crt')),
+    key: readFileSync(join(FIXTURES, 'web.key')),
+    cert: readFileSync(join(FIXTURES, 'web.crt')),
   } : undefined
 
   return {
     root: 'web',
     build: {outDir: resolve(__dirname, 'dist-web'), target: 'esnext'},
     server: httpsConfig ? {https: httpsConfig} : {},
-    preview: {host: true, https: httpsConfig},
+    preview: {host: true, https: false},
     define,
     worker: {format: 'es' as const},
     plugins,
