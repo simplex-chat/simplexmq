@@ -432,7 +432,7 @@ getCerts tls =
 testSNICertSelection :: Expectation
 testSNICertSelection =
   withXFTPServerSNI $ \_ -> do
-    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
@@ -458,7 +458,7 @@ testNoSNICertSelection =
 testCORSHeaders :: Expectation
 testCORSHeaders =
   withXFTPServerSNI $ \_ -> do
-    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
@@ -472,7 +472,7 @@ testCORSHeaders =
 testCORSPreflight :: Expectation
 testCORSPreflight =
   withXFTPServerSNI $ \_ -> do
-    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
@@ -505,10 +505,12 @@ testFileChunkDeliverySNI =
 testWebHandshake :: Expectation
 testWebHandshake =
   withXFTPServerSNI $ \_ -> do
-    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-    let keyHash = C.KeyHash fp
+    Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+    Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let webCaHash = C.KeyHash fpWeb
+        keyHash = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just keyHash) $ \(tls :: TLS 'TClient) -> do
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
       let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
       h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
       -- Send web challenge as XFTPClientHello
@@ -545,10 +547,12 @@ testWebHandshake =
 testWebReHandshake :: Expectation
 testWebReHandshake =
   withXFTPServerSNI $ \_ -> do
-    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-    let keyHash = C.KeyHash fp
+    Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+    Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let webCaHash = C.KeyHash fpWeb
+        keyHash = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just keyHash) $ \(tls :: TLS 'TClient) -> do
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
       let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
       h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
       g <- C.newRandom
