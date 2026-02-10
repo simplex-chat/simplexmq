@@ -41,6 +41,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -242,7 +243,8 @@ cliSendFile opts = cliSendFileOpts opts True $ printProgress "Uploaded"
 
 cliSendFileOpts :: SendOptions -> Bool -> (Int64 -> Int64 -> IO ()) -> ExceptT CLIError IO ()
 cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} printInfo notifyProgress = do
-  let (_, fileName) = splitFileName filePath
+  let (_, fileNameStr) = splitFileName filePath
+      fileName = T.pack fileNameStr
   liftIO $ when printInfo $ printNoNewLine "Encrypting file..."
   g <- liftIO C.newRandom
   (encPath, fdRcv, fdSnd, chunkSpecs, encSize) <- encryptFileForUpload g fileName
@@ -254,14 +256,14 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
   liftIO $ do
     let fdRcvs = createRcvFileDescriptions fdRcv sentChunks
         fdSnd' = createSndFileDescription fdSnd sentChunks
-    (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
+    (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileNameStr fdRcvs fdSnd'
     when printInfo $ do
       printNoNewLine "File uploaded!"
       putStrLn $ "\nSender file description: " <> fdSndPath
       putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
   where
-    encryptFileForUpload :: TVar ChaChaDRG -> String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
+    encryptFileForUpload :: TVar ChaChaDRG -> Text -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
     encryptFileForUpload g fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwE $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
@@ -430,13 +432,14 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
         when verbose $ putStrLn ""
       pure (chunkNo, chunkPath)
     downloadFileChunk _ _ _ _ _ _ = throwE $ CLIError "chunk has no replicas"
-    getFilePath :: String -> ExceptT String IO FilePath
-    getFilePath name =
-      case filePath of
-        Just path ->
-          ifM (doesDirectoryExist path) (uniqueCombine path name) $
-            ifM (doesFileExist path) (throwE "File already exists") (pure path)
-        _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
+    getFilePath :: Text -> ExceptT String IO FilePath
+    getFilePath name = case filePath of
+      Just path ->
+        ifM (doesDirectoryExist path) (uniqueCombine path name') $
+          ifM (doesFileExist path) (throwE "File already exists") (pure path)
+      _ -> (`uniqueCombine` name') . (</> "Downloads") =<< getHomeDirectory
+      where
+        name' = T.unpack name
     acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
     acknowledgeFileChunk a FileChunk {replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica

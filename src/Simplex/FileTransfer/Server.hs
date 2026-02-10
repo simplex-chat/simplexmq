@@ -167,26 +167,32 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
         Nothing -> processHello Nothing
-        Just (HandshakeSent pk) -> processClientHandshake pk
+        Just (HandshakeSent pk)
+          | webHello -> processHello (Just pk)
+          | otherwise -> processClientHandshake pk
         Just (HandshakeAccepted thParams)
           | webHello -> processHello (serverPrivKey <$> thAuth thParams)
+          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth)
           | otherwise -> pure $ Just thParams
       either sendError pure r
       where
         webHello = sniUsed && any (\(t, _) -> tokenKey t == "xftp-web-hello") (fst $ H.requestHeaders request)
+        webHandshake = sniUsed && any (\(t, _) -> tokenKey t == "xftp-handshake") (fst $ H.requestHeaders request)
         processHello pk_ = do
           challenge_ <-
             if
               | B.null bodyHead -> pure Nothing
               | sniUsed -> do
-                  XFTPClientHello {webChallenge} <- liftHS $ smpDecode bodyHead
+                  body <- liftHS $ C.unPad bodyHead
+                  XFTPClientHello {webChallenge} <- liftHS $ smpDecode body
                   pure webChallenge
               | otherwise -> throwE HANDSHAKE
-          (k, pk) <- maybe
-            (atomically . C.generateKeyPair =<< asks random)
-            (\pk -> pure (C.publicKey pk, pk))
-            pk_
-          atomically $ TM.insert sessionId (HandshakeSent pk) sessions
+          rng <- asks random
+          k <- atomically $ TM.lookup sessionId sessions >>= \case
+            Just (HandshakeSent pk') -> pure $ C.publicKey pk'
+            _ -> do
+              kp <- maybe (C.generateKeyPair rng) (\p -> pure (C.publicKey p, p)) pk_
+              fst kp <$ TM.insert sessionId (HandshakeSent $ snd kp) sessions
           let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
               webIdentityProof = C.sign serverSignKey . (<> sessionId) <$> challenge_
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey, webIdentityProof}
