@@ -514,8 +514,8 @@ testWebHandshake =
       -- Send web challenge as XFTPClientHello
       g <- C.newRandom
       challenge <- atomically $ C.randomBytes 32 g
-      let helloBody = smpEncode (XFTPClientHello {webChallenge = Just challenge})
-          helloReq = H2.requestBuilder "POST" "/" [] $ byteString helloBody
+      helloBody <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge})) xftpBlockSize
+      let helloReq = H2.requestBuilder "POST" "/" [] $ byteString helloBody
       resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000)
       let serverHsBody = bodyHead (HC.respBody resp1)
       -- Decode server handshake
@@ -554,7 +554,8 @@ testWebReHandshake =
       g <- C.newRandom
       -- First handshake
       challenge1 <- atomically $ C.randomBytes 32 g
-      let helloReq1 = H2.requestBuilder "POST" "/" [] $ byteString (smpEncode (XFTPClientHello {webChallenge = Just challenge1}))
+      helloBody1 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge1})) xftpBlockSize
+      let helloReq1 = H2.requestBuilder "POST" "/" [] $ byteString helloBody1
       resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000)
       serverHs1 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
       XFTPServerHandshake {sessionId = sid1} <- either error pure $ smpDecode serverHs1
@@ -563,7 +564,8 @@ testWebReHandshake =
       B.length (bodyHead (HC.respBody resp1b)) `shouldBe` 0
       -- Re-handshake on same connection with xftp-web-hello header
       challenge2 <- atomically $ C.randomBytes 32 g
-      let helloReq2 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString (smpEncode (XFTPClientHello {webChallenge = Just challenge2}))
+      helloBody2 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge2})) xftpBlockSize
+      let helloReq2 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody2
       resp2 <- either (error . show) pure =<< HC.sendRequest h2 helloReq2 (Just 5000000)
       serverHs2 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp2))
       XFTPServerHandshake {sessionId = sid2} <- either error pure $ smpDecode serverHs2

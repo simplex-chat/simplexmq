@@ -29,7 +29,7 @@ import System.Random (randomIO)
 import Data.X509.Validation (Fingerprint (..))
 import Simplex.FileTransfer.Client (prepareChunkSizes)
 import Simplex.FileTransfer.Description (FileDescription (..), FileSize (..), ValidFileDescription, pattern ValidFileDescription)
-import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), xftpBlockSize)
 import Simplex.FileTransfer.Transport (XFTPClientHello (..))
 import Simplex.FileTransfer.Types (FileHeader (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -1249,10 +1249,6 @@ tsCommandTests = describe "protocol/commands" $ do
           impCmd <> jsOut ("Cmd.encodeFGET(" <> jsUint8 dhKey <> ")")
       tsResult `shouldBe` expected
 
-    it "encodeFACK" $ do
-      tsResult <- callNode $ impCmd <> jsOut "Cmd.encodeFACK()"
-      tsResult `shouldBe` "FACK"
-
     it "encodePING" $ do
       tsResult <- callNode $ impCmd <> jsOut "Cmd.encodePING()"
       tsResult `shouldBe` "PING"
@@ -1527,7 +1523,7 @@ tsHandshakeTests = describe "protocol/handshake" $ do
 
     it "encodeClientHello (Just challenge)" $ do
       let challenge = B.pack [1 .. 32]
-          expected = smpEncode (XFTPClientHello {webChallenge = Just challenge})
+          expected = either (error . show) id $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge})) xftpBlockSize
       tsResult <-
         callNode $
           impHs
@@ -2859,7 +2855,7 @@ webHandshakeTest cfg caFile = do
              \});\
              \const client = http2.connect('https://' + server.host + ':' + server.port, {rejectUnauthorized: false});\
              \const challenge = new Uint8Array(crypto.randomBytes(32));\
-             \const s1 = client.request({':method': 'POST', ':path': '/'});\
+             \const s1 = client.request({':method': 'POST', ':path': '/', 'xftp-web-hello': '1'});\
              \s1.end(Buffer.from(Hs.encodeClientHello({webChallenge: challenge})));\
              \const hs = Hs.decodeServerHandshake(new Uint8Array(await readBody(s1)));\
              \const idOk = hs.webIdentityProof\
@@ -2867,7 +2863,7 @@ webHandshakeTest cfg caFile = do
              \sigBytes: hs.webIdentityProof, challenge, sessionId: hs.sessionId, keyHash: server.keyHash})\
              \ : false;\
              \const ver = hs.xftpVersionRange.maxVersion;\
-             \const s2 = client.request({':method': 'POST', ':path': '/'});\
+             \const s2 = client.request({':method': 'POST', ':path': '/', 'xftp-handshake': '1'});\
              \s2.end(Buffer.from(Hs.encodeClientHandshake({xftpVersion: ver, keyHash: server.keyHash})));\
              \const ack = await readBody(s2);\
              \client.close();"
@@ -2910,7 +2906,7 @@ fullRoundTripTest cfg caFile = do
         \import * as K from './dist/crypto/keys.js';\
         \import {sha256} from './dist/crypto/digest.js';\
         \import {connectXFTP, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk,\
-        \ ackXFTPChunk, addXFTPRecipients, deleteXFTPChunk, closeXFTP} from './dist/client.js';\
+        \ addXFTPRecipients, deleteXFTPChunk, closeXFTP} from './dist/client.js';\
         \await sodium.ready;\
         \const server = Addr.parseXFTPServer('"
           <> addr
@@ -2931,7 +2927,6 @@ fullRoundTripTest cfg caFile = do
              \await uploadXFTPChunk(c, sndKp.privateKey, senderId, chunkData);\
              \const dl1 = await downloadXFTPChunk(c, rcvKp1.privateKey, recipientIds[0], digest);\
              \const match1 = dl1.length === chunkData.length && dl1.every((b, i) => b === chunkData[i]);\
-             \await ackXFTPChunk(c, rcvKp1.privateKey, recipientIds[0]);\
              \const newIds = await addXFTPRecipients(c, sndKp.privateKey, senderId,\
              \  [K.encodePubKeyEd25519(rcvKp2.publicKey)]);\
              \const dl2 = await downloadXFTPChunk(c, rcvKp2.privateKey, newIds[0], digest);\
@@ -2994,11 +2989,13 @@ agentUploadDownloadTest cfg caFile = do
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
+             \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(50000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'test-file.bin');\
-             \const {rcvDescription, sndDescription, uri} = await Agent.uploadFile(server, encrypted);\
+             \const {rcvDescription, sndDescription, uri} = await Agent.uploadFile(agent, server, encrypted);\
              \const fd = Agent.decodeDescriptionURI(uri);\
-             \const {header, content} = await Agent.downloadFile(fd);\
+             \const {header, content} = await Agent.downloadFile(agent, fd);\
+             \Agent.closeXFTPAgent(agent);\
              \const nameMatch = header.fileName === 'test-file.bin' ? 1 : 0;\
              \const sizeMatch = content.length === originalData.length ? 1 : 0;\
              \let dataMatch = 1;\
@@ -3025,16 +3022,18 @@ agentDeleteTest cfg caFile = do
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
+             \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(50000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'del-test.bin');\
-             \const {rcvDescription, sndDescription} = await Agent.uploadFile(server, encrypted);\
-             \await Agent.deleteFile(sndDescription);\
+             \const {rcvDescription, sndDescription} = await Agent.uploadFile(agent, server, encrypted);\
+             \await Agent.deleteFile(agent, sndDescription);\
              \let deleted = 0;\
              \try {\
-             \  await Agent.downloadFile(rcvDescription);\
+             \  await Agent.downloadFile(agent, rcvDescription);\
              \} catch (e) {\
              \  deleted = 1;\
-             \};"
+             \}\
+             \Agent.closeXFTPAgent(agent);"
           <> jsOut "new Uint8Array([deleted])"
     result `shouldBe` B.pack [1]
 
@@ -3055,12 +3054,14 @@ agentRedirectTest cfg caFile = do
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
+             \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(100000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'redirect-test.bin');\
-             \const {rcvDescription, uri} = await Agent.uploadFile(server, encrypted, null, 50);\
+             \const {rcvDescription, uri} = await Agent.uploadFile(agent, server, encrypted, {redirectThreshold: 50});\
              \const fd = Agent.decodeDescriptionURI(uri);\
              \const hasRedirect = fd.redirect !== null ? 1 : 0;\
-             \const {header, content} = await Agent.downloadFile(fd);\
+             \const {header, content} = await Agent.downloadFile(agent, fd);\
+             \Agent.closeXFTPAgent(agent);\
              \const nameMatch = header.fileName === 'redirect-test.bin' ? 1 : 0;\
              \const sizeMatch = content.length === originalData.length ? 1 : 0;\
              \let dataMatch = 1;\
@@ -3089,9 +3090,11 @@ tsUploadHaskellDownloadTest cfg caFile = do
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
+             \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(50000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'ts-to-hs.bin');\
-             \const {rcvDescription} = await Agent.uploadFile(server, encrypted);\
+             \const {rcvDescription} = await Agent.uploadFile(agent, server, encrypted);\
+             \Agent.closeXFTPAgent(agent);\
              \const yaml = encodeFileDescription(rcvDescription);"
           <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"
     let vfd :: ValidFileDescription 'FRecipient = either error id $ strDecode yamlDesc
@@ -3122,9 +3125,11 @@ tsUploadRedirectHaskellDownloadTest cfg caFile = do
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
+             \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(100000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'ts-redirect-to-hs.bin');\
-             \const {rcvDescription} = await Agent.uploadFile(server, encrypted, null, 50);\
+             \const {rcvDescription} = await Agent.uploadFile(agent, server, encrypted, {redirectThreshold: 50});\
+             \Agent.closeXFTPAgent(agent);\
              \const yaml = encodeFileDescription(rcvDescription);"
           <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"
     let vfd@(ValidFileDescription fd) :: ValidFileDescription 'FRecipient = either error id $ strDecode yamlDesc
@@ -3151,28 +3156,31 @@ haskellUploadTsDownloadTest cfg = do
       (_, _, SFDONE _ [rfd]) <- sfGet sndr
       pure rfd
     let yamlDesc = strEncode vfd
+        tmpYaml = "tests/tmp/hs-to-ts-desc.yaml"
+        tmpData = "tests/tmp/hs-to-ts-data.bin"
+    B.writeFile tmpYaml yamlDesc
+    B.writeFile tmpData originalData
     result <-
       callNode $
-        "import sodium from 'libsodium-wrappers-sumo';\
+        "import fs from 'node:fs';\
+        \import sodium from 'libsodium-wrappers-sumo';\
         \import * as Agent from './dist/agent.js';\
         \import {decodeFileDescription, validateFileDescription} from './dist/protocol/description.js';\
         \await sodium.ready;\
-        \const yaml = Buffer.from("
-          <> jsUint8 yamlDesc
-          <> ").toString();\
-             \const fd = decodeFileDescription(yaml);\
-             \const err = validateFileDescription(fd);\
-             \if (err) throw new Error(err);\
-             \const {header, content} = await Agent.downloadFile(fd);\
-             \const nameMatch = header.fileName === 'hs-to-ts.bin' ? 1 : 0;\
-             \const sizeMatch = content.length === 50000 ? 1 : 0;\
-             \const expected = "
-          <> jsUint8 originalData
-          <> ";\
-             \let dataMatch = 1;\
-             \for (let i = 0; i < content.length; i++) {\
-             \  if (content[i] !== expected[i]) { dataMatch = 0; break; }\
-             \};"
+        \const yaml = fs.readFileSync('../tests/tmp/hs-to-ts-desc.yaml', 'utf-8');\
+        \const expected = new Uint8Array(fs.readFileSync('../tests/tmp/hs-to-ts-data.bin'));\
+        \const fd = decodeFileDescription(yaml);\
+        \const err = validateFileDescription(fd);\
+        \if (err) throw new Error(err);\
+        \const agent = Agent.newXFTPAgent();\
+        \const {header, content} = await Agent.downloadFile(agent, fd);\
+        \Agent.closeXFTPAgent(agent);\
+        \const nameMatch = header.fileName === 'hs-to-ts.bin' ? 1 : 0;\
+        \const sizeMatch = content.length === expected.length ? 1 : 0;\
+        \let dataMatch = 1;\
+        \for (let i = 0; i < content.length; i++) {\
+        \  if (content[i] !== expected[i]) { dataMatch = 0; break; }\
+        \};"
           <> jsOut "new Uint8Array([nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1]
 
