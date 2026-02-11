@@ -75,7 +75,7 @@ import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
-import System.IO (hPrint, hPutStrLn, universalNewlineMode)
+import System.IO (hPrint, hPutStrLn, stderr, universalNewlineMode)
 #ifdef slow_servers
 import System.Random (getStdRandom, randomR)
 #endif
@@ -179,12 +179,18 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         webHello = sniUsed && any (\(t, _) -> tokenKey t == "xftp-web-hello") (fst $ H.requestHeaders request)
         webHandshake = sniUsed && any (\(t, _) -> tokenKey t == "xftp-handshake") (fst $ H.requestHeaders request)
         processHello pk_ = do
+          liftIO $ hPutStrLn stderr $ "DEBUG processHello: bodyHead.len=" <> show (B.length bodyHead) <> " sniUsed=" <> show sniUsed <> " webHello=" <> show webHello
+          liftIO $ hPutStrLn stderr $ "DEBUG processHello: bodyHead first20=" <> show (B.take 20 bodyHead)
           challenge_ <-
             if
               | B.null bodyHead -> pure Nothing
               | sniUsed -> do
-                  body <- liftHS $ C.unPad bodyHead
-                  XFTPClientHello {webChallenge} <- liftHS $ smpDecode body
+                  let unpadResult = C.unPad bodyHead
+                  liftIO $ hPutStrLn stderr $ "DEBUG processHello: unPad result=" <> show (either show (\b -> "OK len=" <> show (B.length b) <> " bytes=" <> show (B.take 20 b)) unpadResult)
+                  body <- liftHS unpadResult
+                  let decodeResult = smpDecode body :: Either String XFTPClientHello
+                  liftIO $ hPutStrLn stderr $ "DEBUG processHello: smpDecode result=" <> show (either id (\(XFTPClientHello wc) -> "OK challenge=" <> show (fmap B.length wc)) decodeResult)
+                  XFTPClientHello {webChallenge} <- liftHS $ first show decodeResult
                   pure webChallenge
               | otherwise -> throwE HANDSHAKE
           rng <- asks random

@@ -85,18 +85,34 @@ export interface XFTPServerHandshake {
 //         sigBytes = ByteString (1-byte len prefix, empty for Nothing)
 // Trailing bytes (Tail) are ignored for forward compatibility.
 export function decodeServerHandshake(block: Uint8Array): XFTPServerHandshake {
+  console.log('[DEBUG decodeServerHandshake] block.length=%d', block.length)
   const raw = blockUnpad(block)
+  console.log('[DEBUG decodeServerHandshake] unpadded.length=%d content=%s', raw.length, String.fromCharCode(...raw.subarray(0, Math.min(40, raw.length))))
+  // Detect error responses (server sends padded error string like "HANDSHAKE")
+  if (raw.length < 20) {
+    const text = String.fromCharCode(...raw)
+    if (/^[A-Z_]+$/.test(text)) {
+      throw new Error("server handshake error: " + text)
+    }
+  }
   const d = new Decoder(raw)
   const xftpVersionRange = decodeVersionRange(d)
+  console.log('[DEBUG decodeServerHandshake] versionRange=%o offset=%d', xftpVersionRange, d.offset())
   const sessionId = decodeBytes(d)
+  console.log('[DEBUG decodeServerHandshake] sessionId.length=%d offset=%d', sessionId.length, d.offset())
   // CertChainPubKey: smpEncode (encodeCertChain certChain, SignedObject signedPubKey)
   const certChainDer = decodeNonEmpty(decodeLarge, d)
+  console.log('[DEBUG decodeServerHandshake] certChain.length=%d offset=%d', certChainDer.length, d.offset())
   const signedKeyDer = decodeLarge(d)
+  console.log('[DEBUG decodeServerHandshake] signedKey.length=%d offset=%d remaining=%d', signedKeyDer.length, d.offset(), d.remaining())
   // webIdentityProof: 1-byte length-prefixed ByteString (empty = Nothing)
   let webIdentityProof: Uint8Array | null = null
   if (d.remaining() > 0) {
     const sigBytes = decodeBytes(d)
+    console.log('[DEBUG decodeServerHandshake] webProof.length=%d', sigBytes.length)
     webIdentityProof = sigBytes.length === 0 ? null : sigBytes
+  } else {
+    console.log('[DEBUG decodeServerHandshake] no webIdentityProof (remaining=0)')
   }
   // Remaining bytes are Tail (ignored for forward compatibility)
   return {xftpVersionRange, sessionId, certChainDer, signedKeyDer, webIdentityProof}
