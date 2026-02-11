@@ -75,7 +75,7 @@ import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
-import System.IO (hPrint, hPutStrLn, universalNewlineMode)
+import System.IO (hPrint, hPutStrLn, stderr, universalNewlineMode)
 #ifdef slow_servers
 import System.Random (getStdRandom, randomR)
 #endif
@@ -165,15 +165,28 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
     xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, request, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
       s <- atomically $ TM.lookup sessionId sessions
+      let sessHex = B64.encode sessionId
       r <- runExceptT $ case s of
-        Nothing -> processHello Nothing
+        Nothing -> do
+          liftIO $ hPutStrLn stderr $ "DEBUG dispatch: Nothing sessId=" <> show sessHex <> " webHello=" <> show webHello
+          processHello Nothing
         Just (HandshakeSent pk)
-          | webHello -> processHello (Just pk)
-          | otherwise -> processClientHandshake pk
+          | webHello -> do
+              liftIO $ hPutStrLn stderr $ "DEBUG dispatch: HandshakeSent+webHello sessId=" <> show sessHex
+              processHello (Just pk)
+          | otherwise -> do
+              liftIO $ hPutStrLn stderr $ "DEBUG dispatch: HandshakeSent+handshake sessId=" <> show sessHex
+              processClientHandshake pk
         Just (HandshakeAccepted thParams)
-          | webHello -> processHello (serverPrivKey <$> thAuth thParams)
-          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth)
-          | otherwise -> pure $ Just thParams
+          | webHello -> do
+              liftIO $ hPutStrLn stderr $ "DEBUG dispatch: Accepted+webHello sessId=" <> show sessHex
+              processHello (serverPrivKey <$> thAuth thParams)
+          | webHandshake, Just auth <- thAuth thParams -> do
+              liftIO $ hPutStrLn stderr $ "DEBUG dispatch: Accepted+handshake sessId=" <> show sessHex
+              processClientHandshake (serverPrivKey auth)
+          | otherwise -> do
+              liftIO $ hPutStrLn stderr $ "DEBUG dispatch: Accepted+command sessId=" <> show sessHex
+              pure $ Just thParams
       either sendError pure r
       where
         webHello = sniUsed && any (\(t, _) -> tokenKey t == "xftp-web-hello") (fst $ H.requestHeaders request)
