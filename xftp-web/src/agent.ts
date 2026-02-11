@@ -6,7 +6,7 @@
 import pako from "pako"
 import {encryptFile, encodeFileHeader} from "./crypto/file.js"
 import {generateEd25519KeyPair, encodePubKeyEd25519, encodePrivKeyEd25519, decodePrivKeyEd25519, ed25519KeyPairFromSeed} from "./crypto/keys.js"
-import {sha512} from "./crypto/digest.js"
+import {sha512Streaming} from "./crypto/digest.js"
 import {prepareChunkSizes, prepareChunkSpecs, getChunkDigest, fileSizeLen, authTagSize} from "./protocol/chunks.js"
 import {
   encodeFileDescription, decodeFileDescription, validateFileDescription,
@@ -22,7 +22,6 @@ export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent, type TransportConfig
 import {processDownloadedFile, decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
 import {formatXFTPServer, parseXFTPServer} from "./protocol/address.js"
-import {concatBytes} from "./protocol/encoding.js"
 import type {FileHeader} from "./crypto/file.js"
 
 // -- Types
@@ -90,7 +89,7 @@ export function encryptFileForUpload(source: Uint8Array, fileName: string): Encr
   const chunkSizes = prepareChunkSizes(payloadSize)
   const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0))
   const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize)
-  const digest = sha512(encData)
+  const digest = sha512Streaming([encData])
   return {encData, digest, key, nonce, chunkSizes}
 }
 
@@ -306,9 +305,9 @@ export async function downloadFile(
       raw.dhSecret, raw.nonce, raw.body, raw.digest
     )
   }, {onProgress})
-  const combined = chunks.length === 1 ? chunks[0] : concatBytes(...chunks)
-  if (combined.length !== resolvedFd.size) throw new Error("downloadFile: file size mismatch")
-  const digest = sha512(combined)
+  const totalSize = chunks.reduce((s, c) => s + c.length, 0)
+  if (totalSize !== resolvedFd.size) throw new Error("downloadFile: file size mismatch")
+  const digest = sha512Streaming(chunks)
   if (!digestEqual(digest, resolvedFd.digest)) throw new Error("downloadFile: file digest mismatch")
   return processDownloadedFile(resolvedFd, chunks)
 }
@@ -329,8 +328,7 @@ async function resolveRedirect(
   }
   const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0)
   if (totalSize !== fd.size) throw new Error("resolveRedirect: redirect file size mismatch")
-  const combined = plaintextChunks.length === 1 ? plaintextChunks[0] : concatBytes(...plaintextChunks)
-  const digest = sha512(combined)
+  const digest = sha512Streaming(plaintextChunks)
   if (!digestEqual(digest, fd.digest)) throw new Error("resolveRedirect: redirect file digest mismatch")
   const {content: yamlBytes} = processDownloadedFile(fd, plaintextChunks)
   const yamlStr = new TextDecoder().decode(yamlBytes)
