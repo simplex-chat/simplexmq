@@ -30,6 +30,7 @@ export default defineConfig({
   plugins: [xftpServerPlugin()],
   test: {
     include: ['test/**/*.test.ts'],
+    exclude: ['test/**/*.node.test.ts'],
     browser: {
       enabled: true,
       provider: 'playwright',

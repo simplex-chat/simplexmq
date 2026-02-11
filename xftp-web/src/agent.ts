@@ -15,10 +15,10 @@ import {
 } from "./protocol/description.js"
 import type {FileInfo} from "./protocol/commands.js"
 import {
-  getXFTPServerClient, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk, downloadXFTPChunkRaw,
+  createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk, downloadXFTPChunkRaw,
   deleteXFTPChunk, type XFTPClientAgent
 } from "./client.js"
-export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent} from "./client.js"
+export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent, type TransportConfig} from "./client.js"
 import {processDownloadedFile, decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
 import {formatXFTPServer, parseXFTPServer} from "./protocol/address.js"
@@ -116,7 +116,6 @@ export async function uploadFile(
         : () => { throw new Error("uploadFile: readChunk required when encData is absent") })
   const total = encrypted.chunkSizes.reduce((a, b) => a + b, 0)
   const specs = prepareChunkSpecs(encrypted.chunkSizes)
-  const client = await getXFTPServerClient(agent, server)
   const sentChunks: SentChunk[] = []
   let uploaded = 0
   for (let i = 0; i < specs.length; i++) {
@@ -133,9 +132,9 @@ export async function uploadFile(
     }
     const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
     const {senderId, recipientIds} = await createXFTPChunk(
-      client, sndKp.privateKey, fileInfo, rcvKeysForChunk
+      agent, server, sndKp.privateKey, fileInfo, rcvKeysForChunk
     )
-    await uploadXFTPChunk(client, sndKp.privateKey, senderId, chunkData)
+    await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
     sentChunks.push({
       chunkNo, senderId, senderKey: sndKp.privateKey,
       recipientId: recipientIds[0], recipientKey: rcvKp.privateKey,
@@ -188,7 +187,6 @@ async function uploadRedirectDescription(
   server: XFTPServer,
   innerFd: FileDescription
 ): Promise<FileDescription> {
-  const client = await getXFTPServerClient(agent, server)
   const yaml = encodeFileDescription(innerFd)
   const yamlBytes = new TextEncoder().encode(yaml)
   const enc = encryptFileForUpload(yamlBytes, "")
@@ -208,9 +206,9 @@ async function uploadRedirectDescription(
     }
     const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
     const {senderId, recipientIds} = await createXFTPChunk(
-      client, sndKp.privateKey, fileInfo, rcvKeysForChunk
+      agent, server, sndKp.privateKey, fileInfo, rcvKeysForChunk
     )
-    await uploadXFTPChunk(client, sndKp.privateKey, senderId, chunkData)
+    await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
     sentChunks.push({
       chunkNo, senderId, senderKey: sndKp.privateKey,
       recipientId: recipientIds[0], recipientKey: rcvKp.privateKey,
@@ -267,25 +265,22 @@ export async function downloadFileRaw(
     fd = await resolveRedirect(agent, fd)
   }
   const resolvedFd = fd
-  // Pre-connect to avoid race condition under concurrency
-  const servers = new Set(resolvedFd.chunks.map(c => c.replicas[0]?.server).filter(Boolean) as string[])
-  for (const s of servers) {
-    await getXFTPServerClient(agent, parseXFTPServer(s))
-  }
-  // Sliding-window parallel download
+  // Group chunks by server, sequential within each server, parallel across servers
   let downloaded = 0
-  const queue = resolvedFd.chunks.slice()
-  let idx = 0
-  async function worker() {
-    while (idx < queue.length) {
-      const i = idx++
-      const chunk = queue[i]
+  const byServer = new Map<string, typeof resolvedFd.chunks>()
+  for (const chunk of resolvedFd.chunks) {
+    const srv = chunk.replicas[0]?.server ?? ""
+    if (!byServer.has(srv)) byServer.set(srv, [])
+    byServer.get(srv)!.push(chunk)
+  }
+  await Promise.all([...byServer.entries()].map(async ([srv, chunks]) => {
+    const server = parseXFTPServer(srv)
+    for (const chunk of chunks) {
       const replica = chunk.replicas[0]
       if (!replica) throw new Error("downloadFileRaw: chunk has no replicas")
-      const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
       const seed = decodePrivKeyEd25519(replica.replicaKey)
       const kp = ed25519KeyPairFromSeed(seed)
-      const raw = await downloadXFTPChunkRaw(client, kp.privateKey, replica.replicaId)
+      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId)
       await onRawChunk({
         chunkNo: chunk.chunkNo,
         dhSecret: raw.dhSecret,
@@ -296,9 +291,7 @@ export async function downloadFileRaw(
       downloaded += chunk.chunkSize
       onProgress?.(downloaded, resolvedFd.size)
     }
-  }
-  const workers = Array.from({length: Math.min(concurrency, queue.length)}, () => worker())
-  await Promise.all(workers)
+  }))
   return resolvedFd
 }
 
@@ -328,10 +321,10 @@ async function resolveRedirect(
   for (const chunk of fd.chunks) {
     const replica = chunk.replicas[0]
     if (!replica) throw new Error("resolveRedirect: chunk has no replicas")
-    const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
+    const server = parseXFTPServer(replica.server)
     const seed = decodePrivKeyEd25519(replica.replicaKey)
     const kp = ed25519KeyPairFromSeed(seed)
-    const data = await downloadXFTPChunk(client, kp.privateKey, replica.replicaId, chunk.digest)
+    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.digest)
     plaintextChunks[chunk.chunkNo - 1] = data
   }
   const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0)
@@ -355,10 +348,10 @@ export async function deleteFile(agent: XFTPClientAgent, sndDescription: FileDes
   for (const chunk of sndDescription.chunks) {
     const replica = chunk.replicas[0]
     if (!replica) throw new Error("deleteFile: chunk has no replicas")
-    const client = await getXFTPServerClient(agent, parseXFTPServer(replica.server))
+    const server = parseXFTPServer(replica.server)
     const seed = decodePrivKeyEd25519(replica.replicaKey)
     const kp = ed25519KeyPairFromSeed(seed)
-    await deleteXFTPChunk(client, kp.privateKey, replica.replicaId)
+    await deleteXFTPChunk(agent, server, kp.privateKey, replica.replicaId)
   }
 }
 

@@ -17,11 +17,63 @@ import {verifyIdentityProof} from "./crypto/identity.js"
 import {generateX25519KeyPair, encodePubKeyX25519, dh} from "./crypto/keys.js"
 import {
   encodeFNEW, encodeFADD, encodeFPUT, encodeFGET, encodeFDEL, encodePING,
-  decodeResponse, type FileResponse, type FileInfo
+  decodeResponse, type FileResponse, type FileInfo, type XFTPErrorType
 } from "./protocol/commands.js"
 import {decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
+import {formatXFTPServer} from "./protocol/address.js"
 import {concatBytes} from "./protocol/encoding.js"
+import {blockUnpad} from "./protocol/transmission.js"
+
+// -- Error types
+
+export class XFTPRetriableError extends Error {
+  constructor(public readonly errorType: string) {
+    super(humanReadableMessage(errorType))
+    this.name = "XFTPRetriableError"
+  }
+}
+
+export class XFTPPermanentError extends Error {
+  constructor(public readonly errorType: string, message: string) {
+    super(message)
+    this.name = "XFTPPermanentError"
+  }
+}
+
+export function isRetriable(e: unknown): boolean {
+  if (e instanceof XFTPRetriableError) return true
+  if (e instanceof XFTPPermanentError) return false
+  if (e instanceof TypeError) return true  // fetch network error
+  if (e instanceof Error && e.name === "AbortError") return true  // timeout
+  return false
+}
+
+export function categorizeError(e: unknown): Error {
+  if (e instanceof XFTPRetriableError || e instanceof XFTPPermanentError) return e
+  if (e instanceof TypeError) return new XFTPRetriableError("NETWORK")
+  if (e instanceof Error && e.name === "AbortError") return new XFTPRetriableError("TIMEOUT")
+  return e instanceof Error ? e : new Error(String(e))
+}
+
+export function humanReadableMessage(errorType: string | XFTPErrorType): string {
+  const t = typeof errorType === "string" ? errorType : errorType.type
+  switch (t) {
+    case "SESSION": return "Session expired, reconnecting..."
+    case "HANDSHAKE": return "Connection interrupted, reconnecting..."
+    case "NETWORK": return "Network error, retrying..."
+    case "TIMEOUT": return "Server timeout, retrying..."
+    case "AUTH": return "File is invalid, expired, or has been removed"
+    case "NO_FILE": return "File not found — it may have expired"
+    case "SIZE": return "File size exceeds server limit"
+    case "QUOTA": return "Server storage quota exceeded"
+    case "BLOCKED": return "File has been blocked by server"
+    case "DIGEST": return "File integrity check failed"
+    case "INTERNAL": return "Server internal error"
+    case "CMD": return "Protocol error"
+    default: return "Server error: " + t
+  }
+}
 
 // -- Types
 
@@ -31,6 +83,12 @@ export interface XFTPClient {
   xftpVersion: number
   transport: Transport
 }
+
+export interface TransportConfig {
+  timeoutMs: number  // default 30000 (30s), lower for tests
+}
+
+const DEFAULT_TRANSPORT_CONFIG: TransportConfig = {timeoutMs: 30000}
 
 interface Transport {
   post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array>
@@ -45,21 +103,25 @@ const isNode = typeof globalThis.process !== "undefined" && globalThis.process.v
 // __XFTP_PROXY_PORT__ is injected by vite build (null in production)
 declare const __XFTP_PROXY_PORT__: string | null
 
-async function createTransport(baseUrl: string): Promise<Transport> {
+async function createTransport(baseUrl: string, config: TransportConfig): Promise<Transport> {
   if (isNode) {
-    return createNodeTransport(baseUrl)
+    return createNodeTransport(baseUrl, config)
   } else {
-    return createBrowserTransport(baseUrl)
+    return createBrowserTransport(baseUrl, config)
   }
 }
 
-async function createNodeTransport(baseUrl: string): Promise<Transport> {
+async function createNodeTransport(baseUrl: string, config: TransportConfig): Promise<Transport> {
   const http2 = await import("node:http2")
   const session = http2.connect(baseUrl, {rejectUnauthorized: false})
   return {
     async post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array> {
       return new Promise((resolve, reject) => {
         const req = session.request({":method": "POST", ":path": "/", ...headers})
+        req.setTimeout(config.timeoutMs, () => {
+          req.close()
+          reject(Object.assign(new Error("Request timeout"), {name: "AbortError"}))
+        })
         const chunks: Buffer[] = []
         req.on("data", (chunk: Buffer) => chunks.push(chunk))
         req.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
@@ -73,7 +135,7 @@ async function createNodeTransport(baseUrl: string): Promise<Transport> {
   }
 }
 
-function createBrowserTransport(baseUrl: string): Transport {
+function createBrowserTransport(baseUrl: string, config: TransportConfig): Transport {
   // In dev mode, route through /xftp-proxy to avoid self-signed cert rejection
   // __XFTP_PROXY_PORT__ is 'proxy' in dev mode (uses relative path), null in production
   const effectiveUrl = typeof __XFTP_PROXY_PORT__ !== 'undefined' && __XFTP_PROXY_PORT__
@@ -81,60 +143,107 @@ function createBrowserTransport(baseUrl: string): Transport {
     : baseUrl
   return {
     async post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array> {
-      const resp = await fetch(effectiveUrl, {
-        method: "POST",
-        headers,
-        body,
-      })
-      if (!resp.ok) {
-        console.error('[XFTP] fetch %s failed: %d %s', effectiveUrl, resp.status, resp.statusText)
-        throw new Error(`Server request failed: ${resp.status} ${resp.statusText}`)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), config.timeoutMs)
+      try {
+        const resp = await fetch(effectiveUrl, {
+          method: "POST",
+          headers,
+          body,
+          signal: controller.signal
+        })
+        if (!resp.ok) {
+          console.error('[XFTP] fetch %s failed: %d %s', effectiveUrl, resp.status, resp.statusText)
+          throw new Error(`Server request failed: ${resp.status} ${resp.statusText}`)
+        }
+        return new Uint8Array(await resp.arrayBuffer())
+      } finally {
+        clearTimeout(timer)
       }
-      return new Uint8Array(await resp.arrayBuffer())
     },
     close() {}
   }
 }
 
-// -- Client agent (connection pool)
+// -- Client agent (connection pool with Promise-based lock)
+
+interface ServerConnection {
+  client: Promise<XFTPClient>   // resolves to connected client; replaced on reconnect
+  queue: Promise<void>          // tail of sequential command chain
+}
 
 export interface XFTPClientAgent {
-  clients: Map<string, XFTPClient>
+  connections: Map<string, ServerConnection>
+  /** @internal Injectable for testing — defaults to connectXFTP */
+  _connectFn: (server: XFTPServer) => Promise<XFTPClient>
 }
 
 export function newXFTPAgent(): XFTPClientAgent {
-  return {clients: new Map()}
+  return {connections: new Map(), _connectFn: connectXFTP}
 }
 
-export async function getXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): Promise<XFTPClient> {
-  const key = "https://" + server.host + ":" + server.port
-  let c = agent.clients.get(key)
-  if (!c) {
-    c = await connectXFTP(server)
-    agent.clients.set(key, c)
+export function getXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): Promise<XFTPClient> {
+  const key = formatXFTPServer(server)
+  let conn = agent.connections.get(key)
+  if (!conn) {
+    const p = agent._connectFn(server)
+    conn = {client: p, queue: Promise.resolve()}
+    agent.connections.set(key, conn)
+    p.catch(() => {
+      const cur = agent.connections.get(key)
+      if (cur && cur.client === p) agent.connections.delete(key)
+    })
   }
-  return c
+  return conn.client
+}
+
+export function reconnectClient(agent: XFTPClientAgent, server: XFTPServer): Promise<XFTPClient> {
+  const key = formatXFTPServer(server)
+  const old = agent.connections.get(key)
+  old?.client.then(c => c.transport.close(), () => {})
+  const p = agent._connectFn(server)
+  const conn: ServerConnection = {client: p, queue: old?.queue ?? Promise.resolve()}
+  agent.connections.set(key, conn)
+  p.catch(() => {
+    const cur = agent.connections.get(key)
+    if (cur && cur.client === p) agent.connections.delete(key)
+  })
+  return p
+}
+
+export function removeStaleConnection(
+  agent: XFTPClientAgent, server: XFTPServer, failedP: Promise<XFTPClient>
+): void {
+  const key = formatXFTPServer(server)
+  const conn = agent.connections.get(key)
+  if (conn && conn.client === failedP) {
+    agent.connections.delete(key)
+    failedP.then(c => c.transport.close(), () => {})
+  }
 }
 
 export function closeXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): void {
-  const key = "https://" + server.host + ":" + server.port
-  const c = agent.clients.get(key)
-  if (c) {
-    agent.clients.delete(key)
-    c.transport.close()
+  const key = formatXFTPServer(server)
+  const conn = agent.connections.get(key)
+  if (conn) {
+    agent.connections.delete(key)
+    conn.client.then(c => c.transport.close(), () => {})
   }
 }
 
 export function closeXFTPAgent(agent: XFTPClientAgent): void {
-  for (const c of agent.clients.values()) c.transport.close()
-  agent.clients.clear()
+  for (const conn of agent.connections.values()) {
+    conn.client.then(c => c.transport.close(), () => {})
+  }
+  agent.connections.clear()
 }
 
 // -- Connect + handshake
 
-export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
+export async function connectXFTP(server: XFTPServer, config?: Partial<TransportConfig>): Promise<XFTPClient> {
+  const cfg: TransportConfig = {...DEFAULT_TRANSPORT_CONFIG, ...config}
   const baseUrl = "https://" + server.host + ":" + server.port
-  const transport = await createTransport(baseUrl)
+  const transport = await createTransport(baseUrl, cfg)
 
   try {
     // Step 1: send client hello with web challenge
@@ -185,9 +294,9 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
   }
 }
 
-// -- Send command
+// -- Send command (single attempt, no retry)
 
-async function sendXFTPCommand(
+async function sendXFTPCommandOnce(
   client: XFTPClient,
   privateKey: Uint8Array,
   entityId: Uint8Array,
@@ -204,38 +313,80 @@ async function sendXFTPCommand(
   }
   const respBlock = fullResp.subarray(0, XFTP_BLOCK_SIZE)
   const body = fullResp.subarray(XFTP_BLOCK_SIZE)
+  // Detect padded error strings (HANDSHAKE, SESSION) before decodeTransmission
+  const raw = blockUnpad(respBlock)
+  if (raw.length < 20) {
+    const text = new TextDecoder().decode(raw)
+    if (/^[A-Z_]+$/.test(text)) {
+      throw new XFTPRetriableError(text)
+    }
+  }
   const {command} = decodeTransmission(client.sessionId, respBlock)
   const response = decodeResponse(command)
   if (response.type === "FRErr") {
-    console.error('[XFTP] Server error: %s', response.err.type)
-    throw new Error("Server error: " + response.err.type)
+    const err = response.err
+    if (err.type === "SESSION" || err.type === "HANDSHAKE") {
+      throw new XFTPRetriableError(err.type)
+    }
+    throw new XFTPPermanentError(err.type, humanReadableMessage(err))
   }
   return {response, body}
+}
+
+// -- Send command (with retry + reconnect)
+
+export async function sendXFTPCommand(
+  agent: XFTPClientAgent,
+  server: XFTPServer,
+  privateKey: Uint8Array,
+  entityId: Uint8Array,
+  cmdBytes: Uint8Array,
+  chunkData?: Uint8Array,
+  maxRetries: number = 3
+): Promise<{response: FileResponse, body: Uint8Array}> {
+  let clientP = getXFTPServerClient(agent, server)
+  let client = await clientP
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await sendXFTPCommandOnce(client, privateKey, entityId, cmdBytes, chunkData)
+    } catch (e) {
+      if (!isRetriable(e)) {
+        throw categorizeError(e)
+      }
+      if (attempt === maxRetries) {
+        removeStaleConnection(agent, server, clientP)
+        throw categorizeError(e)
+      }
+      clientP = reconnectClient(agent, server)
+      client = await clientP
+    }
+  }
+  throw new Error("unreachable")
 }
 
 // -- Command wrappers
 
 export async function createXFTPChunk(
-  c: XFTPClient, spKey: Uint8Array, file: FileInfo,
+  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, file: FileInfo,
   rcvKeys: Uint8Array[], auth: Uint8Array | null = null
 ): Promise<{senderId: Uint8Array, recipientIds: Uint8Array[]}> {
-  const {response} = await sendXFTPCommand(c, spKey, new Uint8Array(0), encodeFNEW(file, rcvKeys, auth))
+  const {response} = await sendXFTPCommand(agent, server, spKey, new Uint8Array(0), encodeFNEW(file, rcvKeys, auth))
   if (response.type !== "FRSndIds") throw new Error("unexpected response: " + response.type)
   return {senderId: response.senderId, recipientIds: response.recipientIds}
 }
 
 export async function addXFTPRecipients(
-  c: XFTPClient, spKey: Uint8Array, fId: Uint8Array, rcvKeys: Uint8Array[]
+  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, fId: Uint8Array, rcvKeys: Uint8Array[]
 ): Promise<Uint8Array[]> {
-  const {response} = await sendXFTPCommand(c, spKey, fId, encodeFADD(rcvKeys))
+  const {response} = await sendXFTPCommand(agent, server, spKey, fId, encodeFADD(rcvKeys))
   if (response.type !== "FRRcvIds") throw new Error("unexpected response: " + response.type)
   return response.recipientIds
 }
 
 export async function uploadXFTPChunk(
-  c: XFTPClient, spKey: Uint8Array, fId: Uint8Array, chunkData: Uint8Array
+  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, fId: Uint8Array, chunkData: Uint8Array
 ): Promise<void> {
-  const {response} = await sendXFTPCommand(c, spKey, fId, encodeFPUT(), chunkData)
+  const {response} = await sendXFTPCommand(agent, server, spKey, fId, encodeFPUT(), chunkData)
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 
@@ -246,36 +397,37 @@ export interface RawChunkResponse {
 }
 
 export async function downloadXFTPChunkRaw(
-  c: XFTPClient, rpKey: Uint8Array, fId: Uint8Array
+  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array
 ): Promise<RawChunkResponse> {
   const {publicKey, privateKey} = generateX25519KeyPair()
   const cmd = encodeFGET(encodePubKeyX25519(publicKey))
-  const {response, body} = await sendXFTPCommand(c, rpKey, fId, cmd)
+  const {response, body} = await sendXFTPCommand(agent, server, rpKey, fId, cmd)
   if (response.type !== "FRFile") throw new Error("unexpected response: " + response.type)
   const dhSecret = dh(response.rcvDhKey, privateKey)
   return {dhSecret, nonce: response.nonce, body}
 }
 
 export async function downloadXFTPChunk(
-  c: XFTPClient, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
+  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
 ): Promise<Uint8Array> {
-  const {dhSecret, nonce, body} = await downloadXFTPChunkRaw(c, rpKey, fId)
+  const {dhSecret, nonce, body} = await downloadXFTPChunkRaw(agent, server, rpKey, fId)
   return decryptReceivedChunk(dhSecret, nonce, body, digest ?? null)
 }
 
 export async function deleteXFTPChunk(
-  c: XFTPClient, spKey: Uint8Array, sId: Uint8Array
+  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, sId: Uint8Array
 ): Promise<void> {
-  const {response} = await sendXFTPCommand(c, spKey, sId, encodeFDEL())
+  const {response} = await sendXFTPCommand(agent, server, spKey, sId, encodeFDEL())
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 
-export async function pingXFTP(c: XFTPClient): Promise<void> {
+export async function pingXFTP(agent: XFTPClientAgent, server: XFTPServer): Promise<void> {
+  const client = await getXFTPServerClient(agent, server)
   const corrId = new Uint8Array(0)
-  const block = encodeTransmission(c.sessionId, corrId, new Uint8Array(0), encodePING())
-  const fullResp = await c.transport.post(block)
+  const block = encodeTransmission(client.sessionId, corrId, new Uint8Array(0), encodePING())
+  const fullResp = await client.transport.post(block)
   if (fullResp.length < XFTP_BLOCK_SIZE) throw new Error("pingXFTP: response too short")
-  const {command} = decodeTransmission(c.sessionId, fullResp.subarray(0, XFTP_BLOCK_SIZE))
+  const {command} = decodeTransmission(client.sessionId, fullResp.subarray(0, XFTP_BLOCK_SIZE))
   const response = decodeResponse(command)
   if (response.type !== "FRPong") throw new Error("unexpected response: " + response.type)
 }

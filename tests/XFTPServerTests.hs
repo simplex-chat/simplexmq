@@ -85,6 +85,7 @@ xftpServerTests =
       it "should upload and receive file chunk through SNI-enabled server" testFileChunkDeliverySNI
       it "should complete web handshake with challenge-response" testWebHandshake
       it "should re-handshake on same connection with xftp-web-hello header" testWebReHandshake
+      it "should return padded SESSION error for stale web session" testStaleWebSession
 
 chSize :: Integral a => a
 chSize = kb 128
@@ -517,7 +518,7 @@ testWebHandshake =
       g <- C.newRandom
       challenge <- atomically $ C.randomBytes 32 g
       helloBody <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge})) xftpBlockSize
-      let helloReq = H2.requestBuilder "POST" "/" [] $ byteString helloBody
+      let helloReq = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody
       resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000)
       let serverHsBody = bodyHead (HC.respBody resp1)
       -- Decode server handshake
@@ -559,7 +560,7 @@ testWebReHandshake =
       -- First handshake
       challenge1 <- atomically $ C.randomBytes 32 g
       helloBody1 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge1})) xftpBlockSize
-      let helloReq1 = H2.requestBuilder "POST" "/" [] $ byteString helloBody1
+      let helloReq1 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody1
       resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000)
       serverHs1 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
       XFTPServerHandshake {sessionId = sid1} <- either error pure $ smpDecode serverHs1
@@ -577,3 +578,23 @@ testWebReHandshake =
       -- Complete re-handshake
       resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
       B.length (bodyHead (HC.respBody resp2b)) `shouldBe` 0
+
+testStaleWebSession :: Expectation
+testStaleWebSession =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+    let webCaHash = C.KeyHash fpWeb
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      -- Send a command on web connection without doing hello (no xftp-web-hello header)
+      dummyBody <- either (error . show) pure $ C.pad "PING" xftpBlockSize
+      let req = H2.requestBuilder "POST" "/" [] $ byteString dummyBody
+      resp <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      let respBody = bodyHead (HC.respBody resp)
+      -- Server should return padded SESSION error
+      B.length respBody `shouldBe` xftpBlockSize
+      decoded <- either (error . show) pure $ C.unPad respBody
+      decoded `shouldBe` smpEncode SESSION
+

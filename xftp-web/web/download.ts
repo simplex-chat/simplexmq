@@ -4,6 +4,7 @@ import {
   newXFTPAgent, closeXFTPAgent,
   decodeDescriptionURI, downloadFileRaw
 } from '../src/agent.js'
+import {XFTPPermanentError} from '../src/client.js'
 
 export function initDownload(app: HTMLElement, hash: string) {
   let fd: ReturnType<typeof decodeDescriptionURI>
@@ -108,7 +109,10 @@ export function initDownload(app: HTMLElement, hash: string) {
       ring.update(1)
       statusText.textContent = 'Download complete'
     } catch (err: any) {
-      showError(err?.message ?? String(err))
+      const msg = err?.message ?? String(err)
+      showError(msg)
+      if (err instanceof XFTPPermanentError) retryBtn.hidden = true
+      else retryBtn.hidden = false
     } finally {
       await backend.cleanup().catch(() => {})
       closeXFTPAgent(agent)

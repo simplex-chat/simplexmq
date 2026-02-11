@@ -5,6 +5,7 @@ import {
   newXFTPAgent, closeXFTPAgent, uploadFile, encodeDescriptionURI,
   type EncryptedFileMetadata
 } from '../src/agent.js'
+import {XFTPPermanentError} from '../src/client.js'
 
 const MAX_SIZE = 100 * 1024 * 1024
 
@@ -149,7 +150,13 @@ export function initUpload(app: HTMLElement) {
         })
       }
     } catch (err: any) {
-      if (!aborted) showError(err?.message ?? String(err))
+      if (!aborted) {
+        const msg = err?.message ?? String(err)
+        showError(msg)
+        // Hide retry button for permanent errors (no point retrying)
+        if (err instanceof XFTPPermanentError) retryBtn.hidden = true
+        else retryBtn.hidden = false
+      }
     } finally {
       await backend.cleanup().catch(() => {})
       closeXFTPAgent(agent)
