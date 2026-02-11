@@ -90,6 +90,7 @@ export function encryptFileForUpload(source: Uint8Array, fileName: string): Encr
   const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0))
   const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize)
   const digest = sha512Streaming([encData])
+  console.log(`[AGENT-DBG] encrypt: encData.len=${encData.length} digest=${_dbgHex(digest, 64)} chunkSizes=[${chunkSizes.join(',')}]`)
   return {encData, digest, key, nonce, chunkSizes}
 }
 
@@ -124,6 +125,7 @@ export async function uploadFile(
     const rcvKp = generateEd25519KeyPair()
     const chunkData = await readChunk(spec.chunkOffset, spec.chunkSize)
     const chunkDigest = getChunkDigest(chunkData)
+    console.log(`[AGENT-DBG] upload chunk=${chunkNo} offset=${spec.chunkOffset} size=${spec.chunkSize} digest=${_dbgHex(chunkDigest, 32)} data[0..8]=${_dbgHex(chunkData)} data[-8..]=${_dbgHex(chunkData.slice(-8))}`)
     const fileInfo: FileInfo = {
       sndKey: encodePubKeyEd25519(sndKp.publicKey),
       size: spec.chunkSize,
@@ -261,7 +263,9 @@ export async function downloadFileRaw(
   const {onProgress, concurrency = 1} = options ?? {}
   // Resolve redirect on main thread (redirect data is small)
   if (fd.redirect !== null) {
+    console.log(`[AGENT-DBG] resolving redirect: outer size=${fd.size} chunks=${fd.chunks.length}`)
     fd = await resolveRedirect(agent, fd)
+    console.log(`[AGENT-DBG] resolved: size=${fd.size} chunks=${fd.chunks.length} digest=${Array.from(fd.digest.slice(0, 16)).map(x => x.toString(16).padStart(2, '0')).join('')}…`)
   }
   const resolvedFd = fd
   // Group chunks by server, sequential within each server, parallel across servers
@@ -280,6 +284,7 @@ export async function downloadFileRaw(
       const seed = decodePrivKeyEd25519(replica.replicaKey)
       const kp = ed25519KeyPairFromSeed(seed)
       const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId)
+      console.log(`[AGENT-DBG] chunk=${chunk.chunkNo} body.len=${raw.body.length} expectedChunkSize=${chunk.chunkSize} digest=${_dbgHex(chunk.digest, 32)} body.byteOffset=${raw.body.byteOffset} body.buffer.byteLength=${raw.body.buffer.byteLength}`)
       await onRawChunk({
         chunkNo: chunk.chunkNo,
         dhSecret: raw.dhSecret,
@@ -354,6 +359,10 @@ export async function deleteFile(agent: XFTPClientAgent, sndDescription: FileDes
 }
 
 // -- Internal
+
+function _dbgHex(b: Uint8Array, n = 8): string {
+  return Array.from(b.slice(0, n)).map(x => x.toString(16).padStart(2, '0')).join('')
+}
 
 function digestEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false

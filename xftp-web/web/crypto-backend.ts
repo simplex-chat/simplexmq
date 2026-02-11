@@ -88,6 +88,11 @@ class WorkerBackend implements CryptoBackend {
     const nonceCopy = new Uint8Array(nonce)
     const digestCopy = new Uint8Array(digest)
     const buf = this.toTransferable(body)
+    const hex = (b: Uint8Array | ArrayBuffer, n = 8) => {
+      const u = b instanceof ArrayBuffer ? new Uint8Array(b) : b
+      return Array.from(u.slice(0, n)).map(x => x.toString(16).padStart(2, '0')).join('')
+    }
+    console.log(`[BACKEND-DBG] chunk=${chunkNo} body.len=${body.length} body.byteOff=${body.byteOffset} buf.byteLen=${buf.byteLength} nonce=${hex(nonceCopy, 24)} dhSecret=${hex(dhSecretCopy)} digest=${hex(digestCopy, 32)} buf[0..8]=${hex(buf)} body[-8..]=${hex(body.slice(-8))}`)
     await this.send(
       {type: 'decryptAndStoreChunk', dhSecret: dhSecretCopy, nonce: nonceCopy, body: buf, chunkDigest: digestCopy, chunkNo},
       [buf]
