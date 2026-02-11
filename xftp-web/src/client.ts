@@ -79,21 +79,18 @@ function createBrowserTransport(baseUrl: string): Transport {
   const effectiveUrl = typeof __XFTP_PROXY_PORT__ !== 'undefined' && __XFTP_PROXY_PORT__
     ? '/xftp-proxy'
     : baseUrl
-  console.log('[DEBUG transport] baseUrl=%s effectiveUrl=%s proxy=%s', baseUrl, effectiveUrl, __XFTP_PROXY_PORT__)
   return {
     async post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array> {
-      console.log('[DEBUG transport.post] url=%s bodyLen=%d headers=%o', effectiveUrl, body.length, headers)
       const resp = await fetch(effectiveUrl, {
         method: "POST",
         headers,
         body,
       })
-      console.log('[DEBUG transport.post] status=%d statusText=%s', resp.status, resp.statusText)
-      console.log('[DEBUG transport.post] response headers:', Object.fromEntries(resp.headers.entries()))
-      if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`)
-      const buf = new Uint8Array(await resp.arrayBuffer())
-      console.log('[DEBUG transport.post] responseLen=%d first16=%s', buf.length, Array.from(buf.subarray(0, 16)).map(b => b.toString(16).padStart(2,'0')).join(' '))
-      return buf
+      if (!resp.ok) {
+        console.error('[XFTP] fetch %s failed: %d %s', effectiveUrl, resp.status, resp.statusText)
+        throw new Error(`Server request failed: ${resp.status} ${resp.statusText}`)
+      }
+      return new Uint8Array(await resp.arrayBuffer())
     },
     close() {}
   }
@@ -141,20 +138,17 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
 
   try {
     // Step 1: send client hello with web challenge
-    console.log('[DEBUG connectXFTP] Step 1: sending client hello')
     const challenge = new Uint8Array(32)
     crypto.getRandomValues(challenge)
     const clientHelloBytes = encodeClientHello({webChallenge: challenge})
-    console.log('[DEBUG connectXFTP] clientHelloBytes.length=%d', clientHelloBytes.length)
     const shsBody = await transport.post(clientHelloBytes, {"xftp-web-hello": "1"})
-    console.log('[DEBUG connectXFTP] Step 1 done: shsBody.length=%d', shsBody.length)
 
     // Step 2: decode + verify server handshake
-    console.log('[DEBUG connectXFTP] Step 2: decoding server handshake')
     const hs = decodeServerHandshake(shsBody)
-    console.log('[DEBUG connectXFTP] Step 2 decoded: sessionId.length=%d certChain.length=%d signedKey.length=%d webProof=%s',
-      hs.sessionId.length, hs.certChainDer.length, hs.signedKeyDer.length, hs.webIdentityProof ? hs.webIdentityProof.length : 'null')
-    if (!hs.webIdentityProof) throw new Error("connectXFTP: no web identity proof")
+    if (!hs.webIdentityProof) {
+      console.error('[XFTP] Server did not provide web identity proof')
+      throw new Error("Server did not provide web identity proof")
+    }
     const idOk = verifyIdentityProof({
       certChainDer: hs.certChainDer,
       signedKeyDer: hs.signedKeyDer,
@@ -163,24 +157,29 @@ export async function connectXFTP(server: XFTPServer): Promise<XFTPClient> {
       sessionId: hs.sessionId,
       keyHash: server.keyHash
     })
-    console.log('[DEBUG connectXFTP] Step 2 identity verified=%s', idOk)
-    if (!idOk) throw new Error("connectXFTP: identity verification failed")
+    if (!idOk) {
+      console.error('[XFTP] Server identity verification failed')
+      throw new Error("Server identity verification failed")
+    }
 
     // Step 3: version negotiation
     const vr = compatibleVRange(hs.xftpVersionRange, {minVersion: initialXFTPVersion, maxVersion: currentXFTPVersion})
-    console.log('[DEBUG connectXFTP] Step 3: version range=%o negotiated=%o', hs.xftpVersionRange, vr)
-    if (!vr) throw new Error("connectXFTP: incompatible version")
+    if (!vr) {
+      console.error('[XFTP] Incompatible server version: %o', hs.xftpVersionRange)
+      throw new Error("Incompatible server version")
+    }
     const xftpVersion = vr.maxVersion
 
     // Step 4: send client handshake
-    console.log('[DEBUG connectXFTP] Step 4: sending client handshake v=%d', xftpVersion)
     const ack = await transport.post(encodeClientHandshake({xftpVersion, keyHash: server.keyHash}), {"xftp-handshake": "1"})
-    console.log('[DEBUG connectXFTP] Step 4 done: ack.length=%d', ack.length)
-    if (ack.length !== 0) throw new Error("connectXFTP: non-empty handshake ack")
+    if (ack.length !== 0) {
+      console.error('[XFTP] Non-empty handshake ack (%d bytes)', ack.length)
+      throw new Error("Server handshake failed")
+    }
 
-    console.log('[DEBUG connectXFTP] handshake complete, sessionId=%s', Array.from(hs.sessionId.subarray(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(''))
     return {baseUrl, sessionId: hs.sessionId, xftpVersion, transport}
   } catch (e) {
+    console.error('[XFTP] Connection to %s failed:', baseUrl, e)
     transport.close()
     throw e
   }
@@ -195,23 +194,22 @@ async function sendXFTPCommand(
   cmdBytes: Uint8Array,
   chunkData?: Uint8Array
 ): Promise<{response: FileResponse, body: Uint8Array}> {
-  const cmdTag = String.fromCharCode(...cmdBytes.subarray(0, 4))
-  console.log('[DEBUG sendXFTPCommand] cmd=%s entityId.len=%d chunkData=%s', cmdTag, entityId.length, chunkData ? chunkData.length : 'none')
   const corrId = new Uint8Array(0)
   const block = encodeAuthTransmission(client.sessionId, corrId, entityId, cmdBytes, privateKey)
   const reqBody = chunkData ? concatBytes(block, chunkData) : block
-  console.log('[DEBUG sendXFTPCommand] reqBody.length=%d (block=%d + chunk=%d)', reqBody.length, block.length, chunkData?.length ?? 0)
   const fullResp = await client.transport.post(reqBody)
-  console.log('[DEBUG sendXFTPCommand] fullResp.length=%d', fullResp.length)
-  if (fullResp.length < XFTP_BLOCK_SIZE) throw new Error("sendXFTPCommand: response too short (" + fullResp.length + " < " + XFTP_BLOCK_SIZE + ")")
+  if (fullResp.length < XFTP_BLOCK_SIZE) {
+    console.error('[XFTP] Response too short: %d bytes (expected >= %d)', fullResp.length, XFTP_BLOCK_SIZE)
+    throw new Error("Server response too short")
+  }
   const respBlock = fullResp.subarray(0, XFTP_BLOCK_SIZE)
   const body = fullResp.subarray(XFTP_BLOCK_SIZE)
-  console.log('[DEBUG sendXFTPCommand] respBlock first4: %s', Array.from(respBlock.subarray(0, 4)).map(b => b.toString(16).padStart(2,'0')).join(' '))
   const {command} = decodeTransmission(client.sessionId, respBlock)
-  console.log('[DEBUG sendXFTPCommand] decoded command=%s', String.fromCharCode(...command.subarray(0, Math.min(20, command.length))))
   const response = decodeResponse(command)
-  console.log('[DEBUG sendXFTPCommand] response.type=%s', response.type)
-  if (response.type === "FRErr") throw new Error("XFTP error: " + response.err.type)
+  if (response.type === "FRErr") {
+    console.error('[XFTP] Server error: %s', response.err.type)
+    throw new Error("Server error: " + response.err.type)
+  }
   return {response, body}
 }
 

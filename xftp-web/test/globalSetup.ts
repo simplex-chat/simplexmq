@@ -1,4 +1,4 @@
-import {spawn, execSync, ChildProcess} from 'child_process'
+import {spawn, ChildProcess} from 'child_process'
 import {createHash} from 'crypto'
 import {createConnection, createServer} from 'net'
 import {resolve, join, dirname} from 'path'
@@ -34,11 +34,11 @@ let server: ChildProcess | null = null
 let isOwner = false
 
 async function setup() {
-  // Kill any stale server from a previous run
+  // Kill any stale server from a previous run (negative PID kills process group)
   if (existsSync(SERVER_PID_FILE)) {
     try {
       const serverPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf-8').trim(), 10)
-      process.kill(serverPid, 'SIGTERM')
+      process.kill(-serverPid, 'SIGTERM')
       await new Promise(r => setTimeout(r, 500))
     } catch (_) {}
     try { unlinkSync(LOCK_FILE) } catch (_) {}
@@ -89,16 +89,13 @@ key: ${join(fixtures, 'web.key')}
 `
   writeFileSync(join(cfgDir, 'file-server.ini'), iniContent)
 
-  // Resolve binary path once (avoids cabal rebuild check on every run)
-  const serverBin = execSync('cabal -v0 list-bin xftp-server', {encoding: 'utf-8'}).trim()
-
   // Redirect server stderr to file so logs survive after setup exits
   const serverLogPath = join(tmpdir(), 'xftp-test-server.log')
   const stderrFd = openSync(serverLogPath, 'w')
   console.log('[runSetup] Server log:', serverLogPath)
 
-  // Spawn xftp-server as detached process so runSetup.ts can exit
-  server = spawn(serverBin, ['start'], {
+  // Spawn via cabal run to always use freshly built code
+  server = spawn('cabal', ['run', 'xftp-server', '--', 'start'], {
     env: {
       ...process.env,
       XFTP_SERVER_CFG_PATH: cfgDir,
@@ -118,11 +115,11 @@ key: ${join(fixtures, 'web.key')}
 }
 
 export async function teardown() {
-  // Kill the xftp-server if it's running
+  // Kill the xftp-server process group if it's running
   if (existsSync(SERVER_PID_FILE)) {
     try {
       const serverPid = parseInt(readFileSync(SERVER_PID_FILE, 'utf-8').trim(), 10)
-      process.kill(serverPid, 'SIGTERM')
+      process.kill(-serverPid, 'SIGTERM')
       // Wait a bit for graceful shutdown
       await new Promise(r => setTimeout(r, 500))
     } catch (_) {

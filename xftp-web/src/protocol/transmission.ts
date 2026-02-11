@@ -92,32 +92,22 @@ export interface DecodedTransmission {
 // Call decodeResponse(command) from commands.ts to parse the response.
 // Matches xftpDecodeTClient with implySessId = False: reads and verifies sessionId from wire.
 export function decodeTransmission(sessionId: Uint8Array, block: Uint8Array): DecodedTransmission {
-  console.log('[DEBUG decodeTransmission] block.length=%d', block.length)
   const raw = blockUnpad(block)
-  console.log('[DEBUG decodeTransmission] unpadded.length=%d first8=%s', raw.length, Array.from(raw.subarray(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(' '))
   const d = new Decoder(raw)
   const count = d.anyByte()
-  console.log('[DEBUG decodeTransmission] batch count=%d', count)
   if (count !== 1) throw new Error("decodeTransmission: expected batch count 1, got " + count)
   const transmission = decodeLarge(d)
-  console.log('[DEBUG decodeTransmission] transmission.length=%d', transmission.length)
   const td = new Decoder(transmission)
   // Skip authenticator (server responses have empty auth)
-  const auth = decodeBytes(td)
-  console.log('[DEBUG decodeTransmission] auth.length=%d', auth.length)
+  decodeBytes(td)
   // implySessId = False: read sessionId from wire and verify
   const sessId = decodeBytes(td)
-  console.log('[DEBUG decodeTransmission] sessId.length=%d', sessId.length)
   if (sessId.length !== sessionId.length || !sessId.every((b, i) => b === sessionId[i])) {
-    console.log('[DEBUG decodeTransmission] SESSION MISMATCH expected=%s got=%s',
-      Array.from(sessionId.subarray(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(''),
-      Array.from(sessId.subarray(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(''))
-    throw new Error("decodeTransmission: session ID mismatch")
+    console.error('[XFTP] Session ID mismatch in server response')
+    throw new Error("Session ID mismatch in server response")
   }
   const corrId = decodeBytes(td)
   const entityId = decodeBytes(td)
   const command = td.takeAll()
-  console.log('[DEBUG decodeTransmission] corrId.len=%d entityId.len=%d command.len=%d cmd=%s',
-    corrId.length, entityId.length, command.length, String.fromCharCode(...command.subarray(0, Math.min(10, command.length))))
   return {corrId, entityId, command}
 }
