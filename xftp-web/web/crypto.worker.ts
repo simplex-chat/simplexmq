@@ -12,6 +12,8 @@ let downloadWriteHandle: FileSystemSyncAccessHandle | null = null
 const chunkMeta = new Map<number, {offset: number, size: number}>()
 let currentDownloadOffset = 0
 let sessionDir: FileSystemDirectoryHandle | null = null
+let useMemory = false
+const memoryChunks = new Map<number, Uint8Array>()
 
 async function getSessionDir(): Promise<FileSystemDirectoryHandle> {
   if (!sessionDir) {
@@ -92,6 +94,12 @@ async function handleDecryptAndStore(
   const decrypted = decryptReceivedChunk(dhSecret, nonce, bodyArr, chunkDigest)
   console.log(`[WORKER-DBG] decrypted chunk=${chunkNo} len=${decrypted.length} [0..8]=${_whex(decrypted)} [-8..]=${_whex(decrypted.slice(-8))}`)
 
+  if (useMemory) {
+    memoryChunks.set(chunkNo, decrypted)
+    self.postMessage({id, type: 'stored'})
+    return
+  }
+
   if (!downloadWriteHandle) {
     const dir = await getSessionDir()
     const fileHandle = await dir.getFileHandle('download.bin', {create: true})
@@ -103,7 +111,30 @@ async function handleDecryptAndStore(
   chunkMeta.set(chunkNo, {offset, size: decrypted.length})
   const written = downloadWriteHandle.write(decrypted, {at: offset})
   console.log(`[WORKER-DBG] OPFS write chunk=${chunkNo} offset=${offset} size=${decrypted.length} written=${written}`)
-  if (written !== decrypted.length) throw new Error(`OPFS download write chunk ${chunkNo}: ${written}/${decrypted.length}`)
+
+  if (written !== decrypted.length) {
+    console.warn(`[WORKER] OPFS write failed chunk=${chunkNo}: ${written}/${decrypted.length}, falling back to in-memory storage`)
+    // Migrate previously written chunks from OPFS to memory
+    for (const [cn, meta] of chunkMeta.entries()) {
+      if (cn === chunkNo) continue
+      const buf = new Uint8Array(meta.size)
+      downloadWriteHandle.read(buf, {at: meta.offset})
+      memoryChunks.set(cn, buf)
+    }
+    downloadWriteHandle.close()
+    downloadWriteHandle = null
+    try {
+      const dir = await getSessionDir()
+      await dir.removeEntry('download.bin')
+    } catch (_) {}
+    chunkMeta.clear()
+    currentDownloadOffset = 0
+    memoryChunks.set(chunkNo, decrypted)
+    useMemory = true
+    self.postMessage({id, type: 'stored'})
+    return
+  }
+
   downloadWriteHandle.flush()
 
   // Verify: read back and compare first/last 8 bytes
@@ -119,32 +150,39 @@ async function handleDecryptAndStore(
 async function handleVerifyAndDecrypt(
   id: number, size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array
 ) {
-  console.log(`[WORKER-DBG] verify: expectedSize=${size} expectedDigest=${_whex(digest, 64)} chunkMeta.size=${chunkMeta.size}`)
-  // Close write handle, reopen as read
-  if (downloadWriteHandle) {
-    downloadWriteHandle.flush()
-    downloadWriteHandle.close()
-    downloadWriteHandle = null
-  }
+  console.log(`[WORKER-DBG] verify: expectedSize=${size} expectedDigest=${_whex(digest, 64)} useMemory=${useMemory} chunkMeta.size=${chunkMeta.size} memoryChunks.size=${memoryChunks.size}`)
 
-  const dir = await getSessionDir()
-  const fileHandle = await dir.getFileHandle('download.bin')
-  const readHandle = await fileHandle.createSyncAccessHandle()
-  const fileSize = readHandle.getSize()
-  console.log(`[WORKER-DBG] verify: OPFS file size=${fileSize}`)
-
-  // Read chunks ordered by chunkNo, verify size and SHA-512 digest (streaming)
-  const sortedEntries = [...chunkMeta.entries()].sort((a, b) => a[0] - b[0])
+  // Read chunks — from memory (fallback) or OPFS
   const chunks: Uint8Array[] = []
   let totalSize = 0
-  for (const [chunkNo, meta] of sortedEntries) {
-    const buf = new Uint8Array(meta.size)
-    const bytesRead = readHandle.read(buf, {at: meta.offset})
-    console.log(`[WORKER-DBG] verify read chunk=${chunkNo} offset=${meta.offset} size=${meta.size} bytesRead=${bytesRead} [0..8]=${_whex(buf)} [-8..]=${_whex(buf.slice(-8))}`)
-    chunks.push(buf)
-    totalSize += meta.size
+  if (useMemory) {
+    const sorted = [...memoryChunks.entries()].sort((a, b) => a[0] - b[0])
+    for (const [chunkNo, data] of sorted) {
+      console.log(`[WORKER-DBG] verify memory chunk=${chunkNo} size=${data.length}`)
+      chunks.push(data)
+      totalSize += data.length
+    }
+  } else {
+    // Close write handle, reopen as read
+    if (downloadWriteHandle) {
+      downloadWriteHandle.flush()
+      downloadWriteHandle.close()
+      downloadWriteHandle = null
+    }
+    const dir = await getSessionDir()
+    const fileHandle = await dir.getFileHandle('download.bin')
+    const readHandle = await fileHandle.createSyncAccessHandle()
+    console.log(`[WORKER-DBG] verify: OPFS file size=${readHandle.getSize()}`)
+    const sortedEntries = [...chunkMeta.entries()].sort((a, b) => a[0] - b[0])
+    for (const [chunkNo, meta] of sortedEntries) {
+      const buf = new Uint8Array(meta.size)
+      const bytesRead = readHandle.read(buf, {at: meta.offset})
+      console.log(`[WORKER-DBG] verify read chunk=${chunkNo} offset=${meta.offset} size=${meta.size} bytesRead=${bytesRead} [0..8]=${_whex(buf)} [-8..]=${_whex(buf.slice(-8))}`)
+      chunks.push(buf)
+      totalSize += meta.size
+    }
+    readHandle.close()
   }
-  readHandle.close()
 
   if (totalSize !== size) {
     self.postMessage({id, type: 'error', message: `File size mismatch: ${totalSize} !== ${size}`})
@@ -183,10 +221,15 @@ async function handleVerifyAndDecrypt(
   // File-level decrypt
   const result = decryptChunks(BigInt(size), chunks, key, nonce)
 
-  // Clean up download file
-  try { await dir.removeEntry('download.bin') } catch (_) {}
+  // Clean up download state
+  if (!useMemory) {
+    const dir = await getSessionDir()
+    try { await dir.removeEntry('download.bin') } catch (_) {}
+  }
   chunkMeta.clear()
+  memoryChunks.clear()
   currentDownloadOffset = 0
+  useMemory = false
 
   const contentBuf = result.content.buffer.slice(
     result.content.byteOffset,
@@ -208,7 +251,9 @@ async function handleCleanup(id: number) {
     downloadWriteHandle = null
   }
   chunkMeta.clear()
+  memoryChunks.clear()
   currentDownloadOffset = 0
+  useMemory = false
   try {
     const root = await navigator.storage.getDirectory()
     await root.removeEntry(SESSION_DIR, {recursive: true})

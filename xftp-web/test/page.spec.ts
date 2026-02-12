@@ -2,6 +2,7 @@ import {test, expect, createTestContent, createTextContent} from './fixtures'
 import {UploadPage} from './pages/upload-page'
 import {DownloadPage} from './pages/download-page'
 import {readFileSync, statSync} from 'fs'
+import {createHash} from 'crypto'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Upload Flow Tests
@@ -323,5 +324,55 @@ test.describe('Slow Tests', () => {
       const stat = statSync(path)
       expect(stat.size).toBe(5 * 1024 * 1024)
     }
+  })
+
+  // Disabled by default — run with: npx playwright test -g "100MB"
+  test.skip('upload and download 100MB random file', async ({browser}) => {
+    test.setTimeout(600_000) // 10 minutes
+
+    const SIZE = 100 * 1024 * 1024
+
+    const context = await browser.newContext({ignoreHTTPSErrors: true})
+    const page = await context.newPage()
+    const upload = new UploadPage(page)
+    await upload.goto()
+
+    // Generate random content in browser and compute SHA-256
+    const uploadHash = await page.evaluate(async (size: number) => {
+      const buffer = new ArrayBuffer(size)
+      const view = new Uint8Array(buffer)
+      for (let off = 0; off < size; off += 65536) {
+        crypto.getRandomValues(view.subarray(off, Math.min(off + 65536, size)))
+      }
+      const hashBuf = await crypto.subtle.digest('SHA-256', buffer)
+      const hash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('')
+      const input = document.getElementById('file-input') as HTMLInputElement
+      const file = new File([buffer], 'large-100mb.bin', {type: 'application/octet-stream'})
+      const dt = new DataTransfer()
+      dt.items.add(file)
+      input.files = dt.files
+      input.dispatchEvent(new Event('change', {bubbles: true}))
+      return hash
+    }, SIZE)
+
+    const link = await upload.waitForShareLink(300_000)
+
+    const dlPage = await context.newPage()
+    const dl = new DownloadPage(dlPage)
+    await dl.gotoWithLink(link)
+    const download = await dl.clickDownload()
+
+    expect(download.suggestedFilename()).toBe('large-100mb.bin')
+
+    const path = await download.path()
+    expect(path).toBeTruthy()
+
+    const stat = statSync(path!)
+    expect(stat.size).toBe(SIZE)
+
+    const downloadHash = createHash('sha256').update(readFileSync(path!)).digest('hex')
+    expect(downloadHash).toBe(uploadHash)
+
+    await context.close()
   })
 })
