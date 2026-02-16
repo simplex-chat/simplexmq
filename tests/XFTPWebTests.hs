@@ -28,6 +28,7 @@ import Data.Word (Word8, Word16, Word32)
 import System.Random (randomIO)
 import Data.X509.Validation (Fingerprint (..))
 import Simplex.FileTransfer.Client (prepareChunkSizes)
+import Simplex.FileTransfer.Client.Main (decodeWebURI, encodeWebURI)
 import Simplex.FileTransfer.Description (FileDescription (..), FileSize (..), ValidFileDescription, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), xftpBlockSize)
 import Simplex.FileTransfer.Transport (XFTPClientHello (..))
@@ -2150,6 +2151,25 @@ tsDescriptionTests = describe "protocol/description" $ do
           impDesc
             <> jsOut "new TextEncoder().encode(Desc.fdSeparator)"
       tsResult `shouldBe` "################################\n"
+
+    it "web URI encoding matches Haskell" $ do
+      yaml <- B.readFile "tests/fixtures/file_description.yaml"
+      fd <- either fail pure (strDecode yaml :: Either String (FileDescription 'FRecipient))
+      let hsEncoded = encodeWebURI fd
+      -- Haskell round-trip
+      ValidFileDescription fd' <- either (fail . ("decode: " <>)) pure $ decodeWebURI hsEncoded
+      fd `shouldBe` fd'
+      -- Cross-language: TS reads same fixture, encodes, should match
+      tsEncoded <-
+        callNode $
+          "import {readFileSync} from 'node:fs';\
+          \import * as Agent from './dist/agent.js';\
+          \import * as Desc from './dist/protocol/description.js';\
+          \const yaml = readFileSync('../tests/fixtures/file_description.yaml', 'utf8');\
+          \const fd = Desc.decodeFileDescription(yaml);\
+          \const uri = Agent.encodeDescriptionURI(fd);\
+          \process.stdout.write(Buffer.from(uri));"
+      hsEncoded `shouldBe` tsEncoded
 
   describe "validation" $ do
     it "valid description" $ do

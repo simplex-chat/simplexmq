@@ -16,6 +16,9 @@ module Simplex.FileTransfer.Client.Main
     xftpClientCLI,
     cliSendFile,
     cliSendFileOpts,
+    encodeWebURI,
+    decodeWebURI,
+    fileWebLink,
     singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
@@ -23,6 +26,7 @@ module Simplex.FileTransfer.Client.Main
   )
 where
 
+import qualified Codec.Compression.Zlib.Raw as Z
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -30,12 +34,13 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
 import Data.Either (partitionEithers)
 import Data.Int (Int64)
-import Data.List (foldl', sortOn)
+import Data.List (foldl', isPrefixOf, sortOn)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -63,7 +68,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
@@ -262,6 +267,10 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
       putStrLn $ "\nSender file description: " <> fdSndPath
       putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
+    when printInfo $ case fdRcvs of
+      rcvFd : _ -> forM_ (fileWebLink rcvFd) $ \(host, fragment) ->
+        putStrLn $ "\nWeb link:\nhttps://" <> B.unpack host <> "/#" <> B.unpack fragment
+      _ -> pure ()
   where
     encryptFileForUpload :: TVar ChaChaDRG -> Text -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
     encryptFileForUpload g fileName = do
@@ -389,8 +398,17 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
-  getFileDescription' fileDescription >>= receive
+  getInputFileDescription >>= receive
   where
+    getInputFileDescription
+      | "http://" `isPrefixOf` fileDescription || "https://" `isPrefixOf` fileDescription = do
+          let fragment = B.pack $ drop 1 $ dropWhile (/= '#') fileDescription
+          when (B.null fragment) $ throwE $ CLIError "Invalid URL: no fragment"
+          vfd@(ValidFileDescription FileDescription {redirect = r}) <- either (throwE . CLIError . ("Invalid web link: " <>)) pure $ decodeWebURI fragment
+          case r of
+            Just _ -> throwE $ CLIError "Redirect descriptions are not yet supported via CLI. Download in browser instead."
+            Nothing -> pure vfd
+      | otherwise = getFileDescription' fileDescription
     receive :: ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
     receive (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
       encPath <- getEncPath tempPath "xftp"
@@ -555,3 +573,24 @@ cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do
       B.hPut h bytes
       when (sz > mb') $ saveRandomFile h (sz - mb')
     mb' = mb 1
+
+-- | Encode file description as web-compatible URI fragment.
+-- Result is base64url(deflateRaw(YAML)), no leading '#'.
+encodeWebURI :: FileDescription 'FRecipient -> B.ByteString
+encodeWebURI fd = U.encode $ LB.toStrict $ Z.compress $ LB.fromStrict $ strEncode fd
+
+-- | Decode web URI fragment to validated file description.
+-- Input is base64url-encoded DEFLATE-compressed YAML, no leading '#'.
+decodeWebURI :: B.ByteString -> Either String (ValidFileDescription 'FRecipient)
+decodeWebURI fragment = do
+  compressed <- U.decode fragment
+  let yaml = LB.toStrict $ Z.decompress $ LB.fromStrict compressed
+  strDecode yaml >>= validateFileDescription
+
+-- | Extract web link host and URI fragment from a file description.
+-- Returns (hostname, uriFragment) for https://hostname/#uriFragment.
+fileWebLink :: FileDescription 'FRecipient -> Maybe (B.ByteString, B.ByteString)
+fileWebLink fd@FileDescription {chunks} = case chunks of
+  (FileChunk {replicas = FileChunkReplica {server = ProtocolServer {host}} : _} : _) ->
+    Just (strEncode (L.head host), encodeWebURI fd)
+  _ -> Nothing

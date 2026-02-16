@@ -48,12 +48,14 @@ testXFTPCLISendReceive = withXFTPServer $ do
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
-  sendResult
+  let (sendInfo, sendRest) = splitAt 4 sendResult
+  sendInfo
     `shouldBe` [ "Sender file description: " <> fdSnd,
                  "Pass file descriptions to the recipient(s):",
                  fdRcv1,
                  fdRcv2
                ]
+  sendRest `shouldSatisfy` any ("https://" `isPrefixOf`)
   testInfoFile fdRcv1 "Recipient"
   testReceiveFile fdRcv1 "testfile" file
   testInfoFile fdRcv2 "Recipient"
@@ -82,12 +84,14 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
-  sendResult
+  let (sendInfo, sendRest) = splitAt 4 sendResult
+  sendInfo
     `shouldBe` [ "Sender file description: " <> fdSnd,
                  "Pass file descriptions to the recipient(s):",
                  fdRcv1,
                  fdRcv2
                ]
+  sendRest `shouldSatisfy` any ("https://" `isPrefixOf`)
   testReceiveFile fdRcv1 "testfile" file
   testReceiveFile fdRcv2 "testfile_1" file
   where
@@ -118,12 +122,14 @@ testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
   progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
   progress `shouldSatisfy` uploadProgress
-  sendResult
+  let (sendInfo, sendRest) = splitAt 4 sendResult
+  sendInfo
     `shouldBe` [ "Sender file description: " <> fdSnd,
                  "Pass file descriptions to the recipient(s):",
                  fdRcv1,
                  fdRcv2
                ]
+  sendRest `shouldSatisfy` any ("https://" `isPrefixOf`)
   xftpCLI ["del", fdRcv1]
     `shouldThrow` anyException
   progress1 : recvResult <- xftpCLI ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp", "-y"]
