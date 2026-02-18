@@ -3,9 +3,8 @@ import {getServers} from './servers.js'
 import {createProgressRing} from './progress.js'
 import {
   newXFTPAgent, closeXFTPAgent, uploadFile, encodeDescriptionURI,
-  type EncryptedFileMetadata
+  XFTPPermanentError, type EncryptedFileMetadata
 } from '../src/agent.js'
-import {XFTPPermanentError} from '../src/client.js'
 
 const MAX_SIZE = 100 * 1024 * 1024
 
