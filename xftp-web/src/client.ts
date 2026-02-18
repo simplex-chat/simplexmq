@@ -16,7 +16,7 @@ import {
 import {verifyIdentityProof} from "./crypto/identity.js"
 import {generateX25519KeyPair, encodePubKeyX25519, dh} from "./crypto/keys.js"
 import {
-  encodeFNEW, encodeFADD, encodeFPUT, encodeFGET, encodeFDEL, encodePING,
+  encodeFNEW, encodeFADD, encodeFPUT, encodeFGET, encodeFACK, encodeFDEL, encodePING,
   decodeResponse, type FileResponse, type FileInfo, type XFTPErrorType
 } from "./protocol/commands.js"
 import {decryptReceivedChunk} from "./download.js"
@@ -427,6 +427,13 @@ export async function deleteXFTPChunk(
   agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, sId: Uint8Array
 ): Promise<void> {
   const {response} = await sendXFTPCommand(agent, server, spKey, sId, encodeFDEL())
+  if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
+}
+
+export async function ackXFTPChunk(
+  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, rId: Uint8Array
+): Promise<void> {
+  const {response} = await sendXFTPCommand(agent, server, rpKey, rId, encodeFACK())
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 

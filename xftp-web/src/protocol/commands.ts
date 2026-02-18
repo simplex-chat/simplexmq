@@ -73,6 +73,8 @@ export function encodeFPUT(): Uint8Array { return ascii("FPUT") }
 
 export function encodeFDEL(): Uint8Array { return ascii("FDEL") }
 
+export function encodeFACK(): Uint8Array { return ascii("FACK") }
+
 export function encodeFGET(rcvDhKey: Uint8Array): Uint8Array {
   return concatBytes(ascii("FGET"), SPACE, encodeBytes(rcvDhKey))
 }
