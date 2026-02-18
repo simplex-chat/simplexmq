@@ -96,7 +96,7 @@ export function encryptFileForUpload(source: Uint8Array, fileName: string): Encr
 }
 
 const DEFAULT_REDIRECT_THRESHOLD = 400
-const MAX_RECIPIENTS_PER_REQUEST = 200
+const MAX_RECIPIENTS_PER_REQUEST = 200 // each key is ~46 bytes; 200 keys fit within 16KB XFTP block
 
 export interface UploadOptions {
   onProgress?: (uploaded: number, total: number) => void
