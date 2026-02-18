@@ -18,7 +18,8 @@ import {
   createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk, downloadXFTPChunkRaw,
   deleteXFTPChunk, type XFTPClientAgent
 } from "./client.js"
-export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent, type TransportConfig} from "./client.js"
+export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent, type TransportConfig,
+  XFTPRetriableError, XFTPPermanentError, isRetriable, categorizeError, humanReadableMessage} from "./client.js"
 import {processDownloadedFile, decryptReceivedChunk} from "./download.js"
 import type {XFTPServer} from "./protocol/address.js"
 import {formatXFTPServer, parseXFTPServer} from "./protocol/address.js"
