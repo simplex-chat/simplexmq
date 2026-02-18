@@ -105,10 +105,11 @@ export interface UploadOptions {
 
 export async function uploadFile(
   agent: XFTPClientAgent,
-  server: XFTPServer,
+  servers: XFTPServer[],
   encrypted: EncryptedFileMetadata,
   options?: UploadOptions
 ): Promise<UploadResult> {
+  if (servers.length === 0) throw new Error("uploadFile: servers list is empty")
   const {onProgress, redirectThreshold, readChunk: readChunkOpt} = options ?? {}
   const readChunk: (offset: number, size: number) => Promise<Uint8Array> = readChunkOpt
     ? readChunkOpt
@@ -122,6 +123,7 @@ export async function uploadFile(
   for (let i = 0; i < specs.length; i++) {
     const spec = specs[i]
     const chunkNo = i + 1
+    const server = servers[Math.floor(Math.random() * servers.length)]
     const sndKp = generateEd25519KeyPair()
     const rcvKp = generateEd25519KeyPair()
     const chunkData = await readChunk(spec.chunkOffset, spec.chunkSize)
@@ -151,7 +153,7 @@ export async function uploadFile(
   let finalRcvDescription = rcvDescription
   const threshold = redirectThreshold ?? DEFAULT_REDIRECT_THRESHOLD
   if (uri.length > threshold && sentChunks.length > 1) {
-    finalRcvDescription = await uploadRedirectDescription(agent, server, rcvDescription)
+    finalRcvDescription = await uploadRedirectDescription(agent, servers, rcvDescription)
     uri = encodeDescriptionURI(finalRcvDescription)
   }
   return {rcvDescription: finalRcvDescription, sndDescription, uri}
@@ -186,7 +188,7 @@ function buildDescription(
 
 async function uploadRedirectDescription(
   agent: XFTPClientAgent,
-  server: XFTPServer,
+  servers: XFTPServer[],
   innerFd: FileDescription
 ): Promise<FileDescription> {
   const yaml = encodeFileDescription(innerFd)
@@ -197,6 +199,7 @@ async function uploadRedirectDescription(
   for (let i = 0; i < specs.length; i++) {
     const spec = specs[i]
     const chunkNo = i + 1
+    const server = servers[Math.floor(Math.random() * servers.length)]
     const sndKp = generateEd25519KeyPair()
     const rcvKp = generateEd25519KeyPair()
     const chunkData = enc.encData.subarray(spec.chunkOffset, spec.chunkOffset + spec.chunkSize)
