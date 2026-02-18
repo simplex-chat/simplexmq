@@ -160,6 +160,7 @@ import Data.Either (isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -1820,8 +1821,21 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
-        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
-        ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
+        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> do
+          ntf <- liftIO $ newIORef Nothing
+          tryWithLock "ICAckDel" $ do
+            t_ <- ack srv rId srvMsgId
+            liftIO $ writeIORef ntf t_
+            withStore' c (\db -> deleteMsg db connId msgId)
+          -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+          liftIO (readIORef ntf) >>= mapM_ (atomically . writeTBQueue subQ)
+        ICAck rId srvMsgId -> withServer $ \srv -> do
+          ntf <- liftIO $ newIORef Nothing
+          tryWithLock "ICAck" $ do
+            t_ <- ack srv rId srvMsgId
+            liftIO $ writeIORef ntf t_
+          -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+          liftIO (readIORef ntf) >>= mapM_ (atomically . writeTBQueue subQ)
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2184,34 +2198,39 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                   cStats <- connectionStats c conn
                   notify $ SWITCH QDSnd SPConfirmed cStats
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
-                  withStore' c $ \db -> setSndQueueStatus db sq Active
-                  SomeConn _ conn <- withStore c (`getConn` connId)
-                  case conn of
-                    DuplexConnection cData' rqs sqs -> do
-                      -- remove old snd queue from connection once QTEST is sent to the new queue
-                      let addr = qAddress sq
-                      case findQ addr sqs of
-                        -- this is the same queue where this loop delivers messages to but with updated state
-                        Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
-                          -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
-                          case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
-                            Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
-                            Just (sq', sq'' : sqs') -> do
-                              checkSQSwchStatus sq' SSSendingQTEST
-                              -- remove the delivery from the map to stop the thread when the delivery loop is complete
-                              atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
-                              withStore' c $ \db -> do
-                                when primary $ setSndQueuePrimary db connId sq
-                                deletePendingMsgs db connId sq'
-                                deleteConnSndQueue db connId sq'
-                              let sqs'' = sq'' :| sqs'
-                                  conn' = DuplexConnection cData' rqs sqs''
-                              cStats <- connectionStats c conn'
-                              notify $ SWITCH QDSnd SPCompleted cStats
-                            _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
-                        _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
-                    _ -> internalErr msgId "QTEST sent not in duplex connection"
+                AM_QTEST_ -> do
+                  evt_ <- withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
+                    withStore' c $ \db -> setSndQueueStatus db sq Active
+                    SomeConn _ conn <- withStore c (`getConn` connId)
+                    case conn of
+                      DuplexConnection cData' rqs sqs -> do
+                        -- remove old snd queue from connection once QTEST is sent to the new queue
+                        let addr = qAddress sq
+                        case findQ addr sqs of
+                          -- this is the same queue where this loop delivers messages to but with updated state
+                          Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
+                            -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
+                            case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
+                              Nothing -> pure $ Left "sent QTEST: queue not found in connection"
+                              Just (sq', sq'' : sqs') -> do
+                                checkSQSwchStatus sq' SSSendingQTEST
+                                -- remove the delivery from the map to stop the thread when the delivery loop is complete
+                                atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
+                                withStore' c $ \db -> do
+                                  when primary $ setSndQueuePrimary db connId sq
+                                  deletePendingMsgs db connId sq'
+                                  deleteConnSndQueue db connId sq'
+                                let sqs'' = sq'' :| sqs'
+                                    conn' = DuplexConnection cData' rqs sqs''
+                                cStats <- connectionStats c conn'
+                                pure $ Right $ AEvt SAEConn $ SWITCH QDSnd SPCompleted cStats
+                              _ -> pure $ Left "sent QTEST: there is only one queue in connection"
+                          _ -> pure $ Left "sent QTEST: queue not in connection or not replacing another queue"
+                      _ -> pure $ Left "QTEST sent not in duplex connection"
+                  -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+                  case evt_ of
+                    Right evt -> atomically $ writeTBQueue subQ ("", connId, evt)
+                    Left err -> internalErr msgId err
                 AM_EREADY_ -> pure ()
               delMsgKeep (msgType == AM_A_MSG_) msgId
               where
@@ -2251,16 +2270,19 @@ retrySndOp c loop = do
   loop
 
 ackMessage' :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection {} -> ack >> sendRcpt conn >> del
-    RcvConnection {} -> ack >> del
-    SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
-    ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
-    NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
+ackMessage' c connId msgId rcptInfo_ = do
+  t_ <- withConnLock c connId "ackMessage" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    case conn of
+      DuplexConnection {} -> do t_ <- ack; sendRcpt conn; del; pure t_
+      RcvConnection {} -> do t_ <- ack; del; pure t_
+      SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
+      ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
+      NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
+  -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+  forM_ (t_ :: Maybe ATransmission) $ atomically . writeTBQueue (subQ c)
   where
-    ack :: AM ()
+    ack :: AM (Maybe ATransmission)
     ack = do
       -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
@@ -2368,7 +2390,7 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
       | otherwise -> throwE $ CMD PROHIBITED "synchronizeRatchet: not allowed"
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
-ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
+ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (Maybe ATransmission)
 ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
@@ -2380,10 +2402,11 @@ ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   where
     sendMsgNtf stat = do
       atomically $ incSMPServerStat c userId server stat
-      whenM (liftIO $ hasGetLock c rq) $ do
-        atomically $ releaseGetLock c rq
-        brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
-        atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
+      ifM (liftIO $ hasGetLock c rq)
+        (do atomically $ releaseGetLock c rq
+            brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
+            pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
+        (pure Nothing)
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ()
