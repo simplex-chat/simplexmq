@@ -28,7 +28,7 @@ const servers = [
   parseXFTPServer("xftp://server2..."),
   parseXFTPServer("xftp://server3..."),
 ]
-const encrypted = encryptFileForUpload(fileBytes, "photo.jpg")
+const encrypted = await encryptFileForUpload(fileBytes, "photo.jpg")
 const {rcvDescriptions, sndDescription, uri} = await uploadFile(agent, servers, encrypted, {
   onProgress: (uploaded, total) => console.log(`${uploaded}/${total}`),
 })

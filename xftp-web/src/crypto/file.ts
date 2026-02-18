@@ -69,6 +69,48 @@ export function encryptFile(
   return concatBytes(hdr, encSource, encPad, tag)
 }
 
+// Async variant: encrypts source in 64KB slices, yielding between each to avoid blocking the main thread.
+// Produces identical output to encryptFile.
+const ENCRYPT_SLICE = 65536
+
+export async function encryptFileAsync(
+  source: Uint8Array,
+  fileHdr: Uint8Array,
+  key: Uint8Array,
+  nonce: Uint8Array,
+  fileSize: bigint,
+  encSize: bigint,
+  onProgress?: (done: number, total: number) => void
+): Promise<Uint8Array> {
+  const state = sbInit(key, nonce)
+  const lenStr = encodeInt64(fileSize)
+  const padLen = Number(encSize - AUTH_TAG_SIZE - fileSize - 8n)
+  if (padLen < 0) throw new Error("encryptFile: encSize too small")
+  const totalOut = Number(encSize)
+  const out = new Uint8Array(totalOut)
+  let outOff = 0
+  // Header (small, no yield needed)
+  const hdr = sbEncryptChunk(state, concatBytes(lenStr, fileHdr))
+  out.set(hdr, outOff); outOff += hdr.length
+  // Source in 64KB slices, yielding between each
+  for (let off = 0; off < source.length; off += ENCRYPT_SLICE) {
+    const end = Math.min(off + ENCRYPT_SLICE, source.length)
+    const enc = sbEncryptChunk(state, source.subarray(off, end))
+    out.set(enc, outOff); outOff += enc.length
+    onProgress?.(end, source.length)
+    await new Promise<void>(r => setTimeout(r, 0))
+  }
+  // Padding (small, no yield needed)
+  const padding = new Uint8Array(padLen)
+  padding.fill(0x23)
+  const encPad = sbEncryptChunk(state, padding)
+  out.set(encPad, outOff); outOff += encPad.length
+  // Auth tag
+  const tag = sbAuth(state)
+  out.set(tag, outOff)
+  return out
+}
+
 // -- Decryption (FileTransfer.Crypto:decryptChunks)
 
 // Decrypt one or more XFTP chunks into a FileHeader and file content.

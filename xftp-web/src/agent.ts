@@ -4,7 +4,7 @@
 // file descriptions, and DEFLATE-compressed URI encoding.
 
 import pako from "pako"
-import {encryptFile, encodeFileHeader} from "./crypto/file.js"
+import {encryptFileAsync, encodeFileHeader} from "./crypto/file.js"
 import {generateEd25519KeyPair, encodePubKeyEd25519, encodePrivKeyEd25519, decodePrivKeyEd25519, ed25519KeyPairFromSeed} from "./crypto/keys.js"
 import {sha512Streaming} from "./crypto/digest.js"
 import {prepareChunkSizes, prepareChunkSpecs, getChunkDigest, fileSizeLen, authTagSize} from "./protocol/chunks.js"
@@ -79,7 +79,11 @@ export function decodeDescriptionURI(fragment: string): FileDescription {
 
 // -- Upload
 
-export function encryptFileForUpload(source: Uint8Array, fileName: string): EncryptedFileInfo {
+export async function encryptFileForUpload(
+  source: Uint8Array,
+  fileName: string,
+  onProgress?: (done: number, total: number) => void
+): Promise<EncryptedFileInfo> {
   const key = new Uint8Array(32)
   const nonce = new Uint8Array(24)
   crypto.getRandomValues(key)
@@ -89,7 +93,7 @@ export function encryptFileForUpload(source: Uint8Array, fileName: string): Encr
   const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
   const chunkSizes = prepareChunkSizes(payloadSize)
   const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0))
-  const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize)
+  const encData = await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize, onProgress)
   const digest = sha512Streaming([encData])
   console.log(`[AGENT-DBG] encrypt: encData.len=${encData.length} digest=${_dbgHex(digest, 64)} chunkSizes=[${chunkSizes.join(',')}]`)
   return {encData, digest, key, nonce, chunkSizes}
@@ -229,7 +233,7 @@ async function uploadRedirectDescription(
 ): Promise<FileDescription> {
   const yaml = encodeFileDescription(innerFd)
   const yamlBytes = new TextEncoder().encode(yaml)
-  const enc = encryptFileForUpload(yamlBytes, "")
+  const enc = await encryptFileForUpload(yamlBytes, "")
   const specs = prepareChunkSpecs(enc.chunkSizes)
 
   const chunkJobs = specs.map((spec, i) => ({
