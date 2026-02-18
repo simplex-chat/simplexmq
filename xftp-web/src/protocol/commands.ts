@@ -22,11 +22,18 @@ export interface FileInfo {
 
 export type CommandError = "UNKNOWN" | "SYNTAX" | "PROHIBITED" | "NO_AUTH" | "HAS_AUTH" | "NO_ENTITY"
 
+export type BlockingReason = "spam" | "content"
+
+export interface BlockingInfo {
+  reason: BlockingReason
+  notice: {ttl: number | null} | null
+}
+
 export type XFTPErrorType =
   | {type: "BLOCK"} | {type: "SESSION"} | {type: "HANDSHAKE"}
   | {type: "CMD", cmdErr: CommandError}
   | {type: "AUTH"}
-  | {type: "BLOCKED", blockInfo: string}
+  | {type: "BLOCKED", blockInfo: BlockingInfo}
   | {type: "SIZE"} | {type: "QUOTA"} | {type: "DIGEST"} | {type: "CRYPTO"}
   | {type: "NO_FILE"} | {type: "HAS_FILE"} | {type: "FILE_IO"}
   | {type: "TIMEOUT"} | {type: "INTERNAL"}
@@ -104,6 +111,17 @@ function decodeCommandError(s: string): CommandError {
   throw new Error("bad CommandError: " + s)
 }
 
+function decodeBlockingInfo(s: string): BlockingInfo {
+  const noticeIdx = s.indexOf(",notice=")
+  const reasonPart = noticeIdx >= 0 ? s.slice(0, noticeIdx) : s
+  const reason: BlockingReason = reasonPart === "reason=spam" ? "spam" : "content"
+  let notice: {ttl: number | null} | null = null
+  if (noticeIdx >= 0) {
+    try { notice = JSON.parse(s.slice(noticeIdx + 8)) } catch {}
+  }
+  return {reason, notice}
+}
+
 export function decodeXFTPError(d: Decoder): XFTPErrorType {
   const s = readTag(d)
   switch (s) {
@@ -117,7 +135,7 @@ export function decodeXFTPError(d: Decoder): XFTPErrorType {
       const rest = d.takeAll()
       let info = ""
       for (let i = 0; i < rest.length; i++) info += String.fromCharCode(rest[i])
-      return {type: "BLOCKED", blockInfo: info}
+      return {type: "BLOCKED", blockInfo: decodeBlockingInfo(info)}
     }
     case "SIZE": return {type: "SIZE"}
     case "QUOTA": return {type: "QUOTA"}
