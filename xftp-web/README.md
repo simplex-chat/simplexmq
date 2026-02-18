@@ -22,10 +22,14 @@ import {
 // Create agent (manages connections)
 const agent = newXFTPAgent()
 
-// Upload
-const server = parseXFTPServer("xftp://...")
+// Upload — chunks are distributed randomly across servers
+const servers = [
+  parseXFTPServer("xftp://server1..."),
+  parseXFTPServer("xftp://server2..."),
+  parseXFTPServer("xftp://server3..."),
+]
 const encrypted = encryptFileForUpload(fileBytes, "photo.jpg")
-const {rcvDescription, sndDescription, uri} = await uploadFile(agent, server, encrypted, {
+const {rcvDescriptions, sndDescription, uri} = await uploadFile(agent, servers, encrypted, {
   onProgress: (uploaded, total) => console.log(`${uploaded}/${total}`),
 })
 
@@ -40,11 +44,21 @@ await deleteFile(agent, sndDescription)
 closeXFTPAgent(agent)
 ```
 
+### Upload options
+
+```typescript
+await uploadFile(agent, servers, encrypted, {
+  onProgress: (uploaded, total) => {},  // progress callback
+  auth: basicAuthBytes,                 // BasicAuth for auth-required servers
+  numRecipients: 3,                     // multiple independent download credentials (default: 1)
+})
+```
+
 ### Error handling
 
 ```typescript
 try {
-  await uploadFile(agent, server, encrypted)
+  await uploadFile(agent, servers, encrypted)
 } catch (e) {
   if (e instanceof XFTPRetriableError) {
     // Network/timeout/session errors — safe to retry
