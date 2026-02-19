@@ -92,12 +92,17 @@ export default defineConfig(({mode}) => {
       chunkSizeWarningLimit: 1200,
       rollupOptions: {
         external: ['node:http2', 'url'],
+        output: {
+          entryFileNames: 'assets/[name].js',
+          chunkFileNames: 'assets/[name].js',
+          assetFileNames: 'assets/[name][extname]',
+        },
       },
     },
     server: httpsConfig ? {https: httpsConfig} : {},
     preview: {host: true, https: false},
     define,
-    worker: {format: 'es' as const, rollupOptions: {external: ['node:http2', 'url']}},
+    worker: {format: 'es' as const, rollupOptions: {external: ['node:http2', 'url'], output: {entryFileNames: '[name].js'}}},
     plugins,
   }
 })
