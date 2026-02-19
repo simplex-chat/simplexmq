@@ -341,36 +341,43 @@ ackMessage' c connId msgId rcptInfo_ = do
   t_ <- withConnLock c connId "ackMessage" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     case conn of
-      DuplexConnection {} -> do t_ <- ack; sendRcpt conn; del; pure t_
-      RcvConnection {} -> do t_ <- ack; del; pure t_
-      ContactConnection {} -> do t_ <- ack; del; pure t_
-      SndConnection {} -> throwE $ CONN SIMPLEX
-      NewConnection {} -> throwE $ CONN SIMPLEX
-  -- subQ write is now OUTSIDE connLock
-  forM_ t_ $ atomically . writeTBQueue (subQ c)
+      DuplexConnection {} -> do
+        t_ <- ack
+        sendRcpt conn
+        del
+        pure t_
+      RcvConnection {} -> do
+        t_ <- ack
+        del
+        pure t_
+      SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
+      ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
+      NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
+  -- subQ write is OUTSIDE connLock
+  case t_ of
+    Just t -> atomically $ writeTBQueue (subQ c) t
+    Nothing -> pure ()
 ```
 
-**Caller 2: `ICAck` / `ICAckDel`** (Agent.hs:1823-1824) — use IORef to pass event out of `tryWithLock`:
+**Caller 2: `ICAck` / `ICAckDel`** (Agent.hs:1823-1824) — inline `tryWithLock` as `tryCommand` + `withConnLock`, write subQ between the two scopes:
 
-`tryWithLock` discards return values (`tryCommand action = tryMoveableCommand (action $> CCCompleted)`). An `IORef` allocated before the lock scope captures the event for writing after lock release.
+`tryWithLock name = tryCommand . withConnLock c connId name` — by inlining, the subQ write can be placed outside `withConnLock` but inside `tryCommand` (retaining retry/error handling).
 
 ```haskell
-ICAck rId srvMsgId -> withServer $ \srv -> do
-  ntf <- liftIO $ newIORef Nothing
-  tryWithLock "ICAck" $ do
-    t_ <- ack srv rId srvMsgId
-    liftIO $ writeIORef ntf t_
-  t_ <- liftIO $ readIORef ntf
-  forM_ t_ $ atomically . writeTBQueue (subQ c)
+ICAck rId srvMsgId -> withServer $ \srv ->
+  tryCommand $ do
+    t_ <- withConnLock c connId "ICAck" $ ack srv rId srvMsgId
+    -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+    forM_ t_ $ atomically . writeTBQueue subQ
 
-ICAckDel rId srvMsgId msgId -> withServer $ \srv -> do
-  ntf <- liftIO $ newIORef Nothing
-  tryWithLock "ICAckDel" $ do
-    t_ <- ack srv rId srvMsgId
-    liftIO $ writeIORef ntf t_
-    withStore' c (\db -> deleteMsg db connId msgId)
-  t_ <- liftIO $ readIORef ntf
-  forM_ t_ $ atomically . writeTBQueue (subQ c)
+ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
+  tryCommand $ do
+    t_ <- withConnLock c connId "ICAckDel" $ do
+      t_ <- ack srv rId srvMsgId
+      withStore' c (\db -> deleteMsg db connId msgId)
+      pure t_
+    -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+    forM_ t_ $ atomically . writeTBQueue subQ
 ```
 
 Where `ack` now returns `AM (Maybe ATransmission)`:
@@ -402,7 +409,7 @@ All races are cosmetic UI ordering. None affect ratchet state, protocol correctn
 | Agent.hs | Restructure AM_QTEST_ to return event from `withConnLock`, write outside | ~2187-2214 |
 | Agent.hs | Change `ackQueueMessage` return type to `AM (Maybe ATransmission)`, return event instead of writing | ~2371-2386 |
 | Agent.hs | `ackMessage'`: return event from `withConnLock`, write outside | ~2253-2267 |
-| Agent.hs | `ICAck`/`ICAckDel`: IORef to pass event out of `tryWithLock`, write outside | ~1823-1824 |
+| Agent.hs | `ICAck`/`ICAckDel`: inline `tryCommand` + `withConnLock`, write subQ between scopes | ~1823-1824 |
 | Agent.hs | `ack` helper: propagate new return type | ~1899-1901 |
 
 No new data structures. No new modules. No changes to other write sites (1937, 3216 — already safe). ~25 lines changed total.

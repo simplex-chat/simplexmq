@@ -160,7 +160,6 @@ import Data.Either (isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
-import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -1821,21 +1820,19 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
-        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> do
-          ntf <- liftIO $ newIORef Nothing
-          tryWithLock "ICAckDel" $ do
-            t_ <- ack srv rId srvMsgId
-            liftIO $ writeIORef ntf t_
-            withStore' c (\db -> deleteMsg db connId msgId)
-          -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-          liftIO (readIORef ntf) >>= mapM_ (atomically . writeTBQueue subQ)
-        ICAck rId srvMsgId -> withServer $ \srv -> do
-          ntf <- liftIO $ newIORef Nothing
-          tryWithLock "ICAck" $ do
-            t_ <- ack srv rId srvMsgId
-            liftIO $ writeIORef ntf t_
-          -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-          liftIO (readIORef ntf) >>= mapM_ (atomically . writeTBQueue subQ)
+        ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
+          tryCommand $ do
+            t_ <- withConnLock c connId "ICAckDel" $ do
+              t_ <- ack srv rId srvMsgId
+              withStore' c (\db -> deleteMsg db connId msgId)
+              pure t_
+            -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+            forM_ t_ $ atomically . writeTBQueue subQ
+        ICAck rId srvMsgId -> withServer $ \srv ->
+          tryCommand $ do
+            t_ <- withConnLock c connId "ICAck" $ ack srv rId srvMsgId
+            -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
+            forM_ t_ $ atomically . writeTBQueue subQ
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2274,13 +2271,22 @@ ackMessage' c connId msgId rcptInfo_ = do
   t_ <- withConnLock c connId "ackMessage" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     case conn of
-      DuplexConnection {} -> do t_ <- ack; sendRcpt conn; del; pure t_
-      RcvConnection {} -> do t_ <- ack; del; pure t_
+      DuplexConnection {} -> do
+        t_ <- ack
+        sendRcpt conn
+        del
+        pure t_
+      RcvConnection {} -> do
+        t_ <- ack
+        del
+        pure t_
       SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
       ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
       NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-  forM_ (t_ :: Maybe ATransmission) $ atomically . writeTBQueue (subQ c)
+  case t_ of
+    Just t -> atomically $ writeTBQueue (subQ c) t
+    Nothing -> pure ()
   where
     ack :: AM (Maybe ATransmission)
     ack = do
