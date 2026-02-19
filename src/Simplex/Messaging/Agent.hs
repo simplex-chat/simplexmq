@@ -2189,39 +2189,35 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                   cStats <- connectionStats c conn
                   notify $ SWITCH QDSnd SPConfirmed cStats
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> do
-                  evt_ <- withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
-                    withStore' c $ \db -> setSndQueueStatus db sq Active
-                    SomeConn _ conn <- withStore c (`getConn` connId)
-                    case conn of
-                      DuplexConnection cData' rqs sqs -> do
-                        -- remove old snd queue from connection once QTEST is sent to the new queue
-                        let addr = qAddress sq
-                        case findQ addr sqs of
-                          -- this is the same queue where this loop delivers messages to but with updated state
-                          Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
-                            -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
-                            case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
-                              Nothing -> pure $ Left "sent QTEST: queue not found in connection"
-                              Just (sq', sq'' : sqs') -> do
-                                checkSQSwchStatus sq' SSSendingQTEST
-                                -- remove the delivery from the map to stop the thread when the delivery loop is complete
-                                atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
-                                withStore' c $ \db -> do
-                                  when primary $ setSndQueuePrimary db connId sq
-                                  deletePendingMsgs db connId sq'
-                                  deleteConnSndQueue db connId sq'
-                                let sqs'' = sq'' :| sqs'
-                                    conn' = DuplexConnection cData' rqs sqs''
-                                cStats <- connectionStats c conn'
-                                pure $ Right $ AEvt SAEConn $ SWITCH QDSnd SPCompleted cStats
-                              _ -> pure $ Left "sent QTEST: there is only one queue in connection"
-                          _ -> pure $ Left "sent QTEST: queue not in connection or not replacing another queue"
-                      _ -> pure $ Left "QTEST sent not in duplex connection"
-                  -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-                  case evt_ of
-                    Right evt -> atomically $ writeTBQueue subQ ("", connId, evt)
-                    Left err -> internalErr msgId err
+                AM_QTEST_ -> withConnLockNotify c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
+                  let err s = pure $ Just ("", connId, AEvt SAEConn $ ERR $ INTERNAL s)
+                  withStore' c $ \db -> setSndQueueStatus db sq Active
+                  SomeConn _ conn <- withStore c (`getConn` connId)
+                  case conn of
+                    DuplexConnection cData' rqs sqs -> do
+                      -- remove old snd queue from connection once QTEST is sent to the new queue
+                      let addr = qAddress sq
+                      case findQ addr sqs of
+                        -- this is the same queue where this loop delivers messages to but with updated state
+                        Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
+                          -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
+                          case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
+                            Nothing -> err "sent QTEST: queue not found in connection"
+                            Just (sq', sq'' : sqs') -> do
+                              checkSQSwchStatus sq' SSSendingQTEST
+                              -- remove the delivery from the map to stop the thread when the delivery loop is complete
+                              atomically $ TM.delete (qAddress sq') $ smpDeliveryWorkers c
+                              withStore' c $ \db -> do
+                                when primary $ setSndQueuePrimary db connId sq
+                                deletePendingMsgs db connId sq'
+                                deleteConnSndQueue db connId sq'
+                              let sqs'' = sq'' :| sqs'
+                                  conn' = DuplexConnection cData' rqs sqs''
+                              cStats <- connectionStats c conn'
+                              pure $ Just ("", connId, AEvt SAEConn $ SWITCH QDSnd SPCompleted cStats)
+                            _ -> err "sent QTEST: there is only one queue in connection"
+                        _ -> err "sent QTEST: queue not in connection or not replacing another queue"
+                    _ -> err "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
               delMsgKeep (msgType == AM_A_MSG_) msgId
               where
@@ -2250,7 +2246,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
     notifyDel msgId cmd = notify cmd >> delMsg msgId
     connError msgId = notifyDel msgId . ERR . (`CONN` "")
     qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
-    internalErr msgId = notifyDel msgId . ERR . INTERNAL
 
 retrySndOp :: AgentClient -> AM () -> AM ()
 retrySndOp c loop = do
