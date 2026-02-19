@@ -265,9 +265,9 @@ async function handleCleanup(id: number) {
 // ── Message dispatch ────────────────────────────────────────────
 
 self.onmessage = async (e: MessageEvent) => {
-  await initPromise
   const msg = e.data
   try {
+    await initPromise
     switch (msg.type) {
       case 'encrypt':
         await handleEncrypt(msg.id, msg.data, msg.fileName)
@@ -311,3 +311,6 @@ const initPromise = (async () => {
   await sodium.ready
   await sweepStale()
 })()
+
+// Signal main thread that the worker is ready to receive messages
+initPromise.then(() => self.postMessage({type: 'ready'}), () => {})

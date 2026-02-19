@@ -28,10 +28,27 @@ class WorkerBackend implements CryptoBackend {
   private pending = new Map<number, PendingRequest>()
   private nextId = 1
   private progressCb: ((done: number, total: number) => void) | null = null
+  private ready: Promise<void>
 
   constructor() {
     this.worker = new Worker(new URL('./crypto.worker.ts', import.meta.url), {type: 'module'})
-    this.worker.onmessage = (e) => this.handleMessage(e.data)
+    let rejectReady: (e: Error) => void
+    this.ready = new Promise((resolve, reject) => {
+      rejectReady = reject
+      this.worker.onmessage = (e) => {
+        if (e.data?.type === 'ready') {
+          this.worker.onmessage = (e) => this.handleMessage(e.data)
+          resolve()
+        } else {
+          reject(new Error('Worker: unexpected first message'))
+        }
+      }
+    })
+    this.worker.onerror = (e) => {
+      rejectReady(new Error('Worker failed to load: ' + e.message))
+      for (const p of this.pending.values()) p.reject(new Error('Worker error: ' + e.message))
+      this.pending.clear()
+    }
   }
 
   private handleMessage(msg: {id: number, type: string, [k: string]: any}) {
@@ -49,7 +66,8 @@ class WorkerBackend implements CryptoBackend {
     }
   }
 
-  private send(msg: Record<string, any>, transfer?: Transferable[]): Promise<any> {
+  private async send(msg: Record<string, any>, transfer?: Transferable[]): Promise<any> {
+    await this.ready
     const id = this.nextId++
     return new Promise((resolve, reject) => {
       this.pending.set(id, {resolve, reject})
