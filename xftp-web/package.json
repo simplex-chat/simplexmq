@@ -5,12 +5,17 @@
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "https://github.com/simplex-chat/simplexmq",
+    "url": "git+https://github.com/simplex-chat/simplexmq.git",
     "directory": "xftp-web"
   },
   "type": "module",
   "main": "dist-web/index.html",
-  "files": ["src", "web", "dist", "dist-web"],
+  "files": [
+    "src",
+    "web",
+    "dist",
+    "dist-web"
+  ],
   "publishConfig": {
     "access": "public"
   },
