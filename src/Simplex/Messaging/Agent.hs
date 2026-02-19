@@ -2190,7 +2190,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                   notify $ SWITCH QDSnd SPConfirmed cStats
                 AM_QUSE_ -> pure ()
                 AM_QTEST_ -> withConnLockNotify c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
-                  let err s = pure $ Just ("", connId, AEvt SAEConn $ ERR $ INTERNAL s)
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   case conn of
@@ -2202,7 +2201,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                         Just SndQueue {dbReplaceQueueId = Just replacedId, primary} ->
                           -- second part of this condition is a sanity check because dbReplaceQueueId cannot point to the same queue, see switchConnection'
                           case removeQP (\sq' -> dbQId sq' == replacedId && not (sameQueue addr sq')) sqs of
-                            Nothing -> err "sent QTEST: queue not found in connection"
+                            Nothing -> internalErr msgId "sent QTEST: queue not found in connection"
                             Just (sq', sq'' : sqs') -> do
                               checkSQSwchStatus sq' SSSendingQTEST
                               -- remove the delivery from the map to stop the thread when the delivery loop is complete
@@ -2215,9 +2214,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                                   conn' = DuplexConnection cData' rqs sqs''
                               cStats <- connectionStats c conn'
                               pure $ Just ("", connId, AEvt SAEConn $ SWITCH QDSnd SPCompleted cStats)
-                            _ -> err "sent QTEST: there is only one queue in connection"
-                        _ -> err "sent QTEST: queue not in connection or not replacing another queue"
-                    _ -> err "QTEST sent not in duplex connection"
+                            _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
+                        _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
+                    _ -> internalErr msgId "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
               delMsgKeep (msgType == AM_A_MSG_) msgId
               where
@@ -2246,6 +2245,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
     notifyDel msgId cmd = notify cmd >> delMsg msgId
     connError msgId = notifyDel msgId . ERR . (`CONN` "")
     qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
+    internalErr msgId s = do
+      delMsg msgId
+      pure $ Just ("", connId, AEvt SAEConn $ ERR $ INTERNAL s)
 
 retrySndOp :: AgentClient -> AM () -> AM ()
 retrySndOp c loop = do
