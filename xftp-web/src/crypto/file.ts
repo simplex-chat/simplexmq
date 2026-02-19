@@ -71,8 +71,22 @@ export function encryptFile(
 
 // Async variant: encrypts source in 64KB slices, yielding between each to avoid blocking the main thread.
 // Produces identical output to encryptFile.
+// When onSlice is provided, encrypted data is streamed to the callback instead of buffered.
 const ENCRYPT_SLICE = 65536
 
+export async function encryptFileAsync(
+  source: Uint8Array, fileHdr: Uint8Array,
+  key: Uint8Array, nonce: Uint8Array,
+  fileSize: bigint, encSize: bigint,
+  onProgress?: (done: number, total: number) => void
+): Promise<Uint8Array>
+export async function encryptFileAsync(
+  source: Uint8Array, fileHdr: Uint8Array,
+  key: Uint8Array, nonce: Uint8Array,
+  fileSize: bigint, encSize: bigint,
+  onProgress: ((done: number, total: number) => void) | undefined,
+  onSlice: (data: Uint8Array) => void | Promise<void>
+): Promise<void>
 export async function encryptFileAsync(
   source: Uint8Array,
   fileHdr: Uint8Array,
@@ -80,35 +94,37 @@ export async function encryptFileAsync(
   nonce: Uint8Array,
   fileSize: bigint,
   encSize: bigint,
-  onProgress?: (done: number, total: number) => void
-): Promise<Uint8Array> {
+  onProgress?: (done: number, total: number) => void,
+  onSlice?: (data: Uint8Array) => void | Promise<void>
+): Promise<Uint8Array | void> {
   const state = sbInit(key, nonce)
   const lenStr = encodeInt64(fileSize)
   const padLen = Number(encSize - AUTH_TAG_SIZE - fileSize - 8n)
   if (padLen < 0) throw new Error("encryptFile: encSize too small")
-  const totalOut = Number(encSize)
-  const out = new Uint8Array(totalOut)
+  const out = onSlice ? null : new Uint8Array(Number(encSize))
   let outOff = 0
-  // Header (small, no yield needed)
-  const hdr = sbEncryptChunk(state, concatBytes(lenStr, fileHdr))
-  out.set(hdr, outOff); outOff += hdr.length
-  // Source in 64KB slices, yielding between each
+
+  async function emit(data: Uint8Array) {
+    if (onSlice) {
+      await onSlice(data)
+    } else {
+      out!.set(data, outOff)
+      outOff += data.length
+    }
+  }
+
+  await emit(sbEncryptChunk(state, concatBytes(lenStr, fileHdr)))
   for (let off = 0; off < source.length; off += ENCRYPT_SLICE) {
     const end = Math.min(off + ENCRYPT_SLICE, source.length)
-    const enc = sbEncryptChunk(state, source.subarray(off, end))
-    out.set(enc, outOff); outOff += enc.length
+    await emit(sbEncryptChunk(state, source.subarray(off, end)))
     onProgress?.(end, source.length)
     await new Promise<void>(r => setTimeout(r, 0))
   }
-  // Padding (small, no yield needed)
   const padding = new Uint8Array(padLen)
   padding.fill(0x23)
-  const encPad = sbEncryptChunk(state, padding)
-  out.set(encPad, outOff); outOff += encPad.length
-  // Auth tag
-  const tag = sbAuth(state)
-  out.set(tag, outOff)
-  return out
+  await emit(sbEncryptChunk(state, padding))
+  await emit(sbAuth(state))
+  if (out) return out
 }
 
 // -- Decryption (FileTransfer.Crypto:decryptChunks)

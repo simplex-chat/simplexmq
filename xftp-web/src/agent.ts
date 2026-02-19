@@ -6,7 +6,7 @@
 import pako from "pako"
 import {encryptFileAsync, encodeFileHeader} from "./crypto/file.js"
 import {generateEd25519KeyPair, encodePubKeyEd25519, encodePrivKeyEd25519, decodePrivKeyEd25519, ed25519KeyPairFromSeed} from "./crypto/keys.js"
-import {sha512Streaming} from "./crypto/digest.js"
+import {sha512Streaming, sha512Init, sha512Update, sha512Final} from "./crypto/digest.js"
 import {prepareChunkSizes, prepareChunkSpecs, getChunkDigest, fileSizeLen, authTagSize} from "./protocol/chunks.js"
 import {
   encodeFileDescription, decodeFileDescription, validateFileDescription,
@@ -79,11 +79,25 @@ export function decodeDescriptionURI(fragment: string): FileDescription {
 
 // -- Upload
 
+export interface EncryptForUploadOptions {
+  onProgress?: (done: number, total: number) => void
+  onSlice?: (data: Uint8Array) => void | Promise<void>
+}
+
+export async function encryptFileForUpload(
+  source: Uint8Array, fileName: string,
+  options: EncryptForUploadOptions & {onSlice: NonNullable<EncryptForUploadOptions['onSlice']>}
+): Promise<EncryptedFileMetadata>
+export async function encryptFileForUpload(
+  source: Uint8Array, fileName: string,
+  options?: EncryptForUploadOptions
+): Promise<EncryptedFileInfo>
 export async function encryptFileForUpload(
   source: Uint8Array,
   fileName: string,
-  onProgress?: (done: number, total: number) => void
-): Promise<EncryptedFileInfo> {
+  options?: EncryptForUploadOptions
+): Promise<EncryptedFileInfo | EncryptedFileMetadata> {
+  const {onProgress, onSlice} = options ?? {}
   const key = new Uint8Array(32)
   const nonce = new Uint8Array(24)
   crypto.getRandomValues(key)
@@ -93,10 +107,20 @@ export async function encryptFileForUpload(
   const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
   const chunkSizes = prepareChunkSizes(payloadSize)
   const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0))
-  const encData = await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize, onProgress)
-  const digest = sha512Streaming([encData])
-  console.log(`[AGENT-DBG] encrypt: encData.len=${encData.length} digest=${_dbgHex(digest, 64)} chunkSizes=[${chunkSizes.join(',')}]`)
-  return {encData, digest, key, nonce, chunkSizes}
+  if (onSlice) {
+    const hashState = sha512Init()
+    await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize, onProgress, (data) => {
+      sha512Update(hashState, data)
+      return onSlice(data)
+    })
+    const digest = sha512Final(hashState)
+    return {digest, key, nonce, chunkSizes}
+  } else {
+    const encData = await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize, onProgress)
+    const digest = sha512Streaming([encData])
+    console.log(`[AGENT-DBG] encrypt: encData.len=${encData.length} digest=${_dbgHex(digest, 64)} chunkSizes=[${chunkSizes.join(',')}]`)
+    return {encData, digest, key, nonce, chunkSizes}
+  }
 }
 
 const DEFAULT_REDIRECT_THRESHOLD = 400

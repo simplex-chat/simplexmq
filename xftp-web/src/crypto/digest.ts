@@ -12,6 +12,19 @@ export function sha512(data: Uint8Array): Uint8Array {
   return sodium.crypto_hash_sha512(data)
 }
 
+// Incremental SHA-512 — for computing digest during streaming encryption.
+export function sha512Init(): StateAddress {
+  return sodium.crypto_hash_sha512_init() as unknown as StateAddress
+}
+
+export function sha512Update(state: StateAddress, data: Uint8Array): void {
+  sodium.crypto_hash_sha512_update(state, data)
+}
+
+export function sha512Final(state: StateAddress): Uint8Array {
+  return sodium.crypto_hash_sha512_final(state)
+}
+
 // Streaming SHA-512 over multiple chunks -- avoids copying large data into WASM memory at once.
 // Internally segments chunks larger than 4MB to limit peak WASM memory usage.
 export function sha512Streaming(chunks: Iterable<Uint8Array>): Uint8Array {

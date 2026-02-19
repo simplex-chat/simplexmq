@@ -2,6 +2,8 @@ import {test, expect} from 'vitest'
 import sodium from 'libsodium-wrappers-sumo'
 import {encryptFile, encryptFileAsync, encodeFileHeader} from '../src/crypto/file.js'
 import {prepareChunkSizes, fileSizeLen, authTagSize} from '../src/protocol/chunks.js'
+import {sha512Streaming} from '../src/crypto/digest.js'
+import {encryptFileForUpload} from '../src/agent.js'
 
 await sodium.ready
 
@@ -70,4 +72,31 @@ test('encryptFileAsync matches sync for empty source', async () => {
   const syncResult = encryptFile(source, fileHdr, key, nonce, fileSize, encSize)
   const asyncResult = await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize)
   expect(Buffer.from(asyncResult)).toEqual(Buffer.from(syncResult))
+})
+
+test('encryptFileAsync streaming produces identical output to buffered', async () => {
+  const {source, fileHdr, key, nonce, fileSize, encSize} = makeTestParams(256 * 1024)
+  const slices: Uint8Array[] = []
+  await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize, undefined, (data) => {
+    slices.push(data)
+  })
+  const streamed = Buffer.concat(slices)
+  const buffered = await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize)
+  expect(streamed).toEqual(Buffer.from(buffered))
+})
+
+test('encryptFileForUpload streaming digest matches slice data', async () => {
+  const source = new Uint8Array(256 * 1024)
+  fillRandom(source)
+  const slices: Uint8Array[] = []
+  const result = await encryptFileForUpload(source, 'test.bin', {
+    onSlice: (data) => { slices.push(data) }
+  })
+  const combined = Buffer.concat(slices)
+  const actualDigest = sha512Streaming([combined])
+  expect(Buffer.from(result.digest)).toEqual(Buffer.from(actualDigest))
+  expect(result.key.length).toBe(32)
+  expect(result.nonce.length).toBe(24)
+  expect(result.chunkSizes.length).toBeGreaterThan(0)
+  expect('encData' in result).toBe(false)
 })
