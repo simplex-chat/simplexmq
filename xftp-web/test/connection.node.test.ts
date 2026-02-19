@@ -1,9 +1,9 @@
 import {test, expect, vi, beforeEach} from 'vitest'
 import {
-  newXFTPAgent, getXFTPServerClient, reconnectClient, removeStaleConnection,
+  XFTPAgent, getXFTPServerClient, reconnectClient, removeStaleConnection,
   sendXFTPCommand,
   XFTPRetriableError, XFTPPermanentError,
-  type XFTPClient, type XFTPClientAgent
+  type XFTPClient
 } from '../src/client.js'
 import {formatXFTPServer, type XFTPServer} from '../src/protocol/address.js'
 import {blockPad} from '../src/protocol/transmission.js'
@@ -26,10 +26,8 @@ function makeMockClient(overrides?: Partial<XFTPClient>): XFTPClient {
   }
 }
 
-function makeAgent(connectFn: (s: any) => Promise<XFTPClient>): XFTPClientAgent {
-  const agent = newXFTPAgent()
-  agent._connectFn = connectFn
-  return agent
+function makeAgent(connectFn: (s: any) => Promise<XFTPClient>): XFTPAgent {
+  return new XFTPAgent(connectFn)
 }
 
 // T4: getXFTPServerClient coalesces concurrent calls
@@ -66,7 +64,7 @@ test('getXFTPServerClient auto-cleans failed connections', async () => {
 
 // T6: removeStaleConnection respects promise identity
 test('removeStaleConnection respects promise identity', () => {
-  const agent = newXFTPAgent()
+  const agent = new XFTPAgent()
   const mockClient1 = makeMockClient()
   const mockClient2 = makeMockClient()
   const p1 = Promise.resolve(mockClient1)

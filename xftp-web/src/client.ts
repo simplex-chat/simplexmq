@@ -172,17 +172,24 @@ interface ServerConnection {
   queue: Promise<void>          // tail of sequential command chain
 }
 
-export interface XFTPClientAgent {
-  connections: Map<string, ServerConnection>
+export class XFTPAgent {
+  connections = new Map<string, ServerConnection>()
   /** @internal Injectable for testing — defaults to connectXFTP */
   _connectFn: (server: XFTPServer) => Promise<XFTPClient>
+
+  constructor(connectFn?: (server: XFTPServer) => Promise<XFTPClient>) {
+    this._connectFn = connectFn ?? connectXFTP
+  }
+
+  close(): void {
+    for (const conn of this.connections.values()) {
+      conn.client.then(c => c.transport.close(), () => {})
+    }
+    this.connections.clear()
+  }
 }
 
-export function newXFTPAgent(): XFTPClientAgent {
-  return {connections: new Map(), _connectFn: connectXFTP}
-}
-
-export function getXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): Promise<XFTPClient> {
+export function getXFTPServerClient(agent: XFTPAgent, server: XFTPServer): Promise<XFTPClient> {
   const key = formatXFTPServer(server)
   let conn = agent.connections.get(key)
   if (!conn) {
@@ -197,7 +204,7 @@ export function getXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer):
   return conn.client
 }
 
-export function reconnectClient(agent: XFTPClientAgent, server: XFTPServer): Promise<XFTPClient> {
+export function reconnectClient(agent: XFTPAgent, server: XFTPServer): Promise<XFTPClient> {
   const key = formatXFTPServer(server)
   const old = agent.connections.get(key)
   old?.client.then(c => c.transport.close(), () => {})
@@ -212,7 +219,7 @@ export function reconnectClient(agent: XFTPClientAgent, server: XFTPServer): Pro
 }
 
 export function removeStaleConnection(
-  agent: XFTPClientAgent, server: XFTPServer, failedP: Promise<XFTPClient>
+  agent: XFTPAgent, server: XFTPServer, failedP: Promise<XFTPClient>
 ): void {
   const key = formatXFTPServer(server)
   const conn = agent.connections.get(key)
@@ -222,20 +229,13 @@ export function removeStaleConnection(
   }
 }
 
-export function closeXFTPServerClient(agent: XFTPClientAgent, server: XFTPServer): void {
+export function closeXFTPServerClient(agent: XFTPAgent, server: XFTPServer): void {
   const key = formatXFTPServer(server)
   const conn = agent.connections.get(key)
   if (conn) {
     agent.connections.delete(key)
     conn.client.then(c => c.transport.close(), () => {})
   }
-}
-
-export function closeXFTPAgent(agent: XFTPClientAgent): void {
-  for (const conn of agent.connections.values()) {
-    conn.client.then(c => c.transport.close(), () => {})
-  }
-  agent.connections.clear()
 }
 
 // -- Connect + handshake
@@ -342,7 +342,7 @@ function _hex(b: Uint8Array, n = 8): string {
 // -- Send command (with retry + reconnect)
 
 export async function sendXFTPCommand(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   server: XFTPServer,
   privateKey: Uint8Array,
   entityId: Uint8Array,
@@ -375,7 +375,7 @@ export async function sendXFTPCommand(
 // -- Command wrappers
 
 export async function createXFTPChunk(
-  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, file: FileInfo,
+  agent: XFTPAgent, server: XFTPServer, spKey: Uint8Array, file: FileInfo,
   rcvKeys: Uint8Array[], auth: Uint8Array | null = null
 ): Promise<{senderId: Uint8Array, recipientIds: Uint8Array[]}> {
   const {response} = await sendXFTPCommand(agent, server, spKey, new Uint8Array(0), encodeFNEW(file, rcvKeys, auth))
@@ -384,7 +384,7 @@ export async function createXFTPChunk(
 }
 
 export async function addXFTPRecipients(
-  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, fId: Uint8Array, rcvKeys: Uint8Array[]
+  agent: XFTPAgent, server: XFTPServer, spKey: Uint8Array, fId: Uint8Array, rcvKeys: Uint8Array[]
 ): Promise<Uint8Array[]> {
   const {response} = await sendXFTPCommand(agent, server, spKey, fId, encodeFADD(rcvKeys))
   if (response.type !== "FRRcvIds") throw new Error("unexpected response: " + response.type)
@@ -392,7 +392,7 @@ export async function addXFTPRecipients(
 }
 
 export async function uploadXFTPChunk(
-  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, fId: Uint8Array, chunkData: Uint8Array
+  agent: XFTPAgent, server: XFTPServer, spKey: Uint8Array, fId: Uint8Array, chunkData: Uint8Array
 ): Promise<void> {
   const {response} = await sendXFTPCommand(agent, server, spKey, fId, encodeFPUT(), chunkData)
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
@@ -405,7 +405,7 @@ export interface RawChunkResponse {
 }
 
 export async function downloadXFTPChunkRaw(
-  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array
+  agent: XFTPAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array
 ): Promise<RawChunkResponse> {
   const {publicKey, privateKey} = generateX25519KeyPair()
   const cmd = encodeFGET(encodePubKeyX25519(publicKey))
@@ -417,27 +417,27 @@ export async function downloadXFTPChunkRaw(
 }
 
 export async function downloadXFTPChunk(
-  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
+  agent: XFTPAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
 ): Promise<Uint8Array> {
   const {dhSecret, nonce, body} = await downloadXFTPChunkRaw(agent, server, rpKey, fId)
   return decryptReceivedChunk(dhSecret, nonce, body, digest ?? null)
 }
 
 export async function deleteXFTPChunk(
-  agent: XFTPClientAgent, server: XFTPServer, spKey: Uint8Array, sId: Uint8Array
+  agent: XFTPAgent, server: XFTPServer, spKey: Uint8Array, sId: Uint8Array
 ): Promise<void> {
   const {response} = await sendXFTPCommand(agent, server, spKey, sId, encodeFDEL())
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 
 export async function ackXFTPChunk(
-  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, rId: Uint8Array
+  agent: XFTPAgent, server: XFTPServer, rpKey: Uint8Array, rId: Uint8Array
 ): Promise<void> {
   const {response} = await sendXFTPCommand(agent, server, rpKey, rId, encodeFACK())
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type)
 }
 
-export async function pingXFTP(agent: XFTPClientAgent, server: XFTPServer): Promise<void> {
+export async function pingXFTP(agent: XFTPAgent, server: XFTPServer): Promise<void> {
   const client = await getXFTPServerClient(agent, server)
   const corrId = new Uint8Array(0)
   const block = encodeTransmission(client.sessionId, corrId, new Uint8Array(0), encodePING())

@@ -1,7 +1,7 @@
 import {createCryptoBackend} from './crypto-backend.js'
 import {createProgressRing} from './progress.js'
 import {
-  newXFTPAgent, closeXFTPAgent,
+  XFTPAgent,
   decodeDescriptionURI, downloadFileRaw
 } from '../src/agent.js'
 import {XFTPPermanentError} from '../src/client.js'
@@ -68,7 +68,7 @@ export function initDownload(app: HTMLElement, hash: string) {
     statusText.textContent = 'Downloading…'
 
     const backend = createCryptoBackend()
-    const agent = newXFTPAgent()
+    const agent = new XFTPAgent()
 
     try {
       const resolvedFd = await downloadFileRaw(agent, fd, async (raw) => {
@@ -115,7 +115,7 @@ export function initDownload(app: HTMLElement, hash: string) {
       else retryBtn.hidden = false
     } finally {
       await backend.cleanup().catch(() => {})
-      closeXFTPAgent(agent)
+      agent.close()
     }
   }
 }

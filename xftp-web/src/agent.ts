@@ -19,9 +19,9 @@ import {
 import type {FileInfo} from "./protocol/commands.js"
 import {
   createXFTPChunk, addXFTPRecipients, uploadXFTPChunk, downloadXFTPChunk, downloadXFTPChunkRaw,
-  deleteXFTPChunk, ackXFTPChunk, type XFTPClientAgent
+  deleteXFTPChunk, ackXFTPChunk, XFTPAgent
 } from "./client.js"
-export {newXFTPAgent, closeXFTPAgent, type XFTPClientAgent, type TransportConfig,
+export {XFTPAgent, type TransportConfig,
   XFTPRetriableError, XFTPPermanentError, isRetriable, categorizeError, humanReadableMessage,
   ackXFTPChunk, addXFTPRecipients} from "./client.js"
 import {processDownloadedFile, decryptReceivedChunk} from "./download.js"
@@ -130,7 +130,7 @@ export interface UploadOptions {
 }
 
 async function uploadSingleChunk(
-  agent: XFTPClientAgent, server: XFTPServer,
+  agent: XFTPAgent, server: XFTPServer,
   chunkNo: number, chunkData: Uint8Array, chunkSize: number,
   numRecipients: number, auth: Uint8Array | null
 ): Promise<SentChunk> {
@@ -167,7 +167,7 @@ async function uploadSingleChunk(
 }
 
 export async function uploadFile(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   servers: XFTPServer[],
   encrypted: EncryptedFileMetadata,
   options?: UploadOptions
@@ -230,17 +230,17 @@ export interface SendFileOptions {
 }
 
 export async function sendFile(
-  agent: XFTPClientAgent, servers: XFTPServer[],
+  agent: XFTPAgent, servers: XFTPServer[],
   source: Uint8Array, fileName: string,
   options?: SendFileOptions
 ): Promise<UploadResult>
 export async function sendFile(
-  agent: XFTPClientAgent, servers: XFTPServer[],
+  agent: XFTPAgent, servers: XFTPServer[],
   source: AsyncIterable<Uint8Array>, sourceSize: number,
   fileName: string, options?: SendFileOptions
 ): Promise<UploadResult>
 export async function sendFile(
-  agent: XFTPClientAgent, servers: XFTPServer[],
+  agent: XFTPAgent, servers: XFTPServer[],
   source: Uint8Array | AsyncIterable<Uint8Array>,
   fileNameOrSize: string | number,
   fileNameOrOptions?: string | SendFileOptions,
@@ -362,7 +362,7 @@ function buildDescription(
 }
 
 async function uploadRedirectDescription(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   servers: XFTPServer[],
   innerFd: FileDescription,
   auth?: Uint8Array
@@ -429,7 +429,7 @@ export interface DownloadRawOptions {
 }
 
 export async function downloadFileRaw(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   fd: FileDescription,
   onRawChunk: (chunk: RawDownloadedChunk) => Promise<void>,
   options?: DownloadRawOptions
@@ -477,7 +477,7 @@ export async function downloadFileRaw(
 }
 
 export async function downloadFile(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   fd: FileDescription,
   onProgress?: (downloaded: number, total: number) => void
 ): Promise<DownloadResult> {
@@ -495,7 +495,7 @@ export async function downloadFile(
 }
 
 export async function receiveFile(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   uri: string,
   options?: {onProgress?: (downloaded: number, total: number) => void}
 ): Promise<DownloadResult> {
@@ -504,7 +504,7 @@ export async function receiveFile(
 }
 
 async function resolveRedirect(
-  agent: XFTPClientAgent,
+  agent: XFTPAgent,
   fd: FileDescription
 ): Promise<FileDescription> {
   const plaintextChunks: Uint8Array[] = new Array(fd.chunks.length)
@@ -542,7 +542,7 @@ async function resolveRedirect(
 
 // -- Delete
 
-export async function deleteFile(agent: XFTPClientAgent, sndDescription: FileDescription): Promise<void> {
+export async function deleteFile(agent: XFTPAgent, sndDescription: FileDescription): Promise<void> {
   const byServer = new Map<string, typeof sndDescription.chunks>()
   for (const chunk of sndDescription.chunks) {
     const srv = chunk.replicas[0]?.server ?? ""

@@ -2,7 +2,7 @@ import {createCryptoBackend} from './crypto-backend.js'
 import {getServers} from './servers.js'
 import {createProgressRing} from './progress.js'
 import {
-  newXFTPAgent, closeXFTPAgent, uploadFile, encodeDescriptionURI,
+  XFTPAgent, uploadFile, encodeDescriptionURI,
   XFTPPermanentError, type EncryptedFileMetadata
 } from '../src/agent.js'
 
@@ -104,12 +104,12 @@ export function initUpload(app: HTMLElement) {
     statusText.textContent = 'Encrypting…'
 
     const backend = createCryptoBackend()
-    const agent = newXFTPAgent()
+    const agent = new XFTPAgent()
 
     cancelBtn.onclick = () => {
       aborted = true
       backend.cleanup().catch(() => {})
-      closeXFTPAgent(agent)
+      agent.close()
       showStage(dropZone)
     }
 
@@ -157,7 +157,7 @@ export function initUpload(app: HTMLElement) {
       }
     } finally {
       await backend.cleanup().catch(() => {})
-      closeXFTPAgent(agent)
+      agent.close()
     }
   }
 }

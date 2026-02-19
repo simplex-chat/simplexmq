@@ -12,14 +12,14 @@ npm install xftp-web
 
 ```typescript
 import {
-  newXFTPAgent, closeXFTPAgent,
+  XFTPAgent,
   parseXFTPServer,
   sendFile, receiveFile, deleteFile,
   XFTPRetriableError, XFTPPermanentError, isRetriable,
 } from "xftp-web"
 
 // Create agent (manages connections)
-const agent = newXFTPAgent()
+const agent = new XFTPAgent()
 
 const servers = [
   parseXFTPServer("xftp://server1..."),
@@ -47,7 +47,7 @@ const {header, content} = await receiveFile(agent, uri)
 await deleteFile(agent, sndDescription)
 
 // Cleanup
-closeXFTPAgent(agent)
+agent.close()
 ```
 
 ### Advanced usage
