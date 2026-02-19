@@ -1,7 +1,6 @@
 import sodium from 'libsodium-wrappers-sumo'
-import {encryptFile, encodeFileHeader, decryptChunks} from '../src/crypto/file.js'
+import {encryptFile, prepareEncryption, decryptChunks} from '../src/crypto/file.js'
 import {sha512Streaming} from '../src/crypto/digest.js'
-import {prepareChunkSizes, fileSizeLen, authTagSize} from '../src/protocol/chunks.js'
 import {decryptReceivedChunk} from '../src/download.js'
 
 // ── OPFS session management ─────────────────────────────────────
@@ -40,15 +39,7 @@ async function sweepStale() {
 
 async function handleEncrypt(id: number, data: ArrayBuffer, fileName: string) {
   const source = new Uint8Array(data)
-  const key = new Uint8Array(32)
-  const nonce = new Uint8Array(24)
-  crypto.getRandomValues(key)
-  crypto.getRandomValues(nonce)
-  const fileHdr = encodeFileHeader({fileName, fileExtra: null})
-  const fileSize = BigInt(fileHdr.length + source.length)
-  const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
-  const chunkSizes = prepareChunkSizes(payloadSize)
-  const encSize = BigInt(chunkSizes.reduce((a: number, b: number) => a + b, 0))
+  const {fileHdr, key, nonce, fileSize, encSize, chunkSizes} = prepareEncryption(source.length, fileName)
   const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize)
 
   self.postMessage({id, type: 'progress', done: 50, total: 100})

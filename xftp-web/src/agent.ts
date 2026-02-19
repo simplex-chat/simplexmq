@@ -4,10 +4,13 @@
 // file descriptions, and DEFLATE-compressed URI encoding.
 
 import pako from "pako"
-import {encryptFileAsync, encodeFileHeader} from "./crypto/file.js"
+import {encryptFileAsync, prepareEncryption} from "./crypto/file.js"
+import {sbInit, sbEncryptChunk, sbAuth} from "./crypto/secretbox.js"
+import {concatBytes, encodeInt64} from "./protocol/encoding.js"
+export {prepareEncryption, type EncryptionParams} from "./crypto/file.js"
 import {generateEd25519KeyPair, encodePubKeyEd25519, encodePrivKeyEd25519, decodePrivKeyEd25519, ed25519KeyPairFromSeed} from "./crypto/keys.js"
 import {sha512Streaming, sha512Init, sha512Update, sha512Final} from "./crypto/digest.js"
-import {prepareChunkSizes, prepareChunkSpecs, getChunkDigest, fileSizeLen, authTagSize} from "./protocol/chunks.js"
+import {prepareChunkSpecs, getChunkDigest} from "./protocol/chunks.js"
 import {
   encodeFileDescription, decodeFileDescription, validateFileDescription,
   base64urlEncode, base64urlDecode,
@@ -98,15 +101,7 @@ export async function encryptFileForUpload(
   options?: EncryptForUploadOptions
 ): Promise<EncryptedFileInfo | EncryptedFileMetadata> {
   const {onProgress, onSlice} = options ?? {}
-  const key = new Uint8Array(32)
-  const nonce = new Uint8Array(24)
-  crypto.getRandomValues(key)
-  crypto.getRandomValues(nonce)
-  const fileHdr = encodeFileHeader({fileName, fileExtra: null})
-  const fileSize = BigInt(fileHdr.length + source.length)
-  const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
-  const chunkSizes = prepareChunkSizes(payloadSize)
-  const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0))
+  const {fileHdr, key, nonce, fileSize, encSize, chunkSizes} = prepareEncryption(source.length, fileName)
   if (onSlice) {
     const hashState = sha512Init()
     await encryptFileAsync(source, fileHdr, key, nonce, fileSize, encSize, onProgress, (data) => {
@@ -221,6 +216,116 @@ export async function uploadFile(
   let finalRcvDescriptions = rcvDescriptions
   const threshold = redirectThreshold ?? DEFAULT_REDIRECT_THRESHOLD
   if (uri.length > threshold && sentChunks.length > 1) {
+    const redirected = await uploadRedirectDescription(agent, servers, rcvDescriptions[0], auth)
+    finalRcvDescriptions = [redirected, ...rcvDescriptions.slice(1)]
+    uri = encodeDescriptionURI(redirected)
+  }
+  return {rcvDescriptions: finalRcvDescriptions, sndDescription, uri}
+}
+
+export interface SendFileOptions {
+  onProgress?: (uploaded: number, total: number) => void
+  auth?: Uint8Array
+  numRecipients?: number
+}
+
+export async function sendFile(
+  agent: XFTPClientAgent, servers: XFTPServer[],
+  source: Uint8Array, fileName: string,
+  options?: SendFileOptions
+): Promise<UploadResult>
+export async function sendFile(
+  agent: XFTPClientAgent, servers: XFTPServer[],
+  source: AsyncIterable<Uint8Array>, sourceSize: number,
+  fileName: string, options?: SendFileOptions
+): Promise<UploadResult>
+export async function sendFile(
+  agent: XFTPClientAgent, servers: XFTPServer[],
+  source: Uint8Array | AsyncIterable<Uint8Array>,
+  fileNameOrSize: string | number,
+  fileNameOrOptions?: string | SendFileOptions,
+  maybeOptions?: SendFileOptions
+): Promise<UploadResult> {
+  let sourceSize: number, fileName: string, options: SendFileOptions | undefined
+  if (source instanceof Uint8Array) {
+    sourceSize = source.length
+    fileName = fileNameOrSize as string
+    options = fileNameOrOptions as SendFileOptions | undefined
+  } else {
+    sourceSize = fileNameOrSize as number
+    fileName = fileNameOrOptions as string
+    options = maybeOptions
+  }
+  if (servers.length === 0) throw new Error("sendFile: servers list is empty")
+  const {onProgress, auth, numRecipients = 1} = options ?? {}
+  const params = prepareEncryption(sourceSize, fileName)
+  const specs = prepareChunkSpecs(params.chunkSizes)
+  const total = params.chunkSizes.reduce((a, b) => a + b, 0)
+
+  const encState = sbInit(params.key, params.nonce)
+  const hashState = sha512Init()
+
+  const sentChunks: SentChunk[] = new Array(specs.length)
+  let specIdx = 0, chunkOff = 0, uploaded = 0
+  let chunkBuf = new Uint8Array(specs[0].chunkSize)
+
+  async function flushChunk() {
+    const server = servers[Math.floor(Math.random() * servers.length)]
+    sentChunks[specIdx] = await uploadSingleChunk(
+      agent, server, specIdx + 1, chunkBuf, specs[specIdx].chunkSize, numRecipients, auth ?? null
+    )
+    uploaded += specs[specIdx].chunkSize
+    onProgress?.(uploaded, total)
+    specIdx++
+    if (specIdx < specs.length) {
+      chunkBuf = new Uint8Array(specs[specIdx].chunkSize)
+      chunkOff = 0
+    }
+  }
+
+  async function feedEncrypted(data: Uint8Array) {
+    sha512Update(hashState, data)
+    let off = 0
+    while (off < data.length) {
+      const space = specs[specIdx].chunkSize - chunkOff
+      const n = Math.min(space, data.length - off)
+      chunkBuf.set(data.subarray(off, off + n), chunkOff)
+      chunkOff += n
+      off += n
+      if (chunkOff === specs[specIdx].chunkSize) await flushChunk()
+    }
+  }
+
+  await feedEncrypted(sbEncryptChunk(encState, concatBytes(encodeInt64(params.fileSize), params.fileHdr)))
+
+  const SLICE = 65536
+  if (source instanceof Uint8Array) {
+    for (let off = 0; off < source.length; off += SLICE) {
+      await feedEncrypted(sbEncryptChunk(encState, source.subarray(off, Math.min(off + SLICE, source.length))))
+    }
+  } else {
+    for await (const chunk of source) {
+      for (let off = 0; off < chunk.length; off += SLICE) {
+        await feedEncrypted(sbEncryptChunk(encState, chunk.subarray(off, Math.min(off + SLICE, chunk.length))))
+      }
+    }
+  }
+
+  const padLen = Number(params.encSize - 16n - params.fileSize - 8n)
+  const padding = new Uint8Array(padLen)
+  padding.fill(0x23)
+  await feedEncrypted(sbEncryptChunk(encState, padding))
+  await feedEncrypted(sbAuth(encState))
+
+  const digest = sha512Final(hashState)
+  const encrypted: EncryptedFileMetadata = {digest, key: params.key, nonce: params.nonce, chunkSizes: params.chunkSizes}
+  const rcvDescriptions = Array.from({length: numRecipients}, (_, ri) =>
+    buildDescription("recipient", ri, encrypted, sentChunks)
+  )
+  const sndDescription = buildDescription("sender", 0, encrypted, sentChunks)
+  let uri = encodeDescriptionURI(rcvDescriptions[0])
+  let finalRcvDescriptions = rcvDescriptions
+  if (uri.length > DEFAULT_REDIRECT_THRESHOLD && sentChunks.length > 1) {
     const redirected = await uploadRedirectDescription(agent, servers, rcvDescriptions[0], auth)
     finalRcvDescriptions = [redirected, ...rcvDescriptions.slice(1)]
     uri = encodeDescriptionURI(redirected)
@@ -387,6 +492,15 @@ export async function downloadFile(
   const digest = sha512Streaming(chunks)
   if (!digestEqual(digest, resolvedFd.digest)) throw new Error("downloadFile: file digest mismatch")
   return processDownloadedFile(resolvedFd, chunks)
+}
+
+export async function receiveFile(
+  agent: XFTPClientAgent,
+  uri: string,
+  options?: {onProgress?: (downloaded: number, total: number) => void}
+): Promise<DownloadResult> {
+  const fd = decodeDescriptionURI(uri)
+  return downloadFile(agent, fd, options?.onProgress)
 }
 
 async function resolveRedirect(

@@ -14,40 +14,73 @@ npm install xftp-web
 import {
   newXFTPAgent, closeXFTPAgent,
   parseXFTPServer,
-  encryptFileForUpload, uploadFile, downloadFile, deleteFile,
-  decodeDescriptionURI, encodeDescriptionURI,
+  sendFile, receiveFile, deleteFile,
   XFTPRetriableError, XFTPPermanentError, isRetriable,
 } from "xftp-web"
 
 // Create agent (manages connections)
 const agent = newXFTPAgent()
 
-// Upload — chunks are distributed randomly across servers
 const servers = [
   parseXFTPServer("xftp://server1..."),
   parseXFTPServer("xftp://server2..."),
   parseXFTPServer("xftp://server3..."),
 ]
-const encrypted = await encryptFileForUpload(fileBytes, "photo.jpg")
-const {rcvDescriptions, sndDescription, uri} = await uploadFile(agent, servers, encrypted, {
-  onProgress: (uploaded, total) => console.log(`${uploaded}/${total}`),
-})
 
-// Download (from URI or FileDescription)
-const fd = decodeDescriptionURI(uri)
-const {header, content} = await downloadFile(agent, fd)
+// Upload (from Uint8Array)
+const {rcvDescriptions, sndDescription, uri} = await sendFile(
+  agent, servers, fileBytes, "photo.jpg",
+  {onProgress: (uploaded, total) => console.log(`${uploaded}/${total}`)}
+)
 
-// Delete (using sender description)
+// Upload (streaming — constant memory, no full-file buffer)
+const file = inputEl.files[0]
+const result = await sendFile(
+  agent, servers, file.stream(), file.size, file.name,
+  {onProgress: (uploaded, total) => console.log(`${uploaded}/${total}`)}
+)
+
+// Download
+const {header, content} = await receiveFile(agent, uri)
+
+// Delete
 await deleteFile(agent, sndDescription)
 
 // Cleanup
 closeXFTPAgent(agent)
 ```
 
+### Advanced usage
+
+For streaming encryption (avoids buffering the full encrypted file) or worker-based uploads:
+
+```typescript
+import {
+  encryptFileForUpload, uploadFile, downloadFile,
+  decodeDescriptionURI,
+} from "xftp-web"
+
+// Streaming encryption — encrypted slices emitted via callback
+const metadata = await encryptFileForUpload(fileBytes, "photo.jpg", {
+  onSlice: (data) => { /* write to OPFS, IndexedDB, etc. */ },
+  onProgress: (done, total) => {},
+})
+// metadata has {digest, key, nonce, chunkSizes} but no encData
+
+// Upload with custom chunk reader (e.g. reading from OPFS)
+const result = await uploadFile(agent, servers, metadata, {
+  readChunk: (offset, size) => readFromStorage(offset, size),
+})
+
+// Download with FileDescription object
+const fd = decodeDescriptionURI(uri)
+const {header, content} = await downloadFile(agent, fd)
+```
+
 ### Upload options
 
 ```typescript
-await uploadFile(agent, servers, encrypted, {
+await sendFile(agent, servers, fileBytes, "photo.jpg", {
   onProgress: (uploaded, total) => {},  // progress callback
   auth: basicAuthBytes,                 // BasicAuth for auth-required servers
   numRecipients: 3,                     // multiple independent download credentials (default: 1)
@@ -58,7 +91,7 @@ await uploadFile(agent, servers, encrypted, {
 
 ```typescript
 try {
-  await uploadFile(agent, servers, encrypted)
+  await sendFile(agent, servers, fileBytes, "photo.jpg")
 } catch (e) {
   if (e instanceof XFTPRetriableError) {
     // Network/timeout/session errors — safe to retry

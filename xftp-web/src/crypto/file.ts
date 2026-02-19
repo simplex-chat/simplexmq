@@ -3,6 +3,7 @@
 
 import {Decoder, concatBytes, encodeInt64, encodeString, decodeString, encodeMaybe, decodeMaybe} from "../protocol/encoding.js"
 import {sbInit, sbEncryptChunk, sbDecryptTailTag, sbAuth} from "./secretbox.js"
+import {prepareChunkSizes, fileSizeLen, authTagSize} from "../protocol/chunks.js"
 
 const AUTH_TAG_SIZE = 16n
 
@@ -125,6 +126,30 @@ export async function encryptFileAsync(
   await emit(sbEncryptChunk(state, padding))
   await emit(sbAuth(state))
   if (out) return out
+}
+
+// -- Encryption preparation (key gen + chunk sizing)
+
+export interface EncryptionParams {
+  fileHdr: Uint8Array
+  key: Uint8Array
+  nonce: Uint8Array
+  fileSize: bigint
+  encSize: bigint
+  chunkSizes: number[]
+}
+
+export function prepareEncryption(sourceSize: number, fileName: string): EncryptionParams {
+  const key = new Uint8Array(32)
+  const nonce = new Uint8Array(24)
+  crypto.getRandomValues(key)
+  crypto.getRandomValues(nonce)
+  const fileHdr = encodeFileHeader({fileName, fileExtra: null})
+  const fileSize = BigInt(fileHdr.length + sourceSize)
+  const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
+  const chunkSizes = prepareChunkSizes(payloadSize)
+  const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0))
+  return {fileHdr, key, nonce, fileSize, encSize, chunkSizes}
 }
 
 // -- Decryption (FileTransfer.Crypto:decryptChunks)
