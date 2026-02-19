@@ -134,6 +134,43 @@ export interface UploadOptions {
   numRecipients?: number
 }
 
+async function uploadSingleChunk(
+  agent: XFTPClientAgent, server: XFTPServer,
+  chunkNo: number, chunkData: Uint8Array, chunkSize: number,
+  numRecipients: number, auth: Uint8Array | null
+): Promise<SentChunk> {
+  const sndKp = generateEd25519KeyPair()
+  const rcvKps = Array.from({length: numRecipients}, () => generateEd25519KeyPair())
+  const chunkDigest = getChunkDigest(chunkData)
+  const fileInfo: FileInfo = {
+    sndKey: encodePubKeyEd25519(sndKp.publicKey),
+    size: chunkSize,
+    digest: chunkDigest
+  }
+  const firstBatch = Math.min(numRecipients, MAX_RECIPIENTS_PER_REQUEST)
+  const firstBatchKeys = rcvKps.slice(0, firstBatch).map(kp => encodePubKeyEd25519(kp.publicKey))
+  const {senderId, recipientIds: firstIds} = await createXFTPChunk(
+    agent, server, sndKp.privateKey, fileInfo, firstBatchKeys, auth
+  )
+  const allRecipientIds = [...firstIds]
+  let added = firstBatch
+  while (added < numRecipients) {
+    const batchSize = Math.min(numRecipients - added, MAX_RECIPIENTS_PER_REQUEST)
+    const batchKeys = rcvKps.slice(added, added + batchSize).map(kp => encodePubKeyEd25519(kp.publicKey))
+    const moreIds = await addXFTPRecipients(agent, server, sndKp.privateKey, senderId, batchKeys)
+    allRecipientIds.push(...moreIds)
+    added += batchSize
+  }
+  await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
+  return {
+    chunkNo, senderId, senderKey: sndKp.privateKey,
+    recipients: allRecipientIds.map((rid, ri) => ({
+      recipientId: rid, recipientKey: rcvKps[ri].privateKey
+    })),
+    chunkSize, digest: chunkDigest, server
+  }
+}
+
 export async function uploadFile(
   agent: XFTPClientAgent,
   servers: XFTPServer[],
@@ -169,38 +206,8 @@ export async function uploadFile(
   await Promise.all([...byServer.values()].map(async (jobs) => {
     for (const {index, spec, server} of jobs) {
       const chunkNo = index + 1
-      const sndKp = generateEd25519KeyPair()
-      const rcvKps = Array.from({length: numRecipients}, () => generateEd25519KeyPair())
       const chunkData = await readChunk(spec.chunkOffset, spec.chunkSize)
-      const chunkDigest = getChunkDigest(chunkData)
-      console.log(`[AGENT-DBG] upload chunk=${chunkNo} offset=${spec.chunkOffset} size=${spec.chunkSize} digest=${_dbgHex(chunkDigest, 32)} data[0..8]=${_dbgHex(chunkData)} data[-8..]=${_dbgHex(chunkData.slice(-8))}`)
-      const fileInfo: FileInfo = {
-        sndKey: encodePubKeyEd25519(sndKp.publicKey),
-        size: spec.chunkSize,
-        digest: chunkDigest
-      }
-      const firstBatch = Math.min(numRecipients, MAX_RECIPIENTS_PER_REQUEST)
-      const firstBatchKeys = rcvKps.slice(0, firstBatch).map(kp => encodePubKeyEd25519(kp.publicKey))
-      const {senderId, recipientIds: firstIds} = await createXFTPChunk(
-        agent, server, sndKp.privateKey, fileInfo, firstBatchKeys, auth ?? null
-      )
-      const allRecipientIds = [...firstIds]
-      let added = firstBatch
-      while (added < numRecipients) {
-        const batchSize = Math.min(numRecipients - added, MAX_RECIPIENTS_PER_REQUEST)
-        const batchKeys = rcvKps.slice(added, added + batchSize).map(kp => encodePubKeyEd25519(kp.publicKey))
-        const moreIds = await addXFTPRecipients(agent, server, sndKp.privateKey, senderId, batchKeys)
-        allRecipientIds.push(...moreIds)
-        added += batchSize
-      }
-      await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
-      sentChunks[index] = {
-        chunkNo, senderId, senderKey: sndKp.privateKey,
-        recipients: allRecipientIds.map((rid, ri) => ({
-          recipientId: rid, recipientKey: rcvKps[ri].privateKey
-        })),
-        chunkSize: spec.chunkSize, digest: chunkDigest, server
-      }
+      sentChunks[index] = await uploadSingleChunk(agent, server, chunkNo, chunkData, spec.chunkSize, numRecipients, auth ?? null)
       uploaded += spec.chunkSize
       onProgress?.(uploaded, total)
     }
@@ -276,25 +283,8 @@ async function uploadRedirectDescription(
   await Promise.all([...byServer.values()].map(async (jobs) => {
     for (const {index, spec, server} of jobs) {
       const chunkNo = index + 1
-      const sndKp = generateEd25519KeyPair()
-      const rcvKp = generateEd25519KeyPair()
       const chunkData = enc.encData.subarray(spec.chunkOffset, spec.chunkOffset + spec.chunkSize)
-      const chunkDigest = getChunkDigest(chunkData)
-      const fileInfo: FileInfo = {
-        sndKey: encodePubKeyEd25519(sndKp.publicKey),
-        size: spec.chunkSize,
-        digest: chunkDigest
-      }
-      const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
-      const {senderId, recipientIds} = await createXFTPChunk(
-        agent, server, sndKp.privateKey, fileInfo, rcvKeysForChunk, auth ?? null
-      )
-      await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
-      sentChunks[index] = {
-        chunkNo, senderId, senderKey: sndKp.privateKey,
-        recipients: [{recipientId: recipientIds[0], recipientKey: rcvKp.privateKey}],
-        chunkSize: spec.chunkSize, digest: chunkDigest, server
-      }
+      sentChunks[index] = await uploadSingleChunk(agent, server, chunkNo, chunkData, spec.chunkSize, 1, auth ?? null)
     }
   }))
 
