@@ -1821,18 +1821,12 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         DEL -> withServer' . tryCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
-          tryCommand $ do
-            t_ <- withConnLock c connId "ICAckDel" $ do
-              t_ <- ack srv rId srvMsgId
-              withStore' c (\db -> deleteMsg db connId msgId)
-              pure t_
-            -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-            forM_ t_ $ atomically . writeTBQueue subQ
+          tryCommand $ withConnLockNotify c connId "ICAckDel" $ do
+            t_ <- ack srv rId srvMsgId
+            withStore' c (\db -> deleteMsg db connId msgId)
+            pure t_
         ICAck rId srvMsgId -> withServer $ \srv ->
-          tryCommand $ do
-            t_ <- withConnLock c connId "ICAck" $ ack srv rId srvMsgId
-            -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-            forM_ t_ $ atomically . writeTBQueue subQ
+          tryCommand $ withConnLockNotify c connId "ICAck" $ ack srv rId srvMsgId
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2266,27 +2260,29 @@ retrySndOp c loop = do
   atomically $ beginAgentOperation c AOSndNetwork
   loop
 
+-- | Like 'withConnLock', but writes the returned 'ATransmission' to 'subQ'
+-- after releasing the lock, preventing deadlock with agentSubscriber.
+withConnLockNotify :: AgentClient -> ConnId -> Text -> AM (Maybe ATransmission) -> AM ()
+withConnLockNotify c connId name action = do
+  t_ <- withConnLock c connId name action
+  forM_ t_ $ atomically . writeTBQueue (subQ c)
+
 ackMessage' :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c connId msgId rcptInfo_ = do
-  t_ <- withConnLock c connId "ackMessage" $ do
-    SomeConn _ conn <- withStore c (`getConn` connId)
-    case conn of
-      DuplexConnection {} -> do
-        t_ <- ack
-        sendRcpt conn
-        del
-        pure t_
-      RcvConnection {} -> do
-        t_ <- ack
-        del
-        pure t_
-      SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
-      ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
-      NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
-  -- subQ write is OUTSIDE connLock — cannot deadlock with agentSubscriber
-  case t_ of
-    Just t -> atomically $ writeTBQueue (subQ c) t
-    Nothing -> pure ()
+ackMessage' c connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  case conn of
+    DuplexConnection {} -> do
+      t_ <- ack
+      sendRcpt conn
+      del
+      pure t_
+    RcvConnection {} -> do
+      t_ <- ack
+      del
+      pure t_
+    SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
+    ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
+    NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   where
     ack :: AM (Maybe ATransmission)
     ack = do
