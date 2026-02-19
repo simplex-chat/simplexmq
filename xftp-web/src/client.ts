@@ -181,6 +181,15 @@ export class XFTPAgent {
     this._connectFn = connectFn ?? connectXFTP
   }
 
+  closeServer(server: XFTPServer): void {
+    const key = formatXFTPServer(server)
+    const conn = this.connections.get(key)
+    if (conn) {
+      this.connections.delete(key)
+      conn.client.then(c => c.transport.close(), () => {})
+    }
+  }
+
   close(): void {
     for (const conn of this.connections.values()) {
       conn.client.then(c => c.transport.close(), () => {})
@@ -226,15 +235,6 @@ export function removeStaleConnection(
   if (conn && conn.client === failedP) {
     agent.connections.delete(key)
     failedP.then(c => c.transport.close(), () => {})
-  }
-}
-
-export function closeXFTPServerClient(agent: XFTPAgent, server: XFTPServer): void {
-  const key = formatXFTPServer(server)
-  const conn = agent.connections.get(key)
-  if (conn) {
-    agent.connections.delete(key)
-    conn.client.then(c => c.transport.close(), () => {})
   }
 }
 
@@ -448,8 +448,3 @@ export async function pingXFTP(agent: XFTPAgent, server: XFTPServer): Promise<vo
   if (response.type !== "FRPong") throw new Error("unexpected response: " + response.type)
 }
 
-// -- Close
-
-export function closeXFTP(c: XFTPClient): void {
-  c.transport.close()
-}
