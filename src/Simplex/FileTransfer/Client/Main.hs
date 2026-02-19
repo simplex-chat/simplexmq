@@ -398,23 +398,16 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
-  getInputFileDescription >>= receive
+  getInputFileDescription >>= receive 1
   where
     getInputFileDescription
       | "http://" `isPrefixOf` fileDescription || "https://" `isPrefixOf` fileDescription = do
           let fragment = B.pack $ drop 1 $ dropWhile (/= '#') fileDescription
           when (B.null fragment) $ throwE $ CLIError "Invalid URL: no fragment"
-          vfd@(ValidFileDescription FileDescription {redirect = r}) <- either (throwE . CLIError . ("Invalid web link: " <>)) pure $ decodeWebURI fragment
-          case r of
-            Just ri -> resolveRedirect vfd ri
-            Nothing -> pure vfd
-      | otherwise = do
-          vfd@(ValidFileDescription FileDescription {redirect = r}) <- getFileDescription' fileDescription
-          case r of
-            Just ri -> resolveRedirect vfd ri
-            Nothing -> pure vfd
-    receive :: ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
-    receive (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
+          either (throwE . CLIError . ("Invalid web link: " <>)) pure $ decodeWebURI fragment
+      | otherwise = getFileDescription' fileDescription
+    receive :: Int -> ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
+    receive depth (ValidFileDescription FileDescription {size, digest, key, nonce, chunks, redirect}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
@@ -432,14 +425,26 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       when (encDigest /= unFileDigest digest) $ throwE $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwE $ CLIError "File size mismatch"
-      liftIO $ printNoNewLine "Decrypting file..."
-      CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
-      forM_ chunks $ acknowledgeFileChunk a
-      whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
-      liftIO $ do
-        printNoNewLine $ "File downloaded: " <> path
-        unless ("http://" `isPrefixOf` fileDescription || "https://" `isPrefixOf` fileDescription) $
-          removeFD yes fileDescription
+      case redirect of
+        Just _
+          | depth > 0 -> do
+              CryptoFile tmpFile _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ \_ ->
+                fmap CF.plain $ uniqueCombine encPath "redirect.yaml"
+              forM_ chunks $ acknowledgeFileChunk a
+              yaml <- liftIO $ B.readFile tmpFile
+              whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
+              innerVfd <- either (throwE . CLIError . ("Redirect: invalid file description: " <>)) pure $ strDecode yaml
+              receive 0 innerVfd
+          | otherwise -> throwE $ CLIError "Redirect chain too long"
+        Nothing -> do
+          liftIO $ printNoNewLine "Decrypting file..."
+          CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
+          forM_ chunks $ acknowledgeFileChunk a
+          whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
+          liftIO $ do
+            printNoNewLine $ "File downloaded: " <> path
+            unless ("http://" `isPrefixOf` fileDescription || "https://" `isPrefixOf` fileDescription) $
+              removeFD yes fileDescription
     downloadFileChunk :: TVar ChaChaDRG -> XFTPClientAgent -> FilePath -> FileSize Int64 -> TVar [Int64] -> FileChunk -> ExceptT CLIError IO (Int, FilePath)
     downloadFileChunk g a encPath (FileSize encSize) downloadedChunks FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
@@ -469,34 +474,6 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       c <- withRetry retryCount $ getXFTPServerClient a server
       withRetry retryCount $ ackXFTPChunk c replicaKey (unChunkReplicaId replicaId)
     acknowledgeFileChunk _ _ = throwE $ CLIError "chunk has no replicas"
-    resolveRedirect :: ValidFileDescription 'FRecipient -> RedirectFileInfo -> ExceptT CLIError IO (ValidFileDescription 'FRecipient)
-    resolveRedirect (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) RedirectFileInfo {size = rdSize, digest = rdDigest} = do
-      encPath <- getEncPath tempPath "xftp-redirect"
-      createDirectory encPath
-      a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
-      liftIO $ printNoNewLine "Resolving redirect..."
-      downloadedChunks <- newTVarIO []
-      let srv FileChunk {replicas} = case replicas of
-            [] -> error "empty FileChunk.replicas"
-            FileChunkReplica {server} : _ -> server
-          srvChunks = groupAllOn srv chunks
-      g <- liftIO C.newRandom
-      (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 srvChunks $ mapM $ runExceptT . downloadFileChunk g a encPath size downloadedChunks)
-      mapM_ throwE errs
-      let chunkPaths = map snd $ sortOn fst rs
-      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
-      when (encDigest /= unFileDigest digest) $ throwE $ CLIError "Redirect: file digest mismatch"
-      encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
-      when (FileSize encSize /= size) $ throwE $ CLIError "Redirect: file size mismatch"
-      CryptoFile tmpFile _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ \_ ->
-        fmap CF.plain $ uniqueCombine encPath "redirect.yaml"
-      yaml <- liftIO $ B.readFile tmpFile
-      whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
-      innerVfd@(ValidFileDescription FileDescription {size = innerSize, digest = innerDigest}) <-
-        either (throwE . CLIError . ("Redirect: invalid inner file description: " <>)) pure $ strDecode yaml
-      when (innerSize /= rdSize) $ throwE $ CLIError "Redirect: inner file size mismatch"
-      when (innerDigest /= rdDigest) $ throwE $ CLIError "Redirect: inner file digest mismatch"
-      pure innerVfd
 
 printProgress :: String -> Int64 -> Int64 -> IO ()
 printProgress s part total = printNoNewLine $ s <> " " <> show ((part * 100) `div` total) <> "%"
