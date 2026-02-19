@@ -1,5 +1,5 @@
 import {createCryptoBackend} from './crypto-backend.js'
-import {getServers, pickRandomServer} from './servers.js'
+import {getServers} from './servers.js'
 import {createProgressRing} from './progress.js'
 import {
   newXFTPAgent, closeXFTPAgent, uploadFile, encodeDescriptionURI,
@@ -131,8 +131,7 @@ export function initUpload(app: HTMLElement) {
         chunkSizes: encrypted.chunkSizes
       }
       const servers = getServers()
-      const server = pickRandomServer(servers)
-      const result = await uploadFile(agent, server, metadata, {
+      const result = await uploadFile(agent, servers, metadata, {
         readChunk: (off, sz) => backend.readChunk(off, sz),
         onProgress: (uploaded, total) => {
           ring.update(0.3 + (uploaded / total) * 0.7)

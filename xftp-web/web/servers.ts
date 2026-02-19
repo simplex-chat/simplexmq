@@ -10,7 +10,3 @@ const serverAddresses: string[] = __XFTP_SERVERS__
 export function getServers(): XFTPServer[] {
   return serverAddresses.map(parseXFTPServer)
 }
-
-export function pickRandomServer(servers: XFTPServer[]): XFTPServer {
-  return servers[Math.floor(Math.random() * servers.length)]
-}

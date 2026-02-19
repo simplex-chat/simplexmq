@@ -104,10 +104,11 @@ export interface UploadOptions {
 
 export async function uploadFile(
   agent: XFTPClientAgent,
-  server: XFTPServer,
+  servers: XFTPServer[],
   encrypted: EncryptedFileMetadata,
   options?: UploadOptions
 ): Promise<UploadResult> {
+  if (servers.length === 0) throw new Error("uploadFile: servers list is empty")
   const {onProgress, redirectThreshold, readChunk: readChunkOpt} = options ?? {}
   const readChunk: (offset: number, size: number) => Promise<Uint8Array> = readChunkOpt
     ? readChunkOpt
@@ -116,41 +117,56 @@ export async function uploadFile(
         : () => { throw new Error("uploadFile: readChunk required when encData is absent") })
   const total = encrypted.chunkSizes.reduce((a, b) => a + b, 0)
   const specs = prepareChunkSpecs(encrypted.chunkSizes)
-  const sentChunks: SentChunk[] = []
-  let uploaded = 0
-  for (let i = 0; i < specs.length; i++) {
-    const spec = specs[i]
-    const chunkNo = i + 1
-    const sndKp = generateEd25519KeyPair()
-    const rcvKp = generateEd25519KeyPair()
-    const chunkData = await readChunk(spec.chunkOffset, spec.chunkSize)
-    const chunkDigest = getChunkDigest(chunkData)
-    console.log(`[AGENT-DBG] upload chunk=${chunkNo} offset=${spec.chunkOffset} size=${spec.chunkSize} digest=${_dbgHex(chunkDigest, 32)} data[0..8]=${_dbgHex(chunkData)} data[-8..]=${_dbgHex(chunkData.slice(-8))}`)
-    const fileInfo: FileInfo = {
-      sndKey: encodePubKeyEd25519(sndKp.publicKey),
-      size: spec.chunkSize,
-      digest: chunkDigest
-    }
-    const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
-    const {senderId, recipientIds} = await createXFTPChunk(
-      agent, server, sndKp.privateKey, fileInfo, rcvKeysForChunk
-    )
-    await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
-    sentChunks.push({
-      chunkNo, senderId, senderKey: sndKp.privateKey,
-      recipientId: recipientIds[0], recipientKey: rcvKp.privateKey,
-      chunkSize: spec.chunkSize, digest: chunkDigest, server
-    })
-    uploaded += spec.chunkSize
-    onProgress?.(uploaded, total)
+
+  // Pre-assign servers and group by server for parallel upload
+  const chunkJobs = specs.map((spec, i) => ({
+    index: i,
+    spec,
+    server: servers[Math.floor(Math.random() * servers.length)]
+  }))
+  const byServer = new Map<string, typeof chunkJobs>()
+  for (const job of chunkJobs) {
+    const key = formatXFTPServer(job.server)
+    if (!byServer.has(key)) byServer.set(key, [])
+    byServer.get(key)!.push(job)
   }
+
+  // Upload groups in parallel, sequential within each group
+  const sentChunks: SentChunk[] = new Array(specs.length)
+  let uploaded = 0
+  await Promise.all([...byServer.values()].map(async (jobs) => {
+    for (const {index, spec, server} of jobs) {
+      const chunkNo = index + 1
+      const sndKp = generateEd25519KeyPair()
+      const rcvKp = generateEd25519KeyPair()
+      const chunkData = await readChunk(spec.chunkOffset, spec.chunkSize)
+      const chunkDigest = getChunkDigest(chunkData)
+      const fileInfo: FileInfo = {
+        sndKey: encodePubKeyEd25519(sndKp.publicKey),
+        size: spec.chunkSize,
+        digest: chunkDigest
+      }
+      const rcvKeysForChunk = [encodePubKeyEd25519(rcvKp.publicKey)]
+      const {senderId, recipientIds} = await createXFTPChunk(
+        agent, server, sndKp.privateKey, fileInfo, rcvKeysForChunk
+      )
+      await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData)
+      sentChunks[index] = {
+        chunkNo, senderId, senderKey: sndKp.privateKey,
+        recipientId: recipientIds[0], recipientKey: rcvKp.privateKey,
+        chunkSize: spec.chunkSize, digest: chunkDigest, server
+      }
+      uploaded += spec.chunkSize
+      onProgress?.(uploaded, total)
+    }
+  }))
   const rcvDescription = buildDescription("recipient", encrypted, sentChunks)
   const sndDescription = buildDescription("sender", encrypted, sentChunks)
   let uri = encodeDescriptionURI(rcvDescription)
   let finalRcvDescription = rcvDescription
   const threshold = redirectThreshold ?? DEFAULT_REDIRECT_THRESHOLD
   if (uri.length > threshold && sentChunks.length > 1) {
-    finalRcvDescription = await uploadRedirectDescription(agent, server, rcvDescription)
+    finalRcvDescription = await uploadRedirectDescription(agent, servers, rcvDescription)
     uri = encodeDescriptionURI(finalRcvDescription)
   }
   return {rcvDescription: finalRcvDescription, sndDescription, uri}
@@ -185,7 +201,7 @@ function buildDescription(
 
 async function uploadRedirectDescription(
   agent: XFTPClientAgent,
-  server: XFTPServer,
+  servers: XFTPServer[],
   innerFd: FileDescription
 ): Promise<FileDescription> {
   const yaml = encodeFileDescription(innerFd)
@@ -196,6 +212,7 @@ async function uploadRedirectDescription(
   for (let i = 0; i < specs.length; i++) {
     const spec = specs[i]
     const chunkNo = i + 1
+    const server = servers[Math.floor(Math.random() * servers.length)]
     const sndKp = generateEd25519KeyPair()
     const rcvKp = generateEd25519KeyPair()
     const chunkData = enc.encData.subarray(spec.chunkOffset, spec.chunkOffset + spec.chunkSize)

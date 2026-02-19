@@ -10,7 +10,7 @@ test('browser upload + download round-trip', async () => {
     const data = new Uint8Array(50000)
     crypto.getRandomValues(data)
     const encrypted = encryptFileForUpload(data, 'test.bin')
-    const {rcvDescription} = await uploadFile(agent, server, encrypted)
+    const {rcvDescription} = await uploadFile(agent, [server], encrypted)
     const {content} = await downloadFile(agent, rcvDescription)
     expect(content).toEqual(data)
   } finally {
