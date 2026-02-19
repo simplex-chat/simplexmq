@@ -41,9 +41,11 @@ const result = await sendFile(
 )
 
 // Download
-const {header, content} = await receiveFile(agent, uri)
+const {header, content} = await receiveFile(agent, uri, {
+  onProgress: (downloaded, total) => console.log(`${downloaded}/${total}`)
+})
 
-// Delete
+// Delete (requires sender description from upload)
 await deleteFile(agent, sndDescription)
 
 // Cleanup
