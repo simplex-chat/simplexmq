@@ -85,11 +85,19 @@ export default defineConfig(({mode}) => {
 
   return {
     root: 'web',
-    build: {outDir: resolve(__dirname, 'dist-web'), target: 'esnext'},
+    build: {
+      outDir: resolve(__dirname, 'dist-web'),
+      emptyOutDir: true,
+      target: 'esnext',
+      chunkSizeWarningLimit: 1200,
+      rollupOptions: {
+        external: ['node:http2', 'url'],
+      },
+    },
     server: httpsConfig ? {https: httpsConfig} : {},
     preview: {host: true, https: false},
     define,
-    worker: {format: 'es' as const},
+    worker: {format: 'es' as const, rollupOptions: {external: ['node:http2', 'url']}},
     plugins,
   }
 })
