@@ -5,6 +5,10 @@
   max-width: 480px;
   padding: 16px;
   box-sizing: border-box;
+  --xftp-ring-encrypt: #f59e0b;
+  --xftp-ring-upload: #3b82f6;
+  --xftp-ring-download: #06b6d4;
+  --xftp-ring-decrypt: #8b5cf6;
 }
 
 :is(#app, [data-xftp-app]) .card {
@@ -99,7 +103,12 @@
   color: #e5e7eb;
   --xftp-ring-bg: #374151;
   --xftp-ring-fg: #60a5fa;
+  --xftp-ring-encrypt: #fbbf24;
+  --xftp-ring-upload: #60a5fa;
+  --xftp-ring-download: #22d3ee;
+  --xftp-ring-decrypt: #a78bfa;
   --xftp-ring-text: #e5e7eb;
+  --xftp-ring-done: #4ade80;
 }
 .dark :is(#app, [data-xftp-app]) .card {
   background: #1f2937;

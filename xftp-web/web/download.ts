@@ -78,21 +78,21 @@ export function initDownload(app: HTMLElement, hash: string) {
         )
       }, {
         onProgress: (downloaded, total) => {
-          ring.update(downloaded / total * 0.8)
+          ring.update(downloaded / total, '--xftp-ring-download')
         }
       })
 
+      ring.update(0, '--xftp-ring-decrypt')
       statusText.textContent = t('decrypting', 'Decrypting\u2026')
-      ring.update(0.85)
 
       const {header, content} = await backend.verifyAndDecrypt({
         size: resolvedFd.size,
         digest: resolvedFd.digest,
         key: resolvedFd.key,
         nonce: resolvedFd.nonce
+      }, (done, total) => {
+        ring.update(done / total, '--xftp-ring-decrypt')
       })
-
-      ring.update(0.95)
 
       // Sanitize filename and trigger browser save
       const fileName = sanitizeFileName(header.fileName)
@@ -116,6 +116,7 @@ export function initDownload(app: HTMLElement, hash: string) {
       if (err instanceof XFTPPermanentError) retryBtn.hidden = true
       else retryBtn.hidden = false
     } finally {
+      ring.destroy()
       await backend.cleanup().catch(() => {})
       closeXFTPAgent(agent)
     }

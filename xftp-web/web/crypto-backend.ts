@@ -10,7 +10,8 @@ export interface CryptoBackend {
     dhSecret: Uint8Array, nonce: Uint8Array,
     body: Uint8Array, digest: Uint8Array, chunkNo: number
   ): Promise<void>
-  verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array}
+  verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array},
+                   onProgress?: (done: number, total: number) => void
   ): Promise<{header: FileHeader, content: Uint8Array}>
   cleanup(): Promise<void>
 }
@@ -118,12 +119,15 @@ class WorkerBackend implements CryptoBackend {
     )
   }
 
-  async verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array}
+  async verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array},
+                         onProgress?: (done: number, total: number) => void
   ): Promise<{header: FileHeader, content: Uint8Array}> {
+    this.progressCb = onProgress ?? null
     const resp = await this.send({
       type: 'verifyAndDecrypt',
       size: params.size, digest: params.digest, key: params.key, nonce: params.nonce
     })
+    this.progressCb = null
     return {header: resp.header, content: new Uint8Array(resp.content)}
   }
 

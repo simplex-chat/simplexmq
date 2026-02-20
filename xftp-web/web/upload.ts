@@ -122,6 +122,7 @@ export function initUpload(app: HTMLElement) {
 
     cancelBtn.onclick = () => {
       aborted = true
+      ring.destroy()
       backend.cleanup().catch(() => {})
       closeXFTPAgent(agent)
       showStage(dropZone)
@@ -132,10 +133,11 @@ export function initUpload(app: HTMLElement) {
       if (aborted) return
 
       const encrypted = await backend.encrypt(fileData, file.name, (done, total) => {
-        ring.update(done / total * 0.3)
+        ring.update(done / total, '--xftp-ring-encrypt')
       })
       if (aborted) return
 
+      ring.update(0, '--xftp-ring-upload')
       statusText.textContent = t('uploading', 'Uploading\u2026')
       const metadata: EncryptedFileMetadata = {
         digest: encrypted.digest,
@@ -147,7 +149,7 @@ export function initUpload(app: HTMLElement) {
       const result = await uploadFile(agent, servers, metadata, {
         readChunk: (off, sz) => backend.readChunk(off, sz),
         onProgress: (uploaded, total) => {
-          ring.update(0.3 + (uploaded / total) * 0.7)
+          ring.update(uploaded / total, '--xftp-ring-upload')
         }
       })
       if (aborted) return
@@ -174,6 +176,7 @@ export function initUpload(app: HTMLElement) {
         else retryBtn.hidden = false
       }
     } finally {
+      ring.destroy()
       await backend.cleanup().catch(() => {})
       closeXFTPAgent(agent)
     }

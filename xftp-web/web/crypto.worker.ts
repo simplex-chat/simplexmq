@@ -155,12 +155,16 @@ async function handleVerifyAndDecrypt(
   // Read chunks — from memory (fallback) or OPFS
   const chunks: Uint8Array[] = []
   let totalSize = 0
+  const chunkCount = useMemory ? memoryChunks.size : chunkMeta.size
+  const totalSteps = chunkCount * 2 + 1 // read + hash + decrypt
+  let step = 0
   if (useMemory) {
     const sorted = [...memoryChunks.entries()].sort((a, b) => a[0] - b[0])
     for (const [chunkNo, data] of sorted) {
       console.log(`[WORKER-DBG] verify memory chunk=${chunkNo} size=${data.length}`)
       chunks.push(data)
       totalSize += data.length
+      self.postMessage({id, type: 'progress', done: ++step, total: totalSteps})
     }
   } else {
     // Close write handle, reopen as read
@@ -180,6 +184,7 @@ async function handleVerifyAndDecrypt(
       console.log(`[WORKER-DBG] verify read chunk=${chunkNo} offset=${meta.offset} size=${meta.size} bytesRead=${bytesRead} [0..8]=${_whex(buf)} [-8..]=${_whex(buf.slice(-8))}`)
       chunks.push(buf)
       totalSize += meta.size
+      self.postMessage({id, type: 'progress', done: ++step, total: totalSteps})
     }
     readHandle.close()
   }
@@ -197,6 +202,7 @@ async function handleVerifyAndDecrypt(
     for (let off = 0; off < chunk.length; off += SEG) {
       sodium.crypto_hash_sha512_update(state, chunk.subarray(off, Math.min(off + SEG, chunk.length)))
     }
+    self.postMessage({id, type: 'progress', done: ++step, total: totalSteps})
   }
   const actualDigest = sodium.crypto_hash_sha512_final(state)
   if (!digestEqual(actualDigest, digest)) {
