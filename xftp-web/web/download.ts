@@ -54,12 +54,12 @@ export function initDownload(app: HTMLElement, hash: string) {
   }
 
   function showError(msg: string) {
-    errorMsg.textContent = msg
+    errorMsg.innerHTML = msg
     showStage(errorStage)
   }
 
   dlBtn.addEventListener('click', startDownload)
-  retryBtn.addEventListener('click', startDownload)
+  retryBtn.addEventListener('click', () => showStage(readyStage))
 
   async function startDownload() {
     showStage(progressStage)

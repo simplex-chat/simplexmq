@@ -83,7 +83,9 @@ export function initUpload(app: HTMLElement) {
     if (fileInput.files?.[0]) startUpload(fileInput.files[0])
   })
   retryBtn.addEventListener('click', () => {
-    if (pendingFile) startUpload(pendingFile)
+    pendingFile = null
+    fileInput.value = ''
+    showStage(dropZone)
   })
 
   function showStage(stage: HTMLElement) {
@@ -92,7 +94,7 @@ export function initUpload(app: HTMLElement) {
   }
 
   function showError(msg: string) {
-    errorMsg.textContent = msg
+    errorMsg.innerHTML = msg
     showStage(errorStage)
   }
 
