@@ -8,9 +8,11 @@ function getAppElement(): HTMLElement | null {
   return (document.querySelector('[data-xftp-app]') as HTMLElement | null) ?? document.getElementById('app')
 }
 
-async function main() {
-  await sodium.ready
+const wasmReady = sodium.ready
 
+async function main() {
+  // Render UI immediately — no WASM needed for HTML + event listeners.
+  // WASM is only used later when user triggers upload/download.
   const app = getAppElement()
   if (!app?.hasAttribute('data-defer-init')) {
     initApp()
@@ -21,6 +23,8 @@ async function main() {
       if (!hash || isXFTPHash(hash)) initApp()
     })
   }
+  await wasmReady
+  app?.dispatchEvent(new CustomEvent('xftp:ready', {bubbles: true}))
 }
 
 function isXFTPHash(hash: string): boolean {
@@ -38,7 +42,7 @@ function initApp() {
   }
 }
 
-;(window as any).__xftp_initApp = initApp
+;(window as any).__xftp_initApp = async () => { await wasmReady; initApp() }
 
 main().catch(err => {
   const app = getAppElement()
