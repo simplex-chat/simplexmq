@@ -102,7 +102,7 @@ export default defineConfig(({mode}) => {
     server: httpsConfig ? {https: httpsConfig} : {},
     preview: {host: true, https: false},
     define,
-    worker: {format: 'es' as const, rollupOptions: {external: ['node:http2', 'url'], output: {entryFileNames: '[name].js'}}},
+    worker: {format: 'es' as const, rollupOptions: {external: ['node:http2', 'url'], output: {entryFileNames: 'assets/[name].js'}}},
     plugins,
   }
 })

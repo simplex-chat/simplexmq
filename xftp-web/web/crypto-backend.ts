@@ -1,4 +1,5 @@
 import type {FileHeader} from '../src/crypto/file.js'
+import {t} from './i18n.js'
 
 export interface CryptoBackend {
   encrypt(data: Uint8Array, fileName: string,
@@ -134,7 +135,7 @@ class WorkerBackend implements CryptoBackend {
 
 export function createCryptoBackend(): CryptoBackend {
   if (typeof Worker === 'undefined') {
-    throw new Error('Web Workers required — update your browser')
+    throw new Error(t('workersRequired', 'Web Workers required \u2014 update your browser'))
   }
   return new WorkerBackend()
 }

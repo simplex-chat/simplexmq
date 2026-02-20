@@ -1,6 +1,7 @@
 import {createCryptoBackend} from './crypto-backend.js'
 import {getServers} from './servers.js'
 import {createProgressRing} from './progress.js'
+import {t} from './i18n.js'
 import {
   newXFTPAgent, closeXFTPAgent, uploadFile, encodeDescriptionURI,
   type EncryptedFileMetadata
@@ -12,35 +13,35 @@ const MAX_SIZE = 100 * 1024 * 1024
 export function initUpload(app: HTMLElement) {
   app.innerHTML = `
     <div class="card">
-      <h1>SimpleX File Transfer</h1>
+      <h1>${t('title', 'SimpleX File Transfer')}</h1>
       <div id="drop-zone" class="drop-zone">
-        <p>Drag & drop a file here</p>
-        <p class="hint">or</p>
-        <label class="btn" for="file-input">Choose file</label>
+        <p>${t('dropZone', 'Drag & drop a file here')}</p>
+        <p class="hint">${t('dropZoneHint', 'or')}</p>
+        <label class="btn" for="file-input">${t('chooseFile', 'Choose file')}</label>
         <input id="file-input" type="file" hidden>
-        <p class="hint">Max 100 MB</p>
+        <p class="hint">${t('maxSizeHint', 'Max 100 MB')}</p>
       </div>
       <div id="upload-progress" class="stage" hidden>
         <div id="progress-container"></div>
-        <p id="upload-status">Encrypting…</p>
-        <button id="cancel-btn" class="btn btn-secondary">Cancel</button>
+        <p id="upload-status">${t('encrypting', 'Encrypting\u2026')}</p>
+        <button id="cancel-btn" class="btn btn-secondary">${t('cancel', 'Cancel')}</button>
       </div>
       <div id="upload-complete" class="stage" hidden>
-        <p class="success">File uploaded</p>
+        <p class="success">${t('fileUploaded', 'File uploaded')}</p>
         <div class="link-row">
           <input id="share-link" data-testid="share-link" readonly>
-          <button id="copy-btn" class="btn">Copy</button>
+          <button id="copy-btn" class="btn">${t('copy', 'Copy')}</button>
         </div>
-        <p class="hint expiry">Files are typically available for 48 hours.</p>
+        <p class="hint expiry">${t('expiryHint', 'Files are typically available for 48 hours.')}</p>
         <div class="security-note">
-          <p>Your file was encrypted in the browser before upload — the server never sees file contents.</p>
-          <p>The link contains the decryption key in the hash fragment, which the browser never sends to any server.</p>
-          <p>For maximum security, use the <a href="https://simplex.chat" target="_blank" rel="noopener">SimpleX app</a>.</p>
+          <p>${t('securityNote1', 'Your file was encrypted in the browser before upload \u2014 the server never sees file contents.')}</p>
+          <p>${t('securityNote2', 'The link contains the decryption key in the hash fragment, which the browser never sends to any server.')}</p>
+          <p>${t('securityNote3', 'For maximum security, use the <a href="https://simplex.chat" target="_blank" rel="noopener">SimpleX app</a>.')}</p>
         </div>
       </div>
       <div id="upload-error" class="stage" hidden>
         <p class="error" id="error-msg"></p>
-        <button id="retry-btn" class="btn">Retry</button>
+        <button id="retry-btn" class="btn">${t('retry', 'Retry')}</button>
       </div>
     </div>`
 
@@ -56,6 +57,16 @@ export function initUpload(app: HTMLElement) {
   const copyBtn = document.getElementById('copy-btn')!
   const errorMsg = document.getElementById('error-msg')!
   const retryBtn = document.getElementById('retry-btn')!
+
+  const shareBtn = typeof navigator.share === 'function'
+    ? (() => {
+        const btn = document.createElement('button')
+        btn.className = 'btn btn-secondary'
+        btn.textContent = t('share', 'Share')
+        shareLink.parentElement!.appendChild(btn)
+        return btn
+      })()
+    : null
 
   let aborted = false
   let pendingFile: File | null = null
@@ -90,11 +101,11 @@ export function initUpload(app: HTMLElement) {
     aborted = false
 
     if (file.size > MAX_SIZE) {
-      showError(`File too large (${formatSize(file.size)}). Maximum is 100 MB.`)
+      showError(t('fileTooLarge', 'File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.').replace('%size%', formatSize(file.size)))
       return
     }
     if (file.size === 0) {
-      showError('File is empty.')
+      showError(t('fileEmpty', 'File is empty.'))
       return
     }
 
@@ -102,7 +113,7 @@ export function initUpload(app: HTMLElement) {
     const ring = createProgressRing()
     progressContainer.innerHTML = ''
     progressContainer.appendChild(ring.canvas)
-    statusText.textContent = 'Encrypting…'
+    statusText.textContent = t('encrypting', 'Encrypting\u2026')
 
     const backend = createCryptoBackend()
     const agent = newXFTPAgent()
@@ -123,7 +134,7 @@ export function initUpload(app: HTMLElement) {
       })
       if (aborted) return
 
-      statusText.textContent = 'Uploading…'
+      statusText.textContent = t('uploading', 'Uploading\u2026')
       const metadata: EncryptedFileMetadata = {
         digest: encrypted.digest,
         key: encrypted.key,
@@ -142,11 +153,15 @@ export function initUpload(app: HTMLElement) {
       const url = window.location.origin + window.location.pathname + '#' + result.uri
       shareLink.value = url
       showStage(completeStage)
+      app.dispatchEvent(new CustomEvent('xftp:upload-complete', {detail: {url}, bubbles: true}))
       copyBtn.onclick = () => {
         navigator.clipboard.writeText(url).then(() => {
-          copyBtn.textContent = 'Copied!'
-          setTimeout(() => { copyBtn.textContent = 'Copy' }, 2000)
+          copyBtn.textContent = t('copied', 'Copied!')
+          setTimeout(() => { copyBtn.textContent = t('copy', 'Copy') }, 2000)
         })
+      }
+      if (shareBtn) {
+        shareBtn.onclick = () => navigator.share({url}).catch(() => {})
       }
     } catch (err: any) {
       if (!aborted) {

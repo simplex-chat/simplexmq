@@ -1,5 +1,6 @@
 import {createCryptoBackend} from './crypto-backend.js'
 import {createProgressRing} from './progress.js'
+import {t} from './i18n.js'
 import {
   newXFTPAgent, closeXFTPAgent,
   decodeDescriptionURI, downloadFileRaw
@@ -11,30 +12,30 @@ export function initDownload(app: HTMLElement, hash: string) {
   try {
     fd = decodeDescriptionURI(hash)
   } catch (err: any) {
-    app.innerHTML = `<div class="card"><p class="error">Invalid or corrupted link.</p></div>`
+    app.innerHTML = `<div class="card"><p class="error">${t('invalidLink', 'Invalid or corrupted link.')}</p></div>`
     return
   }
 
   const size = fd.redirect ? fd.redirect.size : fd.size
   app.innerHTML = `
     <div class="card">
-      <h1>SimpleX File Transfer</h1>
+      <h1>${t('title', 'SimpleX File Transfer')}</h1>
       <div id="dl-ready" class="stage">
-        <p>File available (~${formatSize(size)})</p>
-        <button id="dl-btn" class="btn">Download</button>
+        <p>${t('fileAvailable', 'File available (~%size%)').replace('%size%', formatSize(size))}</p>
+        <button id="dl-btn" class="btn">${t('download', 'Download')}</button>
         <div class="security-note">
-          <p>This file is encrypted — the server never sees file contents.</p>
-          <p>The decryption key is in the link's hash fragment, which your browser never sends to any server.</p>
-          <p>For maximum security, use the <a href="https://simplex.chat" target="_blank" rel="noopener">SimpleX app</a>.</p>
+          <p>${t('dlSecurityNote1', 'This file is encrypted \u2014 the server never sees file contents.')}</p>
+          <p>${t('dlSecurityNote2', 'The decryption key is in the link\u2019s hash fragment, which your browser never sends to any server.')}</p>
+          <p>${t('dlSecurityNote3', 'For maximum security, use the <a href="https://simplex.chat" target="_blank" rel="noopener">SimpleX app</a>.')}</p>
         </div>
       </div>
       <div id="dl-progress" class="stage" hidden>
         <div id="dl-progress-container"></div>
-        <p id="dl-status">Downloading…</p>
+        <p id="dl-status">${t('downloading', 'Downloading\u2026')}</p>
       </div>
       <div id="dl-error" class="stage" hidden>
         <p class="error" id="dl-error-msg"></p>
-        <button id="dl-retry-btn" class="btn">Retry</button>
+        <button id="dl-retry-btn" class="btn">${t('retry', 'Retry')}</button>
       </div>
     </div>`
 
@@ -65,7 +66,7 @@ export function initDownload(app: HTMLElement, hash: string) {
     const ring = createProgressRing()
     progressContainer.innerHTML = ''
     progressContainer.appendChild(ring.canvas)
-    statusText.textContent = 'Downloading…'
+    statusText.textContent = t('downloading', 'Downloading\u2026')
 
     const backend = createCryptoBackend()
     const agent = newXFTPAgent()
@@ -81,7 +82,7 @@ export function initDownload(app: HTMLElement, hash: string) {
         }
       })
 
-      statusText.textContent = 'Decrypting…'
+      statusText.textContent = t('decrypting', 'Decrypting\u2026')
       ring.update(0.85)
 
       const {header, content} = await backend.verifyAndDecrypt({
@@ -107,7 +108,8 @@ export function initDownload(app: HTMLElement, hash: string) {
       setTimeout(() => URL.revokeObjectURL(url), 1000)
 
       ring.update(1)
-      statusText.textContent = 'Download complete'
+      statusText.textContent = t('downloadComplete', 'Download complete')
+      app.dispatchEvent(new CustomEvent('xftp:download-complete', {detail: {fileName}, bubbles: true}))
     } catch (err: any) {
       const msg = err?.message ?? String(err)
       showError(msg)
