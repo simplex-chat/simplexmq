@@ -1,6 +1,7 @@
 import sodium from 'libsodium-wrappers-sumo'
 import {initUpload} from './upload.js'
 import {initDownload} from './download.js'
+import {decodeDescriptionURI} from '../src/agent.js'
 import {t} from './i18n.js'
 
 function getAppElement(): HTMLElement | null {
@@ -15,15 +16,22 @@ async function main() {
     initApp()
   }
   if (!app?.hasAttribute('data-no-hashchange')) {
-    window.addEventListener('hashchange', initApp)
+    window.addEventListener('hashchange', () => {
+      const hash = window.location.hash.slice(1)
+      if (!hash || isXFTPHash(hash)) initApp()
+    })
   }
+}
+
+function isXFTPHash(hash: string): boolean {
+  try { decodeDescriptionURI(hash); return true } catch { return false }
 }
 
 function initApp() {
   const app = getAppElement()!
   const hash = window.location.hash.slice(1)
 
-  if (hash) {
+  if (hash && isXFTPHash(hash)) {
     initDownload(app, hash)
   } else {
     initUpload(app)
