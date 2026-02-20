@@ -190,7 +190,7 @@ async function handleVerifyAndDecrypt(
   }
 
   // Compute per-chunk SHA-512 incrementally to find divergence point
-  const state = sodium.crypto_hash_sha512_init()
+  const state = sodium.crypto_hash_sha512_init() as unknown as import('libsodium-wrappers').StateAddress
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]
     const SEG = 4 * 1024 * 1024
@@ -202,7 +202,7 @@ async function handleVerifyAndDecrypt(
   if (!digestEqual(actualDigest, digest)) {
     console.error(`[WORKER-DBG] DIGEST MISMATCH: expected=${_whex(digest, 64)} actual=${_whex(actualDigest, 64)} chunks=${chunks.length} totalSize=${totalSize}`)
     // Log per-chunk incremental hash to find divergence
-    const state2 = sodium.crypto_hash_sha512_init()
+    const state2 = sodium.crypto_hash_sha512_init() as unknown as import('libsodium-wrappers').StateAddress
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]
       const SEG = 4 * 1024 * 1024

@@ -97,7 +97,7 @@ interface Transport {
 
 // -- Transport implementations
 
-const isNode = typeof globalThis.process !== "undefined" && globalThis.process.versions?.node
+const isNode = typeof (globalThis as any).process !== "undefined" && (globalThis as any).process.versions?.node
 
 // In development mode, use HTTP proxy to avoid self-signed cert issues in browser
 // __XFTP_PROXY_PORT__ is injected by vite build (null in production)
@@ -112,7 +112,8 @@ async function createTransport(baseUrl: string, config: TransportConfig): Promis
 }
 
 async function createNodeTransport(baseUrl: string, config: TransportConfig): Promise<Transport> {
-  const http2 = await import("node:http2")
+  // @ts-ignore node:http2 unavailable in browser tsconfig
+  const http2: any = await import("node:http2")
   const session = http2.connect(baseUrl, {rejectUnauthorized: false})
   return {
     async post(body: Uint8Array, headers?: Record<string, string>): Promise<Uint8Array> {
@@ -122,11 +123,14 @@ async function createNodeTransport(baseUrl: string, config: TransportConfig): Pr
           req.close()
           reject(Object.assign(new Error("Request timeout"), {name: "AbortError"}))
         })
-        const chunks: Buffer[] = []
-        req.on("data", (chunk: Buffer) => chunks.push(chunk))
-        req.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
+        const chunks: any[] = []
+        req.on("data", (chunk: any) => chunks.push(chunk))
+        req.on("end", () => {
+          const B = (globalThis as any).Buffer
+          resolve(new Uint8Array(B.concat(chunks)))
+        })
         req.on("error", reject)
-        req.end(Buffer.from(body))
+        req.end(body)
       })
     },
     close() {
@@ -149,7 +153,7 @@ function createBrowserTransport(baseUrl: string, config: TransportConfig): Trans
         const resp = await fetch(effectiveUrl, {
           method: "POST",
           headers,
-          body,
+          body: body as any,
           signal: controller.signal
         })
         if (!resp.ok) {
