@@ -84,6 +84,7 @@ export default defineConfig(({mode}) => {
   } : undefined
 
   return {
+    base: './',
     root: 'web',
     build: {
       outDir: resolve(__dirname, 'dist-web'),
