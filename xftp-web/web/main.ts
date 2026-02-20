@@ -9,9 +9,11 @@ function getAppElement(): HTMLElement | null {
 
 async function main() {
   await sodium.ready
-  initApp()
 
   const app = getAppElement()
+  if (!app?.hasAttribute('data-defer-init')) {
+    initApp()
+  }
   if (!app?.hasAttribute('data-no-hashchange')) {
     window.addEventListener('hashchange', initApp)
   }
