@@ -4,12 +4,40 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' __CSP_CONNECT_SRC__;">
+    content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' __CSP_SCRIPT_HASHES__; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' __CSP_CONNECT_SRC__;">
   <title>SimpleX File Transfer</title>
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <div id="app"></div>
+  <!-- Placeholder HTML — styled by CSS immediately, replaced by JS when loaded.
+       Eliminates Cumulative Layout Shift (CLS) for module-deferred scripts.
+       Embedders should replicate this pattern inside their <div data-xftp-app>. -->
+  <div id="app">
+    <div class="card">
+      <h1>SimpleX File Transfer</h1>
+      <div class="drop-zone">
+        <p>Drag &amp; drop a file here</p>
+        <p class="hint">or</p>
+        <span class="btn">Choose file</span>
+        <p class="hint">Max 100 MB</p>
+      </div>
+    </div>
+  </div>
+  <template id="dl-placeholder">
+    <div class="card">
+      <h1>SimpleX File Transfer</h1>
+      <div class="stage">
+        <p>File available</p>
+        <span class="btn">Download</span>
+        <div class="security-note">
+          <p>This file is encrypted &mdash; the server never sees file contents.</p>
+          <p>The decryption key is in the link&rsquo;s hash fragment, which your browser never sends to any server.</p>
+          <p>For maximum security, use the <a href="https://simplex.chat" target="_blank" rel="noopener">SimpleX app</a>.</p>
+        </div>
+      </div>
+    </div>
+  </template>
+  <script>if(location.hash.length>50){var a=document.getElementById("app"),t=document.getElementById("dl-placeholder");if(a&&t)a.replaceChildren(t.content.cloneNode(true))}</script>
   <script type="module" src="./main.ts"></script>
 </body>
 </html>

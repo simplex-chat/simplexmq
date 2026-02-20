@@ -27,7 +27,15 @@ function cspPlugin(servers: string[], isDev: boolean): Plugin {
         if (isDev) {
           return html.replace(/<meta\s[^>]*?Content-Security-Policy[\s\S]*?>/i, '')
         }
-        return html.replace('__CSP_CONNECT_SRC__', origins)
+        // Auto-compute SHA-256 hashes for inline scripts (CSP script-src)
+        const scriptHashes: string[] = []
+        html.replace(/<script>(.+?)<\/script>/gs, (_m: string, content: string) => {
+          scriptHashes.push("'sha256-" + createHash('sha256').update(content, 'utf-8').digest('base64') + "'")
+          return _m
+        })
+        return html
+          .replace('__CSP_CONNECT_SRC__', origins)
+          .replace('__CSP_SCRIPT_HASHES__', scriptHashes.join(' '))
       }
     }
   }

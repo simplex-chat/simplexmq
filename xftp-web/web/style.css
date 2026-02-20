@@ -1,4 +1,4 @@
-#app {
+#app, [data-xftp-app] {
   font-family: system-ui, -apple-system, sans-serif;
   color: #333;
   width: 100%;
@@ -7,7 +7,7 @@
   box-sizing: border-box;
 }
 
-#app .card {
+:is(#app, [data-xftp-app]) .card {
   background: #fff;
   border-radius: 12px;
   padding: 32px 24px;
@@ -15,28 +15,28 @@
   text-align: center;
 }
 
-#app h1 {
+:is(#app, [data-xftp-app]) h1 {
   font-size: 1.25rem;
   font-weight: 600;
   margin-bottom: 24px;
 }
 
-#app .stage { margin-top: 16px; }
+:is(#app, [data-xftp-app]) .stage { margin-top: 16px; }
 
 /* Drop zone */
-#app .drop-zone {
+:is(#app, [data-xftp-app]) .drop-zone {
   border: 2px dashed #ccc;
   border-radius: 8px;
   padding: 32px 16px;
   transition: border-color .15s, background .15s;
 }
-#app .drop-zone.drag-over {
+:is(#app, [data-xftp-app]) .drop-zone.drag-over {
   border-color: #3b82f6;
   background: #eff6ff;
 }
 
 /* Buttons */
-#app .btn {
+:is(#app, [data-xftp-app]) .btn {
   display: inline-block;
   padding: 10px 24px;
   border: none;
@@ -48,25 +48,26 @@
   cursor: pointer;
   transition: background .15s;
 }
-#app .btn:hover { background: #2563eb; }
-#app .btn-secondary { background: #6b7280; }
-#app .btn-secondary:hover { background: #4b5563; }
+:is(#app, [data-xftp-app]) .btn:hover { background: #2563eb; }
+:is(#app, [data-xftp-app]) .btn-secondary { background: #6b7280; }
+:is(#app, [data-xftp-app]) .btn-secondary:hover { background: #4b5563; }
 
 /* Hints */
-#app .hint { color: #999; font-size: .85rem; margin-top: 8px; }
-#app .expiry { margin-top: 12px; }
+:is(#app, [data-xftp-app]) .hint { color: #999; font-size: .85rem; margin-top: 8px; }
+:is(#app, [data-xftp-app]) .expiry { margin-top: 12px; }
 
 /* Progress */
-#app .progress-ring { display: block; margin: 0 auto 12px; }
-#app #upload-status, #app #dl-status { font-size: .9rem; color: #666; margin-bottom: 12px; }
+:is(#app, [data-xftp-app]) .progress-ring { display: block; margin: 0 auto 12px; }
+:is(#app, [data-xftp-app]) #upload-status,
+:is(#app, [data-xftp-app]) #dl-status { font-size: .9rem; color: #666; margin-bottom: 12px; }
 
 /* Share link row */
-#app .link-row {
+:is(#app, [data-xftp-app]) .link-row {
   display: flex;
   gap: 8px;
   margin-top: 12px;
 }
-#app .link-row input {
+:is(#app, [data-xftp-app]) .link-row input {
   flex: 1;
   padding: 8px 10px;
   border: 1px solid #ccc;
@@ -76,11 +77,11 @@
 }
 
 /* Messages */
-#app .success { color: #16a34a; font-weight: 600; }
-#app .error { color: #dc2626; font-weight: 500; margin-bottom: 12px; }
+:is(#app, [data-xftp-app]) .success { color: #16a34a; font-weight: 600; }
+:is(#app, [data-xftp-app]) .error { color: #dc2626; font-weight: 500; margin-bottom: 12px; }
 
 /* Security note */
-#app .security-note {
+:is(#app, [data-xftp-app]) .security-note {
   margin-top: 20px;
   padding: 12px;
   background: #f0fdf4;
@@ -89,40 +90,40 @@
   color: #555;
   text-align: left;
 }
-#app .security-note p + p { margin-top: 6px; }
-#app .security-note a { color: #3b82f6; text-decoration: none; }
-#app .security-note a:hover { text-decoration: underline; }
+:is(#app, [data-xftp-app]) .security-note p + p { margin-top: 6px; }
+:is(#app, [data-xftp-app]) .security-note a { color: #3b82f6; text-decoration: none; }
+:is(#app, [data-xftp-app]) .security-note a:hover { text-decoration: underline; }
 
 /* ── Dark mode ─────────────────────────────────── */
-.dark #app {
+.dark :is(#app, [data-xftp-app]) {
   color: #e5e7eb;
   --xftp-ring-bg: #374151;
   --xftp-ring-fg: #60a5fa;
   --xftp-ring-text: #e5e7eb;
 }
-.dark #app .card {
+.dark :is(#app, [data-xftp-app]) .card {
   background: #1f2937;
   box-shadow: 0 1px 3px rgba(0,0,0,.4);
 }
-.dark #app .drop-zone { border-color: #4b5563; }
-.dark #app .drop-zone.drag-over {
+.dark :is(#app, [data-xftp-app]) .drop-zone { border-color: #4b5563; }
+.dark :is(#app, [data-xftp-app]) .drop-zone.drag-over {
   border-color: #60a5fa;
   background: rgba(59,130,246,.15);
 }
-.dark #app .btn-secondary { background: #4b5563; }
-.dark #app .btn-secondary:hover { background: #374151; }
-.dark #app .hint { color: #9ca3af; }
-.dark #app #upload-status,
-.dark #app #dl-status { color: #9ca3af; }
-.dark #app .link-row input {
+.dark :is(#app, [data-xftp-app]) .btn-secondary { background: #4b5563; }
+.dark :is(#app, [data-xftp-app]) .btn-secondary:hover { background: #374151; }
+.dark :is(#app, [data-xftp-app]) .hint { color: #9ca3af; }
+.dark :is(#app, [data-xftp-app]) #upload-status,
+.dark :is(#app, [data-xftp-app]) #dl-status { color: #9ca3af; }
+.dark :is(#app, [data-xftp-app]) .link-row input {
   background: #374151;
   border-color: #4b5563;
   color: #e5e7eb;
 }
-.dark #app .success { color: #4ade80; }
-.dark #app .error { color: #f87171; }
-.dark #app .security-note {
+.dark :is(#app, [data-xftp-app]) .success { color: #4ade80; }
+.dark :is(#app, [data-xftp-app]) .error { color: #f87171; }
+.dark :is(#app, [data-xftp-app]) .security-note {
   background: rgba(34,197,94,.1);
   color: #d1d5db;
 }
-.dark #app .security-note a { color: #60a5fa; }
+.dark :is(#app, [data-xftp-app]) .security-note a { color: #60a5fa; }
