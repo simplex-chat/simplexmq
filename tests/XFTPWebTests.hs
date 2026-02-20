@@ -56,6 +56,10 @@ import qualified Simplex.Messaging.Crypto.File as CF
 xftpWebDir :: FilePath
 xftpWebDir = "xftp-web"
 
+-- | Redirect console.log/warn to stderr so library debug output doesn't pollute stdout binary data.
+redirectConsole :: String
+redirectConsole = "console.log = console.warn = (...a) => process.stderr.write(a.map(String).join(' ') + '\\n');"
+
 -- | Run an inline ES module script via node, return stdout as ByteString.
 callNode :: String -> IO B.ByteString
 callNode script = do
@@ -63,7 +67,7 @@ callNode script = do
   let nodeEnv = ("NODE_TLS_REJECT_UNAUTHORIZED", "0") : baseEnv
   (_, Just hout, Just herr, ph) <-
     createProcess
-      (proc "node" ["--input-type=module", "-e", script])
+      (proc "node" ["--input-type=module", "-e", redirectConsole <> script])
         { std_out = CreatePipe,
           std_err = CreatePipe,
           cwd = Just xftpWebDir,
@@ -2900,14 +2904,15 @@ pingTest cfg caFile = do
       callNode $
         "import sodium from 'libsodium-wrappers-sumo';\
         \import * as Addr from './dist/protocol/address.js';\
-        \import {connectXFTP, pingXFTP, closeXFTP} from './dist/client.js';\
+        \import {newXFTPAgent, closeXFTPAgent} from './dist/client.js';\
+        \import {pingXFTP} from './dist/client.js';\
         \await sodium.ready;\
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
-             \const c = await connectXFTP(server);\
-             \await pingXFTP(c);\
-             \closeXFTP(c);"
+             \const agent = newXFTPAgent();\
+             \await pingXFTP(agent, server);\
+             \closeXFTPAgent(agent);"
           <> jsOut "new Uint8Array([1])"
     result `shouldBe` B.pack [1]
 
@@ -2925,13 +2930,13 @@ fullRoundTripTest cfg caFile = do
         \import * as Addr from './dist/protocol/address.js';\
         \import * as K from './dist/crypto/keys.js';\
         \import {sha256} from './dist/crypto/digest.js';\
-        \import {connectXFTP, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk,\
-        \ addXFTPRecipients, deleteXFTPChunk, closeXFTP} from './dist/client.js';\
+        \import {newXFTPAgent, closeXFTPAgent, createXFTPChunk, uploadXFTPChunk, downloadXFTPChunk,\
+        \ addXFTPRecipients, deleteXFTPChunk} from './dist/client.js';\
         \await sodium.ready;\
         \const server = Addr.parseXFTPServer('"
           <> addr
           <> "');\
-             \const c = await connectXFTP(server);\
+             \const agent = newXFTPAgent();\
              \const sndKp = K.generateEd25519KeyPair();\
              \const rcvKp1 = K.generateEd25519KeyPair();\
              \const rcvKp2 = K.generateEd25519KeyPair();\
@@ -2943,16 +2948,16 @@ fullRoundTripTest cfg caFile = do
              \  digest\
              \};\
              \const rcvKeys = [K.encodePubKeyEd25519(rcvKp1.publicKey)];\
-             \const {senderId, recipientIds} = await createXFTPChunk(c, sndKp.privateKey, file, rcvKeys, null);\
-             \await uploadXFTPChunk(c, sndKp.privateKey, senderId, chunkData);\
-             \const dl1 = await downloadXFTPChunk(c, rcvKp1.privateKey, recipientIds[0], digest);\
+             \const {senderId, recipientIds} = await createXFTPChunk(agent, server, sndKp.privateKey, file, rcvKeys, null);\
+             \await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData);\
+             \const dl1 = await downloadXFTPChunk(agent, server, rcvKp1.privateKey, recipientIds[0], digest);\
              \const match1 = dl1.length === chunkData.length && dl1.every((b, i) => b === chunkData[i]);\
-             \const newIds = await addXFTPRecipients(c, sndKp.privateKey, senderId,\
+             \const newIds = await addXFTPRecipients(agent, server, sndKp.privateKey, senderId,\
              \  [K.encodePubKeyEd25519(rcvKp2.publicKey)]);\
-             \const dl2 = await downloadXFTPChunk(c, rcvKp2.privateKey, newIds[0], digest);\
+             \const dl2 = await downloadXFTPChunk(agent, server, rcvKp2.privateKey, newIds[0], digest);\
              \const match2 = dl2.length === chunkData.length && dl2.every((b, i) => b === chunkData[i]);\
-             \await deleteXFTPChunk(c, sndKp.privateKey, senderId);\
-             \closeXFTP(c);"
+             \await deleteXFTPChunk(agent, server, sndKp.privateKey, senderId);\
+             \closeXFTPAgent(agent);"
           <> jsOut "new Uint8Array([match1 ? 1 : 0, match2 ? 1 : 0])"
     result `shouldBe` B.pack [1, 1]
 
@@ -3012,7 +3017,7 @@ agentUploadDownloadTest cfg caFile = do
              \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(50000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'test-file.bin');\
-             \const {rcvDescription, sndDescription, uri} = await Agent.uploadFile(agent, server, encrypted);\
+             \const {rcvDescription, sndDescription, uri} = await Agent.uploadFile(agent, [server], encrypted);\
              \const fd = Agent.decodeDescriptionURI(uri);\
              \const {header, content} = await Agent.downloadFile(agent, fd);\
              \Agent.closeXFTPAgent(agent);\
@@ -3045,7 +3050,7 @@ agentDeleteTest cfg caFile = do
              \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(50000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'del-test.bin');\
-             \const {rcvDescription, sndDescription} = await Agent.uploadFile(agent, server, encrypted);\
+             \const {rcvDescription, sndDescription} = await Agent.uploadFile(agent, [server], encrypted);\
              \await Agent.deleteFile(agent, sndDescription);\
              \let deleted = 0;\
              \try {\
@@ -3077,7 +3082,7 @@ agentRedirectTest cfg caFile = do
              \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(100000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'redirect-test.bin');\
-             \const {rcvDescription, uri} = await Agent.uploadFile(agent, server, encrypted, {redirectThreshold: 50});\
+             \const {rcvDescription, uri} = await Agent.uploadFile(agent, [server], encrypted, {redirectThreshold: 50});\
              \const fd = Agent.decodeDescriptionURI(uri);\
              \const hasRedirect = fd.redirect !== null ? 1 : 0;\
              \const {header, content} = await Agent.downloadFile(agent, fd);\
@@ -3113,7 +3118,7 @@ tsUploadHaskellDownloadTest cfg caFile = do
              \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(50000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'ts-to-hs.bin');\
-             \const {rcvDescription} = await Agent.uploadFile(agent, server, encrypted);\
+             \const {rcvDescription} = await Agent.uploadFile(agent, [server], encrypted);\
              \Agent.closeXFTPAgent(agent);\
              \const yaml = encodeFileDescription(rcvDescription);"
           <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"
@@ -3148,7 +3153,7 @@ tsUploadRedirectHaskellDownloadTest cfg caFile = do
              \const agent = Agent.newXFTPAgent();\
              \const originalData = new Uint8Array(crypto.randomBytes(100000));\
              \const encrypted = Agent.encryptFileForUpload(originalData, 'ts-redirect-to-hs.bin');\
-             \const {rcvDescription} = await Agent.uploadFile(agent, server, encrypted, {redirectThreshold: 50});\
+             \const {rcvDescription} = await Agent.uploadFile(agent, [server], encrypted, {redirectThreshold: 50});\
              \Agent.closeXFTPAgent(agent);\
              \const yaml = encodeFileDescription(rcvDescription);"
           <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"

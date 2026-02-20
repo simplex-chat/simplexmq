@@ -240,7 +240,7 @@ export function closeXFTPAgent(agent: XFTPClientAgent): void {
 
 // -- Connect + handshake
 
-export async function connectXFTP(server: XFTPServer, config?: Partial<TransportConfig>): Promise<XFTPClient> {
+async function connectXFTP(server: XFTPServer, config?: Partial<TransportConfig>): Promise<XFTPClient> {
   const cfg: TransportConfig = {...DEFAULT_TRANSPORT_CONFIG, ...config}
   const baseUrl = "https://" + server.host + ":" + server.port
   const transport = await createTransport(baseUrl, cfg)
@@ -441,8 +441,3 @@ export async function pingXFTP(agent: XFTPClientAgent, server: XFTPServer): Prom
   if (response.type !== "FRPong") throw new Error("unexpected response: " + response.type)
 }
 
-// -- Close
-
-export function closeXFTP(c: XFTPClient): void {
-  c.transport.close()
-}
