@@ -167,6 +167,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
 import Simplex.Messaging.Transport.KeepAlive
+import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts, x509validate)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
@@ -1066,26 +1067,30 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {keyHash = C.KeyHash kh} proxyAuth
+connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth
   | thVersion (thParams c) >= sendingProxySMPVersion =
       sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
         PKEY sId vr (CertChainPubKey chain key) ->
           case supportedClientSMPRelayVRange `compatibleVersion` vr of
             Nothing -> throwE $ transportErr TEVersion
-            Just (Compatible v) -> liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) $ ProxiedRelay sId v proxyAuth <$> validateRelay chain key
+            Just (Compatible v) -> do
+              relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
+              pure $ ProxiedRelay sId v proxyAuth relayKey
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where
     tOut = Just $ netTimeoutInt tcpConnectTimeout nm + netTimeoutInt tcpTimeout nm
     transportErr = PCEProtocolError . PROXY . BROKER . TRANSPORT
-    validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> Either String C.PublicKeyX25519
-    validateRelay (X.CertificateChain cert) exact = do
-      serverKey <- case cert of
-        [leaf, ca]
-          | XV.Fingerprint kh == XV.getFingerprint ca X.HashSHA256 ->
-              C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leaf
-        _ -> throwError "bad certificate"
-      C.x509ToPublic' =<< C.verifyX509 serverKey exact
+    hostName = B.unpack $ strEncode $ transportHost' c
+    validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> ExceptT String IO C.PublicKeyX25519
+    validateRelay chain exact = case chainIdCaCerts chain of
+      CCValid {leafCert, idCert, caCert}
+        | XV.Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 -> do
+            errs <- liftIO $ x509validate caCert (hostName, B.pack relayPort) chain
+            unless (null errs) $ throwError "bad certificate"
+            serverKey <- liftEither $ C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leafCert
+            liftEither $ C.x509ToPublic' =<< C.verifyX509 serverKey exact
+      _ -> throwError "bad certificate"
 
 data ProxiedRelay = ProxiedRelay
   { prSessionId :: SessionId,
