@@ -264,32 +264,38 @@ async function handleCleanup(id: number) {
 
 // ── Message dispatch ────────────────────────────────────────────
 
-self.onmessage = async (e: MessageEvent) => {
+// Serialize all message processing — async onmessage would allow
+// interleaved execution at await points, racing on shared OPFS handles
+// when downloadFileRaw fetches chunks from multiple servers in parallel.
+let queue: Promise<void> = Promise.resolve()
+self.onmessage = (e: MessageEvent) => {
   const msg = e.data
-  try {
-    await initPromise
-    switch (msg.type) {
-      case 'encrypt':
-        await handleEncrypt(msg.id, msg.data, msg.fileName)
-        break
-      case 'readChunk':
-        handleReadChunk(msg.id, msg.offset, msg.size)
-        break
-      case 'decryptAndStoreChunk':
-        await handleDecryptAndStore(msg.id, msg.dhSecret, msg.nonce, msg.body, msg.chunkDigest, msg.chunkNo)
-        break
-      case 'verifyAndDecrypt':
-        await handleVerifyAndDecrypt(msg.id, msg.size, msg.digest, msg.key, msg.nonce)
-        break
-      case 'cleanup':
-        await handleCleanup(msg.id)
-        break
-      default:
-        self.postMessage({id: msg.id, type: 'error', message: `Unknown message type: ${msg.type}`})
+  queue = queue.then(async () => {
+    try {
+      await initPromise
+      switch (msg.type) {
+        case 'encrypt':
+          await handleEncrypt(msg.id, msg.data, msg.fileName)
+          break
+        case 'readChunk':
+          handleReadChunk(msg.id, msg.offset, msg.size)
+          break
+        case 'decryptAndStoreChunk':
+          await handleDecryptAndStore(msg.id, msg.dhSecret, msg.nonce, msg.body, msg.chunkDigest, msg.chunkNo)
+          break
+        case 'verifyAndDecrypt':
+          await handleVerifyAndDecrypt(msg.id, msg.size, msg.digest, msg.key, msg.nonce)
+          break
+        case 'cleanup':
+          await handleCleanup(msg.id)
+          break
+        default:
+          self.postMessage({id: msg.id, type: 'error', message: `Unknown message type: ${msg.type}`})
+      }
+    } catch (err: any) {
+      self.postMessage({id: msg.id, type: 'error', message: err?.message ?? String(err)})
     }
-  } catch (err: any) {
-    self.postMessage({id: msg.id, type: 'error', message: err?.message ?? String(err)})
-  }
+  })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
