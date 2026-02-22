@@ -1,4 +1,11 @@
-module Simplex.Messaging.Agent.QueryString where
+module Simplex.Messaging.Agent.QueryString
+  ( QueryStringParams (..),
+    QSPEscaping (..),
+    queryParam,
+    queryParamParser,
+    queryParam_,
+    queryParamStr,
+  ) where
 
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
