@@ -1,4 +1,4 @@
-# SimpleX Network Protocol Specifications — Governance and Evolution
+# SimpleX Network Protocol Specifications — Governance and Evolution (draft)
 
 ## Why this document exists
 
