@@ -2,7 +2,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.Main.Init where
+module Simplex.Messaging.Server.Main.Init
+  ()
+where
 
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L

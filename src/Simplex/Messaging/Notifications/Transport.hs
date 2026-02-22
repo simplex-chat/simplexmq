@@ -7,7 +7,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.Messaging.Notifications.Transport where
+module Simplex.Messaging.Notifications.Transport
+  ()
+where
 
 import Control.Monad (forM)
 import Control.Monad.Except

@@ -4,7 +4,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Notifications.Server.Store.Types where
+module Simplex.Messaging.Notifications.Server.Store.Types
+  ()
+where
 
 import Control.Applicative (optional)
 import Control.Concurrent.STM

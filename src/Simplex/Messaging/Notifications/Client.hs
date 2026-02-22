@@ -4,7 +4,9 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Notifications.Client where
+module Simplex.Messaging.Notifications.Client
+  ()
+where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except

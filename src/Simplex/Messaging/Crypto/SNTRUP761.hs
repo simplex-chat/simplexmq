@@ -2,7 +2,9 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Simplex.Messaging.Crypto.SNTRUP761 where
+module Simplex.Messaging.Crypto.SNTRUP761
+  ()
+where
 
 import Crypto.Hash (Digest, SHA3_256, hash)
 import Data.ByteArray (ScrubbedBytes)

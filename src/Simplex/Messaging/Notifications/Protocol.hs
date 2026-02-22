@@ -9,7 +9,9 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Simplex.Messaging.Notifications.Protocol where
+module Simplex.Messaging.Notifications.Protocol
+  ()
+where
 
 import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))

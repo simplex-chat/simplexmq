@@ -6,7 +6,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Notifications.Server.Env where
+module Simplex.Messaging.Notifications.Server.Env
+  ()
+where
 
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple

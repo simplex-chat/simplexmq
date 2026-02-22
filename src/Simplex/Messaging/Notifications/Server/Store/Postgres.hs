@@ -16,7 +16,9 @@
 {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -fno-warn-orphans -fno-warn-ambiguous-fields #-}
 
-module Simplex.Messaging.Notifications.Server.Store.Postgres where
+module Simplex.Messaging.Notifications.Server.Store.Postgres
+  ()
+where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E

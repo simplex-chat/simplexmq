@@ -2,7 +2,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Server.QueueStore.Postgres.Migrations where
+module Simplex.Messaging.Server.QueueStore.Postgres.Migrations
+  ()
+where
 
 import Data.List (sortOn)
 import Data.Text (Text)

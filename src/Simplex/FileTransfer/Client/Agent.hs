@@ -5,7 +5,9 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.FileTransfer.Client.Agent where
+module Simplex.FileTransfer.Client.Agent
+  ()
+where
 
 import Control.Logger.Simple (logInfo)
 import Control.Monad

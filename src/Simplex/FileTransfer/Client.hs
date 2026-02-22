@@ -9,7 +9,9 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.FileTransfer.Client where
+module Simplex.FileTransfer.Client
+  ()
+where
 
 import Control.Logger.Simple
 import Control.Monad

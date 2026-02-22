@@ -2,7 +2,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Notifications.Server.Store.Migrations where
+module Simplex.Messaging.Notifications.Server.Store.Migrations
+  ()
+where
 
 import Data.List (sortOn)
 import Data.Text (Text)

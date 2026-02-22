@@ -8,7 +8,9 @@
 
 {-# HLINT ignore "Use newtype instead of data" #-}
 
-module Simplex.Messaging.Notifications.Server.Push.APNS where
+module Simplex.Messaging.Notifications.Server.Push.APNS
+  ()
+where
 
 import Control.Exception (Exception)
 import Control.Logger.Simple

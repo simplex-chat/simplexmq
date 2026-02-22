@@ -7,7 +7,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
-module Simplex.FileTransfer.Server.Env where
+module Simplex.FileTransfer.Server.Env
+  ()
+where
 
 import Control.Logger.Simple
 import Control.Monad

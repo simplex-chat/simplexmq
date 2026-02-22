@@ -2,7 +2,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Notifications.Server.Stats where
+module Simplex.Messaging.Notifications.Server.Stats
+  ()
+where
 
 import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM

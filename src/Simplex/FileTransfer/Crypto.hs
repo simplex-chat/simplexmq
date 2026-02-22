@@ -4,7 +4,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Crypto where
+module Simplex.FileTransfer.Crypto
+  ()
+where
 
 import Control.Monad
 import Control.Monad.Except

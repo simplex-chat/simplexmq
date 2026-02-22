@@ -9,7 +9,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Notifications.Server.Store where
+module Simplex.Messaging.Notifications.Server.Store
+  ()
+where
 
 import Control.Concurrent.STM
 import Control.Monad

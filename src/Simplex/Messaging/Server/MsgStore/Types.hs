@@ -15,7 +15,9 @@
 
 {-# HLINT ignore "Redundant multi-way if" #-}
 
-module Simplex.Messaging.Server.MsgStore.Types where
+module Simplex.Messaging.Server.MsgStore.Types
+  ()
+where
 
 import Control.Concurrent.STM
 import Control.Monad

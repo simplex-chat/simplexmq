@@ -7,7 +7,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Server.StoreLog.ReadWrite where
+module Simplex.Messaging.Server.StoreLog.ReadWrite
+  ()
+where
 
 import Control.Concurrent.STM
 import Control.Logger.Simple

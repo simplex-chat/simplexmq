@@ -1,7 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.Messaging.Server.Main.GitCommit where
+module Simplex.Messaging.Server.Main.GitCommit
+  ()
+where
 
 import Language.Haskell.TH
 import System.Process

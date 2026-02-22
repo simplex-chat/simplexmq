@@ -4,7 +4,9 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unrecognised-pragmas #-}
 
-module Simplex.FileTransfer.Server.Prometheus where
+module Simplex.FileTransfer.Server.Prometheus
+  ()
+where
 
 import Data.Int (Int64)
 import Data.Text (Text)

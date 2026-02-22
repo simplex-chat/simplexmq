@@ -13,7 +13,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.FileTransfer.Server where
+module Simplex.FileTransfer.Server
+  ()
+where
 
 import Control.Logger.Simple
 import Control.Monad

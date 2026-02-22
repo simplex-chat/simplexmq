@@ -3,7 +3,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.Messaging.Server.QueueStore.QueueInfo where
+module Simplex.Messaging.Server.QueueStore.QueueInfo
+  ()
+where
 
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ

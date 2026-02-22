@@ -14,7 +14,9 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
-module Simplex.FileTransfer.Protocol where
+module Simplex.FileTransfer.Protocol
+  ()
+where
 
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (first)
