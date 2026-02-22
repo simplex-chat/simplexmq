@@ -26,14 +26,9 @@ The ratcheted transition is not just a clever device — it is a historically pr
 
 ### Specification governance via the Consortium Agreement
 
-The SimpleX Network Consortium Agreement (being deployed in 2026) establishes two levels of intellectual property governance:
+The SimpleX Network Consortium Agreement (being deployed in 2026) establishes two levels of intellectual property governance: **Licensed IP** (all contributed protocol specifications, software, and documentation, licensed perpetually and irrevocably) and **Core IP** (the subset essential to the network, requiring consortium governance to change). The distinction between these levels and how they map to the RFC process is described in [Standard vs Core specifications](#standard-vs-core-specifications) below.
 
-- **Licensed IP**: all contributed protocol specifications, software, and documentation. Licensed perpetually and irrevocably. Governed by the company under product-first development.
-- **Core IP**: the subset of Licensed IP essential to the SimpleX Network. A legally binding commitment: IP included in Core IP cannot be changed without a Governing Decision — the company cannot unilaterally change code it owns if that code implements Core IP. This requires approval by a majority of Governing Parties, with unanimity required for fundamental changes.
-
-The RFC process defined in this document is the mechanism through which both levels of IP evolve in a controlled, traceable way.
-
-## Two-folder model
+## Specification change process: protocol specifications and RFCs
 
 Protocol knowledge lives in two places:
 
@@ -97,7 +92,6 @@ Every RFC in `standard/` carries a history header:
 Proposed: YYYY-MM-DD
 Implemented: YYYY-MM-DD
 Standardized: YYYY-MM-DD
-Supersedes: (if applicable)
 Protocol: simplex-messaging v9 (or whichever protocol this amends)
 ---
 ```
@@ -108,8 +102,8 @@ SimpleX Network follows the Netscape-to-W3C evolution path, with ratcheted rathe
 
 | Phase | Period | Governance | Development process |
 |-------|--------|-----------|-------------------|
-| Protocol invented | 2020 | Two people | — |
-| SimpleX Chat | 2022 | One company | Product-first: code leads, specs follow |
+| Protocol invented | 2020 | Two people | Prototype developed |
+| SimpleX Chat Ltd | 2022 | One company | Product-first: code leads, specs follow |
 | SimpleX Network Consortium | 2026 | Agreement of SimpleX Chat Ltd and non-profit entities | Product-first for standard; standards-first for core |
 | Decentralized governance | Future | TBD (DAO research ongoing) | Standards-first |
 
@@ -125,21 +119,21 @@ Any Specification Author (as defined in the Consortium Agreement) may propose RF
 
 The distinction between standard and core maps directly to the two levels of IP governance in the Consortium Agreement, and reflects the difference between product-first and standards-first development:
 
-**Standard** — Licensed IP, governed by the company.
+**Standard** — Licensed IP, not yet under consortium governance. Governed by the company.
 
-All standard RFCs and their corresponding consolidated `protocol/` specifications are Licensed IP under the Consortium Agreement. They follow product-first development: the company can evolve them with product needs, and they must be maintained on every code change that affects protocol behavior.
+All contributed protocol specifications are Licensed IP under the Consortium Agreement. Standard specifications follow product-first development: the company can evolve them with product needs, and they must be maintained on every code change that affects protocol behavior.
 
 Standard specifications live in `rfcs/standard/` and `protocol/`.
 
-**Core** — Core IP, governed by the consortium.
+**Core** — Governed IP, governed by the consortium.
 
-A subset of standard specifications designated as Core IP under the Consortium Agreement. Core specifications follow standards-first development: specification changes must be agreed via Governing Decision before code changes.
+A subset of standard specifications will be designated as Core IP under the Consortium Agreement. Core specifications will follow standards-first development: specification changes must be agreed via Governing Decision before code changes.
 
 This is a legally binding commitment. Once Licensed IP is included in Core IP, the company that owns the code cannot unilaterally change it — even though they own the code, the Consortium Agreement requires a Governing Decision for any change to Core IP. This protects the fundamental properties of the network (privacy, security, decentralization) from unilateral modification by any single party.
 
 The designation of specific specifications as Core IP is itself a Governing Decision requiring unanimous approval. The transition will happen incrementally as protocols stabilize — the governance ratchet ensures that each designation is irreversible.
 
-Core specifications will live in `rfcs/core/` (or equivalent designation within `rfcs/standard/`, TBD) and `protocol/`.
+The exact mechanism for distinguishing core from standard within the RFC and protocol folder structure is TBD — it will be decided as the first protocols are designated as Core IP.
 
 ### Future: standards-first development
 
