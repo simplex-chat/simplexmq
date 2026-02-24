@@ -1820,8 +1820,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
-        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
-        ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
+        ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
+          tryCommand $ withConnLockNotify c connId "ICAckDel" $ do
+            t_ <- ack srv rId srvMsgId
+            withStore' c (\db -> deleteMsg db connId msgId)
+            pure t_
+        ICAck rId srvMsgId -> withServer $ \srv ->
+          tryCommand $ withConnLockNotify c connId "ICAck" $ ack srv rId srvMsgId
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2184,7 +2189,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                   cStats <- connectionStats c conn
                   notify $ SWITCH QDSnd SPConfirmed cStats
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
+                AM_QTEST_ -> withConnLockNotify c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   case conn of
@@ -2208,7 +2213,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                               let sqs'' = sq'' :| sqs'
                                   conn' = DuplexConnection cData' rqs sqs''
                               cStats <- connectionStats c conn'
-                              notify $ SWITCH QDSnd SPCompleted cStats
+                              pure $ Just ("", connId, AEvt SAEConn $ SWITCH QDSnd SPCompleted cStats)
                             _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
                         _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
@@ -2240,7 +2245,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
     notifyDel msgId cmd = notify cmd >> delMsg msgId
     connError msgId = notifyDel msgId . ERR . (`CONN` "")
     qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
-    internalErr msgId = notifyDel msgId . ERR . INTERNAL
+    internalErr msgId s = do
+      delMsg msgId
+      pure $ Just ("", connId, AEvt SAEConn $ ERR $ INTERNAL s)
 
 retrySndOp :: AgentClient -> AM () -> AM ()
 retrySndOp c loop = do
@@ -2250,17 +2257,31 @@ retrySndOp c loop = do
   atomically $ beginAgentOperation c AOSndNetwork
   loop
 
+-- | Like 'withConnLock', but writes the returned 'ATransmission' to 'subQ'
+-- after releasing the lock, preventing deadlock with agentSubscriber.
+withConnLockNotify :: AgentClient -> ConnId -> Text -> AM (Maybe ATransmission) -> AM ()
+withConnLockNotify c connId name action = do
+  t_ <- withConnLock c connId name action
+  forM_ t_ $ atomically . writeTBQueue (subQ c)
+
 ackMessage' :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
+ackMessage' c connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
-    DuplexConnection {} -> ack >> sendRcpt conn >> del
-    RcvConnection {} -> ack >> del
+    DuplexConnection {} -> do
+      t_ <- ack
+      sendRcpt conn
+      del
+      pure t_
+    RcvConnection {} -> do
+      t_ <- ack
+      del
+      pure t_
     SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
     ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
     NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   where
-    ack :: AM ()
+    ack :: AM (Maybe ATransmission)
     ack = do
       -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
@@ -2368,7 +2389,7 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
       | otherwise -> throwE $ CMD PROHIBITED "synchronizeRatchet: not allowed"
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
-ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
+ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (Maybe ATransmission)
 ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
@@ -2380,10 +2401,11 @@ ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   where
     sendMsgNtf stat = do
       atomically $ incSMPServerStat c userId server stat
-      whenM (liftIO $ hasGetLock c rq) $ do
-        atomically $ releaseGetLock c rq
-        brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
-        atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
+      ifM (liftIO $ hasGetLock c rq)
+        (do atomically $ releaseGetLock c rq
+            brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
+            pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
+        (pure Nothing)
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ()
