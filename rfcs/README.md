@@ -20,9 +20,9 @@ SimpleX follows the same Netscape-to-consortium evolution path, but with two rat
 
 - **Licensing ratchet**: all contributed IP is licensed under AGPLv3 (software) and Creative Commons (documentation), perpetually and irrevocably. What is licensed cannot be unlicensed. If a Party transfers Licensed IP, the licensing obligations transfer with it.
 
-- **Governance ratchet**: power can be given to the SimpleX Network Consortium, but never taken back. The Consortium Agreement requires unanimous approval of all Governing Parties for changes to the agreement itself, IP policy, and admission or removal of parties.
+- **Governance ratchet**: power can be given to the SimpleX Network Consortium, but never taken back. The Consortium Agreement requires majority decision of all Governing Parties for changes to the agreement itself, IP policy, and admission or removal of parties.
 
-The ratcheted transition is not just a clever device — it is a historically proven imperative. It allows the company to continue driving rapid product innovation (as Netscape did for the web) while incrementally and irreversibly transferring governance to the consortium, without the abrupt handover that stalled web evolution or the centralization that later undermined it.
+The ratcheted transition is historically proven to be necessary. It allows the company to continue driving rapid product innovation (as Netscape did for the web) while incrementally and irreversibly transferring governance to the consortium, without the abrupt handover that stalled web evolution or the centralization that later undermined it.
 
 ### Specification governance via the Consortium Agreement
 
