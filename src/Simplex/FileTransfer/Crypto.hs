@@ -5,8 +5,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.FileTransfer.Crypto
-  ()
-where
+  ( encryptFile,
+    decryptChunks,
+    readChunks,
+  ) where
 
 import Control.Monad
 import Control.Monad.Except

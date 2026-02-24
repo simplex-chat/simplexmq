@@ -3,7 +3,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Stats
-  ()
+  ( NtfServerStats (..),
+    NtfServerStatsData (..),
+    StatsByServer,
+    StatsByServerData (..),
+    newNtfServerStats,
+    getNtfServerStatsData,
+    setNtfServerStats,
+    getStatsByServer,
+    setStatsByServer,
+    incServerStat,
+  )
 where
 
 import Control.Applicative (optional, (<|>))

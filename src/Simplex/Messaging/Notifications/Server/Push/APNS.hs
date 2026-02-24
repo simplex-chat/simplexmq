@@ -9,7 +9,19 @@
 {-# HLINT ignore "Use newtype instead of data" #-}
 
 module Simplex.Messaging.Notifications.Server.Push.APNS
-  ()
+  ( PushNotification (..),
+    PushProviderClient,
+    PushProviderError (..),
+    APNSPushClientConfig (..),
+    APNSNotification (..),
+    APNSNotificationBody (..),
+    APNSAlertBody (..),
+    APNSErrorResponse (..),
+    defaultAPNSPushClientConfig,
+    createAPNSPushClient,
+    apnsPushProviderClient,
+    apnsProviderHost,
+  )
 where
 
 import Control.Exception (Exception)

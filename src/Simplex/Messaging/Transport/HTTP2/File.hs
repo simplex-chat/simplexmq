@@ -1,6 +1,11 @@
 {-# LANGUAGE MultiWayIf #-}
 
-module Simplex.Messaging.Transport.HTTP2.File where
+module Simplex.Messaging.Transport.HTTP2.File
+  ( fileBlockSize,
+    hReceiveFile,
+    getFileChunk,
+    hSendFile,
+  ) where
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B

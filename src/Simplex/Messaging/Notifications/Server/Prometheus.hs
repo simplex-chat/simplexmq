@@ -5,7 +5,13 @@
 {-# OPTIONS_GHC -fno-warn-unrecognised-pragmas #-}
 
 module Simplex.Messaging.Notifications.Server.Prometheus
-  ()
+  ( NtfServerMetrics (..),
+    NtfRealTimeMetrics (..),
+    NtfSMPWorkerMetrics (..),
+    NtfSMPSubMetrics (..),
+    ntfPrometheusMetrics,
+    rtsOptionsEnv,
+  )
 where
 
 import Data.Int (Int64)

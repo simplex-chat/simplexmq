@@ -5,7 +5,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Notifications.Server.Store.Types
-  ()
+  ( NtfTknRec (..),
+    NtfSubRec (..),
+    NtfAssociatedService,
+    ServerNtfSub,
+    mkTknData,
+    mkTknRec,
+    mkSubData,
+    mkSubRec,
+  )
 where
 
 import Control.Applicative (optional)

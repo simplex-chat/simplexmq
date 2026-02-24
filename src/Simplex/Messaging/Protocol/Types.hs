@@ -4,8 +4,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Protocol.Types
-  ()
-where
+  ( ClientNotice (..),
+  ) where
 
 import qualified Data.Aeson.TH as J
 import Data.Int (Int64)

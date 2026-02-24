@@ -6,8 +6,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.FileTransfer.Client.Agent
-  ()
-where
+  ( XFTPClientVar,
+    XFTPClientAgent (..),
+    XFTPClientAgentConfig (..),
+    defaultXFTPClientAgentConfig,
+    XFTPClientAgentError (..),
+    newXFTPAgent,
+    getXFTPServerClient,
+    showServer,
+    closeXFTPServerClient,
+  ) where
 
 import Control.Logger.Simple (logInfo)
 import Control.Monad

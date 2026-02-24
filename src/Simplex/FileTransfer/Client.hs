@@ -10,8 +10,27 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Client
-  ()
-where
+  ( XFTPClient (..),
+    XFTPClientConfig (..),
+    XFTPChunkSpec (..),
+    XFTPClientError,
+    defaultXFTPClientConfig,
+    getXFTPClient,
+    closeXFTPClient,
+    xftpClientServer,
+    xftpTransportHost,
+    createXFTPChunk,
+    addXFTPRecipients,
+    uploadXFTPChunk,
+    downloadXFTPChunk,
+    deleteXFTPChunk,
+    getChunkDigest,
+    prepareChunkSizes,
+    prepareChunkSpecs,
+    singleChunkSize,
+    ackXFTPChunk,
+    pingXFTP,
+  ) where
 
 import Control.Logger.Simple
 import Control.Monad

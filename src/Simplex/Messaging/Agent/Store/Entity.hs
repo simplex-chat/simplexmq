@@ -9,7 +9,10 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.Agent.Store.Entity
-  ()
+  ( DBStored (..),
+    DBEntityId,
+    DBEntityId' (..),
+  )
 where
 
 import Data.Aeson (FromJSON (..), ToJSON (..))

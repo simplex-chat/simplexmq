@@ -9,7 +9,8 @@
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server.Main
-  ()
+  ( ntfServerCLI,
+  )
 where
 
 import Control.Logger.Simple (setLogLevel)

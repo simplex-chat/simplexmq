@@ -1,6 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Notifications.Server.Push.APNS.Internal where
+module Simplex.Messaging.Notifications.Server.Push.APNS.Internal
+  ( hApnsTopic,
+    hApnsPushType,
+    hApnsPriority,
+    apnsJSONOptions,
+  ) where
 
 import qualified Data.Aeson as J
 import qualified Data.CaseInsensitive as CI

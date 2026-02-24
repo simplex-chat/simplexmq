@@ -3,8 +3,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.FileTransfer.Server.Stats
-  ()
-where
+  ( FileServerStats (..),
+    FileServerStatsData (..),
+    newFileServerStats,
+    getFileServerStatsData,
+    setFileServerStats,
+  ) where
 
 import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A

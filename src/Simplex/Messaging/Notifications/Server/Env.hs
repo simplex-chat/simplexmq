@@ -7,7 +7,22 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Env
-  ()
+  ( NtfServerConfig (..),
+    NtfEnv (..),
+    NtfSubscriber (..),
+    NtfPushServer (..),
+    NtfRequest (..),
+    NtfServerClient (..),
+    SMPSubscriber (..),
+    SMPSubscriberVar,
+    defaultInactiveClientExpiration,
+    newNtfServerEnv,
+    newNtfSubscriber,
+    newNtfPushServer,
+    newPushClient,
+    getPushClient,
+    newNtfServerClient,
+  )
 where
 
 import Control.Concurrent (ThreadId)

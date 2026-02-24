@@ -8,8 +8,17 @@
 {-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Notifications.Transport
-  ()
-where
+  ( NTFVersion,
+    VersionRangeNTF,
+    THandleNTF,
+    pattern VersionNTF,
+    invalidReasonNTFVersion,
+    ntfClientHandshake,
+    ntfServerHandshake,
+    supportedClientNTFVRange,
+    supportedServerNTFVRange,
+    alpnSupportedNTFHandshakes,
+  ) where
 
 import Control.Monad (forM)
 import Control.Monad.Except

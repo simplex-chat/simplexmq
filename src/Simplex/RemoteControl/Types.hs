@@ -8,7 +8,30 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.RemoteControl.Types where
+module Simplex.RemoteControl.Types
+  ( VersionRangeRCP,
+    VersionRCP,
+    RCPVersion,
+    RCCtrlAddress (..),
+    RCErrorType (..),
+    RCHostHello (..),
+    RCCtrlHello (..),
+    RCHostPairing (..),
+    KnownHostPairing (..),
+    RCCtrlPairing (..),
+    RCHostKeys (..),
+    RCHostSession (..),
+    HostSessKeys (..),
+    RCCtrlSession (..),
+    CtrlSessKeys (..),
+    RCHostEncHello (..),
+    RCCtrlEncHello (..),
+    SessionCode,
+    RCStepTMVar,
+    IpProbe (..),
+    currentRCPVersion,
+    supportedRCPVRange,
+  ) where
 
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ

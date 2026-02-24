@@ -3,7 +3,8 @@
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Notifications.Server.Store.Migrations
-  ()
+  ( ntfServerMigrations,
+  )
 where
 
 import Data.List (sortOn)

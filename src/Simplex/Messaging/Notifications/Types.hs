@@ -5,7 +5,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Types
-  ()
+  ( NtfTknAction (..),
+    NtfToken (..),
+    newNtfToken,
+    NtfSubAction (..),
+    isDeleteNtfSubAction,
+    NtfActionTs,
+    NtfSubNTFAction (..),
+    NtfSubSMPAction (..),
+    NtfAgentSubStatus (..),
+    NtfSubscription (..),
+    newNtfSubscription,
+  )
 where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A

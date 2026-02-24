@@ -10,7 +10,24 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Notifications.Server.Store
-  ()
+  ( NtfSTMStore (..),
+    NtfTknData (..),
+    NtfSubData (..),
+    TokenNtfMessageRecord (..),
+    newNtfSTMStore,
+    mkNtfTknData,
+    ntfSubServer,
+    stmGetNtfTokenIO,
+    stmAddNtfToken,
+    stmRemoveInactiveTokenRegistrations,
+    stmRemoveTokenRegistration,
+    stmDeleteNtfToken,
+    stmGetNtfSubscriptionIO,
+    stmAddNtfSubscription,
+    stmDeleteNtfSubscription,
+    stmStoreTokenLastNtf,
+    stmSetNtfService,
+  )
 where
 
 import Control.Concurrent.STM

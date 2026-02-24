@@ -3,7 +3,13 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unrecognised-pragmas #-}
 
-module Simplex.Messaging.Server.Prometheus where
+module Simplex.Messaging.Server.Prometheus
+  ( ServerMetrics (..),
+    RealTimeMetrics (..),
+    RTSubscriberMetrics (..),
+    rtsOptionsEnv,
+    prometheusMetrics,
+  ) where
 
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM

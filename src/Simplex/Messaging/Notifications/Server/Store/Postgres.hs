@@ -17,7 +17,40 @@
 {-# OPTIONS_GHC -fno-warn-orphans -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server.Store.Postgres
-  ()
+  ( NtfPostgresStore (..),
+    NtfEntityRec (..),
+    mkNtfTknRec,
+    mkNtfSubRec,
+    newNtfDbStore,
+    closeNtfDbStore,
+    addNtfToken,
+    replaceNtfToken,
+    getNtfToken,
+    findNtfTokenRegistration,
+    deleteNtfToken,
+    updateTknCronInterval,
+    getUsedSMPServers,
+    getServerNtfSubscriptions,
+    findNtfSubscription,
+    getNtfSubscription,
+    addNtfSubscription,
+    deleteNtfSubscription,
+    updateSubStatus,
+    updateSrvSubStatus,
+    batchUpdateSrvSubStatus,
+    batchUpdateSrvSubErrors,
+    removeServiceAssociation,
+    addTokenLastNtf,
+    getEntityCounts,
+    updateTknStatus,
+    setTknStatusConfirmed,
+    setTokenActive,
+    withPeriodicNtfTokens,
+    updateTokenCronSentAt,
+    importNtfSTMStore,
+    exportNtfDbStore,
+    withDB',
+  )
 where
 
 import Control.Concurrent.STM

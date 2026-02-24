@@ -3,8 +3,11 @@
 {-# LANGUAGE LambdaCase #-}
 
 module Simplex.Messaging.Crypto.SNTRUP761
-  ()
-where
+  ( KEMHybridSecret (..),
+    kemHybridSecret,
+    kcbDecrypt,
+    kcbEncrypt,
+  ) where
 
 import Crypto.Hash (Digest, SHA3_256, hash)
 import Data.ByteArray (ScrubbedBytes)

@@ -3,7 +3,8 @@
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Server.QueueStore.Postgres.Migrations
-  ()
+  ( serverMigrations,
+  )
 where
 
 import Data.List (sortOn)

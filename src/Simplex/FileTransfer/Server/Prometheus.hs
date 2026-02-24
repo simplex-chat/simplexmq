@@ -5,8 +5,10 @@
 {-# OPTIONS_GHC -fno-warn-unrecognised-pragmas #-}
 
 module Simplex.FileTransfer.Server.Prometheus
-  ()
-where
+  ( FileServerMetrics (..),
+    rtsOptionsEnv,
+    xftpPrometheusMetrics,
+  ) where
 
 import Data.Int (Int64)
 import Data.Text (Text)

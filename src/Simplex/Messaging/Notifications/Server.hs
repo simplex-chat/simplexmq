@@ -16,7 +16,10 @@
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Notifications.Server
-  ()
+  ( runNtfServer,
+    runNtfServerBlocking,
+    restoreServerLastNtfs,
+  )
 where
 
 import Control.Concurrent (threadDelay)

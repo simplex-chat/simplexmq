@@ -2,7 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Notifications.Server.Control
-  ()
+  ( ControlProtocol (..),
+  )
 where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A

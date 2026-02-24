@@ -8,7 +8,19 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Transport.HTTP2.Client where
+module Simplex.Messaging.Transport.HTTP2.Client
+  ( HTTP2Client (..),
+    HTTP2Response (..),
+    HClient (..),
+    HTTP2ClientConfig (..),
+    HTTP2ClientError (..),
+    sendRequest,
+    closeHTTP2Client,
+    getHTTP2Client,
+    getVerifiedHTTP2Client,
+    defaultHTTP2ClientConfig,
+    attachHTTP2Client,
+  ) where
 
 import Control.Concurrent.Async
 import Control.Exception (IOException, try)

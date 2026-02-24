@@ -2,8 +2,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Server.Main.GitCommit
-  ()
-where
+  ( gitCommit,
+  ) where
 
 import Language.Haskell.TH
 import System.Process

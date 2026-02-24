@@ -1,7 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.ServiceScheme where
+module Simplex.Messaging.ServiceScheme
+  ( SrvLoc (..),
+    ServiceScheme(..),
+    simplexChat,
+  ) where
 
 import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A

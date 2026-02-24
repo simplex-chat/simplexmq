@@ -4,8 +4,13 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.Messaging.Server.QueueStore.QueueInfo
-  ()
-where
+  ( QueueInfo (..),
+    QSub (..),
+    QSubThread (..),
+    MsgInfo (..),
+    QueueMode (..),
+    MsgType (..),
+  ) where
 
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ

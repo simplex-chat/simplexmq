@@ -3,7 +3,32 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.Messaging.Agent.Stats where
+module Simplex.Messaging.Agent.Stats
+  ( AgentSMPServerStats (..),
+    AgentSMPServerStatsData (..),
+    OptionalInt (..),
+    newAgentSMPServerStats,
+    newAgentSMPServerStatsData,
+    newAgentSMPServerStats',
+    getAgentSMPServerStats,
+    addSMPStatsData,
+    AgentXFTPServerStats (..),
+    AgentXFTPServerStatsData (..),
+    newAgentXFTPServerStats,
+    newAgentXFTPServerStatsData,
+    newAgentXFTPServerStats',
+    getAgentXFTPServerStats,
+    addXFTPStatsData,
+    AgentNtfServerStats (..),
+    AgentNtfServerStatsData (..),
+    newAgentNtfServerStats,
+    newAgentNtfServerStatsData,
+    newAgentNtfServerStats',
+    getAgentNtfServerStats,
+    addNtfStatsData,
+    AgentPersistedServerStats (..),
+    OptionalMap (..),
+  ) where
 
 import Data.Aeson (FromJSON (..), FromJSONKey, ToJSON (..))
 import qualified Data.Aeson.TH as J

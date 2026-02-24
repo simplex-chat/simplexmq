@@ -16,7 +16,24 @@
 {-# HLINT ignore "Redundant multi-way if" #-}
 
 module Simplex.Messaging.Server.MsgStore.Types
-  ()
+  ( MsgStoreClass (..),
+    MSType (..),
+    QSType (..),
+    SMSType (..),
+    SQSType (..),
+    MessageStats (..),
+    LoadedQueueCounts (..),
+    newMessageStats,
+    addQueue,
+    getQueue,
+    getQueueRec,
+    getQueues,
+    getQueueRecs,
+    readQueueRec,
+    withPeekMsgQueue,
+    expireQueueMsgs,
+    deleteExpireMsgs_,
+  )
 where
 
 import Control.Concurrent.STM

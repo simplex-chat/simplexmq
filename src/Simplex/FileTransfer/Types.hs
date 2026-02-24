@@ -5,8 +5,29 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.FileTransfer.Types
-  ()
-where
+  ( RcvFileId,
+    SndFileId,
+    authTagSize,
+    FileHeader (..),
+    DBRcvFileId,
+    RcvFile (..),
+    RcvFileStatus (..),
+    RcvFileChunk (..),
+    RcvFileChunkReplica (..),
+    RcvFileRedirect (..),
+    DBSndFileId,
+    SndFile (..),
+    sndFileEncPath,
+    SndFileStatus (..),
+    SndFileChunk (..),
+    sndChunkSize,
+    NewSndChunkReplica (..),
+    SndFileChunkReplica (..),
+    SndFileReplicaStatus (..),
+    DeletedSndChunkReplica (..),
+    SentRecipientReplica (..),
+    FileErrorType (..),
+  ) where
 
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A

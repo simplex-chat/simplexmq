@@ -7,8 +7,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.FileTransfer.Server.Main
-  ()
-where
+  ( xftpServerCLI,
+  ) where
 
 import Data.Either (fromRight)
 import Data.Functor (($>))

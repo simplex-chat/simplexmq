@@ -4,7 +4,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Simplex.Messaging.Parsers where
+module Simplex.Messaging.Parsers
+  ( defaultJSON,
+    parseAll,
+    dropPrefix,
+    sumTypeJSON,
+    enumJSON,
+    parseString,
+    parseRead1,
+    parseE,
+    parseE',
+    parse,
+    textP,
+    fstToLower,
+  ) where
 
 import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
