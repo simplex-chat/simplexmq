@@ -6,10 +6,10 @@
 module Simplex.Messaging.Server.NtfStore
   ( NtfStore (..),
     MsgNtf (..),
+    NtfLogRecord (..),
     storeNtf,
     deleteNtfs,
     deleteExpiredNtfs,
-    NtfLogRecord (..),
   ) where
 
 import Control.Concurrent.STM

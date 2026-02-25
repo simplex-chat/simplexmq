@@ -7,14 +7,13 @@
 module Simplex.Messaging.Notifications.Server.Store.Types
   ( NtfTknRec (..),
     NtfSubRec (..),
-    NtfAssociatedService,
     ServerNtfSub,
+    NtfAssociatedService,
     mkTknData,
     mkTknRec,
     mkSubData,
     mkSubRec,
-  )
-where
+  ) where
 
 import Control.Applicative (optional)
 import Control.Concurrent.STM

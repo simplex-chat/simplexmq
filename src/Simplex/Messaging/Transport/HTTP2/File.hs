@@ -3,8 +3,8 @@
 module Simplex.Messaging.Transport.HTTP2.File
   ( fileBlockSize,
     hReceiveFile,
-    getFileChunk,
     hSendFile,
+    getFileChunk,
   ) where
 
 import Data.ByteString (ByteString)

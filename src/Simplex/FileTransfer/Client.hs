@@ -24,12 +24,12 @@ module Simplex.FileTransfer.Client
     uploadXFTPChunk,
     downloadXFTPChunk,
     deleteXFTPChunk,
-    getChunkDigest,
-    prepareChunkSizes,
-    prepareChunkSpecs,
-    singleChunkSize,
     ackXFTPChunk,
     pingXFTP,
+    singleChunkSize,
+    prepareChunkSizes,
+    prepareChunkSpecs,
+    getChunkDigest,
   ) where
 
 import Control.Logger.Simple

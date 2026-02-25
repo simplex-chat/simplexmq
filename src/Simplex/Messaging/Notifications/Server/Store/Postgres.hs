@@ -20,7 +20,6 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
   ( NtfPostgresStore (..),
     NtfEntityRec (..),
     mkNtfTknRec,
-    mkNtfSubRec,
     newNtfDbStore,
     closeNtfDbStore,
     addNtfToken,
@@ -33,6 +32,12 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     getServerNtfSubscriptions,
     findNtfSubscription,
     getNtfSubscription,
+    mkNtfSubRec,
+    updateTknStatus,
+    setTknStatusConfirmed,
+    setTokenActive,
+    withPeriodicNtfTokens,
+    updateTokenCronSentAt,
     addNtfSubscription,
     deleteNtfSubscription,
     updateSubStatus,
@@ -42,16 +47,10 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     removeServiceAssociation,
     addTokenLastNtf,
     getEntityCounts,
-    updateTknStatus,
-    setTknStatusConfirmed,
-    setTokenActive,
-    withPeriodicNtfTokens,
-    updateTokenCronSentAt,
     importNtfSTMStore,
     exportNtfDbStore,
     withDB',
-  )
-where
+  ) where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E

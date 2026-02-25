@@ -15,23 +15,23 @@
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.FileTransfer.Protocol
-  ( XFTPFileId,
-    FileInfo(..),
-    SFileParty(..),
-    FileCmd (..),
-    FileParty (..),
-    FilePartyI (..),
-    FileResponse (..),
+  ( FileParty (..),
+    SFileParty (..),
     AFileParty (..),
+    FilePartyI (..),
     FileCommand (..),
-    checkParty,
+    FileCmd (..),
+    FileInfo (..),
+    XFTPFileId,
+    FileResponse (..),
+    xftpBlockSize,
     toFileParty,
     aFileParty,
-    xftpBlockSize,
-    xftpDecodeTClient,
+    checkParty,
     xftpEncodeAuthTransmission,
     xftpEncodeTransmission,
     xftpDecodeTServer,
+    xftpDecodeTClient,
   ) where
 
 import qualified Data.Aeson.TH as J

@@ -9,12 +9,12 @@
 
 module Simplex.RemoteControl.Discovery
   ( getLocalAddress,
+    mkLastLocalHost,
+    preferAddress,
     startTLSServer,
     withSender,
     withListener,
     recvAnnounce,
-    mkLastLocalHost,
-    preferAddress,
   ) where
 
 import Control.Applicative ((<|>))

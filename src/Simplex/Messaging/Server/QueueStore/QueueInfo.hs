@@ -8,8 +8,8 @@ module Simplex.Messaging.Server.QueueStore.QueueInfo
     QSub (..),
     QSubThread (..),
     MsgInfo (..),
-    QueueMode (..),
     MsgType (..),
+    QueueMode (..),
   ) where
 
 import qualified Data.Aeson as J

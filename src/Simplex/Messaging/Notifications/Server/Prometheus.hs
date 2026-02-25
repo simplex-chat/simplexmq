@@ -9,10 +9,9 @@ module Simplex.Messaging.Notifications.Server.Prometheus
     NtfRealTimeMetrics (..),
     NtfSMPWorkerMetrics (..),
     NtfSMPSubMetrics (..),
-    ntfPrometheusMetrics,
     rtsOptionsEnv,
-  )
-where
+    ntfPrometheusMetrics,
+  ) where
 
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M

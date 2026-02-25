@@ -3,10 +3,10 @@
 
 module Simplex.Messaging.Transport.HTTP2
   ( HTTP2Body (..),
-    getHTTP2Body,
-    withHTTP2,
     defaultHTTP2BufferSize,
+    withHTTP2,
     http2TLSParams,
+    getHTTP2Body,
     httpALPN,
     httpALPN11,
   ) where

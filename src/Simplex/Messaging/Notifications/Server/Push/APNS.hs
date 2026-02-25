@@ -10,19 +10,18 @@
 
 module Simplex.Messaging.Notifications.Server.Push.APNS
   ( PushNotification (..),
-    PushProviderClient,
-    PushProviderError (..),
-    APNSPushClientConfig (..),
     APNSNotification (..),
     APNSNotificationBody (..),
     APNSAlertBody (..),
+    APNSPushClientConfig (..),
+    PushProviderError (..),
+    PushProviderClient,
     APNSErrorResponse (..),
+    apnsProviderHost,
     defaultAPNSPushClientConfig,
     createAPNSPushClient,
     apnsPushProviderClient,
-    apnsProviderHost,
-  )
-where
+  ) where
 
 import Control.Exception (Exception)
 import Control.Logger.Simple

@@ -10,11 +10,11 @@ module Simplex.Messaging.Notifications.Server.Env
   ( NtfServerConfig (..),
     NtfEnv (..),
     NtfSubscriber (..),
+    SMPSubscriberVar,
+    SMPSubscriber (..),
     NtfPushServer (..),
     NtfRequest (..),
     NtfServerClient (..),
-    SMPSubscriber (..),
-    SMPSubscriberVar,
     defaultInactiveClientExpiration,
     newNtfServerEnv,
     newNtfSubscriber,
@@ -22,8 +22,7 @@ module Simplex.Messaging.Notifications.Server.Env
     newPushClient,
     getPushClient,
     newNtfServerClient,
-  )
-where
+  ) where
 
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple

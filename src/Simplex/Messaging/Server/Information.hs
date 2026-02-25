@@ -10,14 +10,14 @@ module Simplex.Messaging.Server.Information
   ( ServerInformation (..),
     ServerPublicConfig (..),
     ServerPublicInfo (..),
-    emptyServerInfo,
-    hasServerInfo,
     ServerPersistenceMode (..),
     ServerConditions (..),
     HostingType (..),
     Entity (..),
     ServerContactAddress (..),
     PGPKey (..),
+    emptyServerInfo,
+    hasServerInfo,
   ) where
 
 import Data.Aeson (FromJSON (..), ToJSON (..))

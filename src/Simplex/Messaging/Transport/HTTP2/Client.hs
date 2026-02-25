@@ -10,16 +10,16 @@
 
 module Simplex.Messaging.Transport.HTTP2.Client
   ( HTTP2Client (..),
-    HTTP2Response (..),
     HClient (..),
+    HTTP2Response (..),
     HTTP2ClientConfig (..),
     HTTP2ClientError (..),
-    sendRequest,
-    closeHTTP2Client,
+    defaultHTTP2ClientConfig,
     getHTTP2Client,
     getVerifiedHTTP2Client,
-    defaultHTTP2ClientConfig,
     attachHTTP2Client,
+    closeHTTP2Client,
+    sendRequest,
   ) where
 
 import Control.Concurrent.Async

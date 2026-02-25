@@ -3,10 +3,10 @@
 
 module Simplex.Messaging.Crypto.SNTRUP761.Bindings
   ( KEMPublicKey (..),
+    KEMSecretKey,
     KEMCiphertext (..),
     KEMSharedKey (..),
     KEMKeyPair,
-    KEMSecretKey,
     sntrup761Keypair,
     sntrup761Enc,
     sntrup761Dec,

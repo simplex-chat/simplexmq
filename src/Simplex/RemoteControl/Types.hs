@@ -9,15 +9,16 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Simplex.RemoteControl.Types
-  ( VersionRangeRCP,
-    VersionRCP,
+  ( RCErrorType (..),
     RCPVersion,
-    RCCtrlAddress (..),
-    RCErrorType (..),
+    VersionRCP,
+    VersionRangeRCP,
+    IpProbe (..),
     RCHostHello (..),
     RCCtrlHello (..),
     RCHostPairing (..),
     KnownHostPairing (..),
+    RCCtrlAddress (..),
     RCCtrlPairing (..),
     RCHostKeys (..),
     RCHostSession (..),
@@ -28,7 +29,6 @@ module Simplex.RemoteControl.Types
     RCCtrlEncHello (..),
     SessionCode,
     RCStepTMVar,
-    IpProbe (..),
     currentRCPVersion,
     supportedRCPVRange,
   ) where

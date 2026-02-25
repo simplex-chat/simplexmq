@@ -7,7 +7,6 @@
 module Simplex.FileTransfer.Types
   ( RcvFileId,
     SndFileId,
-    authTagSize,
     FileHeader (..),
     DBRcvFileId,
     RcvFile (..),
@@ -17,16 +16,17 @@ module Simplex.FileTransfer.Types
     RcvFileRedirect (..),
     DBSndFileId,
     SndFile (..),
-    sndFileEncPath,
     SndFileStatus (..),
     SndFileChunk (..),
-    sndChunkSize,
     NewSndChunkReplica (..),
     SndFileChunkReplica (..),
     SndFileReplicaStatus (..),
     DeletedSndChunkReplica (..),
     SentRecipientReplica (..),
     FileErrorType (..),
+    authTagSize,
+    sndFileEncPath,
+    sndChunkSize,
   ) where
 
 import qualified Data.Aeson.TH as J

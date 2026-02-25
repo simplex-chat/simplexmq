@@ -16,20 +16,13 @@
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module Simplex.Messaging.Server.Main
-  ( smpServerCLI,
-    smpServerCLI_,
-    EmbeddedWebParams (..),
+  ( EmbeddedWebParams (..),
     WebHttpsParams (..),
-    getServerSourceCode,
-    simplexmqSource,
-    serverPublicInfo,
-    validCountryValue,
-    printSourceCode,
     CliCommand (..),
     StoreCmd (..),
     DatabaseTable (..),
-    cliCommandP,
-    strParse,
+    smpServerCLI,
+    smpServerCLI_,
 #if defined(dbServerPostgres)
     importStoreLogToDatabase,
     importMessagesToDatabase,
@@ -37,6 +30,13 @@ module Simplex.Messaging.Server.Main
 #endif
     newJournalMsgStore,
     storeMsgsJournalDir',
+    getServerSourceCode,
+    simplexmqSource,
+    serverPublicInfo,
+    validCountryValue,
+    printSourceCode,
+    cliCommandP,
+    strParse,
   ) where
 
 import Control.Concurrent.STM

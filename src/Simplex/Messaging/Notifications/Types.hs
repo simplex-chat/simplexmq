@@ -7,17 +7,16 @@
 module Simplex.Messaging.Notifications.Types
   ( NtfTknAction (..),
     NtfToken (..),
-    newNtfToken,
     NtfSubAction (..),
-    isDeleteNtfSubAction,
     NtfActionTs,
     NtfSubNTFAction (..),
     NtfSubSMPAction (..),
     NtfAgentSubStatus (..),
     NtfSubscription (..),
+    newNtfToken,
+    isDeleteNtfSubAction,
     newNtfSubscription,
-  )
-where
+  ) where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)

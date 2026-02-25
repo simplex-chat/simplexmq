@@ -4,9 +4,9 @@
 
 module Simplex.Messaging.Crypto.SNTRUP761
   ( KEMHybridSecret (..),
-    kemHybridSecret,
     kcbDecrypt,
     kcbEncrypt,
+    kemHybridSecret,
   ) where
 
 import Crypto.Hash (Digest, SHA3_256, hash)

@@ -10,14 +10,14 @@
 module Simplex.Messaging.Notifications.Transport
   ( NTFVersion,
     VersionRangeNTF,
-    THandleNTF,
     pattern VersionNTF,
+    THandleNTF,
     invalidReasonNTFVersion,
-    ntfClientHandshake,
-    ntfServerHandshake,
     supportedClientNTFVRange,
     supportedServerNTFVRange,
     alpnSupportedNTFHandshakes,
+    ntfServerHandshake,
+    ntfClientHandshake,
   ) where
 
 import Control.Monad (forM)

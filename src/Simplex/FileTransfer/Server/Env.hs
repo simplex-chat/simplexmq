@@ -9,13 +9,13 @@
 
 module Simplex.FileTransfer.Server.Env
   ( XFTPServerConfig (..),
-    defaultInactiveClientExpiration,
     XFTPEnv (..),
+    XFTPRequest (..),
+    defaultInactiveClientExpiration,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
     countUsedStorage,
-    XFTPRequest (..),
   ) where
 
 import Control.Logger.Simple

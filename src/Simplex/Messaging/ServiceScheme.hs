@@ -2,8 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.ServiceScheme
-  ( SrvLoc (..),
-    ServiceScheme(..),
+  ( ServiceScheme (..),
+    SrvLoc (..),
     simplexChat,
   ) where
 

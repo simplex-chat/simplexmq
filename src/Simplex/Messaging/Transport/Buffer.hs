@@ -5,10 +5,10 @@
 module Simplex.Messaging.Transport.Buffer
   ( TBuffer (..),
     newTBuffer,
-    getBuffered,
-    getLnBuffered,
     peekBuffered,
+    getBuffered,
     withTimedErr,
+    getLnBuffered,
     trimCR,
   ) where
 

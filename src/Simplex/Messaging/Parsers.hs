@@ -5,18 +5,18 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.Messaging.Parsers
-  ( defaultJSON,
+  ( parse,
     parseAll,
-    dropPrefix,
-    sumTypeJSON,
-    enumJSON,
-    parseString,
-    parseRead1,
     parseE,
     parseE',
-    parse,
-    textP,
+    parseRead1,
+    parseString,
     fstToLower,
+    dropPrefix,
+    enumJSON,
+    sumTypeJSON,
+    defaultJSON,
+    textP,
   ) where
 
 import Control.Monad.Trans.Except

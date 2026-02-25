@@ -33,8 +33,7 @@ module Simplex.Messaging.Server.MsgStore.Types
     withPeekMsgQueue,
     expireQueueMsgs,
     deleteExpireMsgs_,
-  )
-where
+  ) where
 
 import Control.Concurrent.STM
 import Control.Monad

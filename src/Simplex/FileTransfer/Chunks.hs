@@ -5,8 +5,8 @@ module Simplex.FileTransfer.Chunks
     chunkSize2,
     chunkSize3,
     kb,
-    mb,
     toKB,
+    mb,
     gb,
   ) where
 

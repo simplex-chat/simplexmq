@@ -7,12 +7,12 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.Messaging.SystemTime
-  ( SystemDate,
-    RoundedSystemTime (..),
+  ( RoundedSystemTime (..),
+    SystemDate,
     SystemSeconds,
-    getSystemSeconds,
-    getSystemDate,
     getRoundedSystemTime,
+    getSystemDate,
+    getSystemSeconds,
     roundedToUTCTime,
   ) where
 

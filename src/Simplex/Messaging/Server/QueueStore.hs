@@ -11,8 +11,8 @@ module Simplex.Messaging.Server.QueueStore
   ( QueueRec (..),
     NtfCreds (..),
     ServiceRec (..),
-    ServerEntityStatus (..),
     CertFingerprint,
+    ServerEntityStatus (..),
   ) where
 
 import Control.Applicative (optional, (<|>))

@@ -3,11 +3,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Server.Main.Init
-  ( defaultControlPort,
+  ( InitOptions (..),
+    ServerPassword (..),
+    defaultControlPort,
     defaultDBOpts,
     defaultDeletedTTL,
-    InitOptions (..),
-    ServerPassword (..),
     iniFileContent,
     informationIniContent,
     iniDbOpts,
