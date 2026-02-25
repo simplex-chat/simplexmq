@@ -1,7 +1,15 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Transport.HTTP2 where
+module Simplex.Messaging.Transport.HTTP2
+  ( HTTP2Body (..),
+    defaultHTTP2BufferSize,
+    withHTTP2,
+    http2TLSParams,
+    getHTTP2Body,
+    httpALPN,
+    httpALPN11,
+  ) where
 
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)

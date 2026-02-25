@@ -4,7 +4,11 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.Messaging.Transport.KeepAlive where
+module Simplex.Messaging.Transport.KeepAlive
+  ( KeepAliveOpts (..),
+    defaultKeepAliveOpts,
+    setSocketKeepAlive,
+  ) where
 
 import qualified Data.Aeson.TH as J
 import Foreign.C (CInt (..))

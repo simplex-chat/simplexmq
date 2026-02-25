@@ -210,6 +210,7 @@ module Simplex.Messaging.Protocol
     -- * exports for tests
     CommandTag (..),
     BrokerMsgTag (..),
+    checkParty,
   )
 where
 

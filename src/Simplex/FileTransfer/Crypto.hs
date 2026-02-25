@@ -4,7 +4,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Crypto where
+module Simplex.FileTransfer.Crypto
+  ( encryptFile,
+    decryptChunks,
+    readChunks,
+  ) where
 
 import Control.Monad
 import Control.Monad.Except

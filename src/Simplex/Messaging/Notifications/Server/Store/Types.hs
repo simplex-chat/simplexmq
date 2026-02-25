@@ -4,7 +4,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Notifications.Server.Store.Types where
+module Simplex.Messaging.Notifications.Server.Store.Types
+  ( NtfTknRec (..),
+    NtfSubRec (..),
+    ServerNtfSub,
+    NtfAssociatedService,
+    mkTknData,
+    mkTknRec,
+    mkSubData,
+    mkSubRec,
+  ) where
 
 import Control.Applicative (optional)
 import Control.Concurrent.STM

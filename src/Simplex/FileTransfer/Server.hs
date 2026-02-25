@@ -13,7 +13,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.FileTransfer.Server where
+module Simplex.FileTransfer.Server
+  ( runXFTPServer,
+    runXFTPServerBlocking,
+  ) where
 
 import Control.Logger.Simple
 import Control.Monad
@@ -56,7 +59,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
 import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
-import Simplex.Messaging.Server.Control (CPClientRole (..))
+import Simplex.Messaging.Server.Control (CPClientRole (..), ControlProtocol (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.Stats
@@ -330,6 +333,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
+              _ -> hPutStrLn h "unsupported command"
               where
                 withUserRole action =
                   readTVarIO role >>= \case

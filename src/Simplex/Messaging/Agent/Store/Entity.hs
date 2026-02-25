@@ -8,7 +8,12 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Agent.Store.Entity where
+module Simplex.Messaging.Agent.Store.Entity
+  ( DBStored (..),
+    DBEntityId,
+    DBEntityId' (..),
+  )
+where
 
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J

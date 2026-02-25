@@ -7,7 +7,18 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.Messaging.Notifications.Transport where
+module Simplex.Messaging.Notifications.Transport
+  ( NTFVersion,
+    VersionRangeNTF,
+    pattern VersionNTF,
+    THandleNTF,
+    invalidReasonNTFVersion,
+    supportedClientNTFVRange,
+    supportedServerNTFVRange,
+    alpnSupportedNTFHandshakes,
+    ntfServerHandshake,
+    ntfClientHandshake,
+  ) where
 
 import Control.Monad (forM)
 import Control.Monad.Except

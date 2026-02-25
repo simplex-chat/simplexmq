@@ -1,4 +1,14 @@
-module Simplex.FileTransfer.Chunks where
+module Simplex.FileTransfer.Chunks
+  ( serverChunkSizes,
+    chunkSize0,
+    chunkSize1,
+    chunkSize2,
+    chunkSize3,
+    kb,
+    toKB,
+    mb,
+    gb,
+  ) where
 
 import Data.Word (Word32)
 

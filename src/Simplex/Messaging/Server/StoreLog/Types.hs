@@ -2,7 +2,9 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 
-module Simplex.Messaging.Server.StoreLog.Types where
+module Simplex.Messaging.Server.StoreLog.Types
+  ( StoreLog (..),
+  ) where
 
 import System.IO (Handle, IOMode (..))
 
