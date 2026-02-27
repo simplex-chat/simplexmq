@@ -7,6 +7,10 @@ import {
 } from '../src/agent.js'
 import {XFTPPermanentError} from '../src/client.js'
 
+const DECRYPT_WEIGHT = 0.15
+const DECRYPT_MIN_DISPLAY_MS = 1000
+const DECRYPT_MIN_FILE_SIZE = 10 * 1024
+
 export function initDownload(app: HTMLElement, hash: string) {
   let fd: ReturnType<typeof decodeDescriptionURI>
   try {
@@ -66,6 +70,8 @@ export function initDownload(app: HTMLElement, hash: string) {
     const ring = createProgressRing()
     progressContainer.innerHTML = ''
     progressContainer.appendChild(ring.canvas)
+    const showDecrypt = size >= DECRYPT_MIN_FILE_SIZE
+    const decryptWeight = showDecrypt ? DECRYPT_WEIGHT : 0
     statusText.textContent = t('downloading', 'Downloading\u2026')
 
     const backend = createCryptoBackend()
@@ -78,21 +84,30 @@ export function initDownload(app: HTMLElement, hash: string) {
         )
       }, {
         onProgress: (downloaded, total) => {
-          ring.update(downloaded / total)
+          ring.update((downloaded / total) * (1 - decryptWeight))
         }
       })
 
-      ring.update(0)
-      statusText.textContent = t('decrypting', 'Decrypting\u2026')
+      if (showDecrypt) {
+        statusText.textContent = t('decrypting', 'Decrypting\u2026')
+      }
 
+      const decryptStart = performance.now()
       const {header, content} = await backend.verifyAndDecrypt({
         size: resolvedFd.size,
         digest: resolvedFd.digest,
         key: resolvedFd.key,
         nonce: resolvedFd.nonce
       }, (done, total) => {
-        ring.update(done / total)
+        ring.update((1 - decryptWeight) + (done / total) * decryptWeight)
       })
+
+      if (showDecrypt) {
+        const elapsed = performance.now() - decryptStart
+        if (elapsed < DECRYPT_MIN_DISPLAY_MS) {
+          await new Promise(r => setTimeout(r, DECRYPT_MIN_DISPLAY_MS - elapsed))
+        }
+      }
 
       // Sanitize filename and trigger browser save
       const fileName = sanitizeFileName(header.fileName)
