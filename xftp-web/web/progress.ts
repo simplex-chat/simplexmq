@@ -6,7 +6,7 @@ const LERP_SPEED = 0.12
 
 export interface ProgressRing {
   canvas: HTMLCanvasElement
-  update(fraction: number, fgVar?: string): void
+  update(fraction: number): void
   setIndeterminate(on: boolean): void
   destroy(): void
 }
@@ -26,14 +26,12 @@ export function createProgressRing(): ProgressRing {
   let animId = 0
   let spinAngle = 0
   let spinning = false
-  let currentFgVar = '--xftp-ring-fg'
-
   function getColors() {
     const appEl = document.querySelector('[data-xftp-app]') ?? document.getElementById('app')
     const s = appEl ? getComputedStyle(appEl) : null
     return {
       bg: s?.getPropertyValue('--xftp-ring-bg').trim() || '#e0e0e0',
-      fg: s?.getPropertyValue(currentFgVar).trim() || s?.getPropertyValue('--xftp-ring-fg').trim() || '#3b82f6',
+      fg: s?.getPropertyValue('--xftp-ring-fg').trim() || '#3b82f6',
       text: s?.getPropertyValue('--xftp-ring-text').trim() || '#333',
       done: s?.getPropertyValue('--xftp-ring-done').trim() || '#16a34a',
     }
@@ -132,9 +130,8 @@ export function createProgressRing(): ProgressRing {
   render(0)
   return {
     canvas,
-    update(fraction: number, fgVar?: string) {
+    update(fraction: number) {
       stopAnim()
-      if (fgVar) currentFgVar = fgVar
       // Snap immediately on phase reset (0) and completion (1)
       if ((fraction === 0 && target > 0) || fraction >= 1) {
         displayed = fraction

@@ -9,6 +9,9 @@ import {
 import {XFTPPermanentError} from '../src/client.js'
 
 const MAX_SIZE = 100 * 1024 * 1024
+const ENCRYPT_WEIGHT = 0.15
+const ENCRYPT_MIN_DISPLAY_MS = 1000
+const ENCRYPT_MIN_FILE_SIZE = 10 * 1024
 
 export function initUpload(app: HTMLElement) {
   app.innerHTML = `
@@ -115,7 +118,12 @@ export function initUpload(app: HTMLElement) {
     const ring = createProgressRing()
     progressContainer.innerHTML = ''
     progressContainer.appendChild(ring.canvas)
-    statusText.textContent = t('encrypting', 'Encrypting\u2026')
+
+    const showEncrypt = file.size >= ENCRYPT_MIN_FILE_SIZE
+    const encryptWeight = showEncrypt ? ENCRYPT_WEIGHT : 0
+    statusText.textContent = showEncrypt
+      ? t('encrypting', 'Encrypting\u2026')
+      : t('uploading', 'Uploading\u2026')
 
     const backend = createCryptoBackend()
     const agent = newXFTPAgent()
@@ -132,13 +140,23 @@ export function initUpload(app: HTMLElement) {
       const fileData = new Uint8Array(await file.arrayBuffer())
       if (aborted) return
 
+      const encryptStart = performance.now()
       const encrypted = await backend.encrypt(fileData, file.name, (done, total) => {
-        ring.update(done / total, '--xftp-ring-encrypt')
+        if (showEncrypt) {
+          ring.update((done / total) * encryptWeight)
+        }
       })
       if (aborted) return
 
-      ring.update(0, '--xftp-ring-upload')
-      statusText.textContent = t('uploading', 'Uploading\u2026')
+      if (showEncrypt) {
+        const elapsed = performance.now() - encryptStart
+        if (elapsed < ENCRYPT_MIN_DISPLAY_MS) {
+          await new Promise(r => setTimeout(r, ENCRYPT_MIN_DISPLAY_MS - elapsed))
+          if (aborted) return
+        }
+        statusText.textContent = t('uploading', 'Uploading\u2026')
+      }
+
       const metadata: EncryptedFileMetadata = {
         digest: encrypted.digest,
         key: encrypted.key,
@@ -149,7 +167,7 @@ export function initUpload(app: HTMLElement) {
       const result = await uploadFile(agent, servers, metadata, {
         readChunk: (off, sz) => backend.readChunk(off, sz),
         onProgress: (uploaded, total) => {
-          ring.update(uploaded / total, '--xftp-ring-upload')
+          ring.update(encryptWeight + (uploaded / total) * (1 - encryptWeight))
         }
       })
       if (aborted) return

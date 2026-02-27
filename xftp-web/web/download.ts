@@ -78,11 +78,11 @@ export function initDownload(app: HTMLElement, hash: string) {
         )
       }, {
         onProgress: (downloaded, total) => {
-          ring.update(downloaded / total, '--xftp-ring-download')
+          ring.update(downloaded / total)
         }
       })
 
-      ring.update(0, '--xftp-ring-decrypt')
+      ring.update(0)
       statusText.textContent = t('decrypting', 'Decrypting\u2026')
 
       const {header, content} = await backend.verifyAndDecrypt({
@@ -91,7 +91,7 @@ export function initDownload(app: HTMLElement, hash: string) {
         key: resolvedFd.key,
         nonce: resolvedFd.nonce
       }, (done, total) => {
-        ring.update(done / total, '--xftp-ring-decrypt')
+        ring.update(done / total)
       })
 
       // Sanitize filename and trigger browser save
