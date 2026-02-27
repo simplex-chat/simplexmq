@@ -49,14 +49,17 @@ async function handleEncrypt(id: number, data: ArrayBuffer, fileName: string) {
   const payloadSize = Number(fileSize) + fileSizeLen + authTagSize
   const chunkSizes = prepareChunkSizes(payloadSize)
   const encSize = BigInt(chunkSizes.reduce((a: number, b: number) => a + b, 0))
-  const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize)
+  const encDataLen = Number(encSize)
+  const total = source.length + encDataLen * 2 // encrypt + hash + write
 
-  self.postMessage({id, type: 'progress', done: 50, total: 100})
+  const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize, (done) => {
+    self.postMessage({id, type: 'progress', done, total})
+  })
 
-  const digest = sha512Streaming([encData])
+  const digest = sha512Streaming([encData], (done) => {
+    self.postMessage({id, type: 'progress', done: source.length + done, total})
+  }, encDataLen)
   console.log(`[WORKER-DBG] encrypt: encData.len=${encData.length} digest=${_whex(digest, 64)} chunkSizes=[${chunkSizes.join(',')}]`)
-
-  self.postMessage({id, type: 'progress', done: 80, total: 100})
 
   // Write to OPFS
   const dir = await getSessionDir()
@@ -70,7 +73,7 @@ async function handleEncrypt(id: number, data: ArrayBuffer, fileName: string) {
   // Reopen as persistent read handle
   uploadReadHandle = await fileHandle.createSyncAccessHandle()
 
-  self.postMessage({id, type: 'progress', done: 100, total: 100})
+  self.postMessage({id, type: 'progress', done: total, total})
   self.postMessage({id, type: 'encrypted', digest, key, nonce, chunkSizes})
 }
 
@@ -155,12 +158,16 @@ async function handleVerifyAndDecrypt(
   // Read chunks — from memory (fallback) or OPFS
   const chunks: Uint8Array[] = []
   let totalSize = 0
+  const total = size * 3 // read + hash + decrypt (byte-based progress)
+  let done = 0
   if (useMemory) {
     const sorted = [...memoryChunks.entries()].sort((a, b) => a[0] - b[0])
     for (const [chunkNo, data] of sorted) {
       console.log(`[WORKER-DBG] verify memory chunk=${chunkNo} size=${data.length}`)
       chunks.push(data)
       totalSize += data.length
+      done += data.length
+      self.postMessage({id, type: 'progress', done, total})
     }
   } else {
     // Close write handle, reopen as read
@@ -180,6 +187,8 @@ async function handleVerifyAndDecrypt(
       console.log(`[WORKER-DBG] verify read chunk=${chunkNo} offset=${meta.offset} size=${meta.size} bytesRead=${bytesRead} [0..8]=${_whex(buf)} [-8..]=${_whex(buf.slice(-8))}`)
       chunks.push(buf)
       totalSize += meta.size
+      done += meta.size
+      self.postMessage({id, type: 'progress', done, total})
     }
     readHandle.close()
   }
@@ -189,27 +198,27 @@ async function handleVerifyAndDecrypt(
     return
   }
 
-  // Compute per-chunk SHA-512 incrementally to find divergence point
+  // Compute SHA-512 with byte-level progress
+  const hashSEG = 4 * 1024 * 1024
   const state = sodium.crypto_hash_sha512_init() as unknown as import('libsodium-wrappers').StateAddress
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]
-    const SEG = 4 * 1024 * 1024
-    for (let off = 0; off < chunk.length; off += SEG) {
-      sodium.crypto_hash_sha512_update(state, chunk.subarray(off, Math.min(off + SEG, chunk.length)))
+    for (let off = 0; off < chunk.length; off += hashSEG) {
+      const end = Math.min(off + hashSEG, chunk.length)
+      sodium.crypto_hash_sha512_update(state, chunk.subarray(off, end))
+      done += end - off
+      self.postMessage({id, type: 'progress', done, total})
     }
   }
   const actualDigest = sodium.crypto_hash_sha512_final(state)
   if (!digestEqual(actualDigest, digest)) {
     console.error(`[WORKER-DBG] DIGEST MISMATCH: expected=${_whex(digest, 64)} actual=${_whex(actualDigest, 64)} chunks=${chunks.length} totalSize=${totalSize}`)
-    // Log per-chunk incremental hash to find divergence
     const state2 = sodium.crypto_hash_sha512_init() as unknown as import('libsodium-wrappers').StateAddress
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]
-      const SEG = 4 * 1024 * 1024
-      for (let off = 0; off < chunk.length; off += SEG) {
-        sodium.crypto_hash_sha512_update(state2, chunk.subarray(off, Math.min(off + SEG, chunk.length)))
+      for (let off = 0; off < chunk.length; off += hashSEG) {
+        sodium.crypto_hash_sha512_update(state2, chunk.subarray(off, Math.min(off + hashSEG, chunk.length)))
       }
-      // snapshot incremental hash (create temp copy of state)
       const chunkDigest = sha512Streaming([chunk])
       console.error(`[WORKER-DBG] chunk[${i}] size=${chunk.length} sha512=${_whex(chunkDigest, 32)}… [0..8]=${_whex(chunk)} [-8..]=${_whex(chunk.slice(-8))}`)
     }
@@ -218,8 +227,11 @@ async function handleVerifyAndDecrypt(
   }
   console.log(`[WORKER-DBG] verify: digest OK`)
 
-  // File-level decrypt
-  const result = decryptChunks(BigInt(size), chunks, key, nonce)
+  // File-level decrypt with byte-level progress
+  const result = decryptChunks(BigInt(size), chunks, key, nonce, (d) => {
+    self.postMessage({id, type: 'progress', done: size * 2 + d, total})
+  })
+  self.postMessage({id, type: 'progress', done: total, total})
 
   // Clean up download state
   if (!useMemory) {

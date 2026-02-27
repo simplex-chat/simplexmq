@@ -1,4 +1,5 @@
 import type {FileHeader} from '../src/crypto/file.js'
+import {t} from './i18n.js'
 
 export interface CryptoBackend {
   encrypt(data: Uint8Array, fileName: string,
@@ -9,7 +10,8 @@ export interface CryptoBackend {
     dhSecret: Uint8Array, nonce: Uint8Array,
     body: Uint8Array, digest: Uint8Array, chunkNo: number
   ): Promise<void>
-  verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array}
+  verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array},
+                   onProgress?: (done: number, total: number) => void
   ): Promise<{header: FileHeader, content: Uint8Array}>
   cleanup(): Promise<void>
 }
@@ -117,12 +119,15 @@ class WorkerBackend implements CryptoBackend {
     )
   }
 
-  async verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array}
+  async verifyAndDecrypt(params: {size: number, digest: Uint8Array, key: Uint8Array, nonce: Uint8Array},
+                         onProgress?: (done: number, total: number) => void
   ): Promise<{header: FileHeader, content: Uint8Array}> {
+    this.progressCb = onProgress ?? null
     const resp = await this.send({
       type: 'verifyAndDecrypt',
       size: params.size, digest: params.digest, key: params.key, nonce: params.nonce
     })
+    this.progressCb = null
     return {header: resp.header, content: new Uint8Array(resp.content)}
   }
 
@@ -134,7 +139,7 @@ class WorkerBackend implements CryptoBackend {
 
 export function createCryptoBackend(): CryptoBackend {
   if (typeof Worker === 'undefined') {
-    throw new Error('Web Workers required — update your browser')
+    throw new Error(t('workersRequired', 'Web Workers required \u2014 update your browser'))
   }
   return new WorkerBackend()
 }

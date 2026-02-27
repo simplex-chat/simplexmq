@@ -2,12 +2,14 @@ const SIZE = 120
 const LINE_WIDTH = 8
 const RADIUS = (SIZE - LINE_WIDTH) / 2
 const CENTER = SIZE / 2
-const BG_COLOR = '#e0e0e0'
-const FG_COLOR = '#3b82f6'
+const LERP_SPEED = 0.12
 
 export interface ProgressRing {
   canvas: HTMLCanvasElement
   update(fraction: number): void
+  fillTo(fraction: number, durationMs: number): Promise<void>
+  setIndeterminate(on: boolean): void
+  destroy(): void
 }
 
 export function createProgressRing(): ProgressRing {
@@ -20,33 +22,160 @@ export function createProgressRing(): ProgressRing {
   const ctx = canvas.getContext('2d')!
   ctx.scale(devicePixelRatio, devicePixelRatio)
 
-  function draw(fraction: number) {
-    ctx.clearRect(0, 0, SIZE, SIZE)
-    // Background arc
+  let displayed = 0
+  let target = 0
+  let animId = 0
+  let spinAngle = 0
+  let spinning = false
+  let fillResolve: (() => void) | null = null
+  function getColors() {
+    const appEl = document.querySelector('[data-xftp-app]') ?? document.getElementById('app')
+    const s = appEl ? getComputedStyle(appEl) : null
+    return {
+      bg: s?.getPropertyValue('--xftp-ring-bg').trim() || '#e0e0e0',
+      fg: s?.getPropertyValue('--xftp-ring-fg').trim() || '#3b82f6',
+      text: s?.getPropertyValue('--xftp-ring-text').trim() || '#333',
+      done: s?.getPropertyValue('--xftp-ring-done').trim() || '#16a34a',
+    }
+  }
+
+  function drawBgRing(c: ReturnType<typeof getColors>, color?: string) {
     ctx.beginPath()
     ctx.arc(CENTER, CENTER, RADIUS, 0, 2 * Math.PI)
-    ctx.strokeStyle = BG_COLOR
+    ctx.strokeStyle = color ?? c.bg
     ctx.lineWidth = LINE_WIDTH
     ctx.lineCap = 'round'
     ctx.stroke()
-    // Foreground arc
-    if (fraction > 0) {
+  }
+
+  function render(fraction: number) {
+    const c = getColors()
+    ctx.clearRect(0, 0, SIZE, SIZE)
+    drawBgRing(c, fraction >= 1 ? c.done : undefined)
+
+    if (fraction > 0 && fraction < 1) {
       ctx.beginPath()
       ctx.arc(CENTER, CENTER, RADIUS, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * fraction)
-      ctx.strokeStyle = FG_COLOR
+      ctx.strokeStyle = c.fg
       ctx.lineWidth = LINE_WIDTH
       ctx.lineCap = 'round'
       ctx.stroke()
     }
-    // Percentage text
-    const pct = Math.round(fraction * 100)
-    ctx.fillStyle = '#333'
-    ctx.font = '600 20px system-ui, sans-serif'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(pct + '%', CENTER, CENTER)
+
+    if (fraction >= 1) {
+      ctx.strokeStyle = c.done
+      ctx.lineWidth = 5
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.beginPath()
+      ctx.moveTo(CENTER - 18, CENTER + 2)
+      ctx.lineTo(CENTER - 4, CENTER + 16)
+      ctx.lineTo(CENTER + 22, CENTER - 14)
+      ctx.stroke()
+    } else {
+      const pct = Math.round(fraction * 100)
+      ctx.fillStyle = c.text
+      ctx.font = '600 20px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(pct + '%', CENTER, CENTER)
+    }
   }
 
-  draw(0)
-  return {canvas, update: draw}
+  function tick() {
+    if (spinning) return
+    const diff = target - displayed
+    if (Math.abs(diff) < 0.002) {
+      displayed = target
+      render(displayed)
+      animId = 0
+      return
+    }
+    displayed += diff * LERP_SPEED
+    render(displayed)
+    animId = requestAnimationFrame(tick)
+  }
+
+  function startTick() {
+    if (!animId && !spinning) { animId = requestAnimationFrame(tick) }
+  }
+
+  function stopAnim() {
+    if (animId) { cancelAnimationFrame(animId); animId = 0 }
+    spinning = false
+    if (fillResolve) { fillResolve(); fillResolve = null }
+  }
+
+  function spinFrame() {
+    const c = getColors()
+    ctx.clearRect(0, 0, SIZE, SIZE)
+    drawBgRing(c)
+    ctx.beginPath()
+    ctx.arc(CENTER, CENTER, RADIUS, spinAngle, spinAngle + Math.PI * 0.75)
+    ctx.strokeStyle = c.fg
+    ctx.lineWidth = LINE_WIDTH
+    ctx.lineCap = 'round'
+    ctx.stroke()
+    spinAngle += 0.06
+    if (spinning) animId = requestAnimationFrame(spinFrame)
+  }
+
+  function redraw() {
+    if (spinning) return
+    render(displayed)
+  }
+
+  const mql = matchMedia('(prefers-color-scheme: dark)')
+  mql.addEventListener('change', redraw)
+  const observer = new MutationObserver(redraw)
+  observer.observe(document.documentElement, {attributes: true, attributeFilter: ['class']})
+
+  render(0)
+  return {
+    canvas,
+    update(fraction: number) {
+      stopAnim()
+      // Snap immediately on phase reset (0) and completion (1)
+      if ((fraction === 0 && target > 0) || fraction >= 1) {
+        displayed = fraction
+        target = fraction
+        render(fraction)
+        return
+      }
+      target = fraction
+      startTick()
+    },
+    fillTo(fraction: number, durationMs: number): Promise<void> {
+      stopAnim()
+      const from = displayed
+      const start = performance.now()
+      return new Promise(resolve => {
+        fillResolve = resolve
+        function frame() {
+          const t = Math.min(1, (performance.now() - start) / durationMs)
+          const eased = 1 - (1 - t) * (1 - t) // ease-out
+          displayed = from + (fraction - from) * eased
+          target = displayed
+          render(displayed)
+          if (t < 1) {
+            animId = requestAnimationFrame(frame)
+          } else {
+            animId = 0
+            fillResolve = null
+            resolve()
+          }
+        }
+        animId = requestAnimationFrame(frame)
+      })
+    },
+    setIndeterminate(on: boolean) {
+      stopAnim()
+      if (on) { spinning = true; spinFrame() }
+    },
+    destroy() {
+      stopAnim()
+      mql.removeEventListener('change', redraw)
+      observer.disconnect()
+    },
+  }
 }

@@ -1,12 +1,27 @@
 {
   "name": "xftp-web",
   "version": "0.1.0",
-  "private": true,
+  "description": "XFTP file transfer protocol client for web/browser environments",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simplex-chat/simplexmq.git",
+    "directory": "xftp-web"
+  },
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist-web/index.html",
+  "files": [
+    "src",
+    "web",
+    "dist",
+    "dist-web"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "postinstall": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs && npx playwright install chromium",
+    "prepublishOnly": "npm run build && npm run build:prod",
+    "pretest": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs && npx playwright install chromium",
     "build": "tsc",
     "test": "vitest",
     "dev": "npx tsx test/runSetup.ts && vite --mode development",
