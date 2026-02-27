@@ -8,8 +8,8 @@ import {
 import {XFTPPermanentError} from '../src/client.js'
 
 const DECRYPT_WEIGHT = 0.15
+const DECRYPT_MIN_FILE_SIZE = 100 * 1024
 const DECRYPT_MIN_DISPLAY_MS = 1000
-const DECRYPT_MIN_FILE_SIZE = 10 * 1024
 
 export function initDownload(app: HTMLElement, hash: string) {
   let fd: ReturnType<typeof decodeDescriptionURI>
@@ -99,13 +99,13 @@ export function initDownload(app: HTMLElement, hash: string) {
         key: resolvedFd.key,
         nonce: resolvedFd.nonce
       }, (done, total) => {
-        ring.update((1 - decryptWeight) + (done / total) * decryptWeight)
+        ring.update(Math.min(0.99, (1 - decryptWeight) + (done / total) * decryptWeight))
       })
 
       if (showDecrypt) {
         const elapsed = performance.now() - decryptStart
         if (elapsed < DECRYPT_MIN_DISPLAY_MS) {
-          await new Promise(r => setTimeout(r, DECRYPT_MIN_DISPLAY_MS - elapsed))
+          await ring.fillTo(0.99, DECRYPT_MIN_DISPLAY_MS - elapsed)
         }
       }
 

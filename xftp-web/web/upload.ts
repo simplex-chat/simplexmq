@@ -10,8 +10,8 @@ import {XFTPPermanentError} from '../src/client.js'
 
 const MAX_SIZE = 100 * 1024 * 1024
 const ENCRYPT_WEIGHT = 0.15
+const ENCRYPT_MIN_FILE_SIZE = 100 * 1024
 const ENCRYPT_MIN_DISPLAY_MS = 1000
-const ENCRYPT_MIN_FILE_SIZE = 10 * 1024
 
 export function initUpload(app: HTMLElement) {
   app.innerHTML = `
@@ -137,21 +137,19 @@ export function initUpload(app: HTMLElement) {
     }
 
     try {
+      const encryptStart = performance.now()
       const fileData = new Uint8Array(await file.arrayBuffer())
       if (aborted) return
 
-      const encryptStart = performance.now()
       const encrypted = await backend.encrypt(fileData, file.name, (done, total) => {
-        if (showEncrypt) {
-          ring.update((done / total) * encryptWeight)
-        }
+        ring.update((done / total) * encryptWeight)
       })
       if (aborted) return
 
       if (showEncrypt) {
         const elapsed = performance.now() - encryptStart
         if (elapsed < ENCRYPT_MIN_DISPLAY_MS) {
-          await new Promise(r => setTimeout(r, ENCRYPT_MIN_DISPLAY_MS - elapsed))
+          await ring.fillTo(encryptWeight, ENCRYPT_MIN_DISPLAY_MS - elapsed)
           if (aborted) return
         }
         statusText.textContent = t('uploading', 'Uploading\u2026')

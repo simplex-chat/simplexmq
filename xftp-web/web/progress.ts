@@ -7,6 +7,7 @@ const LERP_SPEED = 0.12
 export interface ProgressRing {
   canvas: HTMLCanvasElement
   update(fraction: number): void
+  fillTo(fraction: number, durationMs: number): Promise<void>
   setIndeterminate(on: boolean): void
   destroy(): void
 }
@@ -26,6 +27,7 @@ export function createProgressRing(): ProgressRing {
   let animId = 0
   let spinAngle = 0
   let spinning = false
+  let fillResolve: (() => void) | null = null
   function getColors() {
     const appEl = document.querySelector('[data-xftp-app]') ?? document.getElementById('app')
     const s = appEl ? getComputedStyle(appEl) : null
@@ -101,6 +103,7 @@ export function createProgressRing(): ProgressRing {
   function stopAnim() {
     if (animId) { cancelAnimationFrame(animId); animId = 0 }
     spinning = false
+    if (fillResolve) { fillResolve(); fillResolve = null }
   }
 
   function spinFrame() {
@@ -141,6 +144,29 @@ export function createProgressRing(): ProgressRing {
       }
       target = fraction
       startTick()
+    },
+    fillTo(fraction: number, durationMs: number): Promise<void> {
+      stopAnim()
+      const from = displayed
+      const start = performance.now()
+      return new Promise(resolve => {
+        fillResolve = resolve
+        function frame() {
+          const t = Math.min(1, (performance.now() - start) / durationMs)
+          const eased = 1 - (1 - t) * (1 - t) // ease-out
+          displayed = from + (fraction - from) * eased
+          target = displayed
+          render(displayed)
+          if (t < 1) {
+            animId = requestAnimationFrame(frame)
+          } else {
+            animId = 0
+            fillResolve = null
+            resolve()
+          }
+        }
+        animId = requestAnimationFrame(frame)
+      })
     },
     setIndeterminate(on: boolean) {
       stopAnim()
