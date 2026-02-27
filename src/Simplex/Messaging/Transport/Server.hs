@@ -11,6 +11,7 @@ module Simplex.Messaging.Transport.Server
   ( TransportServerConfig (..),
     ServerCredentials (..),
     TLSServerCredential (..),
+    SNICredentialUsed,
     AddHTTP,
     mkTransportServerConfig,
     runTransportServerState,
@@ -62,6 +63,7 @@ data TransportServerConfig = TransportServerConfig
   { logTLSErrors :: Bool,
     serverALPN :: Maybe [ALPN],
     askClientCert :: Bool,
+    addCORSHeaders :: Bool,
     tlsSetupTimeout :: Int,
     transportTimeout :: Int
   }
@@ -91,6 +93,7 @@ mkTransportServerConfig logTLSErrors serverALPN askClientCert =
     { logTLSErrors,
       serverALPN,
       askClientCert,
+      addCORSHeaders = False,
       tlsSetupTimeout = 60000000,
       transportTimeout = 40000000
     }
@@ -274,9 +277,10 @@ paramsAskClientCert clientCert params =
     { T.serverWantClientCert = True,
       T.serverHooks =
         (T.serverHooks params)
-          { T.onClientCertificate = \cc -> validateClientCertificate cc >>= \case
-              Just reason -> T.CertificateUsageReject reason <$ atomically (tryPutTMVar clientCert Nothing)
-              Nothing -> T.CertificateUsageAccept <$ atomically (tryPutTMVar clientCert $ Just cc)
+          { T.onClientCertificate = \cc ->
+              validateClientCertificate cc >>= \case
+                Just reason -> T.CertificateUsageReject reason <$ atomically (tryPutTMVar clientCert Nothing)
+                Nothing -> T.CertificateUsageAccept <$ atomically (tryPutTMVar clientCert $ Just cc)
           }
     }
 

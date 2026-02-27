@@ -2,7 +2,17 @@
 
 This file provides guidance on coding style and approaches and on building the code.
 
-## Code Style and Formatting
+## Code Security
+
+When designing code and planning implementations:
+- Apply adversarial thinking, and consider what may happen if one of the communicating parties is malicious.
+- Formulate an explicit threat model for each change - who can do which undesirable things and under which circumstances.
+
+## Code Quality Standards
+
+Haskell client and server code serves as system specification, not just implementation — we use type-driven design to reflect the business domain in types. Quality, conciseness, and clarity of Haskell code are critical.
+
+## Code Style, Formatting and Approaches
 
 The project uses **fourmolu** for Haskell code formatting. Configuration is in `fourmolu.yaml`.
 
@@ -40,6 +50,11 @@ Some files that use CPP language extension cannot be formatted as a whole, so in
 - Avoid unnecessary changes and code movements
 - Never do refactoring unless it substantially reduces cost of solving the current problem, including the cost of refactoring
 - Aim to minimize the code changes - do what is minimally required to solve users' problems
+
+**Document and code structure:**
+- **Never move existing code or sections around** - add new content at appropriate locations without reorganizing existing structure.
+- When adding new sections to documents, continue the existing numbering scheme.
+- Minimize diff size - prefer small, targeted changes over reorganization.
 
 **Code analysis and review:**
 - Trace data flows end-to-end: from origin, through storage/parameters, to consumption. Flag values that are discarded and reconstructed from partial data (e.g. extracted from a URI missing original fields) — this is usually a bug.

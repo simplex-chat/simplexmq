@@ -40,11 +40,11 @@ import Simplex.Messaging.Client
     NetworkRequestMode (..),
     ProtocolClientError (..),
     TransportSession,
-    netTimeoutInt,
     chooseTransportHost,
-    defaultNetworkConfig,
-    transportClientConfig,
     clientSocksCredentials,
+    defaultNetworkConfig,
+    netTimeoutInt,
+    transportClientConfig,
     unexpectedResponse,
     useWebPort,
   )
@@ -54,13 +54,13 @@ import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( BasicAuth,
+    NetworkError (..),
     Protocol (..),
     ProtocolServer (..),
     RecipientId,
     SenderId,
-    pattern NoEntity,
-    NetworkError (..),
     toNetworkError,
+    pattern NoEntity,
   )
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost)
@@ -126,8 +126,9 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
       thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
-    Just alpn | alpn == xftpALPNv1 || alpn == httpALPN11 ->
-      xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
+    Just alpn
+      | alpn == xftpALPNv1 || alpn == httpALPN11 ->
+          xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
     _ -> pure thParams0
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}
@@ -212,7 +213,7 @@ sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = d
   HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req (Just reqTimeout)
   when (B.length bodyHead /= xftpBlockSize) $ throwE $ PCEResponseError BLOCK
   -- TODO validate that the file ID is the same as in the request?
-  (_, _fId, respOrErr) <-liftEither $ first PCEResponseError $ xftpDecodeTClient thParams bodyHead
+  (_, _fId, respOrErr) <- liftEither $ first PCEResponseError $ xftpDecodeTClient thParams bodyHead
   case respOrErr of
     Right r -> case protocolError r of
       Just e -> throwE $ PCEProtocolError e

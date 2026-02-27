@@ -19,6 +19,7 @@ module Simplex.FileTransfer.Transport
     -- xftpClientHandshake,
     XFTPServerHandshake (..),
     -- xftpServerHandshake,
+    XFTPClientHello (..),
     THandleXFTP,
     THandleParamsXFTP,
     VersionXFTP,
@@ -35,6 +36,7 @@ module Simplex.FileTransfer.Transport
   )
 where
 
+import Control.Applicative (optional)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -60,7 +62,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey, ServiceCredentials, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, tshow)
+import Simplex.Messaging.Util (bshow, tshow, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO (Handle, IOMode (..), withFile)
@@ -111,11 +113,18 @@ alpnSupportedXFTPhandshakes = [xftpALPNv1]
 xftpALPNv1 :: ALPN
 xftpALPNv1 = "xftp/1"
 
+data XFTPClientHello = XFTPClientHello
+  { -- | a random string sent by the client to the server to prove that server has identity certificate
+    webChallenge :: Maybe ByteString
+  }
+
 data XFTPServerHandshake = XFTPServerHandshake
   { xftpVersionRange :: VersionRangeXFTP,
     sessionId :: SessionId,
     -- | pub key to agree shared secrets for command authorization and entity ID encryption.
-    authPubKey :: CertChainPubKey
+    authPubKey :: CertChainPubKey,
+    -- | signed identity challenge from  XFTPClientHello
+    webIdentityProof :: Maybe C.ASignature
   }
 
 data XFTPClientHandshake = XFTPClientHandshake
@@ -124,6 +133,14 @@ data XFTPClientHandshake = XFTPClientHandshake
     -- | server identity - CA certificate fingerprint
     keyHash :: C.KeyHash
   }
+
+instance Encoding XFTPClientHello where
+  smpEncode XFTPClientHello {webChallenge} = smpEncode webChallenge
+  smpP = do
+    webChallenge <- smpP
+    forM_ webChallenge $ \challenge -> unless (B.length challenge == 32) $ fail "bad XFTPClientHello webChallenge"
+    Tail _compat <- smpP
+    pure XFTPClientHello {webChallenge}
 
 instance Encoding XFTPClientHandshake where
   smpEncode XFTPClientHandshake {xftpVersion, keyHash} =
@@ -134,13 +151,13 @@ instance Encoding XFTPClientHandshake where
     pure XFTPClientHandshake {xftpVersion, keyHash}
 
 instance Encoding XFTPServerHandshake where
-  smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey} =
-    smpEncode (xftpVersionRange, sessionId, authPubKey)
+  smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof} =
+    smpEncode (xftpVersionRange, sessionId, authPubKey, C.signatureBytes webIdentityProof)
   smpP = do
-    (xftpVersionRange, sessionId) <- smpP
-    authPubKey <- smpP
+    (xftpVersionRange, sessionId, authPubKey) <- smpP
+    webIdentityProof <- optional $ C.decodeSignature <$?> smpP
     Tail _compat <- smpP
-    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey}
+    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof}
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go

@@ -40,6 +40,7 @@ import GHC.IO.Handle (hSetNewlineMode)
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import qualified Network.HTTP.Types as N
+import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import Simplex.FileTransfer.Protocol
@@ -63,12 +64,12 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
-import Simplex.Messaging.Transport.HTTP2.Server
-import Simplex.Messaging.Transport.Server (runLocalTCPServer)
+import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), runLocalTCPServer)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
@@ -89,8 +90,23 @@ data XFTPTransportRequest = XFTPTransportRequest
   { thParams :: THandleParamsXFTP 'TServer,
     reqBody :: HTTP2Body,
     request :: H.Request,
-    sendResponse :: H.Response -> IO ()
+    sendResponse :: H.Response -> IO (),
+    sniUsed :: SNICredentialUsed,
+    addCORS :: Bool
   }
+
+corsHeaders :: Bool -> [N.Header]
+corsHeaders addCORS
+  | addCORS = [("Access-Control-Allow-Origin", "*"), ("Access-Control-Expose-Headers", "*")]
+  | otherwise = []
+
+corsPreflightHeaders :: [N.Header]
+corsPreflightHeaders =
+  [ ("Access-Control-Allow-Origin", "*"),
+    ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+    ("Access-Control-Allow-Headers", "*"),
+    ("Access-Control-Max-Age", "86400")
+  ]
 
 runXFTPServer :: XFTPServerConfig -> IO ()
 runXFTPServer cfg = do
@@ -120,45 +136,73 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     runServer :: M ()
     runServer = do
       srvCreds@(chain, pk) <- asks tlsServerCreds
+      httpCreds_ <- asks httpServerCreds
       signKey <- liftIO $ case C.x509ToPrivate' pk of
         Right pk' -> pure pk'
         Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
       env <- ask
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize defaultSupportedParams srvCreds transportConfig inactiveClientExpiration cleanup $ \sessionId sessionALPN r sendResponse -> do
-        reqBody <- getHTTP2Body r xftpBlockSize
-        let v = VersionXFTP 1
-            thServerVRange = versionToRange v
-            thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
-            req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse}
-        flip runReaderT env $ case sessionALPN of
-          Nothing -> processRequest req0
-          Just alpn | alpn == xftpALPNv1 || alpn == httpALPN11 ->
-            xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
-              Nothing -> pure () -- handshake response sent
-              Just thParams -> processRequest req0 {thParams} -- proceed with new version (XXX: may as well switch the request handler here)
-          _ -> liftIO . sendResponse $ H.responseNoBody N.ok200 [] -- shouldn't happen: means server picked handshake protocol it doesn't know about
+          srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
+        let addCORS' = sniUsed && addCORSHeaders transportConfig
+        if addCORS' && H.requestMethod r == Just "OPTIONS"
+          then sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
+          else do
+            reqBody <- getHTTP2Body r xftpBlockSize
+            let v = VersionXFTP 1
+                thServerVRange = versionToRange v
+                thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
+                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, sniUsed, addCORS = addCORS'}
+            flip runReaderT env $ case sessionALPN of
+              Nothing -> processRequest req0
+              Just alpn
+                | alpn == xftpALPNv1 || alpn == httpALPN11 || (sniUsed && alpn == "h2") ->
+                    xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
+                      Nothing -> pure ()
+                      Just thParams -> processRequest req0 {thParams}
+                | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M (Maybe (THandleParams XFTPVersion 'TServer))
-    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, reqBody = HTTP2Body {bodyHead}, sendResponse} = do
+    xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, request, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
       s <- atomically $ TM.lookup sessionId sessions
       r <- runExceptT $ case s of
-        Nothing -> processHello
-        Just (HandshakeSent pk) -> processClientHandshake pk
-        Just (HandshakeAccepted thParams) -> pure $ Just thParams
+        Nothing
+          | sniUsed && not webHello -> throwE SESSION
+          | otherwise -> processHello Nothing
+        Just (HandshakeSent pk)
+          | webHello -> processHello (Just pk)
+          | otherwise -> processClientHandshake pk
+        Just (HandshakeAccepted thParams)
+          | webHello -> processHello (serverPrivKey <$> thAuth thParams)
+          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth)
+          | otherwise -> pure $ Just thParams
       either sendError pure r
       where
-        processHello = do
-          unless (B.null bodyHead) $ throwE HANDSHAKE
-          (k, pk) <- atomically . C.generateKeyPair =<< asks random
-          atomically $ TM.insert sessionId (HandshakeSent pk) sessions
+        webHello = sniUsed && any (\(t, _) -> tokenKey t == "xftp-web-hello") (fst $ H.requestHeaders request)
+        webHandshake = sniUsed && any (\(t, _) -> tokenKey t == "xftp-handshake") (fst $ H.requestHeaders request)
+        processHello pk_ = do
+          challenge_ <-
+            if
+              | B.null bodyHead -> pure Nothing
+              | sniUsed -> do
+                  body <- liftHS $ C.unPad bodyHead
+                  XFTPClientHello {webChallenge} <- liftHS $ first show (smpDecode body)
+                  pure webChallenge
+              | otherwise -> throwE HANDSHAKE
+          rng <- asks random
+          k <- atomically $ TM.lookup sessionId sessions >>= \case
+            Just (HandshakeSent pk') -> pure $ C.publicKey pk'
+            _ -> do
+              kp <- maybe (C.generateKeyPair rng) (\p -> pure (C.publicKey p, p)) pk_
+              fst kp <$ TM.insert sessionId (HandshakeSent $ snd kp) sessions
           let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
-          let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey}
+              webIdentityProof = C.sign serverSignKey . (<> sessionId) <$> challenge_
+          let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey, webIdentityProof}
           shs <- encodeXftp hs
 #ifdef slow_servers
           lift randomDelay
 #endif
-          liftIO . sendResponse $ H.responseBuilder N.ok200 [] shs
+          liftIO . sendResponse $ H.responseBuilder N.ok200 (corsHeaders addCORS) shs
           pure Nothing
         processClientHandshake pk = do
           unless (B.length bodyHead == xftpBlockSize) $ throwE HANDSHAKE
@@ -174,13 +218,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 #ifdef slow_servers
               lift randomDelay
 #endif
-              liftIO . sendResponse $ H.responseNoBody N.ok200 []
+              liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS)
               pure Nothing
             Nothing -> throwE HANDSHAKE
         sendError :: XFTPErrorType -> M (Maybe (THandleParams XFTPVersion 'TServer))
         sendError err = do
           runExceptT (encodeXftp err) >>= \case
-            Right bs -> liftIO . sendResponse $ H.responseBuilder N.ok200 [] bs
+            Right bs -> liftIO . sendResponse $ H.responseBuilder N.ok200 (corsHeaders addCORS) bs
             Left _ -> logError $ "Error encoding handshake error: " <> tshow err
           pure Nothing
         encodeXftp :: Encoding a => a -> ExceptT XFTPErrorType (ReaderT XFTPEnv IO) Builder
@@ -346,7 +390,7 @@ data ServerFile = ServerFile
   }
 
 processRequest :: XFTPTransportRequest -> M ()
-processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse}
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
   | otherwise =
       case xftpDecodeTServer thParams bodyHead of
@@ -365,7 +409,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
 #ifdef slow_servers
       randomDelay
 #endif
-      liftIO $ sendResponse $ H.responseStreaming N.ok200 [] $ streamBody t_
+      liftIO $ sendResponse $ H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody t_
       where
         streamBody t_ send done = do
           case t_ of
