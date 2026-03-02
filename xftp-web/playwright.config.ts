@@ -8,10 +8,12 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
     launchOptions: {
       // --ignore-certificate-errors makes fetch() accept self-signed certs
+      // --disable-dev-shm-usage avoids crashes in Docker (default /dev/shm is 64MB)
       args: [
         '--ignore-certificate-errors',
         '--ignore-certificate-errors-spki-list',
         '--allow-insecure-localhost',
+        '--disable-dev-shm-usage',
       ]
     }
   },
