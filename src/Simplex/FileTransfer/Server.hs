@@ -46,7 +46,7 @@ import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Server.Control
+import Simplex.FileTransfer.Server.Control (ControlProtocol (..))
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Prometheus
 import Simplex.FileTransfer.Server.Stats
@@ -59,7 +59,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
 import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
-import Simplex.Messaging.Server.Control (CPClientRole (..), ControlProtocol (..))
+import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.Stats
