@@ -1,7 +1,11 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Compression where
+module Simplex.Messaging.Compression
+  ( Compressed,
+    maxLengthPassthrough,
+    compressionLevel,
+  ) where
 
 import qualified Codec.Compression.Zstd as Z1
 import Data.ByteString (ByteString)

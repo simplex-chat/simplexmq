@@ -16,7 +16,41 @@
 {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -fno-warn-orphans -fno-warn-ambiguous-fields #-}
 
-module Simplex.Messaging.Notifications.Server.Store.Postgres where
+module Simplex.Messaging.Notifications.Server.Store.Postgres
+  ( NtfPostgresStore (..),
+    NtfEntityRec (..),
+    mkNtfTknRec,
+    newNtfDbStore,
+    closeNtfDbStore,
+    addNtfToken,
+    replaceNtfToken,
+    getNtfToken,
+    findNtfTokenRegistration,
+    deleteNtfToken,
+    updateTknCronInterval,
+    getUsedSMPServers,
+    getServerNtfSubscriptions,
+    findNtfSubscription,
+    getNtfSubscription,
+    mkNtfSubRec,
+    updateTknStatus,
+    setTknStatusConfirmed,
+    setTokenActive,
+    withPeriodicNtfTokens,
+    updateTokenCronSentAt,
+    addNtfSubscription,
+    deleteNtfSubscription,
+    updateSubStatus,
+    updateSrvSubStatus,
+    batchUpdateSrvSubStatus,
+    batchUpdateSrvSubErrors,
+    removeServiceAssociation,
+    addTokenLastNtf,
+    getEntityCounts,
+    importNtfSTMStore,
+    exportNtfDbStore,
+    withDB',
+  ) where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E

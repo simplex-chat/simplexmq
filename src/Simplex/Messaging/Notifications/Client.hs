@@ -4,7 +4,25 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Notifications.Client where
+module Simplex.Messaging.Notifications.Client
+  ( NtfClient,
+    NtfClientError,
+    defaultNTFClientConfig,
+    ntfRegisterToken,
+    ntfVerifyToken,
+    ntfCheckToken,
+    ntfReplaceToken,
+    ntfDeleteToken,
+    ntfSetCronInterval,
+    ntfCreateSubscription,
+    ntfCreateSubscriptions,
+    ntfCheckSubscription,
+    ntfCheckSubscriptions,
+    ntfDeleteSubscription,
+    sendNtfCommand,
+    okNtfCommand,
+  )
+where
 
 import Control.Monad.Except
 import Control.Monad.Trans.Except

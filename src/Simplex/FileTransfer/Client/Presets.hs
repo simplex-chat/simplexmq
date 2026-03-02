@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.FileTransfer.Client.Presets where
+module Simplex.FileTransfer.Client.Presets
+  ( defaultXFTPServers,
+  ) where
 
 import Data.List.NonEmpty (NonEmpty)
 import Simplex.Messaging.Protocol (XFTPServerWithAuth)

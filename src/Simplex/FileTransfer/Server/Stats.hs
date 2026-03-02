@@ -2,7 +2,13 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.FileTransfer.Server.Stats where
+module Simplex.FileTransfer.Server.Stats
+  ( FileServerStats (..),
+    FileServerStatsData (..),
+    newFileServerStats,
+    getFileServerStatsData,
+    setFileServerStats,
+  ) where
 
 import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A

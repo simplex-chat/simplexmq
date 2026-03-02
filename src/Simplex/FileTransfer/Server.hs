@@ -13,7 +13,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Simplex.FileTransfer.Server where
+module Simplex.FileTransfer.Server
+  ( runXFTPServer,
+    runXFTPServerBlocking,
+  ) where
 
 import Control.Logger.Simple
 import Control.Monad
@@ -44,7 +47,7 @@ import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Server as H
 import Network.Socket
 import Simplex.FileTransfer.Protocol
-import Simplex.FileTransfer.Server.Control
+import Simplex.FileTransfer.Server.Control (ControlProtocol (..))
 import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Prometheus
 import Simplex.FileTransfer.Server.Stats
@@ -374,6 +377,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
+              _ -> hPutStrLn h "unsupported command"
               where
                 withUserRole action =
                   readTVarIO role >>= \case

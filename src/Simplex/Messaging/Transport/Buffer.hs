@@ -2,7 +2,15 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Transport.Buffer where
+module Simplex.Messaging.Transport.Buffer
+  ( TBuffer (..),
+    newTBuffer,
+    peekBuffered,
+    getBuffered,
+    withTimedErr,
+    getLnBuffered,
+    trimCR,
+  ) where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E

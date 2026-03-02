@@ -7,7 +7,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
 
-module Simplex.FileTransfer.Server.Env where
+module Simplex.FileTransfer.Server.Env
+  ( XFTPServerConfig (..),
+    XFTPEnv (..),
+    XFTPRequest (..),
+    defaultInactiveClientExpiration,
+    defFileExpirationHours,
+    defaultFileExpiration,
+    newXFTPServerEnv,
+    countUsedStorage,
+  ) where
 
 import Control.Logger.Simple
 import Control.Monad

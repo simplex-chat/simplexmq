@@ -15,7 +15,29 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module Simplex.Messaging.Server.Main where
+module Simplex.Messaging.Server.Main
+  ( EmbeddedWebParams (..),
+    WebHttpsParams (..),
+    CliCommand (..),
+    StoreCmd (..),
+    DatabaseTable (..),
+    smpServerCLI,
+    smpServerCLI_,
+#if defined(dbServerPostgres)
+    importStoreLogToDatabase,
+    importMessagesToDatabase,
+    exportDatabaseToStoreLog,
+#endif
+    newJournalMsgStore,
+    storeMsgsJournalDir',
+    getServerSourceCode,
+    simplexmqSource,
+    serverPublicInfo,
+    validCountryValue,
+    printSourceCode,
+    cliCommandP,
+    strParse,
+  ) where
 
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, try)

@@ -6,7 +6,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Simplex.FileTransfer.Server.Main where
+module Simplex.FileTransfer.Server.Main
+  ( xftpServerCLI,
+  ) where
 
 import Data.Either (fromRight)
 import Data.Functor (($>))

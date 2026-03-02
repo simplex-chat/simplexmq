@@ -4,7 +4,14 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-unrecognised-pragmas #-}
 
-module Simplex.Messaging.Notifications.Server.Prometheus where
+module Simplex.Messaging.Notifications.Server.Prometheus
+  ( NtfServerMetrics (..),
+    NtfRealTimeMetrics (..),
+    NtfSMPWorkerMetrics (..),
+    NtfSMPSubMetrics (..),
+    rtsOptionsEnv,
+    ntfPrometheusMetrics,
+  ) where
 
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M

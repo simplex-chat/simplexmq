@@ -6,7 +6,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.SystemTime where
+module Simplex.Messaging.SystemTime
+  ( RoundedSystemTime (..),
+    SystemDate,
+    SystemSeconds,
+    getRoundedSystemTime,
+    getSystemDate,
+    getSystemSeconds,
+    roundedToUTCTime,
+  ) where
 
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Int (Int64)

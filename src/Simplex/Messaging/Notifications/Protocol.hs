@@ -9,7 +9,36 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Simplex.Messaging.Notifications.Protocol where
+module Simplex.Messaging.Notifications.Protocol
+  ( NtfEntity (..),
+    SNtfEntity (..),
+    NtfEntityI (..),
+    NtfCommandTag (..),
+    NtfCmdTag (..),
+    NtfRegCode (..),
+    NewNtfEntity (..),
+    ANewNtfEntity (..),
+    NtfCommand (..),
+    NtfCmd (..),
+    NtfResponseTag (..),
+    NtfResponse (..),
+    SMPQueueNtf (..),
+    PushProvider (..),
+    DeviceToken (..),
+    PNMessageData (..),
+    NtfEntityId,
+    NtfSubscriptionId,
+    NtfTokenId,
+    NtfSubStatus (..),
+    NtfTknStatus (..),
+    NTInvalidReason (..),
+    encodePNMessages,
+    pnMessagesP,
+    ntfShouldSubscribe,
+    allowTokenVerification,
+    allowNtfSubCommands,
+    checkEntity,
+  ) where
 
 import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.=))

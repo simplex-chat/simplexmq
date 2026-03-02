@@ -2,7 +2,12 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Transport.Shared where
+module Simplex.Messaging.Transport.Shared
+  ( ChainCertificates (..),
+    chainIdCaCerts,
+    x509validate,
+    takePeerCertChain,
+  ) where
 
 import Control.Concurrent.STM
 import qualified Control.Exception as E

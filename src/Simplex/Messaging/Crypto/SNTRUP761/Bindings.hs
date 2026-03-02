@@ -1,7 +1,16 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Crypto.SNTRUP761.Bindings where
+module Simplex.Messaging.Crypto.SNTRUP761.Bindings
+  ( KEMPublicKey (..),
+    KEMSecretKey,
+    KEMCiphertext (..),
+    KEMSharedKey (..),
+    KEMKeyPair,
+    sntrup761Keypair,
+    sntrup761Enc,
+    sntrup761Dec,
+  ) where
 
 import Control.Concurrent.STM
 import Crypto.Random (ChaChaDRG)

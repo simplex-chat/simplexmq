@@ -2,7 +2,12 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.Messaging.Session where
+module Simplex.Messaging.Session
+  ( SessionVar (..),
+    getSessVar,
+    removeSessVar,
+    tryReadSessVar,
+  ) where
 
 import Control.Concurrent.STM
 import Data.Time (UTCTime)

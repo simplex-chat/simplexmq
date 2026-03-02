@@ -3,7 +3,14 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.NtfStore where
+module Simplex.Messaging.Server.NtfStore
+  ( NtfStore (..),
+    MsgNtf (..),
+    NtfLogRecord (..),
+    storeNtf,
+    deleteNtfs,
+    deleteExpiredNtfs,
+  ) where
 
 import Control.Concurrent.STM
 import Control.Monad (foldM)

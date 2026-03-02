@@ -1,4 +1,6 @@
-module Simplex.Messaging.Agent.Store.Postgres.Options where
+module Simplex.Messaging.Agent.Store.Postgres.Options
+  ( DBOpts (..),
+  ) where
 
 import Data.ByteString (ByteString)
 import Numeric.Natural

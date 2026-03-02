@@ -1,6 +1,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Simplex.Messaging.Server.Expiration where
+module Simplex.Messaging.Server.Expiration
+  ( ExpirationConfig (..),
+    expireBeforeEpoch,
+    showTTL,
+  ) where
 
 import Control.Monad.IO.Class
 import Data.Int (Int64)
