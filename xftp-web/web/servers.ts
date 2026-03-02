@@ -8,5 +8,6 @@ declare const __XFTP_SERVERS__: string[]
 const serverAddresses: string[] = __XFTP_SERVERS__
 
 export function getServers(): XFTPServer[] {
-  return serverAddresses.map(parseXFTPServer)
+  const addrs = (window as any).__XFTP_SERVERS__ ?? serverAddresses
+  return addrs.map(parseXFTPServer)
 }
