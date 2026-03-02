@@ -12,7 +12,7 @@ import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Int (Int64)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
@@ -21,7 +21,7 @@ import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Transport (supportedFileServerVRange, alpnSupportedXFTPhandshakes)
+import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
@@ -29,7 +29,7 @@ import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -124,6 +124,10 @@ xftpServerCLI cfgPath logPath = do
                \disconnect: off\n"
             <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+            <> "\n\
+               \[WEB]\n\
+               \# cert: /etc/opt/simplex-xftp/web.crt\n\
+               \# key: /etc/opt/simplex-xftp/web.key\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -154,6 +158,17 @@ xftpServerCLI cfgPath logPath = do
                 then maybe "allowed." (const "requires password.") newFileBasicAuth
                 else "NOT allowed."
           putStrLn $ "Listening on port " <> xftpPort <> "..."
+
+        httpCredentials_ =
+          eitherToMaybe $ do
+            cert <- T.unpack <$> lookupValue "WEB" "cert" ini
+            key <- T.unpack <$> lookupValue "WEB" "key" ini
+            pure
+              ServerCredentials
+                { caCertificateFile = Nothing,
+                  certificateFile = cert,
+                  privateKeyFile = key
+                }
 
         serverConfig =
           XFTPServerConfig
@@ -186,6 +201,7 @@ xftpServerCLI cfgPath logPath = do
                     privateKeyFile = c serverKeyFile,
                     certificateFile = c serverCrtFile
                   },
+              httpCredentials = httpCredentials_,
               xftpServerVRange = supportedFileServerVRange,
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
@@ -194,10 +210,12 @@ xftpServerCLI cfgPath logPath = do
               prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
               prometheusMetricsFile = combine logPath "xftp-server-metrics.txt",
               transportConfig =
-                mkTransportServerConfig
-                  (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just $ alpnSupportedXFTPhandshakes <> httpALPN)
-                  False,
+                let cfg =
+                      mkTransportServerConfig
+                        (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
+                        (Just $ alpnSupportedXFTPhandshakes <> httpALPN)
+                        False
+                 in cfg {addCORSHeaders = isJust httpCredentials_},
               responseDelay = 0
             }
 
@@ -229,11 +247,14 @@ cliCommandP cfgPath logPath iniFile =
     initP :: Parser InitOptions
     initP = do
       enableStoreLog <-
-        flag' False
+        flag'
+          False
           ( long "disable-store-log"
               <> help "Disable store log for persistence (enabled by default)"
           )
-          <|> flag True True
+          <|> flag
+            True
+            True
             ( long "store-log"
                 <> short 'l'
                 <> help "Enable store log for persistence (DEPRECATED, enabled by default)"

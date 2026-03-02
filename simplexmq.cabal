@@ -347,6 +347,7 @@ library
       , process ==1.6.*
       , temporary ==1.3.*
       , websockets ==0.12.*
+      , zlib >=0.6 && <0.8
   if flag(client_postgres) || flag(server_postgres)
     build-depends:
         postgresql-libpq >=0.10.0.0
@@ -497,6 +498,7 @@ test-suite simplexmq-test
       XFTPCLI
       XFTPClient
       XFTPServerTests
+      XFTPWebTests
       Static
       Static.Embedded
       Paths_simplexmq
@@ -526,6 +528,7 @@ test-suite simplexmq-test
     , async
     , base64-bytestring
     , bytestring
+    , case-insensitive ==1.2.*
     , containers
     , crypton
     , crypton-x509

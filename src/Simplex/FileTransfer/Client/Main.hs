@@ -16,6 +16,9 @@ module Simplex.FileTransfer.Client.Main
     xftpClientCLI,
     cliSendFile,
     cliSendFileOpts,
+    encodeWebURI,
+    decodeWebURI,
+    fileWebLink,
     singleChunkSize,
     prepareChunkSizes,
     prepareChunkSpecs,
@@ -23,6 +26,7 @@ module Simplex.FileTransfer.Client.Main
   )
 where
 
+import qualified Codec.Compression.Zlib.Raw as Z
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -30,17 +34,19 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Char (toLower)
 import Data.Either (partitionEithers)
 import Data.Int (Int64)
-import Data.List (foldl', sortOn)
+import Data.List (foldl', isPrefixOf, sortOn)
 import Data.List.NonEmpty (NonEmpty (..), nonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import GHC.Records (HasField (getField))
@@ -62,7 +68,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
@@ -242,7 +248,8 @@ cliSendFile opts = cliSendFileOpts opts True $ printProgress "Uploaded"
 
 cliSendFileOpts :: SendOptions -> Bool -> (Int64 -> Int64 -> IO ()) -> ExceptT CLIError IO ()
 cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, retryCount, tempPath, verbose} printInfo notifyProgress = do
-  let (_, fileName) = splitFileName filePath
+  let (_, fileNameStr) = splitFileName filePath
+      fileName = T.pack fileNameStr
   liftIO $ when printInfo $ printNoNewLine "Encrypting file..."
   g <- liftIO C.newRandom
   (encPath, fdRcv, fdSnd, chunkSpecs, encSize) <- encryptFileForUpload g fileName
@@ -254,14 +261,18 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
   liftIO $ do
     let fdRcvs = createRcvFileDescriptions fdRcv sentChunks
         fdSnd' = createSndFileDescription fdSnd sentChunks
-    (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileName fdRcvs fdSnd'
+    (fdRcvPaths, fdSndPath) <- writeFileDescriptions fileNameStr fdRcvs fdSnd'
     when printInfo $ do
       printNoNewLine "File uploaded!"
       putStrLn $ "\nSender file description: " <> fdSndPath
       putStrLn "Pass file descriptions to the recipient(s):"
     forM_ fdRcvPaths putStrLn
+    when printInfo $ case fdRcvs of
+      rcvFd : _ -> forM_ (fileWebLink rcvFd) $ \(host, fragment) ->
+        putStrLn $ "\nWeb link:\nhttps://" <> B.unpack host <> "/#" <> B.unpack fragment
+      _ -> pure ()
   where
-    encryptFileForUpload :: TVar ChaChaDRG -> String -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
+    encryptFileForUpload :: TVar ChaChaDRG -> Text -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
     encryptFileForUpload g fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwE $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
@@ -387,10 +398,16 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
 
 cliReceiveFile :: ReceiveOptions -> ExceptT CLIError IO ()
 cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, verbose, yes} =
-  getFileDescription' fileDescription >>= receive
+  getInputFileDescription >>= receive 1
   where
-    receive :: ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
-    receive (ValidFileDescription FileDescription {size, digest, key, nonce, chunks}) = do
+    getInputFileDescription
+      | "http://" `isPrefixOf` fileDescription || "https://" `isPrefixOf` fileDescription = do
+          let fragment = B.pack $ drop 1 $ dropWhile (/= '#') fileDescription
+          when (B.null fragment) $ throwE $ CLIError "Invalid URL: no fragment"
+          either (throwE . CLIError . ("Invalid web link: " <>)) pure $ decodeWebURI fragment
+      | otherwise = getFileDescription' fileDescription
+    receive :: Int -> ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
+    receive depth (ValidFileDescription FileDescription {size, digest, key, nonce, chunks, redirect}) = do
       encPath <- getEncPath tempPath "xftp"
       createDirectory encPath
       a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
@@ -408,13 +425,26 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       when (encDigest /= unFileDigest digest) $ throwE $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwE $ CLIError "File size mismatch"
-      liftIO $ printNoNewLine "Decrypting file..."
-      CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
-      forM_ chunks $ acknowledgeFileChunk a
-      whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
-      liftIO $ do
-        printNoNewLine $ "File downloaded: " <> path
-        removeFD yes fileDescription
+      case redirect of
+        Just _
+          | depth > 0 -> do
+              CryptoFile tmpFile _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ \_ ->
+                fmap CF.plain $ uniqueCombine encPath "redirect.yaml"
+              forM_ chunks $ acknowledgeFileChunk a
+              yaml <- liftIO $ B.readFile tmpFile
+              whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
+              innerVfd <- either (throwE . CLIError . ("Redirect: invalid file description: " <>)) pure $ strDecode yaml
+              receive 0 innerVfd
+          | otherwise -> throwE $ CLIError "Redirect chain too long"
+        Nothing -> do
+          liftIO $ printNoNewLine "Decrypting file..."
+          CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
+          forM_ chunks $ acknowledgeFileChunk a
+          whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
+          liftIO $ do
+            printNoNewLine $ "File downloaded: " <> path
+            unless ("http://" `isPrefixOf` fileDescription || "https://" `isPrefixOf` fileDescription) $
+              removeFD yes fileDescription
     downloadFileChunk :: TVar ChaChaDRG -> XFTPClientAgent -> FilePath -> FileSize Int64 -> TVar [Int64] -> FileChunk -> ExceptT CLIError IO (Int, FilePath)
     downloadFileChunk g a encPath (FileSize encSize) downloadedChunks FileChunk {chunkNo, chunkSize, digest, replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
@@ -430,13 +460,14 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
         when verbose $ putStrLn ""
       pure (chunkNo, chunkPath)
     downloadFileChunk _ _ _ _ _ _ = throwE $ CLIError "chunk has no replicas"
-    getFilePath :: String -> ExceptT String IO FilePath
-    getFilePath name =
-      case filePath of
-        Just path ->
-          ifM (doesDirectoryExist path) (uniqueCombine path name) $
-            ifM (doesFileExist path) (throwE "File already exists") (pure path)
-        _ -> (`uniqueCombine` name) . (</> "Downloads") =<< getHomeDirectory
+    getFilePath :: Text -> ExceptT String IO FilePath
+    getFilePath name = case filePath of
+      Just path ->
+        ifM (doesDirectoryExist path) (uniqueCombine path name') $
+          ifM (doesFileExist path) (throwE "File already exists") (pure path)
+      _ -> (`uniqueCombine` name') . (</> "Downloads") =<< getHomeDirectory
+      where
+        name' = T.unpack name
     acknowledgeFileChunk :: XFTPClientAgent -> FileChunk -> ExceptT CLIError IO ()
     acknowledgeFileChunk a FileChunk {replicas = replica : _} = do
       let FileChunkReplica {server, replicaId, replicaKey} = replica
@@ -552,3 +583,24 @@ cliRandomFile RandomFileOptions {filePath, fileSize = FileSize size} = do
       B.hPut h bytes
       when (sz > mb') $ saveRandomFile h (sz - mb')
     mb' = mb 1
+
+-- | Encode file description as web-compatible URI fragment.
+-- Result is base64url(deflateRaw(YAML)), no leading '#'.
+encodeWebURI :: FileDescription 'FRecipient -> B.ByteString
+encodeWebURI fd = U.encode $ LB.toStrict $ Z.compress $ LB.fromStrict $ strEncode fd
+
+-- | Decode web URI fragment to validated file description.
+-- Input is base64url-encoded DEFLATE-compressed YAML, no leading '#'.
+decodeWebURI :: B.ByteString -> Either String (ValidFileDescription 'FRecipient)
+decodeWebURI fragment = do
+  compressed <- U.decode fragment
+  let yaml = LB.toStrict $ Z.decompress $ LB.fromStrict compressed
+  strDecode yaml >>= validateFileDescription
+
+-- | Extract web link host and URI fragment from a file description.
+-- Returns (hostname, uriFragment) for https://hostname/#uriFragment.
+fileWebLink :: FileDescription 'FRecipient -> Maybe (B.ByteString, B.ByteString)
+fileWebLink fd@FileDescription {chunks} = case chunks of
+  (FileChunk {replicas = FileChunkReplica {server = ProtocolServer {host}} : _} : _) ->
+    Just (strEncode (L.head host), encodeWebURI fd)
+  _ -> Nothing
