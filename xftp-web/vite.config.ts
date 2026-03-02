@@ -49,19 +49,15 @@ function getFingerprint(): string {
     .replace(/\+/g, '-').replace(/\//g, '_')
 }
 
-// Plugin to inject __XFTP_SERVERS__ lazily (reads PORT_FILE written by test/runSetup.ts)
+// Plugin to inject __XFTP_SERVERS__ via Vite define (reads PORT_FILE written by test/runSetup.ts)
 function xftpServersPlugin(): Plugin {
-  let serverAddr: string | null = null
   const fp = getFingerprint()
   return {
     name: 'xftp-servers-define',
-    transform(code, _id) {
-      if (!code.includes('__XFTP_SERVERS__')) return null
-      if (!serverAddr) {
-        const port = readFileSync(PORT_FILE, 'utf-8').trim()
-        serverAddr = `xftp://${fp}@localhost:${port}`
-      }
-      return code.replace(/__XFTP_SERVERS__/g, JSON.stringify([serverAddr]))
+    config() {
+      const port = readFileSync(PORT_FILE, 'utf-8').trim()
+      const serverAddr = `xftp://${fp}@localhost:${port}`
+      return {define: {__XFTP_SERVERS__: JSON.stringify([serverAddr])}}
     }
   }
 }

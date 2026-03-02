@@ -1,7 +1,6 @@
 import sodium from 'libsodium-wrappers-sumo'
 import {initUpload} from './upload.js'
 import {initDownload} from './download.js'
-import {decodeDescriptionURI} from '../src/agent.js'
 import {t} from './i18n.js'
 
 function getAppElement(): HTMLElement | null {
@@ -20,22 +19,24 @@ async function main() {
   if (!app?.hasAttribute('data-no-hashchange')) {
     window.addEventListener('hashchange', () => {
       const hash = window.location.hash.slice(1)
-      if (!hash || isXFTPHash(hash)) initApp()
+      if (!hash || looksLikeXFTPHash(hash)) initApp()
     })
   }
   await wasmReady
   app?.dispatchEvent(new CustomEvent('xftp:ready', {bubbles: true}))
 }
 
-function isXFTPHash(hash: string): boolean {
-  try { decodeDescriptionURI(hash); return true } catch { return false }
+// XFTP hashes are base64url-encoded DEFLATE data, always long.
+// Matches the index.html inline script heuristic (length > 50).
+function looksLikeXFTPHash(hash: string): boolean {
+  return hash.length > 50 && /^[A-Za-z0-9_=-]+$/.test(hash)
 }
 
 function initApp() {
   const app = getAppElement()!
   const hash = window.location.hash.slice(1)
 
-  if (hash && isXFTPHash(hash)) {
+  if (hash && looksLikeXFTPHash(hash)) {
     initDownload(app, hash)
   } else {
     initUpload(app)

@@ -13,7 +13,8 @@ test.describe('Upload Flow', () => {
     await uploadPage.expectDropZoneVisible()
 
     await uploadPage.selectTextFile('picker-test.txt', 'test content ' + Date.now())
-    await uploadPage.waitForEncrypting()
+    // Small files (< 100KB) skip "Encrypting" and go directly to "Uploading"
+    // await uploadPage.waitForEncrypting()
     await uploadPage.waitForUploading()
 
     const link = await uploadPage.waitForShareLink()
@@ -96,14 +97,20 @@ test.describe('Upload Flow', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test.describe('Download Flow', () => {
-  test('download shows error for malformed hash', async ({downloadPage}) => {
-    await downloadPage.goto('#not-valid-base64!!!')
-    await downloadPage.expectInitialError(/[Ii]nvalid|corrupted/)
-    await downloadPage.expectDownloadButtonNotVisible()
+  test('non-XFTP anchor hash shows upload page', async ({page}) => {
+    await page.goto('http://localhost:4173#hello-world')
+    await expect(page.locator('#drop-zone')).toBeVisible()
   })
 
-  test('download shows error for invalid structure', async ({downloadPage}) => {
-    await downloadPage.goto('#AAAA')
+  test('short non-XFTP hash shows upload page', async ({page}) => {
+    await page.goto('http://localhost:4173#AAAA')
+    await expect(page.locator('#drop-zone')).toBeVisible()
+  })
+
+  test('corrupted XFTP hash shows error', async ({downloadPage}) => {
+    // Long base64url string that looks like XFTP but is not valid DEFLATE data
+    const corrupted = 'A'.repeat(100)
+    await downloadPage.goto('#' + corrupted)
     await downloadPage.expectInitialError(/[Ii]nvalid|corrupted/)
   })
 
