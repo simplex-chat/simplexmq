@@ -548,6 +548,7 @@ test-suite simplexmq-test
     , ini
     , iso8601-time
     , main-tester ==0.2.*
+    , memory
     , mtl
     , network
     , QuickCheck ==2.14.*
@@ -575,8 +576,7 @@ test-suite simplexmq-test
     cpp-options: -DdbPostgres
   else
     build-depends:
-        memory
-      , sqlcipher-simple
+        sqlcipher-simple
   if !flag(client_postgres) || flag(client_postgres) || flag(server_postgres)
     build-depends:
         deepseq ==1.4.*
