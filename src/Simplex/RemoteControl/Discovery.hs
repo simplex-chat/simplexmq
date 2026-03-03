@@ -8,7 +8,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 module Simplex.RemoteControl.Discovery
-  ( getLocalAddress,
+  ( pattern ANY_ADDR_V4,
+    getLocalAddress,
     mkLastLocalHost,
     preferAddress,
     startTLSServer,

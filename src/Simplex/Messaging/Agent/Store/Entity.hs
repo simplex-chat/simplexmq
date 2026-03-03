@@ -10,6 +10,8 @@
 
 module Simplex.Messaging.Agent.Store.Entity
   ( DBStored (..),
+    SDBStored (..),
+    DBStoredI (..),
     DBEntityId,
     DBEntityId' (..),
   )
