@@ -4,7 +4,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Simplex.FileTransfer.Crypto where
+module Simplex.FileTransfer.Crypto
+  ( encryptFile,
+    decryptChunks,
+    readChunks,
+  ) where
 
 import Control.Monad
 import Control.Monad.Except
@@ -16,6 +20,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
+import Data.Text (Text)
 import Simplex.FileTransfer.Types (FileHeader (..), authTagSize)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
@@ -54,7 +59,7 @@ encryptFile srcFile fileHdr key nonce fileSize' encSize encFile = do
           liftIO $ B.hPut w ch'
           encryptChunks_ get w (sb', len - chSize)
 
-decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (String -> ExceptT String IO CryptoFile) -> ExceptT FTCryptoError IO CryptoFile
+decryptChunks :: Int64 -> [FilePath] -> C.SbKey -> C.CbNonce -> (Text -> ExceptT String IO CryptoFile) -> ExceptT FTCryptoError IO CryptoFile
 decryptChunks _ [] _ _ _ = throwE $ FTCEInvalidHeader "empty"
 decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse chPaths of
   [] -> do

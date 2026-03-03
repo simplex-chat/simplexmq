@@ -1,4 +1,6 @@
-module Simplex.Messaging.Version.Internal where
+module Simplex.Messaging.Version.Internal
+  ( Version (..),
+  ) where
 
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Word (Word16)

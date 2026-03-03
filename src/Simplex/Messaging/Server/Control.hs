@@ -1,7 +1,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.Control where
+module Simplex.Messaging.Server.Control
+  ( CPClientRole (..),
+    ControlProtocol (..),
+  ) where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Simplex.Messaging.Encoding.String

@@ -7,7 +7,23 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Notifications.Server.Env where
+module Simplex.Messaging.Notifications.Server.Env
+  ( NtfServerConfig (..),
+    NtfEnv (..),
+    NtfSubscriber (..),
+    SMPSubscriberVar,
+    SMPSubscriber (..),
+    NtfPushServer (..),
+    NtfRequest (..),
+    NtfServerClient (..),
+    defaultInactiveClientExpiration,
+    newNtfServerEnv,
+    newNtfSubscriber,
+    newNtfPushServer,
+    newPushClient,
+    getPushClient,
+    newNtfServerClient,
+  ) where
 
 import Control.Concurrent (ThreadId)
 import Control.Monad.Except

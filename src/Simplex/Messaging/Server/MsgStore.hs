@@ -1,7 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.MsgStore where
+module Simplex.Messaging.Server.MsgStore
+  ( MsgLogRecord (..),
+  ) where
 
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (Message (..), RecipientId)

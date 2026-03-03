@@ -11,7 +11,46 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Server.CLI where
+module Simplex.Messaging.Server.CLI
+  ( SignAlgorithm (..),
+    X509Config (..),
+    CertOptions (..),
+    IniOptions (..),
+    exitError,
+    confirmOrExit,
+    defaultX509Config,
+    getCliCommand',
+    simplexmqVersionCommit,
+    simplexmqCommit,
+    createServerX509,
+    createServerX509_,
+    certOptionsP,
+    dbOptsP,
+    startOptionsP,
+    parseLogLevel,
+    genOnline,
+    warnCAPrivateKeyFile,
+    mkIniOptions,
+    strictIni,
+    readStrictIni,
+    readIniDefault,
+    iniOnOff,
+    strDecodeIni,
+    withPrompt,
+    onOffPrompt,
+    onOff,
+    settingIsOn,
+    checkSavedFingerprint,
+    iniTransports,
+    iniDBOptions,
+    printServerConfig,
+    printServerTransports,
+    printSMPServerConfig,
+    deleteDirIfExists,
+    printServiceInfo,
+    clearDirIfExists,
+    getEnvPath,
+  ) where
 
 import Control.Logger.Simple (LogLevel (..))
 import Control.Monad

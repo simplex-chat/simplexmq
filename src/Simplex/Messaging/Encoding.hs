@@ -24,6 +24,8 @@ import Data.Bits (shiftL, shiftR, (.|.))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (c2w, w2c)
+import Data.Text (Text)
+import Data.Text.Encoding (decodeUtf8', encodeUtf8)
 import Data.Int (Int64)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime (..))
@@ -155,6 +157,12 @@ smpEncodeList xs = B.cons (lenEncode $ length xs) . B.concat $ map smpEncode xs
 
 smpListP :: Encoding a => Parser [a]
 smpListP = (`A.count` smpP) =<< lenP
+
+instance Encoding Text where
+  smpEncode = smpEncode . encodeUtf8
+  {-# INLINE smpEncode #-}
+  smpP = either (fail . show) pure . decodeUtf8' =<< smpP
+  {-# INLINE smpP #-}
 
 instance Encoding String where
   smpEncode = smpEncode . B.pack

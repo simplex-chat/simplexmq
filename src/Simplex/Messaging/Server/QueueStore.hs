@@ -7,7 +7,13 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Simplex.Messaging.Server.QueueStore where
+module Simplex.Messaging.Server.QueueStore
+  ( QueueRec (..),
+    NtfCreds (..),
+    ServiceRec (..),
+    CertFingerprint,
+    ServerEntityStatus (..),
+  ) where
 
 import Control.Applicative (optional, (<|>))
 import qualified Data.ByteString.Char8 as B

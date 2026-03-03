@@ -13,7 +13,9 @@ module Simplex.Messaging.Crypto.ShortLink
   ( contactShortLinkKdf,
     invShortLinkKdf,
     encodeSignLinkData,
+    encodeSignFixedData,
     encodeSignUserData,
+    newOwnerAuth,
     encryptLinkData,
     encryptUserData,
     decryptLinkData,
@@ -50,11 +52,16 @@ contactShortLinkKdf (LinkKey k) =
 invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
-encodeSignLinkData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
-encodeSignLinkData (rootKey, pk) agentVRange linkConnReq userData =
-  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId = Nothing}
-      md = smpEncode $ connLinkData agentVRange userData
-   in (LinkKey (C.sha3_256 fd), (encodeSign pk fd, encodeSign pk md))
+encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> Maybe ByteString -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
+encodeSignLinkData keys@(_, pk) agentVRange linkConnReq linkEntityId userData =
+  let (linkKey, fd) = encodeSignFixedData keys agentVRange linkConnReq linkEntityId
+      md = encodeSignUserData (sConnectionMode @c) pk agentVRange userData
+   in (linkKey, (fd, md))
+
+encodeSignFixedData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> Maybe ByteString -> (LinkKey, ByteString)
+encodeSignFixedData (rootKey, pk) agentVRange linkConnReq linkEntityId =
+  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
+   in (LinkKey (C.sha3_256 fd), encodeSign pk fd)
 
 encodeSignUserData :: ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> UserConnLinkData c -> ByteString
 encodeSignUserData _ pk agentVRange userLinkData =
@@ -67,6 +74,14 @@ connLinkData vr = \case
 
 encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
 encodeSign pk s = smpEncode (C.sign' pk s) <> s
+
+-- | Generate a new owner key pair and create OwnerAuth signed by the authorizing key.
+-- ownerId is application-specific (e.g., MemberId in chat).
+newOwnerAuth :: TVar ChaChaDRG -> OwnerId -> C.PrivateKeyEd25519 -> IO (C.PrivateKeyEd25519, OwnerAuth)
+newOwnerAuth g ownerId signingKey = do
+  (ownerKey, ownerPrivKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
+  let authOwnerSig = C.sign' signingKey $ ownerId <> C.encodePubKey ownerKey
+  pure (ownerPrivKey, OwnerAuth {ownerId, ownerKey, authOwnerSig})
 
 encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> ExceptT AgentErrorType IO QueueLinkData
 encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)

@@ -1,4 +1,6 @@
-module Simplex.Messaging.Server.QueueStore.Postgres.Config where
+module Simplex.Messaging.Server.QueueStore.Postgres.Config
+  ( PostgresStoreCfg (..),
+  ) where
 
 import Data.Int (Int64)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts)

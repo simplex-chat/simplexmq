@@ -60,6 +60,8 @@ module Simplex.Messaging.Agent
     deleteConnectionAsync,
     deleteConnectionsAsync,
     createConnection,
+    prepareConnectionLink,
+    createConnectionForLink,
     setConnShortLink,
     deleteConnShortLink,
     getConnShortLink,
@@ -408,6 +410,19 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, CreatedConnLink c)
 createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newConn c nm userId enableNtfs checkNotices
 {-# INLINE createConnection #-}
+
+-- | Prepare connection link for contact mode (no network call).
+-- Returns root key pair (for signing OwnerAuth), the created link, and internal params.
+-- The link address is fully determined at this point.
+prepareConnectionLink :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId linkEntityId checkNotices
+{-# INLINE prepareConnectionLink #-}
+
+-- | Create connection for prepared link (single network call).
+-- Validates that server response matches the prepared link.
+createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> SubscriptionMode -> AE ConnId
+createConnectionForLink c nm userId enableNtfs = withAgentEnv c .::. createConnectionForLink' c nm userId enableNtfs
+{-# INLINE createConnectionForLink #-}
 
 -- | Create or update user's contact connection short link
 setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE (ConnShortLink c)
@@ -942,6 +957,66 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
     <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys subMode srv
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
+-- | Prepare connection link for contact mode (no network, no database).
+-- Generates all cryptographic material and returns the link that will be created.
+prepareConnectionLink' :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId linkEntityId checkNotices clientData = do
+  g <- asks random
+  plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
+  when checkNotices $ checkClientNotices c plpSrvWithAuth
+  AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
+  plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+  sigKeys@(_, plpRootPrivKey) <- atomically $ C.generateKeyPair g
+  plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
+  let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
+      qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
+      connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
+      (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData sigKeys smpAgentVRange connReq linkEntityId
+      ccLink = CCLink connReq $ Just $ CSLContact SLSServer CCTContact srv plpLinkKey
+      params = PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth}
+  pure (sigKeys, ccLink, params)
+
+-- | Create connection for prepared link (single network call).
+createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
+createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth} userLinkData pqInitKeys subMode = do
+  g <- asks random
+  AgentConfig {smpAgentVRange} <- asks config
+  case pqInitKeys of
+    CR.IKUsePQ -> throwE $ CMD PROHIBITED "createConnectionForLink"
+    _ -> pure ()
+  connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption pqInitKeys)
+  let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
+      md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData
+      linkData = (plpSignedFixedData, md)
+  qd <- encryptContactLinkData g plpRootPrivKey plpLinkKey sndId linkData
+  (_, qUri) <-
+    createRcvQueue c nm userId connId plpSrvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
+      `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+  let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri
+  unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
+  pure connId
+
+-- | Encrypt signed link data for contact mode.
+encryptContactLinkData :: TVar ChaChaDRG -> C.PrivateKeyEd25519 -> LinkKey -> SMP.SenderId -> (ByteString, ByteString) -> AM ClntQueueReqData
+encryptContactLinkData g privSigKey linkKey sndId linkData = do
+  let (linkId, k) = SL.contactShortLinkKdf linkKey
+  srvData <- liftError id $ SL.encryptLinkData g k linkData
+  pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (linkId, (sndId, srvData))}
+
+-- | Shared helper: create receive queue and set up subscriptions.
+createRcvQueue :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> SMPServerWithAuth -> Bool -> SubscriptionMode -> Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
+createRcvQueue c nm userId connId srvWithAuth@(ProtoServerWithAuth srv _) enableNtfs subMode nonce_ qd e2eKeys = do
+  AgentConfig {smpClientVRange = vr} <- asks config
+  ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
+  (rq, qUri, tSess, sessId, serviceId_) <-
+    newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys
+      `catchAllErrors` \e -> liftIO (print e) >> throwE e
+  atomically $ incSMPServerStat c userId srv connCreated
+  rq' <- withStore c $ \db -> updateNewConnRcv db connId rq subMode
+  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
+  mapM_ (newQueueNtfSubscription c rq') ntfServer_
+  pure (rq', qUri)
+
 checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
 checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAuth srv@(ProtocolServer {host}) _) = do
   notices <- readTVarIO clientNotices
@@ -1018,7 +1093,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
           let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
               connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq ud
+              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing ud
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
           let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing (fst srvData)
@@ -1105,25 +1180,15 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
   case userLinkData_ of
     Just d -> do
       (nonce, qUri, cReq, qd) <- prepareLinkData d $ fst e2eKeys
-      (rq, qUri') <- createRcvQueue (Just nonce) qd e2eKeys
+      (rq, qUri') <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just nonce) qd e2eKeys
       ccLink <- connReqWithShortLink qUri cReq qUri' (shortLink rq)
       pure ccLink
     Nothing -> do
       let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
-      (_rq, qUri) <- createRcvQueue Nothing qd e2eKeys
+      (_rq, qUri) <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode Nothing qd e2eKeys
       cReq <- createConnReq qUri
       pure $ CCLink cReq Nothing
   where
-    createRcvQueue :: Maybe C.CbNonce -> ClntQueueReqData -> C.KeyPairX25519 -> AM (RcvQueue, SMPQueueUri)
-    createRcvQueue nonce_ qd e2eKeys = do
-      AgentConfig {smpClientVRange = vr} <- asks config
-      ntfServer_ <- if enableNtfs then newQueueNtfServer else pure Nothing
-      (rq, qUri, tSess, sessId, serviceId_) <- newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys `catchAllErrors` \e -> liftIO (print e) >> throwE e
-      atomically $ incSMPServerStat c userId srv connCreated
-      rq' <- withStore c $ \db -> updateNewConnRcv db connId rq subMode
-      lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
-      mapM_ (newQueueNtfSubscription c rq') ntfServer_
-      pure (rq', qUri)
     createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
     createConnReq qUri = do
       AgentConfig {smpAgentVRange, e2eEncryptVRange} <- asks config
@@ -1147,12 +1212,9 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
       connReq <- createConnReq qUri
-      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq userLinkData
+      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing userLinkData
       qd <- case cMode of
-        SCMContact -> do
-          let (linkId, k) = SL.contactShortLinkKdf linkKey
-          srvData <- liftError id $ SL.encryptLinkData g k linkData
-          pure $ CQRContact $ Just CQRData {linkKey, privSigKey, srvReq = (linkId, (sndId, srvData))}
+        SCMContact -> encryptContactLinkData g privSigKey linkKey sndId linkData
         SCMInvitation -> do
           let k = SL.invShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
@@ -1831,8 +1893,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
-        ICAckDel rId srvMsgId msgId -> withServer $ \srv -> tryWithLock "ICAckDel" $ ack srv rId srvMsgId >> withStore' c (\db -> deleteMsg db connId msgId)
-        ICAck rId srvMsgId -> withServer $ \srv -> tryWithLock "ICAck" $ ack srv rId srvMsgId
+        ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
+          tryCommand $ withConnLockNotify c connId "ICAckDel" $ do
+            t_ <- ack srv rId srvMsgId
+            withStore' c (\db -> deleteMsg db connId msgId)
+            pure t_
+        ICAck rId srvMsgId -> withServer $ \srv ->
+          tryCommand $ withConnLockNotify c connId "ICAck" $ ack srv rId srvMsgId
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2195,7 +2262,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                   cStats <- connectionStats c conn
                   notify $ SWITCH QDSnd SPConfirmed cStats
                 AM_QUSE_ -> pure ()
-                AM_QTEST_ -> withConnLock c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
+                AM_QTEST_ -> withConnLockNotify c connId "runSmpQueueMsgDelivery AM_QTEST_" $ do
                   withStore' c $ \db -> setSndQueueStatus db sq Active
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   case conn of
@@ -2219,7 +2286,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                               let sqs'' = sq'' :| sqs'
                                   conn' = DuplexConnection cData' rqs sqs''
                               cStats <- connectionStats c conn'
-                              notify $ SWITCH QDSnd SPCompleted cStats
+                              pure $ Just ("", connId, AEvt SAEConn $ SWITCH QDSnd SPCompleted cStats)
                             _ -> internalErr msgId "sent QTEST: there is only one queue in connection"
                         _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
@@ -2251,7 +2318,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
     notifyDel msgId cmd = notify cmd >> delMsg msgId
     connError msgId = notifyDel msgId . ERR . (`CONN` "")
     qError msgId = notifyDel msgId . ERR . AGENT . A_QUEUE
-    internalErr msgId = notifyDel msgId . ERR . INTERNAL
+    internalErr msgId s = do
+      delMsg msgId
+      pure $ Just ("", connId, AEvt SAEConn $ ERR $ INTERNAL s)
 
 retrySndOp :: AgentClient -> AM () -> AM ()
 retrySndOp c loop = do
@@ -2261,17 +2330,31 @@ retrySndOp c loop = do
   atomically $ beginAgentOperation c AOSndNetwork
   loop
 
+-- | Like 'withConnLock', but writes the returned 'ATransmission' to 'subQ'
+-- after releasing the lock, preventing deadlock with agentSubscriber.
+withConnLockNotify :: AgentClient -> ConnId -> Text -> AM (Maybe ATransmission) -> AM ()
+withConnLockNotify c connId name action = do
+  t_ <- withConnLock c connId name action
+  forM_ t_ $ atomically . writeTBQueue (subQ c)
+
 ackMessage' :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c connId msgId rcptInfo_ = withConnLock c connId "ackMessage" $ do
+ackMessage' c connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
-    DuplexConnection {} -> ack >> sendRcpt conn >> del
-    RcvConnection {} -> ack >> del
+    DuplexConnection {} -> do
+      t_ <- ack
+      sendRcpt conn
+      del
+      pure t_
+    RcvConnection {} -> do
+      t_ <- ack
+      del
+      pure t_
     SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
     ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
     NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   where
-    ack :: AM ()
+    ack :: AM (Maybe ATransmission)
     ack = do
       -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
       (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
@@ -2379,7 +2462,7 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
       | otherwise -> throwE $ CMD PROHIBITED "synchronizeRatchet: not allowed"
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
-ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM ()
+ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (Maybe ATransmission)
 ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
@@ -2391,10 +2474,11 @@ ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
   where
     sendMsgNtf stat = do
       atomically $ incSMPServerStat c userId server stat
-      whenM (liftIO $ hasGetLock c rq) $ do
-        atomically $ releaseGetLock c rq
-        brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
-        atomically $ writeTBQueue (subQ c) ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_)
+      ifM (liftIO $ hasGetLock c rq)
+        (do atomically $ releaseGetLock c rq
+            brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
+            pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
+        (pure Nothing)
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ()
@@ -2881,10 +2965,13 @@ getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
 
 subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {msgQ} = forever $ do
+subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
   t <- atomically $ readTBQueue msgQ
   agentOperationBracket c AORcvNetwork waitUntilActive $
     processSMPTransmissions c t
+  where
+    run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
+    notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
@@ -3214,7 +3301,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               ackDel :: InternalId -> AM ACKd
               ackDel aId = enqueueCmd (ICAckDel rId srvMsgId aId) $> ACKd
               handleNotifyAck :: AM ACKd -> AM ACKd
-              handleNotifyAck m = m `catchAllErrors` \e -> notify (ERR e) >> ack
+              handleNotifyAck m = m `catchAllOwnErrors` \e -> notify (ERR e) >> ack
           SMP.END ->
             atomically (ifM (activeClientSession c tSess sessId) (removeSubscription c tSess connId rq $> True) (pure False))
               >>= notifyEnd

@@ -47,7 +47,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Set as S
-import Data.Text (Text)
+import Data.Text (Text, pack)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Simplex.FileTransfer.Chunks (toKB)
@@ -433,7 +433,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
         encryptFileForUpload :: SndFile -> FilePath -> AM (FileDigest, [(XFTPChunkSpec, FileDigest)])
         encryptFileForUpload SndFile {key, nonce, srcFile, redirect} fsEncPath = do
           let CryptoFile {filePath} = srcFile
-              fileName = takeFileName filePath
+              fileName = pack $ takeFileName filePath
           fileSize <- liftIO $ fromInteger <$> CF.getFileContentsSize srcFile
           when (fileSize > maxFileSizeHard) $ throwE $ FILE FT.SIZE
           let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}

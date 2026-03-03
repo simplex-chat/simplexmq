@@ -129,6 +129,7 @@ module Simplex.Messaging.Agent.Protocol
     ContactConnType (..),
     ShortLinkScheme (..),
     LinkKey (..),
+    PreparedLinkParams (..),
     validateOwners,
     validateLinkOwners,
     sameConnReqContact,
@@ -179,7 +180,7 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Exception (BlockedIndefinitelyOnSTM (..), fromException)
+import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
 import qualified Data.Aeson.Encoding as JE
@@ -1489,6 +1490,23 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
+-- | Parameters for creating a connection with a prepared link.
+data PreparedLinkParams = PreparedLinkParams
+  { -- | Correlation ID / determines sender ID
+    plpNonce :: C.CbNonce,
+    -- | Queue E2EE DH key pair
+    plpQueueE2EKeys :: C.KeyPairX25519,
+    -- | For encrypting link data
+    plpLinkKey :: LinkKey,
+    -- | Root signing key (for signing link data)
+    plpRootPrivKey :: C.PrivateKeyEd25519,
+    -- | smpEncode of FixedLinkData (includes linkEntityId)
+    plpSignedFixedData :: ByteString,
+    -- | Server with basic auth (not stored in link)
+    plpSrvWithAuth :: SMPServerWithAuth
+  }
+  deriving (Show)
+
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
 
 instance (Typeable c, ConnectionModeI c) => FromField (ConnectionLink c) where fromField = blobFieldDecoder strDecode
@@ -1824,7 +1842,7 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
     smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
   smpP = do
     (agentVRange, rootKey, linkConnReq) <- smpP
-    linkEntityId <- (smpP <|> pure Nothing) <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    linkEntityId <- optional smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
     pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
@@ -1987,7 +2005,9 @@ data AgentErrorType
 instance AnyError AgentErrorType where
   fromSomeException e = case fromException e of
     Just BlockedIndefinitelyOnSTM -> CRITICAL True "Thread blocked indefinitely in STM transaction"
-    _ -> INTERNAL $ show e
+    _ -> case fromException e of
+      Just BlockedIndefinitelyOnMVar -> CRITICAL True "Thread blocked indefinitely on MVar"
+      _ -> INTERNAL $ show e
   {-# INLINE fromSomeException #-}
 
 -- | SMP agent protocol command or response error.

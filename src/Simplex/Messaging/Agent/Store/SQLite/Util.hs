@@ -1,4 +1,10 @@
-module Simplex.Messaging.Agent.Store.SQLite.Util where
+module Simplex.Messaging.Agent.Store.SQLite.Util
+  ( SQLiteFunc,
+    SQLiteFuncFinal,
+    createStaticFunction,
+    createStaticAggregate,
+    mkSQLiteFunc,
+  ) where
 
 import Control.Exception (SomeException, catch, mask_)
 import Data.ByteString (ByteString)

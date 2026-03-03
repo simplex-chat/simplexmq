@@ -6,7 +6,19 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.Messaging.Server.Information where
+module Simplex.Messaging.Server.Information
+  ( ServerInformation (..),
+    ServerPublicConfig (..),
+    ServerPublicInfo (..),
+    ServerPersistenceMode (..),
+    ServerConditions (..),
+    HostingType (..),
+    Entity (..),
+    ServerContactAddress (..),
+    PGPKey (..),
+    emptyServerInfo,
+    hasServerInfo,
+  ) where
 
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as J

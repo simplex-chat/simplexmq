@@ -5,7 +5,12 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 
-module Simplex.Messaging.Server.QueueStore.Types where
+module Simplex.Messaging.Server.QueueStore.Types
+  ( StoreQueueClass (..),
+    QueueStoreClass (..),
+    EntityCounts (..),
+    withLoadedQueues,
+  ) where
 
 import Control.Concurrent.STM
 import Control.Monad

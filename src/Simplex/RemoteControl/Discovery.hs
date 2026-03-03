@@ -7,7 +7,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
-module Simplex.RemoteControl.Discovery where
+module Simplex.RemoteControl.Discovery
+  ( getLocalAddress,
+    mkLastLocalHost,
+    preferAddress,
+    startTLSServer,
+    withSender,
+    withListener,
+    recvAnnounce,
+  ) where
 
 import Control.Applicative ((<|>))
 import Control.Logger.Simple

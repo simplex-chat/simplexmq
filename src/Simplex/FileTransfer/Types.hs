@@ -4,12 +4,36 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Simplex.FileTransfer.Types where
+module Simplex.FileTransfer.Types
+  ( RcvFileId,
+    SndFileId,
+    FileHeader (..),
+    DBRcvFileId,
+    RcvFile (..),
+    RcvFileStatus (..),
+    RcvFileChunk (..),
+    RcvFileChunkReplica (..),
+    RcvFileRedirect (..),
+    DBSndFileId,
+    SndFile (..),
+    SndFileStatus (..),
+    SndFileChunk (..),
+    NewSndChunkReplica (..),
+    SndFileChunkReplica (..),
+    SndFileReplicaStatus (..),
+    DeletedSndChunkReplica (..),
+    SentRecipientReplica (..),
+    FileErrorType (..),
+    authTagSize,
+    sndFileEncPath,
+    sndChunkSize,
+  ) where
 
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
@@ -33,8 +57,8 @@ authTagSize = fromIntegral C.authTagSize
 
 -- fileExtra is added to allow header extension in future versions
 data FileHeader = FileHeader
-  { fileName :: String,
-    fileExtra :: Maybe String
+  { fileName :: Text,
+    fileExtra :: Maybe Text
   }
   deriving (Eq, Show)
 

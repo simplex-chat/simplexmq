@@ -8,7 +8,10 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module Simplex.Messaging.Notifications.Server.Main where
+module Simplex.Messaging.Notifications.Server.Main
+  ( ntfServerCLI,
+  )
+where
 
 import Control.Logger.Simple (setLogLevel)
 import Control.Monad ((<$!>))

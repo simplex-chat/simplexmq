@@ -39,9 +39,17 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Docker image
         uses: simplex-chat/docker-build-push-action@v6
         with:
+          context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             APP=${{ matrix.app }}
