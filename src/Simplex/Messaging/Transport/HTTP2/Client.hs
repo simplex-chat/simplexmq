@@ -20,6 +20,7 @@ module Simplex.Messaging.Transport.HTTP2.Client
     attachHTTP2Client,
     closeHTTP2Client,
     sendRequest,
+    sendRequestDirect,
   ) where
 
 import Control.Concurrent.Async

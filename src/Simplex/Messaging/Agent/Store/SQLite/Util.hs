@@ -1,6 +1,9 @@
 module Simplex.Messaging.Agent.Store.SQLite.Util
   ( SQLiteFunc,
     SQLiteFuncFinal,
+    mkSQLiteFunc,
+    mkSQLiteAggStep,
+    mkSQLiteAggFinal,
     createStaticFunction,
     createStaticAggregate,
     mkSQLiteFunc,
