@@ -5,6 +5,8 @@ module Simplex.Messaging.Compression
   ( Compressed,
     maxLengthPassthrough,
     compressionLevel,
+    compress1,
+    decompress1,
   ) where
 
 import qualified Codec.Compression.Zstd as Z1
