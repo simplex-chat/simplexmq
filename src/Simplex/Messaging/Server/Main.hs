@@ -75,6 +75,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main.Init
+import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -744,18 +745,6 @@ newJournalMsgStore logPath qsCfg =
 
 storeMsgsJournalDir' :: FilePath -> FilePath
 storeMsgsJournalDir' logPath = combine logPath "messages"
-
-data EmbeddedWebParams = EmbeddedWebParams
-  { webStaticPath :: FilePath,
-    webHttpPort :: Maybe Int,
-    webHttpsParams :: Maybe WebHttpsParams
-  }
-
-data WebHttpsParams = WebHttpsParams
-  { port :: Int,
-    cert :: FilePath,
-    key :: FilePath
-  }
 
 getServerSourceCode :: IO (Maybe String)
 getServerSourceCode =

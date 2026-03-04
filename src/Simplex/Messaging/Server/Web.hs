@@ -1,19 +1,25 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
-module Static where
+module Simplex.Messaging.Server.Web
+  ( EmbeddedWebParams (..),
+    WebHttpsParams (..),
+    serveStaticFiles,
+    attachStaticFiles,
+    generateSite,
+    render,
+    section_,
+    item_,
+    timedTTLText,
+  ) where
 
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (toUpper)
 import Data.IORef (readIORef)
-import Data.Maybe (fromMaybe)
-import Data.String (fromString)
-import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
 import Network.Socket (getPeerName)
 import Network.Wai (Application, Request (..))
 import Network.Wai.Application.Static (StaticSettings (..))
@@ -21,20 +27,26 @@ import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
-import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
-import Simplex.Messaging.Server.CLI (simplexmqCommit)
-import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..), simplexmqSource)
-import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Client (TransportHost (..))
+import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Util (tshow)
-import Static.Embedded as E
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
 import qualified WaiAppStatic.Types as WAT
+
+data EmbeddedWebParams = EmbeddedWebParams
+  { webStaticPath :: FilePath,
+    webHttpPort :: Maybe Int,
+    webHttpsParams :: Maybe WebHttpsParams
+  }
+
+data WebHttpsParams = WebHttpsParams
+  { port :: Int,
+    cert :: FilePath,
+    key :: FilePath
+  }
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
 serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
@@ -92,21 +104,15 @@ staticFiles root = S.staticApp settings . changeWellKnownPath
       _ -> req
     pfxLen = B.length "/.well-known/"
 
-generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
-generateSite si onionHost sitePath = do
+generateSite :: ByteString -> [String] -> FilePath -> IO ()
+generateSite indexContent linkPages sitePath = do
   createDirectoryIfMissing True sitePath
-  B.writeFile (sitePath </> "index.html") $ serverInformation si onionHost
+  B.writeFile (sitePath </> "index.html") indexContent
   copyDir "media" E.mediaContent
   -- `.well-known` path is re-written in changeWellKnownPath,
   -- staticApp does not allow hidden folders.
   copyDir "well-known" E.wellKnown
-  createLinkPage "contact"
-  createLinkPage "invitation"
-  createLinkPage "a"
-  createLinkPage "c"
-  createLinkPage "g"
-  createLinkPage "r"
-  createLinkPage "i"
+  forM_ linkPages createLinkPage
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
     copyDir dir content = do
@@ -115,106 +121,6 @@ generateSite si onionHost sitePath = do
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
       B.writeFile (sitePath </> path </> "index.html") E.linkHtml
-
-serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
-serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs
-  where
-    substs = substConfig <> substInfo <> [("onionHost", strEncode <$> onionHost)]
-    substConfig =
-      [ ( "persistence",
-          Just $ case persistence config of
-            SPMMemoryOnly -> "In-memory only"
-            SPMQueues -> "Queues"
-            SPMMessages -> "Queues and messages"
-        ),
-        ("messageExpiration", Just $ maybe "Never" (fromString . timedTTLText) $ messageExpiration config),
-        ("statsEnabled", Just . yesNo $ statsEnabled config),
-        ("newQueuesAllowed", Just . yesNo $ newQueuesAllowed config),
-        ("basicAuthEnabled", Just . yesNo $ basicAuthEnabled config)
-      ]
-    yesNo True = "Yes"
-    yesNo False = "No"
-    substInfo =
-      concat
-        [ basic,
-          maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
-          maybe [("operator", Nothing)] operatorE (operator spi),
-          maybe [("admin", Nothing)] admin (adminContacts spi),
-          maybe [("complaints", Nothing)] complaints (complaintsContacts spi),
-          maybe [("hosting", Nothing)] hostingE (hosting spi),
-          server
-        ]
-      where
-        basic =
-          [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
-            ("noSourceCode", if T.null sc then Just "none" else Nothing),
-            ("version", Just $ B.pack simplexMQVersion),
-            ("commitSourceCode", Just $ encodeUtf8 $ maybe (T.pack simplexmqSource) sourceCode information),
-            ("shortCommit", Just $ B.pack $ take 7 simplexmqCommit),
-            ("commit", Just $ B.pack simplexmqCommit),
-            ("website", encodeUtf8 <$> website spi)
-          ]
-        spi = fromMaybe (emptyServerInfo "") information
-        sc = sourceCode spi
-        conds ServerConditions {conditions, amendments} =
-          [ ("usageConditions", Just $ encodeUtf8 conditions),
-            ("usageAmendments", encodeUtf8 <$> amendments)
-          ]
-        operatorE Entity {name, country} =
-          [ ("operator", Just ""),
-            ("operatorEntity", Just $ encodeUtf8 name),
-            ("operatorCountry", encodeUtf8 <$> country)
-          ]
-        admin ServerContactAddress {simplex, email, pgp} =
-          [ ("admin", Just ""),
-            ("adminSimplex", strEncode <$> simplex),
-            ("adminEmail", encodeUtf8 <$> email),
-            ("adminPGP", encodeUtf8 . pkURI <$> pgp),
-            ("adminPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
-          ]
-        complaints ServerContactAddress {simplex, email, pgp} =
-          [ ("complaints", Just ""),
-            ("complaintsSimplex", strEncode <$> simplex),
-            ("complaintsEmail", encodeUtf8 <$> email),
-            ("complaintsPGP", encodeUtf8 . pkURI <$> pgp),
-            ("complaintsPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
-          ]
-        hostingE Entity {name, country} =
-          [ ("hosting", Just ""),
-            ("hostingEntity", Just $ encodeUtf8 name),
-            ("hostingCountry", encodeUtf8 <$> country)
-          ]
-        server =
-          [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
-            ("hostingType",  (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
-          ]
-
--- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences
-{-# INLINE timedTTLText #-}
-timedTTLText :: (Integral i, Show i) => i -> String
-timedTTLText 0 = "0 sec"
-timedTTLText ttl = do
-  let (m', s) = ttl `quotRem` 60
-      (h', m) = m' `quotRem` 60
-      (d', h) = h' `quotRem` 24
-      (mm, d) = d' `quotRem` 30
-  unwords $
-    [mms mm | mm /= 0]
-      <> [ds d | d /= 0]
-      <> [hs h | h /= 0]
-      <> [ms m | m /= 0]
-      <> [ss s | s /= 0]
-  where
-    ss s = show s <> " sec"
-    ms m = show m <> " min"
-    hs 1 = "1 hour"
-    hs h = show h <> " hours"
-    ds 1 = "1 day"
-    ds 7 = "1 week"
-    ds 14 = "2 weeks"
-    ds d = show d <> " days"
-    mms 1 = "1 month"
-    mms mm = show mm <> " months"
 
 -- | Rewrite source with provided substitutions
 render :: ByteString -> [(ByteString, Maybe ByteString)] -> ByteString
@@ -242,6 +148,9 @@ section_ label content' src =
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"
+    fromMaybe d = \case
+      Just x | not (B.null x) -> x
+      _ -> d
 
 -- | Replace all occurences of @${label}@ with provided content.
 item_ :: ByteString -> ByteString -> ByteString -> ByteString
@@ -251,3 +160,30 @@ item_ label content' src =
     (before, after') -> before <> content' <> item_ label content' (B.drop (B.length marker) after')
   where
     marker = "${" <> label <> "}"
+
+-- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences
+{-# INLINE timedTTLText #-}
+timedTTLText :: (Integral i, Show i) => i -> String
+timedTTLText 0 = "0 sec"
+timedTTLText ttl = do
+  let (m', s) = ttl `quotRem` 60
+      (h', m) = m' `quotRem` 60
+      (d', h) = h' `quotRem` 24
+      (mm, d) = d' `quotRem` 30
+  unwords $
+    [mms mm | mm /= 0]
+      <> [ds d | d /= 0]
+      <> [hs h | h /= 0]
+      <> [ms m | m /= 0]
+      <> [ss s | s /= 0]
+  where
+    ss s = show s <> " sec"
+    ms m = show m <> " min"
+    hs 1 = "1 hour"
+    hs h = show h <> " hours"
+    ds 1 = "1 day"
+    ds 7 = "1 week"
+    ds 14 = "2 weeks"
+    ds d = show d <> " days"
+    mms 1 = "1 month"
+    mms mm = show mm <> " months"
