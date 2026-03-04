@@ -494,6 +494,7 @@ test-suite simplexmq-test
       XFTPCLI
       XFTPClient
       XFTPServerTests
+      WebTests
       XFTPWebTests
       SMP.Web
       Paths_simplexmq
