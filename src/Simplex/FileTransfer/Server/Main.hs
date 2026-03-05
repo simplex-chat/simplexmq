@@ -5,16 +5,22 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Server.Main
   ( xftpServerCLI,
+    xftpServerCLI_,
   ) where
 
+import Control.Monad (when)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
 import Data.Int (Int64)
+import Data.List (find)
+import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust)
+import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Network.Socket (HostName)
@@ -29,6 +35,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
+import Simplex.Messaging.Server.Main (serverPublicInfo, printSourceCode)
+import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), mkTransportServerConfig)
@@ -39,7 +48,15 @@ import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
 
 xftpServerCLI :: FilePath -> FilePath -> IO ()
-xftpServerCLI cfgPath logPath = do
+xftpServerCLI = xftpServerCLI_ (\_ _ _ _ -> pure ()) (\_ -> pure ())
+
+xftpServerCLI_ ::
+  (XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()) ->
+  (EmbeddedWebParams -> IO ()) ->
+  FilePath ->
+  FilePath ->
+  IO ()
+xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -66,7 +83,8 @@ xftpServerCLI cfgPath logPath = do
     defaultServerPort = "443"
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
-    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota} = do
+    defaultStaticPath = combine logPath "www"
+    initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota, webStaticPath = webStaticPath_} = do
       clearDirIfExists cfgPath
       clearDirIfExists logPath
       createDirectoryIfMissing True cfgPath
@@ -81,7 +99,27 @@ xftpServerCLI cfgPath logPath = do
       printServiceInfo serverVersion srv
       where
         iniFileContent host =
-          "[STORE_LOG]\n\
+          "[INFORMATION]\n\
+          \# AGPLv3 license requires that you make any source code modifications\n\
+          \# available to the end users of the server.\n\
+          \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
+          \# Include correct source code URI in case the server source code is modified in any way.\n\
+          \# source_code: https://github.com/simplex-chat/simplexmq\n\
+          \\n\
+          \# Declaring all below information is optional, any of these fields can be omitted.\n\
+          \# server_country: ISO-3166 2-letter code\n\
+          \# operator: entity (organization or person name)\n\
+          \# operator_country: ISO-3166 2-letter code\n\
+          \# website:\n\
+          \# admin_simplex: SimpleX address\n\
+          \# admin_email:\n\
+          \# complaints_simplex: SimpleX address\n\
+          \# complaints_email:\n\
+          \# hosting: entity (organization or person name)\n\
+          \# hosting_country: ISO-3166 2-letter code\n\
+          \# hosting_type: virtual\n\
+          \\n\
+          \[STORE_LOG]\n\
           \# The server uses STM memory for persistence,\n\
           \# that will be lost on restart (e.g., as with redis).\n\
           \# This option enables saving memory to append only log,\n\
@@ -128,8 +166,13 @@ xftpServerCLI cfgPath logPath = do
             <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
             <> "\n\
                \[WEB]\n\
-               \# cert: /etc/opt/simplex-xftp/web.crt\n\
-               \# key: /etc/opt/simplex-xftp/web.key\n"
+               \# Set path to generate static mini-site for server information\n"
+            <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath_) <> "\n\n")
+            <> "# Run an embedded HTTP server on this port.\n\
+               \# http: 8000\n\n\
+               \# TLS credentials for HTTPS web server on the same port as XFTP.\n\
+               \# cert: " <> T.pack (cfgPath `combine` "web.crt") <> "\n\
+               \# key: " <> T.pack (cfgPath `combine` "web.key") <> "\n"
     runServer ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
@@ -138,9 +181,22 @@ xftpServerCLI cfgPath logPath = do
           port = T.unpack $ strictIni "TRANSPORT" "port" ini
           srv = ProtoServerWithAuth (XFTPServer [THDomainName host] (if port == "443" then "" else port) (C.KeyHash fp)) Nothing
       printServiceInfo serverVersion srv
+      let information = serverPublicInfo ini
+      printSourceCode (sourceCode <$> information)
       printXFTPConfig serverConfig
+      case webStaticPath' of
+        Just path -> do
+          let onionHost =
+                either (const Nothing) (find isOnion) $
+                  strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+              webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
+          generateSite serverConfig information onionHost path
+          when (isJust webHttpPort || isJust webHttpsParams') $
+            serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
+        Nothing -> pure ()
       runXFTPServer serverConfig
       where
+        isOnion = \case THOnionHost _ -> True; _ -> False
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
@@ -171,6 +227,14 @@ xftpServerCLI cfgPath logPath = do
                   certificateFile = cert,
                   privateKeyFile = key
                 }
+
+        webHttpsParams' = do
+          httpsPort <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
+          cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
+          key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
+          pure WebHttpsParams {port = httpsPort, cert, key}
+
+        webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
         serverConfig =
           XFTPServerConfig
@@ -209,7 +273,7 @@ xftpServerCLI cfgPath logPath = do
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "file-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "file-server-stats.log",
-              prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
+              prometheusInterval = eitherToMaybe (lookupValue "STORE_LOG" "prometheus_interval" ini) >>= readMaybe . T.unpack,
               prometheusMetricsFile = combine logPath "xftp-server-metrics.txt",
               transportConfig =
                 let cfg =
@@ -218,7 +282,8 @@ xftpServerCLI cfgPath logPath = do
                         (Just $ alpnSupportedXFTPhandshakes <> httpALPN)
                         False
                  in cfg {addCORSHeaders = isJust httpCredentials_},
-              responseDelay = 0
+              responseDelay = 0,
+              webStaticPath = webStaticPath'
             }
 
 data CliCommand
@@ -233,7 +298,8 @@ data InitOptions = InitOptions
     ip :: HostName,
     fqdn :: Maybe HostName,
     filesPath :: FilePath,
-    fileSizeQuota :: FileSize Int64
+    fileSizeQuota :: FileSize Int64,
+    webStaticPath :: Maybe FilePath
   }
   deriving (Show)
 
@@ -302,4 +368,10 @@ cliCommandP cfgPath logPath iniFile =
               <> help "File storage quota (e.g. 100gb)"
               <> metavar "QUOTA"
           )
-      pure InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota}
+      webStaticPath <-
+        (optional . strOption)
+          ( long "web-path"
+              <> help "Directory to store generated static site with server information"
+              <> metavar "PATH"
+          )
+      pure InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota, webStaticPath}

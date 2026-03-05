@@ -135,7 +135,8 @@ testXFTPServerConfig =
       prometheusInterval = Nothing,
       prometheusMetricsFile = xftpTestPrometheusMetricsFile,
       transportConfig = mkTransportServerConfig True (Just alpnSupportedXFTPhandshakes) False,
-      responseDelay = 0
+      responseDelay = 0,
+      webStaticPath = Nothing
     }
 
 testXFTPClientConfig :: XFTPClientConfig
