@@ -197,7 +197,7 @@ render src = \case
 section_ :: ByteString -> Maybe ByteString -> ByteString -> ByteString
 section_ label content' src =
   case B.breakSubstring startMarker src of
-    (_, "") -> item_ label (fromMaybeEmpty "" content') src -- no section, just replace items
+    (_, "") -> item_ label (fromMaybe "" content') src -- no section, just replace items
     (before, afterStart') ->
       -- found section start, search for end too
       case B.breakSubstring endMarker $ B.drop (B.length startMarker) afterStart' of
@@ -205,14 +205,11 @@ section_ label content' src =
         (inside, next') ->
           let next = B.drop (B.length endMarker) next'
            in case content' of
-                Just content | not (B.null content) -> before <> item_ label content inside <> section_ label content' next
-                _ -> before <> next -- collapse section
+                Just content -> before <> item_ label content inside <> section_ label content' next
+                Nothing -> before <> next -- collapse section
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"
-    fromMaybeEmpty d = \case
-      Just x | not (B.null x) -> x
-      _ -> d
 
 -- | Replace all occurrences of @${label}@ with provided content.
 item_ :: ByteString -> ByteString -> ByteString -> ByteString

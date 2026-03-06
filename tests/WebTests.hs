@@ -24,8 +24,8 @@ webTests = describe "Web module" $ do
       section_ "s" (Just "val") "<x-s>${s}</x-s>" `shouldBe` "val"
     it "removes section when content is Nothing" $
       section_ "s" Nothing "before<x-s>inside</x-s>after" `shouldBe` "beforeafter"
-    it "removes section when content is Just empty" $
-      section_ "s" (Just "") "before<x-s>inside</x-s>after" `shouldBe` "beforeafter"
+    it "keeps section when content is Just empty" $
+      section_ "s" (Just "") "before<x-s>inside</x-s>after" `shouldBe` "beforeinsideafter"
     it "handles multiple sections with same label" $
       section_ "s" (Just "X") "<x-s>${s}</x-s>mid<x-s>${s}</x-s>"
         `shouldBe` "XmidX"
