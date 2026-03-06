@@ -229,7 +229,7 @@
                 <td>Source code:</td>
                 <td>
                   <x-sourceCode><a href="${sourceCode}" target="_blank">${sourceCode}</a></x-sourceCode>
-                  <x-noSourceCode>add to smp-server.ini (required by <a href="https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE" target="_blank">AGPLv3</a>)</x-noSourceCode>
+                  <x-noSourceCode>add to ${iniFileName} (required by <a href="https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE" target="_blank">AGPLv3</a>)</x-noSourceCode>
                 </td>
               </tr>
               <x-website>
@@ -317,6 +317,7 @@
             <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">
               Configuration</h2>
             <table id="config">
+              <x-smpConfig>
               <tr class="text-grey-black dark:text-white text-base">
                 <td>Persistence:</td>
                 <td>${persistence}</td>
@@ -337,6 +338,7 @@
                 <td>Basic auth enabled:</td>
                 <td>${basicAuthEnabled}</td>
               </tr>
+              </x-smpConfig>
             </table>
           </div>
         </div>

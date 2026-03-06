@@ -8,7 +8,9 @@ module Simplex.Messaging.Server.Web
     WebHttpsParams (..),
     serveStaticFiles,
     attachStaticFiles,
+    serveStaticPageH2,
     generateSite,
+    serverInfoSubsts,
     render,
     section_,
     item_,
@@ -18,8 +20,16 @@ module Simplex.Messaging.Server.Web
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
+import Data.ByteString.Builder (byteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (toUpper)
 import Data.IORef (readIORef)
+import Data.List (isPrefixOf, isSuffixOf)
+import Data.Maybe (fromMaybe)
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
+import qualified Network.HTTP.Types as N
+import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
 import Network.Wai (Application, Request (..))
 import Network.Wai.Application.Static (StaticSettings (..))
@@ -27,10 +37,14 @@ import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
+import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
+import Simplex.Messaging.Server.CLI (simplexmqCommit)
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Web.Embedded as E
+import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (tshow)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
@@ -122,6 +136,54 @@ generateSite indexContent linkPages sitePath = do
       createDirectoryIfMissing True $ sitePath </> path
       B.writeFile (sitePath </> path </> "index.html") E.linkHtml
 
+-- | Serve static files via HTTP/2 directly (without WAI).
+-- Path traversal protection: resolved path must stay under canonicalRoot.
+-- canonicalRoot must be pre-computed via 'canonicalizePath'.
+serveStaticPageH2 :: FilePath -> H.Request -> (H.Response -> IO ()) -> IO Bool
+serveStaticPageH2 canonicalRoot req sendResponse = do
+  let rawPath = fromMaybe "/" $ H.requestPath req
+      path = rewriteWellKnownH2 rawPath
+      relPath = B.unpack $ B.dropWhile (== '/') path
+      requestedPath
+        | null relPath || relPath == "/" = canonicalRoot </> "index.html"
+        | otherwise = canonicalRoot </> relPath
+  tryServePath requestedPath
+  where
+    tryServePath filePath = do
+      exists <- doesFileExist filePath
+      if exists
+        then serveSafe filePath
+        else do
+          let indexPath = filePath </> "index.html"
+          indexExists <- doesFileExist indexPath
+          if indexExists
+            then serveSafe indexPath
+            else pure False
+    serveSafe filePath = do
+      canonicalFile <- canonicalizePath filePath
+      if (canonicalRoot <> "/") `isPrefixOf` canonicalFile || canonicalRoot == canonicalFile
+        then do
+          content <- B.readFile canonicalFile
+          sendResponse $ H.responseBuilder N.ok200 [("Content-Type", staticMimeType canonicalFile)] (byteString content)
+          pure True
+        else pure False -- path traversal attempt
+    rewriteWellKnownH2 p
+      | "/.well-known/" `B.isPrefixOf` p = "/well-known/" <> B.drop (B.length "/.well-known/") p
+      | otherwise = p
+    staticMimeType fp
+      | ".html" `isSuffixOf` fp = "text/html"
+      | ".css" `isSuffixOf` fp = "text/css"
+      | ".js" `isSuffixOf` fp = "application/javascript"
+      | ".svg" `isSuffixOf` fp = "image/svg+xml"
+      | ".png" `isSuffixOf` fp = "image/png"
+      | ".ico" `isSuffixOf` fp = "image/x-icon"
+      | ".json" `isSuffixOf` fp = "application/json"
+      | "apple-app-site-association" `isSuffixOf` fp = "application/json"
+      | ".woff" `isSuffixOf` fp = "font/woff"
+      | ".woff2" `isSuffixOf` fp = "font/woff2"
+      | ".ttf" `isSuffixOf` fp = "font/ttf"
+      | otherwise = "application/octet-stream"
+
 -- | Rewrite source with provided substitutions
 render :: ByteString -> [(ByteString, Maybe ByteString)] -> ByteString
 render src = \case
@@ -135,7 +197,7 @@ render src = \case
 section_ :: ByteString -> Maybe ByteString -> ByteString -> ByteString
 section_ label content' src =
   case B.breakSubstring startMarker src of
-    (_, "") -> item_ label (fromMaybe "" content') src -- no section, just replace items
+    (_, "") -> item_ label (fromMaybeEmpty "" content') src -- no section, just replace items
     (before, afterStart') ->
       -- found section start, search for end too
       case B.breakSubstring endMarker $ B.drop (B.length startMarker) afterStart' of
@@ -148,11 +210,11 @@ section_ label content' src =
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"
-    fromMaybe d = \case
+    fromMaybeEmpty d = \case
       Just x | not (B.null x) -> x
       _ -> d
 
--- | Replace all occurences of @${label}@ with provided content.
+-- | Replace all occurrences of @${label}@ with provided content.
 item_ :: ByteString -> ByteString -> ByteString -> ByteString
 item_ label content' src =
   case B.breakSubstring marker src of
@@ -187,3 +249,60 @@ timedTTLText ttl = do
     ds d = show d <> " days"
     mms 1 = "1 month"
     mms mm = show mm <> " months"
+
+-- | Substitutions for server information fields shared between SMP and XFTP pages.
+serverInfoSubsts :: String -> Maybe ServerPublicInfo -> [(ByteString, Maybe ByteString)]
+serverInfoSubsts simplexmqSource information =
+  concat
+    [ basic,
+      maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
+      maybe [("operator", Nothing)] operatorE (operator spi),
+      maybe [("admin", Nothing)] admin (adminContacts spi),
+      maybe [("complaints", Nothing)] complaints (complaintsContacts spi),
+      maybe [("hosting", Nothing)] hostingE (hosting spi),
+      server
+    ]
+  where
+    basic =
+      [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
+        ("noSourceCode", if T.null sc then Just "none" else Nothing),
+        ("version", Just $ B.pack simplexMQVersion),
+        ("commitSourceCode", Just $ encodeUtf8 $ maybe (T.pack simplexmqSource) sourceCode information),
+        ("shortCommit", Just $ B.pack $ take 7 simplexmqCommit),
+        ("commit", Just $ B.pack simplexmqCommit),
+        ("website", encodeUtf8 <$> website spi)
+      ]
+    spi = fromMaybe (emptyServerInfo "") information
+    sc = sourceCode spi
+    conds ServerConditions {conditions, amendments} =
+      [ ("usageConditions", Just $ encodeUtf8 conditions),
+        ("usageAmendments", encodeUtf8 <$> amendments)
+      ]
+    operatorE Entity {name, country} =
+      [ ("operator", Just ""),
+        ("operatorEntity", Just $ encodeUtf8 name),
+        ("operatorCountry", encodeUtf8 <$> country)
+      ]
+    admin ServerContactAddress {simplex, email, pgp} =
+      [ ("admin", Just ""),
+        ("adminSimplex", strEncode <$> simplex),
+        ("adminEmail", encodeUtf8 <$> email),
+        ("adminPGP", encodeUtf8 . pkURI <$> pgp),
+        ("adminPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
+      ]
+    complaints ServerContactAddress {simplex, email, pgp} =
+      [ ("complaints", Just ""),
+        ("complaintsSimplex", strEncode <$> simplex),
+        ("complaintsEmail", encodeUtf8 <$> email),
+        ("complaintsPGP", encodeUtf8 . pkURI <$> pgp),
+        ("complaintsPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
+      ]
+    hostingE Entity {name, country} =
+      [ ("hosting", Just ""),
+        ("hostingEntity", Just $ encodeUtf8 name),
+        ("hostingCountry", encodeUtf8 <$> country)
+      ]
+    server =
+      [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
+        ("hostingType", (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
+      ]
