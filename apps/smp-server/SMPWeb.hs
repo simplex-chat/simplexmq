@@ -1,7 +1,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module SMP.Web
+module SMPWeb
   ( smpGenerateSite,
     serverInformation,
   ) where

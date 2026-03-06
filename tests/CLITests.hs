@@ -30,7 +30,7 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
-import qualified SMP.Web
+import qualified SMPWeb
 import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
@@ -152,7 +152,7 @@ smpServerTestStatic = do
   Right ini_ <- readIniFile iniFile
   lookupValue "WEB" "https" ini_ `shouldBe` Right "5223"
 
-  let smpServerCLI' = smpServerCLI_ SMP.Web.smpGenerateSite serveStaticFiles attachStaticFiles
+  let smpServerCLI' = smpServerCLI_ SMPWeb.smpGenerateSite serveStaticFiles attachStaticFiles
   let server = capture_ (withArgs ["start"] $ smpServerCLI' cfgPath logPath `catchAny` print)
   bracket (async server) cancel $ \_t -> do
     threadDelay 1000000

@@ -4,7 +4,7 @@ import Control.Logger.Simple
 import Simplex.Messaging.Server.CLI (getEnvPath)
 import Simplex.Messaging.Server.Main (smpServerCLI_)
 import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
-import SMP.Web (smpGenerateSite)
+import SMPWeb (smpGenerateSite)
 
 defaultCfgPath :: FilePath
 defaultCfgPath = "/etc/opt/simplex"

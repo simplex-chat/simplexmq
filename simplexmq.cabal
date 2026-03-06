@@ -409,7 +409,7 @@ executable smp-server
     cpp-options: -DdbServerPostgres
   main-is: Main.hs
   other-modules:
-      SMP.Web
+      SMPWeb
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
@@ -496,7 +496,7 @@ test-suite simplexmq-test
       XFTPServerTests
       WebTests
       XFTPWebTests
-      SMP.Web
+      SMPWeb
       Paths_simplexmq
   if flag(client_postgres)
       other-modules:
