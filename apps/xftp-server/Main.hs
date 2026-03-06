@@ -4,7 +4,7 @@ import Control.Logger.Simple
 import Simplex.FileTransfer.Server.Main (xftpServerCLI_)
 import Simplex.Messaging.Server.CLI (getEnvPath)
 import Simplex.Messaging.Server.Web (serveStaticFiles)
-import XFTP.Web (xftpGenerateSite)
+import XFTPWeb (xftpGenerateSite)
 
 defaultCfgPath :: FilePath
 defaultCfgPath = "/etc/opt/simplex-xftp"

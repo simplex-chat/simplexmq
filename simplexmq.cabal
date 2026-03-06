@@ -445,7 +445,7 @@ executable xftp-server
       buildable: False
   main-is: Main.hs
   other-modules:
-      XFTP.Web
+      XFTPWeb
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
@@ -499,7 +499,7 @@ test-suite simplexmq-test
       WebTests
       XFTPWebTests
       SMPWeb
-      XFTP.Web
+      XFTPWeb
       Paths_simplexmq
   if flag(client_postgres)
       other-modules:
