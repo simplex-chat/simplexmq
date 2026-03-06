@@ -1,7 +1,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module XFTP.Web
+module XFTPWeb
   ( xftpGenerateSite,
     xftpServerInformation,
   ) where
