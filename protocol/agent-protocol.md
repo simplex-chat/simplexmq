@@ -608,6 +608,58 @@ Agent API uses these events dispatch to notify client application about events r
 
 This list of events is not exhaustive and provided for information only. Please consult the source code for more information.
 
+## Threat model
+
+This threat model complements SimpleX Messaging Protocol [threat model](./overview-tjr.md#threat-model) with agent-level concerns: duplex connections, end-to-end encryption with [post-quantum double ratchet](./pqdr.md), message integrity, connection establishment and queue rotation. Only additional properties not covered in the SMP threat model are listed below.
+
+This section uses network architecture terminology: SMP servers are referred to as routers, SMP queues as streams, and transport messages as packets — see [SimpleX Network architecture](../docs/network-architecture-v2.md).
+
+#### Additional global assumptions
+
+ - The connection link is shared via a trusted out-of-band channel.
+ - Both agents support post-quantum double ratchet (PQDR).
+
+#### A passive adversary
+
+*cannot:*
+ - learn the contents of packets, which are additionally encrypted with the double ratchet independently from per-stream encryption.
+
+#### Destination router (chosen by the receiving client application)
+
+*can:*
+ - correlate streams belonging to the same duplex connection when queue rotation creates a new stream on the same router.
+ - when both peers of a connection chose the same router, correlate the two directions of the duplex connection.
+
+*cannot:*
+ - compromise end-to-end encryption even with full access to the per-stream NaCl DH secret.
+ - correlate streams belonging to the same connection after queue rotation to a different router.
+
+#### An attacker who obtained a client application's (decrypted) database
+
+*can:*
+ - learn the full communication graph: all communication peers, associated router addresses, and stream identifiers.
+
+*cannot:*
+ - decrypt future messages once the client application resumes communication and the double ratchet completes a new ratchet step, provided PQDR is active.
+
+#### A communication peer
+
+*can:*
+ - send malformed agent messages that may affect the client application processing them.
+ - skip message IDs, causing the recipient to generate and store excessive intermediate ratchet keys.
+ - prevent double ratchet advancement by not sending messages, delaying break-in recovery.
+
+*cannot:*
+ - disrupt packet delivery in other streams.
+
+#### An attacker who obtained a connection link
+
+*can:*
+ - learn the initiating party's chosen router address and public keys.
+
+*cannot:*
+ - use the link after the intended recipient has completed the connection.
+
 [1]: https://en.wikipedia.org/wiki/End-to-end_encryption
 [2]: https://en.wikipedia.org/wiki/Man-in-the-middle_attack
 [3]: https://tools.ietf.org/html/rfc5234
