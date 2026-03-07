@@ -43,7 +43,7 @@ import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Util (tshow)
+import Simplex.Messaging.Util (ifM, tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
@@ -147,18 +147,12 @@ serveStaticPageH2 canonicalRoot req sendResponse = do
       requestedPath
         | null relPath || relPath == "/" = canonicalRoot </> "index.html"
         | otherwise = canonicalRoot </> relPath
-  tryServePath requestedPath
+      indexPath = requestedPath </> "index.html"
+  ifM
+    (doesFileExist requestedPath)
+    (serveSafe requestedPath)
+    (ifM (doesFileExist indexPath) (serveSafe indexPath) (pure False))
   where
-    tryServePath filePath = do
-      exists <- doesFileExist filePath
-      if exists
-        then serveSafe filePath
-        else do
-          let indexPath = filePath </> "index.html"
-          indexExists <- doesFileExist indexPath
-          if indexExists
-            then serveSafe indexPath
-            else pure False
     serveSafe filePath = do
       canonicalFile <- canonicalizePath filePath
       if (canonicalRoot <> "/") `isPrefixOf` canonicalFile || canonicalRoot == canonicalFile
@@ -183,69 +177,6 @@ serveStaticPageH2 canonicalRoot req sendResponse = do
       | ".woff2" `isSuffixOf` fp = "font/woff2"
       | ".ttf" `isSuffixOf` fp = "font/ttf"
       | otherwise = "application/octet-stream"
-
--- | Rewrite source with provided substitutions
-render :: ByteString -> [(ByteString, Maybe ByteString)] -> ByteString
-render src = \case
-  [] -> src
-  (label, content') : rest -> render (section_ label content' src) rest
-
--- | Rewrite section content inside @<x-label>...</x-label>@ markers.
--- Markers are always removed when found. Closing marker is mandatory.
--- If content is absent, whole section is removed.
--- Section content is delegated to `item_`. If no sections found, the whole source is delegated.
-section_ :: ByteString -> Maybe ByteString -> ByteString -> ByteString
-section_ label content' src =
-  case B.breakSubstring startMarker src of
-    (_, "") -> item_ label (fromMaybe "" content') src -- no section, just replace items
-    (before, afterStart') ->
-      -- found section start, search for end too
-      case B.breakSubstring endMarker $ B.drop (B.length startMarker) afterStart' of
-        (_, "") -> error $ "missing section end: " <> show endMarker
-        (inside, next') ->
-          let next = B.drop (B.length endMarker) next'
-           in case content' of
-                Just content -> before <> item_ label content inside <> section_ label content' next
-                Nothing -> before <> next -- collapse section
-  where
-    startMarker = "<x-" <> label <> ">"
-    endMarker = "</x-" <> label <> ">"
-
--- | Replace all occurrences of @${label}@ with provided content.
-item_ :: ByteString -> ByteString -> ByteString -> ByteString
-item_ label content' src =
-  case B.breakSubstring marker src of
-    (done, "") -> done
-    (before, after') -> before <> content' <> item_ label content' (B.drop (B.length marker) after')
-  where
-    marker = "${" <> label <> "}"
-
--- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences
-{-# INLINE timedTTLText #-}
-timedTTLText :: (Integral i, Show i) => i -> String
-timedTTLText 0 = "0 sec"
-timedTTLText ttl = do
-  let (m', s) = ttl `quotRem` 60
-      (h', m) = m' `quotRem` 60
-      (d', h) = h' `quotRem` 24
-      (mm, d) = d' `quotRem` 30
-  unwords $
-    [mms mm | mm /= 0]
-      <> [ds d | d /= 0]
-      <> [hs h | h /= 0]
-      <> [ms m | m /= 0]
-      <> [ss s | s /= 0]
-  where
-    ss s = show s <> " sec"
-    ms m = show m <> " min"
-    hs 1 = "1 hour"
-    hs h = show h <> " hours"
-    ds 1 = "1 day"
-    ds 7 = "1 week"
-    ds 14 = "2 weeks"
-    ds d = show d <> " days"
-    mms 1 = "1 month"
-    mms mm = show mm <> " months"
 
 -- | Substitutions for server information fields shared between SMP and XFTP pages.
 serverInfoSubsts :: String -> Maybe ServerPublicInfo -> [(ByteString, Maybe ByteString)]
@@ -303,3 +234,66 @@ serverInfoSubsts simplexmqSource information =
       [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
         ("hostingType", (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
       ]
+
+-- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences
+{-# INLINE timedTTLText #-}
+timedTTLText :: (Integral i, Show i) => i -> String
+timedTTLText 0 = "0 sec"
+timedTTLText ttl = do
+  let (m', s) = ttl `quotRem` 60
+      (h', m) = m' `quotRem` 60
+      (d', h) = h' `quotRem` 24
+      (mm, d) = d' `quotRem` 30
+  unwords $
+    [mms mm | mm /= 0]
+      <> [ds d | d /= 0]
+      <> [hs h | h /= 0]
+      <> [ms m | m /= 0]
+      <> [ss s | s /= 0]
+  where
+    ss s = show s <> " sec"
+    ms m = show m <> " min"
+    hs 1 = "1 hour"
+    hs h = show h <> " hours"
+    ds 1 = "1 day"
+    ds 7 = "1 week"
+    ds 14 = "2 weeks"
+    ds d = show d <> " days"
+    mms 1 = "1 month"
+    mms mm = show mm <> " months"
+
+-- | Rewrite source with provided substitutions
+render :: ByteString -> [(ByteString, Maybe ByteString)] -> ByteString
+render src = \case
+  [] -> src
+  (label, content') : rest -> render (section_ label content' src) rest
+
+-- | Rewrite section content inside @<x-label>...</x-label>@ markers.
+-- Markers are always removed when found. Closing marker is mandatory.
+-- If content is absent, whole section is removed.
+-- Section content is delegated to `item_`. If no sections found, the whole source is delegated.
+section_ :: ByteString -> Maybe ByteString -> ByteString -> ByteString
+section_ label content' src =
+  case B.breakSubstring startMarker src of
+    (_, "") -> item_ label (fromMaybe "" content') src -- no section, just replace items
+    (before, afterStart') ->
+      -- found section start, search for end too
+      case B.breakSubstring endMarker $ B.drop (B.length startMarker) afterStart' of
+        (_, "") -> error $ "missing section end: " <> show endMarker
+        (inside, next') ->
+          let next = B.drop (B.length endMarker) next'
+           in case content' of
+                Just content -> before <> item_ label content inside <> section_ label content' next
+                Nothing -> before <> next -- collapse section
+  where
+    startMarker = "<x-" <> label <> ">"
+    endMarker = "</x-" <> label <> ">"
+
+-- | Replace all occurrences of @${label}@ with provided content.
+item_ :: ByteString -> ByteString -> ByteString -> ByteString
+item_ label content' src =
+  case B.breakSubstring marker src of
+    (done, "") -> done
+    (before, after') -> before <> content' <> item_ label content' (B.drop (B.length marker) after')
+  where
+    marker = "${" <> label <> "}"
