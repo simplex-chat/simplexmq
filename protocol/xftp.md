@@ -1,4 +1,4 @@
-Version 2, 2024-06-22
+Version 3, 2025-01-24
 
 # SimpleX File Transfer Protocol
 
@@ -33,6 +33,7 @@ Version 2, 2024-06-22
   - [File recipient commands](#file-recipient-commands)
     - [Download file chunk](#download-file-chunk)
     - [Acknowledge file chunk download](#acknowledge-file-chunk-download)
+  - [Error responses](#error-responses)
 - [Threat model](#threat-model)
 
 ## Abstract
@@ -48,6 +49,12 @@ It is designed as a application level protocol to solve the problem of secure an
 The objective of SimpleX File Transfer Protocol (XFTP) is to facilitate the secure and private unidirectional transfer of files from senders to recipients via persistent file chunks stored by the xftp server.
 
 XFTP is implemented as an application level protocol on top of HTTP2 and TLS.
+
+This document describes XFTP protocol version 3. The version history:
+
+- v1: initial version
+- v2: authenticated commands - added basic auth support for commands
+- v3: blocked files - added BLOCKED error type for policy violations
 
 The protocol describes the set of commands that senders and recipients can send to XFTP servers to create, upload, download and delete file chunks of several pre-defined sizes. XFTP servers SHOULD support chunks of 4 sizes: 64KB, 256KB, 1MB and 4MB (1KB = 1024 bytes, 1MB = 1024KB).
 
@@ -283,7 +290,7 @@ XFTP server implementations MUST NOT create, store or send to any other servers:
 - binary-encoded commands sent as fixed-size padded block in the body of HTTP2 POST request, similar to SMP and notifications server protocol transmission encodings.
 - HTTP2 POST with a fixed size padded block body for file upload and download.
 
-Block size - 4096 bytes (it would fit ~120 Ed25519 recipient keys).
+Block size - 16384 bytes (it would fit ~350 Ed25519 recipient keys).
 
 The reasons to use HTTP2:
 
@@ -320,12 +327,13 @@ Once TLS handshake is complete, client and server will exchange blocks of fixed 
 
 ```abnf
 paddedServerHello = <padded(serverHello, 16384)>
-serverHello = xftpVersionRange sessionIdentifier serverCert signedServerKey ignoredPart
+serverHello = xftpVersionRange sessionIdentifier serverCerts signedServerKey ignoredPart
 xftpVersionRange = minXftpVersion maxXftpVersion
 minXftpVersion = xftpVersion
 maxXftpVersion = xftpVersion
 sessionIdentifier = shortString
 ; unique session identifier derived from transport connection handshake
+serverCerts = length 1*serverCert ; NonEmpty list of certificates in chain
 serverCert = originalLength <x509encoded>
 signedServerKey = originalLength <x509encoded> ; signed by server certificate
 
@@ -382,7 +390,7 @@ Commands syntax below is provided using ABNF with case-sensitive strings extensi
 xftpCommand = ping / senderCommand / recipientCmd / serverMsg
 senderCommand = register / add / put / delete
 recipientCmd = get / ack
-serverMsg = pong / sndIds / rcvIds / ok / file
+serverMsg = pong / sndIds / rcvIds / ok / file / error
 ```
 
 The syntax of specific commands and responses is defined below.
@@ -427,7 +435,7 @@ The syntax is:
 register = %s"FNEW " fileInfo rcvPublicAuthKeys basicAuth
 fileInfo = sndKey size digest
 sndKey = length x509encoded
-size = 1*DIGIT
+size = 4*4 OCTET ; Word32 big-endian
 digest = length *OCTET
 rcvPublicAuthKeys = length 1*rcvPublicAuthKey
 rcvPublicAuthKey = length x509encoded
@@ -509,7 +517,7 @@ If requested file is successfully located, the server must send `file` response.
 ```abnf
 file = %s"FILE " sDhKey cbNonce
 sDhKey = length x509encoded
-cbNonce = <nonce used in NaCl crypto_box encryption scheme>
+cbNonce = 24*24 OCTET ; NaCl crypto_box nonce
 ```
 
 Chunk is additionally encrypted on the way from the server to the recipient using a key agreed via ephemeral DH keys `rDhKey` and `sDhKey`, so there is no ciphertext in common between sent and received traffic inside TLS connection, in order to complicate traffic correlation attacks, if TLS is compromised.
@@ -525,6 +533,40 @@ ack = %s"FACK"
 If file recipient ID is successfully deleted, the server must send `ok` response.
 
 In current implementation of XFTP protocol in SimpleX Chat clients don't use FACK command. Files are automatically expired on servers after configured time interval.
+
+### Error responses
+
+The server responds with `ERR` followed by the error type:
+
+```abnf
+error = %s"ERR " errorType
+errorType = %s"BLOCK" / %s"SESSION" / %s"HANDSHAKE" /
+            %s"CMD" SP cmdError / %s"AUTH" / %s"BLOCKED" SP blockingInfo /
+            %s"SIZE" / %s"QUOTA" / %s"DIGEST" / %s"CRYPTO" /
+            %s"NO_FILE" / %s"HAS_FILE" / %s"FILE_IO" /
+            %s"TIMEOUT" / %s"INTERNAL"
+cmdError = %s"UNKNOWN" / %s"SYNTAX" / %s"PROHIBITED" / %s"NO_AUTH" / %s"HAS_AUTH" / %s"NO_ENTITY"
+blockingInfo = %s"reason=" blockingReason ["," %s"notice=" jsonNotice]
+blockingReason = %s"spam" / %s"content"
+jsonNotice = *OCTET ; JSON-encoded notice object
+```
+
+Error types:
+- `BLOCK` - incorrect block format, encoding or signature size.
+- `SESSION` - incorrect session ID (TLS Finished message / tls-unique binding).
+- `HANDSHAKE` - incorrect handshake command.
+- `CMD` - command syntax errors (UNKNOWN, SYNTAX, PROHIBITED, NO_AUTH, HAS_AUTH, NO_ENTITY).
+- `AUTH` - command authorization error - bad signature or non-existing file chunk.
+- `BLOCKED` - file chunk was blocked due to policy violation (added in v3). Contains blocking reason and optional notice.
+- `SIZE` - incorrect file size.
+- `QUOTA` - storage quota exceeded.
+- `DIGEST` - incorrect file digest.
+- `CRYPTO` - file encryption/decryption failed.
+- `NO_FILE` - no expected file body in request/response or no file on the server.
+- `HAS_FILE` - unexpected file body.
+- `FILE_IO` - file IO error.
+- `TIMEOUT` - file sending or receiving timeout.
+- `INTERNAL` - internal server error.
 
 ## Threat model
 

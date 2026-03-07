@@ -15,6 +15,123 @@ SET row_security = off;
 CREATE SCHEMA ntf_server;
 
 
+
+CREATE FUNCTION ntf_server.on_subscription_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.on_subscription_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.on_subscription_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.ntf_service_assoc = true AND should_subscribe_status(OLD.status) THEN
+    IF NOT (NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status)) THEN
+      PERFORM update_aggregates(OLD.smp_server_id, -1, OLD.smp_notifier_id);
+    END IF;
+  ELSIF NEW.ntf_service_assoc = true AND should_subscribe_status(NEW.status) THEN
+    PERFORM update_aggregates(NEW.smp_server_id, 1, NEW.smp_notifier_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.should_subscribe_status(p_status text) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+BEGIN
+  RETURN p_status IN ('NEW', 'PENDING', 'ACTIVE', 'INACTIVE');
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.update_aggregates(p_server_id bigint, p_change bigint, p_notifier_id bytea) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  UPDATE smp_servers
+  SET smp_notifier_count = smp_notifier_count + p_change,
+      smp_notifier_ids_hash = xor_combine(smp_notifier_ids_hash, public.digest(p_notifier_id, 'md5'))
+  WHERE smp_server_id = p_server_id;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.update_all_aggregates() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  WITH acc AS (
+    SELECT
+      s.smp_server_id,
+      count(smp_notifier_id) as notifier_count,
+      xor_aggregate(public.digest(s.smp_notifier_id, 'md5')) AS notifier_hash
+    FROM subscriptions s
+    WHERE s.ntf_service_assoc = true AND should_subscribe_status(s.status)
+    GROUP BY s.smp_server_id
+  )
+  UPDATE smp_servers srv
+  SET smp_notifier_count = COALESCE(acc.notifier_count, 0),
+      smp_notifier_ids_hash = COALESCE(acc.notifier_hash, '\x00000000000000000000000000000000')
+  FROM acc
+  WHERE srv.smp_server_id = acc.smp_server_id;
+END;
+$$;
+
+
+
+CREATE FUNCTION ntf_server.xor_combine(state bytea, value bytea) RETURNS bytea
+    LANGUAGE plpgsql IMMUTABLE STRICT
+    AS $$
+DECLARE
+  result BYTEA := state;
+  i INTEGER;
+  len INTEGER := octet_length(value);
+BEGIN
+  IF octet_length(state) != len THEN
+    RAISE EXCEPTION 'Inputs must be equal length (% != %)', octet_length(state), len;
+  END IF;
+  FOR i IN 0..len-1 LOOP
+    result := set_byte(result, i, get_byte(state, i) # get_byte(value, i));
+  END LOOP;
+  RETURN result;
+END;
+$$;
+
+
+
+CREATE AGGREGATE ntf_server.xor_aggregate(bytea) (
+    SFUNC = ntf_server.xor_combine,
+    STYPE = bytea,
+    INITCOND = '\x00000000000000000000000000000000'
+);
+
+
 SET default_table_access_method = heap;
 
 
@@ -53,7 +170,12 @@ CREATE TABLE ntf_server.smp_servers (
     smp_host text NOT NULL,
     smp_port text NOT NULL,
     smp_keyhash bytea NOT NULL,
-    ntf_service_id bytea
+    ntf_service_id bytea,
+    smp_notifier_count bigint DEFAULT 0 NOT NULL,
+    smp_notifier_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL,
+    ntf_service_cert bytea,
+    ntf_service_cert_hash bytea,
+    ntf_service_priv_key bytea
 );
 
 
@@ -155,6 +277,18 @@ CREATE UNIQUE INDEX idx_tokens_push_provider_token ON ntf_server.tokens USING bt
 
 
 CREATE INDEX idx_tokens_status_cron_interval_sent_at ON ntf_server.tokens USING btree (status, cron_interval, ((cron_sent_at + (cron_interval * 60))));
+
+
+
+CREATE TRIGGER tr_subscriptions_delete AFTER DELETE ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_delete();
+
+
+
+CREATE TRIGGER tr_subscriptions_insert AFTER INSERT ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_insert();
+
+
+
+CREATE TRIGGER tr_subscriptions_update AFTER UPDATE ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_update();
 
 
 

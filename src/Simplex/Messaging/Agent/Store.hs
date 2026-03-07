@@ -67,9 +67,9 @@ module Simplex.Messaging.Agent.Store
     AsyncCmdId,
     StoreError (..),
     AnyStoreError (..),
+    ServiceAssoc,
     createStore,
     rcvQueueSub,
-    clientServiceId,
     rcvSMPQueueAddress,
     canAbortRcvSwitch,
     findQ,
@@ -101,9 +101,9 @@ import Data.Time (UTCTime)
 import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State)
-import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Common
 import Simplex.Messaging.Agent.Store.DB (SQLError)
+import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
@@ -158,7 +158,7 @@ data StoredRcvQueue (q :: DBStored) = RcvQueue
     -- | short link ID and credentials
     shortLink :: Maybe ShortLinkCreds,
     -- | associated client service
-    clientService :: Maybe (StoredClientService q),
+    rcvServiceAssoc :: ServiceAssoc,
     -- | queue status
     status :: QueueStatus,
     -- | to enable notifications for this queue - this field is duplicated from ConnData
@@ -199,9 +199,7 @@ rcvQueueSub :: RcvQueue -> RcvQueueSub
 rcvQueueSub RcvQueue {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId = DBEntityId dbQueueId, primary, dbReplaceQueueId} =
   RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
-clientServiceId :: RcvQueue -> Maybe ClientServiceId
-clientServiceId = fmap dbServiceId . clientService
-{-# INLINE clientServiceId #-}
+type ServiceAssoc = Bool
 
 rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
