@@ -1,6 +1,6 @@
 # Web Handshake — Challenge-Response Identity Proof
 
-RFC §6.3: Server proves XFTP identity to web clients independently of TLS CA infrastructure.
+RFC §6.3: Router proves XFTP identity to web clients independently of TLS CA infrastructure.
 
 ## 1. Protocol
 
@@ -29,7 +29,7 @@ Server → empty                                                   → Client
 
 **Detection**: `sniUsed` per-connection flag. Non-empty hello allowed only when `sniUsed`. Empty hello with SNI → standard handshake.
 
-**Why both steps 3 and 4**: Native clients verify `signedPubKey` using the TLS peer certificate (`serverKey` from `getServerVerifyKey`), which is the XFTP identity cert in non-SNI connections — TLS provides this binding. Web clients cannot access TLS peer certificate data (browser API limitation; TLS presents the web CA cert but provides no API to extract it). So web clients must verify at the application layer using `authPubKey.certChain`, which always contains the XFTP identity chain regardless of which cert TLS used. Step 3 proves the server holds its identity key *right now* (freshness via random challenge). Step 4 proves the DH session key was signed by the identity key holder (prevents MITM key substitution). Together they give web clients some assurance native clients get from TLS, except channel binding for commands.
+**Why both steps 3 and 4**: Native clients verify `signedPubKey` using the TLS peer certificate (`serverKey` from `getServerVerifyKey`), which is the XFTP identity cert in non-SNI connections — TLS provides this binding. Web clients cannot access TLS peer certificate data (browser API limitation; TLS presents the web CA cert but provides no API to extract it). So web clients must verify at the application layer using `authPubKey.certChain`, which always contains the XFTP identity chain regardless of which cert TLS used. Step 3 proves the router holds its identity key *right now* (freshness via random challenge). Step 4 proves the DH session key was signed by the identity key holder (prevents MITM key substitution). Together they give web clients some assurance native clients get from TLS, except channel binding for commands.
 
 ## 2. Type Changes — `src/Simplex/FileTransfer/Transport.hs`
 
@@ -56,7 +56,7 @@ Same `Tail compat` pattern as server handshake.
 
 Both types use `(..)` export — new fields auto-exported.
 
-## 3. Server Changes — `src/Simplex/FileTransfer/Server.hs`
+## 3. Router Changes — `src/Simplex/FileTransfer/Server.hs`
 
 ### `XFTPTransportRequest` (line 88)
 
@@ -176,7 +176,7 @@ Remove `extractCertEd25519Key` (replaced by generic path). Keep `extractCertPubl
 
 ### 10.5 Tests — `tests/XFTPWebTests.hs`
 
-**Integration test**: Switch from `withXFTPServerEd25519SNI` (Ed25519 fixtures) to `withXFTPServerSNI` (default Ed448 fixtures). Update fingerprint source from `tests/fixtures/ed25519/ca.crt` to `tests/fixtures/ca.crt`.
+**Integration test**: Switch from `withXFTPServerEd25519SNI` (Ed25519 fixtures) to `withXFTPServerSNI` (default Ed448 fixtures). Update fingerprint source from `tests/fixtures/ed25519/ca.crt` to the default `tests/fixtures/ca.crt`.
 
 Optionally add a second integration test with Ed25519 to cover both paths, or rely on existing unit tests for Ed25519 coverage.
 

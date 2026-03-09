@@ -2,14 +2,14 @@
 
 ## 1. Problem & Business Case
 
-There is no way to send or receive files using SimpleX without installing the app. A static web page that implements the XFTP protocol client-side would allow anyone with a browser to upload and download files via XFTP servers, promoting app adoption.
+There is no way to send or receive files using SimpleX without installing the app. A static web page that implements the XFTP protocol client-side would allow anyone with a browser to upload and download files via XFTP routers, promoting app adoption.
 
 **Business constraints:**
 - Web page allows up to 100 MB uploads; app allows up to 1 GB.
 - Page must promote app installation (e.g., banner, messaging around limits).
 
 **Security constraint:**
-- The server hosting the page must never access file content or file descriptions. The file description is carried in the URL hash fragment (`#`), which browsers do not send to the server.
+- The router hosting the page must never access file content or file descriptions. The file description is carried in the URL hash fragment (`#`), which browsers do not send to the router.
 - The only way to compromise transfer security is page substitution (serving malicious JS). Mitigations: standard web security (HTTPS, CSP, SRI) and IPFS hosting with page fingerprints published in multiple independent locations.
 
 ## 2. Design Overview
@@ -29,7 +29,7 @@ There is no way to send or receive files using SimpleX without installing the ap
          │ fetch() over HTTP/2          │ fetch() over HTTP/2
          ▼                              ▼
 ┌─────────────────┐            ┌─────────────────┐
-│ XFTP Server 1   │            │ XFTP Server 2   │
+│ XFTP Router 1   │            │ XFTP Router 2   │
 │ (SNI→web cert)  │            │ (SNI→web cert)  │
 │ (+CORS headers) │            │ (+CORS headers) │
 └─────────────────┘            └─────────────────┘
@@ -59,7 +59,7 @@ There is no way to send or receive files using SimpleX without installing the ap
 ### 3.3 Error States
 
 - File too large (> 100 MB): Show limit message with app install CTA.
-- Server unreachable: Retry with exponential backoff, show error after exhausting retries.
+- Router unreachable: Retry with exponential backoff, show error after exhausting retries.
 - File expired: "This file is no longer available" message.
 - Decryption failure: "File corrupted or link invalid" message.
 
@@ -71,7 +71,7 @@ There is no way to send or receive files using SimpleX without installing the ap
 https://example.com/file/#<compressed-base64url-encoded-file-description>
 ```
 
-- Hash fragment is never sent to the server.
+- Hash fragment is never sent to the router.
 - Compression: DEFLATE (raw, no gzip/zlib wrapper) — better ratio than LZW for structured text like YAML.
 - Encoding: Base64url (RFC 4648 §5) — no `+`, `/`, `=`, or `%` characters.
 
@@ -79,18 +79,18 @@ Alternative: LZW + base64url if DEFLATE proves problematic. Both should be evalu
 
 ### 4.2 Redirect Mechanism
 
-For files with many chunks, the YAML file description can exceed a practical URL length. The threshold is ~600 bytes of compressed+encoded description (configurable).
+For files with many data packets, the YAML file description can exceed a practical URL length. The threshold is ~600 bytes of compressed+encoded description (configurable).
 
 **Flow when description is too large:**
 1. Serialize recipient file description to YAML.
 2. Encrypt YAML using fresh key + nonce (same XSalsa20-Poly1305 as files).
-3. Upload encrypted YAML as a single-chunk "file" to one randomly chosen XFTP server.
+3. Upload encrypted YAML as a single-packet "file" to one randomly chosen XFTP router.
 4. Create redirect description pointing to this uploaded description.
-5. Encode redirect description into URL (always small — single chunk).
+5. Encode redirect description into URL (always small — single data packet).
 
 **Download with redirect:**
 1. Parse URL → redirect description (has `redirect` field with `size` and `digest`).
-2. Download the description "file" using the single chunk reference.
+2. Download the description "file" using the single data packet reference.
 3. Decrypt → get full YAML description.
 4. Validate size and digest match redirect metadata.
 5. Proceed with normal download using full description.
@@ -99,11 +99,11 @@ For files with many chunks, the YAML file description can exceed a practical URL
 
 These estimates are preliminary and may be incorrect.
 
-| Scenario | Chunks | Compressed+encoded size | URL length |
+| Scenario | Data packets | Compressed+encoded size | URL length |
 |----------|--------|------------------------|------------|
-| Small file (1 chunk, 1 server) | 1 | ~300 bytes | ~350 chars |
-| Medium file (5 chunks, 1 server) | 5 | ~500 bytes | ~550 chars |
-| Large file (25+ chunks) | 25 | Exceeds threshold → redirect | ~350 chars |
+| Small file (1 data packet, 1 router) | 1 | ~300 bytes | ~350 chars |
+| Medium file (5 data packets, 1 router) | 5 | ~500 bytes | ~550 chars |
+| Large file (25+ data packets) | 25 | Exceeds threshold → redirect | ~350 chars |
 
 ## 5. TypeScript XFTP Client Library
 
@@ -141,7 +141,7 @@ The XFTP wire format uses a custom binary encoding (from `Simplex.Messaging.Enco
   - Fields separated by space (0x20).
   - `signature`: Ed25519 signature over `(sessionId ++ corrId ++ entityId ++ encodedCommand)`.
   - `corrId`: Correlation ID (arbitrary, echoed in response).
-  - `entityId`: File/chunk ID on server.
+  - `entityId`: File/data packet ID on router.
   - Command: tag + space-separated fields.
 - **Padding:** 2-byte big-endian length prefix + message + `#` (0x23) fill to block size (16384 bytes).
 
@@ -154,7 +154,7 @@ The XFTP wire format uses a custom binary encoding (from `Simplex.Messaging.Enco
 | Transit decryption (download) | XSalsa20-Poly1305 (streaming: `cbInit` + `sbDecryptChunk`) | DH shared secret | 24 B | 16 B | libsodium.js |
 | Command signing | Ed25519 | 64 B (private) | — | 64 B (sig) | libsodium.js |
 | DH key exchange | X25519 | 32 B | — | — | libsodium.js |
-| Chunk digest | SHA-256 | — | — | 32 B | Web Crypto API |
+| Data packet digest | SHA-256 | — | — | 32 B | Web Crypto API |
 | File digest | SHA-512 | — | — | 64 B | Web Crypto API |
 | Random bytes | ChaCha20-DRBG | — | — | — | libsodium.js `randombytes_buf` |
 
@@ -204,7 +204,7 @@ async function sendXFTPCommand(
 - Firefox 102+: Supported
 - Safari 16.4+: Supported
 
-For older browsers, fall back to `ArrayBuffer` body (buffer entire chunk in memory).
+For older browsers, fall back to `ArrayBuffer` body (buffer entire data packet in memory).
 
 ### 5.5 Upload Orchestration
 
@@ -220,22 +220,22 @@ For older browsers, fall back to `ArrayBuffer` body (buffer entire chunk in memo
    d. Encrypt `'#'` padding in 65536-byte chunks to fill `encSize - authTagSize - fileSize' - 8`
    e. Finalize: `sbAuth(state)` → append 16-byte auth tag
 6. Compute SHA-512 digest of encrypted data
-7. Split into chunks using prepareChunkSizes algorithm:
-   - > 75% of 4MB → 4MB chunks
-   - > 75% of 1MB → 1MB + 4MB chunks
-   - Otherwise → 64KB + 256KB chunks
-8. For each chunk (parallel, up to 8 concurrent):
+7. Split into data packets using prepareChunkSizes algorithm:
+   - > 75% of 4MB → 4MB data packets
+   - > 75% of 1MB → 1MB + 4MB data packets
+   - Otherwise → 64KB + 256KB data packets
+8. For each data packet (parallel, up to 8 concurrent):
    a. Generate Ed25519 sender keypair
    b. Generate Ed25519 recipient keypair (1 recipient for web)
-   c. Compute SHA-256 chunk digest
-   d. Connect to XFTP server (handshake if new connection)
+   c. Compute SHA-256 data packet digest
+   d. Connect to XFTP router (handshake if new connection)
    e. Send FNEW { sndKey, size, digest } + recipient keys → receive (senderId, [recipientId])
-   f. Send FPUT with chunk data → receive OK
+   f. Send FPUT with data packet content → receive OK
    g. Report progress
-9. Build FileDescription YAML from all chunk metadata
+9. Build FileDescription YAML from all data packet metadata
 10. If YAML size (compressed+encoded) > threshold:
     a. Encrypt YAML as a file
-    b. Upload encrypted YAML (single chunk) → get redirect description
+    b. Upload encrypted YAML (single data packet) → get redirect description
     c. Use redirect description for URL
 11. Compress + base64url encode description
 12. Display URL: https://example.com/file/#<encoded>
@@ -247,32 +247,32 @@ For older browsers, fall back to `ArrayBuffer` body (buffer entire chunk in memo
 1. Parse URL hash fragment
 2. Base64url decode + decompress → YAML
 3. Parse YAML → FileDescription
-4. Validate description (sequential chunks, sizes match)
+4. Validate description (sequential data packets, sizes match)
 5. If redirect field present:
-   a. Download redirect file (single chunk)
+   a. Download redirect file (single data packet)
    b. Decrypt, validate size+digest, parse inner description
    c. Continue with inner description
-6. For each chunk (parallel, up to 8 concurrent):
+6. For each data packet (parallel, up to 8 concurrent):
    a. Generate ephemeral X25519 keypair
-   b. Connect to XFTP server (web handshake)
+   b. Connect to XFTP router (web handshake)
    c. Send FGET { recipientDhPubKey } → receive (serverDhPubKey, cbNonce) + encrypted body
    d. Compute DH shared secret
-   e. Transit-decrypt chunk body (XSalsa20-Poly1305 with DH secret)
-   f. Verify chunk digest (SHA-256)
+   e. Transit-decrypt data packet body (XSalsa20-Poly1305 with DH secret)
+   f. Verify data packet digest (SHA-256)
    g. Send FACK → receive OK
    h. Report progress
-7. Concatenate all transit-decrypted chunks (in order) → encrypted file
+7. Concatenate all transit-decrypted data packets (in order) → encrypted file
 8. Verify file digest (SHA-512)
 9. File-decrypt entire stream (XSalsa20-Poly1305 with file key + nonce)
 10. Extract FileHeader → get original fileName
 11. Trigger browser download (Blob + <a download> or File System Access API)
 ```
 
-## 6. XFTP Server Changes
+## 6. XFTP Router Changes
 
 ### 6.1 SNI-Based Certificate Switching
 
-The SMP server already implements SNI-based certificate switching (see `Transport/Server.hs:255-269`). The same mechanism must be added to the XFTP server.
+The SMP router already implements SNI-based certificate switching (see `Transport/Server.hs:255-269`). The same mechanism must be added to the XFTP router.
 
 **Current SMP implementation:**
 ```haskell
@@ -292,14 +292,14 @@ T.onServerNameIndication = case sniCredential of
 
 **Certificate setup:**
 - XFTP identity certificate: Existing self-signed CA chain (used for protocol identity via fingerprint).
-- Web certificate: Standard CA-issued TLS certificate (e.g., Let's Encrypt) for the server's FQDN.
+- Web certificate: Standard CA-issued TLS certificate (e.g., Let's Encrypt) for the router's FQDN.
 - Both certificates served on the same port (443).
 
 ### 6.2 CORS Support
 
-Browsers enforce same-origin policy. The web page (served from `example.com`) must make cross-origin requests to XFTP servers (`xftp1.simplex.im`, etc.).
+Browsers enforce same-origin policy. The web page (served from `example.com`) must make cross-origin requests to XFTP routers (`xftp1.simplex.im`, etc.).
 
-**Required server changes:**
+**Required router changes:**
 
 1. **Handle OPTIONS preflight requests:**
    ```
@@ -319,45 +319,45 @@ Browsers enforce same-origin policy. The web page (served from `example.com`) mu
    Access-Control-Expose-Headers: *
    ```
 
-3. **Implementation location:** In `runHTTP2Server` handler or a wrapper around the XFTP request handler. Detect the `Origin` header → add CORS headers. This can be conditional on web mode being enabled in config.
+3. **Implementation location:** In `runHTTP2Server` handler or a wrapper around the XFTP request handler. Detect the `Origin` header → add CORS headers. This can be conditional on web mode being enabled in the router config.
 
 **Security consideration:** `Access-Control-Allow-Origin: *` is safe here because:
-- All XFTP commands require Ed25519 authentication (per-chunk keys from file description).
+- All XFTP commands require Ed25519 authentication (per-packet keys from file description).
 - No cookies or browser credentials are involved.
 - File content is end-to-end encrypted.
 
-### 6.3 Web Handshake with Server Identity Proof
+### 6.3 Web Handshake with Router Identity Proof
 
 **Both SNI and web handshake are required.** They solve different problems:
 
-1. **SNI certificate switching** is required because browsers reject self-signed certificates. The XFTP identity certificate is self-signed (CA chain with offline root), so the server must present a standard CA-issued web certificate (e.g., Let's Encrypt) when a browser connects. SNI is how the server detects this.
+1. **SNI certificate switching** is required because browsers reject self-signed certificates. The XFTP identity certificate is self-signed (CA chain with offline root), so the router must present a standard CA-issued web certificate (e.g., Let's Encrypt) when a browser connects. SNI is how the router detects this.
 
 2. **Web handshake with challenge-response** is required because browsers cannot access the TLS certificate fingerprint or the TLS-unique channel binding (`sessionId`). The native client validates XFTP identity by checking the certificate chain fingerprint against the known `keyHash` and binding it to the TLS session. The browser gets none of this — it only knows TLS succeeded with some CA-issued cert. So the XFTP identity must be proven at the protocol level.
 
 **Standard handshake (unchanged for native clients):**
 ```
-1. Client → empty POST body → Server
-2. Server → padded { vRange, sessionId, CertChainPubKey } → Client
-3. Client → padded { version, keyHash } → Server
-4. Server → empty → Client
+1. Client → empty POST body → Router
+2. Router → padded { vRange, sessionId, CertChainPubKey } → Client
+3. Client → padded { version, keyHash } → Router
+4. Router → empty → Client
 ```
 
 **Web handshake (new, when SNI is detected):**
 ```
-1. Client → padded { challenge: 32 random bytes } → Server
-2. Server → padded { vRange, sessionId, CertChainPubKey } (header block)
+1. Client → padded { challenge: 32 random bytes } → Router
+2. Router → padded { vRange, sessionId, CertChainPubKey } (header block)
             + extended body { fullCertChain, signature(challenge ++ sessionId) } → Client
 3. Client validates:
    - Certificate chain CA fingerprint matches known keyHash
    - Signature over (challenge ++ sessionId) is valid under cert's public key
-   - This proves: server controls XFTP identity key AND is live (not replay)
-4. Client → padded { version, keyHash } → Server
-5. Server → empty → Client
+   - This proves: router controls XFTP identity key AND is live (not replay)
+4. Client → padded { version, keyHash } → Router
+5. Router → empty → Client
 ```
 
-**Detection mechanism:** The server detects web clients by the `sniCredUsed` flag (already available from the TLS layer). When SNI is detected, the server expects a challenge in the first POST body (non-empty, unlike standard handshake where it is empty). No marker byte is needed — SNI presence is the discriminator.
+**Detection mechanism:** The router detects web clients by the `sniCredUsed` flag (already available from the TLS layer). When SNI is detected, the router expects a challenge in the first POST body (non-empty, unlike standard handshake where it is empty). No marker byte is needed — SNI presence is the discriminator.
 
-**Block size note:** The XFTP block size is 16384 bytes (`Protocol.hs:65`). The XFTP identity certificate chain fits within this block. The signed challenge response is sent as an extended body (streamed after the 16384-byte header block), same mechanism as file chunk data.
+**Block size note:** The XFTP block size is 16384 bytes (`Protocol.hs:65`). The XFTP identity certificate chain fits within this block. The signed challenge response is sent as an extended body (streamed after the 16384-byte header block), same mechanism as data packet content.
 
 ### 6.4 Protocol Version and Handshake Extension
 
@@ -373,11 +373,11 @@ The XFTP handshake is binary-encoded via the `Encoding` typeclass (`Transport.hs
 
 ### 6.5 Serving the Static Page
 
-The XFTP server can optionally serve the static web page itself (similar to how SMP servers serve info pages). When a browser connects via SNI and sends a GET request (not POST), the server serves the HTML/JS/CSS bundle.
+The XFTP router can optionally serve the static web page itself (similar to how SMP routers serve info pages). When a browser connects via SNI and sends a GET request (not POST), the router serves the HTML/JS/CSS bundle.
 
-This can be implemented identically to the SMP server's static page serving (`apps/smp-server/web/Static.hs`), using Warp to handle HTTP requests on the same TLS connection.
+This can be implemented identically to the SMP router's static page serving (`apps/smp-server/web/Static.hs`), using Warp to handle HTTP requests on the same TLS connection.
 
-Alternatively, the page is hosted on a separate web server (e.g., `files.simplex.chat`). The XFTP servers only need to handle XFTP protocol requests (POST) with CORS headers.
+Alternatively, the page is hosted on a separate web server (e.g., `files.simplex.chat`). The XFTP routers only need to handle XFTP protocol requests (POST) with CORS headers.
 
 ## 7. Security Analysis
 
@@ -386,24 +386,24 @@ Alternatively, the page is hosted on a separate web server (e.g., `files.simplex
 | Threat | Mitigation | Residual Risk |
 |--------|-----------|---------------|
 | Page substitution (malicious JS) | HTTPS, CSP, SRI; IPFS hosting with fingerprints in multiple locations | If web server is compromised and IPFS is not used, all guarantees lost. Fundamental limitation of web-based E2E crypto, mitigated by IPFS. |
-| MITM between browser and XFTP server | XFTP identity verification via challenge-response handshake | Attacker can relay traffic (see §7.2) but cannot read file content due to E2E encryption. |
-| File description leakage | Hash fragment (`#`) is never sent to server | If browser extension or malware reads URL bar, description is exposed. |
-| Server learns file content | File encrypted client-side before upload (XSalsa20-Poly1305) | Server sees encrypted chunks only. |
+| MITM between browser and XFTP router | XFTP identity verification via challenge-response handshake | Attacker can relay traffic (see §7.2) but cannot read file content due to E2E encryption. |
+| File description leakage | Hash fragment (`#`) is never sent to router | If browser extension or malware reads URL bar, description is exposed. |
+| Router learns file content | File encrypted client-side before upload (XSalsa20-Poly1305) | Router sees encrypted data packets only. |
 | Traffic analysis | File size visible to network observers | Same as native XFTP client. |
 
 ### 7.2 Relay Attack Analysis
 
-An attacker who controls the network could relay all traffic between the browser and the real XFTP server:
+An attacker who controls the network could relay all traffic between the browser and the real XFTP router:
 
-1. Browser sends challenge to "attacker's server"
-2. Attacker relays to real server
-3. Real server signs challenge + sessionId with XFTP identity key
+1. Browser sends challenge to "attacker's router"
+2. Attacker relays to real router
+3. Real router signs challenge + sessionId with XFTP identity key
 4. Attacker relays signed response to browser
-5. Browser validates ✓ (signature is from the real server)
+5. Browser validates ✓ (signature is from the real router)
 
 However, the attacker **cannot read file content** because:
 - File encryption key is in the hash fragment (never sent over network)
-- Transit encryption uses DH key exchange (FGET) — attacker doesn't have server's DH private key
+- Transit encryption uses DH key exchange (FGET) — attacker doesn't have router's DH private key
 - The attacker can observe transfer sizes and timing, but this is already visible via traffic analysis
 
 The relay attack is equivalent to a passive network observer, which is the same threat model as native XFTP.
@@ -414,6 +414,7 @@ The relay attack is equivalent to a passive network observer, which is the same 
 |----------|--------------|------------|
 | TLS certificate validation | XFTP identity cert via fingerprint pinning | Web CA cert via browser + XFTP identity via challenge-response |
 | Session binding | TLS-unique binds to XFTP identity cert | TLS-unique binds to web cert; challenge binds to XFTP identity |
+
 | Code integrity | Binary signed/distributed via app stores | Served over HTTPS; SRI for subresources; IPFS hosting option; vulnerable to server compromise |
 | File encryption | XSalsa20-Poly1305 | Same |
 | Transit encryption | DH + XSalsa20-Poly1305 | Same |
@@ -421,8 +422,8 @@ The relay attack is equivalent to a passive network observer, which is the same 
 ### 7.4 Layman Security Summary (Displayed on Page)
 
 The web page should display a brief, non-technical security summary explaining to users:
-- Files are encrypted in the browser before upload — the server never sees file contents.
-- The file link (URL) contains the decryption key in the hash fragment, which the browser never sends to any server.
+- Files are encrypted in the browser before upload — the router never sees file contents.
+- The file link (URL) contains the decryption key in the hash fragment, which the browser never sends to any router.
 - Only someone with the exact link can download and decrypt the file.
 - The main risk is if the web page itself is tampered with (page substitution attack). IPFS hosting mitigates this.
 - For maximum security, use the SimpleX app instead.
@@ -445,10 +446,10 @@ The web page should display a brief, non-technical security summary explaining t
 - Well-understood, readable, auditable by the community.
 - Rich crypto ecosystem (libsodium.js provides all needed NaCl primitives as WASM).
 - Direct access to browser APIs (fetch, File, ReadableStream, Blob).
-- Testable in Node.js against Haskell XFTP server.
+- Testable in Node.js against Haskell XFTP router.
 - Small bundle size (~200 KB with libsodium WASM).
 
-**Risk:** Exact byte-level wire compatibility requires careful encoding implementation and thorough testing against the Haskell server.
+**Risk:** Exact byte-level wire compatibility requires careful encoding implementation and thorough testing against the Haskell router.
 
 ### 8.3 Option 3: C to WASM
 
@@ -476,14 +477,14 @@ The web page should display a brief, non-technical security summary explaining t
 4. Handshake encoding/decoding (protocol/handshake.ts) — 18 tests
 5. Identity proof verification (crypto/identity.ts) — 15 tests
 6. File descriptions: types, YAML, validation (protocol/description.ts) — 13 tests
-7. Chunk sizing: prepareChunkSizes, singleChunkSize, etc. (protocol/chunks.ts) — 4 tests
+7. Data packet sizing: prepareChunkSizes, singleChunkSize, etc. (protocol/chunks.ts) — 4 tests
 8. Transport crypto: cbAuthenticate/cbVerify, transit encrypt/decrypt (protocol/client.ts) — 10 tests
-9. Server address parsing (protocol/address.ts) — 3 tests
+9. Router address parsing (protocol/address.ts) — 3 tests
 10. Download helpers: DH, transit-decrypt, file-decrypt (download.ts) — 11 tests
 
-### Phase 2: XFTP Server Changes — DONE
+### Phase 2: XFTP Router Changes — DONE
 
-**Goal:** XFTP servers support web client connections.
+**Goal:** XFTP routers support web client connections.
 
 **Completed** (7 Haskell integration tests passing):
 1. SNI certificate switching — `TLSServerCredential` mechanism for XFTP
@@ -493,20 +494,20 @@ The web page should display a brief, non-technical security summary explaining t
 
 ### Phase 3: HTTP/2 Client + Agent Orchestration
 
-**Goal:** Complete XFTP client that can upload and download files against a real Haskell XFTP server.
+**Goal:** Complete XFTP client that can upload and download files against a real Haskell XFTP router.
 
 1. **`client.ts`** ← `Simplex.FileTransfer.Client` — HTTP/2 client via `fetch()` / `node:http2`: connect + handshake, sendCommand, createChunk, uploadChunk, downloadChunk, deleteChunk, ackChunk, ping.
-2. **`agent.ts`** ← `Simplex.FileTransfer.Client.Main` — Upload orchestration (encrypt → chunk → register → upload → build description), download orchestration (parse → download → verify → decrypt → ack), URL encoding with DEFLATE compression (§4.1).
+2. **`agent.ts`** ← `Simplex.FileTransfer.Client.Main` — Upload orchestration (encrypt → split into data packets → register → upload → build description), download orchestration (parse → download → verify → decrypt → ack), URL encoding with DEFLATE compression (§4.1).
 
 ### Phase 4: Integration Testing
 
-**Goal:** Prove the TypeScript client is wire-compatible with the Haskell server.
+**Goal:** Prove the TypeScript client is wire-compatible with the Haskell router.
 
 1. **Test harness** — Haskell-driven tests in `XFTPWebTests.hs` (same pattern as per-function tests).
-2. **Upload test** — TypeScript uploads file → Haskell client downloads it → verify contents match.
-3. **Download test** — Haskell client uploads file → TypeScript downloads it → verify contents match.
+2. **Upload test** — TypeScript uploads file → Haskell client downloads it → verify content matches.
+3. **Download test** — Haskell client uploads file → TypeScript downloads it → verify content matches.
 4. **Round-trip test** — TypeScript upload → TypeScript download → verify.
-5. **Edge cases** — Single chunk, many chunks, exactly-sized chunks, redirect descriptions.
+5. **Edge cases** — Single data packet, many data packets, exactly-sized data packets, redirect descriptions.
 
 ### Phase 5: Web Page
 
@@ -517,11 +518,11 @@ The web page should display a brief, non-technical security summary explaining t
 3. **Download UI** — Parse URL, show file info, download button, progress circle.
 4. **App install CTA** — Banner/messaging promoting SimpleX app for larger files.
 
-### Phase 6: Server-Hosted Page (Optional)
+### Phase 6: Router-Hosted Page (Optional)
 
-**Goal:** XFTP servers can optionally serve the web page themselves.
+**Goal:** XFTP routers can optionally serve the web page themselves.
 
-1. **Static file serving** — Similar to SMP server's `attachStaticFiles`.
+1. **Static file serving** — Similar to SMP router's `attachStaticFiles`.
 2. **GET handler** — When web client sends HTTP GET (not POST), serve HTML page.
 3. **Page generation** — Embed page bundle at server build time.
 
@@ -588,9 +589,9 @@ cabal test --ghc-options -O0 --test-option=--match="/XFTP Web Client/"
 
 **Random inputs:** Haskell tests can use QuickCheck to generate random inputs each run, not just hardcoded values. This catches edge cases that fixed test vectors miss.
 
-### 10.2 Integration Tests (TS-driven, spawns Haskell server)
+### 10.2 Integration Tests (TS-driven, spawns Haskell router)
 
-**Only attempted after all per-function tests (§10.1) pass.** These are end-to-end tests that verify the full upload/download pipeline works against a real XFTP server.
+**Only attempted after all per-function tests (§10.1) pass.** These are end-to-end tests that verify the full upload/download pipeline works against a real XFTP router.
 
 **Approach:** Node.js test (`xftp-web/test/integration.test.ts`) spawns `xftp-server` and `xftp` CLI as subprocesses.
 
@@ -615,7 +616,7 @@ cabal test --ghc-options -O0 --test-option=--match="/XFTP Web Client/"
 3. TypeScript upload + download round-trip.
 4. Web handshake with challenge-response validation.
 5. Redirect descriptions (large file → compressed description upload).
-6. Multiple chunks across multiple servers.
+6. Multiple data packets across multiple routers.
 7. Error cases: expired file, auth failure, digest mismatch.
 
 ### 10.3 Browser Tests
@@ -635,7 +636,7 @@ The per-function tests (§10.1) must pass before attempting integration tests (�
 5. **Protocol encoding** — command/response encoding, transmission framing (§12.2, §12.3)
 6. **Handshake** — handshake type encoding/decoding (§12.9)
 7. **Description** — YAML serialization, validation (§12.12–§12.14)
-8. **Chunk sizing** — `prepareChunkSizes`, `getChunkDigest` (§12.11)
+8. **Data packet sizing** — `prepareChunkSizes`, `getChunkDigest` (§12.11)
 9. **Transport client** — `sendCommand`, `createChunk`, `uploadChunk`, `downloadChunk` (§12.10)
 10. **Integration** — full upload/download round-trips (§10.2)
 
@@ -660,7 +661,7 @@ The TypeScript implementation must reimplement the exact streaming logic using l
 
 ### 11.3 Web Client Detection
 
-Both SNI and web handshake are mandatory (see §6.3). SNI detection (`sniCredUsed` flag) is the discriminator — when SNI is detected, the server expects the web handshake variant.
+Both SNI and web handshake are mandatory (see §6.3). SNI detection (`sniCredUsed` flag) is the discriminator — when SNI is detected, the router expects the web handshake variant.
 
 ### 11.4 URL Compression
 
@@ -677,32 +678,32 @@ XSalsa20-Poly1305 streaming encryption/decryption is sequential — each 64KB bl
 **Upload flow:**
 1. `File.stream()` → encrypt sequentially (state threading) → buffer encrypted output
 2. Compute SHA-512 digest of encrypted data
-3. Split into chunks, upload in parallel to 8 randomly selected servers (from 6 default servers in `Presets.hs`)
+3. Split into data packets, upload in parallel to 8 randomly selected routers (from 6 default routers in `Presets.hs`)
 
 **Download flow:**
-1. Download chunks in parallel from servers → buffer encrypted data
+1. Download data packets in parallel from routers → buffer encrypted data
 2. Decrypt sequentially (state threading) → verify auth tag
 3. Trigger browser save
 
 Both directions buffer ~100 MB of encrypted data. The approach should be symmetric.
 
-**Option A — Memory buffer:** Buffer encrypted data as `ArrayBuffer`. 100 MB peak memory is feasible on modern devices. Simple implementation, no Web Worker needed. Chunk slicing is zero-copy via `ArrayBuffer.slice()`.
+**Option A — Memory buffer:** Buffer encrypted data as `ArrayBuffer`. 100 MB peak memory is feasible on modern devices. Simple implementation, no Web Worker needed. Data packet slicing is zero-copy via `ArrayBuffer.slice()`.
 
 **Option B — OPFS ([Origin Private File System](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)):** Write encrypted data to OPFS instead of holding in memory. OPFS storage quota is shared with IndexedDB/Cache API — typically hundreds of MB to several GB ([quota details](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria)). The fast synchronous API (`createSyncAccessHandle()`) requires a [Web Worker](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle) but is [3-4x faster than IndexedDB](https://web.dev/articles/origin-private-file-system). The async API (`createWritable()`) works on the main thread.
 
 **Decision:** Use OPFS with a Web Worker. While 100 MB fits in memory, OPFS future-proofs the implementation for raising the file size limit (250 MB, 500 MB, etc.) without code changes. The Web Worker also keeps the main thread responsive during encryption/decryption. The implementation cost is modest — a single worker that runs the sequential crypto pipeline, reading/writing OPFS files.
 
-### 11.7 Server Page Hosting
+### 11.7 Router Page Hosting
 
-Excluded from initial implementation. Added at the very end (Phase 5) as optional feature. Initial deployment serves the page from a separate web host.
+Excluded from initial implementation. Added at the very end (Phase 5) as optional feature. Initial deployment serves the page from a separate web server.
 
 ### 11.8 File Expiry Communication
 
-Hardcode 48 hours for standalone web page. Server-hosted page can use server-configurable TTL. The page should also display which XFTP servers were used for the upload.
+Hardcode 48 hours for standalone web page. Router-hosted page can use router-configurable TTL. The page should also display which XFTP routers were used for the upload.
 
 ### 11.9 Concurrent Operations
 
-8 parallel operations in the browser. The Haskell CLI uses 16, but browsers have per-origin connection limits (6-8). Since chunks typically go to different servers (different origins), 8 provides good parallelism without hitting browser limits.
+8 parallel operations in the browser. The Haskell CLI uses 16, but browsers have per-origin connection limits (6-8). Since data packets typically go to different routers (different origins), 8 provides good parallelism without hitting browser limits.
 
 ## 12. Haskell-to-TypeScript Function Mapping
 
@@ -861,13 +862,13 @@ Note: `encryptFile` does NOT use `padLazy` or `sbEncryptTailTag`. It manually pr
 
 **`decryptChunks` algorithm** (lines 57-111) — two paths:
 
-**Single chunk (one file, line 60):** Calls `sbDecryptTailTag(key, nonce, encSize - authTagSize, data)` directly. This internally decrypts, verifies auth tag, and strips the 8-byte length prefix + padding via `unPad`. Returns `(authOk, content)`. Then parses `FileHeader` from content.
+**Single data packet (one file, line 60):** Calls `sbDecryptTailTag(key, nonce, encSize - authTagSize, data)` directly. This internally decrypts, verifies auth tag, and strips the 8-byte length prefix + padding via `unPad`. Returns `(authOk, content)`. Then parses `FileHeader` from content.
 
-**Multi-chunk (line 67):**
+**Multi-packet (line 67):**
 1. `sbInit(key, nonce)` → init state
-2. Decrypt first chunk file: `sbDecryptChunkLazy(state, chunk)` → `splitLen` extracts 8-byte `expectedLen` → parse `FileHeader`
-3. Decrypt middle chunk files: `sbDecryptChunkLazy(state, chunk)` loop, write to output, accumulate `len`
-4. Decrypt last chunk file: split off last 16 bytes as auth tag → `sbDecryptChunkLazy(state, remaining)` → truncate padding using `expectedLen` vs accumulated `len` → verify `sbAuth(finalState) == authTag`
+2. Decrypt first data packet: `sbDecryptChunkLazy(state, chunk)` → `splitLen` extracts 8-byte `expectedLen` → parse `FileHeader`
+3. Decrypt middle data packets: `sbDecryptChunkLazy(state, chunk)` loop, write to output, accumulate `len`
+4. Decrypt last data packet: split off last 16 bytes as auth tag → `sbDecryptChunkLazy(state, remaining)` → truncate padding using `expectedLen` vs accumulated `len` → verify `sbAuth(finalState) == authTag`
 
 **`FileHeader`** (`Types.hs:35`): `{fileName :: String, fileExtra :: Maybe String}`, parsed via `smpP`.
 
@@ -888,18 +889,18 @@ XFTP handshake types and encoding.
 
 ### 12.10 `protocol/client.ts` ← `Simplex/FileTransfer/Client.hs` (crypto primitives) — DONE
 
-Transport-level crypto for command authentication and chunk encryption/decryption.
+Transport-level crypto for command authentication and data packet encryption/decryption.
 
 | TypeScript function | Haskell function | Description | Status |
 |---|---|---|---|
 | `cbAuthenticate(peerPub, ownPriv, nonce, msg)` | `C.cbAuthenticate` | 80-byte crypto_box authenticator | ✓ |
 | `cbVerify(peerPub, ownPriv, nonce, auth, msg)` | `C.cbVerify` | Verify authenticator | ✓ |
-| `encryptTransportChunk(dhSecret, nonce, plain)` | `sendEncFile` | Encrypt chunk (tag appended) | ✓ |
-| `decryptTransportChunk(dhSecret, nonce, enc)` | `receiveEncFile` | Decrypt chunk (tag verified) | ✓ |
+| `encryptTransportChunk(dhSecret, nonce, plain)` | `sendEncFile` | Encrypt data packet (tag appended) | ✓ |
+| `decryptTransportChunk(dhSecret, nonce, enc)` | `receiveEncFile` | Decrypt data packet (tag verified) | ✓ |
 
 ### 12.11 `protocol/chunks.ts` ← `Simplex/FileTransfer/Chunks.hs` + `Client.hs` — DONE
 
-Chunk size selection and file splitting.
+Data packet size selection and file splitting.
 
 | TypeScript function/constant | Haskell equivalent | Status |
 |---|---|---|
@@ -944,7 +945,7 @@ HTTP/2 XFTP client using `node:http2` (Node.js) or `fetch()` (browser). Transpil
 **XFTPClient state** (returned by `connectXFTP`):
 - HTTP/2 session (node: `ClientHttp2Session`, browser: base URL for fetch)
 - `thParams`: `{sessionId, blockSize, thVersion, thAuth}` from handshake
-- Server address for reconnection
+- Router address for reconnection
 
 **sendXFTPCommand wire format:**
 1. `xftpEncodeAuthTransmission(thParams, pKey, (corrId, fId, cmd))` → padded 16KB block
@@ -960,16 +961,16 @@ Upload/download orchestration and URL encoding. Combines what the RFC originally
 
 | TypeScript function | Haskell function | Line | Description |
 |---|---|---|---|
-| `encryptFileForUpload(file, fileName)` | `encryptFileForUpload` | 264 | key/nonce → encrypt → digest → chunk specs |
+| `encryptFileForUpload(file, fileName)` | `encryptFileForUpload` | 264 | key/nonce → encrypt → digest → data packet specs |
 | `uploadFile(client, chunkSpecs, servers, numRcps)` | `uploadFile` | 285 | Parallel upload (up to 16 concurrent) |
-| `uploadFileChunk(client, chunkNo, spec, server)` | `uploadFileChunk` | 301 | FNEW + FPUT for one chunk |
+| `uploadFileChunk(client, chunkNo, spec, server)` | `uploadFileChunk` | 301 | FNEW + FPUT for one data packet |
 | `createRcvFileDescriptions(fd, sentChunks)` | `createRcvFileDescriptions` | 329 | Build per-recipient descriptions |
 | `createSndFileDescription(fd, sentChunks)` | `createSndFileDescription` | 361 | Build sender (deletion) description |
 
 **Upload call sequence** (`cliSendFileOpts`, line 243):
 1. `encryptFileForUpload` — `randomSbKey` + `randomCbNonce` → `encryptFile` → `sha512Hash` digest → `prepareChunkSpecs`
-2. `uploadFile` — for each chunk: generate sender/recipient key pairs, `createXFTPChunk`, `uploadXFTPChunk`
-3. `createRcvFileDescriptions` — assemble `FileDescription` per recipient from sent chunks
+2. `uploadFile` — for each data packet: generate sender/recipient key pairs, `createXFTPChunk`, `uploadXFTPChunk`
+3. `createRcvFileDescriptions` — assemble `FileDescription` per recipient from sent data packets
 4. `createSndFileDescription` — assemble sender description with deletion keys
 
 **Download functions:**
@@ -977,17 +978,17 @@ Upload/download orchestration and URL encoding. Combines what the RFC originally
 | TypeScript function | Haskell function | Line | Description |
 |---|---|---|---|
 | `downloadFile(description)` | `cliReceiveFile` | 388 | Full download: parse → download → verify → decrypt |
-| `downloadFileChunk(client, chunk)` | `downloadFileChunk` | 418 | FGET + transit-decrypt one chunk |
-| `ackFileChunk(client, chunk)` | `acknowledgeFileChunk` | 440 | FACK one chunk |
-| `deleteFile(description)` | `cliDeleteFile` | 455 | FDEL for all chunks |
+| `downloadFileChunk(client, chunk)` | `downloadFileChunk` | 418 | FGET + transit-decrypt one data packet |
+| `ackFileChunk(client, chunk)` | `acknowledgeFileChunk` | 440 | FACK one data packet |
+| `deleteFile(description)` | `cliDeleteFile` | 455 | FDEL for all data packets |
 
 **Download call sequence** (`cliReceiveFile`, line 388):
 1. Parse and validate `FileDescription` from YAML
-2. Group chunks by server
-3. Parallel download: `downloadXFTPChunk` per chunk (up to 16 concurrent)
-4. Verify file digest (SHA-512) over concatenated encrypted chunks
+2. Group data packets by router
+3. Parallel download: `downloadXFTPChunk` per data packet (up to 16 concurrent)
+4. Verify file digest (SHA-512) over concatenated encrypted data packets
 5. `decryptChunks` — file-level decrypt with auth tag verification
-6. Parallel acknowledge: `ackXFTPChunk` per chunk
+6. Parallel acknowledge: `ackXFTPChunk` per data packet
 
 **URL encoding (§4.1):**
 
@@ -1004,7 +1005,7 @@ Upload/download orchestration and URL encoding. Combines what the RFC originally
 2. Send `FGET(rcvDhPubKey)` → receive `FRFile(sndDhPubKey, cbNonce)` + encrypted body
 3. Compute DH shared secret: `dh'(sndDhPubKey, rcvDhPrivKey)` (`Crypto.hs:1280`)
 4. Transit-decrypt body via `receiveSbFile` (`Transport.hs:176`): `cbInit(dhSecret, cbNonce)` → `sbDecryptChunk` loop (`fileBlockSize` = 16384-byte blocks, `Transport/HTTP2/File.hs:14`) → `sbAuth` tag verification at end
-5. Verify chunk digest (SHA-256): `getChunkDigest` (`Client.hs:346`)
+5. Verify data packet digest (SHA-256): `getChunkDigest` (`Client.hs:346`)
 
 ### 12.18 Per-Function Testing: Haskell Drives Node
 

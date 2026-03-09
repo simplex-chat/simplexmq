@@ -11,8 +11,8 @@ This document describes the cryptographic primitives and threat model for the Si
   - [Global assumptions](#global-assumptions)
   - [A passive adversary able to monitor the traffic of one user](#a-passive-adversary-able-to-monitor-the-traffic-of-one-user)
   - [A passive adversary able to monitor a set of senders and recipients](#a-passive-adversary-able-to-monitor-a-set-of-senders-and-recipients)
-  - [SimpleX Messaging Protocol server](#simplex-messaging-protocol-server)
-  - [SimpleX Messaging Protocol server that proxies messages](#simplex-messaging-protocol-server-that-proxies-messages)
+  - [SimpleX Messaging Protocol router](#simplex-messaging-protocol-router)
+  - [SimpleX Messaging Protocol router that proxies messages](#simplex-messaging-protocol-router-that-proxies-messages)
   - [An attacker who obtained a user's decrypted chat database](#an-attacker-who-obtained-a-users-decrypted-chat-database)
   - [A user's contact](#a-users-contact)
   - [An attacker who observes an introduction message](#an-attacker-who-observes-an-introduction-message)
@@ -21,15 +21,15 @@ This document describes the cryptographic primitives and threat model for the Si
 
 ## Encryption primitives
 
-- **Server command authorization**: X25519 DH-based authenticated encryption (SMP v7+), providing sender deniability. Ed25519 signatures used for recipient commands and notifier commands.
+- **Router command authorization**: X25519 DH-based authenticated encryption (SMP v7+), providing sender deniability. Ed25519 signatures used for recipient commands and notifier commands.
 
 - **Per-queue key agreement**: Curve25519 DH exchange to agree:
-  - the shared secret between server and recipient (to encrypt message bodies — avoids shared ciphertext in sender and recipient traffic),
+  - the shared secret between router and recipient (to encrypt message bodies — avoids shared ciphertext in sender and recipient traffic),
   - the shared secret between sender and recipient (to encrypt messages end-to-end in each queue — avoids shared ciphertext in redundant queues).
 
-- **SMP-layer encryption**: [NaCl crypto_box](https://nacl.cr.yp.to/box.html) (curve25519xsalsa20poly1305) for message body encryption between server and recipient, and for e2e per-queue encryption.
+- **SMP-layer encryption**: [NaCl crypto_box](https://nacl.cr.yp.to/box.html) (curve25519xsalsa20poly1305) for message body encryption between router and recipient, and for e2e per-queue encryption.
 
-- **Certificate validation**: SHA256 to validate server offline certificates.
+- **Certificate validation**: SHA256 to validate router offline certificates.
 
 - **End-to-end encryption**: [Double ratchet](https://signal.org/docs/specifications/doubleratchet/) protocol:
   - Curve448 keys for shared secret agreement via [X3DH](https://signal.org/docs/specifications/x3dh/) with 2 ephemeral keys per side,
@@ -45,7 +45,7 @@ This document describes the cryptographic primitives and threat model for the Si
 - A user protects their local database and key material.
 - The user's application is authentic, and no local malware is running.
 - The cryptographic primitives in use are not broken.
-- A user's choice of servers is not directly tied to their identity or otherwise represents distinguishing information about the user.
+- A user's choice of routers is not directly tied to their identity or otherwise represents distinguishing information about the user.
 - The user's client uses 2-hop onion message routing.
 
 
@@ -55,7 +55,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - identify that and when a user is using SimpleX.
 
-- determine which servers the user receives messages from.
+- determine which routers the user receives messages from.
 
 - observe how much traffic is being sent, and make guesses as to its purpose.
 
@@ -63,7 +63,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - see who sends messages to the user and who the user sends messages to.
 
-- determine the servers used by users' contacts.
+- determine the routers used by users' contacts.
 
 
 ### A passive adversary able to monitor a set of senders and recipients
@@ -72,11 +72,11 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - identify who and when is using SimpleX.
 
-- learn which SMP servers are used as receive queues for which users.
+- learn which SMP routers are used as receive queues for which users.
 
 - learn when messages are sent and received.
 
-- perform traffic correlation attacks against senders and recipients within the monitored set, frustrated by the number of users on the servers.
+- perform traffic correlation attacks against senders and recipients within the monitored set, frustrated by the number of users on the routers.
 
 - observe how much traffic is being sent, and make guesses as to its purpose.
 
@@ -85,7 +85,7 @@ This document describes the cryptographic primitives and threat model for the Si
 - perform traffic correlation attacks with any increase in efficiency over a non-compromised transport protocol.
 
 
-### SimpleX Messaging Protocol server
+### SimpleX Messaging Protocol router
 
 *can:*
 
@@ -117,12 +117,12 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - compromise the users' end-to-end encryption with an active attack.
 
-- learn a sender's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on IP addresses, even if Tor is not used (provided messages are sent via proxy SMP server).
+- learn a sender's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on IP addresses, even if Tor is not used (provided messages are sent via proxy SMP router).
 
-- perform senders' queue correlation (matching multiple queues to a single sender) via either a re-used transport connection, user's IP Address, or connection timing regularities, unless it has additional information from the proxy SMP server (provided messages are sent via proxy SMP server).
+- perform senders' queue correlation (matching multiple queues to a single sender) via either a re-used transport connection, user's IP Address, or connection timing regularities, unless it has additional information from the proxy SMP router (provided messages are sent via proxy SMP router).
 
 
-### SimpleX Messaging Protocol server that proxies messages
+### SimpleX Messaging Protocol router that proxies messages
 
 *can:*
 
@@ -130,15 +130,15 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - learn when a sender with a given IP address is online.
 
-- know how many messages are sent from a given IP address and to a given destination SMP server.
+- know how many messages are sent from a given IP address and to a given destination SMP router.
 
-- drop all messages from a given IP address or to a given destination server.
+- drop all messages from a given IP address or to a given destination router.
 
-- unless the destination SMP server detects repeated public DH keys of senders, replay messages to a destination server within a single session, causing either duplicate message delivery (which will be detected and ignored by the receiving clients), or, when receiving client is not connected to SMP server, exhausting capacity of destination queues used within the session.
+- unless the destination SMP router detects repeated public DH keys of senders, replay messages to a destination router within a single session, causing either duplicate message delivery (which will be detected and ignored by the receiving clients), or, when receiving client is not connected to SMP router, exhausting capacity of destination queues used within the session.
 
 *cannot:*
 
-- perform queue correlation (matching multiple queues to a single user), unless it has additional information from the destination SMP server.
+- perform queue correlation (matching multiple queues to a single user), unless it has additional information from the destination SMP router.
 
 - undetectably add, duplicate, or corrupt individual messages.
 
@@ -154,7 +154,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - compromise the user's end-to-end encryption with another user via an active attack.
 
-- compromise the user's end-to-end encryption with the destination SMP servers via an active attack.
+- compromise the user's end-to-end encryption with the destination SMP routers via an active attack.
 
 
 ### An attacker who obtained a user's decrypted chat database
@@ -173,7 +173,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 *cannot:*
 
-- impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the server (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
+- impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the router (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
 
 - undetectably communicate at the same time as the user with their contacts. Doing so would result in the contact getting different messages with repeated IDs.
 
@@ -212,7 +212,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 *can:*
 
-- Denial of Service SimpleX messaging servers.
+- Denial of Service SimpleX messaging routers.
 
 - spam a user's public "contact queue" with connection requests.
 
@@ -220,4 +220,4 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - send messages to a user who they are not connected with.
 
-- enumerate queues on a SimpleX server.
+- enumerate queues on a SimpleX router.

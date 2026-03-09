@@ -12,8 +12,8 @@ Make CLI produce and consume web-compatible links so that:
 - CLI `recv` accepts a web link URL as input (alternative to `.xftp` file path)
 - Browser can download files uploaded by CLI and vice versa
 
-The web page host is derived from the XFTP server address - the server that hosts the file
-also hosts the download page. Making XFTP servers actually serve the web page is a separate
+The web page host is derived from the XFTP router address - the router that hosts the file
+also hosts the download page. Making XFTP routers actually serve the web page is a separate
 concern (not covered here), but the link format anticipates it.
 
 The YAML file description format is already identical between CLI and web.
@@ -33,7 +33,7 @@ Encoding chain (agent.ts:64-68):
 3. `pako.deflateRaw(bytes)` -> compressed
 4. `base64urlEncode(compressed)` -> URI fragment (no `#`)
 
-For multi-chunk files exceeding ~400 chars in URI, a redirect description is uploaded:
+For multi-packet files exceeding ~400 chars in URI, a redirect description is uploaded:
 the real file description is encrypted, uploaded as a separate XFTP file, and a smaller
 "redirect" description (pointing to it) is put in the URI.
 
@@ -111,7 +111,7 @@ Extracts the actual filename from the path and embeds it in the encrypted header
 
 #### CLI download: uses filename from header (ok)
 
-`Crypto.hs:62-66` (single chunk) / `Crypto.hs:72-74` (multi-chunk):
+`Crypto.hs:62-66` (single data packet) / `Crypto.hs:72-74` (multi-packet):
 ```haskell
 (FileHeader {fileName}, rest) <- parseFileHeader decryptedContent
 destFile <- withExceptT FTCEFileIOError $ getDestFile fileName
@@ -163,19 +163,19 @@ The CLI should consider adding filename sanitization similar to the web client f
 
 ### 2. Web Link Host Derivation
 
-The web page URL domain comes from the XFTP server address, not from a CLI flag:
+The web page URL domain comes from the XFTP router address, not from a CLI flag:
 
-- **Non-redirected description**: use the server host of the first chunk's first replica.
+- **Non-redirected description**: use the router host of the first data packet's first replica.
   E.g., `xftp://abc=@xftp1.simplex.im` -> `https://xftp1.simplex.im/#<encoded>`
 
-- **Redirected description**: use the server host of the redirect chunk (the outer description's
-  chunk that stores the encrypted inner description).
+- **Redirected description**: use the router host of the redirect data packet (the outer description's
+  data packet that stores the encrypted inner description).
 
-The server address format is `xftp://<keyhash>@<host>[,<host2>,...][:<port>]`.
+The router address format is `xftp://<keyhash>@<host>[,<host2>,...][:<port>]`.
 The web link uses `https://<host>` (port 443 implied).
 
-This means the CLI does not need a `--web-url` flag - the server address fully determines
-the link. The XFTP server serving the web page is a separate deployment concern.
+This means the CLI does not need a `--web-url` flag - the router address fully determines
+the link. The XFTP router serving the web page is a separate deployment concern.
 
 ### 3. Web URI Encoding/Decoding in Haskell
 
@@ -196,7 +196,7 @@ decodeWebURI :: ByteString -> Either String (ValidFileDescription 'FRecipient)
 -- 4. validateFileDescription
 
 -- Build full web link from file description
--- Extracts server host from first chunk replica (or redirect chunk)
+-- Extracts router host from first data packet replica (or redirect data packet)
 fileWebLink :: FileDescription 'FRecipient -> (String, ByteString)
 -- Returns (webHost, uriFragment)
 -- Caller assembles: "https://" <> webHost <> "/#" <> uriFragment
@@ -210,20 +210,20 @@ The `zlib` Haskell package provides `Codec.Compression.Zlib.Raw` for raw DEFLATE
 
 ### 4. Redirect Description Support
 
-The CLI currently does NOT create redirect descriptions. For single-server single-recipient
-uploads, most file descriptions fit in a reasonable URI even for multi-chunk files. But for
-large files (many chunks x long server hostnames), the URI can exceed practical limits.
+The CLI currently does NOT create redirect descriptions. For single-router single-recipient
+uploads, most file descriptions fit in a reasonable URI even for multi-packet files. But for
+large files (many data packets x long router hostnames), the URI can exceed practical limits.
 
 **Approach**: Match the web client threshold.
-- After encoding the URI, if `length > 400` and chunks > 1, upload a redirect description.
+- After encoding the URI, if `length > 400` and data packets > 1, upload a redirect description.
 - The redirect upload uses the same XFTP upload flow: encrypt YAML -> upload as file -> create
   outer description pointing to it.
 - This matches `agent.ts:152-155` exactly.
-- The redirect chunk's server becomes the web link host.
+- The redirect data packet's router becomes the web link host.
 
 For CLI download from a redirect URI, the existing `cliReceiveFile` needs extension:
 - After decoding the file description, check `redirect` field.
-- If present: download and decrypt the redirect chunks first to get the inner description,
+- If present: download and decrypt the redirect data packets first to get the inner description,
   then download the actual file using the inner description.
 - The web client already does this (`resolveRedirect` in agent.ts:320-346).
 
@@ -281,16 +281,16 @@ Already identical. The web `description.ts` explicitly matches Haskell `Data.Yam
 Adding a cross-client test (CLI upload -> web download, or web upload -> CLI download) would
 validate interop end-to-end.
 
-### 7. Server Compatibility
+### 7. Router Compatibility
 
-No server changes needed. Both clients use the same XFTP protocol (FGET, FPUT, FNEW, FACK, FDEL).
+No router changes needed. Both clients use the same XFTP protocol (FGET, FPUT, FNEW, FACK, FDEL).
 The web client adds `xftp-web-hello: 1` header for the hello handshake, but the actual file
 operations are identical wire-format.
 
 The only consideration: CLI uses native HTTP/2 (via `http2` Haskell package), web uses
 browser `fetch()` API over HTTP/2. Both produce identical XFTP protocol frames.
 
-**Note**: Making XFTP servers actually serve the web download page at `https://<host>/` is a
+**Note**: Making XFTP routers actually serve the web download page at `https://<host>/` is a
 separate deployment/infrastructure task. This plan only establishes the link format convention
 so that links are ready to work once servers serve the page.
 
@@ -301,7 +301,7 @@ so that links are ready to work once servers serve the page.
 1. Add `zlib` dependency to `simplexmq.cabal`
 2. Add `encodeWebURI` / `decodeWebURI` / `fileWebLink` to `Simplex.FileTransfer.Description`
    (or a new `Simplex.FileTransfer.Description.WebURI` module)
-3. `fileWebLink` extracts host from first chunk's first replica server address
+3. `fileWebLink` extracts host from first data packet's first replica router address
 4. Add unit tests: encode a known FileDescription, verify output matches web client encoding
 5. Add round-trip test: encode -> decode -> compare
 
@@ -309,7 +309,7 @@ so that links are ready to work once servers serve the page.
 
 1. Modify `ReceiveOptions` to accept `Either FilePath WebURL` for `fileDescription`
 2. In `cliReceiveFile`: if URL, extract fragment after `#`, call `decodeWebURI`
-3. Add redirect resolution: if `redirect /= Nothing`, download redirect chunks,
+3. Add redirect resolution: if `redirect /= Nothing`, download redirect data packets,
    decrypt, parse inner description, then proceed with download
 4. Test: upload via web page -> copy link -> `xftp recv <link>`
 

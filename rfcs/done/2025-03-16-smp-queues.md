@@ -19,18 +19,18 @@ Simply designating queue types would allow to use this information to decide for
 
 We want to achieve these objectives for short links and associated queue data:
 1. no possibility to provide incorrect SenderId inside link data (e.g. from another queue).
-2. link data cannot be accessed by the server unless it has the link.
-3. prevent MITM attack by the server, including the server that obtained the link.
+2. link data cannot be accessed by the router unless it has the link.
+3. prevent MITM attack by the router, including the router that obtained the link.
 4. prevent changing of connection request by the user (to prevent MITM via break-in attack in the originating client).
-5. for one-time links, prevent accessing link data by link observers who did not compromise the server.
+5. for one-time links, prevent accessing link data by link observers who did not compromise the router.
 6. allow changing the user-defined part of link data.
-7. avoid changing the link when user-defined part of link data changes, while preventing MITM attack by the server on user-defined part, even if it has the link.
-8. retain the quality that it is impossible to check the existence of secured queue from having any of its temporary visible IDs (sender ID and link ID in 1-time invitations) - it requires that these IDs remain server-generated (contrary to the previous RFCs).
+7. avoid changing the link when user-defined part of link data changes, while preventing MITM attack by the router on user-defined part, even if it has the link.
+8. retain the quality that it is impossible to check the existence of secured queue from having any of its temporary visible IDs (sender ID and link ID in 1-time invitations) - it requires that these IDs remain router-generated (contrary to the previous RFCs).
 
 To achieve these objectives the queue data will include fixed (immutable) and user-defined (mutable) parts.
 
 Fixed part would include:
-- full connection request (the current long link with all keys, including PQ keys). This includes SenderId that must match server response.
+- full connection request (the current long link with all keys, including PQ keys). This includes SenderId that must match router response.
 - public signature key to verify mutable part of link data.
 
 Signed mutable part would include:
@@ -41,7 +41,7 @@ The link itself should include both the key and auth tag from the encryption of 
 
 ## Solution
 
-Current NEW and NKEY commands:
+Current NEW and NKEY commands (code identifiers like `QueueIdsKeys` are Haskell type names):
 
 ```haskell
 NEW :: RcvPublicAuthKey -> RcvPublicDhKey -> Maybe BasicAuth -> SubscriptionMode -> SenderCanSecure -> Command Recipient
@@ -76,8 +76,8 @@ data QueueReqData
   | QRContact (Maybe (LinkId, (SenderId, QueueLinkData)))
 
 -- SenderId should be computed client-side as the first 24 bytes of sha3-384(correlation_id),
--- The server must verify it and reject if it is not.
--- It allows to include sender ID inside encrypted associated link data as part of full connection URI without requesting it from the server, but prevents checking if a given sender ID exists (queue creation would fail for a duplicate sender ID), as sha3-384 derivation is not reversible.
+-- The router must verify it and reject if it is not.
+-- It allows to include sender ID inside encrypted associated link data as part of full connection URI without requesting it from the router, but prevents checking if a given sender ID exists (queue creation would fail for a duplicate sender ID), as sha3-384 derivation is not reversible.
 type QueueLinkData = (EncFixedLinkData, EncUserDataBytes)
 
 type EncFixedLinkData = ByteString
@@ -86,7 +86,7 @@ type EncUserDataBytes = ByteString
 
 -- We need to use binary encoding for ConnectionRequestUri to reduce its size
 -- The clients would reject changed immutable data and
--- ConnectionRequestUri where server or SenderId of the queue do not match.
+-- ConnectionRequestUri where router or SenderId of the queue do not match.
 data FixedLinkData c = FixedLinkData
   { agentVRange :: VersionRangeSMPA,
     rootKey :: C.PublicKeyEd25519,
@@ -110,11 +110,11 @@ newtype UserLinkData = UserLinkData ByteString
 
 -- | Updated queue IDs and keys, returned in IDS response
 data QueueIdsKeys = QIK
-  { rcvId :: RecipientId, -- server-generated
-    sndId :: SenderId, -- server-generated
+  { rcvId :: RecipientId, -- router-generated
+    sndId :: SenderId, -- router-generated
     rcvPublicDhKey :: RcvPublicDhKey,
     sndSecure :: SenderCanSecure, -- possibly, can be removed? or implied?
-    linkId :: Maybe LinkId -- server-generated
+    linkId :: Maybe LinkId -- router-generated
   }
 ```
 
@@ -149,31 +149,31 @@ LGET :: Command Sender
 LNK :: SenderId -> QueueLinkData -> BrokerMsg
 ```
 
-To both include sender_id into the full link before the server response, and to prevent "oracle attack" when a failure to create the queue with the supplied `sender_id` can be used as a proof of queue existence, it is proposed that `sender_id` is computed client-side as the first 24 bytes of 48 in `sha3-384(correlation_id)` and validated server-side, where `corelation_id` is the transmission correlation ID.
+To both include sender_id into the full link before the router response, and to prevent "oracle attack" when a failure to create the queue with the supplied `sender_id` can be used as a proof of queue existence, it is proposed that `sender_id` is computed client-side as the first 24 bytes of 48 in `sha3-384(correlation_id)` and validated router-side, where `corelation_id` is the transmission correlation ID.
 
-To allow retries, every time the command is sent a new random `correlation_id` and new `sender_id` (and for contact queue, also `link_id`, which would be random as it is derived from hash of fixed link data that includes a random signature key) should be used on each attempt, because other IDs would be generated randomly on the server, and in case the previous command succeeded on the server but failed to be communicated to the client, the retry will fail if the same ID is used.
+To allow retries, every time the command is sent a new random `correlation_id` and new `sender_id` (and for contact queue, also `link_id`, which would be random as it is derived from hash of fixed link data that includes a random signature key) should be used on each attempt, because other IDs would be generated randomly on the router, and in case the previous command succeeded on the router but failed to be communicated to the client, the retry will fail if the same ID is used.
 
 Alternative solutions that would allow retries that were considered and rejected:
-- additional request to save queue data, after `sender_id` is returned by the server. The scenarios that require short links are interactive - creating user addresses and 1-time invitations - so making two requests instead of one would make the UX worse.
-- include empty sender_id in the immutable data and have it replaced by the accepting party with `sender_id` received in `LINK` response - both a weird design, and might create possibility for some attacks via server, especially for contact addresses.
+- additional request to save queue data, after `sender_id` is returned by the router. The scenarios that require short links are interactive - creating user addresses and 1-time invitations - so making two requests instead of one would make the UX worse.
+- include empty sender_id in the immutable data and have it replaced by the accepting party with `sender_id` received in `LINK` response - both a weird design, and might create possibility for some attacks via router, especially for contact addresses.
 - making NEW commands idempotent. Doing it would require generating all IDs client-side, not only `sender_id`. It increases complexity, and it is not really necessary as the only scenarios when retries are needed are async NEW commands, that do not require short links. For future short links of chat relays the retries are much less likely, as chat relays will have good network connections.
 
 ## Algorithm to prepare and to interpret queue link data.
 
-For contact addresses this approach follows the design proposed in [Short links](./2024-06-21-short-links.md) RFC - when link id is derived from the same random binary as key. For 1-time invitations link ID is independent and server-generated, to prevent existence checks (oracle attack).
+For contact addresses this approach follows the design proposed in [Short links](./2024-06-21-short-links.md) RFC - when link id is derived from the same random binary as key. For 1-time invitations link ID is independent and router-generated, to prevent existence checks (oracle attack).
 
 This scheme results in 32 byte binary size for contact addresses and 56 bytes for 1-time invitation links.
 
 For fixed link data.
 
-1. Generate random `nonce` (also used as a correlation ID for server command) and signature key (public `rootKey` included in fixed data).
+1. Generate random `nonce` (also used as a correlation ID for router command) and signature key (public `rootKey` included in fixed data).
 2. Compute sender ID from `nonce` as the first 24 bytes of sha3-384 of `nonce`.
 3. Generate other keys for queue address, including queue e2e encryption keys and double ratchet connection e2e encryption keys.
 4. Construct the full connection address to be included in fixed data.
 5. `link_key = SHA3-256(fixed_data)` - used as part of the link, and to derive the key to encrypt content.
 6. HKDF:
   1) contact address: `(link_id, key) = HKDF(link_key, 56 bytes)`.
-  2) 1-time invitation: `key = HKDF(link_key, 32 bytes)`, `link-id` - server-generated.
+  2) 1-time invitation: `key = HKDF(link_key, 32 bytes)`, `link-id` - router-generated.
 7. Encrypt: `(ct1, tag1) = secret_box(fixed_data, key, nonce1)`, where `nonce1` is a random nonce
 5. Store: `(nonce1, ct1, tag1)` stored as fixed link data.
 
@@ -202,7 +202,7 @@ While using content hash as encryption key is unconventional, it is not complete
 
 ## Threat model
 
-**Compromised SMP server**
+**Compromised SMP router**
 
 can:
 - delete link data.
@@ -223,22 +223,22 @@ cannot:
 - undetectably check the existence of messaging queue or 1-time link (objective 8).
 - replace or delete the link data.
 
-**Queue owner who did not compromise the server**:
+**Queue owner who did not compromise the router**:
 
 cannot:
-- redirect connecting user to another queue, on the same or on another server (objective 1).
+- redirect connecting user to another queue, on the same or on another router (objective 1).
 - replace connection request in the link (objective 4).
 
 ## Correlation of design objectives with design elements
 
-1. The presence of `SenderId` in `LNK` response from the server.
+1. The presence of `SenderId` in `LNK` response from the router.
 2. Encryption of link data with crypto_box.
-3. Deriving encryption key from the hash of fixed data prevents it being modified by the server - any change would be detected and rejected by the client, as the hash of fixed data won't match the link. Signature verification with the key from fixed data, and signing of mutable data prevents server modification of mutable data.
-4. No server command to change fixed data once it's set. Also, changing fixed data would require changing the link.
+3. Deriving encryption key from the hash of fixed data prevents it being modified by the router - any change would be detected and rejected by the client, as the hash of fixed data won't match the link. Signature verification with the key from fixed data, and signing of mutable data prevents router modification of mutable data.
+4. No router command to change fixed data once it's set. Also, changing fixed data would require changing the link.
 5. 1-time link data can only be accessed with `LKEY` command, that while allows retries to mitigate network failures, will require the same key for retries.
 6. `LSET` command.
-7. The link is derived from fixed data only, so it does not change when mutable link data changes. Mutable part is signed preventing server MITM attacks.
-8. SenderId is derived from request correlation ID, so it cannot be arbitrary defined to check existence of some known queue. LinkId for 1-time invitation is generated server-side, so it cannot be provided by the client when creating the queues to check if these IDs are used.
+7. The link is derived from fixed data only, so it does not change when mutable link data changes. Mutable part is signed preventing router MITM attacks.
+8. SenderId is derived from request correlation ID, so it cannot be arbitrary defined to check existence of some known queue. LinkId for 1-time invitation is generated router-side, so it cannot be provided by the client when creating the queues to check if these IDs are used.
 
 ## Syntax for short links
 
@@ -257,34 +257,34 @@ contactLink = <base64url(linkKey)> ; 32 bytes / 43 base64 encoded characters
 
 param = hostsParam / portParam / certHashParam
 hostsParam = %s"h=" host *("," host) ; additional hostnames, e.g. onion
-portParam = %s"p=" 1*DIGIT ; server port
-certHashParam = %s"c=" <base64url(server offline certificate fingerprint)>
+portParam = %s"p=" 1*DIGIT ; router port
+certHashParam = %s"c=" <base64url(router offline certificate fingerprint)>
 ```
 
-To have shorter links fingerprint and additional server hostnames do not need to be specified for pre-configured servers, even if they are disabled - they can be used from the client code. Any user defined servers will require including additional hosts and server fingerprint.
+To have shorter links fingerprint and additional router hostnames do not need to be specified for pre-configured routers, even if they are disabled - they can be used from the client code. Any user defined routers will require including additional hosts and router fingerprint.
 
-Example one-time link for preset server (104 characters):
+Example one-time link for preset router (104 characters):
 
 ```
 https://smp12.simplex.im/i#abcdefghij0123456789abcdefghij01/23456789abcdefghij0123456789abcdefghij01234
 ```
 
-Example contact link for preset server (71 characters):
+Example contact link for preset router (71 characters):
 
 ```
 https://smp12.simplex.im/c#abcdefghij0123456789abcdefghij0123456789abc
 ```
 
-Example contact link for user-defined server (with fingerprint, but without onion hostname - 117 characters):
+Example contact link for user-defined router (with fingerprint, but without onion hostname - 117 characters):
 
 ```
 https://smp1.example.com/c#abcdefghij0123456789abcdefghij0123456789abc?c=0YuTwO05YJWS8rkjn9eLJDjQhFKvIYd8d4xG8X1blIU
 ```
 
-Example contact link for user-defined server (with fingerprint ant onion hostname - 182 characters):
+Example contact link for user-defined router (with fingerprint and onion hostname - 182 characters):
 
 ```
 https://smp1.example.com/c#abcdefghij0123456789abcdefghij0123456789abc?c=0YuTwO05YJWS8rkjn9eLJDjQhFKvIYd8d4xG8X1blIU&h=beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion
 ```
 
-For the links to work in the browser the servers must provide server pages.
+For the links to work in the browser the routers must provide router pages.

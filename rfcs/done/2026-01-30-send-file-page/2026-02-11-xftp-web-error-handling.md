@@ -2,13 +2,13 @@
 
 ## 1. Problem Statement
 
-The XFTP web client is fundamentally fragile: any transient error (browser opening a new HTTP/2 connection, network hiccup, server restart) causes an unrecoverable failure with a cryptic error message. There is no retry logic, no fetch timeout, no error categorization, and the upload uses a single server instead of distributing chunks across preset servers. This makes the app frustrating — it works most of the time but fails unpredictably, which is worse than being completely broken.
+The XFTP web client is fundamentally fragile: any transient error (browser opening a new HTTP/2 connection, network hiccup, router restart) causes an unrecoverable failure with a cryptic error message. There is no retry logic, no fetch timeout, no error categorization, and the upload uses a single router instead of distributing data packets across preset routers. This makes the app frustrating — it works most of the time but fails unpredictably, which is worse than being completely broken.
 
 ### Confirmed root cause (from diagnostic logs)
 
-When the browser opens a new HTTP/2 connection mid-operation, the new connection has a different TLS SessionId with no handshake state in the server's `TMap SessionId Handshake`. The server's `Nothing` branch in `xftpServerHandshakeV1` (Server.hs:169) unconditionally calls `processHello`, which tries to decode the command body as `XFTPClientHello`, fails, and sends a raw padded "HANDSHAKE" error string. The client cannot parse this as a proper transmission (first byte 'H' = 72 is read as batch count), producing `"expected batch count 1, got 72"`.
+When the browser opens a new HTTP/2 connection mid-operation, the new connection has a different TLS SessionId with no handshake state in the router's `TMap SessionId Handshake`. The router's `Nothing` branch in `xftpServerHandshakeV1` (Server.hs:169) unconditionally calls `processHello`, which tries to decode the command body as `XFTPClientHello`, fails, and sends a raw padded "HANDSHAKE" error string. The client cannot parse this as a proper transmission (first byte 'H' = 72 is read as batch count), producing `"expected batch count 1, got 72"`.
 
-Server log confirming the SessionId change:
+Router log confirming the SessionId change:
 ```
 DEBUG dispatch: Accepted+command sessId="ZSo1GGETgIvjbB7CWHbvGPpbMjx_b2IlC1eTI6aKfqc="
 ...20 successful commands...
@@ -17,32 +17,32 @@ DEBUG dispatch: Nothing sessId="mJC7Sck9xxW5UsXoPGoUWduuHghSVgf6CnD6ZC6SBhU=" we
 
 ### Why re-handshake is required (cannot be made optional)
 
-1. **SessionId is baked into signed command data.** `encodeAuthTransmission` signs `concat(encode(sessionId), tInner)` with Ed25519. Server's `tDecodeServer` (Protocol.hs:2242) verifies `sessId == sessionId`. New connection = different sessionId = signature mismatch.
-2. **Server generates per-session DH keys.** `processHello` creates fresh X25519 keypair stored in `HandshakeSent`. For SMP browser clients (future), `verifyCmdAuth` (Protocol.hs:1322) requires the matching `serverPrivKey` from `thAuth`.
+1. **SessionId is baked into signed command data.** `encodeAuthTransmission` signs `concat(encode(sessionId), tInner)` with Ed25519. Router's `tDecodeServer` (Protocol.hs:2242) verifies `sessId == sessionId`. New connection = different sessionId = signature mismatch.
+2. **Router generates per-session DH keys.** `processHello` creates fresh X25519 keypair stored in `HandshakeSent`. For SMP browser clients (future), `verifyCmdAuth` (Protocol.hs:1322) requires the matching `serverPrivKey` from `thAuth`.
 3. **This applies to both XFTP and future SMP browser clients** — the session management approach is the same.
 
-### Why multiple preset servers cannot work
+### Why multiple preset routers cannot work
 
-Upload (`agent.ts:105-157`) takes a single `server: XFTPServer` parameter and uploads ALL chunks to it. `web/upload.ts:133` calls `pickRandomServer(servers)` which selects ONE random server from all presets. The multi-server preset configuration is pointless — only one server is ever used per upload. The design intent (RFC section 11.6: "upload in parallel to 8 randomly selected servers") is not implemented. This must be fixed in Phase 2 (section 3.7).
+Upload (`agent.ts:105-157`) takes a single `server: XFTPServer` parameter and uploads ALL data packets to it. `web/upload.ts:133` calls `pickRandomServer(servers)` which selects ONE random router from all presets. The multi-router preset configuration is pointless — only one router is ever used per upload. The design intent (RFC section 11.6: "upload in parallel to 8 randomly selected routers") is not implemented. This must be fixed in Phase 2 (section 3.7).
 
 ## 2. Solution Summary
 
 ### Phase 1: Error handling and connection resilience
 
-1. **Server: strict dispatch for allowed protocol combinations** — reject all invalid combinations
+1. **Router: strict dispatch for allowed protocol combinations** — reject all invalid combinations
 2. **Client: automatic retry with re-handshake** on SESSION/HANDSHAKE errors
 3. **Client: fetch timeout** with configurable duration
 4. **UI: error categorization and retry** — auto-retry temporary, human-readable permanent
-5. **Client: connection state with Promise-based lock and per-server queues** — `ServerConnection` with `client: Promise<XFTPClient>` + `queue: Promise<void>`
+5. **Client: connection state with Promise-based lock and per-router queues** — `ServerConnection` with `client: Promise<XFTPClient>` + `queue: Promise<void>`
 6. **Client: fix cache key** — include keyHash
 
-### Phase 2: Multi-server upload (after Phase 1)
+### Phase 2: Multi-router upload (after Phase 1)
 
-7. **Multi-server upload with server selection and failover** — distribute chunks across servers, retry FNEW on different server if one fails
+7. **Multi-router upload with router selection and failover** — distribute data packets across routers, retry FNEW on different router if one fails
 
 ## 3. Detailed Technical Design
 
-### 3.1 Server: strict dispatch for allowed protocol combinations
+### 3.1 Router: strict dispatch for allowed protocol combinations
 
 **Principle:** Everything not explicitly done by existing Haskell/TS clients is prohibited. It is better to fail on impossible combinations than to be permissive — permissiveness complicates debugging and creates attack vectors via unexpected behaviors.
 
@@ -88,14 +88,14 @@ Nothing
 | `FRErr SESSION` | Temporary | Yes (auto) | "Session expired, reconnecting..." |
 | `FRErr HANDSHAKE` | Temporary | Yes (auto) | "Connection interrupted, reconnecting..." |
 | `fetch()` TypeError | Temporary | Yes (auto) | "Network error, retrying..." |
-| AbortError (timeout) | Temporary | Yes (auto) | "Server timeout, retrying..." |
+| AbortError (timeout) | Temporary | Yes (auto) | "Router timeout, retrying..." |
 | `FRErr AUTH` | Permanent | No | "File is invalid, expired, or has been removed" |
 | `FRErr NO_FILE` | Permanent | No | "File not found — it may have expired" |
-| `FRErr SIZE` | Permanent | No | "File size exceeds server limit" |
-| `FRErr QUOTA` | Permanent | No | "Server storage quota exceeded" |
-| `FRErr BLOCKED` | Permanent | No | "File has been blocked by server" |
+| `FRErr SIZE` | Permanent | No | "File size exceeds router limit" |
+| `FRErr QUOTA` | Permanent | No | "Router storage quota exceeded" |
+| `FRErr BLOCKED` | Permanent | No | "File has been blocked by router" |
 | `FRErr DIGEST` | Permanent | No | "File integrity check failed" |
-| `FRErr INTERNAL` | Permanent | No | "Server internal error" |
+| `FRErr INTERNAL` | Permanent | No | "Router internal error" |
 | `CMD *` | Permanent | No | "Protocol error" |
 
 **Retry behavior:**
@@ -156,7 +156,7 @@ if (raw.length < 20) {
 2. **FRErr classification** (replaces current unconditional throw):
 
 ```typescript
-// After decodeResponse, instead of throw new Error("Server error: " + err.type):
+// After decodeResponse, instead of throw new Error("Router error: " + err.type):
 if (response.type === "FRErr") {
   const err = response.err
   if (err.type === "SESSION" || err.type === "HANDSHAKE") {
@@ -206,30 +206,30 @@ Default: 30s for production, 5s for tests. Threaded through `connectXFTP` → `c
 
 **Behavior (Option D):**
 
-- **Temporary errors:** Auto-retry loop (3 attempts). After 3 failures, show human-readable diagnosis with manual retry button. Diagnosis examples: "Server timeout — the server may be temporarily unavailable", "Connection interrupted — your network may be unstable".
+- **Temporary errors:** Auto-retry loop (3 attempts). After 3 failures, show human-readable diagnosis with manual retry button. Diagnosis examples: "Router timeout — the router may be temporarily unavailable", "Connection interrupted — your network may be unstable".
 - **Permanent errors:** Show human-readable error immediately, NO retry button. User can reload page if they want to retry. Examples: "File is invalid, expired, or has been removed" (AUTH), "File not found" (NO_FILE).
 
 **Current UI retry buttons:**
 - `upload.ts:73-75` — retry calls `startUpload(pendingFile)` from scratch
 - `download.ts:60` — retry calls `startDownload()` from scratch
 
-**Improvement:** Track uploaded/downloaded chunk indices. On manual retry, skip completed chunks:
+**Improvement:** Track uploaded/downloaded data packet indices. On manual retry, skip completed data packets:
 
 ```typescript
-// Upload: track which chunks completed
+// Upload: track which data packets completed
 const completedChunks: Set<number> = new Set()
 for (let i = 0; i < specs.length; i++) {
   if (completedChunks.has(i)) continue
-  // ... create + upload chunk
+  // ... create + upload data packet
   completedChunks.add(i)
 }
 
-// Download: already naturally resumable — each chunk is independent
+// Download: already naturally resumable — each data packet is independent
 ```
 
-### 3.5 Client: connection state with Promise-based lock and per-server queues
+### 3.5 Client: connection state with Promise-based lock and per-router queues
 
-**Design:** Each server gets a `ServerConnection` record containing a `Promise<XFTPClient>` (the connection lock) and a `Promise<void>` (the sequential command queue). The `XFTPClientAgent` maps server keys to these records.
+**Design:** Each router gets a `ServerConnection` record containing a `Promise<XFTPClient>` (the connection lock) and a `Promise<void>` (the sequential command queue). The `XFTPClientAgent` maps router keys to these records.
 
 The promise IS the lock — every consumer awaits the same promise. When reconnect is needed, the promise is replaced atomically.
 
@@ -325,7 +325,7 @@ function removeStaleConnection(
 }
 ```
 
-**Per-server sequential queue:** `queue` is a `Promise<void>` — the tail of the sequential operation chain. Each new operation `.then()`s onto it. It's `void` because callers hold their own typed promises; the queue only tracks completion order:
+**Per-router sequential queue:** `queue` is a `Promise<void>` — the tail of the sequential operation chain. Each new operation `.then()`s onto it. It's `void` because callers hold their own typed promises; the queue only tracks completion order:
 
 ```typescript
 async function enqueueCommand<T>(
@@ -348,9 +348,9 @@ async function enqueueCommand<T>(
 }
 ```
 
-Commands to the same server execute one at a time via the queue. Commands to different servers execute concurrently because each has its own queue. `enqueueCommand` provides sequencing; `sendXFTPCommand` (called inside `fn` via command wrappers) provides retry. They compose as: `enqueueCommand` sequences calls to wrappers that internally use `sendXFTPCommand`.
+Commands to the same router execute one at a time via the queue. Commands to different routers execute concurrently because each has its own queue. `enqueueCommand` provides sequencing; `sendXFTPCommand` (called inside `fn` via command wrappers) provides retry. They compose as: `enqueueCommand` sequences calls to wrappers that internally use `sendXFTPCommand`.
 
-**Download change:** Group chunks by server, process each server's chunks sequentially, servers in parallel. Uses `for` loop for per-server sequencing (same pattern as Stage 2 upload). `enqueueCommand` is available for cases where different callers target the same server.
+**Download change:** Group data packets by router, process each router's data packets sequentially, routers in parallel. Uses `for` loop for per-router sequencing (same pattern as Stage 2 upload). `enqueueCommand` is available for cases where different callers target the same router.
 
 ```typescript
 const byServer = new Map<string, FileChunk[]>()
@@ -374,7 +374,7 @@ await Promise.all([...byServer.entries()].map(async ([srv, chunks]) => {
 
 ### 3.6 Fix cache key
 
-**Bug:** `getXFTPServerClient` (client.ts:110) uses `"https://" + server.host + ":" + server.port` as cache key, ignoring `keyHash`. Two servers with same host:port but different keyHash share a cached connection, bypassing identity verification.
+**Bug:** `getXFTPServerClient` (client.ts:110) uses `"https://" + server.host + ":" + server.port` as cache key, ignoring `keyHash`. Two routers with same host:port but different keyHash share a cached connection, bypassing identity verification.
 
 **Fix:** Use `formatXFTPServer(server)` as cache key (includes keyHash). Already available in `protocol/address.ts:52-54`.
 
@@ -388,11 +388,11 @@ const key = formatXFTPServer(server)
 
 Note: With the redesign in 3.5, the cache key fix is inherent — the `connections` Map uses `formatXFTPServer(server)` everywhere.
 
-### 3.7 Phase 2: Multi-server upload with server selection and failover
+### 3.7 Phase 2: Multi-router upload with router selection and failover
 
-**Problem:** Current upload (`agent.ts:105-157`) takes a single `server: XFTPServer` and uploads ALL chunks to it. The 12 preset servers (6 SimpleX + 6 Flux) are pointless — only one is ever used.
+**Problem:** Current upload (`agent.ts:105-157`) takes a single `server: XFTPServer` and uploads ALL data packets to it. The 12 preset routers (6 SimpleX + 6 Flux) are pointless — only one is ever used.
 
-**Design goal:** Distribute chunks across servers. Retry FNEW on a different server if one fails. Once working servers are found, prefer them (heuristic: server unlikely to fail mid-process, more likely to be broken initially due to maintenance/downtime).
+**Design goal:** Distribute data packets across routers. Retry FNEW on a different router if one fails. Once working routers are found, prefer them (heuristic: router unlikely to fail mid-process, more likely to be broken initially due to maintenance/downtime).
 
 **Reference implementation:** Haskell `Agent.hs:457-486` (`createChunk` / `createWithNextSrv`) + `Client.hs:2335-2385` (`getNextServer_` / `withNextSrv`).
 
@@ -400,13 +400,13 @@ Note: With the redesign in 3.5, the cache key fix is inherent — the `connectio
 
 Two-stage architecture:
 
-1. **Allocate stage (serial per file in Haskell):** For each chunk, call FNEW on a randomly-selected server. If FNEW fails, pick a different server and retry. Track tried hosts to avoid retrying the same server. After all chunks are assigned to servers, spawn one upload worker per server.
+1. **Allocate stage (serial per file in Haskell):** For each data packet, call FNEW on a randomly-selected router. If FNEW fails, pick a different router and retry. Track tried hosts to avoid retrying the same router. After all data packets are assigned to routers, spawn one upload worker per router.
 
-2. **Upload stage (parallel per server):** Each server worker uploads its assigned chunks sequentially (FPUT). On FPUT failure, retry on the same server with backoff (because the chunk replica already exists on that server). No server failover for FPUT.
+2. **Upload stage (parallel per router):** Each router worker uploads its assigned data packets sequentially (FPUT). On FPUT failure, retry on the same router with backoff (because the data packet replica already exists on that router). No router failover for FPUT.
 
-Server selection constraints (hierarchical, `getNextServer_` Client.hs:2335-2350):
-1. Prefer servers from unused operators (operator diversity)
-2. Prefer servers with unused hosts (host diversity)
+Router selection constraints (hierarchical, `getNextServer_` Client.hs:2335-2350):
+1. Prefer routers from unused operators (operator diversity)
+2. Prefer routers with unused hosts (host diversity)
 3. Random pick from the most-constrained candidate set
 4. If all exhausted, reset tried set and start over
 
@@ -414,17 +414,17 @@ Server selection constraints (hierarchical, `getNextServer_` Client.hs:2335-2350
 
 The web client doesn't have operators or a database. Simplified algorithm with two stages:
 
-**Stage 1 — Allocate:** Create chunk records on servers (FNEW). Unlike Haskell which is serial here, web FNEW runs concurrently within a concurrency limit. FNEW is a small command — concurrent FNEW on the same connection is not a problem, and concurrent FNEW across servers improves upload startup time.
+**Stage 1 — Allocate:** Create data packet records on routers (FNEW). Unlike Haskell which is serial here, web FNEW runs concurrently within a concurrency limit. FNEW is a small command — concurrent FNEW on the same connection is not a problem, and concurrent FNEW across routers improves upload startup time.
 
-**Stage 2 — Upload:** Upload chunk data (FPUT). Parallel across servers, sequential per server (reuses per-server queues from 3.5). FPUT retries on the same server with backoff — no server rotation because the chunk replica already exists on that server. Stage 2 reads chunk data by offset (via `readChunk`), so `SentChunk` must be extended with `chunkOffset: number` (from ChunkSpec).
+**Stage 2 — Upload:** Upload data packet content (FPUT). Parallel across routers, sequential per router (reuses per-router queues from 3.5). FPUT retries on the same router with backoff — no router rotation because the data packet replica already exists on that router. Stage 2 reads data packet content by offset (via `readChunk`), so `SentChunk` must be extended with `chunkOffset: number` (from ChunkSpec).
 
 ```typescript
 interface UploadState {
-  untriedServers: XFTPServer[]    // servers not yet attempted — initially all servers
-  workingServers: XFTPServer[]    // servers that succeeded FNEW
+  untriedServers: XFTPServer[]    // routers not yet attempted — initially all routers
+  workingServers: XFTPServer[]    // routers that succeeded FNEW
 }
 
-const MAX_FNEW_ATTEMPTS = 5  // per chunk: try up to 5 different servers
+const MAX_FNEW_ATTEMPTS = 5  // per data packet: try up to 5 different routers
 
 async function uploadFile(
   agent: XFTPClientAgent,
@@ -455,7 +455,7 @@ async function uploadFile(
   )
   await Promise.all(allocateWorkers)
 
-  // Stage 2: Upload — parallel across servers, sequential per server
+  // Stage 2: Upload — parallel across routers, sequential per router
   // readChunk reads from the encrypted file by offset (same as Phase 1 uploadFile)
   let uploaded = 0
   const total = encrypted.chunkSizes.reduce((a, b) => a + b, 0)
@@ -473,7 +473,7 @@ async function uploadFile(
 }
 ```
 
-**`createChunkWithFailover`** — server selection with per-chunk retry limit:
+**`createChunkWithFailover`** — router selection with per-data-packet retry limit:
 
 ```typescript
 async function createChunkWithFailover(
@@ -515,7 +515,7 @@ function pickServer(
   state: UploadState,
   concurrency: number
 ): XFTPServer {
-  // Once enough working servers found, only use those
+  // Once enough working routers found, only use those
   if (state.workingServers.length >= concurrency) {
     return randomPick(state.workingServers)
   }
@@ -524,7 +524,7 @@ function pickServer(
     const idx = Math.floor(Math.random() * state.untriedServers.length)
     return state.untriedServers.splice(idx, 1)[0]  // remove from untried
   }
-  // All tried — reset untried to non-working servers and retry
+  // All tried — reset untried to non-working routers and retry
   state.untriedServers = allServers.filter(
     s => !state.workingServers.some(w => formatXFTPServer(w) === formatXFTPServer(s))
   )
@@ -532,22 +532,22 @@ function pickServer(
     const idx = Math.floor(Math.random() * state.untriedServers.length)
     return state.untriedServers.splice(idx, 1)[0]
   }
-  // Every server is working — pick any working
+  // Every router is working — pick any working
   return randomPick(state.workingServers)
 }
 ```
 
-**Algorithm:** Two lists — `untriedServers` (initially all) and `workingServers` (initially empty). When `workingServers.length < concurrency`, pick from `untriedServers` (removing on pick). On FNEW success, add to `workingServers`. On FNEW failure, server is already removed from `untriedServers`; remove from `workingServers` if present. When `untriedServers` is empty, reset it to all non-working servers. Once `workingServers.length >= concurrency`, pick randomly only from `workingServers`.
+**Algorithm:** Two lists — `untriedServers` (initially all) and `workingServers` (initially empty). When `workingServers.length < concurrency`, pick from `untriedServers` (removing on pick). On FNEW success, add to `workingServers`. On FNEW failure, router is already removed from `untriedServers`; remove from `workingServers` if present. When `untriedServers` is empty, reset it to all non-working routers. Once `workingServers.length >= concurrency`, pick randomly only from `workingServers`.
 
-**Termination condition:** Each chunk tries at most `min(serverCount, 5)` different servers. If all attempts fail, the chunk fails and the upload fails with the last error. Rationale: if 5 out of 12 servers are down, something systemic is wrong and continuing is unlikely to help. Timeouts count as failures — the timed-out server is removed from working and a different server is picked next.
+**Termination condition:** Each data packet tries at most `min(routerCount, 5)` different routers. If all attempts fail, the data packet fails and the upload fails with the last error. Rationale: if 5 out of 12 routers are down, something systemic is wrong and continuing is unlikely to help. Timeouts count as failures — the timed-out router is removed from working and a different router is picked next.
 
 **Key differences from Haskell:**
 - No operator concept — just host diversity via random selection
 - No database — state tracked in-memory during upload
 - FNEW runs concurrently (Haskell is serial) — improves startup time
-- FNEW is cheap and retried with server rotation; FPUT retries on same server
+- FNEW is cheap and retried with router rotation; FPUT retries on same router
 
-**Download changes (also Phase 2):** Default concurrency should be 4 (matching Haskell). Download already groups by server in 3.5. If `replicas[0]` download fails, try `replicas[1]`, `replicas[2]`, etc. (fallback across replicas).
+**Download changes (also Phase 2):** Default concurrency should be 4 (matching Haskell). Download already groups by router in 3.5. If `replicas[0]` download fails, try `replicas[1]`, `replicas[2]`, etc. (fallback across replicas).
 
 ## 4. Implementation Plan
 
@@ -560,7 +560,7 @@ Steps are ordered by dependency and should be implemented one by one.
 - Add import for `formatXFTPServer`
 - Run existing tests to verify no regression
 
-#### Step 2: Typed error detection for padded server errors (3.2 client-side)
+#### Step 2: Typed error detection for padded router errors (3.2 client-side)
 - Add `XFTPRetriableError` class
 - In `sendXFTPCommand`, detect padded error strings before `decodeTransmission`
 - Classify `FRErr` responses as retriable or permanent with human-readable messages
@@ -573,16 +573,16 @@ Steps are ordered by dependency and should be implemented one by one.
 - Add vitest test: timeout triggers after configured duration
 - Run existing tests
 
-#### Step 4: Connection state with Promise-based lock and per-server queues (3.5)
+#### Step 4: Connection state with Promise-based lock and per-router queues (3.5)
 - Introduce `ServerConnection` record: `{client: Promise<XFTPClient>, queue: Promise<void>}`
 - Replace `XFTPClientAgent.clients: Map<string, XFTPClient>` with `connections: Map<string, ServerConnection>`
 - Implement `reconnectClient` — replaces `conn.client` with new promise, preserves queue
-- Implement `enqueueCommand` — chains operation onto server's queue
+- Implement `enqueueCommand` — chains operation onto router's queue
 - Implement `removeStaleConnection` — removes entry only if current promise is the failed one
 - Auto-cleanup: `p.catch(() => delete)` removes failed connections so next caller starts fresh
 - Adapt `closeXFTPServerClient` and `closeXFTPAgent`
 - Add vitest tests:
-  - Concurrent calls to same server produce single connection
+  - Concurrent calls to same router produce single connection
   - Failed promise is cleaned up, next caller gets fresh connection
 
 #### Step 5: Automatic retry in sendXFTPCommand (3.2)
@@ -594,61 +594,61 @@ Steps are ordered by dependency and should be implemented one by one.
 - Max 3 retries for retriable errors, immediate throw for permanent
 - On retriable error: call `reconnectClient` and retry. On retriable error exhausted: call `removeStaleConnection` to clean up. On permanent error: throw immediately without touching connection
 - Add vitest tests:
-  - Server started with delay → first attempt fails, retry succeeds
+  - Router started with delay → first attempt fails, retry succeeds
   - 3 retries exhausted → error propagates with human-readable message
   - Non-retriable error (AUTH) → no retry, immediate failure
 
-#### Step 6: Server-side stale session handling (3.1)
+#### Step 6: Router-side stale session handling (3.1)
 - Add one guard to `Nothing` branch: `sniUsed && not webHello -> throwE SESSION`
 - Remove debug `hPutStrLn stderr` lines (all 6 occurrences in dispatch)
 - All other branches unchanged
 - Run Haskell tests + Playwright tests
 
-#### Step 7: Download with per-server grouping
-- Modify `downloadFileRaw` to group chunks by server, sequential within each server (`for` loop), parallel across servers (`Promise.all`)
-- Add vitest test: concurrent downloads from different servers run in parallel
+#### Step 7: Download with per-router grouping
+- Modify `downloadFileRaw` to group data packets by router, sequential within each router (`for` loop), parallel across routers (`Promise.all`)
+- Add vitest test: concurrent downloads from different routers run in parallel
 
 #### Step 8: UI error improvements (3.4)
 - Temporary errors: auto-retry loop (3 attempts), then show human-readable diagnosis + manual retry button
 - Permanent errors: show human-readable error, NO retry button
-- Manual retry resumes from last successful chunk (not full restart)
+- Manual retry resumes from last successful data packet (not full restart)
 
 #### Step 9: Remove debug logging
 - Remove all `console.log('[DEBUG ...]')` and `hPutStrLn stderr "DEBUG ..."` lines
 - Keep `console.error('[XFTP] ...')` error logging
 
-### Phase 2: Multi-server upload
+### Phase 2: Multi-router upload
 
 Implement after Phase 1 is complete and tested.
 
-#### Step 10: Multi-server upload with failover (3.7)
-- Extend `SentChunk` with `chunkOffset: number` (from ChunkSpec) and `server: XFTPServer` (assigned during allocate) — Stage 2 reads data by offset and groups chunks by server
+#### Step 10: Multi-router upload with failover (3.7)
+- Extend `SentChunk` with `chunkOffset: number` (from ChunkSpec) and `server: XFTPServer` (assigned during allocate) — Stage 2 reads data by offset and groups data packets by router
 - Change `uploadFile` signature: takes `allServers: XFTPServer[]` instead of single `server`
 - Implement `UploadState` with `untriedServers` and `workingServers`
-- Implement `createChunkWithFailover` and `pickServer`: two-list selection (untried → working once enough found), max `min(serverCount, 5)` attempts per chunk
+- Implement `createChunkWithFailover` and `pickServer`: two-list selection (untried → working once enough found), max `min(routerCount, 5)` attempts per data packet
 - Allocate stage: concurrent FNEW within concurrency limit (default 4)
-- Upload stage: parallel across servers, sequential per server (reuse queue from Step 7)
+- Upload stage: parallel across routers, sequential per router (reuse queue from Step 7)
 - Update `web/upload.ts`: pass `getServers()` instead of `pickRandomServer(getServers())`
-- Update description building: each chunk references its actual server
+- Update description building: each data packet references its actual router
 - Add vitest tests:
-  - File split across N servers (verify different servers in description)
-  - One server down → chunks redistributed to others
-  - All servers down → error after exhausting 5 attempts per chunk
+  - File split across N routers (verify different routers in description)
+  - One router down → data packets redistributed to others
+  - All routers down → error after exhausting 5 attempts per data packet
 
 #### Step 11: Download concurrency and replica fallback
 - Change default download concurrency from 1 to 4
 - If `replicas[0]` download fails, try `replicas[1]`, `replicas[2]`, etc.
-- Uses per-server queues from Step 7
+- Uses per-router queues from Step 7
 
 ## 5. Testing Plan
 
 ### Principle
 
-Prefer low-level vitest tests over Playwright E2E. Each new function gets one focused test. Pure functions tested without mocks; connection management tested with mock `connectXFTP`; server behavior tested with real server. Total: 13 tests across 4 files.
+Prefer low-level vitest tests over Playwright E2E. Each new function gets one focused test. Pure functions tested without mocks; connection management tested with mock `connectXFTP`; router behavior tested with real router. Total: 13 tests across 4 files.
 
-Tests A-C run in browser context (`@vitest/browser` with Chromium headless), configured in `vitest.config.ts`. Test D (integration) requires a separate Node.js vitest config since it uses `node:http2`. Existing `globalSetup.ts` provides a real XFTP server for integration tests.
+Tests A-C run in browser context (`@vitest/browser` with Chromium headless), configured in `vitest.config.ts`. Test D (integration) requires a separate Node.js vitest config since it uses `node:http2`. Existing `globalSetup.ts` provides a real XFTP router for integration tests.
 
-### Test file A: `test/errors.test.ts` — pure, no server
+### Test file A: `test/errors.test.ts` — pure, no router
 
 Tests error classification and padded error detection (Steps 2, 5).
 
@@ -682,7 +682,7 @@ expect(re.message).toContain("expired")  // "Session expired, reconnecting..."
 **T3. Padded error detection extracts error string from padded block**
 ```typescript
 import {blockPad, blockUnpad} from '../src/protocol/transmission.js'
-// Simulate server sending padded "SESSION"
+// Simulate router sending padded "SESSION"
 const padded = blockPad(new TextEncoder().encode("SESSION"))
 const raw = blockUnpad(padded)
 expect(raw.length).toBeLessThan(20)
@@ -694,7 +694,7 @@ const normalRaw = blockUnpad(normalBlock)
 expect(normalRaw.length).toBeGreaterThan(20)  // not mistaken for padded error
 ```
 
-### Test file B: `test/connection.test.ts` — mock connectXFTP, no server
+### Test file B: `test/connection.test.ts` — mock connectXFTP, no router
 
 Tests connection management functions (Steps 4, 5). Uses `vi.mock` to replace `connectXFTP` with a controllable promise factory.
 
@@ -800,7 +800,7 @@ await expect(sendXFTPCommand(agent3, server, dummyKey, dummyId, encodePING()))
 expect(vi.mocked(connectXFTP)).toHaveBeenCalledTimes(1)  // initial only, no reconnect
 ```
 
-### Test file C: `test/server-selection.test.ts` — pure, no server
+### Test file C: `test/server-selection.test.ts` — pure, no router
 
 Tests `pickServer` state machine (Step 10). Determinism: seed `Math.random` or test invariants not specific picks.
 
@@ -833,12 +833,12 @@ const state: UploadState = {
   workingServers: [s1, s2]   // only 2 working, concurrency=4
 }
 const picked = pickServer(servers, state, 4)
-// Should have reset untried to non-working servers and picked from them
+// Should have reset untried to non-working routers and picked from them
 expect([s3, s4, s5]).toContainEqual(picked)
 expect(state.untriedServers.length).toBe(2)  // 3 non-working minus 1 picked
 ```
 
-### Test file D: `test/integration.test.ts` — real server, Node.js mode
+### Test file D: `test/integration.test.ts` — real router, Node.js mode
 
 Requires separate vitest config with `browser: {enabled: false}` since these tests use `node:http2` directly. Alternatively, add `test/vitest.node.config.ts` that includes only `test/integration.test.ts` and runs in Node.js.
 
@@ -847,10 +847,10 @@ Requires separate vitest config with `browser: {enabled: false}` since these tes
 import http2 from 'node:http2'
 // Connect and handshake normally via the client
 const client = await connectXFTP(server)
-// Create a raw HTTP/2 session (new TLS SessionId, no handshake state on server)
+// Create a raw HTTP/2 session (new TLS SessionId, no handshake state on router)
 const session = http2.connect(client.baseUrl, {rejectUnauthorized: false})
 // Build a dummy command block using the old client's sessionId.
-// Content doesn't matter — server detects stale session before parsing command.
+// Content doesn't matter — router detects stale session before parsing command.
 const dummyKey = new Uint8Array(64)  // Ed25519 private key (dummy)
 const dummyId = new Uint8Array(24)   // entity ID (dummy)
 const cmdBlock = encodeAuthTransmission(client.sessionId, new Uint8Array(0), dummyId, encodePING(), dummyKey)
@@ -862,7 +862,7 @@ const resp = await new Promise<Uint8Array>((resolve, reject) => {
   req.on("error", reject)
   req.end(Buffer.from(cmdBlock))
 })
-// Server should return padded "SESSION" (not crash, not "HANDSHAKE")
+// Router should return padded "SESSION" (not crash, not "HANDSHAKE")
 const raw = blockUnpad(resp.subarray(0, XFTP_BLOCK_SIZE))
 expect(new TextDecoder().decode(raw)).toBe("SESSION")
 session.close()
@@ -885,7 +885,7 @@ await expect(
 | Cache key fix (Step 1) | Existing round-trip test — uses `formatXFTPServer` after refactor |
 | Basic upload/download | 24 Playwright tests + 1 vitest browser test |
 | File size limits, unicode filenames | Playwright edge case tests |
-| Server startup/teardown | `globalSetup.ts` / `globalTeardown.ts` |
+| Router startup/teardown | `globalSetup.ts` / `globalTeardown.ts` |
 | Handshake + identity verification | `connectXFTP` in existing round-trip test |
 
 ### Test ordering
@@ -895,7 +895,7 @@ Tests must be added alongside their implementation step:
 - **Step 3**: Add T13 (test/integration.test.ts) — requires Node.js vitest config
 - **Step 4**: Add T4, T5, T6, T7 (test/connection.test.ts)
 - **Step 5**: Add T8 (test/connection.test.ts)
-- **Step 6**: Add T12 (test/integration.test.ts) — requires server change + Node.js vitest config
+- **Step 6**: Add T12 (test/integration.test.ts) — requires router change + Node.js vitest config
 - **Step 10**: Add T9, T10, T11 (test/server-selection.test.ts)
 
 ## 6. Context for Implementation Sessions
@@ -914,30 +914,30 @@ Tests must be added alongside their implementation step:
 - `web/servers.ts` — `getServers`, `pickRandomServer`
 
 **TypeScript (xftp-web/test/):**
-- `browser.test.ts` — vitest Node.js test template (uses real Haskell server)
-- `globalSetup.ts` — server startup, config generation, port file
+- `browser.test.ts` — vitest Node.js test template (uses real Haskell router)
+- `globalSetup.ts` — router startup, config generation, port file
 - `page.spec.ts` — Playwright page tests
 
-**Haskell (reference for multi-server):**
-- `src/Simplex/FileTransfer/Agent.hs` — `createChunk` (lines 457-486, allocate stage), `runXFTPSndPrepareWorker` (lines 391-430, serial allocate in Haskell), `runXFTPSndWorker` (lines 494-548, per-server upload worker)
+**Haskell (reference for multi-router):**
+- `src/Simplex/FileTransfer/Agent.hs` — `createChunk` (lines 457-486, allocate stage), `runXFTPSndPrepareWorker` (lines 391-430, serial allocate in Haskell), `runXFTPSndWorker` (lines 494-548, per-router upload worker)
 - `src/Simplex/Messaging/Agent/Client.hs` — `getNextServer_` (lines 2335-2350), `withNextSrv` (lines 2366-2385), `pickServer` (lines 2309-2314)
 
-**Haskell (server):**
+**Haskell (router):**
 - `src/Simplex/FileTransfer/Server.hs` — `xftpServerHandshakeV1` (lines 165-244), `processRequest` (lines 403-435)
 - `src/Simplex/Messaging/Protocol.hs` — `tDecodeServer` (lines 2239-2265) — sessionId verification at line 2242
 
 ### Key design constraints
 
 1. `tDecodeServer` (Protocol.hs:2242) verifies `sessId == sessionId` — commands signed with old sessionId WILL fail on new connection
-2. Server generates per-session DH key in `processHello` (Server.hs:207) — cannot be shared across sessions
+2. Router generates per-session DH key in `processHello` (Server.hs:207) — cannot be shared across sessions
 3. `fetch()` provides zero control over HTTP/2 connection reuse — browser decides
 4. `xftp-web-hello` header is only checked in dispatch (Server.hs:192), NOT inside `processHello`
 5. Handshake-phase errors are raw padded strings; command-phase errors are proper ERR transmissions
 6. Ed25519 signature verification (`TASignature` path, Protocol.hs:1314) does NOT use `thAuth` — but SMP will
-7. Reconnect must re-handshake to get new sessionId AND new server DH key
+7. Reconnect must re-handshake to get new sessionId AND new router DH key
 8. The new `throwE SESSION` guard (Step 6) sends a raw padded "SESSION" string — no sessionId framing. Client detects this via padded error heuristic (section 3.2), not via sessionId mismatch
-9. FNEW is cheap (creates chunk record on server) — retry with different server on failure
-10. FPUT retries on same server (chunk replica already exists there) — close connection + backoff
+9. FNEW is cheap (creates data packet record on router) — retry with different router on failure
+10. FPUT retries on same router (data packet replica already exists there) — close connection + backoff
 
 ## 7. Plan Maintenance
 

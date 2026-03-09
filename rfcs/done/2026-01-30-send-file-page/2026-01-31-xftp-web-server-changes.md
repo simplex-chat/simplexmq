@@ -1,12 +1,12 @@
-# XFTP Server: SNI, CORS, and Web Support
+# XFTP Router: SNI, CORS, and Web Support
 
 Implementation details for Phase 3 of `rfcs/2026-01-30-send-file-page.md` (sections 6.1-6.4).
 
 ## 1. Overview
 
-The XFTP server is extended to support web browser clients by:
+The XFTP router is extended to support web browser clients by:
 
-1. **SNI-based TLS certificate switching** — Present a CA-issued web certificate (e.g., Let's Encrypt) to browsers, while continuing to present the self-signed XFTP identity certificate to native clients.
+1. **SNI-based TLS certificate switching** — Present a CA-issued web certificate (e.g., Let's Encrypt) to browsers, while continuing to present the self-signed XFTP identity certificate to native XFTP clients.
 2. **CORS headers** — Add CORS response headers on SNI connections so browsers allow cross-origin XFTP requests.
 3. **Configuration** — `[WEB]` INI section for HTTPS cert/key paths; opt-in (commented out by default).
 
@@ -16,11 +16,11 @@ Web handshake (challenge-response identity proof, §6.3 of parent RFC) is not ye
 
 ### 2.1 Reusing the SMP Pattern
 
-The SMP server already implements SNI-based certificate switching via `TLSServerCredential` and `runTransportServerState_` (see `rfcs/2024-09-15-shared-port.md`). The XFTP server applies the same pattern with one key difference: both native and web XFTP clients use HTTP/2 transport, whereas SMP switches between raw SMP protocol and HTTP entirely.
+The SMP router already implements SNI-based certificate switching via `TLSServerCredential` and `runTransportServerState_` (see `rfcs/2024-09-15-shared-port.md`). The XFTP router applies the same pattern with one key difference: both native and web XFTP clients use HTTP/2 transport, whereas SMP switches between raw SMP protocol and HTTP entirely.
 
 ### 2.2 Approach
 
-When `httpServerCreds` is configured, the XFTP server bypasses `runHTTP2Server` and uses `runTransportServerState_` directly to obtain the per-connection `sniUsed` flag. It then sets up HTTP/2 manually on each TLS connection using `withHTTP2` (same internals as `runHTTP2ServerWith_`). The `sniUsed` flag is captured in the closure and shared by all HTTP/2 requests on that connection.
+When `httpServerCreds` is configured, the XFTP router bypasses `runHTTP2Server` and uses `runTransportServerState_` directly to obtain the per-connection `sniUsed` flag. It then sets up HTTP/2 manually on each TLS connection using `withHTTP2` (same internals as `runHTTP2ServerWith_`). The `sniUsed` flag is captured in the closure and shared by all HTTP/2 requests on that connection.
 
 When `httpServerCreds` is absent, the existing `runHTTP2Server` path is unchanged.
 
@@ -33,7 +33,7 @@ Browser client (SNI)    ──TLS──> Web CA cert        ──HTTP/2──> 
 
 The web certificate file (e.g., `web.crt`) must contain the full chain: leaf certificate followed by the signing CA certificate. `loadServerCredential` uses `T.credentialLoadX509Chain` which reads all PEM blocks from the file.
 
-The client validates the chain by comparing `idCert` fingerprint (the CA cert, second in the 2-cert chain) against the known `keyHash`. This is the same validation as for XFTP identity certificates — the CA that signed the web cert must match the XFTP server's identity.
+The client validates the chain by comparing `idCert` fingerprint (the CA cert, second in the 2-cert chain) against the known `keyHash`. This is the same validation as for XFTP identity certificates — the CA that signed the web cert must match the XFTP router's identity.
 
 ## 3. CORS Support
 
@@ -69,7 +69,7 @@ Access-Control-Max-Age: 86400
 ### 3.4 Security
 
 `Access-Control-Allow-Origin: *` is safe because:
-- All XFTP commands require Ed25519 authentication (per-chunk keys from file description).
+- All XFTP commands require Ed25519 authentication (per-packet keys from file description).
 - No cookies or browser credentials are involved.
 - File content is end-to-end encrypted.
 
@@ -87,9 +87,9 @@ Commented out by default — web support is opt-in.
 
 ### 4.2 Behavior
 
-- `[WEB]` section not configured: silently ignored, server operates normally for native clients only.
+- `[WEB]` section not configured: silently ignored, router operates normally for native clients only.
 - `[WEB]` section configured with valid cert/key paths: SNI + CORS enabled.
-- `[WEB]` section configured with missing cert files: warning + continue (non-fatal, unlike SMP where it is fatal).
+- `[WEB]` section configured with missing cert files: warning + continue (non-fatal, unlike SMP router where it is fatal).
 
 ## 5. Files Modified
 
@@ -146,9 +146,9 @@ Added SNI and CORS tests as a subsection within `xftpServerTests` (6 tests):
 3. **CORS headers** — SNI POST request includes `Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: *`.
 4. **OPTIONS preflight** — SNI OPTIONS request returns all CORS preflight headers.
 5. **No CORS without SNI** — Non-SNI POST request has no CORS headers.
-6. **File chunk delivery** — Full XFTP file chunk upload/download through SNI-enabled server verifying no regression.
+6. **Data packet delivery** — Full XFTP data packet upload/download through SNI-enabled router verifying no regression.
 
 ## 6. Remaining Work
 
-- **Web handshake** (§6.3 of parent RFC): Challenge-response identity proof for SNI connections. The server detects web clients via the `sniUsed` flag and expects a 32-byte challenge in the first POST body (non-empty, unlike standard handshake). Response includes full cert chain + signature over `(challenge ++ sessionId)`.
+- **Web handshake** (§6.3 of parent RFC): Challenge-response identity proof for SNI connections. The router detects web clients via the `sniUsed` flag and expects a 32-byte challenge in the first POST body (non-empty, unlike standard handshake). Response includes full cert chain + signature over `(challenge ++ sessionId)`.
 - **Static page serving** (§6.5 of parent RFC): Optional serving of the web page HTML/JS bundle on GET requests.

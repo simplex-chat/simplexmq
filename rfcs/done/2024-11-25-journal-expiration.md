@@ -2,7 +2,7 @@
 
 ## Problem
 
-The journal storage servers recently migrated to do not delete delivered or expired messages, they only update pointers to journal file lines. The messages are actually deleted when the whole journal file is deleted (when fully deleted or fully expired).
+The journal storage routers recently migrated to do not delete delivered or expired messages, they only update pointers to journal file lines. The messages are actually deleted when the whole journal file is deleted (when fully deleted or fully expired).
 
 The problem is that in case the queue stops receiving the new messages then writing of messages won't switch to the new journal file, and the current journal file containing delivered or expired messages would never be deleted.
 

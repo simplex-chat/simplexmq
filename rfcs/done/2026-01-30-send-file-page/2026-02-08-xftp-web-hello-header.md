@@ -2,27 +2,27 @@
 
 ## 1. Problem Statement
 
-Browser HTTP/2 connection pooling reuses TLS connections across page navigations (same origin = same connection pool). The XFTP server maintains per-TLS-connection session state in `TMap SessionId Handshake` keyed by `tlsUniq tls`. When a browser navigates from the upload page to the download page (or reloads), the new page sends a fresh ClientHello on the reused HTTP/2 connection. The server is already in `HandshakeAccepted` state for that connection, so it routes the request to `processRequest`, which expects a 16384-byte command block but receives a 34-byte ClientHello → `ERR BLOCK`.
+Browser HTTP/2 connection pooling reuses TLS connections across page navigations (same origin = same connection pool). The XFTP router maintains per-TLS-connection session state in `TMap SessionId Handshake` keyed by `tlsUniq tls`. When a browser navigates from the upload page to the download page (or reloads), the new page sends a fresh ClientHello on the reused HTTP/2 connection. The server is already in `HandshakeAccepted` state for that connection, so it routes the request to `processRequest`, which expects a 16384-byte command block but receives a 34-byte ClientHello → `ERR BLOCK`.
 
-**Root cause**: The server cannot distinguish a ClientHello from a command on an already-handshaked connection because both arrive on the same HTTP/2 connection (same `tlsUniq`), and there is no content-level discriminator (ClientHello is unpadded, but the server never gets to parse it — the size check in `processRequest` rejects it first).
+**Root cause**: The router cannot distinguish a ClientHello from a command on an already-handshaked connection because both arrive on the same HTTP/2 connection (same `tlsUniq`), and there is no content-level discriminator (ClientHello is unpadded, but the router never gets to parse it — the size check in `processRequest` rejects it first).
 
 **Browser limitation**: `fetch()` provides zero control over HTTP/2 connection pooling. There is no browser API to force a new connection or detect connection reuse before a request is sent.
 
 ## 2. Solution Summary
 
-Add an HTTP header `xftp-web-hello` to web ClientHello requests. When the server sees this header on an already-handshaked connection (`HandshakeAccepted` state), it re-runs `processHello` **reusing the existing session keys** (same X25519 key pair from the original handshake). The client then completes the normal handshake flow (sends ClientHandshake, receives ack) and proceeds with commands.
+Add an HTTP header `xftp-web-hello` to web ClientHello requests. When the router sees this header on an already-handshaked connection (`HandshakeAccepted` state), it re-runs `processHello` **reusing the existing session keys** (same X25519 key pair from the original handshake). The client then completes the normal handshake flow (sends ClientHandshake, receives ack) and proceeds with commands.
 
 Key properties:
-- Server reuses existing `serverPrivKey` — no new key material generated on re-handshake, so `thAuth` remains consistent with any in-flight commands on concurrent HTTP/2 streams.
+- Router reuses existing `serverPrivKey` — no new key material generated on re-handshake, so `thAuth` remains consistent with any in-flight commands on concurrent HTTP/2 streams.
 - Header is only checked when `sniUsed` is true (web/browser connections). Native XFTP clients are unaffected.
 - CORS preflight already allows all headers (`Access-Control-Allow-Headers: *`).
 - Web clients always send this header on ClientHello — it's harmless on first connection (`Nothing` state) and enables re-handshake on reused connections (`HandshakeAccepted` state).
 
 ## 3. Detailed Technical Design
 
-### 3.1 Server change: parameterize `processHello` (`src/Simplex/FileTransfer/Server.hs`)
+### 3.1 Router change: parameterize `processHello` (`src/Simplex/FileTransfer/Server.hs`)
 
-The entire server change is parameterizing the existing `processHello` with `Maybe C.PrivateKeyX25519`. Zero new functions.
+The entire router change is parameterizing the existing `processHello` with `Maybe C.PrivateKeyX25519`. Zero new functions.
 
 #### Current code (lines 165-191):
 
@@ -125,7 +125,7 @@ Add optional `headers?` parameter to `Transport.post()`, thread it through `fetc
 
 ### 3.5 Haskell test (`tests/XFTPServerTests.hs`)
 
-Add `testWebReHandshake` next to the existing `testWebHandshake` (line 504). It reuses the same SNI + HTTP/2 setup pattern, performs a full handshake, then sends a second ClientHello with the `xftp-web-hello` header on the same connection and verifies the server responds with a valid ServerHandshake (same `sessionId`), then completes the second handshake.
+Add `testWebReHandshake` next to the existing `testWebHandshake` (line 504). It reuses the same SNI + HTTP/2 setup pattern, performs a full handshake, then sends a second ClientHello with the `xftp-web-hello` header on the same connection and verifies the router responds with a valid ServerHandshake (same `sessionId`), then completes the second handshake.
 
 ```haskell
 -- Register in xftpServerTests (after line 86):
@@ -170,7 +170,7 @@ The only difference from `testWebHandshake`: the second `helloReq2` passes `[("x
 
 ## 4. Implementation Plan
 
-### Step 1: Server — parameterize `processHello`
+### Step 1: Router — parameterize `processHello`
 
 Apply the diff from Section 3.1 to `src/Simplex/FileTransfer/Server.hs`.
 
@@ -216,6 +216,6 @@ Tab A (upload) and Tab B (download) share the same HTTP/2 connection.
 ## 6. Security Considerations
 
 - **No new key material**: Re-handshake reuses existing `serverPrivKey`. No opportunity for key confusion or downgrade.
-- **Identity re-verification**: Server re-signs the web challenge with its long-term signing key. Client verifies identity again.
-- **Header cannot escalate privileges**: The header only triggers re-handshake (which the server was already capable of doing on first connection). It does not bypass any authentication.
+- **Identity re-verification**: Router re-signs the web challenge with its long-term signing key. Client verifies identity again.
+- **Header cannot escalate privileges**: The header only triggers re-handshake (which the router was already capable of doing on first connection). It does not bypass any authentication.
 - **Timing**: Re-handshake takes the same code path as initial handshake, so timing side-channels are unchanged.

@@ -2,7 +2,7 @@
 
 ## Problem
 
-Currently, the clients configure/choose which servers to use, but they cannot see who operates them, in which geography and hosting provider, what is the server source code (in case it was modified from the reference implementation we provide) and also any administrative and feedback contacts.
+Currently, the clients configure/choose which routers to use, but they cannot see who operates them, in which geography and hosting provider, what is the router source code (in case it was modified from the reference implementation we provide) and also any administrative and feedback contacts.
 
 Further, we currently use simplex.chat domain to host group links, and as diversity of the groups grows it is beginning to require managing feedback from the users about groups. It is important that this feedback is directed to relay owners and not to us, in case they are not our relays, as we are simply providing software here.
 
@@ -21,28 +21,28 @@ While this document is not the end of the journey to decentralize the network, i
 
 The proposed solution consists of two parts:
 
-- communicate server metadata via protocol, so it can be observed by the clients.
+- communicate router metadata via protocol, so it can be observed by the clients.
 - create home page for the relays, with all the same metadata.
 - create invitation and address links in the same domain name as the relay.
 
-The latter point is important so it is clear to the users who operates and owns the relay and where the access point to the content or group is hosted. Even though simplex.chat domain is never accessed by the app, and the meaningful part of the address is never sent to the page hosting server, it creates an impression of centralization, and some dependency on simplex.chat domain for anything other that showing the link QR code.
+The latter point is important so it is clear to the users who operates and owns the relay and where the access point to the content or group is hosted. Even though simplex.chat domain is never accessed by the app, and the meaningful part of the address is never sent to the page hosting router, it creates an impression of centralization, and some dependency on simplex.chat domain for anything other that showing the link QR code.
 
 Moving invitation links to the domain of the relay (primary relay, in case the link has redundancy) will both clarify relay ownership, solve the incorrect mis-perception of centralization, remove the dependency on simplex-chat domain without any user effort, and provides the means to submit content complaints to the relay operators (should they wish to receive them, which seems reasonable for large public relays, but may be unnecessary for private relays where unidentified parties cannot create links).
 
 ## Solution details
 
-Extend server INI file with information section:
+Extend router INI file with information section:
 
 ```
 [INFORMATION]
 # Please note that under AGPLv3 license conditions you MUST make
-# any source code modifications available to the end users of the server.
+# any source code modifications available to the end users of the router.
 # LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE
 # Not doing so would constitute a license violation.
 # Declaring an incorrect information here amounts to a fraud.
 # The license holders reserve the right to prosecute missing or incorrect
 # information about the server source code to the fullest extent permitted by the law.
-# The server will show warning on start if this field is absent
+# The router will show warning on start if this field is absent
 # and will not launch from v6.0 until this field is added.
 # If any other information field is present, source code property also MUST be present.
 source_code: https://github.com/simplex-chat/simplexmq
@@ -69,13 +69,13 @@ hosting: Linode / Akamai Inc.
 hosting_country: US
 ```
 
-Server home page would show whether queue creation is allowed and/or password protected, server retention policy (e.g., preserve messages on restart or not, and persist connections or not).
+Router home page would show whether queue creation is allowed and/or password protected, router retention policy (e.g., preserve messages on restart or not, and persist connections or not).
 
-Server queue address/contact pages will optionally, provide the UI to submit feedback, comments and complaints directly from the web page (not an MVP, initially we would simply show addresses for feedback, and, probably, create link that opens in the app with pre-populated message, and we could also use this addresses defined in server meta-data to submit feedback from inside of the app - it's also out of MVP scope).
+Router queue address/contact pages will optionally, provide the UI to submit feedback, comments and complaints directly from the web page (not an MVP, initially we would simply show addresses for feedback, and, probably, create link that opens in the app with pre-populated message, and we could also use this addresses defined in router meta-data to submit feedback from inside of the app - it's also out of MVP scope).
 
-If server is available on .onion address, the web pages would show "open via .onion" in Tor browser.
+If router is available on .onion address, the web pages would show "open via .onion" in Tor browser.
 
-Extend server handshake header with these information fields:
+Extend router handshake header with these information fields:
 
 ```haskell
 data ServerHandshake = ServerHandshake
@@ -93,13 +93,13 @@ data ServerInformation = ServerInformation
     info :: ServerPublicInfo
   }
 
--- based on server configuration
+-- based on router configuration
 data ServerPublicConfig = ServerPublicConfig
   { persistence :: SMPServerPersistenceMode,
     messageExpiration :: Int,
     statsEnabled :: Bool,
     newQueuesAllowed :: Bool,
-    basicAuthEnabled :: Bool -- server is private if enabled
+    basicAuthEnabled :: Bool -- router is private if enabled
   }
 
 -- based on INFORMATION section of INI file
@@ -127,4 +127,4 @@ data ServerContactAddress = ServerContactAddress
   }
 ```
 
-This extended server information will be stored in the chat database every time it changes and shown in the UI of the server configuration.
+This extended router information will be stored in the chat database every time it changes and shown in the UI of the router configuration.

@@ -19,10 +19,10 @@ This document specifies comprehensive Playwright E2E tests for the XFTP web page
 
 - **Upload flow**: File selection (picker + drag-drop), validation, progress, cancellation, link sharing, error handling
 - **Download flow**: Invalid link handling, download button, progress, file save, error states
-- **Edge cases**: Boundary file sizes, special characters, network failures, multi-chunk files with redirect, UI information display
+- **Edge cases**: Boundary file sizes, special characters, network failures, multi-packet files with redirect, UI information display
 
 **Key constraints**:
-- Tests run against a local XFTP server (started via `globalSetup.ts`)
+- Tests run against a local XFTP router (started via `globalSetup.ts`)
 - Server port is dynamic (read from `/tmp/xftp-test-server.port`)
 - Browser uses `--ignore-certificate-errors` for self-signed certs
 - OPFS and Web Workers are required (Chromium supports both)
@@ -50,7 +50,7 @@ xftp-web/
 
 ### 2.2 Prerequisites
 
-- `globalSetup.ts` starts the XFTP server and writes port to `PORT_FILE`
+- `globalSetup.ts` starts the XFTP router and writes port to `PORT_FILE`
 - Tests must read the port dynamically: `readFileSync(PORT_FILE, 'utf-8').trim()`
 - Vite builds and serves the page at `http://localhost:4173`
 
@@ -699,7 +699,7 @@ test('concurrent downloads from same link', async ({browser}) => {
 })
 ```
 
-### 6.7 Redirect File Handling (Multi-chunk)
+### 6.7 Redirect File Handling (Multi-packet)
 
 **Test ID**: `edge-redirect-file`
 
@@ -786,7 +786,7 @@ test('download page shows file size and security note', async ({uploadPage, down
 ### Phase 7: Error Recovery and Advanced (Priority: Low)
 22. `upload-error-retry` - Retry after error
 23. `edge-concurrent-downloads` - Concurrent access
-24. `edge-redirect-file` - Multi-chunk file with redirect (slow)
+24. `edge-redirect-file` - Multi-packet file with redirect (slow)
 25. `edge-ui-info` - Expiry message, security notes
 
 ---

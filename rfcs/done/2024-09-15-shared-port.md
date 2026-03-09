@@ -1,6 +1,6 @@
 # Sharing protocol ports with HTTPS
 
-Some networks block all ports other than web ports, including port 5223 used for SMP protocol by default. Running SMP servers on a common web port 443 would allow them to work on more networks. The servers would need to provide an HTTPS page for browsers (and probes).
+Some networks block all ports other than web ports, including port 5223 used for SMP protocol by default. Running SMP routers on a common web port 443 would allow them to work on more networks. The routers would need to provide an HTTPS page for browsers (and probes).
 
 ## Problem
 
@@ -8,7 +8,7 @@ Browsers and tools rely on system CA bundles instead of certificate pinning.
 The crypto parameters used by HTTPS are different from what the protocols use.
 Public certificate providers like LetsEncrypt can only sign specific types of keys and Ed25519 isn't one of them.
 
-This means a server should distinguish browser and protocol clients and adjust its behavior to match.
+This means a router should distinguish browser and protocol clients and adjust its behavior to match.
 
 ## Solution
 
@@ -16,15 +16,15 @@ This means a server should distinguish browser and protocol clients and adjust i
 
 Since LE certificates are only handed out to domain names, TLS client will be sending the SNI.
 However client transports are constructed over connected sockets and the SNI wouldn't be present unless explicitly requested.
-When a client sends SNI, then it's a browser and a web credentials should be used.
+When a client sends SNI, then it's a browser and web credentials should be used.
 Otherwise it's a protocol client to be offered the self-signed ca, cert and key.
 
 When a transport colocated with a HTTPS, its ALPN list should be extended with `h2 http/1.1`.
 The browsers will send it, and it should be checked before running transport client.
-If HTTP ALPN is detected, then the client connection is served with HTTP `Application` instead (the same "server information" page).
+If HTTP ALPN is detected, then the client connection is served with HTTP `Application` instead (the same "router information" page).
 
-If some client connects to server IP, doesn't send SNI and doesn't send ALPN, it will look like a pre-handshake client.
-In that case a server will send its handshake first.
+If some client connects to router IP, doesn't send SNI and doesn't send ALPN, it will look like a pre-handshake client.
+In that case a router will send its handshake first.
 This can be mitigated by delaying its handshake and letting the probe to issue its HTTP request.
 
 ## Implementation plan
@@ -43,7 +43,7 @@ runServer (tcpPort, ATransport t) = do
       else runClient serverSignKey t h `runReaderT` env -- performs serverHandshake etc as usual
 ```
 
-The web app and server live outside, so `runHttp` has to be provided by the `runSMPServer` caller.
+The web app and router live outside, so `runHttp` has to be provided by the `runSMPServer` caller.
 Additonally, Warp is using its `InternalInfo` object that's scoped to `withII` bracket.
 
 ```haskell
@@ -69,7 +69,7 @@ The implementation relies on a few modification to upstream code:
 
 ### TLS.ServerParams
 
-When a server has port sharing enabled, a new set of TLS params is loaded and combined with transport params:
+When a router has port sharing enabled, a new set of TLS params is loaded and combined with transport params:
 
 ```haskell
 newEnv config = do
@@ -129,7 +129,7 @@ key: /etc/opt/simplex/web.key
 # key: /etc/letsencrypt/live/smp.hostname.tld/privkey.pem
 ```
 
-When `TRANSPORT.port` matches `WEB.https` the transport server becomes shared.
+When `TRANSPORT.port` matches `WEB.https` the transport router becomes shared.
 
 Perhaps a more desirable option would be explicit configuration resulting in additional transported to run:
 
@@ -148,16 +148,16 @@ key: /etc/opt/simplex/web.key
 
 ## Caveats
 
-Serving static files and the protocols togother may pose a problem for those who currently use dedicated web servers as they should switch to embedded http handlers.
+Serving static files and the protocols together may pose a problem for those who currently use dedicated web servers as they should switch to embedded http handlers.
 
 As before, using embedded HTTP server is increasing attack surface.
 
-Users who want to run everything on a single host will have to add and extra IP address and bind servers to specific IPs instead of 0.0.0.0.
-An amalgamated server binary can be provided that would contain both SMP and XFTP servers, where transport will dispatch connections by handshake ALPN.
+Users who want to run everything on a single host will have to add an extra IP address and bind routers to specific IPs instead of 0.0.0.0.
+An amalgamated router binary can be provided that would contain both SMP and XFTP routers, where transport will dispatch connections by handshake ALPN.
 
 ## Alternative: Use transports routable with reverse-proxies
 
 An "industrial" reverse proxy may do the ALPN routing, serving HTTP by itself and delegating `smp` and `xftp` to protocol servers.
 Same with the `websockets`.
 
-Since this in effect does TLS termination, the protocol servers will have to rely on credentials from protocol handshakes.
+Since this in effect does TLS termination, the protocol routers will have to rely on credentials from protocol handshakes.

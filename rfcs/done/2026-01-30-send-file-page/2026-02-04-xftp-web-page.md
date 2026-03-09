@@ -20,7 +20,7 @@ Build a static web page for browser-based XFTP file transfer (Phase 5 of master 
 
 Two build variants:
 - **Local**: single test server at `localhost:7000` (development/testing)
-- **Production**: 12 preset XFTP servers (6 SimpleX + 6 Flux)
+- **Production**: 12 preset XFTP routers (6 SimpleX + 6 Flux)
 
 Uses Vite for bundling (already a dependency via vitest). No CSS framework — plain CSS per RFC spec.
 
@@ -258,7 +258,7 @@ export function pickRandomServer(servers: XFTPServer[]): XFTPServer {
 
 ### 4.3 Assumption
 
-Production XFTP servers must have `[WEB]` section configured with a CA-signed certificate for browser TLS. Without this, browsers will reject the self-signed XFTP identity cert. The local test server uses `tests/fixtures/` certs which Chromium accepts via `ignoreHTTPSErrors`.
+Production XFTP routers must have `[WEB]` section configured with a CA-signed certificate for browser TLS. Without this, browsers will reject the self-signed XFTP identity cert. The local test router uses `tests/fixtures/` certs which Chromium accepts via `ignoreHTTPSErrors`.
 
 ## 5. Page Structure & UI
 
@@ -293,7 +293,7 @@ Both upload-complete and download-ready states display a brief non-technical sec
 
 ### 5.5 File expiry
 
-Display on upload-complete state: "Files are typically available for 48 hours." This is an approximation — actual expiry depends on each XFTP server's `[STORE_LOG]` retention configuration. The 48-hour figure matches the current preset server defaults.
+Display on upload-complete state: "Files are typically available for 48 hours." This is an approximation — actual expiry depends on each XFTP router's `[STORE_LOG]` retention configuration. The 48-hour figure matches the current preset router defaults.
 
 ### 5.6 Styling
 

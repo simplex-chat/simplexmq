@@ -1,8 +1,8 @@
-# SMP server message storage
+# SMP router message storage
 
 ## Problem
 
-Currently SMP servers store all queues in server memory. As the traffic grows, so does the number of undelivered messages. What is worse, Haskell is not avoiding heap fragmentation when messages are allocated and then de-allocated - undelivered messages use ByteString and GC cannot move them around, as they use pinned memory.
+Currently SMP routers store all queues in router memory. As the traffic grows, so does the number of undelivered messages. What is worse, Haskell is not avoiding heap fragmentation when messages are allocated and then de-allocated - undelivered messages use ByteString and GC cannot move them around, as they use pinned memory.
 
 ## Possible solutions
 
@@ -10,7 +10,7 @@ Currently SMP servers store all queues in server memory. As the traffic grows, s
 
 Move from ByteString to some other primitive to store messages in memory long term, e.g. ShortByteString, or manage allocation/de-allocation of stored messages manually in some other way.
 
-Pros: the simplest solution that avoids substantial re-engineering of the server.
+Pros: the simplest solution that avoids substantial re-engineering of the router.
 
 Cons:
 - not a long term solution, as memory growth still has limits.
@@ -22,12 +22,12 @@ Use files or RocksDB to store messages.
 
 Pros:
 - much lower memory usage.
-- no message loss in case of abnormal server termination (important until clients have delivery redundancy).
+- no message loss in case of abnormal router termination (important until clients have delivery redundancy).
 - this is a long term solution, and at some point it might need to be done anyway.
 
 Cons:
 - substantial re-engineering costs and risks.
-- metadata privacy. Currently we only save undelivered messages when server is restarted, with this approach all messages will be stored for some time. this argument is limited, as hosting providers of VMs can make memory snapshots too, on the other hand they are harder to analyze than files. On another hand, with this approach messages will be stored for a shorter time.
+- metadata privacy. Currently we only save undelivered messages when router is restarted, with this approach all messages will be stored for some time. this argument is limited, as hosting providers of VMs can make memory snapshots too, on the other hand they are harder to analyze than files. On another hand, with this approach messages will be stored for a shorter time.
 
 #### RocksDB and other key-value stores
 
@@ -67,7 +67,7 @@ queueLogLine =
     %s"write_msg=" digits
 ```
 
-When queue is first requested by the server:
+When queue is first requested by the router:
 
 ```c
 if queue folder exists:
@@ -87,7 +87,7 @@ nextReadMsg = read_msg
 open write_file in AppendMode
 ```
 
-When message is added to the queue (assumes that queue state is loaded to server memory, if not the previous section will be done first):
+When message is added to the queue (assumes that queue state is loaded to router memory, if not the previous section will be done first):
 
 ```c
 if write_msg > max_queue_messages:
@@ -128,7 +128,7 @@ else
     nextReadByte = current position in file
 ```
 
-When message delivery is acknowledged, the read queue needs to be advanced, and possibly switched to read from the current write_queue:
+When message delivery is acknowledged, the read queue needs to be advanced, and possibly switched to read from the current write queue:
 
 ```c
 if nextReadByte == read_byte:
@@ -162,9 +162,9 @@ Most Linux systems use EXT4 filesystem where the file lookup time scales linearl
 
 So storing all queue folders in one folder won't scale.
 
-To solve this problem we could use recipient queue ID in base64url format not as a folder name, but as a folder path, splitting it to path fragments of some length. The number of fragments can be configurable and migration to a different fragment size can be supported as the number of queues on a given server grows.
+To solve this problem we could use recipient queue ID in base64url format not as a folder name, but as a folder path, splitting it to path fragments of some length. The number of fragments can be configurable and migration to a different fragment size can be supported as the number of queues on a given router grows.
 
-Currently, queue ID is 24 bytes random number, thus allowing 2^192 possible queue IDs. If we assume that a server must hold 1b queues, it means that we have ~2^162 possible addresses for each existing queue. 24 bytes in base64 is 32 characters that can be split into say 8 fragments with 4 characters each, so that queue folder path for queue with ID `abcdefghijklmnopqrstuvwxyz012345` would be:
+Currently, queue ID is 24 bytes random number, thus allowing 2^192 possible queue IDs. If we assume that a router must hold 1b queues, it means that we have ~2^162 possible addresses for each existing queue. 24 bytes in base64 is 32 characters that can be split into say 8 fragments with 4 characters each, so that queue folder path for queue with ID `abcdefghijklmnopqrstuvwxyz012345` would be:
 
 `/var/opt/simplex/messages/abcd/efgh/ijkl/mnop/qrst/uvwx/yz01/2345`
 
@@ -174,6 +174,6 @@ So we could use an unequal split of path, two letters each and the last being lo
 
 `/var/opt/simplex/messages/ab/cd/ef/ghijklmnopqrstuvwxyz012345`
 
-The first three levels in this case can have 4096 subfolders each, and it gives 68b possible subfolders (64^2^3), so the last level will be sparse in case of 1b queues on the server. So we could make it 4 levels with 2 letters to never think about it, accounting for a large variance of the random numbers distribution:
+The first three levels in this case can have 4096 subfolders each, and it gives 68b possible subfolders (64^2^3), so the last level will be sparse in case of 1b queues on the router. So we could make it 4 levels with 2 letters to never think about it, accounting for a large variance of the random numbers distribution:
 
 `/var/opt/simplex/messages/ab/cd/ef/gh/ijklmnopqrstuvwxyz012345`
