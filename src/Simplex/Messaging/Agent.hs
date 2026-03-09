@@ -157,6 +157,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Composition
 import Data.Either (isRight, partitionEithers, rights)
+import Data.IORef
 import Data.Foldable (foldl', toList)
 import Data.Functor (($>))
 import Data.Functor.Identity
@@ -240,6 +241,7 @@ import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
+import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
@@ -247,6 +249,11 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 -- import GHC.Conc (unsafeIOToSTM)
+
+-- TODO remove before merging
+{-# NOINLINE debugFailConnCounter #-}
+debugFailConnCounter :: IORef Int
+debugFailConnCounter = unsafePerformIO $ newIORef 0
 
 type AE a = ExceptT AgentErrorType IO a
 
@@ -2158,7 +2165,11 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
             Right proxySrv_ -> do
               case msgType of
                 AM_CONN_INFO
-                  | senderCanSecure queueMode -> notify (CON pqEncryption) >> setStatus Active
+                  | senderCanSecure queueMode -> do
+                      cnt <- liftIO $ atomicModifyIORef' debugFailConnCounter (\n -> (n + 1, n + 1))
+                      if cnt == 2
+                        then notify $ ERR $ INTERNAL "debug: simulated connection failure"
+                        else notify (CON pqEncryption) >> setStatus Active
                   | otherwise -> setStatus Confirmed
                 AM_CONN_INFO_REPLY -> setStatus Confirmed
                 AM_RATCHET_INFO -> pure ()
@@ -2177,7 +2188,10 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                       -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ do
                         atomically $ incSMPServerStat c userId (qServer rq) connCompleted
-                        notify $ CON pqEncryption
+                        cnt <- liftIO $ atomicModifyIORef' debugFailConnCounter (\n -> (n + 1, n + 1))
+                        if cnt == 2
+                          then notify $ ERR $ INTERNAL "debug: simulated connection failure"
+                          else notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
                 AM_A_MSG_ -> notify $ SENT mId proxySrv_
@@ -3335,8 +3349,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                       case senderKey of
                         Just k -> enqueueCmd $ ICDuplexSecure rId k
                         Nothing -> do
-                          notify $ CON pqEncryption
-                          withStore' c $ \db -> setRcvQueueStatus db rq' Active
+                          cnt <- liftIO $ atomicModifyIORef' debugFailConnCounter (\n -> (n + 1, n + 1))
+                          if cnt == 2
+                            then notify $ ERR $ INTERNAL "debug: simulated connection failure"
+                            else do
+                              notify $ CON pqEncryption
+                              withStore' c $ \db -> setRcvQueueStatus db rq' Active
                     _ -> prohibited "conf: not AgentConnInfo"
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
@@ -3354,7 +3372,10 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                     -- (was executed by initiating party in v1 that is no longer supported)
                     | sndStatus == Active -> do
                         atomically $ incSMPServerStat c userId srv connCompleted
-                        notify $ CON pqEncryption
+                        cnt <- liftIO $ atomicModifyIORef' debugFailConnCounter (\n -> (n + 1, n + 1))
+                        if cnt == 2
+                          then notify $ ERR $ INTERNAL "debug: simulated connection failure"
+                          else notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
             where
