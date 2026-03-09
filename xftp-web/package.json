@@ -1,6 +1,6 @@
 {
   "name": "@simplex-chat/xftp-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "XFTP file transfer protocol client for web/browser environments",
   "license": "AGPL-3.0-only",
   "repository": {
