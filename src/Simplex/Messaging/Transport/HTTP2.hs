@@ -3,6 +3,7 @@
 
 module Simplex.Messaging.Transport.HTTP2
   ( HTTP2Body (..),
+    HTTP2BodyChunk (..),
     defaultHTTP2BufferSize,
     withHTTP2,
     http2TLSParams,

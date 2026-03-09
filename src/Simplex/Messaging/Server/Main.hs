@@ -75,6 +75,7 @@ import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main.Init
+import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -569,7 +570,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
-              prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
+              prometheusInterval = eitherToMaybe (lookupValue "STORE_LOG" "prometheus_interval" ini) >>= readMaybe . T.unpack,
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
               ntfDeliveryInterval = 1500000, -- 1.5 second
@@ -610,18 +611,17 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           let onionHost =
                 either (const Nothing) (find isOnion) $
                   strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-              webHttpPort = eitherToMaybe $ read . T.unpack <$> lookupValue "WEB" "http" ini
+              webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
           generateSite si onionHost webStaticPath
           when (isJust webHttpPort || isJust webHttpsParams) $
             serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
-        webHttpsParams' =
-          eitherToMaybe $ do
-            port <- read . T.unpack <$> lookupValue "WEB" "https" ini
-            cert <- T.unpack <$> lookupValue "WEB" "cert" ini
-            key <- T.unpack <$> lookupValue "WEB" "key" ini
-            pure WebHttpsParams {port, cert, key}
+        webHttpsParams' = do
+          port <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
+          cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
+          key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
+          pure WebHttpsParams {port, cert, key}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
     checkMsgStoreMode :: Ini -> AStoreType -> IO ()
@@ -744,18 +744,6 @@ newJournalMsgStore logPath qsCfg =
 
 storeMsgsJournalDir' :: FilePath -> FilePath
 storeMsgsJournalDir' logPath = combine logPath "messages"
-
-data EmbeddedWebParams = EmbeddedWebParams
-  { webStaticPath :: FilePath,
-    webHttpPort :: Maybe Int,
-    webHttpsParams :: Maybe WebHttpsParams
-  }
-
-data WebHttpsParams = WebHttpsParams
-  { port :: Int,
-    cert :: FilePath,
-    key :: FilePath
-  }
 
 getServerSourceCode :: IO (Maybe String)
 getServerSourceCode =
