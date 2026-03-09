@@ -35,6 +35,7 @@ import Util
 import XFTPAgent
 import XFTPCLI
 import XFTPServerTests (xftpServerTests)
+import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
 
 #if defined(dbPostgres)
@@ -152,6 +153,7 @@ main = do
           describe "XFTP agent" xftpAgentTests
         describe "XFTP Web Client" xftpWebTests
         describe "XRCP" remoteControlTests
+        describe "Web" webTests
         describe "Server CLIs" cliTests
 
 eventuallyRemove :: FilePath -> Int -> IO ()
