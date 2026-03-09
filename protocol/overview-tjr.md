@@ -1,4 +1,4 @@
-Revision 3, 2026-03-09
+Revision 4, 2026-03-09
 
 Evgeny Poberezkin
 
@@ -8,6 +8,8 @@ Evgeny Poberezkin
 
 - [Introduction](#introduction)
   - [What is SimpleX](#what-is-simplex)
+  - [Network model](#network-model)
+  - [Applications](#applications)
   - [SimpleX objectives](#simplex-objectives)
   - [In Comparison](#in-comparison)
 - [Technical Details](#technical-details)
@@ -16,8 +18,7 @@ Evgeny Poberezkin
   - [2-hop Onion Message Routing](#2-hop-onion-message-routing)
   - [SimpleX Messaging Protocol](#simplex-messaging-protocol)
   - [SimpleX Agents](#simplex-agents)
-  - [Encryption Primitives Used](#encryption-primitives-used)
-- [Threat model](#threat-model)
+- [Security](#security)
 - [Acknowledgements](#acknowledgements)
 
 
@@ -28,7 +29,7 @@ Evgeny Poberezkin
 SimpleX as a whole is a platform upon which applications can be built. [SimpleX Chat](https://github.com/simplex-chat/simplex-chat) is one such application that also serves as an example and reference application.
 
  - [SimpleX Messaging Protocol](./simplex-messaging.md) (SMP) is a protocol to send messages in one direction to a recipient, relying on a server in-between. The messages are delivered via uni-directional queues created by recipients.
- 
+
  - SMP protocol allows to send message via a SMP server playing proxy role using 2-hop onion routing (referred to as "private routing" in messaging clients) to protect transport information of the sender (IP address and session) from the server chosen (and possibly controlled) by the recipient.
 
  - SMP runs over a transport protocol (shown below as TLS) that provides integrity, server authentication, confidentiality, and transport channel binding.
@@ -62,6 +63,38 @@ SimpleX as a whole is a platform upon which applications can be built. [SimpleX 
                        |                              |
 ```
 
+#### Network model
+
+SimpleX is a general-purpose packet routing network built on top of the Internet. Network endpoints — end-user devices, automated services, AI-enabled applications, IoT devices — exchange data packets through SimpleX network nodes (SMP servers), which accept, buffer, and deliver packets. Each server operates independently and can be operated by any party on standard computing hardware.
+
+SimpleX servers use resource-based addressing: each address identifies a resource on a server, similar to how the World Wide Web addresses resources via URLs. Internet routers, by comparison, use endpoint-based addressing, where IP addresses identify destination devices. Because of this design, SimpleX network participants do not need globally unique addresses to communicate.
+
+SimpleX network has two resource-based addressing schemes:
+
+- *Messaging queues* ([SMP](./simplex-messaging.md)). A queue is a unidirectional, ordered sequence of fixed-size data packets (16,384 bytes each). Each queue has a resource address on a specific server, gated by cryptographic credentials that separately authorize sending and receiving.
+
+- *File chunks* ([XFTP](./xftp.md)). A file chunk is an individually addressed block in one of the standard sizes. Each chunk has a unique resource address on a specific server, gated by cryptographic credentials. File chunk addressing is more efficient for delivery of larger payloads than queues.
+
+Packet delivery follows a two-server path. The sending endpoint submits a packet to a first server, which forwards it to a second server, where the receiving endpoint retrieves it. The sending endpoint's IP address is known only to the first server; the receiving endpoint's IP address is known only to the second server. See [2-hop Onion Message Routing](#2-hop-onion-message-routing) for details.
+
+Servers buffer packets between submission and retrieval — from seconds to days, enabling asynchronous delivery when endpoints are online at different times. Packets are removed after delivery or after a configured expiration period.
+
+
+#### Applications
+
+Applications currently using SimpleX network:
+
+- **SimpleX Chat** — a peer-to-peer messenger using SimpleX network as a transport layer, in the same way that communication applications use WebRTC, Tor, i2p, or Nym. All communication logic — contacts, conversations, groups, message formats, end-to-end encryption — runs on endpoint devices.
+
+- **IoT devices** — using the SimpleX stream protocol directly for sensor data collection and device control.
+
+- **AI-based services** — automated services built on the SimpleX Chat application core.
+
+- **Secure monitoring and control systems** — applications for equipment monitoring and control, including robotics, using the network for command delivery and telemetry collection.
+
+[SimpleGo](https://simplego.dev), developed by an independent organization, is a microcontroller-based device running a SimpleX Chat-compatible messenger directly on a microcontroller without a general-purpose operating system. Running over 20 days on a single battery charge, it demonstrates the energy efficiency of resource-based addressing: the device receives packets without continuous polling. A microcontroller-based server implementation that functions simultaneously as a WiFi router is also in development.
+
+
 #### SimpleX objectives
 
 1. Provide messaging infrastructure for distributed applications. This infrastructure needs to have the following qualities:
@@ -70,7 +103,7 @@ SimpleX as a whole is a platform upon which applications can be built. [SimpleX 
 
    - Privacy: protect against traffic correlation attacks to determine the contacts that the users communicate with.
 
-   - Reliability: the messages should be delivered even if some participating network servers or receiving clients fail, with “at least once” delivery guarantee.
+   - Reliability: the messages should be delivered even if some participating network servers or receiving clients fail, with "at least once" delivery guarantee.
 
    - Integrity: the messages sent in one direction are ordered in a way that sender and recipient agree on; the recipient can detect when a message was removed or changed.
 
@@ -115,7 +148,7 @@ Users may trust a server because:
 
 - They use servers from a trusted commercial provider. The more clients the provider has, the less metadata about the communication times is leaked to the network observers.
 
-By default, servers do not retain access logs, and permanently delete messages and queues when requested. Messages persist in memory or in a database until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s communications graph and other meta-data.
+By default, servers do not retain access logs, and permanently delete messages and queues when requested. Messages persist in memory or in a database until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user's communications graph and other meta-data.
 
 SimpleX supports measures (managed transparently to the user at the agent level) to mitigate the trust placed in servers.  These include rotating the queues in use between users, noise traffic, supporting overlay networks such as Tor, and isolating traffic to different queues to different transport connections (and Tor circuits, if Tor is used).
 
@@ -159,7 +192,7 @@ The design of 2-hop onion message routing prevents these potential attacks:
 
 See more details about 2-hop onion message routing design in [SimpleX Messaging Protocol](./simplex-messaging.md#proxying-sender-commands)
 
-Also see [Threat model](#threat-model)
+Also see [Security](./security.md)
 
 
 #### SimpleX Messaging Protocol
@@ -170,7 +203,7 @@ Because queues are uni-directional, Bob provides an identically-formatted introd
 
 When setting up a queue, the server will create separate sender and recipient queue IDs (provided to Alice during set-up and Bob during initial connection). Additionally, during set-up Alice will perform a DH exchange with the server to agree upon a shared secret. This secret will be used to re-encrypt Bob's incoming message before Alice receives it, creating the anti-correlation property earlier-described should the transport encryption be compromised.
 
-[0] Users can additionally create public 'contact queues' that are only used to receive connection requests.  
+[0] Users can additionally create public 'contact queues' that are only used to receive connection requests.
 
 
 #### SimpleX Agents
@@ -186,196 +219,21 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 - Noise traffic
 
 
-#### Encryption Primitives Used
+## Security
 
-- X25519 DH-based authenticated encryption to authorize commands to SMP servers (SMP v7+), providing sender deniability. Ed25519 signatures used for recipient commands and notifier commands.
-- Curve25519 for DH exchange to agree:
-  - the shared secret between server and recipient (to encrypt message bodies - it avoids shared cipher-text in sender and recipient traffic)
-  - the shared secret between sender and recipient (to encrypt messages end-to-end in each queue - it avoids shared cipher-text in redundant queues).
-- [NaCl crypto_box](https://nacl.cr.yp.to/box.html) encryption scheme (curve25519xsalsa20poly1305) for message body encryption between server and recipient and for E2E per-queue encryption.
-- SHA256 to validate server offline certificates.
-- [double ratchet](https://signal.org/docs/specifications/doubleratchet/) protocol for end-to-end message encryption between the agents:
-  - Curve448 keys to agree shared secrets required for double ratchet initialization (using [X3DH](https://signal.org/docs/specifications/x3dh/) key agreement with 2 ephemeral keys for each side),
-  - optional [SNTRUP761](https://ntruprime.cr.yp.to/) post-quantum KEM running in parallel with the DH ratchet (see [PQDR](./pqdr.md)), providing post-quantum forward secrecy,
-  - AES-GCM AEAD cipher,
-  - SHA512-based HKDF for key derivation.
+For encryption primitives, threat model, and detailed security analysis, see [Security](./security.md).
 
+SimpleX provides these security properties:
 
-## Threat Model
+- **End-to-end encryption** with forward secrecy via double ratchet protocol, with optional post-quantum protection.
 
-#### Global Assumptions
+- **No shared identifiers** across connections — contacts cannot prove they communicate with the same user.
 
- - A user protects their local database and key material.
- - The user's application is authentic, and no local malware is running.
- - The cryptographic primitives in use are not broken.
- - A user's choice of servers is not directly tied to their identity or otherwise represents distinguishing information about the user.
- - The user's client uses 2-hop onion message routing.
+- **Sender deniability** — neither servers nor recipients can cryptographically prove message origin.
 
-#### A passive adversary able to monitor the traffic of one user
+- **Transport metadata protection** — fixed-size blocks, 2-hop onion routing, and connection isolation frustrate traffic correlation.
 
-*can:*
-
- - identify that and when a user is using SimpleX.
-
- - determine which servers the user receives the messages from.
-
- - observe how much traffic is being sent, and make guesses as to its purpose.
-
-*cannot:*
-
- - see who sends messages to the user and who the user sends the messages to.
-
- - determine the servers used by users' contacts.
-
-#### A passive adversary able to monitor a set of senders and recipients
-
- *can:*
-
- - identify who and when is using SimpleX.
-
- - learn which SimpleX Messaging Protocol servers are used as receive queues for which users.
-
- - learn when messages are sent and received.
-
- - perform traffic correlation attacks against senders and recipients and correlate senders and recipients within the monitored set, frustrated by the number of users on the servers.
-
- - observe how much traffic is being sent, and make guesses as to its purpose
-
-*cannot, even in case of a compromised transport protocol:*
-
- - perform traffic correlation attacks with any increase in efficiency over a non-compromised transport protocol
-
-#### SimpleX Messaging Protocol server
-
-*can:*
-
-- learn when a queue recipient is online
-
-- know how many messages are sent via the queue (although some may be noise or not content messages).
-
-- learn which messages would trigger notifications even if a user does not use [push notifications](./push-notifications.md).
-
-- perform the correlation of the queue used to receive messages (matching multiple queues to a single user) via either a re-used transport connection, user's IP Address, or connection timing regularities.
-
-- learn a recipient's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
-
-- drop all future messages inserted into a queue, detectable only over other, redundant queues.
-
-- lie about the state of a queue to the recipient and/or to the sender  (e.g. suspended or deleted when it is not).
-
-- spam a user with invalid messages.
-
-*cannot:*
-
-- undetectably add, duplicate, or corrupt individual messages.
-
-- undetectably drop individual messages, so long as a subsequent message is delivered.
-
-- learn the contents or type of messages.
-
-- distinguish noise messages from regular messages except via timing regularities.
-
-- compromise the users' end-to-end encryption with an active attack.
-
-- learn a sender's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, even if Tor is not used (provided messages are sent via proxy SMP server).
-
-- perform senders' queue correlation (matching multiple queues to a single sender) via either a re-used transport connection, user's IP Address, or connection timing regularities, unless it has additional information from the proxy SMP server (provided messages are sent via proxy SMP server).
-
-#### SimpleX Messaging Protocol server that proxies the messages to another SMP server
-
-*can:*
-
-- learn a sender's IP address, as long as Tor is not used.
-
-- learn when a sender with a given IP address is online.
-
-- know how many messages are sent from a given IP address and to a given destination SMP server.
-
-- drop all messages from a given IP address or to a given destination server.
-
-- unless destination SMP server detects repeated public DH keys of senders, replay messages to a destination server within a single session, causing either duplicate message delivery (which will be detected and ignored by the receiving clients), or, when receiving client is not connected to SMP server, exhausting capacity of destination queues used within the session.
-
-*cannot:*
-
-- perform queue correlation (matching multiple queues to a single user), unless it has additional information from the destination SMP server.
-
-- undetectably add, duplicate, or corrupt individual messages.
-
-- undetectably drop individual messages, so long as a subsequent message is delivered.
-
-- learn the contents or type of messages.
-
-- learn which messages would trigger notifications.
-
-- learn the destination queues of messages.
-
-- distinguish noise messages from regular messages except via timing regularities.
-
-- compromise the user's end-to-end encryption with another user via an active attack.
-
-- compromise the user's end-to-end encryption with the destination SMP servers via an active attack.
-
-#### An attacker who obtained Alice's (decrypted) chat database
-
-*can:*
-
-- see the history of all messages exchanged by Alice with her communication partners.
-
-- see shared profiles of contacts and groups.
-
-- surreptitiously receive new messages sent to Alice via existing queues; until communication queues are rotated or the Double-Ratchet advances forward.
-
-- prevent Alice from receiving all new messages sent to her - either surreptitiously by emptying the queues regularly or overtly by deleting them.
-
-- send messages from the user to their contacts; recipients will detect it as soon as the user sends the next message, because the previous message hash won’t match (and potentially won’t be able to decrypt them in case they don’t keep the previous ratchet keys).
-
-*cannot:*
-
-- impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the server (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
-
-- undetectably communicate at the same time as Alice with her contacts. Doing so would result in the contact getting different messages with repeated IDs.
-
-- undetectably monitor message queues in realtime without alerting the user they are doing so, as a second subscription request unsubscribes the first and notifies the second.
-
-#### A user’s contact
-
-*can:*
-
-- spam the user with messages.
-
-- forever retain messages from the user.
-
-*cannot:*
-
-- cryptographically prove to a third-party that a message came from a user. Since SMP v7, sender command authorization uses DH-based authenticated encryption (not signatures), providing cryptographic deniability at the transport layer in addition to the double ratchet’s deniability at the e2e layer.
-
-- prove that two contacts they have is the same user.
-
-- cannot collaborate with another of the user's contacts to confirm they are communicating with the same user.
-
-#### An attacker who observes Alice showing an introduction message to Bob
-
-*can:*
-
- - Impersonate Bob to Alice.
-
-*cannot:*
-
- - Impersonate Alice to Bob.
-
-#### An attacker with Internet access
-
-*can:*
-
-- Denial of Service SimpleX messaging servers.
-
-- spam a user's public “contact queue” with connection requests.
-
-*cannot:*
-
-- send messages to a user who they are not connected with.
-
-- enumerate queues on a SimpleX server.
+- **Out-of-band key exchange** — connection requests passed outside the network protect against MITM attacks.
 
 
 ## Acknowledgements
