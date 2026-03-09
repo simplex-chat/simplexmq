@@ -1,3 +1,12 @@
+---
+Proposed: 2023-05-02
+Implemented: 2023-06-30
+Standardized: 2026-03-09
+Protocol: agent-protocol v3
+---
+
+> **Implementation note:** Early brainstorm document. The implementation followed the more detailed RFC 2023-06-08-resync-ratchets, which refined the state machine to use a single RatchetSyncState (RSOk/RSAllowed/RSRequired/RSStarted/RSAgreed) and defined the AgentRatchetKey envelope type.
+
 # Re-sync encryption ratchets, queue rotation, message delivery receipts
 
 This is very unfocussed doc outlining several problems that seem somewhat related, and some possible solution approaches.

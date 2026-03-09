@@ -1,3 +1,12 @@
+---
+Proposed: 2024-03-03
+Implemented: 2024-03-14
+Standardized: 2026-03-09
+Protocol: agent-protocol v5
+---
+
+> **Implementation note:** PQ version negotiation and per-connection PQ mode are implemented. The proposed `RatchetVR` and `EncodingV` type class names were not adopted; the functionality was integrated through existing version range types, PQ-dependent size constants (`e2eEncConnInfoLength`, `e2eEncAgentMsgLength`), and the `pqdrSMPAgentVersion` constant.
+
 # Migrating existing connections to post-quantum double ratchet algorithm
 
 ## Problem

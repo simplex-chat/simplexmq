@@ -1,3 +1,10 @@
+---
+Proposed: 2022-12-27
+Implemented: ~2023
+Standardized: 2026-03-09
+Protocol: simplex-messaging, agent-protocol
+---
+
 # SMP and SMP agent protocol extensions to manage queue quotas
 
 ## Problem

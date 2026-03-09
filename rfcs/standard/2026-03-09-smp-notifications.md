@@ -1,3 +1,10 @@
+---
+Proposed: 2022-06-05
+Implemented: 2022-06-06
+Standardized: 2026-03-09
+Protocol: simplex-messaging v2
+---
+
 # SMP protocol changes to support push notifications on iOS
 
 ## Problem

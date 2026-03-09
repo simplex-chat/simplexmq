@@ -1,3 +1,10 @@
+---
+Proposed: 2022-03-22
+Implemented: ~2022
+Standardized: 2026-03-09
+Protocol: push-notifications v1
+---
+
 # Notification server
 
 ## Background and motivation

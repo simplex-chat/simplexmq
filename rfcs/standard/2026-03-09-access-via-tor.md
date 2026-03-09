@@ -1,3 +1,10 @@
+---
+Proposed: 2022-07-22
+Implemented: ~2022-08
+Standardized: 2026-03-09
+Protocol: simplex-messaging
+---
+
 # Accessing SMP servers via Tor
 
 ## Problem

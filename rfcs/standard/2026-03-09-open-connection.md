@@ -1,3 +1,10 @@
+---
+Proposed: 2021-05-17
+Implemented: ~2021
+Standardized: 2026-03-09
+Protocol: agent-protocol v1
+---
+
 # Open connections
 
 ## Problem

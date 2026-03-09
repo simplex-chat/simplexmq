@@ -1,3 +1,10 @@
+---
+Proposed: 2022-12-26
+Implemented: ~2023
+Standardized: 2026-03-09
+Protocol: xftp v1
+---
+
 # SimpleX File Transfer protocol
 
 ## Problem

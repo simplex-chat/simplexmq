@@ -1,3 +1,10 @@
+---
+Proposed: 2024-03-28
+Implemented: ~2024
+Standardized: 2026-03-09
+Protocol: xftp v2
+---
+
 # XFTP version agreement
 
 ## Problem

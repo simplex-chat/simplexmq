@@ -1,3 +1,10 @@
+---
+Proposed: 2023-10-25
+Implemented: ~2024
+Standardized: 2026-03-09
+Protocol: xrcp v1
+---
+
 # SimpleX Remote Control protocol
 
 Using profiles in SimpleX Chat mobile app from desktop app with minimal risk to the security/threat model of SimpleX protocols.

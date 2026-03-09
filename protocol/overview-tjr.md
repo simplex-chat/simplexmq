@@ -1,4 +1,4 @@
-Revision 2, 2024-06-22
+Revision 3, 2026-03-09
 
 Evgeny Poberezkin
 
@@ -115,7 +115,7 @@ Users may trust a server because:
 
 - They use servers from a trusted commercial provider. The more clients the provider has, the less metadata about the communication times is leaked to the network observers.
 
-By default, servers do not retain access logs, and permanently delete messages and queues when requested. Messages persist only in memory until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s communications graph and other meta-data.
+By default, servers do not retain access logs, and permanently delete messages and queues when requested. Messages persist in memory or in file-based journal storage until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s communications graph and other meta-data.
 
 SimpleX supports measures (managed transparently to the user at the agent level) to mitigate the trust placed in servers.  These include rotating the queues in use between users, noise traffic, supporting overlay networks such as Tor, and isolating traffic to different queues to different transport connections (and Tor circuits, if Tor is used).
 
@@ -188,7 +188,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 #### Encryption Primitives Used
 
-- Ed25519 or Curve25519 to authorize/verify commands to SMP servers (authorization algorithm is set via client/server configuration).
+- X25519 DH-based authenticated encryption to authorize commands to SMP servers (SMP v7+), providing sender deniability. Ed25519 signatures used for recipient commands and notifier commands.
 - Curve25519 for DH exchange to agree:
   - the shared secret between server and recipient (to encrypt message bodies - it avoids shared cipher-text in sender and recipient traffic)
   - the shared secret between sender and recipient (to encrypt messages end-to-end in each queue - it avoids shared cipher-text in redundant queues).
@@ -196,6 +196,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 - SHA256 to validate server offline certificates.
 - [double ratchet](https://signal.org/docs/specifications/doubleratchet/) protocol for end-to-end message encryption between the agents:
   - Curve448 keys to agree shared secrets required for double ratchet initialization (using [X3DH](https://signal.org/docs/specifications/x3dh/) key agreement with 2 ephemeral keys for each side),
+  - optional [SNTRUP761](https://ntruprime.cr.yp.to/) post-quantum KEM running in parallel with the DH ratchet (see [PQDR](./pqdr.md)), providing post-quantum forward secrecy,
   - AES-GCM AEAD cipher,
   - SHA512-based HKDF for key derivation.
 
@@ -346,7 +347,7 @@ SimpleX agents provide higher-level operations compared to SimpleX Clients, who 
 
 *cannot:*
 
-- cryptographically prove to a third-party that a message came from a user (assuming the user’s device is not seized).
+- cryptographically prove to a third-party that a message came from a user. Since SMP v7, sender command authorization uses DH-based authenticated encryption (not signatures), providing cryptographic deniability at the transport layer in addition to the double ratchet’s deniability at the e2e layer.
 
 - prove that two contacts they have is the same user.
 

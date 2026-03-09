@@ -1,3 +1,10 @@
+---
+Proposed: 2024-06-14
+Implemented: 2024-06-30
+Standardized: 2026-03-09
+Protocol: simplex-messaging v9, agent-protocol v6
+---
+
 # Faster connection establishment
 
 ## Problem

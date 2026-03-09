@@ -1,3 +1,10 @@
+---
+Proposed: 2022-08-14
+Implemented: ~2022
+Standardized: 2026-03-09
+Protocol: agent-protocol v2
+---
+
 # SMP queue rotation and redundancy
 
 ## Problem

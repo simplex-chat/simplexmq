@@ -1,3 +1,10 @@
+---
+Proposed: 2023-06-08
+Implemented: 2023-06-30
+Standardized: 2026-03-09
+Protocol: agent-protocol v3
+---
+
 # Re-sync encryption ratchets
 
 ## Problem

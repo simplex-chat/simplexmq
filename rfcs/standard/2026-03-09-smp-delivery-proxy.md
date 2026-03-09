@@ -1,3 +1,12 @@
+---
+Proposed: 2023-05-24
+Implemented: 2024-06-21
+Standardized: 2026-03-09
+Protocol: simplex-messaging v8
+---
+
+> **Implementation note:** Short conceptual proposal. The full design evolved into the two-hop onion routing architecture described in RFC 2023-09-12-second-relays, implemented as SMP v8 with PRXY/PKEY/PFWD/RFWD/RRES/PRES commands.
+
 # SMP and XFTP delivery relays
 
 ## Problem

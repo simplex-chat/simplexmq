@@ -1,3 +1,10 @@
+---
+Proposed: 2024-01-26
+Implemented: ~2024-01
+Standardized: 2026-03-09
+Protocol: xftp
+---
+
 # Sending large file descriptions
 
 It is desirable to provide a QR code/URI from which a file can be downloaded. This way files may be addressed outside a chat client.

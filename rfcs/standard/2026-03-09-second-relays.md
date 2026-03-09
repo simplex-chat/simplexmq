@@ -1,3 +1,10 @@
+---
+Proposed: 2023-09-12
+Implemented: 2024-06-21
+Standardized: 2026-03-09
+Protocol: simplex-messaging v8
+---
+
 # Protecting IP addresses of the users from their contacts
 
 ## Problem

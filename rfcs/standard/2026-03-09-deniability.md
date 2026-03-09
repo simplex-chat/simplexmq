@@ -1,3 +1,10 @@
+---
+Proposed: 2024-02-03
+Implemented: 2024-04-30
+Standardized: 2026-03-09
+Protocol: simplex-messaging v7
+---
+
 # Repudiation for message senders
 
 ## Problem

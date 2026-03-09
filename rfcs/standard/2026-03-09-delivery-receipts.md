@@ -1,3 +1,10 @@
+---
+Proposed: 2023-05-03
+Implemented: 2023-07-13
+Standardized: 2026-03-09
+Protocol: agent-protocol v4
+---
+
 # Delivery receipts
 
 ## Problems
