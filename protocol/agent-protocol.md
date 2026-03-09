@@ -6,7 +6,7 @@ Version 7, 2025-01-24
 
 - [Abstract](#abstract)
 - [SMP agent](#smp-agent)
-- [SMP servers management](#smp-servers-management)
+- [SMP routers management](#smp-routers-management)
 - [SMP agent protocol scope](#smp-agent-protocol-scope)
 - [Duplex connection procedure](#duplex-connection-procedure)
 - [Fast duplex connection procedure](#fast-duplex-connection-procedure)
@@ -35,13 +35,13 @@ Version 7, 2025-01-24
 
 ## Abstract
 
-The purpose of SMP agent protocol is to define the syntax and the semantics of communications between the client and the agent that connects to [SMP](./simplex-messaging.md) servers.
+The purpose of SMP agent protocol is to define the syntax and the semantics of communications between the client and the agent that connects to [SMP](./simplex-messaging.md) routers.
 
 It provides:
-- API to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the servers location from the users of the agent protocol.
+- API to create and manage bi-directional (duplex) connections between the users of SMP agents consisting of two (or more) separate unidirectional (simplex) SMP queues, abstracting away multiple steps required to establish bi-directional connections and any information about the routers location from the users of the agent protocol.
 - management of E2E encryption between SMP agents, generating ephemeral asymmetric keys for each connection.
-- SMP command authentication on SMP servers, generating ephemeral keys for each SMP queue.
-- TCP/TLS transport handshake with SMP servers.
+- SMP command authentication on SMP routers, generating ephemeral keys for each SMP queue.
+- TCP/TLS transport handshake with SMP routers.
 - validation of message integrity.
 
 SMP agent API provides no security between the agent and the client - it is assumed that the agent is executed in the trusted and secure environment, via the agent library, when the agent logic is included directly into the client application - [SimpleX Chat for terminal](https://github.com/simplex-chat/simplex-chat) uses this approach.
@@ -58,22 +58,22 @@ This document describes SMP agent protocol version 7. The version history:
 
 ## SMP agent
 
-SMP agents communicate with each other via SMP servers using [simplex messaging protocol (SMP)](./simplex-messaging.md) according to the API calls used by the client applications. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
+SMP agents communicate with each other via SMP routers using [simplex messaging protocol (SMP)](./simplex-messaging.md) according to the API calls used by the client applications. This protocol is a middle layer in SimpleX protocols (above SMP protocol but below any application level protocol) - it is intended to be used by client-side applications that need secure asynchronous bi-directional communication channels ("connections").
 
 The agent must have a persistent storage to manage the states of known connections and of the client-side information of SMP queues that each connection consists of, and also the buffer of the most recent sent and received messages. The number of the messages that should be stored is implementation specific, depending on the error management approach that the agent implements; at the very least the agent must store the hashes and IDs of the last received and sent messages.
 
-## SMP servers management
+## SMP routers management
 
-SMP agent API does not use the addresses of the SMP servers that the agent will use to create and use the connections (excluding the server address in queue URIs used in JOIN command). The list of the servers is a part of the agent configuration and can be dynamically changed by the agent implementation:
+SMP agent API does not use the addresses of the SMP routers that the agent will use to create and use the connections (excluding the router address in queue URIs used in JOIN command). The list of the routers is a part of the agent configuration and can be dynamically changed by the agent implementation:
 - by the client applications via any API that is outside of scope of this protocol.
-- by the agents themselves based on availability and latency of the configured servers.
+- by the agents themselves based on availability and latency of the configured routers.
 
 ## SMP agent protocol scope
 
 SMP agent protocol has 2 main parts:
 
 - the messages that SMP agents exchange with each other in order to:
-  - negotiate establishing unidirectional (simplex) encrypted queues on SMP servers.
+  - negotiate establishing unidirectional (simplex) encrypted queues on SMP routers.
   - exchange client messages and delivery notifications, providing sequential message IDs and message integrity (by including the hash of the previous message).
   - re-negotiate messaging queues to use and connection e2e encryption.
 - the messages that the clients of SMP agents should send out-of-band (as pre-shared "invitation" including queue URIs) to protect [E2E encryption][1] from active attacks ([MITM attacks][2]).
@@ -86,19 +86,19 @@ SMP agent protocol has 2 main parts:
 
 ![Duplex connection procedure](./diagrams/duplex-messaging/duplex-creating.svg)
 
-The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP servers (which could be the same server). It is shown on the diagram above and has these steps:
+The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP routers (which could be the same router). It is shown on the diagram above and has these steps:
 
 1. Alice requests the new connection from the SMP agent A using agent `createConnection` api function.
-2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
+2. Agent A creates an SMP queue on the router (using [SMP protocol](./simplex-messaging.md) `NEW` command) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
 3. Alice sends the [connection link](#connection-link-1-time-invitation-and-contact-address) to Bob via any secure channel (out-of-band message) - as a link or as a QR code.
 4. Bob uses agent `joinConnection` api function with the connection link as a parameter to agent B to accept the connection.
-5. Agent B creates Bob's SMP reply queue with SMP server `NEW` command.
-6. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection link - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection link to this 2nd queue to Agent A - this connection link SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection link (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
+5. Agent B creates Bob's SMP reply queue with SMP router `NEW` command.
+6. Agent B confirms the connection: sends an "SMP confirmation" with SMP router `SEND` command to the SMP queue specified in the connection link - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection link to this 2nd queue to Agent A - this connection link SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection link (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
 6. Alice confirms and continues the connection:
-  - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP server `MSG`.
+  - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP router `MSG`.
   - Agent A notifies Alice sending `CONF` notification with Bob's info.
   - Alice allows connection to continue with agent `allowConnection` api function.
-  - Agent A secures the queue with SMP server `KEY` command.
+  - Agent A secures the queue with SMP router `KEY` command.
   - Agent A sends SMP confirmation with ephemeral sender key, ephemeral public encryption key and profile (but without reply queue).
 7. Agent B confirms the connection:
   - receives the confirmation.
@@ -114,7 +114,7 @@ The procedure of establishing a duplex connection is explained on the example of
 
 At this point the duplex connection between Alice and Bob is established, they can use `SEND` command to send messages. The diagram also shows how the connection status changes for both parties, where the first part is the status of the SMP queue to receive messages, and the second part - the status of the queue to send messages.
 
-The most communication happens between the agents and servers, from the point of view of Alice and Bob there are 4 steps (not including notifications):
+The most communication happens between the agents and routers, from the point of view of Alice and Bob there are 4 steps (not including notifications):
 
 1. Alice requests a new connection with `createConnection` agent API function and receives the connection link.
 2. Alice passes connection link out-of-band to Bob.
@@ -137,14 +137,14 @@ Faster duplex connection process is possible with the `SKEY` command added in v9
 ![Fast duplex connection procedure](./diagrams/duplex-messaging/duplex-creating-fast.svg)
 
 1. Alice requests the new connection from the SMP agent A using agent `createConnection` api function
-2. Agent A creates an SMP queue on the server (using [SMP protocol](./simplex-messaging.md) `NEW` command with the flag allowing the sender to secure the queue) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
+2. Agent A creates an SMP queue on the router (using [SMP protocol](./simplex-messaging.md) `NEW` command with the flag allowing the sender to secure the queue) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
 3. Alice sends the [connection link](connection-link-1-time-invitation-and-contact-address) to Bob via any secure channel (out-of-band message) - as a link or as a QR code. This link contains the flag that the queue can be secured by the sender.
 4. Bob uses agent `joinConnection` api function with the connection link as a parameter to agent B to accept the connection.
 5. Agent B secures Alice's queue with SMP command `SKEY` - this command can be proxied.
-6. Agent B creates Bob's SMP reply queue with SMP server `NEW` command (with the flag allowing the sender to secure the queue).
-7. Agent B confirms the connection: sends an "SMP confirmation" with SMP server `SEND` command to the SMP queue specified in the connection link - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection link to this 2nd queue to Agent A - this connection link SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection link (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
+6. Agent B creates Bob's SMP reply queue with SMP router `NEW` command (with the flag allowing the sender to secure the queue).
+7. Agent B confirms the connection: sends an "SMP confirmation" with SMP router `SEND` command to the SMP queue specified in the connection link - SMP confirmation is an unauthenticated message with an ephemeral key that will be used to authenticate Bob's commands to the queue, as described in SMP protocol, and Bob's info (profile, public key for E2E encryption, and the connection link to this 2nd queue to Agent A - this connection link SHOULD use "simplex" URI scheme). This message is encrypted using key passed in the connection link (or with the derived shared secret, in which case public key for key derivation should be sent in clear text).
 8. Alice confirms the connection:
-  - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP server `MSG`.
+  - Agent A receives the SMP confirmation containing Bob's key, reply queue and info as SMP router `MSG`.
   - Agent A notifies Alice sending `CONF` notification with Bob's info (that indicates that Agent B already secured the queue).
   - Alice allows connection to continue with agent `allowConnection` api function.
   - Agent A secures Bob's queue with SMP command `SKEY`.
@@ -159,11 +159,11 @@ Faster duplex connection process is possible with the `SKEY` command added in v9
 
 SMP agents support creating a special type of connection - a contact address - that allows to connect to multiple network users who can send connection requests by sending 1-time connection links to the message queue. 
 
-This connection address uses a messaging queue on SMP server to receive invitations to connect - see `agentInvitation` message below. Once connection request is accepted, a new connection is created and the address itself is no longer used to send the messages - deleting this address does not disrupt the connections that were created via it.
+This connection address uses a messaging queue on SMP router to receive invitations to connect - see `agentInvitation` message below. Once connection request is accepted, a new connection is created and the address itself is no longer used to send the messages - deleting this address does not disrupt the connections that were created via it.
 
 ## Communication between SMP agents
 
-To establish duplex connections and to send messages on behalf of their clients, SMP agents communicate via SMP servers.
+To establish duplex connections and to send messages on behalf of their clients, SMP agents communicate via SMP routers.
 
 Agents use SMP message client body (the part of the SMP message after header - see [SMP protocol](./simplex-messaging.md)) to transmit agent client messages and exchange messages between each other.
 
@@ -217,7 +217,7 @@ Decrypted SMP message client body can be one of 4 types:
   - to confirm that the new double ratchet encryption is agreed (`EREADY`).
   - to notify another party that it can continue sending messages after queue capacity was exceeded (`A_QCONT`).
   - to manage SMP queue rotation (`QADD`, `QKEY`, `QUSE`, `QTEST`).
-- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent servers from observing the actual message size. The only case the message padding can be absent is when the message has exactly the maximum size, in all other cases the message MUST be padded to a fixed size.
+- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent routers from observing the actual message size. The only case the message padding can be absent is when the message has exactly the maximum size, in all other cases the message MUST be padded to a fixed size.
 
 ### Messages between SMP agents
 
@@ -256,14 +256,14 @@ A_QCONT = %s"QC" sndQueueAddr
 
 QADD = %s"QA" sndQueues
 sndQueues = length 1*(newQueueUri replacedSndQueue)
-newQueueUri = clientVRange smpServer senderId dhPublicKey [queueMode]
+newQueueUri = clientVRange smpRouter senderId dhPublicKey [queueMode]
 dhPublicKey = length x509encoded
 queueMode = %s"M" / %s"C" ; M - messaging (sender can secure), C - contact
 replacedSndQueue = "0" / "1" sndQueueAddr
 
 QKEY = %s"QK" sndQueueKeys
 sndQueueKeys = length 1*(newQueueInfo senderKey)
-newQueueInfo = version smpServer senderId dhPublicKey [queueMode]
+newQueueInfo = version smpRouter senderId dhPublicKey [queueMode]
 senderKey = length x509encoded
 
 QUSE = %s"QU" sndQueuesReady
@@ -273,8 +273,8 @@ primary = %s"T" / %s"F"
 QTEST = %s"QT" sndQueueAddrs
 sndQueueAddrs = length 1*sndQueueAddr
 
-sndQueueAddr = smpServer senderId
-smpServer = hosts port keyHash
+sndQueueAddr = smpRouter senderId
+smpRouter = hosts port keyHash
 hosts = length 1*host
 host = shortString
 port = shortString
@@ -298,7 +298,7 @@ This message is not used with [fast duplex connection](#fast-duplex-connection-p
 
 #### A_MSG message
 
-This is the agent envelope used to send client messages once the connection is established. This is different from the MSG sent by SMP server to the agent and MSG event from SMP agent to the client that are sent in different contexts.
+This is the agent envelope used to send client messages once the connection is established. This is different from the MSG sent by SMP router to the agent and MSG event from SMP agent to the client that are sent in different contexts.
 
 #### A_RCVD message
 
@@ -314,7 +314,7 @@ This message is sent to notify the sender client that it can continue sending th
 
 ### Rotating messaging queue
 
-SMP agents SHOULD support 4 messages to rotate message reception to another messaging server:
+SMP agents SHOULD support 4 messages to rotate message reception to another messaging router:
 `QADD`: add the new queue address(es) to the connection - sent by the client that initiates rotation.
 `QKEY`: pass sender's key via existing connection (SMP confirmation message will not be used, to avoid the same "race" of the initial key exchange that would create the risk of intercepting the queue for the attacker) - sent by the client accepting the rotation
 `QUSE`: instruct the sender to use the new queue with sender's queue ID as parameter. From this point some messages can be sent to both the new queue and the old queue.
@@ -384,7 +384,7 @@ connectionLink = connectionScheme "/" connLinkType "#/?v=" versionRange "&smp=" 
 connLinkType = %s"invitation" / %s"contact"
 connectionScheme = (%s"https://" clientAppServer) | %s"simplex:"
 clientAppServer = hostname [ ":" port ]
-; client app server, e.g. simplex.chat
+; client app router, e.g. simplex.chat
 versionRange = 1*DIGIT / 1*DIGIT "-" 1*DIGIT ; agent version range
 e2eEncryption = <e2e encryption parameters for double ratchet>
 smpQueues = smpQueue *(";" smpQueue) ; SMP queues for the connection (semicolon-separated)
@@ -392,17 +392,17 @@ smpQueue = <URL-encoded queueURI defined in SMP protocol>
 clientData = <URL-encoded application-specific data>
 ```
 
-All parameters are passed via URI hash to avoid sending them to the server (in case "https" scheme is used) - they can be used by the client-side code and processed by the client application. Parameters can be present in any order, any unknown additional parameters SHOULD be ignored.
+All parameters are passed via URI hash to avoid sending them to the router (in case "https" scheme is used) - they can be used by the client-side code and processed by the client application. Parameters can be present in any order, any unknown additional parameters SHOULD be ignored.
 
-`clientAppServer` is not an SMP server - it is a server that shows the instruction on how to download the client app that will connect using this connection link. This server can also host a mobile or desktop app manifest so that this link is opened directly in the app if it is installed on the device.
+`clientAppServer` is not an SMP router - it is a server that shows the instruction on how to download the client app that will connect using this connection link. This server can also host a mobile or desktop app manifest so that this link is opened directly in the app if it is installed on the device.
 
-"simplex" URI scheme in `connectionProtocol` can be used instead of client app server, to connect without creating any web traffic. Client apps MUST support this URI scheme.
+"simplex" URI scheme in `connectionProtocol` can be used instead of client app router, to connect without creating any web traffic. Client apps MUST support this URI scheme.
 
 See SMP protocol [out-of-band messages](./simplex-messaging.md#out-of-band-messages) for syntax of `queueURI`.
 
 ### Short connection link syntax
 
-Short links provide a more compact representation by storing connection data on the server:
+Short links provide a more compact representation by storing connection data on the router:
 
 ```
 shortLink = shortLinkScheme "/" linkType "#" [linkId "/"] linkKey ["?" shortLinkParams]
@@ -415,7 +415,7 @@ shortLinkParams = hostParam ["&" portParam] ["&" keyHashParam]
 hostParam = %s"h=" hostList
 hostList = host *("," host)
 portParam = %s"p=" port
-keyHashParam = %s"c=" base64url ; server certificate fingerprint
+keyHashParam = %s"c=" base64url ; router certificate fingerprint
 ```
 
 Contact types:
@@ -424,11 +424,11 @@ Contact types:
 - `g` (CCTGroup) - group connection
 - `r` (CCTRelay) - relay connection
 
-Short links can use either the `simplex:` scheme or `https://` with a server hostname. When using the simplex scheme, server information is included in query parameters.
+Short links can use either the `simplex:` scheme or `https://` with a router hostname. When using the simplex scheme, router information is included in query parameters.
 
 ## Short links
 
-Short links provide a compact representation of connection links by storing encrypted connection data on the SMP server. The link key in the URI fragment (after `#`) is never sent to the server, ensuring the server cannot decrypt the stored connection data.
+Short links provide a compact representation of connection links by storing encrypted connection data on the SMP router. The link key in the URI fragment (after `#`) is never sent to the router, ensuring the router cannot decrypt the stored connection data.
 
 ### Link key derivation
 
@@ -441,7 +441,7 @@ linkKey = SHA3-256(fixedLinkData)
 The fixed link data includes:
 - Agent version range
 - Root public key (Ed25519) for signing
-- SMP queue connection request (server, queue IDs, encryption keys)
+- SMP queue connection request (router, queue IDs, encryption keys)
 - Optional link entity ID
 
 For contact links, the link ID and encryption key are derived from the link key using HKDF:
@@ -459,7 +459,7 @@ encryptionKey = HKDF(info="SimpleXInvLink", key=linkKey, outputLen=32)
 
 ### Link data encryption
 
-Link data stored on the server consists of two encrypted parts: fixed data and user data. Both are encrypted using NaCl secret_box (XSalsa20-Poly1305) with the derived encryption key:
+Link data stored on the router consists of two encrypted parts: fixed data and user data. Both are encrypted using NaCl secret_box (XSalsa20-Poly1305) with the derived encryption key:
 
 ```abnf
 queueLinkData = encFixedData encUserData
@@ -500,8 +500,8 @@ The fixed data is signed with the root key and its hash becomes the link key. Th
 When a user receives a short link, the agent resolves it as follows:
 
 1. Extract the link key from the URI fragment
-2. Send `LGET` command to the SMP server with the link ID
-3. Receive encrypted link data from the server
+2. Send `LGET` command to the SMP router with the link ID
+3. Receive encrypted link data from the router
 4. Decrypt the link data using the link key
 5. Extract the full connection information (SMP queue URI, encryption keys, profile)
 6. Proceed with the standard connection procedure using `joinConnection`
@@ -513,7 +513,7 @@ For invitation links, the `LKEY` command is used to set the sender key when gett
 The recipient who created the queue can manage the short link data:
 
 - **LSET** - Set or update the link data associated with a queue. This is used when creating a short link or updating the user data (e.g., profile changes).
-- **LDEL** - Delete the link data from the server. This effectively invalidates the short link.
+- **LDEL** - Delete the link data from the router. This effectively invalidates the short link.
 
 Short links support different connection modes:
 - **invitation** - One-time invitation links that can only be used once
@@ -565,13 +565,13 @@ Client can `acceptContact` and `rejectContact`, with `OK` and `ERR` events in ca
 
 #### Send message
 
-`sendMessage` api is always asynchronous. The api call returns message ID, `SENT` event once the message is sent to the server, `MWARN` event in case of temporary delivery failure that can be resolved by the user (e.g., by connecting via Tor or by upgrading the client) and `MERR` in case of permanent delivery failure.
+`sendMessage` api is always asynchronous. The api call returns message ID, `SENT` event once the message is sent to the router, `MWARN` event in case of temporary delivery failure that can be resolved by the user (e.g., by connecting via Tor or by upgrading the client) and `MERR` in case of permanent delivery failure.
 
 #### Acknowledge received message
 
 Messages are delivered to the client application via `MSG` event.
 
-Client application must always `ackMessage` to receive the next one - failure to call it in reference implementation will prevent the delivery of subsequent messages until the client reconnects to the server.
+Client application must always `ackMessage` to receive the next one - failure to call it in reference implementation will prevent the delivery of subsequent messages until the client reconnects to the router.
 
 This api is also used to acknowledge message delivery to the sending party - that party client application will receive `RCVD` event.
 
@@ -589,11 +589,11 @@ This api is also used to acknowledge message delivery to the sending party - tha
 
 #### Get short link data
 
-`getConnectionLink` api (`LGET` command) is used to retrieve and decrypt the short link data from the server. Returns `LDATA` event with the decrypted link data.
+`getConnectionLink` api (`LGET` command) is used to retrieve and decrypt the short link data from the router. Returns `LDATA` event with the decrypted link data.
 
-#### Rotate message queue to another server
+#### Rotate message queue to another router
 
-`switchConnection` api is used to rotate connection queues to another messaging server.
+`switchConnection` api is used to rotate connection queues to another messaging router.
 
 #### Renegotiate e2e encryption
 
@@ -616,20 +616,20 @@ Agent API uses these events dispatch to notify client application about events r
 - `INFO` - information from the party that initiated the connection with `createConnection` sent to the party accepting the connection with `joinConnection`.
 - `CON` - notification that connection is established sent to both parties of the connection.
 - `END` - notification that connection subscription is terminated when another client subscribed to the same messaging queue.  
-- `DOWN` - notification that connection server is temporarily unavailable.
-- `UP` - notification that the subscriptions made in the current client session are resumed after the server became available.
+- `DOWN` - notification that connection router is temporarily unavailable.
+- `UP` - notification that the subscriptions made in the current client session are resumed after the router became available.
 - `SWITCH` - notification about queue rotation process.
 - `RSYNC` - notification about e2e encryption re-negotiation process.
-- `SENT` - notification to confirm that the message was delivered to at least one of SMP servers. This notification contains the same message ID as returned to `sendMessage` api. `SENT` notification, depending on network availability, can be sent at any time later, potentially in the next client session.
+- `SENT` - notification to confirm that the message was delivered to at least one of SMP routers. This notification contains the same message ID as returned to `sendMessage` api. `SENT` notification, depending on network availability, can be sent at any time later, potentially in the next client session.
 - `MWARN` - temporary delivery failure that can be resolved by the user (e.g., by connecting via Tor or by upgrading the client).
 - `MERR` - notification about permanent message delivery failure.
 - `MERRS` - notification about permanent message delivery failure for multiple messages (e.g., when multiple messages expire).
-- `MSG` - sent when agent receives the message from the SMP server.
+- `MSG` - sent when agent receives the message from the SMP router.
 - `MSGNTF` - sent after agent received and processed the message referenced in the push notification.
 - `RCVD` - notification confirming message receipt by another party.
 - `QCONT` - notification that the agent continued sending messages after queue capacity was exceeded and recipient received all messages.
 - `LINK` - short link URI created or updated for a contact address.
-- `LDATA` - decrypted short link data received from the server.
+- `LDATA` - decrypted short link data received from the router.
 - `DELD` - notification that the connection was deleted.
 - `JOINED` - notification that a member joined via a contact address.
 - `STAT` - connection statistics event.
@@ -642,9 +642,7 @@ This list of events is not exhaustive and provided for information only. Please 
 
 ## Threat model
 
-This threat model complements SimpleX Messaging Protocol [threat model](./overview-tjr.md#threat-model) with agent-level concerns: duplex connections, end-to-end encryption with [post-quantum double ratchet](./pqdr.md), message integrity, connection establishment and queue rotation. Only additional properties not covered in the SMP threat model are listed below.
-
-This section uses network architecture terminology: SMP servers are referred to as routers, SMP queues as streams, and transport messages as packets — see [SimpleX Network architecture](../docs/network-architecture-v2.md).
+This threat model complements SimpleX Messaging Protocol [threat model](./security.md#threat-model) with agent-level concerns: duplex connections, end-to-end encryption with [post-quantum double ratchet](./pqdr.md), message integrity, connection establishment and queue rotation. Only additional properties not covered in the SMP threat model are listed below.
 
 #### Additional global assumptions
 
@@ -654,22 +652,22 @@ This section uses network architecture terminology: SMP servers are referred to 
 #### A passive adversary
 
 *cannot:*
- - learn the contents of packets, which are additionally encrypted with the double ratchet independently from per-stream encryption.
+ - learn the contents of packets, which are additionally encrypted with the double ratchet independently from per-queue encryption.
 
 #### Destination router (chosen by the receiving client application)
 
 *can:*
- - correlate streams belonging to the same duplex connection when queue rotation creates a new stream on the same router.
+ - correlate queues belonging to the same duplex connection when queue rotation creates a new queue on the same router.
  - when both peers of a connection chose the same router, correlate the two directions of the duplex connection.
 
 *cannot:*
- - compromise end-to-end encryption even with full access to the per-stream NaCl DH secret.
- - correlate streams belonging to the same connection after queue rotation to a different router.
+ - compromise end-to-end encryption even with full access to the per-queue NaCl DH secret.
+ - correlate queues belonging to the same connection after queue rotation to a different router.
 
 #### An attacker who obtained a client application's (decrypted) database
 
 *can:*
- - learn the full communication graph: all communication peers, associated router addresses, and stream identifiers.
+ - learn the full communication graph: all communication peers, associated router addresses, and queue identifiers.
 
 *cannot:*
  - decrypt future messages once the client application resumes communication and the double ratchet completes a new ratchet step, provided PQDR is active.
@@ -682,7 +680,7 @@ This section uses network architecture terminology: SMP servers are referred to 
  - prevent double ratchet advancement by not sending messages, delaying break-in recovery.
 
 *cannot:*
- - disrupt packet delivery in other streams.
+ - disrupt packet delivery in other queues.
 
 #### An attacker who obtained a connection link
 
