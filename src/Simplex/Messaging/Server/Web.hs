@@ -1,19 +1,35 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
-module Static where
+module Simplex.Messaging.Server.Web
+  ( EmbeddedWebParams (..),
+    WebHttpsParams (..),
+    serveStaticFiles,
+    attachStaticFiles,
+    serveStaticPageH2,
+    generateSite,
+    serverInfoSubsts,
+    render,
+    section_,
+    item_,
+    timedTTLText,
+  ) where
 
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
+import Data.ByteString.Builder (byteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (toUpper)
 import Data.IORef (readIORef)
+import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
-import Data.String (fromString)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Network.HTTP.Types as N
+import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
 import Network.Wai (Application, Request (..))
 import Network.Wai.Application.Static (StaticSettings (..))
@@ -25,16 +41,26 @@ import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Main (EmbeddedWebParams (..), WebHttpsParams (..), simplexmqSource)
+import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Util (tshow)
-import Static.Embedded as E
-import System.Directory (createDirectoryIfMissing)
+import Simplex.Messaging.Util (ifM, tshow)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
 import qualified WaiAppStatic.Types as WAT
+
+data EmbeddedWebParams = EmbeddedWebParams
+  { webStaticPath :: FilePath,
+    webHttpPort :: Maybe Int,
+    webHttpsParams :: Maybe WebHttpsParams
+  }
+
+data WebHttpsParams = WebHttpsParams
+  { port :: Int,
+    cert :: FilePath,
+    key :: FilePath
+  }
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
 serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
@@ -92,21 +118,15 @@ staticFiles root = S.staticApp settings . changeWellKnownPath
       _ -> req
     pfxLen = B.length "/.well-known/"
 
-generateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
-generateSite si onionHost sitePath = do
+generateSite :: ByteString -> [String] -> FilePath -> IO ()
+generateSite indexContent linkPages sitePath = do
   createDirectoryIfMissing True sitePath
-  B.writeFile (sitePath </> "index.html") $ serverInformation si onionHost
+  B.writeFile (sitePath </> "index.html") indexContent
   copyDir "media" E.mediaContent
   -- `.well-known` path is re-written in changeWellKnownPath,
   -- staticApp does not allow hidden folders.
   copyDir "well-known" E.wellKnown
-  createLinkPage "contact"
-  createLinkPage "invitation"
-  createLinkPage "a"
-  createLinkPage "c"
-  createLinkPage "g"
-  createLinkPage "r"
-  createLinkPage "i"
+  forM_ linkPages createLinkPage
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
     copyDir dir content = do
@@ -116,78 +136,104 @@ generateSite si onionHost sitePath = do
       createDirectoryIfMissing True $ sitePath </> path
       B.writeFile (sitePath </> path </> "index.html") E.linkHtml
 
-serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
-serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs
+-- | Serve static files via HTTP/2 directly (without WAI).
+-- Path traversal protection: resolved path must stay under canonicalRoot.
+-- canonicalRoot must be pre-computed via 'canonicalizePath'.
+serveStaticPageH2 :: FilePath -> H.Request -> (H.Response -> IO ()) -> IO Bool
+serveStaticPageH2 canonicalRoot req sendResponse = do
+  let rawPath = fromMaybe "/" $ H.requestPath req
+      path = rewriteWellKnownH2 rawPath
+      relPath = B.unpack $ B.dropWhile (== '/') path
+      requestedPath
+        | null relPath || relPath == "/" = canonicalRoot </> "index.html"
+        | otherwise = canonicalRoot </> relPath
+      indexPath = requestedPath </> "index.html"
+  ifM
+    (doesFileExist requestedPath)
+    (serveSafe requestedPath)
+    (ifM (doesFileExist indexPath) (serveSafe indexPath) (pure False))
   where
-    substs = substConfig <> substInfo <> [("onionHost", strEncode <$> onionHost)]
-    substConfig =
-      [ ( "persistence",
-          Just $ case persistence config of
-            SPMMemoryOnly -> "In-memory only"
-            SPMQueues -> "Queues"
-            SPMMessages -> "Queues and messages"
-        ),
-        ("messageExpiration", Just $ maybe "Never" (fromString . timedTTLText) $ messageExpiration config),
-        ("statsEnabled", Just . yesNo $ statsEnabled config),
-        ("newQueuesAllowed", Just . yesNo $ newQueuesAllowed config),
-        ("basicAuthEnabled", Just . yesNo $ basicAuthEnabled config)
+    serveSafe filePath = do
+      canonicalFile <- canonicalizePath filePath
+      if (canonicalRoot <> "/") `isPrefixOf` canonicalFile || canonicalRoot == canonicalFile
+        then do
+          content <- B.readFile canonicalFile
+          sendResponse $ H.responseBuilder N.ok200 [("Content-Type", staticMimeType canonicalFile)] (byteString content)
+          pure True
+        else pure False -- path traversal attempt
+    rewriteWellKnownH2 p
+      | "/.well-known/" `B.isPrefixOf` p = "/well-known/" <> B.drop (B.length "/.well-known/") p
+      | otherwise = p
+    staticMimeType fp
+      | ".html" `isSuffixOf` fp = "text/html"
+      | ".css" `isSuffixOf` fp = "text/css"
+      | ".js" `isSuffixOf` fp = "application/javascript"
+      | ".svg" `isSuffixOf` fp = "image/svg+xml"
+      | ".png" `isSuffixOf` fp = "image/png"
+      | ".ico" `isSuffixOf` fp = "image/x-icon"
+      | ".json" `isSuffixOf` fp = "application/json"
+      | "apple-app-site-association" `isSuffixOf` fp = "application/json"
+      | ".woff" `isSuffixOf` fp = "font/woff"
+      | ".woff2" `isSuffixOf` fp = "font/woff2"
+      | ".ttf" `isSuffixOf` fp = "font/ttf"
+      | otherwise = "application/octet-stream"
+
+-- | Substitutions for server information fields shared between SMP and XFTP pages.
+serverInfoSubsts :: String -> Maybe ServerPublicInfo -> [(ByteString, Maybe ByteString)]
+serverInfoSubsts simplexmqSource information =
+  concat
+    [ basic,
+      maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
+      maybe [("operator", Nothing)] operatorE (operator spi),
+      maybe [("admin", Nothing)] admin (adminContacts spi),
+      maybe [("complaints", Nothing)] complaints (complaintsContacts spi),
+      maybe [("hosting", Nothing)] hostingE (hosting spi),
+      server
+    ]
+  where
+    basic =
+      [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
+        ("noSourceCode", if T.null sc then Just "none" else Nothing),
+        ("version", Just $ B.pack simplexMQVersion),
+        ("commitSourceCode", Just $ encodeUtf8 $ maybe (T.pack simplexmqSource) sourceCode information),
+        ("shortCommit", Just $ B.pack $ take 7 simplexmqCommit),
+        ("commit", Just $ B.pack simplexmqCommit),
+        ("website", encodeUtf8 <$> website spi)
       ]
-    yesNo True = "Yes"
-    yesNo False = "No"
-    substInfo =
-      concat
-        [ basic,
-          maybe [("usageConditions", Nothing), ("usageAmendments", Nothing)] conds (usageConditions spi),
-          maybe [("operator", Nothing)] operatorE (operator spi),
-          maybe [("admin", Nothing)] admin (adminContacts spi),
-          maybe [("complaints", Nothing)] complaints (complaintsContacts spi),
-          maybe [("hosting", Nothing)] hostingE (hosting spi),
-          server
-        ]
-      where
-        basic =
-          [ ("sourceCode", if T.null sc then Nothing else Just (encodeUtf8 sc)),
-            ("noSourceCode", if T.null sc then Just "none" else Nothing),
-            ("version", Just $ B.pack simplexMQVersion),
-            ("commitSourceCode", Just $ encodeUtf8 $ maybe (T.pack simplexmqSource) sourceCode information),
-            ("shortCommit", Just $ B.pack $ take 7 simplexmqCommit),
-            ("commit", Just $ B.pack simplexmqCommit),
-            ("website", encodeUtf8 <$> website spi)
-          ]
-        spi = fromMaybe (emptyServerInfo "") information
-        sc = sourceCode spi
-        conds ServerConditions {conditions, amendments} =
-          [ ("usageConditions", Just $ encodeUtf8 conditions),
-            ("usageAmendments", encodeUtf8 <$> amendments)
-          ]
-        operatorE Entity {name, country} =
-          [ ("operator", Just ""),
-            ("operatorEntity", Just $ encodeUtf8 name),
-            ("operatorCountry", encodeUtf8 <$> country)
-          ]
-        admin ServerContactAddress {simplex, email, pgp} =
-          [ ("admin", Just ""),
-            ("adminSimplex", strEncode <$> simplex),
-            ("adminEmail", encodeUtf8 <$> email),
-            ("adminPGP", encodeUtf8 . pkURI <$> pgp),
-            ("adminPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
-          ]
-        complaints ServerContactAddress {simplex, email, pgp} =
-          [ ("complaints", Just ""),
-            ("complaintsSimplex", strEncode <$> simplex),
-            ("complaintsEmail", encodeUtf8 <$> email),
-            ("complaintsPGP", encodeUtf8 . pkURI <$> pgp),
-            ("complaintsPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
-          ]
-        hostingE Entity {name, country} =
-          [ ("hosting", Just ""),
-            ("hostingEntity", Just $ encodeUtf8 name),
-            ("hostingCountry", encodeUtf8 <$> country)
-          ]
-        server =
-          [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
-            ("hostingType",  (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
-          ]
+    spi = fromMaybe (emptyServerInfo "") information
+    sc = sourceCode spi
+    conds ServerConditions {conditions, amendments} =
+      [ ("usageConditions", Just $ encodeUtf8 conditions),
+        ("usageAmendments", encodeUtf8 <$> amendments)
+      ]
+    operatorE Entity {name, country} =
+      [ ("operator", Just ""),
+        ("operatorEntity", Just $ encodeUtf8 name),
+        ("operatorCountry", encodeUtf8 <$> country)
+      ]
+    admin ServerContactAddress {simplex, email, pgp} =
+      [ ("admin", Just ""),
+        ("adminSimplex", strEncode <$> simplex),
+        ("adminEmail", encodeUtf8 <$> email),
+        ("adminPGP", encodeUtf8 . pkURI <$> pgp),
+        ("adminPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
+      ]
+    complaints ServerContactAddress {simplex, email, pgp} =
+      [ ("complaints", Just ""),
+        ("complaintsSimplex", strEncode <$> simplex),
+        ("complaintsEmail", encodeUtf8 <$> email),
+        ("complaintsPGP", encodeUtf8 . pkURI <$> pgp),
+        ("complaintsPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
+      ]
+    hostingE Entity {name, country} =
+      [ ("hosting", Just ""),
+        ("hostingEntity", Just $ encodeUtf8 name),
+        ("hostingCountry", encodeUtf8 <$> country)
+      ]
+    server =
+      [ ("serverCountry", encodeUtf8 <$> serverCountry spi),
+        ("hostingType", (\s -> maybe s (\(c, rest) -> toUpper c `B.cons` rest) $ B.uncons s) . strEncode <$> hostingType spi)
+      ]
 
 -- Copy-pasted from simplex-chat Simplex.Chat.Types.Preferences
 {-# INLINE timedTTLText #-}
@@ -237,13 +283,13 @@ section_ label content' src =
         (inside, next') ->
           let next = B.drop (B.length endMarker) next'
            in case content' of
-                Just content | not (B.null content) -> before <> item_ label content inside <> section_ label content' next
-                _ -> before <> next -- collapse section
+                Just content -> before <> item_ label content inside <> section_ label content' next
+                Nothing -> before <> next -- collapse section
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"
 
--- | Replace all occurences of @${label}@ with provided content.
+-- | Replace all occurrences of @${label}@ with provided content.
 item_ :: ByteString -> ByteString -> ByteString -> ByteString
 item_ label content' src =
   case B.breakSubstring marker src of

@@ -131,7 +131,7 @@ A subset of standard specifications will be designated as Core IP under the Cons
 
 This is a legally binding commitment. Once Licensed IP is included in Core IP, the company that owns the code cannot unilaterally change it — even though they own the code, the Consortium Agreement requires a Governing Decision for any change to Core IP. This protects the fundamental properties of the network (privacy, security, decentralization) from unilateral modification by any single party.
 
-The designation of specific specifications as Core IP is itself a Governing Decision requiring unanimous approval. The transition will happen incrementally as protocols stabilize — the governance ratchet ensures that each designation is irreversible.
+The designation of specific specifications as Core IP is itself a Governing Decision that requires Consortium vote. The transition will happen incrementally as protocols stabilize — the governance ratchet ensures that each designation is irreversible.
 
 The exact mechanism for distinguishing core from standard within the RFC and protocol folder structure is TBD — it will be decided as the first protocols are designated as Core IP.
 

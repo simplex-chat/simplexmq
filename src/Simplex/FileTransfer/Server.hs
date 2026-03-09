@@ -73,6 +73,7 @@ import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
 import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), runLocalTCPServer)
+import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
@@ -84,7 +85,7 @@ import System.Random (getStdRandom, randomR)
 #endif
 import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
-import UnliftIO.Directory (doesFileExist, removeFile, renameFile)
+import UnliftIO.Directory (canonicalizePath, doesFileExist, removeFile, renameFile)
 import qualified UnliftIO.Exception as E
 
 type M a = ReaderT XFTPEnv IO a
@@ -147,11 +148,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
+      webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
       liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
-        if addCORS' && H.requestMethod r == Just "OPTIONS"
-          then sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
-          else do
+        case H.requestMethod r of
+          Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
+          Just "GET" | sniUsed -> forM_ webCanonicalRoot_ $ \root -> serveStaticPageH2 root r sendResponse
+          _ -> do
             reqBody <- getHTTP2Body r xftpBlockSize
             let v = VersionXFTP 1
                 thServerVRange = versionToRange v
@@ -377,7 +380,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
-              _ -> hPutStrLn h "unsupported command"
               where
                 withUserRole action =
                   readTVarIO role >>= \case
