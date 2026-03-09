@@ -75,7 +75,7 @@ export default defineConfig(({mode}) => {
     servers = ['xftp://fp@localhost:443']
   } else {
     // In production mode, use the preset servers
-    servers = [...presets.simplex, ...presets.flux]
+    servers = [...presets.simplex]
     define['__XFTP_SERVERS__'] = JSON.stringify(servers)
     define['__XFTP_PROXY_PORT__'] = JSON.stringify(null)
   }
