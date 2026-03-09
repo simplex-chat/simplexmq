@@ -52,6 +52,7 @@ module Simplex.Messaging.Client
     subscribeSMPQueuesNtfs,
     subscribeService,
     smpClientService,
+    smpClientServiceId,
     secureSMPQueue,
     secureSndSMPQueue,
     proxySecureSndSMPQueue,
@@ -106,6 +107,7 @@ module Simplex.Messaging.Client
     smpProxyError,
     smpErrorClientNotice,
     textToHostMode,
+    clientHandlers,
     ServerTransmissionBatch,
     ServerTransmission (..),
     ClientCommand,
@@ -128,7 +130,8 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception
+import Control.Exception (Exception, Handler (..), IOException, SomeAsyncException, SomeException)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -251,7 +254,7 @@ type ClientCommand msg = (EntityId, Maybe C.APrivateAuthKey, ProtoCommand msg)
 
 -- | Type synonym for transmission from SPM servers.
 -- Batch response is presented as a single `ServerTransmissionBatch` tuple.
-type ServerTransmissionBatch v err msg = (TransportSession msg, Version v, SessionId, NonEmpty (EntityId, ServerTransmission err msg))
+type ServerTransmissionBatch v err msg = (TransportSession msg, THandleParams v 'TClient, NonEmpty (EntityId, ServerTransmission err msg))
 
 data ServerTransmission err msg
   = STEvent (Either (ProtocolClientError err) msg)
@@ -565,7 +568,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
-        `catch` \(e :: IOException) -> pure . Left $ PCEIOError e
+        `E.catches` clientHandlers
     Left e -> pure $ Left e
   where
     NetworkConfig {tcpConnectTimeout, tcpTimeout, smpPingInterval} = networkConfig
@@ -638,7 +641,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
           raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
-            `finally` disconnected c'
+            `E.finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -717,6 +720,13 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               Left e -> logError $ "SMP client error: " <> tshow e
               Right _ -> logWarn "SMP client unprocessed event"
 
+clientHandlers :: [Handler (Either (ProtocolClientError e) a)]
+clientHandlers =
+  [ Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError $ E.displayException e,
+    Handler $ \(e :: SomeAsyncException) -> E.throwIO e,
+    Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
+  ]
+
 useWebPort :: NetworkConfig -> [HostName] -> ProtocolServer p -> Bool
 useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortServers cfg of
   SWPAll -> True
@@ -765,7 +775,7 @@ data ProtocolClientError err
   | -- | Error when cryptographically "signing" the command or when initializing crypto_box.
     PCECryptoError C.CryptoError
   | -- | IO Error
-    PCEIOError IOException
+    PCEIOError String
   deriving (Eq, Show, Exception)
 
 type SMPClientError = ProtocolClientError ErrorType
@@ -778,10 +788,10 @@ temporaryClientError = \case
   _ -> False
 {-# INLINE temporaryClientError #-}
 
+-- it is consistent with clientServiceError
 smpClientServiceError :: SMPClientError -> Bool
 smpClientServiceError = \case
   PCEServiceUnavailable -> True
-  PCETransportError (TEHandshake BAD_SERVICE) -> True -- TODO [certs] this error may be temporary, so we should possibly resubscribe.
   PCEProtocolError SERVICE -> True
   PCEProtocolError (PROXY (BROKER NO_SERVICE)) -> True -- for completeness, it cannot happen.
   _ -> False
@@ -864,8 +874,7 @@ writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
 writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c [(rId, STEvent (Right msg))]) (msgQ $ client_ c)
 
 serverTransmission :: ProtocolClient v err msg -> NonEmpty (RecipientId, ServerTransmission err msg) -> ServerTransmissionBatch v err msg
-serverTransmission ProtocolClient {thParams = THandleParams {thVersion, sessionId}, client_ = PClient {transportSession}} ts =
-  (transportSession, thVersion, sessionId, ts)
+serverTransmission ProtocolClient {thParams, client_ = PClient {transportSession}} ts = (transportSession, thParams, ts)
 
 -- | Get message from SMP queue. The server returns ERR PROHIBITED if a client uses SUB and GET via the same transport connection for the same queue
 --
@@ -909,23 +918,27 @@ nsubResponse_ = \case
 {-# INLINE nsubResponse_ #-}
 
 -- This command is always sent in background request mode
-subscribeService :: forall p. (PartyI p, ServiceParty p) => SMPClient -> SParty p -> ExceptT SMPClientError IO Int64
-subscribeService c party = case smpClientService c of
+subscribeService :: forall p. (PartyI p, ServiceParty p) => SMPClient -> SParty p -> Int64 -> IdsHash -> ExceptT SMPClientError IO ServiceSub
+subscribeService c party n idsHash = case smpClientService c of
   Just THClientService {serviceId, serviceKey} -> do
     liftIO $ enablePings c
     sendSMPCommand c NRMBackground (Just (C.APrivateAuthKey C.SEd25519 serviceKey)) serviceId subCmd >>= \case
-      SOKS n -> pure n
+      SOKS n' idsHash' -> pure $ ServiceSub serviceId n' idsHash'
       r -> throwE $ unexpectedResponse r
     where
       subCmd :: Command p
       subCmd = case party of
-        SRecipientService -> SUBS
-        SNotifierService -> NSUBS
+        SRecipientService -> SUBS n idsHash
+        SNotifierService -> NSUBS n idsHash
   Nothing -> throwE PCEServiceUnavailable
 
 smpClientService :: SMPClient -> Maybe THClientService
 smpClientService = thAuth . thParams >=> clientService
 {-# INLINE smpClientService #-}
+
+smpClientServiceId :: SMPClient -> Maybe ServiceId
+smpClientServiceId = fmap (\THClientService {serviceId} -> serviceId) . smpClientService
+{-# INLINE smpClientServiceId #-}
 
 enablePings :: SMPClient -> IO ()
 enablePings ProtocolClient {client_ = PClient {sendPings}} = atomically $ writeTVar sendPings True

@@ -32,6 +32,7 @@ module Simplex.FileTransfer.Client
     getChunkDigest,
   ) where
 
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -67,6 +68,7 @@ import Simplex.Messaging.Client
     netTimeoutInt,
     transportClientConfig,
     unexpectedResponse,
+    clientHandlers,
     useWebPort,
   )
 import qualified Simplex.Messaging.Crypto as C
@@ -80,7 +82,6 @@ import Simplex.Messaging.Protocol
     ProtocolServer (..),
     RecipientId,
     SenderId,
-    toNetworkError,
     pattern NoEntity,
   )
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
@@ -90,8 +91,10 @@ import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (liftEitherWith, liftError', tshow, whenM)
 import Simplex.Messaging.Version
-import UnliftIO
+import System.IO (IOMode (..), SeekMode (..), hSeek, withFile)
+import System.Timeout (timeout)
 import UnliftIO.Directory
+import UnliftIO.STM
 
 data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
@@ -282,13 +285,11 @@ downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {
         let dhSecret = C.dh' sDhKey rpDhKey
         cbState <- liftEither . first PCECryptoError $ LC.cbInit dhSecret cbNonce
         let t = chunkTimeout config chunkSize
-        ExceptT (sequence <$> (t `timeout` (download cbState `catches` errors))) >>= maybe (throwE PCEResponseTimeout) pure
+        ExceptT (sequence <$> (t `timeout` (download cbState `E.catches` handlers))) >>= maybe (throwE PCEResponseTimeout) pure
         where
-          errors =
-            [ Handler $ \(e :: H.HTTP2Error) -> pure $ Left $ PCENetworkError $ NEConnectError $ displayException e,
-              Handler $ \(e :: IOException) -> pure $ Left $ PCEIOError e,
-              Handler $ \(e :: SomeException) -> pure $ Left $ PCENetworkError $ toNetworkError e
-            ]
+          handlers =
+            E.Handler (\(e :: H.HTTP2Error) -> pure $ Left $ PCENetworkError $ NEConnectError $ E.displayException e)
+              : clientHandlers
           download cbState =
             runExceptT . withExceptT PCEResponseError $
               receiveEncFile chunkPart cbState chunkSpec `catchError` \e ->

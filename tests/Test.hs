@@ -40,6 +40,8 @@ import XFTPWebTests (xftpWebTests)
 
 #if defined(dbPostgres)
 import Fixtures
+import SMPAgentClient (testDB)
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.App
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
 #endif
@@ -47,13 +49,13 @@ import AgentTests.SchemaDump (schemaDumpTest)
 #if defined(dbServerPostgres)
 import NtfServerTests (ntfServerTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestStoreDBOpts)
-import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
+import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (postgressBracket)
 #endif
 
@@ -73,10 +75,6 @@ main = do
       . before_ (createDirectoryIfMissing False "tests/tmp")
       . after_ (eventuallyRemove "tests/tmp" 3)
       $ do
--- TODO [postgres] schema dump for postgres
-#if !defined(dbPostgres)
-        describe "Agent SQLite schema dump" schemaDumpTest
-#endif
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
@@ -155,6 +153,17 @@ main = do
         describe "XRCP" remoteControlTests
         describe "Web" webTests
         describe "Server CLIs" cliTests
+#if defined(dbPostgres)
+        around_ (postgressBracket testDBConnectInfo) $
+          describe "Agent PostgreSQL schema dump" $
+            postgresSchemaDumpTest
+              appMigrations
+              ["20250322_short_links"] -- snd_secure and last_broker_ts columns swap order on down migration
+              (testDBOpts testDB)
+              "src/Simplex/Messaging/Agent/Store/Postgres/Migrations/agent_postgres_schema.sql"
+#else
+        describe "Agent SQLite schema dump" schemaDumpTest
+#endif
 
 eventuallyRemove :: FilePath -> Int -> IO ()
 eventuallyRemove path retries = case retries of
