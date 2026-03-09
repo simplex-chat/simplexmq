@@ -77,7 +77,8 @@ data XFTPServerConfig = XFTPServerConfig
     prometheusInterval :: Maybe Int,
     prometheusMetricsFile :: FilePath,
     transportConfig :: TransportServerConfig,
-    responseDelay :: Int
+    responseDelay :: Int,
+    webStaticPath :: Maybe FilePath
   }
 
 defaultInactiveClientExpiration :: ExpirationConfig
