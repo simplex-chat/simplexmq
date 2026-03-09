@@ -92,6 +92,7 @@ cabal list-bin exe:smp-server
 ### Cabal Flags
 
 - `swift`: Enable Swift JSON format
+- `use_crypton`: Use crypton in cryptostore (default: enabled)
 - `client_library`: Build without server code
 - `client_postgres`: Use PostgreSQL instead of SQLite for agent persistence
 - `server_postgres`: PostgreSQL support for server queue/notification store
