@@ -159,7 +159,7 @@ smpServerTestStatic = do
     html <- BL.readFile $ webPath <> "/index.html"
 
     -- "external" CA signing HTTP credentials
-    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
     manager <- H1.newManager H1.defaultManagerSettings
     H1.responseBody <$> H1.httpLbs "http://127.0.0.1:8000" manager `shouldReturn` html
