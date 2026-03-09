@@ -5,6 +5,7 @@
 Consistent with threat models in:
 - `protocol/overview-tjr.md` (cross-protocol)
 - `protocol/simplex-messaging.md` (SMP)
+- `protocol/agent-protocol.md` (Agent: duplex connections, ratchet, queue rotation)
 - `protocol/xftp.md` (XFTP)
 - `protocol/xrcp.md` (XRCP)
 - `protocol/push-notifications.md` (notifications)
