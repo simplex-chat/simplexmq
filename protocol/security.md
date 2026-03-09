@@ -8,14 +8,14 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - [Encryption primitives](#encryption-primitives)
 - [Threat model](#threat-model)
-  - [Global assumptions](#global-assumptions)
+  - [Global Assumptions](#global-assumptions)
   - [A passive adversary able to monitor the traffic of one user](#a-passive-adversary-able-to-monitor-the-traffic-of-one-user)
   - [A passive adversary able to monitor a set of senders and recipients](#a-passive-adversary-able-to-monitor-a-set-of-senders-and-recipients)
   - [SimpleX Messaging Protocol router](#simplex-messaging-protocol-router)
-  - [SimpleX Messaging Protocol router that proxies messages](#simplex-messaging-protocol-router-that-proxies-messages)
-  - [An attacker who obtained a user's decrypted chat database](#an-attacker-who-obtained-a-users-decrypted-chat-database)
+  - [SimpleX Messaging Protocol router that proxies the messages to another SMP router](#simplex-messaging-protocol-router-that-proxies-the-messages-to-another-smp-router)
+  - [An attacker who obtained Alice's (decrypted) chat database](#an-attacker-who-obtained-alices-decrypted-chat-database)
   - [A user's contact](#a-users-contact)
-  - [An attacker who observes an introduction message](#an-attacker-who-observes-an-introduction-message)
+  - [An attacker who observes Alice showing an introduction message to Bob](#an-attacker-who-observes-alice-showing-an-introduction-message-to-bob)
   - [An attacker with Internet access](#an-attacker-with-internet-access)
 
 
@@ -38,16 +38,15 @@ This document describes the cryptographic primitives and threat model for the Si
   - SHA512-based HKDF for key derivation.
 
 
-## Threat model
+## Threat Model
 
-### Global assumptions
+### Global Assumptions
 
 - A user protects their local database and key material.
 - The user's application is authentic, and no local malware is running.
 - The cryptographic primitives in use are not broken.
 - A user's choice of routers is not directly tied to their identity or otherwise represents distinguishing information about the user.
 - The user's client uses 2-hop onion message routing.
-
 
 ### A passive adversary able to monitor the traffic of one user
 
@@ -65,18 +64,17 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - determine the routers used by users' contacts.
 
-
 ### A passive adversary able to monitor a set of senders and recipients
 
 *can:*
 
 - identify who and when is using SimpleX.
 
-- learn which SMP routers are used as receive queues for which users.
+- learn which SimpleX Messaging Protocol routers are used as receive queues for which users.
 
 - learn when messages are sent and received.
 
-- perform traffic correlation attacks against senders and recipients within the monitored set, frustrated by the number of users on the routers.
+- perform traffic correlation attacks against senders and recipients and correlate senders and recipients within the monitored set, frustrated by the number of users on the routers.
 
 - observe how much traffic is being sent, and make guesses as to its purpose.
 
@@ -84,24 +82,23 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - perform traffic correlation attacks with any increase in efficiency over a non-compromised transport protocol.
 
-
 ### SimpleX Messaging Protocol router
 
 *can:*
 
 - learn when a queue recipient is online.
 
-- know how many messages are sent via the queue (some may be noise or non-content messages).
+- know how many messages are sent via the queue (although some may be noise or not content messages).
 
 - learn which messages would trigger notifications even if a user does not use [push notifications](./push-notifications.md).
 
-- correlate queues to a single user via re-used transport connection, IP address, or connection timing regularities.
+- perform the correlation of the queue used to receive messages (matching multiple queues to a single user) via either a re-used transport connection, user's IP Address, or connection timing regularities.
 
-- learn a recipient's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on IP addresses, as long as Tor is not used.
+- learn a recipient's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, as long as Tor is not used.
 
 - drop all future messages inserted into a queue, detectable only over other, redundant queues.
 
-- lie about queue state to the recipient and/or sender (e.g. suspended or deleted when it is not).
+- lie about the state of a queue to the recipient and/or to the sender  (e.g. suspended or deleted when it is not).
 
 - spam a user with invalid messages.
 
@@ -117,12 +114,11 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - compromise the users' end-to-end encryption with an active attack.
 
-- learn a sender's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on IP addresses, even if Tor is not used (provided messages are sent via proxy SMP router).
+- learn a sender's IP address, track them through other IP addresses they use to access the same queue, and infer information (e.g. employer) based on the IP addresses, even if Tor is not used (provided messages are sent via proxy SMP router).
 
 - perform senders' queue correlation (matching multiple queues to a single sender) via either a re-used transport connection, user's IP Address, or connection timing regularities, unless it has additional information from the proxy SMP router (provided messages are sent via proxy SMP router).
 
-
-### SimpleX Messaging Protocol router that proxies messages
+### SimpleX Messaging Protocol router that proxies the messages to another SMP router
 
 *can:*
 
@@ -134,7 +130,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - drop all messages from a given IP address or to a given destination router.
 
-- unless the destination SMP router detects repeated public DH keys of senders, replay messages to a destination router within a single session, causing either duplicate message delivery (which will be detected and ignored by the receiving clients), or, when receiving client is not connected to SMP router, exhausting capacity of destination queues used within the session.
+- unless destination SMP router detects repeated public DH keys of senders, replay messages to a destination router within a single session, causing either duplicate message delivery (which will be detected and ignored by the receiving clients), or, when receiving client is not connected to SMP router, exhausting capacity of destination queues used within the session.
 
 *cannot:*
 
@@ -156,18 +152,17 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - compromise the user's end-to-end encryption with the destination SMP routers via an active attack.
 
-
-### An attacker who obtained a user's decrypted chat database
+### An attacker who obtained Alice's (decrypted) chat database
 
 *can:*
 
-- see the history of all messages exchanged with communication partners.
+- see the history of all messages exchanged by Alice with her communication partners.
 
 - see shared profiles of contacts and groups.
 
-- surreptitiously receive new messages sent via existing queues; until communication queues are rotated or the Double-Ratchet advances forward.
+- surreptitiously receive new messages sent to Alice via existing queues; until communication queues are rotated or the Double-Ratchet advances forward.
 
-- prevent the user from receiving all new messages — either surreptitiously by emptying the queues regularly or overtly by deleting them.
+- prevent Alice from receiving all new messages sent to her - either surreptitiously by emptying the queues regularly or overtly by deleting them.
 
 - send messages from the user to their contacts; recipients will detect it as soon as the user sends the next message, because the previous message hash won't match (and potentially won't be able to decrypt them in case they don't keep the previous ratchet keys).
 
@@ -175,10 +170,9 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the router (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
 
-- undetectably communicate at the same time as the user with their contacts. Doing so would result in the contact getting different messages with repeated IDs.
+- undetectably communicate at the same time as Alice with her contacts. Doing so would result in the contact getting different messages with repeated IDs.
 
 - undetectably monitor message queues in realtime without alerting the user they are doing so, as a second subscription request unsubscribes the first and notifies the second.
-
 
 ### A user's contact
 
@@ -190,23 +184,21 @@ This document describes the cryptographic primitives and threat model for the Si
 
 *cannot:*
 
-- cryptographically prove to a third-party that a message came from a user. Since SMP v7, sender command authorization uses DH-based authenticated encryption (not signatures), providing cryptographic deniability at the transport layer in addition to the double ratchet's deniability at the e2e layer.
+- cryptographically prove to a third-party that a message came from a user (assuming the user's device is not seized).
 
 - prove that two contacts they have is the same user.
 
-- collaborate with another of the user's contacts to confirm they are communicating with the same user.
+- cannot collaborate with another of the user's contacts to confirm they are communicating with the same user.
 
-
-### An attacker who observes an introduction message
+### An attacker who observes Alice showing an introduction message to Bob
 
 *can:*
 
-- Impersonate the recipient (Bob) to the sender (Alice).
+- Impersonate Bob to Alice.
 
 *cannot:*
 
-- Impersonate the sender (Alice) to the recipient (Bob).
-
+- Impersonate Alice to Bob.
 
 ### An attacker with Internet access
 
