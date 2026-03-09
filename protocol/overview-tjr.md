@@ -115,7 +115,7 @@ Users may trust a server because:
 
 - They use servers from a trusted commercial provider. The more clients the provider has, the less metadata about the communication times is leaked to the network observers.
 
-By default, servers do not retain access logs, and permanently delete messages and queues when requested. Messages persist in memory or in file-based journal storage until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s communications graph and other meta-data.
+By default, servers do not retain access logs, and permanently delete messages and queues when requested. Messages persist in memory or in a database until they cross a threshold of time, typically on the order of days.[0] There is still a risk that a server maliciously records all queues and messages (even though encrypted) sent via the same transport connection to gain a partial knowledge of the user’s communications graph and other meta-data.
 
 SimpleX supports measures (managed transparently to the user at the agent level) to mitigate the trust placed in servers.  These include rotating the queues in use between users, noise traffic, supporting overlay networks such as Tor, and isolating traffic to different queues to different transport connections (and Tor circuits, if Tor is used).
 
