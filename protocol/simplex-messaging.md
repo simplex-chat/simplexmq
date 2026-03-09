@@ -102,7 +102,7 @@ This document describes SMP protocol version 19. Versions 1-5 are discontinued. 
 - v16: service certificates
 - v17: create notification credentials with NEW command
 - v18: support client notices in BLOCKED error
-- v19: service subscriptions to messages (SUBS, SOKS, ENDS commands)
+- v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
 
 ## Introduction
 
@@ -445,11 +445,13 @@ SMP protocol supports client services - high capacity clients that act as servic
 
 ### Service roles
 
-A client service can have one of two roles:
+A client service can have one of three roles:
 
-- **Messaging** - Message receiver service that subscribes to and receives messages from multiple SMP queues with a single command.
+- **Messaging** (`"M"`) - Message receiver service that subscribes to and receives messages from multiple SMP queues with a single command.
 
-- **Notifications** - Notification service that subscribes to queue notifications and delivers push notifications to user devices.
+- **Notifications** (`"N"`) - Notification service that subscribes to queue notifications and delivers push notifications to user devices.
+
+- **Proxy** (`"P"`) - Proxy service that forwards sender commands to destination servers.
 
 Service role is identified in the transport handshake and determines what commands the service is authorized to send.
 
@@ -465,7 +467,7 @@ Service certificates are included in the client handshake and verified by the se
 
 ```abnf
 clientHandshakeService = serviceRole serviceCertKey
-serviceRole = %s"M" / %s"N" ; Messaging / Notifier
+serviceRole = %s"M" / %s"N" / %s"P" ; Messaging / Notifier / Proxy
 serviceCertKey = certChainPubKey
 ```
 
@@ -506,7 +508,7 @@ transmissionCount = 1*1 OCTET ; equal or greater than 1
 transmissions = transmissionLength transmission [transmissions]
 transmissionLength = 2*2 OCTET ; word16 encoded in network byte order
 
-transmission = authorization authorized
+transmission = authorization [serviceSig] authorized
 authorized = sessionIdentifier corrId entityId smpCommand
 corrId = %x18 24*24 OCTET / %x0 ""
   ; corrId is required in client commands and server responses,
@@ -517,6 +519,8 @@ entityId = shortString ; queueId or proxySessionId
 authorization = shortString ; signature or authenticator
   ; empty authorization can be used with "send" before the queue is secured with secure command
   ; authorization is always empty with "ping" and server responses
+serviceSig = shortString ; optional Ed25519 service signature (v16+)
+  ; present only in service sessions when authorization is non-empty
 sessionIdentifier = "" ; 
 sessionIdentifierForAuth = shortString 
   ; sessionIdentifierForAuth MUST be included in authorized transmission body.
@@ -881,17 +885,17 @@ This command is sent to the server by the sender both to confirm the queue after
 send = %s"SEND " msgFlags SP smpEncMessage
 msgFlags = notificationFlag reserved
 notificationFlag = %s"T" / %s"F"
-smpEncMessage = smpEncClientMessage / smpEncConfirmation ; message up to 16064 bytes
+smpEncMessage = smpEncClientMessage / smpEncConfirmation ; message up to 16048 bytes (v11+)
 
-smpEncClientMessage = smpPubHeaderNoKey msgNonce sentClientMsgBody ; message up to 16064 bytes
+smpEncClientMessage = smpPubHeaderNoKey msgNonce sentClientMsgBody ; message up to maxMessageLength bytes
 smpPubHeaderNoKey = smpClientVersion "0"
-sentClientMsgBody = 16016*16016 OCTET
+sentClientMsgBody = 16000*16000 OCTET ; = maxMessageLength(v11+) - 48 = 16048 - 48
 
 smpEncConfirmation = smpPubHeaderWithKey msgNonce sentConfirmationBody
 smpPubHeaderWithKey = smpClientVersion "1" senderPublicDhKey
   ; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
   ; it is only sent in confirmation message
-sentConfirmationBody = 15920*15920 OCTET ; E2E-encrypted smpClientMessage padded to 16016 bytes before encryption
+sentConfirmationBody = 15904*15904 OCTET ; E2E-encrypted smpClientMessage padded to e2eEncMessageLength before encryption
 senderPublicDhKey = length x509encoded
 
 smpClientVersion = word16
@@ -917,16 +921,18 @@ Until the queue is secured, the server should accept any number of unsigned mess
 The body should be encrypted with the shared secret based on recipient's "public" key (`EK`); once decrypted it must have this format:
 
 ```abnf
-sentClientMsgBody = <encrypted padded(smpClientMessage, 16016)>
+sentClientMsgBody = <encrypted padded(smpClientMessage, e2eEncMessageLength)>
+  ; e2eEncMessageLength = 16000
 smpClientMessage = emptyHeader clientMsgBody
 emptyHeader = "_"
-clientMsgBody = *OCTET ; up to 16016 - 2
+clientMsgBody = *OCTET ; up to e2eEncMessageLength - 2
 
-sentConfirmationBody = <encrypted padded(smpConfirmation, 15920)>
+sentConfirmationBody = <encrypted padded(smpConfirmation, e2eEncConfirmationLength)>
+  ; e2eEncConfirmationLength = 15904
 smpConfirmation = smpConfirmationHeader confirmationBody
 smpConfirmationHeader = emptyHeader / %s"K" senderKey
   ; emptyHeader is used when queue is already secured by sender
-confirmationBody = *OCTET ; up to 15920 - 2
+confirmationBody = *OCTET ; up to e2eEncConfirmationLength - 2
 senderKey = length x509encoded
   ; the sender's Ed25519 or X25519 public key to authorize SEND commands for this queue
 ```
@@ -940,15 +946,15 @@ SMP transmission structure for directly sent messages:
     1 | transmission count (= 1)
     2 | originalLength
  299- | authorization sessionId corrId queueId %s"SEND" SP (1+114 + 1+32? + 1+24 + 1+24 + 4+1 = 203)
-      ....... smpEncMessage (= 16064 bytes = 16384 - 320 bytes)
+      ....... smpEncMessage (= 16048 bytes for v11+, within 16384 - 320 bytes)
          8- | smpPubHeader (for messages it is only version and '0' to mean "no DH key" = 3 bytes)
          24 | nonce for smpClientMessage
          16 | auth tag for smpClientMessage
-            ------- smpClientMessage (E2E encrypted, = 16016 bytes = 16064 - 48)
+            ------- smpClientMessage (E2E encrypted, = 16000 bytes = 16048 - 48, for v11+)
                 2 | originalLength
                2- | smpPrivHeader
                   .......
-                        | clientMsgBody (<= 16012 bytes = 16016 - 4)
+                        | clientMsgBody (<= 15996 bytes = 16000 - 4)
                   .......
                0+ | smpClientMessage pad
             ------- smpClientMessage end
@@ -971,17 +977,17 @@ SMP transmission structure for received messages:
           2 | originalLength
           8 | timestamp
          8- | message flags
-            ....... smpEncMessage (= 16064 bytes = 16082 - 18 bytes)
+            ....... smpEncMessage (= 16048 bytes for v11+, padded within 16082 - 18 = 16064 bytes)
                8- | smpPubHeader (empty header for the message)
                24 | nonce for smpClientMessage
                16 | auth tag for smpClientMessage
-                  ------- smpClientMessage (E2E encrypted, = 16016 bytes = 16064 - 48 bytes)
+                  ------- smpClientMessage (E2E encrypted, = 16000 bytes = 16048 - 48 bytes, for v11+)
                       2 | originalLength
                      2- | smpPrivHeader (empty header for the message)
-                        ....... clientMsgBody (<= 16012 bytes = 16016 - 4)
+                        ....... clientMsgBody (<= 15996 bytes = 16000 - 4)
                               -- TODO move internal structure (below) to agent protocol
                           20- | agentPublicHeader (the size is for user messages post handshake, without E2E X3DH keys - it is version and 'M' for the messages - 3 bytes in total)
-                              ....... E2E double-ratchet encrypted (<= 15996 bytes = 16016 - 20)
+                              ....... E2E double-ratchet encrypted (<= 15980 bytes = 16000 - 20)
                                   1 | encoded double ratchet header length (it is 123 now)
                                 123 | encoded double ratchet header, including:
                                          2 | version
@@ -989,12 +995,12 @@ SMP transmission structure for received messages:
                                         16 | double-ratchet header auth tag
                                       1+88 | double-ratchet header (actual size is 69 bytes, the rest is reserved)
                                  16 | message auth tag (IV generated from chain ratchet)
-                                    ------- encrypted agent message (= 15856 bytes = 15996 - 140)
+                                    ------- encrypted agent message (= 15840 bytes = 15980 - 140)
                                         2 | originalLength
                                       64- | agentHeader (the actual size is 41 = 8 + 1+32)
                                         2 | %s"MM"
                                           .......
-                                                | application message (<= 15788 bytes = 15856 - 68)
+                                                | application message (<= 15772 bytes = 15840 - 68)
                                           .......
                                        0+ | encrypted agent message pad
                                     ------- encrypted agent message end
@@ -1117,7 +1123,7 @@ Transmission sent to proxy server should use session ID as entity ID and use a r
 Encrypted transmission should use the received session ID from the connection between proxy server and destination server in the authorized body.
 
 ```abnf
-proxyCommand = %s"PFWD" SP smpVersion commandKey <encrypted padded(transmission, 16242)>
+proxyCommand = %s"PFWD" SP smpVersion commandKey <encrypted padded(transmission, 16226)>
 smpVersion = 2*2 OCTET
 commandKey = length x509encoded
 ```
@@ -1127,7 +1133,7 @@ The proxy server will forward the encrypted transmission in `RFWD` command (see 
 Having received the `RRES` response from the destination server, proxy server will forward `PRES` response to the client. `PRES` response should use the same correlation ID as `PFWD` command. The destination server will use this correlation ID increased by 1 as a nonce for encryption of the response.
 
 ```abnf
-proxyResponse = %s"PRES" SP <encrypted padded(forwardedResponse, 16242)>
+proxyResponse = %s"PRES" SP <encrypted padded(forwardedResponse, 16226)>
 ```
 
 #### Forward command to destination server
@@ -1158,7 +1164,7 @@ relayResponse = %s"RRES" SP <encrypted(responseTransmission)>
 
 ### Short link commands
 
-These commands are used by senders to access queues via short links (added in v8).
+These commands are used by senders to access queues via short links (added in v15).
 
 #### Set link key
 
@@ -1270,7 +1276,7 @@ The server must deliver messages to all subscribed simplex queues on the current
 message = %s"MSG" SP msgId encryptedRcvMsgBody
 encryptedRcvMsgBody = <encrypt padded(rcvMsgBody, maxMessageLength + 2)>
   ; server-encrypted padded sent msgBody
-  ; maxMessageLength = 16064
+  ; maxMessageLength = 16048 (v11+)
 rcvMsgBody = timestamp msgFlags SP sentMsgBody / msgQuotaExceeded
 msgQuotaExceeded = %s"QUOTA" SP timestamp
 msgId = length 24*24OCTET
@@ -1367,16 +1373,16 @@ deleted = %s"DELD"
         - `IDENTITY` - incorrect server identity (certificate fingerprint does not match server address).
         - `BAD_AUTH` - incorrect or missing server credentials in handshake.
 - authentication error (`AUTH`) - incorrect authorization, unknown (or suspended) queue, sender's ID is used in place of recipient's and vice versa, and some other cases (see [Send message](#send-message) command).
-- blocked entity error (`BLOCKED`) - the entity (queue or message) was blocked due to policy violation (added in v17). Contains blocking information:
+- blocked entity error (`BLOCKED`) - the entity (queue or message) was blocked due to policy violation (added in v12). Contains blocking information:
   - `reason` - blocking reason (`spam` or `content`).
   - `notice` - optional client notice with additional information.
 - service error (`SERVICE`) - service-related error.
 - crypto error (`CRYPTO`) - cryptographic operation failed.
 - message queue quota exceeded error (`QUOTA`) - too many messages were sent to the message queue. Further messages can only be sent after the recipient retrieves the messages.
 - store error (`STORE`) - server storage error with error message.
-- message expired (`EXPIRED`) - message has expired.
+- relay public key expired (`EXPIRED`) - relay public key has expired.
 - no message (`NO_MSG`) - no message available or message ID mismatch.
-- sent message is too large (> 16064) to be delivered (`LARGE_MSG`).
+- sent message is too large (> maxMessageLength) to be delivered (`LARGE_MSG`).
 - internal server error (`INTERNAL`).
 - duplicate error (`DUPLICATE_`) - internal duplicate detection error (not returned by server).
 
@@ -1513,7 +1519,7 @@ clientKey = length x509encoded ; X25519 public key for session encryption - only
 proxyServer = %s"T" / %s"F" ; true if connecting client is a proxy server
 optClientService = %s"0" / (%s"1" clientService) ; optional service client credentials
 clientService = serviceRole serviceCertKey
-serviceRole = %s"M" / %s"N" ; Messaging / Notifier
+serviceRole = %s"M" / %s"N" / %s"P" ; Messaging / Notifier / Proxy
 serviceCertKey = certChain signedServiceKey
 signedServiceKey = originalLength x509encoded ; Ed25519 key signed by service certificate
 
@@ -1530,7 +1536,14 @@ pad = *OCTET
 
 `proxyServer` flag (v14+) disables additional transport encryption inside TLS for proxy connections, since proxy server connection already has additional encryption.
 
-`clientService` (v16+) provides long-term service client certificate for high-volume services using SMP server (chat relays, notification servers, high traffic bots). The server responds with a third handshake message containing the assigned service ID.
+`clientService` (v16+) provides long-term service client certificate for high-volume services using SMP server (chat relays, notification servers, high traffic bots). The server responds with a third handshake message containing the assigned service ID:
+
+```abnf
+paddedServerHandshakeResponse = <padded(serverHandshakeResponse, 16384)>
+serverHandshakeResponse = %s"R" serviceId / %s"E" handshakeError
+serviceId = shortString
+handshakeError = transportError
+```
 
 `ignoredPart` in handshake allows to add additional parameters in handshake without changing protocol version - the client and servers must ignore any extra bytes within the original block length.
 

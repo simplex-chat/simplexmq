@@ -143,7 +143,7 @@ hostHello = %s"HELLO " dhPubKey nonce encrypted(unpaddedSize hostHelloJSON hello
 unpaddedSize = largeLength
 dhPubKey = length x509encoded
 pad = <pad block size to 16384 bytes>
-helloPad = <pad hello size to 12888 bytes>
+helloPad = <pad hello size to 12288 bytes>
 largeLength = 2*2 OCTET
 ```
 
@@ -190,7 +190,7 @@ ctrlHello = %s"HELLO " kemCiphertext encrypted(unpaddedSize ctrlHelloJSON helloP
 unpaddedSize = largeLength
 kemCiphertext = largeLength *OCTET
 pad = <pad block size to 16384 bytes>
-helloPad = <pad hello size to 12888 bytes>
+helloPad = <pad hello size to 12288 bytes>
 largeLength = 2*2 OCTET
 
 ctrlError = %s"ERROR " nonce encrypted(unpaddedSize ctrlErrorMessage helloPad) pad

@@ -177,7 +177,7 @@ These messages are encrypted with per-queue shared secret using NaCL crypto_box 
 decryptedSMPClientMessage = agentConfirmation / agentMsgEnvelope / agentInvitation / agentRatchetKey
 agentConfirmation = agentVersion %s"C" ("0" / "1" sndE2EEncryptionParams) encConnInfo
 agentVersion = 2*2 OCTET
-sndE2EEncryptionParams = TODO
+sndE2EEncryptionParams = <sender E2E ratchet parameters, see crypto-ratchet.md>
 encConnInfo = doubleRatchetEncryptedMessage
 
 agentMsgEnvelope = agentVersion %s"M" encAgentMessage
@@ -187,10 +187,19 @@ agentInvitation = agentVersion %s"I" connReqLength connReq connInfo
 connReqLength = 2*2 OCTET ; Word16
 
 agentRatchetKey = agentVersion %s"R" rcvE2EEncryptionParams agentRatchetInfo
-rcvE2EEncryptionParams = TODO
+rcvE2EEncryptionParams = <receiver E2E ratchet parameters, see crypto-ratchet.md>
 
-doubleRatchetEncryptedMessage = TODO
+doubleRatchetEncryptedMessage = <double ratchet encrypted message, see crypto-ratchet.md>
 ```
+
+The maximum size of the encrypted connection info and agent message depend on whether post-quantum key exchange is used:
+
+| Constant | PQ on | PQ off |
+|----------|-------|--------|
+| `e2eEncConnInfoLength` | 11106 | 14832 |
+| `e2eEncAgentMsgLength` | 13618 | 15840 |
+
+The PQ-on sizes are smaller because the ratchet header and reply link include larger PQ keys (SNTRUP761).
 
 This syntax of decrypted SMP client message body is defined by `decryptedAgentMessage` below.
 
@@ -465,10 +474,20 @@ fixedData = agentVersionRange rootKey linkConnReq [linkEntityId]
 agentVersionRange = version version ; min and max agent protocol version
 version = 2*2 OCTET
 rootKey = length x509encoded ; Ed25519 public key
+linkConnReq = connectionRequestUri ; see full connection link syntax above
 linkEntityId = shortString
 userData = invitationLinkData / contactLinkData
-invitationLinkData = %s"I" agentVersionRange connInfo
+invitationLinkData = %s"I" agentVersionRange userLinkData
 contactLinkData = %s"C" agentVersionRange userContactData
+userLinkData = *OCTET ; opaque application data (e.g., user profile)
+userContactData = direct ownersList relaysList userLinkData
+direct = %s"T" / %s"F" ; whether direct connection via connReq is allowed
+ownersList = length *ownerAuth
+ownerAuth = shortString ; length-prefixed encoding of (ownerId ownerKey authOwnerSig)
+ownerId = shortString ; application-specific owner ID (e.g., MemberId)
+ownerKey = length x509encoded ; Ed25519 public key
+authOwnerSig = 64*64 OCTET ; Ed25519 signature of (ownerId || ownerKey) by previous owner
+relaysList = length *connShortLink ; alternative relay short links
 largeString = 2*2 OCTET *OCTET ; Word16 length prefix
 length = 1*1 OCTET
 shortString = length *OCTET
@@ -564,6 +583,14 @@ This api is also used to acknowledge message delivery to the sending party - tha
 
 `getNotificationMessage` is used by push notification subsystem of the client application to receive the message from a specific messaging queue mentioned in the notification. The client application would receive `MSG` and any other events from the agent, and then `MSGNTF` event once the message related to this notification is received.
 
+#### Set short link data
+
+`setConnectionLink` api (`LSET` command) is used to set or update short link data associated with a contact address queue. Returns `LINK` event with the short link URI.
+
+#### Get short link data
+
+`getConnectionLink` api (`LGET` command) is used to retrieve and decrypt the short link data from the server. Returns `LDATA` event with the decrypted link data.
+
 #### Rotate message queue to another server
 
 `switchConnection` api is used to rotate connection queues to another messaging server.
@@ -574,7 +601,7 @@ This api is also used to acknowledge message delivery to the sending party - tha
 
 #### Delete connection
 
-`deleteConnection` api is used to delete connection. In case of asynchronous call, the connection deletion will be confirmed with `DEL_RCVQ` and `DEL_CONN` events.
+`deleteConnection` api is used to delete connection. In case of asynchronous call, the connection deletion will be confirmed with `DEL_RCVQS` and `DEL_CONNS` events.
 
 #### Suspend connection
 
@@ -601,8 +628,13 @@ Agent API uses these events dispatch to notify client application about events r
 - `MSGNTF` - sent after agent received and processed the message referenced in the push notification.
 - `RCVD` - notification confirming message receipt by another party.
 - `QCONT` - notification that the agent continued sending messages after queue capacity was exceeded and recipient received all messages.
-- `DEL_RCVQ` - confirmation that message queue was deleted.
-- `DEL_CONN` - confirmation that connection was deleted.
+- `LINK` - short link URI created or updated for a contact address.
+- `LDATA` - decrypted short link data received from the server.
+- `DELD` - notification that the connection was deleted.
+- `JOINED` - notification that a member joined via a contact address.
+- `STAT` - connection statistics event.
+- `DEL_RCVQS` - confirmation that receiver message queues were deleted.
+- `DEL_CONNS` - confirmation that connections were deleted.
 - `OK` - confirmation that asynchronous api call was successful.
 - `ERR` - error of asynchronous api call or some other error event.
 

@@ -1,6 +1,11 @@
-Version 2, 2024-06-22
+Version 3, 2025-01-24
 
 # Overview of push notifications for SimpleX Messaging Servers
+
+This document describes Notification Server protocol version 3. Version history:
+- v1: initial version
+- v2: authenticated commands, command batching
+- v3: detailed invalid token reason
 
 ## Table of contents
 
@@ -91,13 +96,15 @@ To manage notification subscriptions to SMP servers, SimpleX Notification Server
 
 This protocol sends requests and responses in a fixed size blocks of 512 bytes over TLS, uses the same [syntax of protocol transmissions](./simplex-messaging.md#smp-transmission-and-transport-block-structure) as SMP protocol, and has the same transport [handshake syntax](./simplex-messaging.md#transport-handshake) (except the server certificate is not included in the handshake).
 
+The client and server use ALPN extension with `ntf/1` protocol name to agree handshake version.
+
 Protocol commands have this syntax:
 
 ```
 ntfServerTransmission = 
 ntfServerCmd = newTokenCmd / verifyTokenCmd / checkTokenCmd /
                replaceTokenCmd / deleteTokenCmd / cronCmd /
-               newSubCmd / checkSubCmd / deleteSubCmd
+               newSubCmd / checkSubCmd / deleteSubCmd / pingCmd
 ```
 ### Register new notification token
 
@@ -159,7 +166,9 @@ The response to this command:
 
 ```abnf
 tokenStatusResp = %s"TKN" SP tokenStatus
-tokenStatus = %s"NEW" / %s"REGISTERED" / %s"INVALID" / %s"CONFIRMED" / %s"ACTIVE" / %s"EXPIRED"
+tokenStatus = %s"NEW" / %s"REGISTERED" / tokenInvalid / %s"CONFIRMED" / %s"ACTIVE" / %s"EXPIRED"
+tokenInvalid = %s"INVALID" ["," invalidReason] ; optional reason added in v3
+invalidReason = %s"BAD" / %s"TOPIC" / %s"EXPIRED" / %s"UNREGISTERED"
 ```
 
 ### Replace notification token
@@ -249,7 +258,7 @@ The response:
 subStatusResp = %s"SUB" SP subStatus
 subStatus = %s"NEW" / %s"PENDING" / ; e.g., after SMP server disconnect/timeout while ntf server is retrying to connect
             %s"ACTIVE" / %s"INACTIVE" / %s"END" / ; if another server subscribed to notifications
-            %s"AUTH" / subErrStatus
+            %s"AUTH" / %s"DELETED" / %s"SERVICE" / subErrStatus
 subErrStatus = %s"ERR" SP shortString
 ```
 
@@ -264,6 +273,17 @@ deleteSubCmd = %s"SDEL"
 The response to this command is `okResp` or `errorResp`.
 
 After this command no more message notifications will be sent from this queue.
+
+### Keep-alive command
+
+To keep the transport connection alive the clients should use `PING` command:
+
+```abnf
+pingCmd = %s"PING"
+pongResp = %s"PONG"
+```
+
+This command is sent unsigned and without entity ID.
 
 ### Error responses
 
