@@ -60,5 +60,8 @@ Function documentation format:
 - [remote-control.md](remote-control.md) — XRCP implementation
 - [compression.md](compression.md) — Zstd compression
 
+### Cross-cutting Features
+- [rcv-services.md](rcv-services.md) — Service certificates for high-volume SMP clients (bulk subscription)
+
 ### Security
 - [security-invariants.md](security-invariants.md) — All security invariants
