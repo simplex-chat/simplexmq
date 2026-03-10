@@ -1,3 +1,4 @@
+
 # Sharing protocol ports with HTTPS
 
 Some networks block all ports other than web ports, including port 5223 used for SMP protocol by default. Running SMP routers on a common web port 443 would allow them to work on more networks. The routers would need to provide an HTTPS page for browsers (and probes).
@@ -65,8 +66,6 @@ The implementation relies on a few modification to upstream code:
 - `warp`: Only the re-export of `serveConnection` is needed.
   Unfortunately the most recent `warp` version can't be used right away due to dependency cascade around `http-5` and `auto-update-2`.
   So a fork containing the backported re-export has to be used until the dependencies are refreshed.
-
-
 ### TLS.ServerParams
 
 When a router has port sharing enabled, a new set of TLS params is loaded and combined with transport params:
