@@ -143,8 +143,8 @@ As more protocols are designated as Core IP, development naturally transitions t
 
 | Location | Contents | Count |
 |----------|----------|-------|
-| `protocol/` | Consolidated specs (SMP v9, Agent v5, XFTP v2, XRCP v1, Push v2, PQDR v1) | 6 specs + overview |
-| `rfcs/` root | Active draft proposals | 19 |
-| `rfcs/done/` | Implemented, not yet verified | 25 |
-| `rfcs/standard/` | Verified against implementation | (to be populated) |
+| `protocol/` | Consolidated specs (SMP v19, Agent v7, XFTP v3, XRCP v1, NTF v3, PQDR v1) | 6 specs + overview |
+| `rfcs/` root | Active draft proposals | 10 |
+| `rfcs/done/` | Implemented, not yet verified | 12 |
+| `rfcs/standard/` | Verified against implementation | 25 |
 | `rfcs/rejected/` | Draft proposals not accepted | 7 |

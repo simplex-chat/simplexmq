@@ -13,6 +13,11 @@ Version 1, 2024-06-22
   - [Initialization](#initialization)
   - [Encrypting messages](#encrypting-messages)
   - [Decrypting messages](#decrypting-messages)
+- [Ratchet message wire format](#ratchet-message-wire-format)
+  - [Encrypted ratchet message](#encrypted-ratchet-message)
+  - [Encrypted message header](#encrypted-message-header)
+  - [Plaintext message header](#plaintext-message-header)
+  - [KEM state machine](#kem-state-machine)
 - [Implementation considerations](#implementation-considerations)
 - [Chosen KEM algorithm](#chosen-kem-algorithm)
 - [Summary](#summary)
@@ -71,11 +76,10 @@ def RatchetInitAlicePQ2HE(state, SK, bob_dh_public_key, shared_hka, shared_nhkb,
     // below added for post-quantum KEM
     state.PQRs = GENERATE_PQKEM()
     state.PQRr = bob_pq_kem_encapsulation_key
-    state.PQRss = random // shared secret for KEM
-    state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret
+    state.PQRct, state.PQRss = PQKEM-ENC(state.PQRr) // encapsulate: generates shared secret and ciphertext
     // above added for KEM
     // the next line augments DH key agreement with PQ shared secret
-    state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss) 
+    state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
     state.CKr = None
     state.Ns = 0
     state.Nr = 0
@@ -176,8 +180,7 @@ def DHRatchetPQ2HE(state, header):
     state.DHRs = GENERATE_DH()
     // below is added for KEM
     state.PQRs = GENERATE_PQKEM() // generate new PQ key pair
-    state.PQRss = random // shared secret for KEM
-    state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret KEM #1
+    state.PQRct, state.PQRss = PQKEM-ENC(state.PQRr) // encapsulate: generates shared secret and ciphertext KEM #1
     // above is added for KEM
     // use new shared secret with sending ratchet
     state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
@@ -190,6 +193,80 @@ def DHRatchetPQ2HE(state, header):
 Other than augmenting DH key agreements with the shared secrets from KEM, the above is identical to the original double ratchet DH ratchet step.
 
 It is worth noting that while DH agreements work as ping-pong, when the new received DH key is used for both DH agreements (and only the sent DH key is updated for the second DH key agreement), PQ KEM agreements in the proposed scheme work as a "parallel ping-pong", with two balls in play all the time (two KEM agreements run in parallel).
+
+## Ratchet message wire format
+
+The pseudocode above describes the algorithm. This section specifies the actual binary encoding used in SimpleX implementation with Curve448 DH keys, sntrup761 KEM and AES-256-GCM AEAD.
+
+The ratchet-encrypted message has three encoding layers, from outermost to innermost:
+
+1. **Encrypted ratchet message** — the complete ratchet message envelope, referenced as an opaque encrypted body in [agent protocol](./agent-protocol.md).
+2. **Encrypted message header** — the encrypted header within the ratchet message, used as associated data for message body encryption.
+3. **Plaintext message header** — the DH and KEM ratchet keys and counters.
+
+### Encrypted ratchet message
+
+The outer envelope contains the encrypted header (used as associated data for body authentication), the body authentication tag, and the encrypted message body.
+
+The message body is encrypted with AES-256-GCM using the message key derived from the sending chain key (`KDF_CK`). The associated data for body encryption is the concatenation of the ratchet associated data and the encoded encrypted header.
+
+```abnf
+encRatchetMessage = versionedLength encMessageHeader msgAuthTag encMsgBody
+; encMessageHeader is used as associated data for body decryption: AD = rcAD || encMessageHeader
+msgAuthTag = 16*16 OCTET ; AES-256-GCM authentication tag for the message body
+encMsgBody = *OCTET ; AES-256-GCM encrypted padded message body (remaining bytes)
+```
+
+### Encrypted message header
+
+The encrypted header wraps the current ratchet e2e encryption version, an initialization vector, an authentication tag, and the encrypted padded header body.
+
+The header body is encrypted with AES-256-GCM using the header key (`HKs`). The associated data for header encryption is the ratchet associated data. The header is padded before encryption to a fixed size to prevent leaking information about the KEM state.
+
+```abnf
+encMessageHeader = currentVersion headerIV headerAuthTag versionedLength encHeaderBody
+currentVersion = 2*2 OCTET ; Word16, current ratchet e2e encryption version
+headerIV = 16*16 OCTET ; AES-256 initialization vector for header encryption
+headerAuthTag = 16*16 OCTET ; AES-256-GCM authentication tag for the header
+encHeaderBody = *OCTET ; AES-256-GCM encrypted padded header (see plaintext format below)
+```
+
+`versionedLength` uses a 2-byte length prefix (Word16) when the current e2e version supports PQ encryption, or a 1-byte length prefix otherwise. The parser distinguishes the two encodings by peeking at the first byte: values below 32 indicate a 2-byte prefix (as the header is always at least 69 bytes).
+
+```abnf
+versionedLength = largeLength / length ; 2-byte for PQ versions, 1-byte for pre-PQ versions
+```
+
+The padded header sizes before encryption are: 2310 bytes when PQ is supported, 88 bytes when PQ is not supported. Padding uses a 2-byte big-endian length prefix followed by the plaintext header and `#` fill bytes.
+
+### Plaintext message header
+
+```abnf
+msgHeader = maxVersion dhPublicKey [kemParams] prevMsgCount msgCount
+maxVersion = 2*2 OCTET ; Word16, max supported e2e encryption version
+dhPublicKey = length x509encoded ; Curve448 public DH ratchet key
+kemParams = noKEM / proposedKEM / acceptedKEM
+  ; present only when current ratchet version >= pqRatchetE2EEncryptVersion
+noKEM = %x30 ; "0" - no KEM parameters
+proposedKEM = %x31 %s"P" kemEncapsulationKey ; KEM proposed, not yet accepted
+acceptedKEM = %x31 %s"A" kemCiphertext kemEncapsulationKey ; KEM accepted
+kemEncapsulationKey = largeLength 1158*1158 OCTET ; sntrup761 encapsulation key
+kemCiphertext = largeLength 1039*1039 OCTET ; sntrup761 ciphertext
+prevMsgCount = 4*4 OCTET ; Word32, number of messages in previous sending chain
+msgCount = 4*4 OCTET ; Word32, message number in current sending chain
+length = 1*1 OCTET
+largeLength = 2*2 OCTET ; Word16
+```
+
+### KEM state machine
+
+PQ encryption can be enabled or disabled during a connection's lifetime. The KEM parameters in the header reflect three states:
+
+- **No KEM** (`noKEM`): PQ encryption is not active. The header contains only the DH key, as in the original double ratchet.
+- **Proposed** (`proposedKEM`): One party generated a KEM key pair and includes the encapsulation key in the header, proposing PQ encryption. No ciphertext is included because the other party has not yet sent its encapsulation key.
+- **Accepted** (`acceptedKEM`): The party received the other's encapsulation key, performed encapsulation (KEM #1), and includes both the ciphertext and its own new encapsulation key (for KEM #2). This is the steady state for active PQ encryption.
+
+The transition from Proposed to Accepted happens when a party receives a message containing KEM parameters (either Proposed or Accepted) and responds with its own Accepted parameters. Once both parties are in Accepted state, the double PQ KEM augmentation described in the algorithm above operates in each DH ratchet step.
 
 ## Implementation considerations for SimpleX Messaging Protocol
 
