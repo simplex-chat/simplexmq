@@ -105,7 +105,7 @@ Multicast session announcement is a binary encoded packet with this syntax:
 sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize sessionAddress packetPad)
 dhPubKey = length x509encoded ; same as announced
 nonce = 24*24 OCTET ; NaCl 192-bit nonce, no length prefix
-sessionAddress = largeLength sessionAddressUri ; as above
+sessionAddress = sessionAddressUri ; length given by unpaddedSize
 length = 1*1 OCTET ; for binary data up to 255 bytes
 largeLength = 2*2 OCTET ; for binary data up to 65535 bytes
 packetPad = <pad invitation content to 900 bytes before encryption>

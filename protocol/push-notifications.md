@@ -100,8 +100,9 @@ The client and router use ALPN extension with `ntf/1` protocol name to agree han
 
 Protocol commands have this syntax:
 
-```
-ntfRouterTransmission = 
+```abnf
+ntfRouterTransmission = authorization corrId entityId ntfRouterCmd
+  ; same transmission structure as SMP, see simplex-messaging.md
 ntfRouterCmd = newTokenCmd / verifyTokenCmd / checkTokenCmd /
                replaceTokenCmd / deleteTokenCmd / cronCmd /
                newSubCmd / checkSubCmd / deleteSubCmd / pingCmd

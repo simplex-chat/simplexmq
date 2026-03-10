@@ -421,7 +421,7 @@ pong = %s"PONG"
 
 ### File sender commands
 
-Sending any of the commands in this section (other than `register`, that is sent without data packet ID) is only allowed with sender's ID.
+Sending any of the commands in this section (other than `register`, that is sent without data packet ID) is only allowed with sender's ID. The `register` command must be signed (using `sndKey` included in `fileInfo` for verification) but must NOT include a data packet ID.
 
 #### Register new data packet
 

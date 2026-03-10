@@ -24,12 +24,11 @@ Version 7, 2025-01-24
   - [Full connection link syntax](#full-connection-link-syntax)
   - [Short connection link syntax](#short-connection-link-syntax)
 - [Short links](#short-links)
-  - [Short link structure](#short-link-structure)
   - [Link key derivation](#link-key-derivation)
   - [Link data encryption](#link-data-encryption)
   - [Short link resolution](#short-link-resolution)
   - [Link data management](#link-data-management)
-- [Appendix A: SMP agent API](#smp-agent-api)
+- [Appendix A: SMP agent API](#appendix-a-smp-agent-api)
   - [API functions](#api-functions)
   - [API events](#api-events)
 
@@ -177,7 +176,7 @@ These messages are encrypted with per-queue shared secret using NaCL crypto_box 
 decryptedSMPClientMessage = agentConfirmation / agentMsgEnvelope / agentInvitation / agentRatchetKey
 agentConfirmation = agentVersion %s"C" ("0" / "1" sndE2EEncryptionParams) encConnInfo
 agentVersion = 2*2 OCTET
-sndE2EEncryptionParams = <sender E2E ratchet parameters, see crypto-ratchet.md>
+sndE2EEncryptionParams = <sender E2E ratchet parameters, see pqdr.md>
 encConnInfo = doubleRatchetEncryptedMessage
 
 agentMsgEnvelope = agentVersion %s"M" encAgentMessage
@@ -185,11 +184,14 @@ encAgentMessage = doubleRatchetEncryptedMessage
 
 agentInvitation = agentVersion %s"I" connReqLength connReq connInfo
 connReqLength = 2*2 OCTET ; Word16
+connReq = *OCTET ; URI text encoding of connection link, length given by connReqLength
+connInfo = *OCTET ; opaque connection information (remaining bytes)
 
-agentRatchetKey = agentVersion %s"R" rcvE2EEncryptionParams agentRatchetInfo
-rcvE2EEncryptionParams = <receiver E2E ratchet parameters, see crypto-ratchet.md>
+agentRatchetKey = agentVersion %s"R" rcvE2EEncryptionParams ratchetKeyInfo
+rcvE2EEncryptionParams = <receiver E2E ratchet parameters, see pqdr.md>
+ratchetKeyInfo = *OCTET ; additional ratchet renegotiation info (remaining bytes)
 
-doubleRatchetEncryptedMessage = <double ratchet encrypted message, see crypto-ratchet.md>
+doubleRatchetEncryptedMessage = <double ratchet encrypted message, see pqdr.md>
 ```
 
 The maximum size of the encrypted connection info and agent message depend on whether post-quantum key exchange is used:
@@ -217,7 +219,8 @@ Decrypted SMP message client body can be one of 4 types:
   - to confirm that the new double ratchet encryption is agreed (`EREADY`).
   - to notify another party that it can continue sending messages after queue capacity was exceeded (`A_QCONT`).
   - to manage SMP queue rotation (`QADD`, `QKEY`, `QUSE`, `QTEST`).
-- `msgPadding` - an optional message padding to make all SMP messages have constant size, to prevent routers from observing the actual message size. The only case the message padding can be absent is when the message has exactly the maximum size, in all other cases the message MUST be padded to a fixed size.
+
+The encoded `agentMessage` is padded to a fixed size by the double ratchet encryption layer (see [ratchet message wire format](./pqdr.md#ratchet-message-wire-format)) to make all SMP messages have constant size, preventing routers from observing the actual message size.
 
 ### Messages between SMP agents
 
@@ -232,7 +235,7 @@ smpQueues = length 1*newQueueInfo ; NonEmpty list of reply queues
 agentRatchetInfo = %s"R" ratchetInfo
 ratchetInfo = *OCTET
 
-agentMessage = %s"M" agentMsgHeader aMessage msgPadding
+agentMessage = %s"M" agentMsgHeader aMessage
 agentMsgHeader = agentMsgId prevMsgHash
 agentMsgId = 8*8 OCTET ; Int64
 prevMsgHash = shortString
@@ -243,12 +246,13 @@ aMessage = HELLO / A_MSG / A_RCVD / EREADY / A_QCONT /
 HELLO = %s"H"
 
 A_MSG = %s"M" userMsgBody
-userMsgBody = *OCTET
+userMsgBody = *OCTET ; remaining bytes
 
 A_RCVD = %s"V" msgReceipts
 msgReceipts = length 1*msgReceipt ; NonEmpty list
 msgReceipt = agentMsgId msgHash rcptLength rcptInfo
 msgHash = shortString
+rcptInfo = *OCTET ; opaque receipt info, length given by rcptLength (Word16)
 
 EREADY = %s"E" agentMsgId
 
@@ -284,7 +288,6 @@ senderId = shortString
 clientVRange = version version
 version = 2*2 OCTET
 
-msgPadding = *OCTET
 rcptLength = 2*2 OCTET
 shortString = length *OCTET
 length = 1*1 OCTET
@@ -474,12 +477,15 @@ fixedData = agentVersionRange rootKey linkConnReq [linkEntityId]
 agentVersionRange = version version ; min and max agent protocol version
 version = 2*2 OCTET
 rootKey = length x509encoded ; Ed25519 public key
-linkConnReq = connectionRequestUri ; see full connection link syntax above
+linkConnReq = invitationConnReq / contactConnReq ; binary encoding of connection request
+invitationConnReq = %s"I" connReqData e2eRatchetParams
+contactConnReq = %s"C" connReqData
 linkEntityId = shortString
 userData = invitationLinkData / contactLinkData
 invitationLinkData = %s"I" agentVersionRange userLinkData
 contactLinkData = %s"C" agentVersionRange userContactData
 userLinkData = shortString / (%xFF largeString) ; opaque application data (e.g., user profile)
+  ; shortString length byte 0x00-0xFE (max 254 bytes); 0xFF is reserved as largeString sentinel
 userContactData = direct ownersList relaysList userLinkData
 direct = %s"T" / %s"F" ; whether direct connection via connReq is allowed
 ownersList = length *ownerAuth
@@ -488,6 +494,38 @@ ownerId = shortString ; application-specific owner ID (e.g., MemberId)
 ownerKey = length x509encoded ; Ed25519 public key
 authOwnerSig = length 64*64 OCTET ; Ed25519 signature of (ownerId || ownerKey) by previous owner
 relaysList = length *connShortLink ; alternative relay short links
+
+; Binary encoding of connection request (used in linkConnReq)
+connReqData = agentVersionRange smpQueueUris clientData
+smpQueueUris = length 1*smpQueueUri
+clientData = %s"0" / (%s"1" largeString) ; Maybe (Large ByteString)
+smpQueueUri = smpClientVersionRange smpServer senderId smpDhPublicKey [queueMode]
+smpClientVersionRange = version version ; min and max SMP client versions
+smpServer = hosts port serverKeyHash
+hosts = length 1*host
+host = shortString ; text-encoded hostname or IP address
+port = shortString ; text-encoded port number
+serverKeyHash = shortString ; CA certificate fingerprint
+senderId = shortString ; queue sender ID
+smpDhPublicKey = length x509encoded ; X25519 DH public key
+queueMode = %s"M" / %s"C" ; messaging or contact (version-dependent trailing field)
+e2eRatchetParams = e2eVersionRange e2eDhKey e2eDhKey kemParams
+e2eVersionRange = version version ; min and max e2e encryption versions
+e2eDhKey = length x509encoded ; X448 DH public key
+kemParams = %s"0" / (%s"1" ratchetKEMParams)
+ratchetKEMParams = %s"P" kemPublicKey / %s"A" kemCiphertext kemPublicKey
+kemPublicKey = largeString ; sntrup761 public key
+kemCiphertext = largeString ; sntrup761 ciphertext
+
+; Binary encoding of short link (used in relaysList)
+connShortLink = invShortLink / contactShortLink
+invShortLink = %s"I" smpServer linkId linkKey
+contactShortLink = %s"C" contactConnType smpServer linkKey
+contactConnType = %s"A" / %s"C" / %s"G" / %s"R" ; contact / channel / group / relay
+linkId = shortString
+linkKey = shortString
+
+x509encoded = *OCTET ; DER-encoded X.509 SubjectPublicKeyInfo
 largeString = 2*2 OCTET *OCTET ; Word16 length prefix
 length = 1*1 OCTET
 shortString = length *OCTET

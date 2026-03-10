@@ -172,7 +172,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 - undetectably communicate at the same time as Alice with her contacts. Doing so would result in the contact getting different messages with repeated IDs.
 
-- undetectably monitor message queues in realtime without alerting the user they are doing so, as a second subscription request unsubscribes the first and notifies the second.
+- undetectably monitor message queues in realtime without alerting the user they are doing so, as a second subscription request unsubscribes the first and notifies the first.
 
 ### A user's contact
 

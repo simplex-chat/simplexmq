@@ -466,9 +466,9 @@ To send service commands, services should authenticate themselves to SMP routers
 Service certificates are included in the client handshake and verified by the router. The service receives a service ID in the handshake response, which is then used as entity ID in service transmissions.
 
 ```abnf
-clientHandshakeService = serviceRole serviceCertKey
+clientService = serviceRole serviceCertKey
 serviceRole = %s"M" / %s"N" / %s"P" ; Messaging / Notifier / Proxy
-serviceCertKey = certChainPubKey
+serviceCertKey = certChain signedServiceKey
 ```
 
 ### Service subscriptions
@@ -537,14 +537,14 @@ Commands syntax below is provided using [ABNF][8] with [case-sensitive strings e
 smpCommand = ping / recipientCmd / senderCommand /
              proxyCommand / notifierCommand / linkCommand / routerMsg
 recipientCmd = create / subscribe / subscribeMultiple / rcvSecure / recipientKeys /
-               enableNotifications / disableNotifications / getMessage
+               enableNotifications / disableNotifications / getMessage /
                acknowledge / suspend / delete / getQueueInfo / setShortLink / deleteShortLink
 senderCommand = send / sndSecure
 linkCommand = setLinkKey / getLinkData
 proxyCommand = proxySession / proxyForward / relayForward
 notifierCommand = subscribeNotifications / subscribeNotificationsMultiple
 routerMsg = queueIds / linkResponse / serviceOk / serviceOkMultiple /
-            message / allReceived / notifierIdResp / messageNotification /
+            message / allReceived / notifierIdResponse / messageNotification /
             proxySessionKey / proxyResponse / relayResponse /
             unsubscribed / serviceUnsubscribed / deleted /
             queueInfo / ok / error / pong
@@ -663,7 +663,7 @@ This command is used by recipient services to subscribe to multiple queues at on
 ```abnf
 subscribeMultiple = %s"SUBS " count idsHash
 count = 8*8 OCTET ; Int64, network byte order (big-endian)
-idsHash = 16*16 OCTET ; XOR of MD5 hashes of all queue IDs
+idsHash = length 16*16 OCTET ; XOR of MD5 hashes of all queue IDs
 ```
 
 The count and idsHash allow the router to detect subscription drift. The router responds with `serviceOkMultiple` (`SOKS`) response.
@@ -883,19 +883,19 @@ This command is sent to the router by the sender both to confirm the queue after
 
 ```abnf
 send = %s"SEND " msgFlags SP smpEncMessage
-msgFlags = notificationFlag reserved
+msgFlags = notificationFlag
 notificationFlag = %s"T" / %s"F"
 smpEncMessage = smpEncClientMessage / smpEncConfirmation ; message up to 16048 bytes (v11+)
 
 smpEncClientMessage = smpPubHeaderNoKey msgNonce sentClientMsgBody ; message up to maxMessageLength bytes
 smpPubHeaderNoKey = smpClientVersion "0"
-sentClientMsgBody = 16000*16000 OCTET ; = maxMessageLength(v11+) - 48 = 16048 - 48
+sentClientMsgBody = 16016*16016 OCTET ; = e2eEncMessageLength(16000) + authTagSize(16)
 
 smpEncConfirmation = smpPubHeaderWithKey msgNonce sentConfirmationBody
 smpPubHeaderWithKey = smpClientVersion "1" senderPublicDhKey
   ; sender's Curve25519 public key to agree DH secret for E2E encryption in this queue
   ; it is only sent in confirmation message
-sentConfirmationBody = 15904*15904 OCTET ; E2E-encrypted smpClientMessage padded to e2eEncMessageLength before encryption
+sentConfirmationBody = 15920*15920 OCTET ; E2E-encrypted smpConfirmation padded to e2eEncConfirmationLength(15904), + authTagSize(16)
 senderPublicDhKey = length x509encoded
 
 smpClientVersion = word16
@@ -1123,7 +1123,7 @@ Transmission sent to proxy router should use session ID as entity ID and use a r
 Encrypted transmission should use the received session ID from the connection between proxy router and destination router in the authorized body.
 
 ```abnf
-proxyCommand = %s"PFWD" SP smpVersion commandKey <encrypted padded(transmission, 16226)>
+proxyForward = %s"PFWD" SP smpVersion commandKey <encrypted padded(transmission, 16226)>
 smpVersion = 2*2 OCTET
 commandKey = length x509encoded
 ```
@@ -1134,6 +1134,7 @@ Having received the `RRES` response from the destination router, proxy router wi
 
 ```abnf
 proxyResponse = %s"PRES" SP <encrypted padded(forwardedResponse, 16226)>
+forwardedResponse = *OCTET ; client-encrypted SMP response, decrypted by client using per-command DH secret
 ```
 
 #### Forward command to destination router
@@ -1143,7 +1144,7 @@ Having received `PFWD` command from the client, the router should additionally e
 Transmission forwarded to destination router uses empty entity ID and its unique random correlation ID is used as a nonce to encrypt forwarded transmission. Correlation ID increased by 1 is used by the destination router as a nonce to encrypt responses.
 
 ```abnf
-relayCommand = %s"RFWD" SP <encrypted(forwardedTransmission)>
+relayForward = %s"RFWD" SP <encrypted(forwardedTransmission)>
 forwardedTransmission = fwdCorrId fwdSmpVersion fwdCommandKey transmission
 fwdCorrId = length 24*24 OCTET
   ; `fwdCorrId` - correlation ID used in `PFWD` command transmission - it is used as a nonce for client encryption,
@@ -1160,6 +1161,8 @@ The shared secret for encrypting transmission bodies between proxy router and de
 
 ```abnf
 relayResponse = %s"RRES" SP <encrypted(responseTransmission)>
+responseTransmission = fwdCorrId forwardedResponse
+  ; fwdCorrId and forwardedResponse defined above in RFWD section
 ```
 
 ### Short link commands
@@ -1212,7 +1215,7 @@ This command is used by notifier services to subscribe to multiple queues at onc
 ```abnf
 subscribeNotificationsMultiple = %s"NSUBS " count idsHash
 count = 8*8 OCTET ; Int64, network byte order (big-endian)
-idsHash = 16*16 OCTET ; XOR of MD5 hashes of all queue IDs
+idsHash = length 16*16 OCTET ; XOR of MD5 hashes of all queue IDs
 ```
 
 The router responds with `serviceOkMultiple` (`SOKS`) response.
@@ -1253,7 +1256,7 @@ Sent in response to `SUBS` or `NSUBS` commands:
 ```abnf
 serviceOkMultiple = %s"SOKS " count idsHash
 count = 8*8 OCTET ; Int64, network byte order (big-endian)
-idsHash = 16*16 OCTET ; XOR of MD5 hashes of all subscribed queue IDs
+idsHash = length 16*16 OCTET ; XOR of MD5 hashes of all subscribed queue IDs
 ```
 
 #### All service messages received
@@ -1297,15 +1300,13 @@ The router must deliver message notifications to all simplex queues that were su
 
 ```abnf
 messageNotification = %s"NMSG " nmsgNonce encryptedNMsgMeta
-
-encryptedNMsgMeta = <encrypted message metadata passed in notification>
-; metadata E2E encrypted between router and recipient containing router's message ID and timestamp (allows extension),
-; to be passed to the recipient by the notifier for them to decrypt
-; with key negotiated in NKEY and NID commands using nmsgNonce
-
-nmsgNonce = <nonce used in NaCl crypto_box encryption scheme>
-; nonce used by the router for encryption of message metadata, to be passed to the recipient by the notifier
-; for them to use in decryption of E2E encrypted metadata
+nmsgNonce = 24*24 OCTET ; 192-bit NaCl crypto_box nonce
+encryptedNMsgMeta = shortString
+  ; NaCl crypto_box encrypted padded(nmsgMeta, 128): 128 + 16 (auth tag) = 144 bytes
+  ; metadata E2E encrypted between router and recipient,
+  ; to be passed to the recipient by the notifier for them to decrypt
+  ; with key negotiated in NKEY and NID commands using nmsgNonce
+nmsgMeta = msgId timestamp ; message ID and timestamp, allows future extension
 ```
 
 Message notification does not contain any message data or non E2E encrypted metadata.
@@ -1327,7 +1328,7 @@ Sent when service subscription is terminated (can be sent when service re-connec
 ```abnf
 serviceUnsubscribed = %s"ENDS " count idsHash
 count = 8*8 OCTET ; Int64, network byte order (big-endian)
-idsHash = 16*16 OCTET ; XOR of MD5 hashes of terminated queue IDs
+idsHash = length 16*16 OCTET ; XOR of MD5 hashes of terminated queue IDs
 ```
 
 #### Queue deleted notification
