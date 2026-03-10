@@ -1,3 +1,12 @@
+---
+Proposed: 2024-02-12
+Implemented: ~2024 (SMP v11)
+Standardized: 2026-03-10
+Protocol: simplex-messaging
+---
+
+> **Implementation note:** This RFC was promoted from done/ to standard/ based on verification that the described feature exists in the codebase. The RFC text reflects the original proposal and may not match the actual implementation in all details. The consolidated protocol specifications in `protocol/` are the authoritative reference for current behavior.
+
 # Transmission encryption
 
 ## Problems
