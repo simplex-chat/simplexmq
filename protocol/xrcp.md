@@ -10,7 +10,7 @@ Version 1, 2024-06-22
   - [Session invitation](#session-invitation)
   - [Establishing TLS connection](#establishing-tls-connection)
   - [Session verification and protocol negotiation](#session-verification-and-protocol-negotiation)
-  - [Controller/host session operation](#сontrollerhost-session-operation)
+  - [Controller/host session operation](#controllerhost-session-operation)
 - [Key agreement for announcement packet and for session](#key-agreement-for-announcement-packet-and-for-session)
 - [Threat model](#threat-model)
 
@@ -104,12 +104,11 @@ Multicast session announcement is a binary encoded packet with this syntax:
 ```abnf
 sessionAddressPacket = dhPubKey nonce encrypted(unpaddedSize sessionAddress packetPad)
 dhPubKey = length x509encoded ; same as announced
-nonce = length *OCTET
+nonce = 24*24 OCTET ; NaCl 192-bit nonce, no length prefix
 sessionAddress = largeLength sessionAddressUri ; as above
 length = 1*1 OCTET ; for binary data up to 255 bytes
 largeLength = 2*2 OCTET ; for binary data up to 65535 bytes
-packetPad = <pad packet size to 1450 bytes> ; possibly, we may need to move KEM agreement one step later,
-; with encapsulation key in HELLO block and KEM ciphertext in reply to HELLO.
+packetPad = <pad invitation content to 900 bytes before encryption>
 ```
 
 ### Establishing TLS connection
@@ -157,10 +156,7 @@ The controller decrypts (including the first session) and validates the received
 {
   "definitions": {
     "version": {
-      "type": "string",
-      "metadata": {
-        "format": "[0-9]+"
-      }
+      "type": "uint16"
     },
     "base64url": {
       "type": "string",
@@ -172,9 +168,7 @@ The controller decrypts (including the first session) and validates the received
   "properties": {
     "v": {"ref": "version"},
     "ca": {"ref": "base64url"},
-    "kem": {"ref": "base64url"}
-  },
-  "optionalProperties": {
+    "kem": {"ref": "base64url"},
     "app": {"properties": {}, "additionalProperties": true}
   },
   "additionalProperties": true
@@ -206,7 +200,7 @@ JTD schema for the encrypted part of controller HELLO block `ctrlHelloJSON`:
 }
 ```
 
-Controller `hello` block and all subsequent protocol messages are encrypted with the chain keys derived from the hybrid key (see key exchange below) - that is why conntroller hello block does not include nonce. That provides forward secrecy within the XRCP session. Receiving this `hello` block allows host to compute the same hybrid keys and to derive the same chain keys.
+Controller `hello` block and all subsequent protocol messages are encrypted with the chain keys derived from the hybrid key (see key exchange below) - that is why controller hello block does not include nonce. That provides forward secrecy within the XRCP session. Receiving this `hello` block allows host to compute the same hybrid keys and to derive the same chain keys.
 
 Once the controller replies HELLO to the valid host HELLO block, it should stop accepting new TCP connections.
 
@@ -261,7 +255,7 @@ kemCiphertext(1) = enc(kemSecret(1), kemEncKey(1))
 kemSecret(1) = dec(kemCiphertext(1), kemDecKey(1))
 
 // multicast announcement for session n
-announcementSecret(n) = sha256(dhSecret(n'))
+announcementSecret(n) = dhSecret(n')
 dhSecret(n') = dh(hostHelloDhKey(n - 1), controllerDhKey(n))
 
 // session n
@@ -277,11 +271,11 @@ If controller fails to store the new host DH key after receiving HELLO block, th
 
 To decrypt a multicast announcement, the host should try to decrypt it using the keys of all known (paired) remote controllers.
 
-Once kemSecret is agreed for the session, it is used to derive two chain keys, to receive and to send messages:
+Once sessionSecret is agreed for the session, it is used to derive two chain keys, to receive and to send messages:
 
 ```
-host: sndKey, rcvKey = HKDF(kemSecret, "SimpleXSbChainInit", 64)
-controller: rcvKey, sndKey  = HKDF(kemSecret, "SimpleXSbChainInit", 64)
+controller: sndKey, rcvKey = HKDF(sessionSecret, "SimpleXSbChainInit", 64)
+host: rcvKey, sndKey = HKDF(sessionSecret, "SimpleXSbChainInit", 64)
 ```
 
 where HKDF is based on SHA512, with empty salt.

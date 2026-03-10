@@ -135,7 +135,7 @@ The sending client combines addresses of all packets and other information into 
 - list of packet descriptions; information for each packet:
   - private Ed25519 key to sign commands for file transfer router.
   - packet address (router host and packet ID).
-  - packet sha512 digest.
+  - packet sha256 digest.
 
 To reduce the size of file description, packets are grouped by the router host.
 
@@ -176,14 +176,14 @@ It includes these fields:
 - `digest` - SHA512 hash of encrypted file, base64url encoded string.
 - `key` - symmetric encryption key to decrypt the file, base64url encoded string.
 - `nonce` - nonce to decrypt the file, base64url encoded string.
-- `packetSize` - default packet size, see `fileSize` syntax below.
+- `chunkSize` - default packet size, see `fileSize` syntax below.
 - `replicas` - the array of data packet replicas descriptions.
 - `redirect` - optional property for redirect information indicating that the file is itself a description to another file, allowing to use file description as a short URI.
 
 Each replica description is an object with 2 fields:
 
-- `packets` - and array of packet replica descriptions stored on one router.
-- `router` - [router address](#xftp-router-uri) where the packets can be downloaded from.
+- `chunks` - an array of packet replica descriptions stored on one server.
+- `server` - [router address](#xftp-router-uri) where the packets can be downloaded from.
 
 Each router replica description is a string with this syntax:
 
@@ -234,7 +234,7 @@ File description URI syntax:
 
 ```abnf
 fileDescriptionURI = serviceScheme "/file"  "#/?desc=" description [ "&data=" userData ]
-serviceScheme = (%s"https://" clientAppServer) | %s"simplex:"
+serviceScheme = (%s"https://" clientAppServer) / %s"simplex:"
 clientAppServer = hostname [ ":" port ]
 ; client app server, e.g. simplex.chat
 description = <URI-escaped YAML file description>
@@ -414,8 +414,6 @@ ping = %s"PING"
 ```
 
 This command is always sent unsigned.
-
-  data FileResponse = ... | FRPong | ...
 
 ```abnf
 pong = %s"PONG"

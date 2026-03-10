@@ -71,11 +71,10 @@ def RatchetInitAlicePQ2HE(state, SK, bob_dh_public_key, shared_hka, shared_nhkb,
     // below added for post-quantum KEM
     state.PQRs = GENERATE_PQKEM()
     state.PQRr = bob_pq_kem_encapsulation_key
-    state.PQRss = random // shared secret for KEM
-    state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret
+    state.PQRct, state.PQRss = PQKEM-ENC(state.PQRr) // encapsulate: generates shared secret and ciphertext
     // above added for KEM
     // the next line augments DH key agreement with PQ shared secret
-    state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss) 
+    state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
     state.CKr = None
     state.Ns = 0
     state.Nr = 0
@@ -176,8 +175,7 @@ def DHRatchetPQ2HE(state, header):
     state.DHRs = GENERATE_DH()
     // below is added for KEM
     state.PQRs = GENERATE_PQKEM() // generate new PQ key pair
-    state.PQRss = random // shared secret for KEM
-    state.PQRct = PQKEM-ENC(state.PQRr, state.PQRss) // encapsulated additional shared secret KEM #1
+    state.PQRct, state.PQRss = PQKEM-ENC(state.PQRr) // encapsulate: generates shared secret and ciphertext KEM #1
     // above is added for KEM
     // use new shared secret with sending ratchet
     state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)

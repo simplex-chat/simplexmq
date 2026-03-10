@@ -118,9 +118,10 @@ The command syntax:
 newTokenCmd = %s"TNEW" SP newToken
 newToken = %s"T" deviceToken authPubKey clientDhPubKey
 deviceToken = pushProvider tokenString
-pushProvider = apnsDev / apnsProd / apnsNull
+pushProvider = apnsDev / apnsProd / apnsTest / apnsNull
 apnsDev = "AD" ; APNS token for development environment
 apnsProd = "AP" ; APNS token for production environment
+apnsTest = "AT" ; APNS token for test environment (mock server)
 apnsNull = "AN" ; token that does not trigger any notification delivery - used for router testing
 tokenString = shortString
 authPubKey = length x509encoded ; Ed25519 key used to verify clients commands
@@ -226,10 +227,10 @@ The interval for periodic notifications is set in minutes, with the minimum of 2
 This command makes notification router subscribe to message notifications from SMP router and to deliver them to push provider:
 
 ```abnf
-newSubCmd = %s"SNEW" newSub
-newSub = %s "S" tokenId smpRouter notifierId notifierKey
+newSubCmd = %s"SNEW" SP newSub
+newSub = %s"S" tokenId smpRouter notifierId notifierKey
 tokenId = shortString ; returned in response to `TNEW` command
-smpRouter = smpRouter = hosts port fingerprint
+smpRouter = hosts port fingerprint
 hosts = length 1*host
 host = shortString
 port = shortString
@@ -259,7 +260,7 @@ subStatusResp = %s"SUB" SP subStatus
 subStatus = %s"NEW" / %s"PENDING" / ; e.g., after SMP router disconnect/timeout while ntf router is retrying to connect
             %s"ACTIVE" / %s"INACTIVE" / %s"END" / ; if another router subscribed to notifications
             %s"AUTH" / %s"DELETED" / %s"SERVICE" / subErrStatus
-subErrStatus = %s"ERR" SP shortString
+subErrStatus = %s"ERR" SP *OCTET
 ```
 
 ### Delete notification subscription

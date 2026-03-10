@@ -613,7 +613,7 @@ data NewQueueReq = NewQueueReq
 data SubscriptionMode = SMSubscribe | SMOnlyCreate
   deriving (Eq, Show)
 
--- SenderId must be computed client-side as `sha3-256(corr_id)`, `corr_id` - a random transmission ID.
+-- SenderId must be computed client-side as the first 24 bytes of `sha3-384(corr_id)`, `corr_id` - a random transmission ID.
 -- The server must verify and reject it if it does not match (and in case of collision).
 -- This allows to include SenderId in FixedDataBytes in full connection request,
 -- and at the same time prevents the possibility of checking whether a queue with a known ID exists.
