@@ -5,6 +5,7 @@ import {
   newXFTPAgent, closeXFTPAgent,
   decodeDescriptionURI, downloadFileRaw
 } from '../src/agent.js'
+import {getDescriptionServers} from '../src/protocol/address.js'
 import {XFTPPermanentError} from '../src/client.js'
 
 const DECRYPT_WEIGHT = 0.15
@@ -17,6 +18,12 @@ export function initDownload(app: HTMLElement, hash: string) {
     fd = decodeDescriptionURI(hash)
   } catch (err: any) {
     app.innerHTML = `<div class="card"><p class="error">${t('invalidLink', 'Invalid or corrupted link.')}</p></div>`
+    return
+  }
+
+  const descHosts = getDescriptionServers(fd).map(s => s.host)
+  if (!descHosts.includes(window.location.hostname)) {
+    app.innerHTML = `<div class="card"><p class="error">${t('wrongServer', 'This file is not hosted on this server.')}</p></div>`
     return
   }
 
