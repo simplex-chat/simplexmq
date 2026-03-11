@@ -21,11 +21,7 @@ export function initDownload(app: HTMLElement, hash: string) {
     return
   }
 
-  const descHosts = getDescriptionServers(fd).map(s => s.host)
-  if (!descHosts.includes(window.location.hostname)) {
-    app.innerHTML = `<div class="card"><p class="error">${t('wrongServer', 'This file is not hosted on this server.')}</p></div>`
-    return
-  }
+  const wrongServer = !getDescriptionServers(fd).map(s => s.host).includes(window.location.hostname)
 
   const size = fd.redirect ? fd.redirect.size : fd.size
   app.innerHTML = `
@@ -67,6 +63,11 @@ export function initDownload(app: HTMLElement, hash: string) {
   function showError(msg: string) {
     errorMsg.innerHTML = msg
     showStage(errorStage)
+  }
+
+  if (wrongServer) {
+    readyStage.innerHTML = `<p class="error">${t('wrongServer', 'This file is not hosted on this server.')}</p>`
+    return
   }
 
   dlBtn.addEventListener('click', startDownload)
