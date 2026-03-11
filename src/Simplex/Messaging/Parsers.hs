@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
+-- spec: spec/modules/Simplex/Messaging/Parsers.md
 module Simplex.Messaging.Parsers
   ( base64P,
     parse,
@@ -105,7 +106,8 @@ enumJSON tagModifier =
       J.allNullaryToStringTag = True
     }
 
--- used in platform-specific encoding, includes tag for single-field encoding of sum types to allow conversion to tagged objects
+-- spec: spec/modules/Simplex/Messaging/Parsers.md#sumTypeJSON
+-- Platform-dependent: ObjectWithSingleField on Darwin+swiftJSON, TaggedObject elsewhere
 sumTypeJSON :: (String -> String) -> J.Options
 #if defined(darwin_HOST_OS) && defined(swiftJSON)
 sumTypeJSON = singleFieldJSON_ $ Just SingleFieldJSONTag

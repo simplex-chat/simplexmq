@@ -119,14 +119,23 @@ See [rcv-services](../rcv-services.md) for the end-to-end service subscription f
 ```
 
 ### Source → module doc
-Comment above function in source:
+
+Add `-- spec:` comments as part of the module documentation work — when you document something non-obvious, add the link in source at the same time. Two levels:
+
+**Module-level** (below the module declaration): when the Overview section has value.
 ```haskell
--- spec: spec/modules/Simplex/Messaging/Server.md#subscribeServiceMessages
--- Delivers buffered messages for all service queues after SUBS (SI-SVC-07)
-subscribeServiceMessages :: ...
+module Simplex.Messaging.Util (...) where
+-- spec: spec/modules/Simplex/Messaging/Util.md
 ```
 
-Only add `-- spec:` comments where the module doc actually has something to say. Don't add links to "No non-obvious behavior" docs.
+**Function-level** (above the function): when that function has a doc entry worth pointing to.
+```haskell
+-- spec: spec/modules/Simplex/Messaging/Util.md#catchOwn
+-- Catches all exceptions except async cancellations (misleading name)
+catchOwn :: ...
+```
+
+Only add `-- spec:` comments where the module doc actually says something the code doesn't. Don't add links to "No non-obvious behavior" docs or to entries that merely restate the source.
 
 ## Topic candidate tracking
 
