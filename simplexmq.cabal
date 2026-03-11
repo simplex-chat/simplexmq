@@ -51,6 +51,11 @@ extra-source-files:
     apps/common/Web/static/media/swiper-bundle.min.js
     apps/common/Web/static/media/tailwind.css
     apps/common/Web/static/media/testflight.png
+    apps/common/Web/static/media/xftp-protocol.svg
+    apps/common/Web/static/media/xftp-protocol-dark.svg
+    apps/xftp-server/static/xftp/crypto.worker.js
+    apps/xftp-server/static/xftp/index.css
+    apps/xftp-server/static/xftp/index.js
 
 flag swift
   description: Enable swift JSON format
@@ -458,7 +463,9 @@ executable xftp-server
   build-depends:
       base
     , bytestring
+    , directory
     , file-embed >=0.0.10 && <0.1
+    , filepath
     , simple-logger
     , simplexmq
   default-language: Haskell2010
