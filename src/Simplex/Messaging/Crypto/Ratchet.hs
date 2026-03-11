@@ -18,6 +18,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md
 module Simplex.Messaging.Crypto.Ratchet
   ( Ratchet (..),
     RatchetX448,
@@ -435,7 +436,8 @@ generateE2EParams g v useKEM_ = do
                   pure (RKParamsAccepted ct k, PrivateRKParamsAccepted ct shared ks)
       _ -> pure Nothing
 
--- used by party initiating connection, Bob in double-ratchet spec
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#pq-x3dh-key-agreement
+-- used by party initiating connection, Bob in double-ratchet spec (roles are reversed)
 generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> PQSupport -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
 generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
   where
@@ -899,6 +901,8 @@ rcCheckCanPad :: Int -> ByteString -> ExceptT CryptoError IO ()
 rcCheckCanPad paddedMsgLen msg =
   unless (canPad (B.length msg) paddedMsgLen) $ throwE CryptoLargeMsgError
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#rcEncryptHeader--separated-from-rcEncryptMsg
+-- Separated from rcEncryptMsg for crash recovery: persist ratchet state between header and message encryption
 rcEncryptHeader :: AlgorithmI a => Ratchet a -> Maybe PQEncryption -> VersionE2E -> ExceptT CryptoError IO (MsgEncryptKey a, Ratchet a)
 rcEncryptHeader Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
 rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} pqEnc_ supportedE2EVersion = do

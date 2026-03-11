@@ -35,6 +35,7 @@
 --
 -- This module provides cryptography implementation for SMP protocols based on
 -- <https://hackage.haskell.org/package/cryptonite cryptonite package>.
+-- spec: spec/modules/Simplex/Messaging/Crypto.md
 module Simplex.Messaging.Crypto
   ( -- * Cryptographic keys
     Algorithm (..),
@@ -1133,7 +1134,8 @@ maxLength :: forall i. KnownNat i => Int
 maxLength = fromIntegral (natVal $ Proxy @i)
 {-# INLINE maxLength #-}
 
--- this function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#two-aead-initialization-paths
+-- This function requires 16 bytes IV, it transforms IV in cryptonite_aes_gcm_init here:
 -- https://github.com/haskell-crypto/cryptonite/blob/master/cbits/cryptonite_aes.c
 -- This is used for double ratchet encryption, so to make it compatible with WebCrypto we will need to deprecate it and start using initAEADGCM
 initAEAD :: forall c. AES.BlockCipher c => Key -> IV -> ExceptT CryptoError IO (AES.AEAD c)
@@ -1393,6 +1395,8 @@ instance ToJSON CbNonce where
 instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#cbNonce--silent-truncationpadding
+-- Silently truncates or zero-pads to 24 bytes — no error on wrong length
 cbNonce :: ByteString -> CbNonce
 cbNonce s
   | len == 24 = CryptoBoxNonce s
