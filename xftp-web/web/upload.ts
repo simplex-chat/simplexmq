@@ -173,7 +173,7 @@ export function initUpload(app: HTMLElement) {
 
       const descServers = getDescriptionServers(result.rcvDescription)
       const origin = descServers.length > 0
-        ? serverOrigin(descServers[Math.floor(Math.random() * descServers.length)])
+        ? serverOrigin(descServers[0])
         : window.location.origin
       const url = origin + window.location.pathname + '#' + result.uri
       shareLink.value = url
