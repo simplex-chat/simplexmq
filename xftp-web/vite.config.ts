@@ -94,6 +94,7 @@ export default defineConfig(({mode}) => {
       outDir: resolve(__dirname, 'dist-web'),
       emptyOutDir: true,
       target: 'esnext',
+      minify: false,
       chunkSizeWarningLimit: 1200,
       rollupOptions: {
         external: ['node:http2', 'url'],
