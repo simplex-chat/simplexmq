@@ -36,6 +36,10 @@ Sequential concatenation with no separators. Works because each element's encodi
 
 Only seconds are encoded (as Int64); nanoseconds are discarded on encode and set to 0 on decode.
 
+## String instance
+
+`smpEncode` goes through `B.pack`, which silently truncates any Unicode character above codepoint 255 to its lowest byte. A String containing non-Latin-1 characters is silently corrupted on encode with no error. Same issue exists in the `StrEncoding String` instance — see [Simplex.Messaging.Encoding.String](./Encoding/String.md#string-instance).
+
 ## smpEncodeList / smpListP
 
 1-byte length prefix for lists — same 255-item limit as ByteString's 255-byte limit.

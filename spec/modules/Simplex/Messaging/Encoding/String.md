@@ -27,9 +27,12 @@ Inherits from ByteString via `B.pack` / `B.unpack`. Only Char8 (Latin-1) charact
 
 `strToJSON` uses `decodeLatin1`, not `decodeUtf8'`. This preserves arbitrary byte sequences (e.g., base64url-encoded binary data) as JSON strings without UTF-8 validation errors, but means the JSON representation is Latin-1, not UTF-8.
 
-## Default strP fallback
+## Class default: strP assumes base64url for all types
 
-If only `strDecode` is defined (no custom `strP`), the default parser runs `base64urlP` first, then passes the decoded bytes to `strDecode`. This means the type's own `strDecode` receives raw bytes, not the base64url text. Easy to confuse when implementing a new instance.
+The `MINIMAL` pragma allows defining only `strDecode` without `strP`. But the default `strP = strDecode <$?> base64urlP` then assumes input is base64url-encoded — for *any* type, not just ByteString. Two consequences:
+
+1. The type's `strDecode` receives raw decoded bytes, not the base64url text. Easy to confuse when implementing a new instance.
+2. `base64urlP` requires non-empty input (`takeWhile1`), so the default `strP` cannot parse empty values — even if `strDecode ""` would succeed. Types that can encode to empty output must define `strP` explicitly.
 
 ## listItem
 
