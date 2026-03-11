@@ -28,12 +28,17 @@ import System.FilePath ((</>))
 xftpWebContent :: [(FilePath, ByteString)]
 xftpWebContent = $(embedDir "apps/xftp-server/static/xftp/")
 
+xftpMediaContent :: [(FilePath, ByteString)]
+xftpMediaContent = $(embedDir "apps/xftp-server/static/media/")
+
 xftpGenerateSite :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()
 xftpGenerateSite cfg info onionHost path = do
   Web.generateSite embeddedContent (xftpServerInformation cfg info onionHost) [] path
   let xftpDir = path </> "xftp"
+      mediaDir = path </> "media"
   createDirectoryIfMissing True xftpDir
   forM_ xftpWebContent $ \(fp, content) -> B.writeFile (xftpDir </> fp) content
+  forM_ xftpMediaContent $ \(fp, content) -> B.writeFile (mediaDir </> fp) content
 
 xftpServerInformation :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> ByteString
 xftpServerInformation XFTPServerConfig {fileExpiration, logStatsInterval, allowNewFiles, newFileBasicAuth} information onionHost = render (Web.indexHtml embeddedContent) substs

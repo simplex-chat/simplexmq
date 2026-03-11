@@ -113,7 +113,7 @@
     @media (min-width: 1024px) { .lg\:max-w-\[448px\] { max-width: 448px; } }
 
     /* Custom utility classes */
-    .lock-scroll { overflow: hidden; }
+    html.lock-scroll, html.lock-scroll body { overflow: hidden; }
     .overlay a, #xftp-file-page p a { color: #0053D0; text-decoration: underline; text-underline-offset: 2px; }
     .dark .overlay a, .dark #xftp-file-page p a { color: #70F0F9; }
 
@@ -712,7 +712,7 @@
           el.removeEventListener('animationend', handler);
           el.classList.remove('flex', 'overlay-closing');
           el.classList.add('hidden');
-          document.body.classList.remove('lock-scroll');
+          document.documentElement.classList.remove('lock-scroll');
         });
       }
     }, true);
@@ -741,7 +741,7 @@
       var el = document.getElementById('xftp-protocol');
       el.classList.remove('hidden');
       el.classList.add('flex');
-      document.body.classList.add('lock-scroll');
+      document.documentElement.classList.add('lock-scroll');
     });
   </script>
   </div>
