@@ -840,9 +840,11 @@ pqEncToSupport (PQEncryption pq) = PQSupport pq
 pqSupportAnd :: PQSupport -> PQSupport -> PQSupport
 pqSupportAnd (PQSupport s1) (PQSupport s2) = PQSupport $ s1 && s2
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#pqenablesupport-is-monotonic
 pqEnableSupport :: VersionE2E -> PQSupport -> PQEncryption -> PQSupport
 pqEnableSupport v (PQSupport sup) (PQEncryption enc) = PQSupport $ sup || (v >= pqRatchetE2EEncryptVersion && enc)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#replykem_--two-step-kem-negotiation
 replyKEM_ :: VersionE2E -> Maybe (RKEMParams 'RKSProposed) -> PQSupport -> Maybe AUseKEM
 replyKEM_ v kem_ = \case
   PQSupportOn | v >= pqRatchetE2EEncryptVersion -> Just $ case kem_ of
@@ -994,6 +996,7 @@ data RatchetStep = AdvanceRatchet | SameRatchet
 
 type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#maxskip--512--dos-protection
 maxSkip :: Word32
 maxSkip = 512
 
@@ -1131,6 +1134,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
       let (ck', mk, iv, _) = chainKdf ck
           mks' = M.insert msgNs (MessageKey mk iv) mks
        in advanceRcvRatchet (n - 1) ck' (msgNs + 1) mks'
+    -- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#decryptskipped--linear-scan-through-all-stored-header-keys
     decryptSkipped :: EncMessageHeader -> EncRatchetMessage -> ExceptT CryptoError IO (SkippedMessage a)
     decryptSkipped encHdr encMsg = tryDecryptSkipped SMNone $ M.assocs rcMKSkipped
       where
@@ -1163,6 +1167,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
     decryptHeader k EncMessageHeader {ehVersion, ehBody, ehAuthTag, ehIV} = do
       header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
       parseE' CryptoHeaderError (msgHeaderP ehVersion) header
+    -- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#decryptmessage--ratchet-advances-even-on-failure
     decryptMessage :: MessageKey -> EncRatchetMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))

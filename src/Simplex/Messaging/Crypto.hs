@@ -1285,11 +1285,13 @@ verify' (PublicKeyEd25519 k) (SignatureEd25519 sig) msg = Ed25519.verify k msg s
 verify' (PublicKeyEd448 k) (SignatureEd448 sig) msg = Ed448.verify k msg sig
 {-# INLINE verify' #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#verify-silently-returns-false-on-algorithm-mismatch
 verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool
 verify (APublicVerifyKey a k) (ASignature a' sig) msg = case testEquality a a' of
   Just Refl -> verify' k sig msg
   _ -> False
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#dh-returns-raw-dh-output--no-key-derivation
 dh' :: DhAlgorithm a => PublicKey a -> PrivateKey a -> DhSecret a
 dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
@@ -1418,6 +1420,7 @@ randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#reversenonce
 reverseNonce :: CbNonce -> CbNonce
 reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
 

@@ -52,6 +52,21 @@ Things that would surprise a competent Haskell developer reading the code for th
 - Alternatives considered and rejected
 - Known limitations and their justification
 
+## Non-obvious threshold
+
+The guiding principle: **non-obvious state machines and flows require documentation; standard things don't.**
+
+Document:
+- Multi-step protocols and negotiation flows (e.g., KEM propose/accept round-trips)
+- Monotonic or irreversible state transitions (e.g., PQ support can only be enabled, never disabled)
+- Silent error behaviors (e.g., `verify` returns `False` on algorithm mismatch instead of an error)
+- Design rationale for non-standard choices (e.g., why byte-reverse a nonce, why hash-then-encrypt for authenticators)
+
+Do NOT document:
+- Standard algorithm properties (e.g., Ed25519 public key derivable from private key)
+- Well-known protocol mechanics (e.g., HKDF usage per RFC 5869, deterministic nonce derivation in double ratchet)
+- Implementation details that follow directly from the type signatures
+
 ## What NOT to include
 
 - **Type signatures** — the code has them
@@ -106,6 +121,14 @@ No non-obvious behavior. See source.
 This is valuable — it confirms someone looked and found nothing to document.
 
 ## Linking conventions
+
+### Module doc → protocol docs
+When a module implements or is governed by a protocol specification in `protocol/`, link to it near the top of the module doc (after the overview). Do not duplicate protocol content — just reference it:
+```markdown
+**Protocol spec**: [`protocol/pqdr.md`](../../../../protocol/pqdr.md) — Post-quantum resistant augmented double ratchet algorithm.
+```
+
+This is especially important for modules in transport, protocol, client, server, and agent layers where behavior is defined by the protocol spec rather than being self-evident from the code.
 
 ### Module doc → other module docs
 Use fully qualified names as link text:

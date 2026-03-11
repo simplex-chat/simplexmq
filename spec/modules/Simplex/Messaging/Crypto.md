@@ -55,10 +55,6 @@ Both apply `pad`/`unPad` by default. The `NoPad` variants skip padding.
 
 The XSalsa20 implementation splits the 24-byte nonce into two 8-byte halves. The first half initializes the cipher state (prepended with 16 zero bytes), the second derives a subkey. The first 32 bytes of output become the Poly1305 one-time key (`rs`), then the rest encrypts the message. This is the standard NaCl construction.
 
-## CbAuthenticator
-
-An authentication scheme that encrypts the SHA-512 hash of the message using crypto_box, rather than the message itself. The result is 80 bytes (64 hash + 16 auth tag). Used for authenticating messages where the content is transmitted separately from the authentication proof.
-
 ## Secret box chains (sbcInit / sbcHkdf)
 
 HKDF-based key chains for deriving sequential key+nonce pairs:
@@ -76,6 +72,22 @@ All keys are encoded as ASN.1 DER (X.509 SubjectPublicKeyInfo for public, PKCS#8
 ## GCMIV constructor not exported
 
 `GCMIV` constructor is not exported — only `gcmIV :: ByteString -> Either CryptoError GCMIV` is available, which validates that the input is exactly 12 bytes. This prevents construction of invalid IVs.
+
+## verify silently returns False on algorithm mismatch
+
+`verify :: APublicVerifyKey -> ASignature -> ByteString -> Bool` uses `testEquality` on the algorithm singletons. If the key is Ed25519 but the signature is Ed448 (or vice versa), `testEquality` fails and `verify` returns `False` — no error, no indication of a type mismatch. A correctly-formed signature can "fail" simply because the wrong algorithm key was passed.
+
+## dh' returns raw DH output — no key derivation
+
+`dh'` returns the raw X25519/X448 shared point with no hashing or HKDF. Callers must apply their own KDF: [SNTRUP761](./Crypto/SNTRUP761.md) hashes with SHA3-256, the [ratchet](./Crypto/Ratchet.md#kdf-functions) uses HKDF-SHA512. Not all DH libraries behave this way — some hash the output automatically.
+
+## reverseNonce
+
+`reverseNonce` creates a "reply" nonce by byte-reversing the original 24-byte nonce. Used for bidirectional communication where both sides need distinct nonces derived from the same starting value. The two nonces are guaranteed distinct unless the original is a byte palindrome, which is astronomically unlikely for random 24-byte values.
+
+## CbAuthenticator
+
+An authentication scheme that encrypts the SHA-512 hash of the message using crypto_box, rather than the message itself. The result is 80 bytes (64 hash + 16 auth tag). This is the djb-recommended authenticator scheme: it proves knowledge of the shared secret and the message content, without requiring the message to fit in a single crypto_box, and without revealing message content even to someone who compromises the shared key after verification.
 
 ## generateKeyPair is STM
 

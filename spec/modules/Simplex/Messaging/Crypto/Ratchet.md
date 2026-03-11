@@ -12,6 +12,8 @@ Implements the Signal double ratchet protocol extended with:
 
 The ratchet uses X448 (not X25519) for DH operations — `type RatchetX448 = Ratchet 'X448`.
 
+**Protocol spec**: [`protocol/pqdr.md`](../../../../protocol/pqdr.md) — Post-quantum resistant augmented double ratchet algorithm.
+
 ## PQ X3DH key agreement
 
 `pqX3dhSnd` / `pqX3dhRcv` perform the extended X3DH:
@@ -46,9 +48,13 @@ Each message header carries `msgMaxVersion` (the sender's max supported ratchet 
 
 `largeP` detects the length-prefix format by peeking at the first byte: if < 32, it's a 2-byte `Large` prefix (new format); otherwise it's a 1-byte prefix (old format). This allows upgrading the header encoding format in a single message without a version bump.
 
+## maxSkip = 512 — DoS protection
+
+`maxSkip` is a hardcoded constant (not configurable). Messages claiming to be more than 512 positions ahead of the current counter are rejected with `CERatchetTooManySkipped`. This prevents an attacker from forcing the receiver to compute and store an unbounded number of skipped message keys.
+
 ## Skipped message keys
 
-When messages arrive out of order, the ratchet computes and stores the message keys for skipped messages (up to `maxSkip = 512`). Skipped keys are stored in a `Map HeaderKey (Map Word32 MessageKey)` — keyed first by header key, then by message number.
+When messages arrive out of order, the ratchet computes and stores the message keys for skipped messages (up to `maxSkip`). Skipped keys are stored in a `Map HeaderKey (Map Word32 MessageKey)` — keyed first by header key, then by message number.
 
 The `SkippedMsgDiff` type represents changes to the skipped key store as a diff rather than a full replacement — this is persisted to the database, and the full state is loaded for the next message. `applySMDiff` is only used in tests.
 
@@ -60,6 +66,14 @@ Decryption tries three strategies in order:
 3. **Next header key**: decrypt header with `rcNHKr` (triggers a ratchet advance)
 
 If strategy 1 decrypts the header but the message number isn't in skipped keys, it checks whether this header key corresponds to the current or next ratchet to decide whether to advance.
+
+### decryptSkipped — linear scan through all stored header keys
+
+`decryptSkipped` iterates through ALL `(HeaderKey, SkippedHdrMsgKeys)` pairs, attempting header decryption with each key. When header decryption succeeds but the message number is NOT in the skipped keys for that header, the result is `SMHeader` — which includes whether the key matches the current ratchet (`rcHKr` → `SameRatchet`) or the next ratchet (`rcNHKr` → `AdvanceRatchet`). This falls through to normal decryption processing rather than producing an error.
+
+### decryptMessage — ratchet advances even on failure
+
+`decryptMessage` returns `Either CryptoError ByteString` inside the `ExceptT` monad — a message decryption failure does NOT abort the ratchet state update. The ratchet counter advances (`rcNr + 1`) and chain key updates (`rcCKr'`) regardless of whether the message body decrypts successfully. This preserves ratchet state consistency for retransmission and error recovery.
 
 ## rcEncryptHeader — separated from rcEncryptMsg
 
@@ -79,6 +93,19 @@ PQ can be enabled/disabled per-message via `pqEnc_` parameter. `rcSupportKEM` ca
 Two distinct newtypes with identical structure (`Bool` wrapper):
 - `PQSupport`: whether PQ **can** be used (determines header padding size, cannot be disabled once enabled)
 - `PQEncryption`: whether PQ **is** being used for the current send/receive ratchet
+
+### pqEnableSupport is monotonic
+
+`pqEnableSupport v sup enc = PQSupport $ sup || (v >= pqRatchetE2EEncryptVersion && enc)`. The `||` means once PQ support is `True`, it stays `True` regardless of subsequent messages. PQ encryption (usage) can be toggled per-message; PQ support (capability / header size) only ratchets up. This prevents the larger header format from being downgraded once negotiated.
+
+## replyKEM_ — two-step KEM negotiation
+
+KEM establishment requires two message round-trips, as described in the [PQDR KEM state machine](../../../../protocol/pqdr.md#kem-state-machine):
+
+1. **Propose**: if the sender has no KEM in their header but the replier supports PQ at sufficient version, the replier includes a KEM proposal (`RKParamsProposed` — their encapsulation public key)
+2. **Accept**: if the sender proposed KEM, the replier accepts by encapsulating against the proposed key and including the ciphertext + their own new encapsulation key (`RKParamsAccepted`)
+
+After acceptance, both sides have a shared KEM secret that is folded into the root KDF. Subsequent ratchet steps continue the KEM exchange with fresh keypairs on each side.
 
 ## Error semantics
 
