@@ -9,6 +9,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/ShortLink.md
 module Simplex.Messaging.Crypto.ShortLink
   ( contactShortLinkKdf,
     invShortLinkKdf,
@@ -44,6 +45,7 @@ fixedDataPaddedLength = 2008 -- 2048 - 24 (nonce) - 16 (auth tag)
 userDataPaddedLength :: Int
 userDataPaddedLength = 13784 -- 13824 - 24 - 16
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/ShortLink.md#kdf-schemes
 contactShortLinkKdf :: LinkKey -> (LinkId, C.SbKey)
 contactShortLinkKdf (LinkKey k) =
   let (lnkId, sbKey) = B.splitAt 24 $ C.hkdf "" k "SimpleXContactLink" 56
@@ -72,6 +74,7 @@ connLinkData vr = \case
   UserInvLinkData d -> InvitationLinkData vr d
   UserContactLinkData d -> ContactLinkData vr d
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/ShortLink.md#encodesign
 encodeSign :: C.PrivateKeyEd25519 -> ByteString -> ByteString
 encodeSign pk s = smpEncode (C.sign' pk s) <> s
 
@@ -97,6 +100,7 @@ encryptData g k len s = do
   ct <- liftEitherWith cryptoError $ C.sbEncrypt k nonce s len
   pure $ EncDataBytes $ smpEncode nonce <> ct
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/ShortLink.md#decryptlinkdata
 decryptLinkData :: forall c. ConnectionModeI c => LinkKey -> C.SbKey -> QueueLinkData -> Either AgentErrorType (FixedLinkData c, ConnLinkData c)
 decryptLinkData linkKey k (encFD, encMD) = do
   (sig1, fd) <- decrypt encFD

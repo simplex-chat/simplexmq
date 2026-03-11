@@ -5,6 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Lazy.md
 module Simplex.Messaging.Crypto.Lazy
   ( sha256Hash,
     sha512Hash,
@@ -65,6 +66,7 @@ sha256Hash = BA.convert . (hashlazy :: LazyByteString -> Digest SHA256)
 sha512Hash :: LazyByteString -> ByteString
 sha512Hash = BA.convert . (hashlazy :: LazyByteString -> Digest SHA512)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Lazy.md#padding-8-byte-length-prefix
 -- this function does not validate the length of the message to avoid consuming all chunks,
 -- but if the passed string is longer it will truncate it to specified length
 pad :: LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
@@ -75,6 +77,7 @@ pad msg len paddedLen
     encodedLen = smpEncode len -- 8 bytes Int64 encoded length
     padLen = paddedLen - len - 8
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Lazy.md#fastreplicate
 fastReplicate :: Int64 -> Char -> LazyByteString
 fastReplicate n c
   | n <= 0 = LB.empty
@@ -102,6 +105,7 @@ splitLen padded
   where
     (lenStr, rest) = LB.splitAt 8 padded
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Lazy.md#auth-tag-placement-prepend-vs-tail
 -- | NaCl @secret_box@ lazy encrypt with a symmetric 256-bit key and 192-bit nonce.
 -- The resulting string will be bigger than paddedLen by the size of the auth tag (16 bytes).
 sbEncrypt :: SbKey -> CbNonce -> LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
@@ -148,6 +152,7 @@ sbEncryptTailTagNoPad :: SbKeyNonce -> LazyByteString -> Either CryptoError Lazy
 sbEncryptTailTagNoPad (SbKey key, CbNonce nonce) msg =
   LB.fromChunks <$> secretBoxTailTag sbEncryptChunk key nonce msg
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Lazy.md#sbdecrypttailtag-validity
 -- | NaCl @secret_box@ decrypt with a symmetric 256-bit key and 192-bit nonce with appended auth tag (more efficient with large files).
 -- paddedLen should NOT include the tag length, it should be the same number that is passed to sbEncrypt / sbEncryptTailTag.
 sbDecryptTailTag :: SbKey -> CbNonce -> Int64 -> LazyByteString -> Either CryptoError (Bool, LazyByteString)
@@ -226,6 +231,7 @@ sbProcessChunkLazy_ :: (SbState -> ByteString -> (ByteString, SbState)) -> SbSta
 sbProcessChunkLazy_ = first (LB.fromChunks . reverse) .:. secretBoxLazy_
 {-# INLINE sbProcessChunkLazy_ #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Lazy.md#encrypt-then-mac-asymmetry
 sbEncryptChunk :: SbState -> ByteString -> (ByteString, SbState)
 sbEncryptChunk (st, authSt) chunk =
   let (!c, !st') = XSalsa.combine st chunk

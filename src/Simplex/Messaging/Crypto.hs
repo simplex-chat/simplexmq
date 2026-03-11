@@ -343,6 +343,7 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#privatekeyed25519-strencoding-deliberately-omitted
 -- Do not enable, to avoid leaking key data
 -- instance StrEncoding (PrivateKey Ed25519) where
 
@@ -736,6 +737,7 @@ generatePrivateAuthKey a g = APrivateAuthKey a <$> generatePrivateKey g
 generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaChaDRG -> STM ADhKeyPair
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#generatekeypair-is-stm
 generateKeyPair :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (KeyPair a)
 generateKeyPair g = stateTVar g (`withDRG` generateKeyPair_)
 
@@ -826,6 +828,7 @@ instance CryptoSignature (Signature s) => Encoding (Signature s) where
   smpP = decodeSignature <$?> smpP
   {-# INLINE smpP #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#signature-algorithm-detection
 instance CryptoSignature ASignature where
   signatureBytes (ASignature _ sig) = signatureBytes sig
   {-# INLINE signatureBytes #-}
@@ -965,6 +968,7 @@ instance ToJSON IV where
 instance FromJSON IV where
   parseJSON = fmap IV . strParseJSON "IV"
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#gcmiv-constructor-not-exported
 -- | GCMIV bytes newtype.
 newtype GCMIV = GCMIV {unGCMIV :: ByteString}
 
@@ -1081,6 +1085,7 @@ canPad msgLen paddedLen = msgLen <= maxMsgLen && padLen >= 0
   where
     padLen = paddedLen - msgLen - 2
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#pad--unpad--2-byte-length-prefix
 pad :: ByteString -> Int -> Either CryptoError ByteString
 pad msg paddedLen
   | len <= maxMsgLen && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
@@ -1290,6 +1295,7 @@ dh' (PublicKeyX25519 k) (PrivateKeyX25519 pk) = DhSecretX25519 $ X25519.dh k pk
 dh' (PublicKeyX448 k) (PrivateKeyX448 pk) = DhSecretX448 $ X448.dh k pk
 {-# INLINE dh' #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#crypto_box--secret_box
 -- | NaCl @crypto_box@ encrypt with padding with a shared DH secret and 192-bit nonce.
 cbEncrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 cbEncrypt (DhSecretX25519 secret) = sbEncrypt_ secret
@@ -1359,6 +1365,7 @@ sbDecryptNoPad_ secret (CbNonce nonce) packet
     (rs, msg) = xSalsa20 secret nonce c
     tag = Poly1305.auth rs c
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#cbauthenticator
 -- type for authentication scheme using NaCl @crypto_box@ over the sha512 digest of the message.
 newtype CbAuthenticator = CbAuthenticator ByteString deriving (Eq, Show)
 
@@ -1454,6 +1461,7 @@ randomSbKey gVar = SecretBoxKey <$> randomBytes 32 gVar
 newtype SbChainKey = SecretBoxChainKey {unSbChainKey :: ByteString}
   deriving (Eq, Show)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#secret-box-chains-sbcinit--sbchkdf
 sbcInit :: ByteArrayAccess secret => ByteString -> secret -> (SbChainKey, SbChainKey)
 sbcInit salt secret = (SecretBoxChainKey ck1, SecretBoxChainKey ck2)
   where
@@ -1474,6 +1482,7 @@ hkdf salt ikm info n =
    in H.expand prk info n
 {-# INLINE hkdf #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#xsalsa20
 xSalsa20 :: ByteArrayAccess key => key -> ByteString -> ByteString -> (ByteString, ByteString)
 xSalsa20 secret nonce msg = (rs, msg')
   where
@@ -1501,6 +1510,7 @@ privateToX509 = \case
 encodeASNObj :: ASN1Object a => a -> ByteString
 encodeASNObj k = toStrict . encodeASN1 DER $ toASN1 k []
 
+-- spec: spec/modules/Simplex/Messaging/Crypto.md#key-encoding
 -- Decoding of binary X509 'CryptoPublicKey'.
 decodePubKey :: CryptoPublicKey k => ByteString -> Either String k
 decodePubKey = decodeASNKey >=> x509ToPublic >=> pubKey

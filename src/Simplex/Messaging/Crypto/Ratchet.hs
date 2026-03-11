@@ -465,6 +465,7 @@ data RatchetInitParams = RatchetInitParams
   }
   deriving (Show)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#pq-x3dh-key-agreement
 -- this is used by the peer joining the connection
 pqX3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe APrivRKEMParams -> E2ERatchetParams 'RKSProposed a -> Either CryptoError (RatchetInitParams, Maybe KEMKeyPair)
 --        3. replied       2. received
@@ -588,6 +589,7 @@ data SkippedMsgDiff
   | SMDRemove HeaderKey Word32
   | SMDAdd SkippedMsgKeys
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#skipped-message-keys
 -- | this function is only used in tests to apply changes in skipped messages,
 -- in the agent the diff is persisted, and the whole state is loaded for the next message.
 applySMDiff :: SkippedMsgKeys -> SkippedMsgDiff -> SkippedMsgKeys
@@ -712,6 +714,7 @@ data MsgHeader a = MsgHeader
   }
   deriving (Show)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#header-encryption-and-padding
 -- to allow extension without increasing the size, the actual header length is:
 -- 69 = 2 (original size) + 2 + 1+56 (Curve448) + 4 + 4
 -- The exact size is 2288, added reserve
@@ -763,6 +766,7 @@ encodeLarge v s
   | v >= pqRatchetE2EEncryptVersion = smpEncode $ Large s
   | otherwise = smpEncode s
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#largep--backward-compatible-length-prefix-parsing
 -- This parser relies on the fact that header cannot be shorter than 32 bytes (it is ~69 bytes without PQ KEM),
 -- therefore if the first byte is less or equal to 31 (x1F), then we have 2 byte-length limited to 8191.
 -- This allows upgrading the current version in one message.
@@ -788,6 +792,7 @@ encRatchetMessageP = do
   (emAuthTag, Tail emBody) <- smpP
   pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#pqsupport-vs-pqencryption
 newtype PQEncryption = PQEncryption {enablePQ :: Bool}
   deriving (Eq, Show)
 
@@ -863,6 +868,7 @@ instance StrEncoding PQSupport where
   strP = pqEncToSupport <$> strP
   {-# INLINE strP #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#initialkeys
 data InitialKeys
   = IKUsePQ -- use PQ keys in contact request and short link data
   | IKLinkPQ PQSupport -- use PQ keys in short link data only, if PQSupport enabled
@@ -991,6 +997,7 @@ type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff
 maxSkip :: Word32
 maxSkip = 512
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#rcdecrypt-flow
 rcDecrypt ::
   forall a.
   (AlgorithmI a, DhAlgorithm a) =>
@@ -1073,6 +1080,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
                 rcNHKs = rcNHKs',
                 rcNHKr = rcNHKr'
               }
+        -- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#pq-ratchet-step
         pqRatchetStep :: Ratchet a -> Maybe ARKEMParams -> ExceptT CryptoError IO (Maybe KEMSharedKey, Maybe KEMSharedKey, Maybe RatchetKEM)
         pqRatchetStep Ratchet {rcKEM, rcEnableKEM = PQEncryption pqEnc, rcVersion = rv} = \case
           -- received message does not have KEM in header,
@@ -1160,6 +1168,7 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/Ratchet.md#kdf-functions
 rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> Maybe KEMSharedKey -> (RatchetKey, RatchetKey, Key)
 rootKdf (RatchetKey rk) k pk kemSecret_ =
   let dhOut = dhBytes' (dh' k pk)
