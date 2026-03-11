@@ -14,8 +14,6 @@ The `Compatible` newtype can only be constructed internally (constructor is not 
 
 ### `Version v`
 
-**Source**: `Version/Internal.hs:11-12`
-
 ```haskell
 newtype Version v = Version Word16
 ```
@@ -31,8 +29,6 @@ The constructor is exported from `Version.Internal` but not from `Version`, so a
 
 ### `VersionRange v`
 
-**Source**: `Version.hs:46-50`
-
 ```haskell
 data VersionRange v = VRange
   { minVersion :: Version v
@@ -42,15 +38,13 @@ data VersionRange v = VRange
 
 Invariant: `minVersion <= maxVersion` (enforced by smart constructors).
 
-The `VRange` constructor is not exported — only the pattern synonym `VersionRange` (read-only, `Version.hs:41-44`) is public.
+The `VRange` constructor is not exported — only the pattern synonym `VersionRange` (read-only) is public.
 
-- `Encoding`: two Word16s concatenated (4 bytes total, `Version.hs:80-84`)
-- `StrEncoding`: `"min-max"` or `"v"` if min == max (`Version.hs:86-93`)
+- `Encoding`: two Word16s concatenated (4 bytes total)
+- `StrEncoding`: `"min-max"` or `"v"` if min == max
 - JSON: `{"minVersion": n, "maxVersion": n}`
 
 ### `VersionScope v`
-
-**Source**: `Version.hs:64`
 
 ```haskell
 class VersionScope v
@@ -67,8 +61,6 @@ This prevents accidentally mixing version ranges from different protocols in neg
 
 ### `Compatible a`
 
-**Source**: `Version.hs:117-122`
-
 ```haskell
 newtype Compatible a = Compatible_ a
 
@@ -79,8 +71,6 @@ pattern Compatible a <- Compatible_ a
 Proof that compatibility was checked. The `Compatible_` constructor is not exported — `Compatible` is a read-only pattern synonym. The only way to obtain a `Compatible` value is through `compatibleVersion`, `compatibleVRange`, `proveCompatible`, or the internal `mkCompatibleIf`.
 
 ### `VersionI` / `VersionRangeI` type classes
-
-**Source**: `Version.hs:95-115`
 
 Multi-param typeclasses with functional dependencies for generic version/range operations. Allow extension types that wrap `Version` or `VersionRange` to participate in negotiation:
 
@@ -103,75 +93,63 @@ Identity instances exist for `Version v` and `VersionRange v` themselves.
 
 ### Construction
 
-| Function | Signature | Purpose | Source |
-|----------|-----------|---------|--------|
-| `mkVersionRange` | `Version v -> Version v -> VersionRange v` | Construct range, `error` if min > max | `Version.hs:67-70` |
-| `safeVersionRange` | `Version v -> Version v -> Maybe (VersionRange v)` | Safe construction, `Nothing` if invalid | `Version.hs:72-75` |
-| `versionToRange` | `Version v -> VersionRange v` | Singleton range (min == max) | `Version.hs:77-78` |
+| Function | Signature | Purpose |
+|----------|-----------|---------|
+| `mkVersionRange` | `Version v -> Version v -> VersionRange v` | Construct range, `error` if min > max |
+| `safeVersionRange` | `Version v -> Version v -> Maybe (VersionRange v)` | Safe construction, `Nothing` if invalid |
+| `versionToRange` | `Version v -> VersionRange v` | Singleton range (min == max) |
 
 ### Compatibility checking
 
-#### `isCompatible`
+### isCompatible
 
-**Source**: `Version.hs:124-125`
+**Purpose**: Check if a single version falls within a range.
 
 ```haskell
 isCompatible :: VersionI v a => a -> VersionRange v -> Bool
 ```
 
-Check if a single version falls within a range.
+### isCompatibleRange
 
-#### `isCompatibleRange`
-
-**Source**: `Version.hs:127-130`
+**Purpose**: Check if two version ranges overlap: `min1 <= max2 && min2 <= max1`.
 
 ```haskell
 isCompatibleRange :: VersionRangeI v a => a -> VersionRange v -> Bool
 ```
 
-Check if two version ranges overlap: `min1 <= max2 && min2 <= max1`.
+### proveCompatible
 
-#### `proveCompatible`
-
-**Source**: `Version.hs:132-133`
+**Purpose**: If version is compatible, wrap in `Compatible` proof. Returns `Nothing` if out of range.
 
 ```haskell
 proveCompatible :: VersionI v a => a -> VersionRange v -> Maybe (Compatible a)
 ```
 
-If version is compatible, wrap in `Compatible` proof. Returns `Nothing` if out of range.
-
 ### Negotiation
 
-#### `compatibleVersion`
+### compatibleVersion
 
-**Source**: `Version.hs:135-140`
+**Purpose**: Negotiate a single version from two ranges. Returns `min(max1, max2)` — the highest mutually-supported version. Returns `Nothing` if ranges don't overlap.
 
 ```haskell
 compatibleVersion :: VersionRangeI v a => a -> VersionRange v -> Maybe (Compatible (VersionT v a))
 ```
 
-Negotiate a single version from two ranges. Returns `min(max1, max2)` — the highest mutually-supported version. Returns `Nothing` if ranges don't overlap.
+### compatibleVRange
 
-#### `compatibleVRange`
-
-**Source**: `Version.hs:143-148`
+**Purpose**: Compute the intersection of two version ranges: `(max(min1,min2), min(max1,max2))`. Returns `Nothing` if the intersection is empty.
 
 ```haskell
 compatibleVRange :: VersionRangeI v a => a -> VersionRange v -> Maybe (Compatible a)
 ```
 
-Compute the intersection of two version ranges: `(max(min1,min2), min(max1,max2))`. Returns `Nothing` if the intersection is empty (i.e., ranges don't overlap).
+### compatibleVRange'
 
-#### `compatibleVRange'`
-
-**Source**: `Version.hs:151-156`
+**Purpose**: Cap a version range's maximum at a given version. Returns `Nothing` if the cap is below the range's minimum.
 
 ```haskell
 compatibleVRange' :: VersionRangeI v a => a -> Version v -> Maybe (Compatible a)
 ```
-
-Cap a version range's maximum at a given version. Returns `Nothing` if the cap is below the range's minimum.
 
 ## Protocol version constants
 

@@ -33,10 +33,10 @@ Service client                    SMP Server
 
 ## Version gates
 
-| Constant | Value | Gate | Source |
-|----------|-------|------|--------|
-| `serviceCertsSMPVersion` | 16 | Service handshake, `SOK`, `useServiceAuth` | Transport.hs:214 |
-| `rcvServiceSMPVersion` | 19 | `SUBS`/`NSUBS` parameters, `SOKS`/`ENDS` idsHash, messaging service role in handshake | Transport.hs:223 |
+| Constant | Value | Gate |
+|----------|-------|------|
+| `serviceCertsSMPVersion` | 16 | Service handshake, `SOK`, `useServiceAuth` |
+| `rcvServiceSMPVersion` | 19 | `SUBS`/`NSUBS` parameters, `SOKS`/`ENDS` idsHash, messaging service role in handshake |
 
 The two-version split means:
 - v16-18 servers accept service certificates and per-queue `SUB` with service auth, but `SUBS`/`NSUBS` send no count/hash parameters (bare command tag only).
@@ -55,14 +55,12 @@ The two-version split means:
 data SMPServiceRole = SRMessaging | SRNotifier | SRProxy
 -- Wire: "M" | "N" | "P"
 ```
-Source: Transport.hs:594
 
 ### Party (service-related constructors)
 
 ```haskell
 data Party = ... | RecipientService | NotifierService | ...
 ```
-Source: Protocol.hs:335-346
 
 The `ServiceParty` type family constrains to `RecipientService | NotifierService` only:
 ```haskell
@@ -71,7 +69,6 @@ type family ServiceParty (p :: Party) :: Constraint where
   ServiceParty NotifierService = ()
   ServiceParty p = (Int ~ Bool, TypeError ...)  -- compile-time error
 ```
-Source: Protocol.hs:430-434
 
 ### IdsHash
 
@@ -89,7 +86,6 @@ instance Monoid IdsHash where
 queueIdHash :: QueueId -> IdsHash
 queueIdHash = IdsHash . C.md5Hash . unEntityId
 ```
-Source: Protocol.hs:1501-1526
 
 **Key property**: XOR is self-inverse, so `addServiceSubs` and `subtractServiceSubs` both use `<>` (XOR) for the hash component:
 ```haskell
@@ -98,7 +94,6 @@ subtractServiceSubs (n', idsHash') (n, idsHash)
   | n > n' = (n - n', idsHash <> idsHash')
   | otherwise = (0, mempty)
 ```
-Source: Protocol.hs:1528-1534
 
 ### ServiceSub / ServiceSubResult / ServiceSubError
 
@@ -116,7 +111,6 @@ data ServiceSubError
   | SSErrorQueueCount {expectedQueueCount, subscribedQueueCount :: Int64}
   | SSErrorQueueIdsHash {expectedQueueIdsHash, subscribedQueueIdsHash :: IdsHash}
 ```
-Source: Protocol.hs:1476-1499
 
 `serviceSubResult` compares expected vs actual, returning the first mismatch (priority: serviceId > count > idsHash).
 
@@ -128,7 +122,6 @@ data STMService = STMService
     serviceRcvQueues :: TVar (Set RecipientId, IdsHash),
     serviceNtfQueues :: TVar (Set NotifierId, IdsHash) }
 ```
-Source: QueueStore/STM.hs:64-68
 
 Tracks the set of queue IDs and their cumulative XOR hash per service, per role (receive vs notify).
 
@@ -142,8 +135,6 @@ Standard SMP handshake is two messages: server sends `SMPServerHandshake`, clien
 2. **Client -> Server**: `SMPClientHandshake` with `clientService :: Maybe SMPClientHandshakeService`
 3. **Server -> Client**: `SMPServerHandshakeResponse {serviceId}` or `SMPServerHandshakeError {handshakeError}`
 
-Source: Transport.hs:752-791 (server), Transport.hs:796-848 (client)
-
 ### SMPClientHandshakeService
 
 ```haskell
@@ -151,7 +142,6 @@ data SMPClientHandshakeService = SMPClientHandshakeService
   { serviceRole :: SMPServiceRole,
     serviceCertKey :: CertChainPubKey }
 ```
-Source: Transport.hs:582-585
 
 The `serviceCertKey` contains the TLS client certificate chain and a proof-of-possession: the service's Ed25519 session key signed by the service's X.509 signing key (`C.signX509 serviceSignKey $ C.publicToX509 k`).
 
@@ -164,13 +154,9 @@ The `serviceCertKey` contains the TLS client certificate chain and a proof-of-po
 5. Call `getService` callback (QueueStore.getCreateService) to get/create ServiceId
 6. Send `SMPServerHandshakeResponse {serviceId}` back to client
 
-Source: Transport.hs:775-791
-
 ### Client-side reception (`getClientService`)
 
 Client receives either `SMPServerHandshakeResponse {serviceId}` (success) or `SMPServerHandshakeError {handshakeError}` (failure). On success, stores `THClientService {serviceId, serviceRole, serviceCertHash, serviceKey}`.
-
-Source: Transport.hs:843-847
 
 ### Version-gated service role filtering (`mkClientService`)
 
@@ -179,7 +165,6 @@ mkClientService v (ServiceCredentials {serviceRole, ...}, (k, _))
   | serviceRole == SRMessaging && v < rcvServiceSMPVersion = Nothing
   | otherwise = Just SMPClientHandshakeService {..}
 ```
-Source: Transport.hs:838-842
 
 Messaging services are suppressed below v19. Notifier services are sent at v16+.
 
@@ -192,7 +177,6 @@ data ServiceCredentials = ServiceCredentials
     serviceCertHash :: XV.Fingerprint,
     serviceSignKey :: C.APrivateSignKey }
 ```
-Source: Transport.hs:587-592
 
 ## Protocol layer: commands and messages
 
@@ -216,7 +200,6 @@ useServiceAuth = \case
   Cmd _ NSUB -> True
   _ -> False
 ```
-Source: Protocol.hs:1737-1742
 
 For these commands, `tEncodeAuth` appends both the primary queue key signature and an optional service Ed25519 signature. `SUBS`/`NSUBS` use the ServiceId as entity and are signed only by the service session key.
 
@@ -237,21 +220,18 @@ For these commands, `tEncodeAuth` appends both the primary queue key signature a
 v >= 19: tag SP count idsHash
 v < 19:  tag  (bare, no parameters)
 ```
-Source: Protocol.hs:1769-1771, 1787-1789
 
 **SOKS/ENDS encoding:**
 ```
 v >= 19: tag SP count idsHash
 v < 19:  tag SP count  (no idsHash)
 ```
-Source: Protocol.hs:1951-1953
 
 **SOKS/ENDS decoding:**
 ```
 v >= 19: tag -> resp <$> _smpP <*> smpP  (count + idsHash)
 v < 19:  tag -> resp <$> _smpP <*> pure mempty  (count only, mempty hash)
 ```
-Source: Protocol.hs:1996-1998
 
 ## Server layer
 
@@ -267,7 +247,6 @@ data Client s = Client
     ntfServiceSubsCount :: TVar (Int64, IdsHash), -- running (count, hash) for notifier queues
     ... }
 ```
-Source: Env/STM.hs:437-456
 
 Server-global state:
 ```haskell
@@ -279,7 +258,6 @@ data ServerSubscribers s = ServerSubscribers
     subClients :: TVar IntSet,
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg))) }
 ```
-Source: Env/STM.hs:362-369
 
 ### ClientSub events
 
@@ -289,7 +267,6 @@ data ClientSub
   | CSDeleted QueueId (Maybe ServiceId)                    -- prev service ID
   | CSService ServiceId (Int64, IdsHash)                   -- service subscription change
 ```
-Source: Env/STM.hs:426-429
 
 These are enqueued into `subQ` and processed by `serverThread` (the subscription event loop).
 
@@ -526,7 +503,6 @@ subscribeService c party n idsHash = case smpClientService c of
             SNotifierService -> NSUBS n idsHash
   Nothing -> throwE PCEServiceUnavailable
 ```
-Source: Client.hs:921-934
 
 Entity is `serviceId`, auth key is the service session key (Ed25519). The client passes its expected count and hash; the server returns its own.
 
@@ -551,7 +527,6 @@ This prevents MITM service substitution inside TLS: an attacker cannot replace t
     (fp <> t, Just $ C.sign' serviceKey t)
   _ -> (t, Nothing)
 ```
-Source: Client.hs:1398-1401
 
 ### Service runtime accessors
 
@@ -562,7 +537,6 @@ smpClientService = thAuth . thParams >=> clientService
 smpClientServiceId :: SMPClient -> Maybe ServiceId
 smpClientServiceId = fmap (\THClientService {serviceId} -> serviceId) . smpClientService
 ```
-Source: Client.hs:936-942
 
 ### Configuration
 
@@ -632,8 +606,6 @@ data SessSubs = SessSubs
     activeServiceSub :: TVar (Maybe ServiceSub),
     pendingServiceSub :: TVar (Maybe ServiceSub) }
 ```
-Source: TSessionSubs.hs:59-65
-
 Key operations:
 - `setPendingServiceSub`: stores expected ServiceSub before SUBS is sent
 - `setActiveServiceSub`: promotes to active after SOKS, validates session ID
@@ -657,8 +629,6 @@ CREATE TABLE client_services(
   service_queue_ids_hash BLOB NOT NULL DEFAULT x'00000000000000000000000000000000'
 );
 ```
-Source: Agent/Store/SQLite/Migrations/M20260115_service_certs.hs:11-23
-
 ### `rcv_queues.rcv_service_assoc`
 
 Boolean column added to `rcv_queues`. When set, the queue is associated with the service for this server. SQLite triggers automatically maintain `service_queue_count` and `service_queue_ids_hash` on insert/delete/update of `rcv_queues` rows.
@@ -675,8 +645,6 @@ Triggers: `tr_rcv_queue_insert`, `tr_rcv_queue_delete`, `tr_rcv_queue_update_rem
 | `setRcvServiceAssocs` | Mark queues as service-associated (sets `rcv_service_assoc = 1`) |
 | `removeRcvServiceAssocs` | Remove service association for all queues on a server |
 | `unassocUserServerRcvQueueSubs` | Remove association and return queues for re-subscription |
-
-Source: AgentStore.hs:419-494, 2378-2414
 
 ### Service ID nullification on cert change
 
@@ -708,8 +676,6 @@ On first use per SMP server, `mkDbService` (Env.hs:126-142) generates a self-sig
 | `CAServiceDisconnected` | Log disconnection |
 | `CAServiceSubError` | Log error (non-fatal; fatal errors go to `CAServiceUnavailable`) |
 | `CAServiceUnavailable` | **Critical recovery path**: calls `removeServiceAndAssociations`, wipes service creds, resubscribes all queues individually |
-
-Source: Server.hs:567-602
 
 ### `removeServiceAndAssociations` (Store/Postgres.hs:620-652)
 
