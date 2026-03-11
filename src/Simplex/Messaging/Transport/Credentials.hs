@@ -40,6 +40,7 @@ privateToTls (C.APrivateSignKey _ k) = case k of
 
 type Credentials = (C.ASignatureKeyPair, X509.SignedCertificate)
 
+-- spec: spec/modules/Simplex/Messaging/Transport/Credentials.md#gencredentials--nanosecond-stripping
 genCredentials :: TVar ChaChaDRG -> Maybe Credentials -> (Hours, Hours) -> Text -> IO Credentials
 genCredentials g parent (before, after) subjectName = do
   subjectKeys <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
