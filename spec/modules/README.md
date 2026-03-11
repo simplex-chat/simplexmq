@@ -74,6 +74,8 @@ Do NOT document:
 - **Function-by-function prose that restates the implementation** — "this function takes X and returns Y by doing Z" adds nothing
 - **Line numbers** — they're brittle and break on every edit
 - **Comments that fit in one line in source** — put those in the source file instead as `-- spec:` comments
+- **Verbatim quotes of source comments** — reference them instead: "See comment on `functionName`." Then add only what the comment doesn't cover (cross-module implications, what breaks if violated). If the source comment says everything, the function doesn't need a doc entry.
+- **Tables that reproduce code structure** — if the information is self-evident from reading the code's pattern matching or type definitions, it doesn't belong in the doc (e.g., per-command credential requirements, version-conditional encoding branches)
 
 ## Format
 

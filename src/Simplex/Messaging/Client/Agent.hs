@@ -275,6 +275,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
 
     removeClientAndSubs :: SMPClient -> IO (Maybe ServiceSub, Maybe (Map QueueId C.APrivateAuthKey))
     removeClientAndSubs smp = do
+      -- spec: spec/modules/Simplex/Messaging/Client/Agent.md#removeclientandsubs--outside-stm-lookup-optimization
       -- Looking up subscription vars outside of STM transaction to reduce re-evaluation.
       -- It is possible because these vars are never removed, they are only added.
       sVar_ <- TM.lookupIO srv $ activeServiceSubs ca
@@ -452,6 +453,7 @@ smpSubscribeQueues ca smp srv subs = do
       pure acc
     sessId = sessionId $ thParams smp
     smpServiceId = smpClientServiceId smp
+    -- spec: spec/modules/Simplex/Messaging/Client/Agent.md#groupsub--subscription-response-classification
     groupSub ::
       Map QueueId C.APrivateAuthKey ->
       ((QueueId, C.APrivateAuthKey), Either SMPClientError (Maybe ServiceId)) ->
