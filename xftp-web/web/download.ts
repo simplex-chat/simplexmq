@@ -5,6 +5,7 @@ import {
   newXFTPAgent, closeXFTPAgent,
   decodeDescriptionURI, downloadFileRaw
 } from '../src/agent.js'
+import {getDescriptionServers} from '../src/protocol/address.js'
 import {XFTPPermanentError} from '../src/client.js'
 
 const DECRYPT_WEIGHT = 0.15
@@ -19,6 +20,8 @@ export function initDownload(app: HTMLElement, hash: string) {
     app.innerHTML = `<div class="card"><p class="error">${t('invalidLink', 'Invalid or corrupted link.')}</p></div>`
     return
   }
+
+  const wrongServer = !getDescriptionServers(fd).map(s => s.host).includes(window.location.hostname)
 
   const size = fd.redirect ? fd.redirect.size : fd.size
   app.innerHTML = `
@@ -60,6 +63,11 @@ export function initDownload(app: HTMLElement, hash: string) {
   function showError(msg: string) {
     errorMsg.innerHTML = msg
     showStage(errorStage)
+  }
+
+  if (wrongServer) {
+    readyStage.innerHTML = `<p class="error">${t('wrongServer', 'This file is not hosted on this server.')}</p>`
+    return
   }
 
   dlBtn.addEventListener('click', startDownload)

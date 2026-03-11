@@ -52,3 +52,23 @@ export function parseXFTPServer(address: string): XFTPServer {
 export function formatXFTPServer(srv: XFTPServer): string {
   return "xftp://" + base64urlEncode(srv.keyHash) + "@" + srv.host + ":" + srv.port
 }
+
+// Extract unique XFTP servers referenced in a file description's chunk replicas.
+export function getDescriptionServers(fd: {chunks: {replicas: {server: string}[]}[]}): XFTPServer[] {
+  const seen = new Set<string>()
+  const servers: XFTPServer[] = []
+  for (const chunk of fd.chunks) {
+    for (const replica of chunk.replicas) {
+      if (!seen.has(replica.server)) {
+        seen.add(replica.server)
+        servers.push(parseXFTPServer(replica.server))
+      }
+    }
+  }
+  return servers
+}
+
+// Build an HTTPS origin from an XFTP server address.
+export function serverOrigin(server: XFTPServer): string {
+  return server.port === "443" ? `https://${server.host}` : `https://${server.host}:${server.port}`
+}
