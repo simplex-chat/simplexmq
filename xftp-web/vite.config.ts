@@ -75,7 +75,7 @@ export default defineConfig(({mode}) => {
     servers = ['xftp://fp@localhost:443']
   } else {
     // In production mode, use the preset servers
-    servers = [...presets.simplex, ...presets.flux]
+    servers = [...presets.simplex]
     define['__XFTP_SERVERS__'] = JSON.stringify(servers)
     define['__XFTP_PROXY_PORT__'] = JSON.stringify(null)
   }
@@ -94,6 +94,7 @@ export default defineConfig(({mode}) => {
       outDir: resolve(__dirname, 'dist-web'),
       emptyOutDir: true,
       target: 'esnext',
+      minify: false,
       chunkSizeWarningLimit: 1200,
       rollupOptions: {
         external: ['node:http2', 'url'],

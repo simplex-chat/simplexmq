@@ -24,33 +24,33 @@ extra-source-files:
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
-    src/Simplex/Messaging/Server/Web/index.html
-    src/Simplex/Messaging/Server/Web/link.html
-    src/Simplex/Messaging/Server/Web/media/apk_icon.png
-    src/Simplex/Messaging/Server/Web/media/apple_store.svg
-    src/Simplex/Messaging/Server/Web/media/contact.js
-    src/Simplex/Messaging/Server/Web/media/contact_page_mobile.png
-    src/Simplex/Messaging/Server/Web/media/f_droid.svg
-    src/Simplex/Messaging/Server/Web/media/favicon.ico
-    src/Simplex/Messaging/Server/Web/media/GilroyBold.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyLight.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyMedium.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyRegular.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyRegularItalic.woff2
-    src/Simplex/Messaging/Server/Web/media/google_play.svg
-    src/Simplex/Messaging/Server/Web/media/logo-dark.png
-    src/Simplex/Messaging/Server/Web/media/logo-light.png
-    src/Simplex/Messaging/Server/Web/media/logo-symbol-dark.svg
-    src/Simplex/Messaging/Server/Web/media/logo-symbol-light.svg
-    src/Simplex/Messaging/Server/Web/media/moon.svg
-    src/Simplex/Messaging/Server/Web/media/qrcode.js
-    src/Simplex/Messaging/Server/Web/media/script.js
-    src/Simplex/Messaging/Server/Web/media/style.css
-    src/Simplex/Messaging/Server/Web/media/sun.svg
-    src/Simplex/Messaging/Server/Web/media/swiper-bundle.min.css
-    src/Simplex/Messaging/Server/Web/media/swiper-bundle.min.js
-    src/Simplex/Messaging/Server/Web/media/tailwind.css
-    src/Simplex/Messaging/Server/Web/media/testflight.png
+    apps/common/Web/static/index.html
+    apps/common/Web/static/link.html
+    apps/common/Web/static/media/apk_icon.png
+    apps/common/Web/static/media/apple_store.svg
+    apps/common/Web/static/media/contact.js
+    apps/common/Web/static/media/contact_page_mobile.png
+    apps/common/Web/static/media/f_droid.svg
+    apps/common/Web/static/media/favicon.ico
+    apps/common/Web/static/media/GilroyBold.woff2
+    apps/common/Web/static/media/GilroyLight.woff2
+    apps/common/Web/static/media/GilroyMedium.woff2
+    apps/common/Web/static/media/GilroyRegular.woff2
+    apps/common/Web/static/media/GilroyRegularItalic.woff2
+    apps/common/Web/static/media/google_play.svg
+    apps/common/Web/static/media/logo-dark.png
+    apps/common/Web/static/media/logo-light.png
+    apps/common/Web/static/media/logo-symbol-dark.svg
+    apps/common/Web/static/media/logo-symbol-light.svg
+    apps/common/Web/static/media/moon.svg
+    apps/common/Web/static/media/qrcode.js
+    apps/common/Web/static/media/script.js
+    apps/common/Web/static/media/style.css
+    apps/common/Web/static/media/sun.svg
+    apps/common/Web/static/media/swiper-bundle.min.css
+    apps/common/Web/static/media/swiper-bundle.min.js
+    apps/common/Web/static/media/tailwind.css
+    apps/common/Web/static/media/testflight.png
 
 flag swift
   description: Enable swift JSON format
@@ -249,7 +249,6 @@ library
           Simplex.Messaging.Server.Main.GitCommit
           Simplex.Messaging.Server.Main.Init
           Simplex.Messaging.Server.Web
-          Simplex.Messaging.Server.Web.Embedded
           Simplex.Messaging.Server.MsgStore
           Simplex.Messaging.Server.MsgStore.Journal
           Simplex.Messaging.Server.MsgStore.Journal.SharedLock
@@ -345,7 +344,6 @@ library
   if !flag(client_library)
     build-depends:
         case-insensitive ==1.2.*
-      , file-embed >=0.0.10 && <0.1
       , hashable ==1.4.*
       , ini ==0.4.1
       , optparse-applicative >=0.15 && <0.17
@@ -412,15 +410,18 @@ executable smp-server
   main-is: Main.hs
   other-modules:
       SMPWeb
+      Web.Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
+      apps/common
   default-extensions:
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       base
     , bytestring
+    , file-embed >=0.0.10 && <0.1
     , simple-logger
     , simplexmq
     , text
@@ -448,15 +449,18 @@ executable xftp-server
   main-is: Main.hs
   other-modules:
       XFTPWeb
+      Web.Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
+      apps/common
   default-extensions:
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       base
     , bytestring
+    , file-embed >=0.0.10 && <0.1
     , simple-logger
     , simplexmq
   default-language: Haskell2010
@@ -502,6 +506,7 @@ test-suite simplexmq-test
       XFTPWebTests
       SMPWeb
       XFTPWeb
+      Web.Embedded
       Paths_simplexmq
   if flag(client_postgres)
       other-modules:
@@ -522,6 +527,7 @@ test-suite simplexmq-test
       tests
       apps/smp-server
       apps/xftp-server
+      apps/common
   default-extensions:
       StrictData
   -- add -fhpc to ghc-options to run tests with coverage
@@ -539,6 +545,7 @@ test-suite simplexmq-test
     , crypton-x509-store
     , crypton-x509-validation
     , directory
+    , file-embed >=0.0.10 && <0.1
     , filepath
     , generic-random ==1.5.*
     , hashable
