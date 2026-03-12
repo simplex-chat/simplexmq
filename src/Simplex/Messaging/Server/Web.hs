@@ -41,7 +41,6 @@ import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (ifM, tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
@@ -118,14 +117,14 @@ staticFiles root = S.staticApp settings . changeWellKnownPath
       _ -> req
     pfxLen = B.length "/.well-known/"
 
-generateSite :: ByteString -> [String] -> FilePath -> IO ()
-generateSite indexContent linkPages sitePath = do
+generateSite :: [(FilePath, ByteString)] -> [(FilePath, ByteString)] -> ByteString -> ByteString -> [String] -> FilePath -> IO ()
+generateSite mediaContent_ wellKnown_ linkHtml_ indexContent linkPages sitePath = do
   createDirectoryIfMissing True sitePath
   B.writeFile (sitePath </> "index.html") indexContent
-  copyDir "media" E.mediaContent
+  copyDir "media" mediaContent_
   -- `.well-known` path is re-written in changeWellKnownPath,
   -- staticApp does not allow hidden folders.
-  copyDir "well-known" E.wellKnown
+  copyDir "well-known" wellKnown_
   forM_ linkPages createLinkPage
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
@@ -134,7 +133,7 @@ generateSite indexContent linkPages sitePath = do
       forM_ content $ \(path, s) -> B.writeFile (sitePath </> dir </> path) s
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
-      B.writeFile (sitePath </> path </> "index.html") E.linkHtml
+      B.writeFile (sitePath </> path </> "index.html") linkHtml_
 
 -- | Serve static files via HTTP/2 directly (without WAI).
 -- Path traversal protection: resolved path must stay under canonicalRoot.
