@@ -8,7 +8,7 @@ module SMPWeb
 
 import Data.ByteString (ByteString)
 import Data.String (fromString)
-import Embedded as E
+import Embedded (embeddedContent)
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (simplexmqSource)
@@ -18,13 +18,13 @@ import Simplex.Messaging.Transport.Client (TransportHost (..))
 
 smpGenerateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
 smpGenerateSite si onionHost path =
-  Web.generateSite E.mediaContent E.wellKnown E.linkHtml (serverInformation si onionHost) smpLinkPages path
+  Web.generateSite embeddedContent (serverInformation si onionHost) smpLinkPages path
 
 smpLinkPages :: [String]
 smpLinkPages = ["contact", "invitation", "a", "c", "g", "r", "i"]
 
 serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
-serverInformation ServerInformation {config, information} onionHost = render E.indexHtml substs
+serverInformation ServerInformation {config, information} onionHost = render (Web.indexHtml embeddedContent) substs
   where
     substs = [("smpConfig", Just "y"), ("xftpConfig", Nothing)] <> substConfig <> serverInfoSubsts simplexmqSource information <> [("onionHost", strEncode <$> onionHost), ("iniFileName", Just "smp-server.ini")]
     substConfig =

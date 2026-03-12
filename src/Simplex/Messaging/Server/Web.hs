@@ -6,6 +6,7 @@
 module Simplex.Messaging.Server.Web
   ( EmbeddedWebParams (..),
     WebHttpsParams (..),
+    EmbeddedContent (..),
     serveStaticFiles,
     attachStaticFiles,
     serveStaticPageH2,
@@ -59,6 +60,13 @@ data WebHttpsParams = WebHttpsParams
   { port :: Int,
     cert :: FilePath,
     key :: FilePath
+  }
+
+data EmbeddedContent = EmbeddedContent
+  { indexHtml :: ByteString,
+    linkHtml :: ByteString,
+    mediaContent :: [(FilePath, ByteString)],
+    wellKnown :: [(FilePath, ByteString)]
   }
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
@@ -117,14 +125,14 @@ staticFiles root = S.staticApp settings . changeWellKnownPath
       _ -> req
     pfxLen = B.length "/.well-known/"
 
-generateSite :: [(FilePath, ByteString)] -> [(FilePath, ByteString)] -> ByteString -> ByteString -> [String] -> FilePath -> IO ()
-generateSite mediaContent_ wellKnown_ linkHtml_ indexContent linkPages sitePath = do
+generateSite :: EmbeddedContent -> ByteString -> [String] -> FilePath -> IO ()
+generateSite embedded indexContent linkPages sitePath = do
   createDirectoryIfMissing True sitePath
   B.writeFile (sitePath </> "index.html") indexContent
-  copyDir "media" mediaContent_
+  copyDir "media" $ mediaContent embedded
   -- `.well-known` path is re-written in changeWellKnownPath,
   -- staticApp does not allow hidden folders.
-  copyDir "well-known" wellKnown_
+  copyDir "well-known" $ wellKnown embedded
   forM_ linkPages createLinkPage
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
@@ -133,7 +141,7 @@ generateSite mediaContent_ wellKnown_ linkHtml_ indexContent linkPages sitePath 
       forM_ content $ \(path, s) -> B.writeFile (sitePath </> dir </> path) s
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
-      B.writeFile (sitePath </> path </> "index.html") linkHtml_
+      B.writeFile (sitePath </> path </> "index.html") $ linkHtml embedded
 
 -- | Serve static files via HTTP/2 directly (without WAI).
 -- Path traversal protection: resolved path must stay under canonicalRoot.
