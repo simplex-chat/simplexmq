@@ -8,17 +8,17 @@ module SMPWeb
 
 import Data.ByteString (ByteString)
 import Data.String (fromString)
+import Embedded as E
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (simplexmqSource)
 import qualified Simplex.Messaging.Server.Web as Web
 import Simplex.Messaging.Server.Web (render, serverInfoSubsts, timedTTLText)
-import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 
 smpGenerateSite :: ServerInformation -> Maybe TransportHost -> FilePath -> IO ()
 smpGenerateSite si onionHost path =
-  Web.generateSite (serverInformation si onionHost) smpLinkPages path
+  Web.generateSite E.mediaContent E.wellKnown E.linkHtml (serverInformation si onionHost) smpLinkPages path
 
 smpLinkPages :: [String]
 smpLinkPages = ["contact", "invitation", "a", "c", "g", "r", "i"]

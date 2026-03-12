@@ -246,7 +246,6 @@ library
           Simplex.Messaging.Server.Main.GitCommit
           Simplex.Messaging.Server.Main.Init
           Simplex.Messaging.Server.Web
-          Simplex.Messaging.Server.Web.Embedded
           Simplex.Messaging.Server.MsgStore
           Simplex.Messaging.Server.MsgStore.Journal
           Simplex.Messaging.Server.MsgStore.Journal.SharedLock
@@ -343,7 +342,6 @@ library
   if !flag(client_library)
     build-depends:
         case-insensitive ==1.2.*
-      , file-embed >=0.0.10 && <0.1
       , hashable ==1.4.*
       , ini ==0.4.1
       , optparse-applicative >=0.15 && <0.17
@@ -410,15 +408,18 @@ executable smp-server
   main-is: Main.hs
   other-modules:
       SMPWeb
+      Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
+      apps/common
   default-extensions:
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       base
     , bytestring
+    , file-embed >=0.0.10 && <0.1
     , simple-logger
     , simplexmq
     , text
@@ -446,15 +447,18 @@ executable xftp-server
   main-is: Main.hs
   other-modules:
       XFTPWeb
+      Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
+      apps/common
   default-extensions:
       StrictData
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
   build-depends:
       base
     , bytestring
+    , file-embed >=0.0.10 && <0.1
     , simple-logger
     , simplexmq
   default-language: Haskell2010
@@ -500,6 +504,7 @@ test-suite simplexmq-test
       XFTPWebTests
       SMPWeb
       XFTPWeb
+      Embedded
       Paths_simplexmq
   if flag(client_postgres)
       other-modules:
@@ -518,6 +523,7 @@ test-suite simplexmq-test
       tests
       apps/smp-server
       apps/xftp-server
+      apps/common
   default-extensions:
       StrictData
   -- add -fhpc to ghc-options to run tests with coverage
@@ -535,6 +541,7 @@ test-suite simplexmq-test
     , crypton-x509-store
     , crypton-x509-validation
     , directory
+    , file-embed >=0.0.10 && <0.1
     , filepath
     , generic-random ==1.5.*
     , hashable

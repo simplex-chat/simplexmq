@@ -9,6 +9,7 @@ module XFTPWeb
 import Data.ByteString (ByteString)
 import Data.Maybe (isJust)
 import Data.String (fromString)
+import Embedded as E
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
@@ -16,12 +17,11 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Server.Main (simplexmqSource)
 import qualified Simplex.Messaging.Server.Web as Web
 import Simplex.Messaging.Server.Web (render, serverInfoSubsts, timedTTLText)
-import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 
 xftpGenerateSite :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()
 xftpGenerateSite cfg info onionHost path =
-  Web.generateSite (xftpServerInformation cfg info onionHost) [] path
+  Web.generateSite E.mediaContent E.wellKnown E.linkHtml (xftpServerInformation cfg info onionHost) [] path
 
 xftpServerInformation :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> ByteString
 xftpServerInformation XFTPServerConfig {fileExpiration, logStatsInterval, allowNewFiles, newFileBasicAuth} information onionHost = render E.indexHtml substs
