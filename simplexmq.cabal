@@ -24,33 +24,33 @@ extra-source-files:
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
-    src/Simplex/Messaging/Server/Web/index.html
-    src/Simplex/Messaging/Server/Web/link.html
-    src/Simplex/Messaging/Server/Web/media/apk_icon.png
-    src/Simplex/Messaging/Server/Web/media/apple_store.svg
-    src/Simplex/Messaging/Server/Web/media/contact.js
-    src/Simplex/Messaging/Server/Web/media/contact_page_mobile.png
-    src/Simplex/Messaging/Server/Web/media/f_droid.svg
-    src/Simplex/Messaging/Server/Web/media/favicon.ico
-    src/Simplex/Messaging/Server/Web/media/GilroyBold.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyLight.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyMedium.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyRegular.woff2
-    src/Simplex/Messaging/Server/Web/media/GilroyRegularItalic.woff2
-    src/Simplex/Messaging/Server/Web/media/google_play.svg
-    src/Simplex/Messaging/Server/Web/media/logo-dark.png
-    src/Simplex/Messaging/Server/Web/media/logo-light.png
-    src/Simplex/Messaging/Server/Web/media/logo-symbol-dark.svg
-    src/Simplex/Messaging/Server/Web/media/logo-symbol-light.svg
-    src/Simplex/Messaging/Server/Web/media/moon.svg
-    src/Simplex/Messaging/Server/Web/media/qrcode.js
-    src/Simplex/Messaging/Server/Web/media/script.js
-    src/Simplex/Messaging/Server/Web/media/style.css
-    src/Simplex/Messaging/Server/Web/media/sun.svg
-    src/Simplex/Messaging/Server/Web/media/swiper-bundle.min.css
-    src/Simplex/Messaging/Server/Web/media/swiper-bundle.min.js
-    src/Simplex/Messaging/Server/Web/media/tailwind.css
-    src/Simplex/Messaging/Server/Web/media/testflight.png
+    apps/common/Web/static/index.html
+    apps/common/Web/static/link.html
+    apps/common/Web/static/media/apk_icon.png
+    apps/common/Web/static/media/apple_store.svg
+    apps/common/Web/static/media/contact.js
+    apps/common/Web/static/media/contact_page_mobile.png
+    apps/common/Web/static/media/f_droid.svg
+    apps/common/Web/static/media/favicon.ico
+    apps/common/Web/static/media/GilroyBold.woff2
+    apps/common/Web/static/media/GilroyLight.woff2
+    apps/common/Web/static/media/GilroyMedium.woff2
+    apps/common/Web/static/media/GilroyRegular.woff2
+    apps/common/Web/static/media/GilroyRegularItalic.woff2
+    apps/common/Web/static/media/google_play.svg
+    apps/common/Web/static/media/logo-dark.png
+    apps/common/Web/static/media/logo-light.png
+    apps/common/Web/static/media/logo-symbol-dark.svg
+    apps/common/Web/static/media/logo-symbol-light.svg
+    apps/common/Web/static/media/moon.svg
+    apps/common/Web/static/media/qrcode.js
+    apps/common/Web/static/media/script.js
+    apps/common/Web/static/media/style.css
+    apps/common/Web/static/media/sun.svg
+    apps/common/Web/static/media/swiper-bundle.min.css
+    apps/common/Web/static/media/swiper-bundle.min.js
+    apps/common/Web/static/media/tailwind.css
+    apps/common/Web/static/media/testflight.png
 
 flag swift
   description: Enable swift JSON format
