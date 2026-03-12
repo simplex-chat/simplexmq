@@ -6,6 +6,7 @@
 module Simplex.Messaging.Server.Web
   ( EmbeddedWebParams (..),
     WebHttpsParams (..),
+    EmbeddedContent (..),
     serveStaticFiles,
     attachStaticFiles,
     serveStaticPageH2,
@@ -41,7 +42,6 @@ import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.Web.Embedded as E
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (ifM, tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
@@ -60,6 +60,13 @@ data WebHttpsParams = WebHttpsParams
   { port :: Int,
     cert :: FilePath,
     key :: FilePath
+  }
+
+data EmbeddedContent = EmbeddedContent
+  { indexHtml :: ByteString,
+    linkHtml :: ByteString,
+    mediaContent :: [(FilePath, ByteString)],
+    wellKnown :: [(FilePath, ByteString)]
   }
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
@@ -118,14 +125,14 @@ staticFiles root = S.staticApp settings . changeWellKnownPath
       _ -> req
     pfxLen = B.length "/.well-known/"
 
-generateSite :: ByteString -> [String] -> FilePath -> IO ()
-generateSite indexContent linkPages sitePath = do
+generateSite :: EmbeddedContent -> ByteString -> [String] -> FilePath -> IO ()
+generateSite embedded indexContent linkPages sitePath = do
   createDirectoryIfMissing True sitePath
   B.writeFile (sitePath </> "index.html") indexContent
-  copyDir "media" E.mediaContent
+  copyDir "media" $ mediaContent embedded
   -- `.well-known` path is re-written in changeWellKnownPath,
   -- staticApp does not allow hidden folders.
-  copyDir "well-known" E.wellKnown
+  copyDir "well-known" $ wellKnown embedded
   forM_ linkPages createLinkPage
   logInfo $ "Generated static site contents at " <> tshow sitePath
   where
@@ -134,7 +141,7 @@ generateSite indexContent linkPages sitePath = do
       forM_ content $ \(path, s) -> B.writeFile (sitePath </> dir </> path) s
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
-      B.writeFile (sitePath </> path </> "index.html") E.linkHtml
+      B.writeFile (sitePath </> path </> "index.html") $ linkHtml embedded
 
 -- | Serve static files via HTTP/2 directly (without WAI).
 -- Path traversal protection: resolved path must stay under canonicalRoot.
