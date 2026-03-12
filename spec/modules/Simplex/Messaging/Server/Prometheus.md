@@ -1,6 +1,6 @@
 # Simplex.Messaging.Server.Prometheus
 
-> Prometheus text exposition format for server metrics, with histogram gap-filling and derived aggregations.
+> Prometheus text exposition format for router metrics, with histogram gap-filling and derived aggregations.
 
 **Source**: [`Prometheus.hs`](../../../../../src/Simplex/Messaging/Server/Prometheus.hs)
 

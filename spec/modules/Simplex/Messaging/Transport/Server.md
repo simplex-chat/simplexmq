@@ -1,6 +1,6 @@
 # Simplex.Messaging.Transport.Server
 
-> TLS server: socket lifecycle, client acceptance, SNI credential switching, socket leak detection.
+> TLS listener: socket lifecycle, client acceptance, SNI credential switching, socket leak detection.
 
 **Source**: [`Transport/Server.hs`](../../../../../src/Simplex/Messaging/Transport/Server.hs)
 
@@ -19,10 +19,10 @@
 ## SNI credential switching
 
 `supportedTLSServerParams` selects TLS credentials based on SNI:
-- **No SNI**: uses `credential` (the primary server credential)
+- **No SNI**: uses `credential` (the primary router credential)
 - **SNI present**: uses `sniCredential` (when configured)
 
-The `sniCredUsed` TVar records whether SNI triggered credential switching. In the SMP server (Server.hs), when `sniUsed` is `True`, the connection is dispatched to the HTTP handler instead of the SMP handler.
+The `sniCredUsed` TVar records whether SNI triggered credential switching. In the SMP router (`Server.hs`), when `sniUsed` is `True`, the connection is dispatched to the HTTP handler instead of the SMP handler.
 
 ## startTCPServer — address resolution
 

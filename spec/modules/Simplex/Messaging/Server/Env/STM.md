@@ -1,12 +1,12 @@
 # Simplex.Messaging.Server.Env.STM
 
-> Server environment, configuration, client state, subscription types, and storage initialization.
+> Router environment, configuration, client state, subscription types, and storage initialization.
 
 **Source**: [`Env/STM.hs`](../../../../../../src/Simplex/Messaging/Server/Env/STM.hs)
 
 ## Overview
 
-This module defines the server's shared state (`Env`, `Server`, `Client`) and the subscription model types. Most non-obvious patterns are about concurrency safety — preventing STM contention while maintaining consistency. Key patterns are documented in [Server.md](../Server.md) where they're used; this doc covers patterns specific to the type definitions and initialization.
+This module defines the router's shared state (`Env`, `Server`, `Client`) and the subscription model types. Most non-obvious patterns are about concurrency safety — preventing STM contention while maintaining consistency. Key patterns are documented in [Server.md](../Server.md) where they're used; this doc covers patterns specific to the type definitions and initialization.
 
 ## SubscribedClients — TVar-of-Maybe pattern
 
@@ -26,7 +26,7 @@ See comment on `deleteSubcribedClient`. The TVar lookup is in a separate IO read
 
 ## insertServerClient — connected check
 
-`insertServerClient` checks `connected` inside the STM transaction before inserting. If the client was already marked disconnected (race with cleanup), the insert is skipped and returns `False`. This prevents resurrecting a disconnected client in the server map.
+`insertServerClient` checks `connected` inside the STM transaction before inserting. If the client was already marked disconnected (race with cleanup), the insert is skipped and returns `False`. This prevents resurrecting a disconnected client in the `serverClients` map.
 
 ## SupportedStore — compile-time storage validation
 
@@ -34,7 +34,7 @@ Type family with `(Int ~ Bool, TypeError ...)` for invalid combinations. The uns
 
 ## newEnv — initialization order
 
-Store initialization order matters: (1) create message store (loads store log for STM backends), (2) create notification store (empty TMap), (3) generate TLS credentials, (4) compute server identity from fingerprint, (5) create stats, (6) create proxy agent. The store log load (`loadStoreLog`) calls `readWriteQueueStore` which reads the existing log, replays it to build state, then opens a new log for writing. `setStoreLog` attaches the write log to the store.
+Store initialization order matters: (1) create message store (loads store log for STM backends), (2) create notification store (empty TMap), (3) generate TLS credentials, (4) compute router identity from fingerprint, (5) create stats, (6) create proxy agent. The store log load (`loadStoreLog`) calls `readWriteQueueStore` which reads the existing log, replays it to build state, then opens a new log for writing. `setStoreLog` attaches the write log to the store.
 
 HTTPS credentials are validated: must be at least 4096-bit RSA (`public_size >= 512` bytes). The check explicitly notes that Let's Encrypt ECDSA uses "insecure curve p256."
 

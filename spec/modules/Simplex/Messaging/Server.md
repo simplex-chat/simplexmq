@@ -1,6 +1,6 @@
 # Simplex.Messaging.Server
 
-> SMP server: client handling, subscription lifecycle, message delivery, proxy forwarding, control port.
+> SMP router (`Server` module): client handling, subscription lifecycle, message delivery, proxy forwarding, control port.
 
 **Source**: [`Server.hs`](../../../../src/Simplex/Messaging/Server.hs)
 
@@ -8,7 +8,7 @@
 
 ## Overview
 
-The server runs as `raceAny_` over many threads — any thread exit stops the entire server. The thread set includes: one `serverThread` per subscription type (SMP, NTF), a notification delivery thread, a pending events thread, a proxy agent receiver, a SIGINT handler, plus per-transport listener threads and optional expiration/stats/prometheus/control-port threads. `E.finally` ensures `stopServer` runs on any exit.
+The router runs as `raceAny_` over many threads — any thread exit stops the entire router process. The thread set includes: one `serverThread` per subscription type (SMP, NTF), a notification delivery thread, a pending events thread, a proxy agent receiver, a SIGINT handler, plus per-transport listener threads and optional expiration/stats/prometheus/control-port threads. `E.finally` ensures `stopServer` runs on any exit.
 
 ## serverThread — subscription lifecycle with split STM
 
@@ -51,7 +51,7 @@ When the signature algorithm doesn't match the queue key, verification runs with
 
 ## Service subscription — hash-based drift detection
 
-See comment on `sharedSubscribeService`. The client sends expected `(count, idsHash)`. The server reads the actual values from storage, then computes `subsChange = subtractServiceSubs currSubs subs'` — the **difference** between what the client's session currently tracks and the new values. This difference (not the absolute values) is passed to `serverThread` via `CSService` to adjust `totalServiceSubs`. Using differences prevents double-counting when a service resubscribes.
+See comment on `sharedSubscribeService`. The client sends expected `(count, idsHash)`. The router reads the actual values from storage, then computes `subsChange = subtractServiceSubs currSubs subs'` — the **difference** between what the client's session currently tracks and the new values. This difference (not the absolute values) is passed to `serverThread` via `CSService` to adjust `totalServiceSubs`. Using differences prevents double-counting when a service resubscribes.
 
 Stats classification: exactly one of `srvSubOk`/`srvSubMore`/`srvSubFewer`/`srvSubDiff` is incremented per subscription. `count == -1` is a special case for old NTF servers.
 
@@ -91,7 +91,7 @@ See `noSubscriptions`. The idle client disconnect thread only checks expiration 
 
 ## clientDisconnected — ordered cleanup
 
-On disconnect: (1) set `connected = False`, (2) atomically swap out all subscriptions, (3) cancel subscription threads, (4) if server is still active: delete client from server map, update queue and service subscribers. Service subscription cleanup (`updateServiceSubs`) subtracts the client's accumulated `(count, idsHash)` from `totalServiceSubs`. End threads are swapped out and killed.
+On disconnect: (1) set `connected = False`, (2) atomically swap out all subscriptions, (3) cancel subscription threads, (4) if router is still active: delete client from `serverClients` map, update queue and service subscribers. Service subscription cleanup (`updateServiceSubs`) subtracts the client's accumulated `(count, idsHash)` from `totalServiceSubs`. End threads are swapped out and killed.
 
 ## Control port — single auth, no downgrade
 

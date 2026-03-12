@@ -8,11 +8,11 @@
 
 ## Overview
 
-This module defines the SMP protocol's type-level structure, wire encoding, and transport batching. It does not implement the server or client — those are in [Server.hs](./Server.md) and [Client.hs](./Client.md). The protocol spec governs the command semantics; this doc focuses on non-obvious implementation choices.
+This module defines the SMP protocol's type-level structure, wire encoding, and transport batching. It does not implement the router or client — those are in [Server.hs](./Server.md) and [Client.hs](./Client.md). The protocol spec governs the command semantics; this doc focuses on non-obvious implementation choices.
 
 ## Two separate version scopes
 
-SMP client protocol version (`SMPClientVersion`, 4 versions) is separate from SMP relay protocol version (`SMPVersion`, up to version 19, defined in [Transport.hs](./Transport.md)). The client version governs client-to-client concerns (binary encoding, multi-host addresses, SKEY command, short links). The relay version governs client-to-server wire format, transport encryption, and command availability. See comment above `SMPClientVersion` data declaration for version history.
+SMP client protocol version (`SMPClientVersion`, 4 versions) is separate from SMP relay protocol version (`SMPVersion`, up to version 19, defined in [Transport.hs](./Transport.md)). The client version governs client-to-client concerns (binary encoding, multi-host addresses, SKEY command, short links). The relay version governs client-to-router wire format, transport encryption, and command availability. See comment above `SMPClientVersion` data declaration for version history.
 
 ## maxMessageLength — version-dependent
 
@@ -57,7 +57,7 @@ The `MsgFlags` parser consumes the `notification` Bool then calls `A.takeTill (=
 
 ## BrokerErrorType NETWORK — detail loss
 
-The `NETWORK` variant of `BrokerErrorType` encodes as just `"NETWORK"` (detail dropped), with `TODO once all upgrade` comment. The parser falls back to `NEFailedError` when the `NetworkError` detail can't be parsed (`_smpP <|> pure NEFailedError`). This means a newer server's detailed network error is seen as `NEFailedError` by older clients.
+The `NETWORK` variant of `BrokerErrorType` encodes as just `"NETWORK"` (detail dropped), with `TODO once all upgrade` comment. The parser falls back to `NEFailedError` when the `NetworkError` detail can't be parsed (`_smpP <|> pure NEFailedError`). This means a newer router's detailed network error is seen as `NEFailedError` by older clients.
 
 ## Version-dependent encoding — scope
 
@@ -65,4 +65,4 @@ The `NETWORK` variant of `BrokerErrorType` encodes as just `"NETWORK"` (detail d
 
 ## SUBS/NSUBS — asymmetric defaulting
 
-When the server parses `SUBS`/`NSUBS` from a client using a version older than `rcvServiceSMPVersion`, both count and hash default (`-1` and `mempty`). For the response side (`SOKS`/`ENDS` via `serviceRespP`), count is still parsed from the wire — only hash defaults to `mempty`. This asymmetry means command-side and response-side parsing have different fallback behavior for the same version boundary.
+When the router parses `SUBS`/`NSUBS` from a client using a version older than `rcvServiceSMPVersion`, both count and hash default (`-1` and `mempty`). For the response side (`SOKS`/`ENDS` via `serviceRespP`), count is still parsed from the wire — only hash defaults to `mempty`. This asymmetry means command-side and response-side parsing have different fallback behavior for the same version boundary.

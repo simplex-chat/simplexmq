@@ -182,6 +182,14 @@ Before finishing a module doc, ask:
 
 If any answer reveals a problem, fix it and repeat from question 1. Only finish when a full pass produces no changes.
 
+## Terminology — the spec as translation boundary
+
+The protocol documents (`protocol/overview-tjr.md`, `protocol/simplex-messaging.md`, `protocol/agent-protocol.md`) define the canonical terminology. Code uses different names for some of the same concepts. The spec is where the translation happens.
+
+The most important distinction: SimpleX protocol routers are referred to as "servers" in code. The term "server" was adopted historically because SimpleX routers were implemented as Linux-based software that is deployed in the same way as servers. But the similarity is entirely formal. Functionally, servers serve responses to the requests of their users - that is why the term "server" was adopted for computers and software that provide Internet services. SimpleX protocol routers don't serve responses - they route packets between endpoints, and they have no concept of a user. Functionally they are similar to Internet Protocol routers, but with a resource-based addressing scheme. Further, SimpleX protocol routers are hardware and software agnostic. SimpleX protocols are open and documented, so they can be implemented in any language and run on a different architecture. For example, [SimpleGo](https://simplego.dev) is a prototype implementation of the SimpleX protocol stack in C for a microcontroller architecture.
+
+**The rule**: use protocol terms for concepts, code terms for identifiers. Write "router" when describing the network node's role, `SMPServer` or `Server.hs` when referencing code. Similarly, "router identity" for the concept (called "server key hash" or "fingerprint" in code). When the distinction matters, bridge explicitly: "the SMP router (implemented by the `Server` module)" or "the `SMPServer` type (representing a router address)."
+
 ## Exclusions
 
 - **Individual migration files** (M20XXXXXX_*.hs): Self-describing SQL. No per-migration docs.

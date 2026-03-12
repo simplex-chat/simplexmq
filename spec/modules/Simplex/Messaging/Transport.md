@@ -10,7 +10,7 @@
 
 This is the core transport module. It defines:
 - The `Transport` typeclass abstracting over TLS and WebSocket connections
-- The SMP handshake protocol (server and client sides)
+- The SMP handshake protocol (router and client sides)
 - Optional block encryption using HKDF-derived symmetric key chains (v11+)
 - Version negotiation with backward-compatible extensions
 
@@ -29,8 +29,8 @@ In practice (Server.hs), the SMP proxy uses `proxiedSMPRelayVRange` to cap the d
 ## withTlsUnique — different API calls yield same value
 
 `withTlsUnique` extracts the tls-unique channel binding (RFC 5929) using a type-level dispatch:
-- **Server** (`STServer`): `T.getPeerFinished` — the peer's (client's) Finished message
-- **Client** (`STClient`): `T.getFinished` — own (client's) Finished message
+- **Router side** (`STServer`): `T.getPeerFinished` — the peer's (client's) Finished message
+- **Client side** (`STClient`): `T.getFinished` — own (client's) Finished message
 
 Both calls yield the client's Finished message. If the result is `Nothing`, the connection is closed immediately (`closeTLS cxt >> ioe_EOF`).
 
@@ -41,31 +41,31 @@ Two TLS parameter sets:
 - **`defaultSupportedParams`**: ChaCha20-Poly1305 ciphers only, Ed448/Ed25519 signatures only, X448/X25519 groups. Per the protocol spec: "TLS_CHACHA20_POLY1305_SHA256 cipher suite, ed25519 EdDSA algorithms for signatures, x25519 ECDHE groups for key exchange."
 - **`defaultSupportedParamsHTTPS`**: extends `defaultSupportedParams` with `ciphersuite_strong`, additional groups, and additional hash/signature combinations. The source comment says: "A selection of extra parameters to accomodate browser chains."
 
-In the SMP server (Server.hs), when HTTP credentials are configured, `defaultSupportedParamsHTTPS` is used for all connections on that port (not selected per-connection). When no HTTP credentials are configured, `defaultSupportedParams` is used.
+In the SMP router (`Server.hs`), when HTTP credentials are configured, `defaultSupportedParamsHTTPS` is used for all connections on that port (not selected per-connection). When no HTTP credentials are configured, `defaultSupportedParams` is used.
 
 ## SMP handshake flow
 
 Per the [protocol spec](../../../../protocol/simplex-messaging.md#transport-handshake), the handshake is a two-message exchange (three if service certs are used):
 
-1. **Server → Client**: `paddedRouterHello` containing `smpVersionRange`, `sessionIdentifier` (tls-unique), and `routerCertKey` (certificate chain + X25519 key signed by the server's certificate)
-2. **Client → Server**: `paddedClientHello` containing agreed `smpVersion`, `keyHash` (router identity — CA certificate fingerprint), optional `clientKey`, `proxyRouter` flag, and optional `clientService`
-3. **Server → Client** (service only): `paddedRouterHandshakeResponse` containing assigned `serviceId` or `handshakeError`
+1. **Router → Client**: `paddedRouterHello` containing `smpVersionRange`, `sessionIdentifier` (tls-unique), and `routerCertKey` (certificate chain + X25519 key signed by the router's certificate)
+2. **Client → Router**: `paddedClientHello` containing agreed `smpVersion`, `keyHash` (router identity — CA certificate fingerprint), optional `clientKey`, `proxyRouter` flag, and optional `clientService`
+3. **Router → Client** (service only): `paddedRouterHandshakeResponse` containing assigned `serviceId` or `handshakeError`
 
-The client verifies `sessionIdentifier` matches its own tls-unique (`when (sessionId /= sessId) $ throwE TEBadSession`). The server verifies `keyHash` matches its CA fingerprint (`when (keyHash /= kh) $ throwE $ TEHandshake IDENTITY`).
+The client verifies `sessionIdentifier` matches its own tls-unique (`when (sessionId /= sessId) $ throwE TEBadSession`). The router verifies `keyHash` matches its CA fingerprint (`when (keyHash /= kh) $ throwE $ TEHandshake IDENTITY`).
 
 Per the protocol spec: "For TLS transport client should assert that sessionIdentifier is equal to tls-unique channel binding defined in RFC 5929."
 
 ### legacyServerSMPRelayVRange when no ALPN
 
-If ALPN is not negotiated (`getSessionALPN c` returns `Nothing`), the server offers `legacyServerSMPRelayVRange` (v6 only) instead of the full version range. Per the protocol spec: "If the client does not confirm this protocol name, the router would fall back to v6 of SMP protocol." The spec notes: "This is added to allow support of older clients without breaking backward compatibility and to extend or modify handshake syntax."
+If ALPN is not negotiated (`getSessionALPN c` returns `Nothing`), the router offers `legacyServerSMPRelayVRange` (v6 only) instead of the full version range. Per the protocol spec: "If the client does not confirm this protocol name, the router would fall back to v6 of SMP protocol." The spec notes: "This is added to allow support of older clients without breaking backward compatibility and to extend or modify handshake syntax."
 
 ### Service certificate handshake extension
 
-When `clientService` is present in the client handshake, the server performs additional verification:
+When `clientService` is present in the client handshake, the router performs additional verification:
 - The TLS client certificate chain must exactly match the certificate chain in the handshake message (`getPeerCertChain c == cc`)
 - The signed X25519 public key is verified against the leaf certificate's key (`getCertVerifyKey leafCert` then `C.verifyX509`)
-- On success, the server sends `SMPServerHandshakeResponse` with a `serviceId`
-- On failure, the server sends `SMPServerHandshakeError` before raising the error
+- On success, the router sends `SMPServerHandshakeResponse` with a `serviceId`
+- On failure, the router sends `SMPServerHandshakeError` before raising the error
 
 Per the protocol spec (v16+): "`clientService` provides long-term service client certificate for high-volume services using SMP router (chat relays, notification routers, high traffic bots). The router responds with a third handshake message containing the assigned service ID."
 
@@ -86,7 +86,7 @@ The protocol spec version history (v11) describes this as "additional encryption
 
 ## smpTHandleClient — chain key swap
 
-`smpTHandleClient` applies `swap` to the chain key pair before creating `TSbChainKeys`. The code comment states: "swap is needed to use client's sndKey as server's rcvKey and vice versa."
+`smpTHandleClient` applies `swap` to the chain key pair before creating `TSbChainKeys`. The code comment states: "swap is needed to use client's sndKey as server's rcvKey and vice versa." (Here "server" is the code's term for the router side of the transport.)
 
 ## Proxy version downgrade logic
 

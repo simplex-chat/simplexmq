@@ -30,7 +30,7 @@ Batch queue lookups (`getQueues_`) read the entire TVar map once with `readTVarI
 
 ## closeQueueStore — non-atomic shutdown
 
-`closeQueueStore` clears TMaps in separate `atomically` calls, not one transaction. Concurrent operations during shutdown could see partially cleared state. This is acceptable because the store log is closed first, and the server should not be processing new requests during shutdown.
+`closeQueueStore` clears TMaps in separate `atomically` calls, not one transaction. Concurrent operations during shutdown could see partially cleared state. This is acceptable because the store log is closed first, and the router should not be processing new requests during shutdown.
 
 ## addQueueLinkData — conditional idempotency
 

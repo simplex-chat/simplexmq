@@ -1,6 +1,6 @@
 # Simplex.Messaging.Transport.Shared
 
-> Certificate chain parsing and X.509 validation utilities shared between client and server.
+> Certificate chain parsing and X.509 validation utilities shared between client and router.
 
 **Source**: [`Transport/Shared.hs`](../../../../../src/Simplex/Messaging/Transport/Shared.hs)
 
@@ -19,10 +19,10 @@
 | 4 | `CCValid {leafCert, idCert, _, caCert}` | "with network certificate" |
 | 5+ | `CCLong` | (rejected) |
 
-The protocol spec defines supported chain lengths of 2, 3, and 4 certificates (see [Router certificate](../../../../protocol/simplex-messaging.md#router-certificate)). In all `CCValid` cases, `idCert` is the certificate whose fingerprint is compared against the server address key hash, and `caCert` is used as the X.509 trust anchor.
+The protocol spec defines supported chain lengths of 2, 3, and 4 certificates (see [Router certificate](../../../../protocol/simplex-messaging.md#router-certificate)). In all `CCValid` cases, `idCert` is the certificate whose fingerprint is compared against the router identity (key hash in the queue URI), and `caCert` is used as the X.509 trust anchor.
 
 In the 4-cert case, index 2 is skipped (`_`) — it is present in the chain but not used as either the identity or the trust anchor.
 
 ## x509validate — FQHN check disabled
 
-`x509validate` sets `checkFQHN = False`. The protocol spec identifies servers by certificate fingerprint (key hash in the server address), not by domain name. The validation uses a fresh `ValidationCache` (`ValidationCacheUnknown` for all lookups, no-op store) — each connection validates independently.
+`x509validate` sets `checkFQHN = False`. The protocol spec identifies routers by certificate fingerprint (key hash in the queue URI), not by domain name. The validation uses a fresh `ValidationCache` (`ValidationCacheUnknown` for all lookups, no-op store) — each connection validates independently.

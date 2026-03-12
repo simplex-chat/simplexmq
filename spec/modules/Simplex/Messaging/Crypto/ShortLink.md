@@ -12,8 +12,8 @@ Short links encode connection data in two encrypted blobs: fixed data (2048 byte
 
 Two distinct HKDF derivations with different info strings:
 
-- **contactShortLinkKdf**: `HKDF("", linkKey, "SimpleXContactLink", 56)` → splits into 24-byte LinkId + 32-byte SbKey. The LinkId is used as the server-side identifier.
-- **invShortLinkKdf**: `HKDF("", linkKey, "SimpleXInvLink", 32)` → 32-byte SbKey only. No LinkId because invitation links don't use server-side lookup.
+- **contactShortLinkKdf**: `HKDF("", linkKey, "SimpleXContactLink", 56)` → splits into 24-byte LinkId + 32-byte SbKey. The LinkId is used as the router-side identifier.
+- **invShortLinkKdf**: `HKDF("", linkKey, "SimpleXInvLink", 32)` → 32-byte SbKey only. No LinkId because invitation links don't use router-side lookup.
 
 ## Fixed padding lengths
 

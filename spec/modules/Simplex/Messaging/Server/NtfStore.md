@@ -6,7 +6,7 @@
 
 ## storeNtf — outside-STM lookup with STM fallback
 
-`storeNtf` uses `TM.lookupIO` outside STM, then falls back to `TM.lookup` inside STM if the notifier entry doesn't exist. This is the same outside-STM lookup pattern used in Server.hs and Client/Agent.hs — avoids transaction re-evaluation from unrelated map changes. The double-check inside STM prevents races when two messages arrive concurrently for a new notifier.
+`storeNtf` uses `TM.lookupIO` outside STM, then falls back to `TM.lookup` inside STM if the notifier entry doesn't exist. This is the same outside-STM lookup pattern used in the router (`Server.hs`) and `Client/Agent.hs` — avoids transaction re-evaluation from unrelated map changes. The double-check inside STM prevents races when two messages arrive concurrently for a new notifier.
 
 ## deleteExpiredNtfs — last-is-earliest optimization
 

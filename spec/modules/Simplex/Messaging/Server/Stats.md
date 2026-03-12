@@ -1,6 +1,6 @@
 # Simplex.Messaging.Server.Stats
 
-> Server statistics: counters, rolling period tracking, delivery time histograms, proxy stats, service stats.
+> Router statistics: counters, rolling period tracking, delivery time histograms, proxy stats, service stats.
 
 **Source**: [`Stats.hs`](../../../../../src/Simplex/Messaging/Server/Stats.hs)
 
@@ -36,4 +36,4 @@ In `logServerStats` (Server.hs), each counter is read and reset via `atomicSwapI
 
 ## setPeriodStats — not thread safe
 
-See comment on `setPeriodStats`. Uses `writeIORef` (not atomic). Only safe during server startup when no other threads are running. If called concurrently, period data could be corrupted.
+See comment on `setPeriodStats`. Uses `writeIORef` (not atomic). Only safe during router startup when no other threads are running. If called concurrently, period data could be corrupted.

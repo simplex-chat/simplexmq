@@ -1,12 +1,12 @@
 # Simplex.Messaging.Server.Web
 
-> Static site generation, serving (HTTP, HTTPS, HTTP/2), and template rendering for the server info page.
+> Static site generation, serving (HTTP, HTTPS, HTTP/2), and template rendering for the router info page.
 
 **Source**: [`Web.hs`](../../../../../src/Simplex/Messaging/Server/Web.hs)
 
 ## attachStaticFiles — reusing Warp internals for TLS connections
 
-`attachStaticFiles` receives already-established TLS connections (which passed TLS handshake and ALPN check in the SMP transport layer) and runs Warp's HTTP handler on them. It manually calls `WI.withII`, `WT.attachConn`, `WI.registerKillThread`, and `WI.serveConnection` — internal Warp APIs. This couples the server to Warp internals and could break on Warp library updates.
+`attachStaticFiles` receives already-established TLS connections (which passed TLS handshake and ALPN check in the SMP transport layer) and runs Warp's HTTP handler on them. It manually calls `WI.withII`, `WT.attachConn`, `WI.registerKillThread`, and `WI.serveConnection` — internal Warp APIs. This couples the router to Warp internals and could break on Warp library updates.
 
 ## serveStaticPageH2 — path traversal protection
 

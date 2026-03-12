@@ -14,7 +14,7 @@ All associated types (`StoreMonad`, `MsgQueue`, `StoreQueue`, `QueueStore`, `Msg
 
 ## tryDelPeekMsg — atomic delete-and-peek
 
-Deletes the current message AND peeks the next one in a single `isolateQueue` call. This atomicity is critical for the ACK flow: the server needs to know if there's a next message to deliver immediately after acknowledging the current one, without a window where a concurrent SEND could interleave.
+Deletes the current message AND peeks the next one in a single `isolateQueue` call. This atomicity is critical for the ACK flow: the router needs to know if there's a next message to deliver immediately after acknowledging the current one, without a window where a concurrent SEND could interleave.
 
 ## withIdleMsgQueue — journal-specific lifecycle
 
@@ -22,7 +22,7 @@ For Journal store, the message queue file handle is closed after the action if i
 
 ## unsafeWithAllMsgQueues — CLI-only
 
-Explicitly unsafe: iterates all queues including those not in active memory. Only safe before server start or in CLI commands. During normal operation, Journal store may have queues on disk but not loaded — this function would load them, interfering with the lazy-loading lifecycle.
+Explicitly unsafe: iterates all queues including those not in active memory. Only safe before router start or in CLI commands. During normal operation, Journal store may have queues on disk but not loaded — this function would load them, interfering with the lazy-loading lifecycle.
 
 ## snapshotTQueue visibility gap
 

@@ -16,7 +16,7 @@ SMP ports are parsed first. When explicit WebSocket ports are provided, they are
 
 ## iniDBOptions — schema creation disabled at CLI
 
-When reading database options from INI, `createSchema` is always set to `False` regardless of INI content. This enforces a security invariant: database schemas must be created manually or by migration, never automatically by the server.
+When reading database options from INI, `createSchema` is always set to `False` regardless of INI content. This enforces a security invariant: database schemas must be created manually or by migration, never automatically by the router.
 
 ## createServerX509_ — external tool dependency
 
@@ -24,7 +24,7 @@ Certificate generation shells out to `openssl` commands via `readCreateProcess`,
 
 ## checkSavedFingerprint — startup invariant
 
-Fingerprint is extracted from the CA certificate and saved during init. On every server start, the saved fingerprint is compared against the current certificate. Mismatch → startup failure. See [Main.md#initializeserver--fingerprint-invariant](./Main.md#initializeserver--fingerprint-invariant).
+Fingerprint is extracted from the CA certificate and saved during init. On every router start, the saved fingerprint is compared against the current certificate. Mismatch → startup failure. See [Main.md#initializeserver--fingerprint-invariant](./Main.md#initializeserver--fingerprint-invariant).
 
 ## genOnline — existing certificate dependency
 

@@ -29,7 +29,7 @@ The NTF protocol reuses SMP's transport infrastructure but with reduced paramete
 
 ## Same ALPN/legacy fallback pattern as SMP
 
-`ntfServerHandshake` uses the same pattern as `smpServerHandshake`: if ALPN is not negotiated (`getSessionALPN` returns `Nothing`), the server offers only `legacyServerNTFVRange` (v1 only).
+`ntfServerHandshake` uses the same pattern as `smpServerHandshake`: if ALPN is not negotiated (`getSessionALPN` returns `Nothing`), the notification router offers only `legacyServerNTFVRange` (v1 only).
 
 ## NTF handshake uses SMP shared types
 

@@ -17,11 +17,11 @@ The `.start` temp backup file provides crash recovery during compaction. The seq
 3. Write compacted state to new file
 4. Rename `.start` to timestamped backup, remove old backups
 
-If the server crashes during step 3, the next startup detects `.start` and restores from it instead of the incomplete new file. Any partially-written current file is preserved as `.bak`. The comment says "do not terminate" during compaction — there is no safe interrupt point between steps 2 and 4.
+If the router crashes during step 3, the next startup detects `.start` and restores from it instead of the incomplete new file. Any partially-written current file is preserved as `.bak`. The comment says "do not terminate" during compaction — there is no safe interrupt point between steps 2 and 4.
 
 ## removeStoreLogBackups — layered retention policy
 
-Backup retention is layered: (1) keep all backups newer than 24 hours, (2) of the rest, keep at least 3, (3) of those eligible for deletion, only delete backups older than 21 days. This means a server with infrequent restarts accumulates many backups (only cleaned on startup), while a frequently-restarting server keeps a rolling window. Backup timestamps come from ISO 8601 suffixes parsed from filenames.
+Backup retention is layered: (1) keep all backups newer than 24 hours, (2) of the rest, keep at least 3, (3) of those eligible for deletion, only delete backups older than 21 days. This means a router with infrequent restarts accumulates many backups (only cleaned on startup), while a frequently-restarting router keeps a rolling window. Backup timestamps come from ISO 8601 suffixes parsed from filenames.
 
 ## QueueRec StrEncoding — backward-compatible parsing
 

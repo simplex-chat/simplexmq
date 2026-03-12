@@ -8,7 +8,7 @@
 
 ## Overview
 
-This module implements the client side of the `Protocol` typeclass — connecting to servers, sending commands, receiving responses, and managing connection lifecycle. It is generic over `Protocol v err msg`, instantiated for SMP as `SMPClient` (= `ProtocolClient SMPVersion ErrorType BrokerMsg`). The SMP proxy protocol (PRXY/PFWD/RFWD) is also implemented here.
+This module implements the client side of the `Protocol` typeclass — connecting to SMP routers, sending commands, receiving responses, and managing connection lifecycle. It is generic over `Protocol v err msg`, instantiated for SMP as `SMPClient` (= `ProtocolClient SMPVersion ErrorType BrokerMsg`). The SMP proxy protocol (PRXY/PFWD/RFWD) is also implemented here.
 
 ## Four concurrent threads — teardown semantics
 
@@ -36,9 +36,9 @@ The double-check pattern (`swapTVar pending False` + `tryTakeTMVar`) handles the
 
 `timeoutErrorCount` is reset to 0 in three places: in `getResponse` when a response arrives, in `receive` on every TLS read, and the monitor uses this count to decide when to drop the connection.
 
-## processMsg — server events vs expired responses
+## processMsg — router events vs expired responses
 
-When `corrId` is empty, the message is an `STEvent` (server-initiated). When non-empty and the request was already expired (`wasPending` is `False`), the response becomes `STResponse` — not discarded, but forwarded to `msgQ` with the original command context. Entity ID mismatch is `STUnexpectedError`.
+When `corrId` is empty, the message is an `STEvent` (router-initiated). When non-empty and the request was already expired (`wasPending` is `False`), the response becomes `STResponse` — not discarded, but forwarded to `msgQ` with the original command context. Entity ID mismatch is `STUnexpectedError`.
 
 ## nonBlockingWriteTBQueue — fork on full
 
@@ -46,7 +46,7 @@ If `tryWriteTBQueue` returns `False`, a new thread is forked for the blocking wr
 
 ## Batch commands do not expire
 
-See comment on `sendBatch`. Batched commands are written with `Nothing` as the request parameter — the send thread skips the `pending` flag check. Individual commands use `Just r` and the send thread checks `pending` after dequeue. The coupling: if the server stops responding, batched commands can block the send queue indefinitely since they have no timeout-based expiry.
+See comment on `sendBatch`. Batched commands are written with `Nothing` as the request parameter — the send thread skips the `pending` flag check. Individual commands use `Just r` and the send thread checks `pending` after dequeue. The coupling: if the router stops responding, batched commands can block the send queue indefinitely since they have no timeout-based expiry.
 
 ## monitor — quasi-periodic adaptive ping
 
@@ -68,7 +68,7 @@ See comment above `proxySMPCommand` for the 9 error scenarios (0-9) mapping each
 
 ## forwardSMPTransmission — proxy-side forwarding
 
-Used by the proxy server to forward `RFWD` to the destination relay. Uses `cbEncryptNoPad`/`cbDecryptNoPad` (no padding) with the session secret from the proxy-relay connection. Response nonce is `reverseNonce` of the request nonce.
+Used by the proxy router to forward `RFWD` to the destination relay. Uses `cbEncryptNoPad`/`cbDecryptNoPad` (no padding) with the session secret from the proxy-relay connection. Response nonce is `reverseNonce` of the request nonce.
 
 ## authTransmission — dual auth with service signature
 
@@ -80,6 +80,6 @@ The service signature is only added when the entity authenticator is non-empty. 
 
 `action` stores a `Weak ThreadId` (via `mkWeakThreadId`) to the main client thread. `closeProtocolClient` dereferences and kills it. The weak reference allows the thread to be garbage collected if all other references are dropped.
 
-## writeSMPMessage — server-side event injection
+## writeSMPMessage — router-side event injection
 
-`writeSMPMessage` writes directly to `msgQ` as `STEvent`, bypassing the entire command/response pipeline. This is used by the server to inject MSG events into the subscription response path.
+`writeSMPMessage` writes directly to `msgQ` as `STEvent`, bypassing the entire command/response pipeline. This is used by the router to inject MSG events into the subscription response path.

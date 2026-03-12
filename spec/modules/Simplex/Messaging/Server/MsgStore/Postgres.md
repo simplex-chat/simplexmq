@@ -1,6 +1,6 @@
 # Simplex.Messaging.Server.MsgStore.Postgres
 
-> PostgreSQL message store: server-side stored procedures for message operations, COPY protocol for bulk import.
+> PostgreSQL message store: router-side stored procedures for message operations, COPY protocol for bulk import.
 
 **Source**: [`Postgres.hs`](../../../../../../src/Simplex/Messaging/Server/MsgStore/Postgres.hs)
 

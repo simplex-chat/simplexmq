@@ -6,9 +6,9 @@
 
 ## Overview
 
-This is the "small agent" — used only in servers (SMP proxy, notification server) to manage client connections to other SMP servers. The "big agent" in `Simplex.Messaging.Agent` + `Simplex.Messaging.Agent.Client` serves client applications and adds the full messaging agent layer. See [Two agent layers](../../../../TOPICS.md) topic.
+This is the "small agent" — used only in routers (SMP proxy, notification router) to manage client connections to other SMP routers. The "big agent" in `Simplex.Messaging.Agent` + `Simplex.Messaging.Agent.Client` serves client applications and adds the full messaging agent layer. See [Two agent layers](../../../../TOPICS.md) topic.
 
-`SMPClientAgent` manages `SMPClient` connections via `smpClients :: TMap SMPServer SMPClientVar` (one per SMP server), tracks active and pending subscriptions, and handles automatic reconnection. It is parameterized by `Party` (`p`) and uses the `ServiceParty` constraint to support both `RecipientService` and `NotifierService` modes.
+`SMPClientAgent` manages `SMPClient` connections via `smpClients :: TMap SMPServer SMPClientVar` (one per router), tracks active and pending subscriptions, and handles automatic reconnection. It is parameterized by `Party` (`p`) and uses the `ServiceParty` constraint to support both `RecipientService` and `NotifierService` modes.
 
 ## Dual subscription model
 
@@ -19,7 +19,7 @@ Four TMap fields track subscriptions in two dimensions:
 | **Service** | `activeServiceSubs` (TMap SMPServer (TVar (Maybe (ServiceSub, SessionId)))) | `pendingServiceSubs` (TMap SMPServer (TVar (Maybe ServiceSub))) |
 | **Queue** | `activeQueueSubs` (TMap SMPServer (TMap QueueId (SessionId, C.APrivateAuthKey))) | `pendingQueueSubs` (TMap SMPServer (TMap QueueId C.APrivateAuthKey)) |
 
-See comments on `activeServiceSubs` and `pendingServiceSubs` for the coexistence rules. Key constraint: only one service subscription per server. Active subs store the `SessionId` that established them.
+See comments on `activeServiceSubs` and `pendingServiceSubs` for the coexistence rules. Key constraint: only one service subscription per router. Active subs store the `SessionId` that established them.
 
 ## SessionVar compare-and-swap — core concurrency safety
 
@@ -27,11 +27,11 @@ See comments on `activeServiceSubs` and `pendingServiceSubs` for the coexistence
 
 ## removeClientAndSubs — outside-STM lookup optimization
 
-See comment on `removeClientAndSubs`. Subscription TVar references are obtained outside STM (via `TM.lookupIO`), then modified inside `atomically`. This is safe because the invariant is that subscription TVar entries for a server are never deleted from the outer TMap, only their contents change. Moving lookups inside the STM transaction would cause excessive re-evaluation under contention.
+See comment on `removeClientAndSubs`. Subscription TVar references are obtained outside STM (via `TM.lookupIO`), then modified inside `atomically`. This is safe because the invariant is that subscription TVar entries for a router are never deleted from the outer TMap, only their contents change. Moving lookups inside the STM transaction would cause excessive re-evaluation under contention.
 
 ## Disconnect preserves others' subscriptions
 
-`updateServiceSub` only moves active→pending when `sessId` matches the disconnected client (see its comment). If a new client already established different subscriptions on the same server, those are preserved. Queue subs use `M.partition` to split by SessionId — only matching subs move to pending, non-matching remain active.
+`updateServiceSub` only moves active→pending when `sessId` matches the disconnected client (see its comment). If a new client already established different subscriptions on the same router, those are preserved. Queue subs use `M.partition` to split by SessionId — only matching subs move to pending, non-matching remain active.
 
 ## Pending never reset to Nothing on disconnect
 
@@ -63,7 +63,7 @@ When serviceId and sessionId match the existing active subscription, queue count
 
 ## CAServiceUnavailable — cascade to queue resubscription
 
-When `smpSubscribeService` detects service ID or role mismatch with the connection, it fires `CAServiceUnavailable`. See comment on `CAServiceUnavailable` for the full implication: the app must resubscribe all queues individually, creating new associations. This can happen if the SMP server reassigns service IDs (e.g., after downgrade and upgrade).
+When `smpSubscribeService` detects service ID or role mismatch with the connection, it fires `CAServiceUnavailable`. See comment on `CAServiceUnavailable` for the full implication: the app must resubscribe all queues individually, creating new associations. This can happen if the SMP router reassigns service IDs (e.g., after downgrade and upgrade).
 
 ## getPending — polymorphic over STM/IO
 
@@ -89,4 +89,4 @@ During reconnection, `reconnectSMPClient` reads current active queue subs (outsi
 
 ## addSubs_ — left-biased union
 
-`addSubs_` uses `TM.union` which delegates to `M.union` (left-biased). If a queue subscription already exists, the new auth key from the incoming map wins. Service subs use `writeTVar` (overwrite) since only one service sub exists per server.
+`addSubs_` uses `TM.union` which delegates to `M.union` (left-biased). If a queue subscription already exists, the new auth key from the incoming map wins. Service subs use `writeTVar` (overwrite) since only one service sub exists per router.

@@ -1,6 +1,6 @@
 # Simplex.Messaging.Server.Control
 
-> Control port protocol types and encoding for server administration.
+> Control port protocol types and encoding for router administration.
 
 **Source**: [`Control.hs`](../../../../../src/Simplex/Messaging/Server/Control.hs)
 

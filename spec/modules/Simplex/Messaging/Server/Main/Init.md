@@ -1,6 +1,6 @@
 # Simplex.Messaging.Server.Main.Init
 
-> Server initialization: INI file content generation, default settings, and CLI option structures.
+> Router initialization: INI file content generation, default settings, and CLI option structures.
 
 **Source**: [`Main/Init.hs`](../../../../../../src/Simplex/Messaging/Server/Main/Init.hs)
 

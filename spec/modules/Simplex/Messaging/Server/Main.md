@@ -1,12 +1,12 @@
 # Simplex.Messaging.Server.Main
 
-> Server CLI entry point: dispatches Init, Start, Delete, Journal, and Database commands.
+> Router CLI entry point: dispatches Init, Start, Delete, Journal, and Database commands.
 
 **Source**: [`Main.hs`](../../../../../src/Simplex/Messaging/Server/Main.hs)
 
 ## Overview
 
-This is the CLI dispatcher for the SMP server. It parses INI configuration, validates storage mode combinations, and dispatches to the appropriate command handler. The most complex logic is storage configuration validation and migration between storage modes.
+This is the CLI dispatcher for the SMP router. It parses INI configuration, validates storage mode combinations, and dispatches to the appropriate command handler. The most complex logic is storage configuration validation and migration between storage modes.
 
 ## Storage mode compatibility — state machine
 
