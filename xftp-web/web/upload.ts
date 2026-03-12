@@ -6,6 +6,7 @@ import {
   newXFTPAgent, closeXFTPAgent, uploadFile, encodeDescriptionURI,
   type EncryptedFileMetadata
 } from '../src/agent.js'
+import {getDescriptionServers, serverOrigin} from '../src/protocol/address.js'
 import {XFTPPermanentError} from '../src/client.js'
 
 const MAX_SIZE = 100 * 1024 * 1024
@@ -170,7 +171,11 @@ export function initUpload(app: HTMLElement) {
       })
       if (aborted) return
 
-      const url = window.location.origin + window.location.pathname + '#' + result.uri
+      const descServers = getDescriptionServers(result.rcvDescription)
+      const origin = descServers.length > 0
+        ? serverOrigin(descServers[0])
+        : window.location.origin
+      const url = origin + window.location.pathname + '#' + result.uri
       shareLink.value = url
       showStage(completeStage)
       app.dispatchEvent(new CustomEvent('xftp:upload-complete', {detail: {url}, bubbles: true}))

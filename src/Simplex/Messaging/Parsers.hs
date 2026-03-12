@@ -19,6 +19,7 @@ module Simplex.Messaging.Parsers
     sumTypeJSON,
     taggedObjectJSON,
     singleFieldJSON,
+    singleFieldJSON_,
     defaultJSON,
     textP,
     pattern SingleFieldJSONTag,
