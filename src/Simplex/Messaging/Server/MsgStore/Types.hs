@@ -49,6 +49,7 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Util ((<$$>), ($>>=))
 
+-- spec: spec/modules/Simplex/Messaging/Server/MsgStore/Types.md#injective-type-families--unambiguous-type-resolution
 class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => MsgStoreClass s where
   type StoreMonad s = (m :: Type -> Type) | m -> s
   type MsgStoreConfig s = c | c -> s

@@ -247,6 +247,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     closeServer :: M s ()
     closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
 
+    -- spec: spec/modules/Simplex/Messaging/Server.md#serverthread--subscription-lifecycle-with-split-stm
     serverThread ::
       forall sub. String ->
       Server s ->
@@ -1223,6 +1224,7 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
 
 data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFailed ErrorType
 
+-- spec: spec/modules/Simplex/Messaging/Server.md#constant-time-authorization--dummy-keys
 -- This function verifies queue command authorization, with the objective to have constant time between the three AUTH error scenarios:
 -- - the queue and party key exist, and the provided authorization has type matching queue key, but it is made with the different key.
 -- - the queue and party key exist, but the provided authorization has incorrect type.
@@ -1982,6 +1984,7 @@ client
             -- If the queue is not full, then the thread is created where these checks are made:
             -- - it is the same subscribed client (in case it was reconnected it would receive message via SUB command)
             -- - nothing was delivered to this subscription (to avoid race conditions with the recipient).
+            -- spec: spec/modules/Simplex/Messaging/Server.md#trydelivermessage--syncasync-split-delivery
             tryDeliverMessage :: Message -> IO ()
             tryDeliverMessage msg =
               -- the subscribed client var is read outside of STM to avoid transaction cost
@@ -2063,6 +2066,7 @@ client
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret ntfNonce (smpEncode msgMeta) 128
               pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
+        -- spec: spec/modules/Simplex/Messaging/Server.md#proxy-forwarding--single-transmission-no-service-identity
         processForwardedCommand :: EncFwdTransmission -> M s BrokerMsg
         processForwardedCommand (EncFwdTransmission s) = fmap (either ERR RRES) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
