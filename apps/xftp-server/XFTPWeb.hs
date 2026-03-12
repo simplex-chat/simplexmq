@@ -9,7 +9,7 @@ module XFTPWeb
 import Data.ByteString (ByteString)
 import Data.Maybe (isJust)
 import Data.String (fromString)
-import Embedded (embeddedContent)
+import Web.Embedded (embeddedContent)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))

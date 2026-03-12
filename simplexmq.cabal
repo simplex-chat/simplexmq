@@ -408,7 +408,7 @@ executable smp-server
   main-is: Main.hs
   other-modules:
       SMPWeb
-      Embedded
+      Web.Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/smp-server
@@ -447,7 +447,7 @@ executable xftp-server
   main-is: Main.hs
   other-modules:
       XFTPWeb
-      Embedded
+      Web.Embedded
       Paths_simplexmq
   hs-source-dirs:
       apps/xftp-server
@@ -504,7 +504,7 @@ test-suite simplexmq-test
       XFTPWebTests
       SMPWeb
       XFTPWeb
-      Embedded
+      Web.Embedded
       Paths_simplexmq
   if flag(client_postgres)
       other-modules:

@@ -8,7 +8,7 @@ module SMPWeb
 
 import Data.ByteString (ByteString)
 import Data.String (fromString)
-import Embedded (embeddedContent)
+import Web.Embedded (embeddedContent)
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.Main (simplexmqSource)
