@@ -1,36 +1,30 @@
 # Simplex.Messaging.Notifications.Transport
 
-> Notification Router Protocol transport: manages push notification subscriptions between client and NTF Router.
+> NTF protocol version negotiation, TLS handshake, and transport handle setup.
 
 **Source**: [`Notifications/Transport.hs`](../../../../../src/Simplex/Messaging/Notifications/Transport.hs)
 
-**Protocol spec**: [`protocol/push-notifications.md`](../../../../../protocol/push-notifications.md) — SimpleX Notification Router protocol.
+## Non-obvious behavior
 
-## Overview
+### 1. ALPN-dependent version range
 
-This module implements the transport layer for the **Notification Router Protocol**. Per the protocol spec: "To manage notification subscriptions to SMP routers, SimpleX Notification Router provides an RPC protocol with a similar design to SimpleX Messaging Protocol router."
+`ntfServerHandshake` advertises `legacyServerNTFVRange` (v1 only) when ALPN is not available (`getSessionALPN` returns `Nothing`). When ALPN is present, it advertises the full `supportedServerNTFVRange`. This is the backward-compatibility mechanism for pre-ALPN clients that cannot negotiate newer protocol features.
 
-The protocol spec diagram shows three separate protocols in the notification flow:
-1. **Notification Router Protocol** (this module): client ↔ SimpleX Notification Router — subscription management
-2. **SMP protocol**: SMP Router → SimpleX Notifications Subscriber — notification signals
-3. **Push provider** (e.g., APN): SimpleX Push Router → device — per the spec: "the notifications are e2e encrypted between SimpleX Notification Router and the user's device"
+### 2. Version-gated features
 
-## Differences from SMP transport
+Two feature gates exist in the NTF protocol:
 
-The NTF protocol reuses SMP's transport infrastructure but with reduced parameters:
+| Version | Feature | Effect |
+|---------|---------|--------|
+| v2 (`authBatchCmdsNTFVersion`) | Auth key exchange + batching | `authPubKey` sent in handshake, `implySessId` and `batch` enabled |
+| v3 (`invalidReasonNTFVersion`) | Token invalid reasons | `NTInvalid` responses include the reason enum |
 
-| Property | SMP | NTF |
-|----------|-----|-----|
-| Block size | 16384 | 512 |
-| Block encryption | Yes (v11+) | No (`encryptBlock = Nothing`) |
-| Service certificates | Yes (v16+) | No (`serviceAuth = False`) |
-| Version range | 6–19 | 1–3 |
-| Handshake messages | 2–3 | 2 |
+Pre-v2 connections have no command encryption or batching — commands are sent in plaintext within TLS.
 
-## Same ALPN/legacy fallback pattern as SMP
+### 3. Unused Protocol typeclass parameters
 
-`ntfServerHandshake` uses the same pattern as `smpServerHandshake`: if ALPN is not negotiated (`getSessionALPN` returns `Nothing`), the notification router offers only `legacyServerNTFVRange` (v1 only).
+`ntfClientHandshake` accepts `_proxyServer` and `_serviceKeys` parameters that are ignored. These exist because the `Protocol` typeclass (shared with SMP) requires `protocolClientHandshake` to accept them. The NTF protocol does not support proxy routing or service authentication.
 
-## NTF handshake uses SMP shared types
+### 4. Block size
 
-The handshake reuses SMP's `THandle`, `THandleParams`, `THandleAuth` types. The `encodeAuthEncryptCmds` and `authEncryptCmdsP` helper functions are defined locally in this module (with NTF-specific version thresholds). NTF never sets `sessSecret` / `sessSecret'`, `peerClientService`, or `clientService` — these are always `Nothing`.
+NTF uses a 512-byte block size (`ntfBlockSize`), significantly smaller than SMP. Notification commands and responses are short — the main payload is the `PNMessageData` which contains encrypted message metadata.
