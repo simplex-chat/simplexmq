@@ -3352,6 +3352,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             agentEnvelope <- parseMessage clientBody
             -- Version check is removed here, because when connecting via v1 contact address the agent still sends v2 message,
             -- to allow duplexHandshake mode, in case the receiving agent was updated to v2 after the address was created.
+            -- v1 slow handshake is no longer supported (minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion).
             -- aVRange <- asks $ smpAgentVRange . config
             -- if agentVersion agentEnvelope `isCompatible` aVRange
             --   then pure (privHeader, agentEnvelope)
@@ -3392,7 +3393,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                         AgentConnInfoReply smpQueues connInfo -> do
                           processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
                           withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
-                        _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
+                        _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2 (v1 slow handshake is no longer supported)
                       where
                         processConf connInfo senderConf = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
