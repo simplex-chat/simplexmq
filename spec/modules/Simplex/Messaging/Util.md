@@ -47,6 +47,3 @@ Runs all actions concurrently, waits for any one to complete, then cancels all o
 
 Handles `Int64` delays exceeding `maxBound :: Int` (~2147 seconds on 32-bit) by looping in chunks. Necessary because `threadDelay` takes `Int`, not `Int64`.
 
-## toChunks
-
-Precondition: `n > 0` (comment-only, not enforced). Passing `n = 0` causes infinite loop.

@@ -28,4 +28,4 @@ This module defines the data types for the XRCP (remote control) protocol, which
 
 ## IpProbe — unused discovery type
 
-`IpProbe` is defined with `Encoding` instance but not used anywhere in the current codebase. It appears to be a placeholder for a planned IP discovery mechanism. Note: the `smpP` parser has a precedence bug — `IpProbe <$> (smpP <* "I") *> smpP` parses as `(IpProbe <$> (smpP <* "I")) *> smpP`, which discards the `IpProbe` wrapper. This has never manifested because the type is unused.
+`IpProbe` is defined with `Encoding` instance but not used anywhere in the current codebase. It appears to be a placeholder for a planned IP discovery mechanism.

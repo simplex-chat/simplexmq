@@ -15,7 +15,7 @@ Verification in `verifySignedInvitation` mirrors this: `ssig` is verified agains
 
 ## Invitation URI format
 
-The `xrcp:/` scheme uses the SMP-style pattern: CA fingerprint as userinfo (`ca@host:port`), query parameters after `#/?`. The `app` field is raw JSON encoded in a query parameter. `RCInvitation`'s parser uses `parseSimpleQuery` + `lookup` (order-independent), but `RCSignedInvitation`'s parser uses `B.breakSubstring "&ssig="` which assumes the signatures appear at a fixed position — see TODO in source on `RCSignedInvitation`'s `strP`.
+The `xrcp:/` scheme uses the SMP-style pattern: CA fingerprint as userinfo (`ca@host:port`), query parameters after `#/?`. The `app` field is raw JSON encoded in a query parameter. `RCInvitation`'s parser uses `parseSimpleQuery` + `lookup` (order-independent).
 
 ## RCVerifiedInvitation — newtype trust boundary
 

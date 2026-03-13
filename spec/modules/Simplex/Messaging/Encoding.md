@@ -14,8 +14,6 @@ The two encoding classes share some instances (`Char`, `Bool`, `SystemTime`) but
 
 **Length prefix is 1 byte.** Maximum encodable length is 255 bytes. If a ByteString exceeds 255 bytes, the length silently wraps via `w2c . fromIntegral` — a 300-byte string encodes length as 44 (300 mod 256). Callers must ensure ByteStrings fit in 255 bytes, or use `Large` for longer values.
 
-**Security**: silent truncation means a caller encoding untrusted input without length validation could produce a malformed message where the decoder reads fewer bytes than were intended, then misparses the remainder as the next field.
-
 ## Large
 
 2-byte length prefix (`Word16`). Use for ByteStrings that may exceed 255 bytes. Maximum 65535 bytes.
@@ -35,10 +33,6 @@ Sequential concatenation with no separators. Works because each element's encodi
 ## SystemTime
 
 Only seconds are encoded (as Int64); nanoseconds are discarded on encode and set to 0 on decode.
-
-## String instance
-
-`smpEncode` goes through `B.pack`, which silently truncates any Unicode character above codepoint 255 to its lowest byte. A String containing non-Latin-1 characters is silently corrupted on encode with no error. Same issue exists in the `StrEncoding String` instance — see [Simplex.Messaging.Encoding.String](./Encoding/String.md#string-instance).
 
 ## smpEncodeList / smpListP
 

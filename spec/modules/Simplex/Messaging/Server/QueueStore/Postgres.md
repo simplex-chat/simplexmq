@@ -6,7 +6,7 @@
 
 ## addQueue_ — no in-memory duplicate check, relies on DB constraint
 
-See comment on `addQueue_`: "Not doing duplicate checks in maps as the probability of duplicates is very low." The STM implementation checks all four ID maps before insertion and returns `DUPLICATE_`. The Postgres implementation skips this and relies on `UniqueViolation` from the DB, which `handleDuplicate` maps to `AUTH`, not `DUPLICATE_`. The same logical error produces different error codes depending on the store backend.
+See comment on `addQueue_`: "Not doing duplicate checks in maps as the probability of duplicates is very low." The Postgres implementation relies on `UniqueViolation` from the DB rather than pre-checking in-memory maps.
 
 ## addQueue_ — non-atomic cache updates
 
@@ -56,17 +56,13 @@ Re-securing with the same key falls through the verify function to `pure ()`, th
 
 (1) **Cache check**: `checkCachedNotifier` acquires a per-notifier-ID lock via `notifierLocks`, then checks `TM.memberIO`. Returns `DUPLICATE_`. (2) **Queue lock**: Via `withQueueRec`, prevents concurrent modifications to the same queue. (3) **Database constraint**: `handleDuplicate` catches `UniqueViolation`, returns `AUTH`. Same duplicate, different error codes depending on whether cache was warm. The `notifierLocks` map grows unboundedly — locks are never removed except when the queue is deleted.
 
-## addQueueNotifier — always clears notification service
-
-The SQL UPDATE always sets `ntf_service_id = NULL` when adding/replacing a notifier. The previous notifier's service association is silently lost. The STM implementation additionally calls `removeServiceQueue` to update service-level tracking; the Postgres version does not.
-
 ## rowToQueueRec — link data replaced with empty stubs
 
 The standard `queueRecQuery` does NOT select `fixed_data` and `user_data` columns. When converting to `QueueRec`, link data is stubbed: `(,(EncDataBytes "", EncDataBytes "")) <$> linkId_`. Actual link data is loaded on demand via `getQueueLinkData`. Any code reading `queueData` from a cached `QueueRec` without going through `getQueueLinkData` sees empty bytes. The separate `rowToQueueRecWithData` (used by `foldQueueRecs` with `withData = True`) includes real data.
 
 ## getCreateService — serialization via serviceLocks
 
-Entire operation wrapped in `withLockMap (serviceLocks st) fp`, serializing all creation/lookup for the same certificate fingerprint. Inside the lock: SELECT by `service_cert_hash`, if not found attempt INSERT catching `UniqueViolation`. The `serviceLocks` map grows unboundedly — no cleanup mechanism.
+Entire operation wrapped in `withLockMap (serviceLocks st) fp`, serializing all creation/lookup for the same certificate fingerprint. Inside the lock: SELECT by `service_cert_hash`, if not found attempt INSERT catching `UniqueViolation`.
 
 ## batchInsertQueues — COPY protocol with manual CSV serialization
 

@@ -42,7 +42,7 @@ When `corrId` is empty, the message is an `STEvent` (router-initiated). When non
 
 ## nonBlockingWriteTBQueue — fork on full
 
-If `tryWriteTBQueue` returns `False`, a new thread is forked for the blocking write. No backpressure mechanism — under sustained overload, thread count grows without bound. This is a deliberate tradeoff: the caller never blocks (preventing deadlock between send and process threads), at the cost of potential unbounded thread creation.
+If `tryWriteTBQueue` returns `False` (queue full), a new thread is forked for the blocking write. The caller never blocks, preventing deadlock between send and process threads.
 
 ## Batch commands do not expire
 

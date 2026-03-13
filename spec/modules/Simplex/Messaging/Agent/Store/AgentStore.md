@@ -75,10 +75,6 @@ Generates random 12-byte IDs (base64url encoded) and retries up to 3 times on co
 
 First clears primary flag on all queues in the connection, then sets it on the target queue. Also clears `replace_*_queue_id` on the new primary — this completes the queue rotation by removing the "replacing" marker.
 
-## checkConfirmedSndQueueExists_ — dpPostgres typo
-
-The CPP guard reads `#if defined(dpPostgres)` (note `dp` instead of `db`). This means the `FOR UPDATE` clause is never included for any backend. The check still works correctly for SQLite (single-writer model) but on PostgreSQL the query runs without row locking, which could allow a TOCTOU race between checking and inserting.
-
 ## createCommand — silent drop for deleted connections
 
 When `createCommand` encounters a constraint violation (the referenced connection was already deleted), it logs the error and returns successfully rather than throwing. This means commands targeting deleted connections are silently dropped. The rationale: the connection is already gone, so there's nothing useful to do with the error.

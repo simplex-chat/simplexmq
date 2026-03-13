@@ -12,8 +12,6 @@ Enumerates network interfaces and filters out non-routable addresses (0.0.0.0, b
 
 `joinMulticast` / `partMulticast` use a shared `TMVar Int` counter to track active listeners. Multicast group membership is per-host (not per-process — see comment in Multicast.hsc), so the counter ensures `IP_ADD_MEMBERSHIP` is called only when transitioning from 0→1 listeners and `IP_DROP_MEMBERSHIP` only when transitioning from 1→0. If `setMembership` fails, the counter is restored to its previous value and the error is logged (not thrown).
 
-**TMVar hazard**: Both functions take the counter from the TMVar unconditionally but only put it back in the 0-or-1 branches. If `joinMulticast` is called when the counter is already >0, or `partMulticast` when >1, the TMVar is left empty and subsequent accesses will deadlock. In practice this is safe because `withListener` serializes access through a single `TMVar Int`, but the abstraction does not protect against concurrent use.
-
 ## startTLSServer — ephemeral port support
 
 When `port_` is `Nothing`, passes `"0"` to `startTCPServer`, which causes the OS to assign an ephemeral port. The assigned port is read via `socketPort` and communicated back through the `startedOnPort` TMVar. On any startup error, `setPort Nothing` is signalled so callers don't block indefinitely on the TMVar.

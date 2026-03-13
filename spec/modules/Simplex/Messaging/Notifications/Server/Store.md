@@ -20,7 +20,7 @@ When a token is activated, `stmRemoveInactiveTokenRegistrations` removes ALL oth
 
 ### 4. tokenLastNtfs accumulates via prepend
 
-New notifications are prepended to the `NonEmpty PNMessageData` list via `(<|)`. The list is unbounded in the STM store — bounding is handled at the push delivery layer (the Postgres store limits to 6).
+New notifications are prepended to the `NonEmpty PNMessageData` list via `(<|)`.
 
 ### 5. stmDeleteNtfToken prunes empty registration maps
 
@@ -46,9 +46,9 @@ When `stmDeleteNtfToken` removes a token, it deletes the entry from the inner `T
 
 When `stmDeleteNtfSubscription` removes a subscription, it deletes the `subId` from the token's `Set NtfSubscriptionId` in `tokenSubscriptions` but never checks whether the set became empty. Tokens with all subscriptions individually deleted accumulate empty set entries — these are only cleaned up when the token itself is deleted via `deleteTokenSubs`.
 
-### 11. stmSetNtfService — asymmetric cleanup with Postgres store
+### 11. stmSetNtfService — key-value service association
 
-`stmSetNtfService` uses `maybe TM.delete TM.insert` to either remove or set the service association for an SMP router. This is purely a key-value update with no cascading effects on subscriptions. The Postgres store's `removeServiceAndAssociations` handles subscription cleanup separately, meaning the STM and Postgres stores have **different cleanup semantics** for service removal.
+`stmSetNtfService` uses `maybe TM.delete TM.insert` to either remove or set the service association for an SMP router. This is purely a key-value update with no cascading effects on subscriptions.
 
 ### 12. Subscription index triple-write invariant
 

@@ -21,7 +21,7 @@ Encodes as base64url. The parser (`strP`) only accepts non-empty strings — emp
 
 ## String instance
 
-Inherits from ByteString via `B.pack` / `B.unpack`. Only Char8 (Latin-1) characters round-trip; `B.pack` truncates unicode codepoints above 255. The source comment warns about this.
+Inherits from ByteString via `B.pack` / `B.unpack`. Only Char8 (Latin-1) characters round-trip.
 
 ## strToJSON / strParseJSON
 

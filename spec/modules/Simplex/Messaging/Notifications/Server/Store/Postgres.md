@@ -83,7 +83,7 @@ The `insertServer` fallback uses `ON CONFLICT ... DO UPDATE SET smp_host = EXCLU
 
 ### 18. deleteNtfToken string_agg with hex parsing
 
-`deleteNtfToken` uses `string_agg(s.smp_notifier_id :: TEXT, ',')` to aggregate `BYTEA` notifier IDs into comma-separated text, then parses with `parseByteaString` which drops the `\x` prefix and hex-decodes. `mapMaybe` silently drops any IDs that fail hex decoding, which could mask data corruption.
+`deleteNtfToken` uses `string_agg(s.smp_notifier_id :: TEXT, ',')` to aggregate `BYTEA` notifier IDs into comma-separated text, then parses with `parseByteaString` which drops the `\x` prefix and hex-decodes.
 
 ### 19. withPeriodicNtfTokens streams with DB.fold
 

@@ -30,7 +30,7 @@ The session key combines DH and post-quantum KEM via `kemHybridSecret`: `SHA3_25
 2. Application displays session code for user verification → calls `confirmCtrlSession` with `True`/`False`
 3. If confirmed, `runSession` proceeds with hello exchange → second `RCStepTMVar` resolved with session
 
-`confirmCtrlSession` does a double `putTMVar` — the first signals the decision, the second blocks until the session thread does `takeTMVar` (synchronization point). See TODO in source: no timeout on this wait.
+`confirmCtrlSession` does a double `putTMVar` — the first signals the decision, the second blocks until the session thread does `takeTMVar` (synchronization point).
 
 ## TLS hooks — single-session enforcement
 

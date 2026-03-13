@@ -52,6 +52,3 @@ Creates a temp table with aggregated message stats, then updates `msg_queues` in
 
 `deleteQueueSize` calls `getQueueSize` BEFORE `deleteStoreQueue`. The returned size is the count at query time — a concurrent `writeMsg` between the size query and the delete means the reported size is stale. This is acceptable because the size is used for statistics, not for correctness.
 
-## unsafeMaxLenBS
-
-`toMessage` uses `C.unsafeMaxLenBS` to bypass the `MaxLen` length check on message bodies read from the database. A TODO comment questions this choice. If the database contains oversized data, the length invariant is silently violated.
