@@ -31,7 +31,7 @@ See the [SimpleX Network overview](./protocol/overview-tjr.md) for the full prot
 Routers are the network infrastructure — they accept, buffer, and deliver packets. Three router types serve different purposes:
 
 - **SMP routers** provide messaging queues — unidirectional, ordered sequences of fixed-size packets (16,384 bytes). Protocol: [SMP](./protocol/simplex-messaging.md). Module spec: [`Simplex.Messaging.Server`](./spec/modules/Simplex/Messaging/Server.md).
-- **XFTP routers** accept and deliver data packets — individually addressed blocks in fixed sizes (64KB–4MB) for larger payloads. Protocol: [XFTP](./protocol/xftp.md). Module spec: [`Simplex.FileTransfer.Server`](./spec/modules/Simplex/FileTransfer/Server.md).
+- **XFTP routers** accept and deliver data packets over HTTP/2 — individually addressed blocks in fixed sizes (64KB–4MB) for larger payloads. Protocol: [XFTP](./protocol/xftp.md). Module spec: [`Simplex.FileTransfer.Server`](./spec/modules/Simplex/FileTransfer/Server.md).
 - **NTF routers** bridge to platform push services (APNS) for mobile notification delivery. Protocol: [Push Notifications](./protocol/push-notifications.md). Module spec: [`Simplex.Messaging.Notifications.Server`](./spec/modules/Simplex/Messaging/Notifications/Server.md).
 
 #### Running an SMP router
@@ -50,9 +50,9 @@ See [docs/ROUTERS.md](./docs/ROUTERS.md) for XFTP/NTF router setup, advanced con
 
 ### SimpleX Client Libraries
 
-[Client libraries](./docs/CLIENT.md) provide low-level protocol access to SimpleX routers. They implement the wire protocols (SMP, XFTP) and handle connection lifecycle, command authentication, and keep-alive.
+[Client libraries](./docs/CLIENT.md) provide low-level protocol access to SimpleX routers. They implement the wire protocols (SMP, XFTP, NTF) and handle connection lifecycle, command authentication, and keep-alive.
 
-The [SMP client](./src/Simplex/Messaging/Client.hs) ([module spec](./spec/modules/Simplex/Messaging/Client.md)) offers a functional Haskell API with STM queues for asynchronous event delivery. The [XFTP client](./src/Simplex/FileTransfer/Client.hs) ([module spec](./spec/modules/Simplex/FileTransfer/Client.md)) sends and receives data packets with per-request forward secrecy.
+The [SMP client](./src/Simplex/Messaging/Client.hs) ([module spec](./spec/modules/Simplex/Messaging/Client.md)) offers a functional Haskell API with STM queues for asynchronous event delivery. The [XFTP client](./src/Simplex/FileTransfer/Client.hs) ([module spec](./spec/modules/Simplex/FileTransfer/Client.md)) sends and receives data packets over HTTP/2 with per-request forward secrecy. The [NTF client](./src/Simplex/Messaging/Notifications/Client.hs) ([module spec](./spec/modules/Simplex/Messaging/Notifications/Client.md)) manages push notification tokens and subscriptions.
 
 Applications that manage their own encryption and connection logic — IoT devices, sensors, simple data pipelines — can use this layer directly. See [docs/CLIENT.md](./docs/CLIENT.md).
 

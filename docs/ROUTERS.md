@@ -35,7 +35,7 @@ echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile
 
 ## XFTP Router
 
-The XFTP router accepts and delivers data packets — individually addressed blocks in fixed sizes (64KB, 256KB, 1MB, 4MB). It implements the [XFTP protocol](../protocol/xftp.md). Data packets are used for larger payload delivery (files, media) where SMP queue packet sizes would be inefficient. **Module spec**: [`spec/modules/Simplex/FileTransfer/Server.md`](../spec/modules/Simplex/FileTransfer/Server.md).
+The XFTP router accepts and delivers data packets over HTTP/2 — individually addressed blocks in fixed sizes (64KB, 256KB, 1MB, 4MB). It implements the [XFTP protocol](../protocol/xftp.md). Data packets are used for larger payload delivery (files, media) where SMP queue packet sizes would be inefficient. The use of HTTP/2 simplifies browser integration. **Module spec**: [`spec/modules/Simplex/FileTransfer/Server.md`](../spec/modules/Simplex/FileTransfer/Server.md).
 
 Initialize with `xftp-server init` and configure storage quota in `xftp-server.ini`.
 
