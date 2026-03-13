@@ -11445,6 +11445,7 @@ function initDownload(app, hash) {
       <div id="dl-progress" class="stage" hidden>
         <div id="dl-progress-container"></div>
         <p id="dl-status">${t("downloading", "Downloading…")}</p>
+        <a id="dl-upload-link" class="upload-link" hidden href="#">${t("uploadYourFile", "Upload your file")}</a>
       </div>
       <div id="dl-error" class="stage" hidden>
         <p class="error" id="dl-error-msg"></p>
@@ -11459,6 +11460,7 @@ function initDownload(app, hash) {
   const dlBtn = document.getElementById("dl-btn");
   const errorMsg = document.getElementById("dl-error-msg");
   const retryBtn = document.getElementById("dl-retry-btn");
+  const uploadLink = document.getElementById("dl-upload-link");
   function showStage(stage) {
     for (const s of [readyStage, progressStage, errorStage]) s.hidden = true;
     stage.hidden = false;
@@ -11473,6 +11475,11 @@ function initDownload(app, hash) {
   }
   dlBtn.addEventListener("click", startDownload);
   retryBtn.addEventListener("click", () => showStage(readyStage));
+  uploadLink.addEventListener("click", (e) => {
+    e.preventDefault();
+    history.replaceState(null, "", window.location.pathname);
+    initUpload(app);
+  });
   async function startDownload() {
     showStage(progressStage);
     const ring = createProgressRing();
@@ -11528,6 +11535,7 @@ function initDownload(app, hash) {
       setTimeout(() => URL.revokeObjectURL(url), 1e3);
       ring.update(1);
       statusText.textContent = t("downloadComplete", "Download complete");
+      uploadLink.hidden = false;
       app.dispatchEvent(new CustomEvent("xftp:download-complete", { detail: { fileName }, bubbles: true }));
     } catch (err) {
       const msg = err?.message ?? String(err);
