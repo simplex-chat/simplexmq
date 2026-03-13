@@ -41,3 +41,15 @@ Token status `NTInvalid` allows subscription commands (SNEW, SCHK, SDEL), which 
 ### 7. DeviceToken hex validation
 
 `DeviceToken` string parsing has two paths: a hardcoded literal match for `"apns_null test_ntf_token"` (test tokens), and hex string validation for real tokens (must be even-length hex). The wire encoding (`smpP`) does not perform this validation — it accepts any `ByteString`.
+
+### 8. SMPQueueNtf parsing applies updateSMPServerHosts
+
+Both `smpP` and `strP` for `SMPQueueNtf` apply `updateSMPServerHosts` to the parsed SMP server. This normalizes server host addresses on deserialization, ensuring consistent comparison even if the on-wire format uses different host representations.
+
+### 9. NRTknId response tag comment
+
+The `NRTknId_` tag encodes as `"IDTKN"` with a source comment: "it should be 'TID', 'SID'". This indicates a naming inconsistency that was preserved for backward compatibility — the tag names don't follow the pattern of other NTF protocol tags.
+
+### 10. useServiceAuth is False
+
+The `Protocol` instance explicitly returns `False` for `useServiceAuth`, meaning the NTF protocol never uses service-level authentication. All authentication is entity-level (per token/subscription).

@@ -8,7 +8,7 @@
 
 At ~3700 lines, this is the largest module in the codebase. It implements all database operations for the agent, compiled with CPP for both SQLite and PostgreSQL backends. Most functions are straightforward SQL CRUD, but several patterns are non-obvious.
 
-The module re-exports `withConnection`, `withTransaction`, `withTransactionPriority`, `firstRow`, `firstRow'`, `maybeFirstRow`, and `fromOnlyBI` from the backend-specific Common module.
+The module re-exports `withConnection`, `withTransaction`, `withTransactionPriority`, `firstRow`, `firstRow'`, and `maybeFirstRow` from the backend-specific Common module. It also exports `fromOnlyBI` (a local helper) and `getWorkItem`/`getWorkItems`.
 
 ## Dual-backend compilation
 
@@ -19,11 +19,11 @@ The module uses `#if defined(dbPostgres)` throughout. Key behavioral differences
 
 ## getWorkItem / getWorkItems — worker store pattern
 
-`getWorkItem` implements the store-side pattern for the [worker framework](../Client.md): `getId → getItem → markFailed`. If `getId` or `getItem` throws an IO exception, `handleWrkErr` wraps it as `SEWorkItemError` (via `mkWorkItemError`), which signals the worker to suspend rather than retry. This prevents crash loops on corrupt data.
+`getWorkItem` implements the store-side pattern for the [worker framework](../Client.md): `getId → getItem → markFailed`. If `getId` throws an IO exception, `handleWrkErr` wraps it as `SEWorkItemError` (via `mkWorkItemError`), which signals the worker to suspend rather than retry. If `getItem` fails (returning Left or throwing), `tryGetItem` calls `markFailed` (also wrapped by `handleWrkErr`) and rethrows the original error. This prevents crash loops on corrupt data.
 
 `getWorkItems` extends this to batch work items, where each item failure is independent.
 
-**Consumed by**: `getPendingQueueMsg`, `getPendingServerCommand`, `getNextNtfSubNTFActions`, `getNextNtfSubSMPActions`, `getNextDeletedSndChunkReplica`, `getNextNtfTokenToDelete`.
+**Consumed by**: `getPendingQueueMsg`, `getPendingServerCommand`, `getNextNtfSubNTFActions`, `getNextNtfSubSMPActions`, `getNextDeletedSndChunkReplica`, `getNextNtfTokenToDelete`, `getNextRcvChunkToDownload`, `getNextRcvFileToDecrypt`, `getNextSndChunkToUpload`, `getNextSndFileToPrepare`.
 
 ## Notification subscription — supervisor/worker coordination
 
@@ -43,11 +43,11 @@ Both functions include `AND last_internal_*_msg_id = ?` in their UPDATE WHERE cl
 
 ## deleteConn — conditional delivery wait
 
-Three deletion paths:
+Four paths:
 1. No timeout: immediate delete.
 2. Timeout + no pending deliveries: immediate delete.
 3. Timeout + pending deliveries + `deleted_at_wait_delivery` expired: delete.
-4. Timeout + pending deliveries + not expired: return `Nothing` (skip).
+4. Timeout + pending deliveries + not expired: return `Nothing` (skip deletion).
 
 This allows graceful delivery completion before connection cleanup.
 
@@ -74,3 +74,55 @@ Generates random 12-byte IDs (base64url encoded) and retries up to 3 times on co
 ## setRcvQueuePrimary / setSndQueuePrimary — two-step primary swap
 
 First clears primary flag on all queues in the connection, then sets it on the target queue. Also clears `replace_*_queue_id` on the new primary — this completes the queue rotation by removing the "replacing" marker.
+
+## checkConfirmedSndQueueExists_ — dpPostgres typo
+
+The CPP guard reads `#if defined(dpPostgres)` (note `dp` instead of `db`). This means the `FOR UPDATE` clause is never included for any backend. The check still works correctly for SQLite (single-writer model) but on PostgreSQL the query runs without row locking, which could allow a TOCTOU race between checking and inserting.
+
+## createCommand — silent drop for deleted connections
+
+When `createCommand` encounters a constraint violation (the referenced connection was already deleted), it logs the error and returns successfully rather than throwing. This means commands targeting deleted connections are silently dropped. The rationale: the connection is already gone, so there's nothing useful to do with the error.
+
+## updateNewConnRcv — retry tolerance
+
+`updateNewConnRcv` accepts both `NewConnection` and `RcvConnection` connection states. The `RcvConnection` case is explicitly commented as "to allow retries" — if the initial queue insertion succeeded but the caller didn't get the response, a retry would find the connection already upgraded. `updateNewConnSnd` does not have this tolerance.
+
+## setLastBrokerTs — monotonic advance
+
+The WHERE clause includes `AND (last_broker_ts IS NULL OR last_broker_ts < ?)`, which ensures the timestamp only moves forward. Out-of-order message processing (e.g., from different queues) cannot regress the broker timestamp.
+
+## deleteDeliveredSndMsg — FOR UPDATE + count zero check
+
+On PostgreSQL, acquires a `FOR UPDATE` lock on the message row before counting pending deliveries. This prevents a race where two concurrent delivery completions both see count > 0 before either deletes, then both try to delete. Only deletes the message when the count reaches exactly 0.
+
+## createWithRandomId' — savepoint-based retry
+
+Uses `withSavepoint` around each insertion attempt rather than bare execute. This is critical for PostgreSQL: a failed statement within a transaction aborts the entire transaction, but savepoints allow rolling back just the failed INSERT and retrying with a new ID.
+
+## Explicit row-lock functions
+
+`lockConnForUpdate`, `lockRcvFileForUpdate`, and `lockSndFileForUpdate` are PostgreSQL-only explicit lock acquisition that compile to no-ops on SQLite. They acquire `FOR UPDATE` locks on rows that need serialized access without modifying them.
+
+## XFTP work item retry ordering
+
+`getNextRcvChunkToDownload` and `getNextSndChunkToUpload` order by `retries ASC, created_at ASC`. This prioritizes chunks with fewer retries, ensuring a repeatedly-failing chunk doesn't starve others. Same pattern for `getNextDeletedSndChunkReplica`.
+
+## getRcvFileRedirects — error resilience
+
+When loading redirect chains, errors loading individual redirect files are silently swallowed (`either (const $ pure Nothing) (pure . Just)`). This prevents a corrupt redirect from blocking access to the main file.
+
+## enableNtfs defaults to True when NULL
+
+Both `toRcvQueue` and `rowToConnData` default `enableNtfs` to `True` when the database value is NULL (`maybe True unBI enableNtfs_`). This is a backward-compatibility default for connections created before the field existed.
+
+## primaryFirst — queue ordering
+
+The `primaryFirst` comparator sorts queues with the primary queue first (`Down` on primary flag), then by `dbReplaceQId` to place the "replacing" queue second. This ensures all queue lists are consistently ordered for connection reconstruction.
+
+## getAnyConn_ — connection GADT reconstruction
+
+Reconstructs the type-level `Connection'` GADT by combining connection mode with the presence/absence of receive and send queues. The `CMContact` mode only maps to `ContactConnection` (receive-only); all other combinations use `CMInvitation` mode. When neither rcv nor snd queues exist, the result is always `NewConnection` regardless of mode.
+
+## deleteNtfSubscription — soft delete when supervisor active
+
+When `updated_by_supervisor` is true, `deleteNtfSubscription` doesn't actually delete the row. Instead, it nulls out the IDs and sets status to `NASDeleted`, preserving the row for the supervisor to observe. Only when the supervisor has not intervened does it perform a real DELETE.

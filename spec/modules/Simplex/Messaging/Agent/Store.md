@@ -42,3 +42,31 @@ See comment on `InvShortLink`. Stored separately from the connection because 1-t
 ## RcvQueueSub — subscription-optimized projection
 
 `RcvQueueSub` strips cryptographic fields from `RcvQueue`, keeping only what's needed for subscription tracking in [TSessionSubs](./TSessionSubs.md). This reduces memory pressure when tracking thousands of subscriptions in STM.
+
+## rcvSMPQueueAddress exposes sender-facing ID
+
+`rcvSMPQueueAddress` constructs the `SMPQueueAddress` from a receive queue using `sndId` (not `rcvId`). The address shared with senders in connection requests contains the sender ID, the public key derived from `e2ePrivKey`, and `queueMode`. The `rcvId` is never exposed externally.
+
+## enableNtfs is duplicated between queue and connection
+
+`enableNtfs` exists on both `StoredRcvQueue` and `ConnData`. The comment marks it as "duplicated from ConnData." The queue-level copy enables subscription operations (which work at the queue level) to check notification status without loading the full connection.
+
+## deleteErrors — queue deletion retry counter
+
+`StoredRcvQueue` has a `deleteErrors :: Int` field that counts failed deletion attempts. This allows the agent to give up on queue deletion after repeated failures rather than retrying indefinitely.
+
+## Two-level message preparation
+
+`SndMsgData` optionally carries `SndMsgPrepData` with a `sndMsgBodyId` reference to a separately stored message body. `PendingMsgData` optionally carries `PendingMsgPrepData` with the actual `AMessage` body. This split allows large message bodies to be stored once and referenced by ID during the send pipeline, avoiding redundant serialization.
+
+## Per-message retry backoff
+
+`PendingMsgData` includes `msgRetryState :: Maybe RI2State` — each pending message independently tracks its retry backoff state. This means messages that fail to send don't reset the retry timers of other pending messages in the same connection.
+
+## Soft deletion and optional contact connection
+
+`ConnData` has `deleted :: Bool` for soft deletion — connections are marked deleted before queue cleanup completes. `Invitation` has `contactConnId_ :: Maybe ConnId` (note the trailing underscore) — invitations can outlive their originating contact connection.
+
+## SEBadQueueStatus is vestigial
+
+`SEBadQueueStatus` is documented in the source as "Currently not used." It was intended for queue status transition validation but was never implemented.

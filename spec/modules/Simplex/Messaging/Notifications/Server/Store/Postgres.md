@@ -52,3 +52,43 @@ Only non-service-associated subscriptions (`NOT ntf_service_assoc`) are returned
 ### 10. Service association tracking
 
 `batchUpdateSrvSubStatus` atomically updates both subscription status and `ntf_service_assoc` flag. When notifications arrive via a service subscription (`newServiceId` is `Just`), all affected subscriptions are marked as service-associated. `removeServiceAndAssociations` resets all subscriptions for a server to `NSInactive` with `ntf_service_assoc = FALSE`.
+
+### 11. uninterruptibleMask_ wraps most store operations
+
+`withDB_` and `withClientDB` wrap the database transaction in `E.uninterruptibleMask_`. This prevents async exceptions from interrupting a PostgreSQL transaction mid-flight, which could leave a connection in a half-committed state and corrupt the pool. Functions that take a raw `DB.Connection` parameter (`getNtfServiceCredentials`, `setNtfServiceCredentials`, `updateNtfServiceId`) operate within a caller-managed transaction and are not independently wrapped. `getUsedSMPServers` uses `withTransaction` directly (intentionally: it is expected to crash on error at startup).
+
+### 12. Silent error swallowing with sentinel returns
+
+`withDB_` catches all `SomeException`, logs the error, and returns `Left (STORE msg)` — callers never see database failures as exceptions. Additionally, `batchUpdateSrvSubStatus` and `batchUpdateSrvSubErrors` use `fromRight (-1)` to convert database errors into a `-1` count, and `withPeriodicNtfTokens` uses `fromRight 0`, making database failures indistinguishable from "zero results" at the call site.
+
+### 13. getUsedSMPServers uncorrelated EXISTS
+
+The `EXISTS` subquery in `getUsedSMPServers` has no join condition to the outer `smp_servers` table — it returns ALL servers if ANY subscription anywhere has a subscribable status. This is intentional for server startup: the server needs all SMP server records (including `ServiceSub` data) to rebuild in-memory state, and the EXISTS clause is a cheap guard against an empty subscription table.
+
+### 14. Trigger-maintained XOR hash aggregates
+
+Subscription insert, update, and delete trigger functions incrementally maintain `smp_notifier_count` and `smp_notifier_ids_hash` on `smp_servers` using XOR-based hash aggregation of MD5 digests. Every `batchUpdateSrvSubStatus` or cascade-delete from token deletion implicitly fires these triggers. The XOR hash is self-inverting: adding and removing the same notifier ID restores the previous hash. `updateNtfServiceId` resets these counters to zero when the service ID changes, invalidating the previous aggregate.
+
+### 15. updateNtfServiceId asymmetric credential cleanup
+
+Setting a new service ID preserves existing TLS credentials (`ntf_service_cert`, etc.) while only resetting aggregate counters. Setting service ID to `NULL` clears both credentials AND counters. In both cases, if a previous service ID existed, all subscription associations are reset first via `removeServiceAssociation_`, and a `logError` is emitted — treating a service ID change as anomalous.
+
+### 16. Server upsert no-op DO UPDATE for RETURNING
+
+The `insertServer` fallback uses `ON CONFLICT ... DO UPDATE SET smp_host = EXCLUDED.smp_host` — a no-op update solely to make `RETURNING smp_server_id` work. PostgreSQL's `ON CONFLICT DO NOTHING` does not support `RETURNING` for conflicting rows, so this pattern forces a row to always be "affected" and thus returnable. This handles races where two concurrent `addNtfSubscription` calls both miss the initial SELECT.
+
+### 17. getNtfServiceCredentials FOR UPDATE serializes provisioning
+
+`getNtfServiceCredentials` acquires `FOR UPDATE` on the server row even though it is a read operation. The caller needs to atomically check whether credentials exist and then set them in the same transaction. Without `FOR UPDATE`, two concurrent provisioning attempts could both see `Nothing` and both provision, resulting in credential mismatch.
+
+### 18. deleteNtfToken string_agg with hex parsing
+
+`deleteNtfToken` uses `string_agg(s.smp_notifier_id :: TEXT, ',')` to aggregate `BYTEA` notifier IDs into comma-separated text, then parses with `parseByteaString` which drops the `\x` prefix and hex-decodes. `mapMaybe` silently drops any IDs that fail hex decoding, which could mask data corruption.
+
+### 19. withPeriodicNtfTokens streams with DB.fold
+
+`withPeriodicNtfTokens` uses `DB.fold` to stream token rows one at a time through a callback that performs IO (sending push notifications), meaning the database transaction and connection are held open for the entire duration of all notifications. This is deliberately routed through the non-priority pool to avoid blocking client-facing operations.
+
+### 20. Cursor-based pagination with byte-ordering
+
+`getServerNtfSubscriptions` uses `subscription_id > ?` with `ORDER BY subscription_id LIMIT ?`. Since `subscription_id` is `BYTEA`, ordering is by raw byte comparison. The batch status update uses `FROM (VALUES ...)` pattern instead of `WHERE IN (...)`, and the `s.status != upd.status` guard prevents no-op writes from firing XOR hash triggers.
