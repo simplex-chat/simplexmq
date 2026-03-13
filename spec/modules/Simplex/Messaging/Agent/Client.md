@@ -8,7 +8,7 @@
 
 ## Overview
 
-This module defines `AgentClient`, the central state container for the messaging agent, and all reusable infrastructure that Agent.hs and other consumers (NtfSubSupervisor.hs, FileTransfer/Agent.hs, simplex-chat) build upon. It contains ~2868 lines covering:
+This module defines `AgentClient`, the central state container for the messaging agent, and all reusable infrastructure that Agent.hs and other consumers (NtfSubSupervisor.hs, FileTransfer/Agent.hs, simplex-chat) build upon. It covers:
 
 - **Protocol client lifecycle**: lazy singleton connections to SMP/NTF/XFTP routers via `SessionVar` pattern, with disconnect callbacks and reconnection workers
 - **Worker framework**: `getAgentWorker` (lifecycle, restart rate limiting, crash recovery) + `withWork`/`withWork_`/`withWorkItems` (task retrieval with doWork flag atomics)
