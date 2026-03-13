@@ -1,5 +1,6 @@
 import {createCryptoBackend} from './crypto-backend.js'
 import {createProgressRing} from './progress.js'
+import {initUpload} from './upload.js'
 import {t} from './i18n.js'
 import {
   newXFTPAgent, closeXFTPAgent,
@@ -77,7 +78,7 @@ export function initDownload(app: HTMLElement, hash: string) {
   uploadLink.addEventListener('click', (e) => {
     e.preventDefault()
     history.replaceState(null, '', window.location.pathname)
-    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    initUpload(app)
   })
 
   async function startDownload() {
