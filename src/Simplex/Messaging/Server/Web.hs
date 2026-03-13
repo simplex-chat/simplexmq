@@ -291,7 +291,7 @@ section_ label content' src =
           let next = B.drop (B.length endMarker) next'
            in case content' of
                 Just content -> before <> item_ label content inside <> section_ label content' next
-                Nothing -> before <> next -- collapse section
+                Nothing -> before <> section_ label Nothing next -- collapse section
   where
     startMarker = "<x-" <> label <> ">"
     endMarker = "</x-" <> label <> ">"
