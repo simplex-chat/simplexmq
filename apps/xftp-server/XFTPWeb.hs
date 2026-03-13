@@ -41,14 +41,14 @@ xftpGenerateSite cfg info onionHost path = do
   let xftpDir = path </> "xftp-web-bundle"
       mediaDir = path </> "media"
       fileDir = path </> "file"
-  filePage xftpDir
-  filePage mediaDir
+  filePage xftpDir xftpWebContent
+  filePage mediaDir xftpMediaContent
   createDirectoryIfMissing True fileDir
   B.writeFile (fileDir </> "index.html") $ render xftpFilePageHtml substs
   where
-    filePage dir = do
+    filePage dir content_ = do
       createDirectoryIfMissing True dir
-      forM_ xftpWebContent $ \(fp, content) -> B.writeFile (dir </> fp) content
+      forM_ content_ $ \(fp, content) -> B.writeFile (dir </> fp) content
 
 xftpServerInformation :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> ByteString
 xftpServerInformation cfg info onionHost = render (Web.indexHtml embeddedContent) (xftpSubsts cfg info onionHost)
