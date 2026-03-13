@@ -26,19 +26,19 @@ import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
 
 xftpWebContent :: [(FilePath, ByteString)]
-xftpWebContent = $(embedDir "apps/xftp-server/static/xftp/")
+xftpWebContent = $(embedDir "apps/xftp-server/static/xftp-web-bundle/")
 
 xftpMediaContent :: [(FilePath, ByteString)]
 xftpMediaContent = $(embedDir "apps/xftp-server/static/media/")
 
 xftpFilePageHtml :: ByteString
-xftpFilePageHtml = $(embedFile "apps/common/Web/static/file.html")
+xftpFilePageHtml = $(embedFile "apps/xftp-server/static/file.html")
 
 xftpGenerateSite :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()
 xftpGenerateSite cfg info onionHost path = do
   let substs = xftpSubsts cfg info onionHost
   Web.generateSite embeddedContent (render (Web.indexHtml embeddedContent) substs) [] path
-  let xftpDir = path </> "xftp"
+  let xftpDir = path </> "xftp-web-bundle"
       mediaDir = path </> "media"
       fileDir = path </> "file"
   createDirectoryIfMissing True xftpDir

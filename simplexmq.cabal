@@ -53,9 +53,9 @@ extra-source-files:
     apps/common/Web/static/media/testflight.png
     apps/xftp-server/static/media/xftp-protocol.svg
     apps/xftp-server/static/media/xftp-protocol-dark.svg
-    apps/xftp-server/static/xftp/crypto.worker.js
-    apps/xftp-server/static/xftp/index.css
-    apps/xftp-server/static/xftp/index.js
+    apps/xftp-server/static/xftp-web-bundle/crypto.worker.js
+    apps/xftp-server/static/xftp-web-bundle/index.css
+    apps/xftp-server/static/xftp-web-bundle/index.js
 
 flag swift
   description: Enable swift JSON format
