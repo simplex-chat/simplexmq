@@ -4,8 +4,8 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>SimpleX Chat - Server Information</title>
-  <meta name="description" content="">
+  <title>SimpleX File Transfer</title>
+  <meta name="description" content="Send files securely with end-to-end encryption">
   <meta name="Content-Type" content="text/html;charset=utf-8">
   <x-onionHost>
     <meta http-equiv="onion-location" content="http://${onionHost}">
@@ -21,64 +21,171 @@
       overflow-x: hidden;
     }
 
-    table#config {
-      border-collapse: collapse;
-      margin-bottom: 4px;
+    /* Missing Tailwind arbitrary-value utilities for file page */
+    .text-\[38px\] { font-size: 38px; }
+    .text-\[35px\] { font-size: 35px; }
+    .leading-\[45px\] { line-height: 45px; }
+    .leading-\[55px\] { line-height: 55px; }
+    .max-w-\[448px\] { max-width: 448px; }
+    .max-w-\[1276px\] { max-width: 1276px; }
+    .max-w-\[600px\] { max-width: 600px; }
+    .min-w-\[300px\] { min-width: 300px; }
+    .z-\[10000\] { z-index: 49; }
+    .z-\[10001\] { z-index: 49; }
+    .shadow-\[0px_3px_12px_rgba\(0\2c 0\2c 0\2c 0\.2\)\] { box-shadow: 0px 3px 12px rgba(0,0,0,0.2); }
+    @media (min-width: 640px) {
+      .sm\:p-14 { padding: 3.5rem; }
     }
-
-    th,
-    td {
-      padding: 7px 0;
-      text-align: left;
-      vertical-align: top;
+    @media (min-width: 768px) {
+      .md\:text-\[45px\] { font-size: 45px; }
+      .md\:leading-\[55px\] { line-height: 55px; }
+      .md\:w-fit { width: fit-content; }
+      .md\:max-w-\[1276px\] { max-width: 1276px; }
+      .md\:max-h-\[660px\] { max-height: 660px; }
+      .md\:h-fit { height: fit-content; }
+      .md\:p-10 { padding: 2.5rem; }
     }
+    .dark\:bg-card-bg-dark:is(.dark *) { background-color: #071C46; }
+    .lg\:max-w-\[448px\] { }
+    @media (min-width: 1024px) { .lg\:max-w-\[448px\] { max-width: 448px; } }
 
-    tr td:not(:last-child) {
-      width: 250px;
-      font-size: 17px;
-      font-family: Gilroy;
-      font-weight: 500;
-      color: #606C71;
-      padding-right: 20px;
+    /* Custom utility classes */
+    html.lock-scroll, html.lock-scroll body { overflow: hidden; }
+    .overlay a, p a { color: #0053D0; text-decoration: underline; text-underline-offset: 2px; }
+    .dark .overlay a, .dark p a { color: #70F0F9; }
+  </style>
+  <link rel="stylesheet" href="/xftp/index.css">
+  <style>
+    /* Reset website .card styles that conflict with xftp bundle */
+    #app .card { cursor: default; }
+    #app .card,
+    #app .card > div { transition: unset; height: auto; }
+    #app .card > div > * { opacity: unset; max-height: unset; transform: unset; transition: unset; }
+
+    /* Align xftp bundle with website design */
+    #app { font-family: inherit; color: #3F484B; max-width: 600px; width: 100%; margin: 0 auto; padding: 0; }
+    #app .card { background: transparent; box-shadow: none; padding: 0; border-radius: 0; }
+    #app .card > h1 { display: none; }
+    .dark #app h1 { color: #fff; }
+    #app .drop-zone { border: 2px dashed #c5d3de; border-radius: 12px; padding: 40px 24px; }
+    #app .drop-zone.drag-over { border-color: #0053D0; background: #DBEEFF; }
+    #app .btn { background: #0053D0; border-radius: 34px; padding: 12px 32px; font-size: .9rem; font-weight: 600; }
+    #app .btn:hover { background: #1661D1; }
+    #app .btn-secondary { background: #6b7280; border-radius: 34px; }
+    #app .hint { color: #6b7280; }
+    #app .link-row input { border-radius: 8px; border-color: #c5d3de; }
+    #app .security-note { background: #ffffff; border-radius: 12px; color: #3F484B; }
+    #app .security-note a { color: #0197FF; }
+    #app .success { color: #0053D0; }
+
+    .dark #app { color: #e5e7eb; }
+    .dark #app .card { background: transparent; box-shadow: none; }
+    .dark #app .drop-zone { border-color: #374151; }
+    .dark #app .drop-zone.drag-over { border-color: #70F0F9; background: #1B325C; }
+    .dark #app .btn { background: #70F0F9; color: #000832; }
+    .dark #app .btn:hover { background: #66D9E2; }
+    .dark #app .link-row input { border-color: #374151; background: #071C46; color: #e5e7eb; }
+    .dark #app .security-note { background: #0B2A59; color: #d1d5db; }
+    .dark #app .security-note a { color: #70F0F9; }
+    .dark #app .success { color: #70F0F9; }
+
+    #app #upload-error { border: 2px dashed #c5d3de; border-radius: 12px; padding: 40px 24px; text-align: center; }
+    .dark #app #upload-error { border-color: #374151; }
+
+    #app .stage > .btn { margin-top: 20px; }
+    #app .security-note { margin-top: 20px; }
+    #app .drop-zone .btn { margin: 10px 0 16px; }
+
+    /* Protocol overlay */
+    #xftp-protocol { padding-top: 70px; }
+    #xftp-protocol::before { top: 0; left: 0; }
+    #xftp-protocol .overlay-card {
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
     }
-
-    @media screen and (max-width: 767px) {
-      tr td:not(:last-child) {
-        font-size: 16px;
+    @media (min-width: 768px) {
+      #xftp-protocol .overlay-card { max-height: min(660px, 100%); }
+    }
+    #xftp-protocol .overlay-card > h1 {
+      flex-shrink: 0;
+      padding-bottom: 16px;
+      margin-bottom: 0;
+      z-index: 1;
+    }
+    @media (min-width: 1024px) and (max-height: 750px) {
+      #xftp-protocol .overlay-card > h1 { font-size: 22px; }
+    }
+    #xftp-protocol .overlay-card > .flex {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: #c5d3de transparent;
+    }
+    .dark #xftp-protocol .overlay-card > .flex {
+      scrollbar-color: #374151 transparent;
+    }
+    #xftp-protocol .overlay-card > .flex::-webkit-scrollbar { width: 6px; }
+    #xftp-protocol .overlay-card > .flex::-webkit-scrollbar-track { background: transparent; }
+    #xftp-protocol .overlay-card > .flex::-webkit-scrollbar-thumb { background: #c5d3de; border-radius: 3px; }
+    .dark #xftp-protocol .overlay-card > .flex::-webkit-scrollbar-thumb { background: #374151; }
+    @media (min-width: 1024px) and (min-height: 600px) {
+      #xftp-protocol .overlay-card > .flex > div:first-child { max-width: 50%; }
+      #xftp-protocol .overlay-card > .flex > div:last-child {
+        position: absolute; right: 56px; top: 0; bottom: 0; left: 55%;
+        display: flex; align-items: center; justify-content: center; pointer-events: none;
       }
+      #xftp-protocol .overlay-card > .flex > div:last-child > div { height: 100%; padding: 40px 0; box-sizing: border-box; }
+      #xftp-protocol .overlay-card > .flex > div:last-child img { height: 100%; }
+    }
+    #xftp-protocol .close-overlay-btn {
+      position: absolute; top: 24px; right: 24px; cursor: pointer; z-index: 3; fill: #606C71;
+    }
+    .dark #xftp-protocol .close-overlay-btn { fill: #e5e7eb; }
+    #xftp-protocol .overlay-card::after {
+      content: '';
+      position: absolute; bottom: 40px; left: 24px; right: 24px;
+      height: 48px;
+      background: linear-gradient(rgba(255,255,255,0), #fff);
+      pointer-events: none; z-index: 2; transition: opacity 0.2s;
+    }
+    .dark #xftp-protocol .overlay-card::after {
+      background: linear-gradient(rgba(7,28,70,0), #071C46);
+    }
+    @media (min-width: 640px) {
+      #xftp-protocol .overlay-card::after { bottom: 56px; left: 56px; right: 56px; }
+    }
+    @media (min-width: 1024px) and (min-height: 600px) {
+      #xftp-protocol .overlay-card::after { right: 50%; }
+    }
+    #xftp-protocol.scrolled-bottom .overlay-card::after { opacity: 0; }
+    #xftp-protocol .overlay-card.flex,
+    #xftp-protocol.flex .overlay-card { animation: overlaySlideIn 0.25s ease-out; }
+    @keyframes overlaySlideIn {
+      from { opacity: 0; transform: scale(0.95) translateY(10px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    #xftp-protocol.overlay-closing { animation: overlayFadeOut 0.2s ease-in forwards; }
+    #xftp-protocol.overlay-closing .overlay-card { animation: overlaySlideOut 0.2s ease-in forwards; }
+    @keyframes overlayFadeOut {
+      from { opacity: 1; } to { opacity: 0; }
+    }
+    @keyframes overlaySlideOut {
+      from { opacity: 1; transform: scale(1) translateY(0); }
+      to { opacity: 0; transform: scale(0.95) translateY(10px); }
     }
 
-    @media screen and (max-width: 440px) {
-      table {
-        width: 100%;
-        table-layout: fixed;
-      }
-
-      tr td:not(:last-child) {
-        width: 40%;
-      }
+    .file-proto-link {
+      font-size: 1.25rem; font-weight: 600;
+      background: linear-gradient(90deg, #001aa7 0%, #0095e7 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      text-decoration: none;
     }
-
-    .dark tr td:not(:last-child) {
-      color: #fff;
-    }
-
-    tr td:last-child {
-      font-size: 17px;
-      font-family: Gilroy;
-      font-weight: 300;
-    }
-
-    tr {
-      text-align: top;
-    }
-
-    tr a {
-      color: #0053D0;
-    }
-
-    .dark tr a {
-      color: #70F0F9;
+    .dark .file-proto-link {
+      background: linear-gradient(90deg, #019bfe 0%, #64fdff 58%, #c8feff 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     }
   </style>
 </head>
@@ -105,13 +212,11 @@
                     class="text-[16px] leading-[26px] tracking-[0.01em] nav-link-text text-black dark:text-white before:bg-black dark:before:bg-white">Server
                     information</span></a>
               </li>
-              <x-xftpConfig>
               <li class="nav-link relative"><a href="/file"
                   class="flex items-center justify-between gap-2 lg:py-5 whitespace-nowrap"><span
                     class="text-[16px] leading-[26px] tracking-[0.01em] nav-link-text text-black dark:text-white before:bg-black dark:before:bg-white">File
                     transfer</span></a>
               </li>
-              </x-xftpConfig>
             </ul><a target="_blank" href="https://github.com/simplex-chat/simplex-chat#help-us-with-donations"
               class="whitespace-nowrap flex items-center gap-1 self-center text-white dark:text-black text-[16px] font-medium tracking-[0.02em] rounded-[34px] bg-primary-light dark:bg-primary-dark py-3 lg:py-2 px-20 lg:px-5 mb-16 lg:mb-0">Donate</a>
           </div>
@@ -216,193 +321,180 @@
       window.addEventListener('scroll', changeHeaderBg);</script>
   </section>
 
-  <div id="server-info">
-  <section class="py-[90px] block bg-secondary-bg-light dark:bg-secondary-bg-dark">
-    <div class="container m-auto flex items-center justify-between px-5">
-      <div class="flex flex-col items-start justify-center w-full">
-        <h1 class="text-[42px] mb-[32px] leading-[43px] font-bold max-w-[500px] primary-header-contact">Server
-          information</h1>
-
-        <div class="flex flex-col lg:flex-row gap-10 justify-between w-full">
-          <div>
-            <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">
-              Public information
-            </h2>
-            <table id="public-info">
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Server version:</td>
-                <td>${version}<x-commit> / <a href="${commitSourceCode}/commit/${commit}" target="_blank">${shortCommit}</a></x-commit></td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Source code:</td>
-                <td>
-                  <x-sourceCode><a href="${sourceCode}" target="_blank">${sourceCode}</a></x-sourceCode>
-                  <x-noSourceCode>add to ${iniFileName} (required by <a href="https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE" target="_blank">AGPLv3</a>)</x-noSourceCode>
-                </td>
-              </tr>
-              <x-website>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Web site:</td>
-                  <td><a href="${website}" target="_blank">${website}</a></td>
-                </tr>
-              </x-website>
-              <x-usageConditions>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Usage conditions:</td>
-                  <td><a href="${usageConditions}" target="_blank">${usageConditions}</a></td>
-                </tr>
-              </x-usageConditions>
-              <x-usageAmendments>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Amendments:</td>
-                  <td><a href="${usageAmendments}" target="_blank">${usageAmendments}</a></td>
-                </tr>
-              </x-usageAmendments>
-              <x-operator>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Operator:</td>
-                  <td>${operatorEntity} (${operatorCountry})</td>
-                </tr>
-              </x-operator>
-              <x-admin>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Administrator contacts:</td>
-                  <td>
-                    <ul class="text-grey-black dark:text-white text-base mb-[16px]">
-                      <x-adminSimplex>
-                        <li>SimpleX: <a href="${adminSimplex}">open address</a></li>
-                      </x-adminSimplex>
-                      <x-adminEmail>
-                        <li>Email: <a href="mailto:${adminEmail}">${adminEmail}</a></li>
-                      </x-adminEmail>
-                      <x-adminPGP>
-                        <li>PGP: <a href="${adminPGP}">${adminPGPFingerprint}</a></li>
-                      </x-adminPGP>
-                    </ul>
-                  </td>
-                </tr>
-              </x-admin>
-              <x-complaints>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Complaints and feedback:</td>
-                  <td>
-                    <ul class="text-grey-black dark:text-white text-base mb-[16px]">
-                      <x-complaintsSimplex>
-                        <li>SimpleX: <a href="${complaintsSimplex}">open address</a></li>
-                      </x-complaintsSimplex>
-                      <x-complaintsEmail>
-                        <li>Email: <a href="mailto:${complaintsEmail}">${complaintsEmail}</a></li>
-                      </x-complaintsEmail>
-                      <x-complaintsPGP>
-                        <li>PGP: <a href="${complaintsPGP}">${complaintsPGPFingerprint}</a></li>
-                      </x-complaintsPGP>
-                    </ul>
-                  </td>
-                </tr>
-              </x-complaints>
-              <x-hosting>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Hosting provider:</td>
-                  <td>${hostingEntity} (${hostingCountry})</td>
-                </tr>
-              </x-hosting>
-              <x-hostingType>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Hosting type:</td>
-                  <td>${hostingType}</td>
-                </tr>
-              </x-hostingType>
-              <x-serverCountry>
-                <tr class="text-grey-black dark:text-white text-base">
-                  <td>Server country:</td>
-                  <td>${serverCountry}</td>
-                </tr>
-              </x-serverCountry>
-            </table>
-          </div>
-
-          <div>
-            <h2 class="text-[30px] mb-[20px] leading-[28px] text-[#606C71] dark:text-white font-bold max-w-[475px]">
-              Configuration</h2>
-            <table id="config">
-              <x-smpConfig>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Persistence:</td>
-                <td>${persistence}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Message expiration:</td>
-                <td>${messageExpiration}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Stats enabled:</td>
-                <td>${statsEnabled}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>New queues allowed:</td>
-                <td>${newQueuesAllowed}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Basic auth enabled:</td>
-                <td>${basicAuthEnabled}</td>
-              </tr>
-              </x-smpConfig>
-              <x-xftpConfig>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>File expiration:</td>
-                <td>${fileExpiration}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Stats enabled:</td>
-                <td>${statsEnabled}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>New uploads allowed:</td>
-                <td>${newUploadsAllowed}</td>
-              </tr>
-              <tr class="text-grey-black dark:text-white text-base">
-                <td>Basic auth enabled:</td>
-                <td>${basicAuthEnabled}</td>
-              </tr>
-              </x-xftpConfig>
-            </table>
+  <section class="bg-secondary-bg-light dark:bg-primary-bg-dark py-10 px-5">
+    <div class="container flex flex-col items-center mx-auto">
+      <noscript>
+        <p class="text-center text-grey-black dark:text-white py-10">
+          JavaScript is required for file transfer.
+        </p>
+      </noscript>
+      <h1 class="text-[38px] text-center font-bold text-active-blue mb-8">SimpleX File Transfer</h1>
+      <div id="app" data-xftp-app data-no-hashchange class="w-full">
+        <div class="card">
+          <div class="drop-zone">
+            <p>Drag &amp; drop a file here</p>
+            <p class="hint">or</p>
+            <span class="btn">Choose file</span>
+            <p class="hint">Max 100 MB - <a href="#join-simplex">SimpleX Chat app</a> supports files up to 1 GB</p>
           </div>
         </div>
       </div>
-  </section>
+      <template id="dl-placeholder">
+        <div class="card">
+          <h1>SimpleX File Transfer</h1>
+          <div class="stage">
+            <p>File available</p>
+            <button class="btn">Download</button>
+            <div class="security-note">
+              <p>This file is encrypted - data routers never see file contents, name or size.</p>
+              <p>The encryption key is in the link's hash fragment - it is never sent to any server.</p>
+              <p>For better security, use <a href="https://simplex.chat/download">SimpleX Chat</a> app.</p>
+            </div>
+          </div>
+        </div>
+      </template>
+      <script>if(location.hash.length>50){var a=document.getElementById("app"),t=document.getElementById("dl-placeholder");if(a&&t)a.replaceChildren(t.content.cloneNode(true))}</script>
+      <script type="module" src="/xftp/index.js"></script>
 
-  <section id="join-simplex" class="bg-primary-bg-light dark:bg-primary-bg-dark py-[90px] px-5">
-    <div class="container flex flex-col items-center">
-      <h2
-        class="text-[38px] leading-[36px] md:leading-[55px] text-grey-black dark:text-white text-center font-bold mb-5">
-        <span class="text-active-blue">Join</span> SimpleX
-      </h2>
-      <p class="text-black dark:text-white text-base text-center mb-14">We invite you to join the conversation</p>
-      <div class="flex flex-col items-center gap-5 self-stretch mb-12"><a target="_blank"
-          href="https://www.reddit.com/r/SimpleXChat/"
-          class="flex items-center justify-center h-11 w-full max-w-[294px] font-medium text-base rounded-[34px] tracking-[0.02em] text-primary-light dark:text-primary-dark dark:bg-primary-bg-dark dark:border-primary-dark dark:border bg-[#D9ECFF]">Join
-          the REDDIT community</a><a target="_blank" href="https://github.com/simplex-chat"
-          class="flex items-center justify-center h-11 w-full max-w-[294px] font-medium text-base rounded-[34px] tracking-[0.02em] text-primary-light dark:text-primary-dark dark:bg-primary-bg-dark dark:border-primary-dark dark:border bg-[#D9ECFF]">Join
-          us on GitHub</a><a target="_blank" href="https://github.com/simplex-chat/simplex-chat#help-us-with-donations"
-          class="flex items-center justify-center h-11 w-full max-w-[294px] font-medium text-base rounded-[34px] tracking-[0.02em] text-primary-light dark:text-primary-dark dark:border-none bg-white dark:bg-[rgba(112,240,249,0.2)] border border-[#0053D0]">Donate
-          here to help us</a></div>
-      <hr class="block mb-7 mx-5 dark:opacity-[0.2] w-full">
-      <p class="text-grey-black dark:text-white text-center mb-7">Get SimpleX&nbsp;<a target="_blank"
-          href="https://simplex.chat/downloads">desktop app</a></p>
-      <div class="flex items-center justify-center gap-4 flex-wrap"><a target="_blank"
-          href="https://apps.apple.com/us/app/simplex-chat/id1605771084"><img class="h-[40px] w-auto"
-            src="/media/apple_store.svg"></a><a target="_blank"
-          href="https://play.google.com/store/apps/details?id=chat.simplex.app"
-          title="Public iOS preview on TestFlight"><img class="h-[40px] w-auto" src="/media/google_play.svg"></a><a
-          target="_blank" href="https://simplex.chat/fdroid" title="SimpleX F-Droid Repository"><img
-            class="h-[40px] w-auto" src="/media/f_droid.svg"></a><a target="_blank"
-          href="https://testflight.apple.com/join/DWuT2LQu"><img class="h-[40px] w-auto"
-            src="/media/testflight.png"></a><a target="_blank"
-          href="https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex.apk"><img
-            class="h-[40px] w-auto" src="/media/apk_icon.png"></a></div>
+      <p class="text-base text-center text-grey-black dark:text-white mt-10 max-w-[600px]">Send files securely with end-to-end encryption — no accounts, no tracking.</p>
+      <a href="javascript:void(0)" id="open-xftp-protocol" class="file-proto-link mt-3 block text-center">Learn more about XFTP protocol</a>
     </div>
   </section>
+
+  <section id="join-simplex" class="bg-primary-bg-light dark:bg-secondary-bg-dark py-[90px] px-5">
+    <div class="container flex flex-col items-center mx-auto text-center">
+      <h2 class="text-[35px] leading-[45px] md:text-[45px] md:leading-[55px] text-grey-black dark:text-white font-bold mb-5">
+        Get SimpleX Chat — the most secure &amp; private messenger
+      </h2>
+      <p class="text-base text-grey-black dark:text-white mb-14 max-w-[600px]">
+        The file transfer you just used uses the same data routing protocol as SimpleX Chat. The app has end-to-end encrypted messaging, voice and video calls, groups, and sending files. No account. No phone. No email. No user profile IDs.
+      </p>
+      <div class="flex items-center justify-center gap-4 flex-wrap">
+        <a href="https://apps.apple.com/us/app/simplex-chat/id1605771084" target="_blank"><img class="h-[40px] w-auto" src="/media/apple_store.svg"></a>
+        <a href="https://play.google.com/store/apps/details?id=chat.simplex.app" target="_blank"><img class="h-[40px] w-auto" src="/media/google_play.svg"></a>
+        <a href="https://simplex.chat/fdroid" target="_blank"><img class="h-[40px] w-auto" src="/media/f_droid.svg"></a>
+        <a href="https://testflight.apple.com/join/DWuT2LQu" target="_blank"><img class="h-[40px] w-auto" src="/media/testflight.png"></a>
+        <a href="https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-aarch64.apk" target="_blank"><img class="h-[40px] w-auto" src="/media/apk_icon.png"></a>
+      </div>
+    </div>
+  </section>
+
+  <div id="xftp-protocol" class="overlay hidden fixed top-0 left-0 bottom-0 right-0 before:absolute before:w-full before:h-full bg-transparent before:bg-secondary-bg-light dark:before:bg-primary-bg-dark before:opacity-90 items-center justify-center p-3 md:p-10 z-[10000]">
+    <div class="overlay-card w-full md:w-fit md:max-w-[1276px] bg-white dark:bg-card-bg-dark opacity-100 h-full md:h-fit md:max-h-[660px] z-[10001] rounded-md shadow-[0px_3px_12px_rgba(0,0,0,0.2)] p-6 py-10 sm:p-14 overflow-auto scale-100">
+      <h1 class="text-3xl font-bold text-active-blue mb-6">XFTP protocol: the most secure file transfer</h1>
+      <div class="flex flex-col-reverse lg:flex-row gap-10 justify-between">
+        <div class="lg:max-w-[448px]">
+          <div class="text-grey-black dark:text-white flex flex-col gap-6 text-base">
+            <div>
+              <h3 class="font-bold text-lg mb-2">No account required</h3>
+              <p>Each file fragment uses a new random key. Data routers have no "users" or "files" - they transfer encrypted file fragments of fixed sizes.</p>
+            </div>
+            <div>
+              <h3 class="font-bold text-lg mb-2">Triple-encrypted in your browser</h3>
+              <p>File encryption key is present only in the URL hash fragment - your browser never sends it to a server. There are 3 encryption layers: TLS transport, per-recipient encryption (unique ephemeral key per transfer), and file end-to-end encryption.</p>
+            </div>
+            <div>
+              <h3 class="font-bold text-lg mb-2">Independent data routers</h3>
+              <p>When file is split to fragments, it is sent via network routers operated by independent parties. No operator can see the actual file size or name. Even if a router is compromised, it can only see encrypted fragments of fixed size. File fragments are cached by network routers for approximately 48 hours.</p>
+            </div>
+            <p class="mt-4">
+              <a href="https://github.com/simplex-chat/simplexmq/blob/stable/protocol/xftp.md" target="_blank" rel="noopener" class="text-active-blue hover:underline">
+                Read the XFTP protocol specification →
+              </a>
+            </p>
+          </div>
+        </div>
+        <div class="max-w-[448px]">
+          <div class="flex items-center justify-center">
+            <img class="w-full max-w-[448px] min-w-[300px] dark:hidden" src="/media/xftp-protocol.svg" alt="">
+            <img class="w-full max-w-[448px] min-w-[300px] hidden dark:block" src="/media/xftp-protocol-dark.svg" alt="">
+          </div>
+        </div>
+      </div>
+      <svg class="close-overlay-btn" width="16" height="16" viewBox="0 0 13 13" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12.7973 11.5525L7.59762 6.49833L12.7947 1.44675C13.055 1.19371 13.0658 0.771991 12.8188 0.505331C12.5718 0.238674 12.1602 0.227644 11.8999 0.480681L6.65343 5.58028L1.09979 0.182228C0.839522 -0.070157 0.427909 -0.059127 0.18094 0.207531C-0.0660305 0.474191 -0.0552645 0.895911 0.205003 1.14894L5.70862 6.49833L0.20247 11.851C-0.0577975 12.104 -0.0685635 12.5257 0.178407 12.7924C0.306324 12.9306 0.477936 13 0.650181 13C0.811033 13 0.971873 12.9397 1.09726 12.817L6.65343 7.41639L11.9025 12.5186C12.0285 12.6406 12.1893 12.7015 12.3495 12.7015C12.5218 12.7015 12.6934 12.6321 12.8213 12.4939C13.0689 12.2273 13.0582 11.8062 12.7973 11.5525Z"></path>
+      </svg>
+    </div>
   </div>
+
+  <script>
+    window.__XFTP_I18N__ = {
+      "title": "SimpleX File Transfer",
+      "dropZone": "Drag & drop a file here",
+      "dropZoneHint": "or",
+      "chooseFile": "Choose file",
+      "maxSizeHint": "Max 100 MB - <a href=\"#join-simplex\">SimpleX Chat app</a> supports files up to 1 GB",
+      "encrypting": "Encrypting…",
+      "uploading": "Uploading…",
+      "cancel": "Cancel",
+      "fileUploaded": "File uploaded",
+      "copy": "Copy",
+      "copied": "Copied!",
+      "share": "Share",
+      "expiryHint": "Files are typically available for 48 hours.",
+      "securityNote1": "Your file was encrypted in the browser - data routers never see file contents, name or size.",
+      "securityNote2": "The encryption key is in the link's hash fragment - it is never sent to any server.",
+      "securityNote3": "For better security, use <a href=\"https://simplex.chat/download\">SimpleX Chat</a> app.",
+      "retry": "Retry",
+      "downloading": "Downloading…",
+      "decrypting": "Decrypting…",
+      "downloadComplete": "Download complete",
+      "download": "Download",
+      "fileTooLarge": "File too large (%size%). Maximum is 100 MB. The <a href=\"#join-simplex\">SimpleX app</a> supports files up to 1 GB.",
+      "fileEmpty": "File is empty.",
+      "invalidLink": "Invalid or corrupted link.",
+      "initError": "Failed to initialize: %error%",
+      "fileAvailable": "File available (~%size%)",
+      "dlSecurityNote1": "This file is encrypted - data routers never see file contents, name or size.",
+      "dlSecurityNote2": "The encryption key is in the link's hash fragment - it is never sent to any server.",
+      "dlSecurityNote3": "For better security, use <a href=\"https://simplex.chat/download\">SimpleX Chat</a> app.",
+      "workersRequired": "Web Workers required — update your browser"
+    }
+  </script>
+
+  <script>
+    // Intercept close for #xftp-protocol to add fade-out animation
+    document.getElementById('xftp-protocol').addEventListener('click', function(e) {
+      if (e.target.closest('.close-overlay-btn') || (e.target.closest('.overlay') && !e.target.closest('.overlay-card'))) {
+        e.stopPropagation();
+        var el = document.getElementById('xftp-protocol');
+        el.classList.add('overlay-closing');
+        el.addEventListener('animationend', function handler() {
+          el.removeEventListener('animationend', handler);
+          el.classList.remove('flex', 'overlay-closing');
+          el.classList.add('hidden');
+          document.documentElement.classList.remove('lock-scroll');
+        });
+      }
+    }, true);
+
+    // Hide scroll fade gradient when text bottom is visible
+    var scrollArea = document.querySelector('#xftp-protocol .overlay-card > .flex');
+    if (scrollArea) {
+      var textCol = scrollArea.querySelector(':scope > div:first-child > div');
+      function checkScrollBottom() {
+        if (!textCol) return;
+        var scrollRect = scrollArea.getBoundingClientRect();
+        if (scrollRect.height === 0) return;
+        var textBottom = textCol.getBoundingClientRect().bottom;
+        document.getElementById('xftp-protocol').classList.toggle('scrolled-bottom', textBottom <= scrollRect.bottom + 10);
+      }
+      scrollArea.addEventListener('scroll', checkScrollBottom);
+      new MutationObserver(function() {
+        if (!document.getElementById('xftp-protocol').classList.contains('hidden')) {
+          requestAnimationFrame(checkScrollBottom);
+        }
+      }).observe(document.getElementById('xftp-protocol'), { attributes: true, attributeFilter: ['class'] });
+    }
+
+    // Open overlay handler
+    document.getElementById('open-xftp-protocol').addEventListener('click', function() {
+      var el = document.getElementById('xftp-protocol');
+      el.classList.remove('hidden');
+      el.classList.add('flex');
+      document.documentElement.classList.add('lock-scroll');
+    });
+  </script>
 
   <section class="bg-[#D9E7ED] dark:bg-[#0E2B57] py-[50px]">
     <div class="container">
@@ -567,7 +659,6 @@
     </div>
   </section>
 
-  <script src="/media/qrcode.js"></script>
 </body>
 
 </html>
