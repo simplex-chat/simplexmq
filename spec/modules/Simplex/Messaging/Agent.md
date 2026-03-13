@@ -38,9 +38,9 @@ The subscriber thread reads batches from `msgQ` (filled by SMP protocol clients)
 
 **Batch UP notification accumulation.** Successful subscription confirmations (`processSubOk`) append to a shared `upConnIds` TVar across the batch. A single `UP` event is emitted after all transmissions are processed, not per-transmission. Similarly, `serviceRQs` accumulates service-associated receive queues for batch processing via `processRcvServiceAssocs`.
 
-**Double validation for subscription results.** `isPendingSub` checks two conditions atomically: the queue must be in the pending map AND the client session must still be active (`activeClientSession`). If either fails, the result is counted as ignored (statistics only). This handles the race where a subscription response arrives after reconnection.
+**Double validation for subscription results.** `isPendingSub` checks two conditions atomically: the queue must be in the pending map AND the client session must still be active (`activeClientSession`). If either fails, the result is counted as ignored (statistics only). This handles the race where a subscription result arrives after reconnection.
 
-**SUB response piggybacking MSG.** When a SUB response arrives as `Right msg@SMP.MSG {}`, the connection is marked UP (via `processSubOk`) AND the MSG is processed. The UP notification happens even if the MSG processing fails — the connection is up regardless.
+**SUB result piggybacking MSG.** When a SUB result arrives as `Right msg@SMP.MSG {}`, the connection is marked UP (via `processSubOk`) AND the MSG is processed. The UP notification happens even if the MSG processing fails — the connection is up regardless.
 
 **subQ overflow to pendingMsgs.** `processSMP` writes events to `subQ` (bounded TBQueue) but when full, events go into a `pendingMsgs` TVar. After processing, pending messages are drained in reverse order (LIFO). This prevents the message processing thread from blocking on a full queue, which would stall the entire SMP client.
 

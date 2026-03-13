@@ -12,7 +12,7 @@
 
 ### 2. Fixed-size padding hides actual file size
 
-The encrypted output is padded to `encSize` (the sum of chunk sizes). Since chunk sizes are fixed powers of 2 (64KB, 256KB, 1MB, 4MB), the encrypted file size reveals only which chunk size bucket the file falls into, not the actual size. The encryption streams data with `LC.sbEncryptChunk` in a loop, pads the remaining space, then manually appends the auth tag via `LC.sbAuth`. This manual streaming approach (rather than using the all-at-once `LC.sbEncryptTailTag`) is necessary because encryption is interleaved with file I/O.
+The encrypted output is padded to `encSize` (the sum of data packet sizes). Since data packet sizes are fixed powers of 2 (64KB, 256KB, 1MB, 4MB), the encrypted file size reveals only which size bucket the file falls into, not the actual size. The encryption streams data with `LC.sbEncryptChunk` in a loop, pads the remaining space, then manually appends the auth tag via `LC.sbAuth`. This manual streaming approach (rather than using the all-at-once `LC.sbEncryptTailTag`) is necessary because encryption is interleaved with file I/O.
 
 ### 3. Dual decrypt paths: single-chunk vs multi-chunk
 
@@ -28,4 +28,4 @@ In the multi-chunk streaming path, if `BA.constEq` detects an auth tag mismatch 
 
 ### 5. Streaming encryption uses 64KB blocks
 
-`encryptFile` reads plaintext in 65536-byte blocks (`LC.sbEncryptChunk`), regardless of the XFTP chunk size. These are encryption blocks within a single continuous stream — not to be confused with XFTP protocol chunks which are much larger (64KB–4MB).
+`encryptFile` reads plaintext in 65536-byte blocks (`LC.sbEncryptChunk`), regardless of the XFTP data packet size. These are encryption blocks within a single continuous stream — not to be confused with XFTP data packets which are much larger (64KB–4MB).

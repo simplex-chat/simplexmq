@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Client
 
-> XFTP client: connection management, handshake, chunk upload/download with forward secrecy.
+> XFTP client: connection management, handshake, data packet upload/download with forward secrecy.
 
 **Source**: [`FileTransfer/Client.hs`](../../../../src/Simplex/FileTransfer/Client.hs)
 
@@ -18,19 +18,19 @@
 
 ### 3. Ephemeral DH key pair per download
 
-`downloadXFTPChunk` generates a fresh X25519 key pair for each chunk download. The public key is sent with the FGET command; the router responds with its own ephemeral key. The derived shared secret encrypts the file data in transit. This provides forward secrecy — compromising a past DH key doesn't decrypt other downloads.
+`downloadXFTPChunk` generates a fresh X25519 key pair for each data packet download. The public key is sent with the FGET command; the router returns its own ephemeral key. The derived shared secret encrypts the data packet in transit. This provides forward secrecy — compromising a past DH key doesn't decrypt other downloads.
 
-### 4. Chunk-size-proportional download timeout
+### 4. Size-proportional download timeout
 
-`downloadXFTPChunk` calculates the timeout as `baseTimeout + (sizeInKB * perKbTimeout)`, where `baseTimeout` is the base TCP timeout and `perKbTimeout` is a per-kilobyte timeout from the network config. Larger chunks get proportionally more time. This prevents premature timeouts on large chunks over slow connections.
+`downloadXFTPChunk` calculates the timeout as `baseTimeout + (sizeInKB * perKbTimeout)`, where `baseTimeout` is the base TCP timeout and `perKbTimeout` is a per-kilobyte timeout from the network config. Larger data packets get proportionally more time. This prevents premature timeouts on large data packets over slow connections.
 
 ### 5. prepareChunkSizes threshold algorithm
 
-`prepareChunkSizes` selects chunk sizes using a 75% threshold: if the remaining payload exceeds 75% of the next larger chunk size, it uses the larger size. Otherwise, it uses the smaller size. `singleChunkSize` returns `Just size` only if the payload fits in a single chunk (used for redirect files which must be single-chunk).
+`prepareChunkSizes` selects data packet sizes using a 75% threshold: if the remaining payload exceeds 75% of the next larger size, it uses the larger size. Otherwise, it uses the smaller size. `singleChunkSize` returns `Just size` only if the payload fits in a single data packet (used for redirect files which must be single-packet).
 
-### 6. Upload sends file body after command response
+### 6. Upload sends data packet after command block
 
-`uploadXFTPChunk` sends the FPUT command and file body in the same streaming HTTP/2 request: the protocol command block is sent first, followed immediately by the raw file data via `hSendFile`. The router response (`FROk` or error) is received only after both the command and file body have been fully sent. This is a single HTTP/2 round trip, not a two-phase interaction.
+`uploadXFTPChunk` sends the FPUT command and data packet body in the same streaming HTTP/2 request: the protocol command block is sent first, followed immediately by the raw encrypted data via `hSendFile`. The command result (`FROk` or error) is received only after both the command and data have been fully sent. This is a single HTTP/2 round trip, not a two-phase interaction.
 
 ### 7. Empty corrId as nonce
 

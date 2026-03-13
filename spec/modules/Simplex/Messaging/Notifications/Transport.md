@@ -17,7 +17,7 @@ Two feature gates exist in the NTF protocol:
 | Version | Feature | Effect |
 |---------|---------|--------|
 | v2 (`authBatchCmdsNTFVersion`) | Auth key exchange + batching | `authPubKey` sent in handshake, `implySessId` and `batch` enabled |
-| v3 (`invalidReasonNTFVersion`) | Token invalid reasons | `NTInvalid` responses include the reason enum |
+| v3 (`invalidReasonNTFVersion`) | Token invalid reasons | `NTInvalid` results include the reason enum |
 
 Pre-v2 connections have no command encryption or batching — commands are sent in plaintext within TLS.
 
@@ -27,7 +27,7 @@ Pre-v2 connections have no command encryption or batching — commands are sent 
 
 ### 4. Block size
 
-NTF uses a 512-byte block size (`ntfBlockSize`), significantly smaller than SMP. This is sufficient because NTF protocol commands (TNEW, SNEW, TCHK, etc.) and their responses are short. `PNMessageData` (which contains encrypted message metadata) is not sent over the NTF transport — it is delivered via APNS push notifications.
+NTF uses a 512-byte block size (`ntfBlockSize`), significantly smaller than SMP. This is sufficient because NTF protocol commands (TNEW, SNEW, TCHK, etc.) and their results are short. `PNMessageData` (which contains encrypted message metadata) is not sent over the NTF transport — it is delivered via APNS push notifications.
 
 ### 5. Initial THandle has version 0
 

@@ -1,6 +1,6 @@
 # Simplex.Messaging.Notifications.Protocol
 
-> NTF protocol entities, commands, responses, and wire encoding for the notification system.
+> NTF protocol entities, commands, command results, and wire encoding for the notification system.
 
 **Source**: [`Notifications/Protocol.hs`](../../../../../src/Simplex/Messaging/Notifications/Protocol.hs)
 
@@ -16,7 +16,7 @@
 | PING | No | Must be empty |
 | All others | Yes | Must be present |
 
-For responses, the rule inverts: `NRTknId`, `NRSubId`, and `NRPong` must NOT have entity IDs (they are returned before/without entity context), while `NRErr` optionally has one (errors can occur with or without entity context).
+For command results, the rule inverts: `NRTknId`, `NRSubId`, and `NRPong` must NOT have entity IDs (they are returned before/without entity context), while `NRErr` optionally has one (errors can occur with or without entity context).
 
 ### 2. PNMessageData semicolon separator
 
@@ -24,7 +24,7 @@ For responses, the rule inverts: `NRTknId`, `NRSubId`, and `NRPong` must NOT hav
 
 ### 3. NTInvalid reason is version-gated
 
-When encoding `NRTkn` responses, the `NTInvalid` reason is only included if the negotiated protocol version is >= `invalidReasonNTFVersion` (v3). Older clients receive `NTInvalid Nothing`. This prevents parse failures on clients that don't understand the reason field.
+When encoding `NRTkn` results, the `NTInvalid` reason is only included if the negotiated protocol version is >= `invalidReasonNTFVersion` (v3). Older clients receive `NTInvalid Nothing`. This prevents parse failures on clients that don't understand the reason field.
 
 ### 4. subscribeNtfStatuses migration invariant
 
@@ -46,7 +46,7 @@ Token status `NTInvalid` allows subscription commands (SNEW, SCHK, SDEL), which 
 
 Both `smpP` and `strP` for `SMPQueueNtf` apply `updateSMPServerHosts` to the parsed SMP server. This normalizes router host addresses on deserialization, ensuring consistent comparison even if the on-wire format uses different host representations.
 
-### 9. NRTknId response tag comment
+### 9. NRTknId result tag comment
 
 The `NRTknId_` tag encodes as `"IDTKN"` with a source comment: "it should be 'TID', 'SID'". This indicates a naming inconsistency that was preserved for backward compatibility — the tag names don't follow the pattern of other NTF protocol tags.
 

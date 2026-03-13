@@ -59,7 +59,7 @@ Stats classification: exactly one of `srvSubOk`/`srvSubMore`/`srvSubFewer`/`srvS
 
 See comment on `processForwardedCommand`. Only single forwarded transmissions are allowed — batches are rejected with `BLOCK`. The synthetic `THandleAuth` has `peerClientService = Nothing`, preventing forwarded clients from claiming service identity. Only SEND, SKEY, LKEY, and LGET are allowed through `rejectOrVerify`.
 
-Double encryption: response is encrypted first to the client (with `C.cbEncrypt` using `reverseNonce clientNonce`), then wrapped and encrypted to the proxy (with `C.cbEncryptNoPad` using `reverseNonce proxyNonce`). Using reversed nonces ensures request and response directions use distinct nonces.
+Double encryption: the result is encrypted first to the client (with `C.cbEncrypt` using `reverseNonce clientNonce`), then wrapped and encrypted to the proxy (with `C.cbEncryptNoPad` using `reverseNonce proxyNonce`). Using reversed nonces ensures command and result directions use distinct nonces.
 
 ## Proxy concurrency limiter
 
@@ -73,13 +73,13 @@ See `wait`/`signal` around `forkProxiedCmd`. `procThreads` TVar implements a cou
 
 See `withSubscribed`. When a service client unsubscribes between the TVar read and the flush, `throwSTM (userError "service unsubscribed")` aborts the STM transaction. This is caught by `tryAny` and logged as "cancelled" — it's a successful path, not an error. The `flushSubscribedNtfs` function also cancels via `throwSTM` if the client is no longer current or sndQ is full.
 
-## Batch subscription responses — SOK grouped with MSG
+## Batch subscription results — SOK grouped with MSG
 
-See comment on `processSubBatch`. When batched SUB commands produce SOK responses plus messages, the first message is appended to the SOK batch (up to 4 SOKs per block) in a single transmission. Remaining messages go to `msgQ` for separate delivery. This ensures the client receives at least one message quickly with its subscription acknowledgments.
+See comment on `processSubBatch`. When batched SUB commands produce SOK results plus messages, the first message is appended to the SOK batch (up to 4 SOKs per block) in a single transmission. Remaining messages go to `msgQ` for separate delivery. This ensures the client receives at least one message quickly with its subscription acknowledgments.
 
 ## send thread — MVar fair lock
 
-The TLS handle is wrapped in an `MVar` (`newMVar h`). Both `send` (command responses from `sndQ`) and `sendMsg` (messages from `msgQ`) acquire this lock via `withMVar`. This ensures fair interleaving between response batches and individual messages, preventing either from starving the other.
+The TLS handle is wrapped in an `MVar` (`newMVar h`). Both `send` (command results from `sndQ`) and `sendMsg` (messages from `msgQ`) acquire this lock via `withMVar`. This ensures fair interleaving between result batches and individual messages, preventing either from starving the other.
 
 ## Queue creation — ID oracle prevention
 
@@ -103,4 +103,4 @@ Every queue command calls `withQueue_` which checks if `updatedAt` matches today
 
 ## foldrM in client command processing
 
-`foldrM process ([], [])` processes a batch of verified commands right-to-left, accumulating responses and messages. The responses list is built with `(:)`, so the final order matches the original command order. Messages from SUB are collected separately and passed as the second element of the `sndQ` tuple.
+`foldrM process ([], [])` processes a batch of verified commands right-to-left, accumulating results and messages. The results list is built with `(:)`, so the final order matches the original command order. Messages from SUB are collected separately and passed as the second element of the `sndQ` tuple.

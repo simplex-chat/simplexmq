@@ -48,7 +48,7 @@ This is the mechanism for time-scheduled subscription health checks.
 
 When the notification router returns `AUTH` for a subscription check, the subscription is not simply marked as failed — it is fully recreated from scratch by resetting to `NSASMP NSASmpKey` state. This handles the case where the notification router has lost its subscription state (restart, data loss). The SMP worker is kicked to re-establish notifier credentials.
 
-Successful check responses with statuses not in `subscribeNtfStatuses` also trigger recreation via `recreateNtfSub`.
+Successful check results with statuses not in `subscribeNtfStatuses` also trigger recreation via `recreateNtfSub`.
 
 ### 5. deleteToken two-phase with restart survival
 

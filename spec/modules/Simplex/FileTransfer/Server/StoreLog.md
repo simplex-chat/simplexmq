@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Server.StoreLog
 
-> Append-only store log for XFTP router file operations with error-resilient replay and compaction.
+> Append-only store log for XFTP router data packet operations with error-resilient replay and compaction.
 
 **Source**: [`FileTransfer/Server/StoreLog.hs`](../../../../../src/Simplex/FileTransfer/Server/StoreLog.hs)
 
@@ -24,10 +24,10 @@
 
 ### 5. Log entry types track operation lifecycle
 
-Six log entry types capture the complete file lifecycle:
-- `AddFile`: file creation with sender ID, file info, timestamp, and status
+Six log entry types capture the complete data packet lifecycle:
+- `AddFile`: data packet creation with sender ID, file info, timestamp, and status
 - `AddRecipients`: recipient registration (batched as `NonEmpty FileRecipient`) with sender ID association
 - `PutFile`: upload completion with file path
-- `DeleteFile`: file deletion by sender ID
+- `DeleteFile`: data packet deletion by sender ID
 - `AckFile`: single recipient acknowledgment
-- `BlockFile`: file blocking with blocking info
+- `BlockFile`: data packet blocking with blocking info

@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Types
 
-> Agent-side file transfer types: receive/send file records, status state machines, chunk/replica structures.
+> Agent-side file transfer types: receive/send file records, status state machines, and chunk/replica structures. Chunks are the agent's view of file pieces; each chunk maps to a data packet on an XFTP router.
 
 **Source**: [`FileTransfer/Types.hs`](../../../../src/Simplex/FileTransfer/Types.hs)
 
@@ -24,4 +24,4 @@
 
 ### 5. authTagSize = 16 bytes
 
-`authTagSize` is defined as `fromIntegral C.authTagSize` (16 bytes). This is the AES-GCM authentication tag appended to the encrypted file stream. It is included in the payload size calculation (`payloadSize = fileSize' + fileSizeLen + authTagSize`), which is then passed to `prepareChunkSizes` to determine chunk allocation.
+`authTagSize` is defined as `fromIntegral C.authTagSize` (16 bytes). This is the AES-GCM authentication tag appended to the encrypted file stream. It is included in the payload size calculation (`payloadSize = fileSize' + fileSizeLen + authTagSize`), which is then passed to `prepareChunkSizes` to determine data packet allocation.

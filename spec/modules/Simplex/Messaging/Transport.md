@@ -24,7 +24,7 @@ The version history jumps from 12 (`blockedEntitySMPVersion`) to 14 (`proxyServe
 
 `proxiedSMPRelayVersion = 18`, one below `currentClientSMPRelayVersion = 19`. The code comment states: "SMP proxy sets it to lower than its current version to prevent client version fingerprinting by the destination relays when clients upgrade at different times."
 
-In practice (Server.hs), the SMP proxy uses `proxiedSMPRelayVRange` to cap the destination relay's version range in the `PKEY` response sent to the client, so the client sees a capped version range rather than the relay's actual range.
+In practice (Server.hs), the SMP proxy uses `proxiedSMPRelayVRange` to cap the destination relay's version range in the `PKEY` result sent to the client, so the client sees a capped version range rather than the relay's actual range.
 
 ## withTlsUnique — different API calls yield same value
 
@@ -67,7 +67,7 @@ When `clientService` is present in the client handshake, the router performs add
 - On success, the router sends `SMPServerHandshakeResponse` with a `serviceId`
 - On failure, the router sends `SMPServerHandshakeError` before raising the error
 
-Per the protocol spec (v16+): "`clientService` provides long-term service client certificate for high-volume services using SMP router (chat relays, notification routers, high traffic bots). The router responds with a third handshake message containing the assigned service ID."
+Per the protocol spec (v16+): "`clientService` provides long-term service client certificate for high-volume services using SMP router (chat relays, notification routers, high traffic bots). The router returns a third handshake message containing the assigned service ID."
 
 The client only includes service credentials when `v >= serviceCertsSMPVersion && certificateSent c` (the TLS client certificate was actually sent).
 

@@ -22,7 +22,7 @@ Each client connection spawns `receive`, `send`, and `client` threads via `raceA
 
 ### 1. Timing attack mitigation on entity lookup
 
-When `verifyNtfTransmission` encounters an AUTH error (entity not found), it calls `dummyVerifyCmd` to equalize response timing before returning the error. This prevents attackers from distinguishing "entity doesn't exist" from "signature invalid" based on response latency.
+When `verifyNtfTransmission` encounters an AUTH error (entity not found), it calls `dummyVerifyCmd` to equalize result timing before returning the error. This prevents attackers from distinguishing "entity doesn't exist" from "signature invalid" based on result latency.
 
 ### 2. TNEW idempotent re-registration
 
@@ -74,9 +74,9 @@ Cron notification interval has a hard minimum of 20 minutes. `TCRN 0` disables c
 
 `resubscribe` uses `mapConcurrently` to resubscribe to all known SMP routers in parallel. Within each router, subscriptions are paginated via `subscribeLoop` using cursor-based pagination (`afterSubId_`).
 
-### 11. receive separates error responses from commands
+### 11. receive separates error results from commands
 
-The `receive` function processes incoming transmissions and partitions results: malformed/unauthorized requests are written directly to `sndQ` as error responses, while valid commands go to `rcvQ` for processing. This ensures protocol errors get immediate responses without competing for the command processing queue.
+The `receive` function processes incoming transmissions and partitions results: malformed/unauthorized requests are written directly to `sndQ` as error results, while valid commands go to `rcvQ` for processing. This ensures protocol errors get immediate results without competing for the command processing queue.
 
 ### 12. Maintenance mode saves state then exits immediately
 

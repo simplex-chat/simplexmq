@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Protocol
 
-> XFTP protocol types, commands, responses, and credential verification.
+> XFTP protocol types, commands, command results, and credential verification.
 
 **Source**: [`FileTransfer/Protocol.hs`](../../../../src/Simplex/FileTransfer/Protocol.hs)
 
@@ -15,9 +15,9 @@
 
 This asymmetry means FNEW and PING bypass the standard entity-lookup path entirely — they are handled as separate `XFTPRequest` constructors (`XFTPReqNew`, `XFTPReqPing`).
 
-### 2. BLOCKED response downgraded to AUTH for old clients
+### 2. BLOCKED result downgraded to AUTH for old clients
 
-`encodeProtocol` checks the protocol version: if `v < blockedFilesXFTPVersion`, a `BLOCKED` response is encoded as `AUTH` instead. This prevents old clients that don't understand `BLOCKED` from receiving an unknown error type. The blocking information is silently lost for these clients.
+`encodeProtocol` checks the protocol version: if `v < blockedFilesXFTPVersion`, a `BLOCKED` result is encoded as `AUTH` instead. This prevents old clients that don't understand `BLOCKED` from receiving an unknown error type. The blocking information is silently lost for these clients.
 
 ### 3. Single-transmission batch enforcement
 

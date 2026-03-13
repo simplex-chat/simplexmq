@@ -1,6 +1,6 @@
 # Simplex.Messaging.Protocol
 
-> SMP protocol types, commands, responses, encoding/decoding, and transport functions.
+> SMP protocol types, commands, command results, encoding/decoding, and transport functions.
 
 **Source**: [`Protocol.hs`](../../../../src/Simplex/Messaging/Protocol.hs)
 
@@ -65,4 +65,4 @@ The `NETWORK` variant of `BrokerErrorType` encodes as just `"NETWORK"` (detail d
 
 ## SUBS/NSUBS — asymmetric defaulting
 
-When the router parses `SUBS`/`NSUBS` from a client using a version older than `rcvServiceSMPVersion`, both count and hash default (`-1` and `mempty`). For the response side (`SOKS`/`ENDS` via `serviceRespP`), count is still parsed from the wire — only hash defaults to `mempty`. This asymmetry means command-side and response-side parsing have different fallback behavior for the same version boundary.
+When the router parses `SUBS`/`NSUBS` from a client using a version older than `rcvServiceSMPVersion`, both count and hash default (`-1` and `mempty`). For the result side (`SOKS`/`ENDS` via `serviceRespP`), count is still parsed from the wire — only hash defaults to `mempty`. This asymmetry means command-side and result-side parsing have different fallback behavior for the same version boundary.

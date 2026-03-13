@@ -10,7 +10,7 @@
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `fileIdSize` | 16 bytes | Random file/recipient ID length |
+| `fileIdSize` | 16 bytes | Random data packet/recipient ID length |
 | `fileTimeout` | 5 minutes | Maximum upload duration per chunk |
 | `logStatsInterval` | 86400s (daily) | Stats CSV flush interval |
 | `logStatsStartTime` | 0 (midnight UTC) | First stats flush time-of-day |

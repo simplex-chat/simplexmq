@@ -16,7 +16,7 @@ Service subscriptions (aggregate, router-managed) and queue subscriptions (indiv
 
 The central invariant: a subscription is only active if it was confirmed on the *current* TLS session. Every function that promotes subscriptions to active (`addActiveSub'`, `batchAddActiveSubs`, `setActiveServiceSub`) checks `Just sessId == sessId'` (stored session ID). On mismatch, the subscription goes to pending instead — silently, with no error.
 
-This means subscription RPCs that succeed but return after a reconnect are safely caught: the response carries the old session ID, which won't match the new one stored by `setSessionId`.
+This means subscription RPCs that succeed but return after a reconnect are safely caught: the result carries the old session ID, which won't match the new one stored by `setSessionId`.
 
 ## setSessionId — silent demotion on reconnect
 

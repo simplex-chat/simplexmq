@@ -45,9 +45,9 @@ When `connectClient` calls `newSMPClient` and it fails, the error is stored with
 
 Both `smpSubscribeQueues` and `smpSubscribeService` validate `activeClientSession` AFTER the subscription RPC completes, before committing results to state. If the session changed during the RPC (client reconnected), results are discarded and reconnection is triggered. This is optimistic execution with post-hoc validation — the RPC may succeed but its results are thrown away if the session is stale.
 
-## groupSub — subscription response classification
+## groupSub — subscription result classification
 
-Each queue response is classified by a `foldr` over the (subs, responses) zip:
+Each queue result is classified by a `foldr` over the (subs, results) zip:
 
 - **Success with matching serviceId**: counted as service-subscribed (`sQs` list)
 - **Success without matching serviceId**: counted as queue-only (`qOks` list with SessionId and key)

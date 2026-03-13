@@ -4,17 +4,21 @@
 
 **Source**: [`FileTransfer/Agent.hs`](../../../../src/Simplex/FileTransfer/Agent.hs)
 
+## Terminology
+
+The agent splits a **file** into **chunks** determined by the chunking algorithm. Each chunk is stored on an XFTP router as a **data packet** — the router has no concept of files or chunks, only directly addressable data packets. This document uses "chunk" for the agent's internal tracking and "data packet" when referring to what is transferred to/from or stored on routers.
+
 ## Architecture
 
 The XFTP agent uses five worker types organized in three categories:
 
 | Worker | Key (router) | Purpose |
 |--------|-------------|---------|
-| `xftpRcvWorker` | `Just server` | Download chunks from a specific XFTP router |
+| `xftpRcvWorker` | `Just server` | Download data packets from a specific XFTP router |
 | `xftpRcvLocalWorker` | `Nothing` | Decrypt completed downloads locally |
-| `xftpSndPrepareWorker` | `Nothing` | Encrypt files and create chunks on routers |
-| `xftpSndWorker` | `Just server` | Upload chunks to a specific XFTP router |
-| `xftpDelWorker` | `Just server` | Delete chunks from a specific XFTP router |
+| `xftpSndPrepareWorker` | `Nothing` | Encrypt files and create data packets on routers |
+| `xftpSndWorker` | `Just server` | Upload data packets to a specific XFTP router |
+| `xftpDelWorker` | `Just server` | Delete data packets from a specific XFTP router |
 
 Workers are created on-demand via `getAgentWorker` and keyed by router address. The local workers (keyed by `Nothing`) handle CPU-bound operations that don't require network access.
 
@@ -55,7 +59,7 @@ Similarly, `prepareFile` checks `status /= SFSEncrypted` and deletes the partial
 
 ### 8. addRecipients recursive batching
 
-During upload, `addRecipients` recursively calls itself if a chunk needs more recipients than `xftpMaxRecipientsPerRequest`. Each iteration sends an FADD command for up to `maxRecipients` new recipients, accumulates the results, and recurses until all recipients are registered.
+During upload, `addRecipients` recursively calls itself if a data packet needs more recipients than `xftpMaxRecipientsPerRequest`. Each iteration sends an FADD command for up to `maxRecipients` new recipients, accumulates the results, and recurses until all recipients are registered.
 
 ### 9. File description generation cross-product
 
@@ -71,7 +75,7 @@ During upload, `addRecipients` recursively calls itself if a chunk needs more re
 
 ### 12. Delete workers skip files older than rcvFilesTTL
 
-`runXFTPDelWorker` uses `rcvFilesTTL` (not a dedicated delete TTL) to filter pending deletions. Files older than this TTL would already be expired on the router, so attempting deletion is pointless. This reuses the receive TTL as a proxy for router-side expiration.
+`runXFTPDelWorker` uses `rcvFilesTTL` (not a dedicated delete TTL) to filter pending deletions. Data packets older than this TTL would already be expired on the router, so attempting deletion is pointless. This reuses the receive TTL as a proxy for router-side expiration.
 
 ### 13. closeXFTPAgent atomically swaps worker maps
 
@@ -83,4 +87,4 @@ During upload, `addRecipients` recursively calls itself if a chunk needs more re
 
 ### 15. Per-router stats tracking
 
-Every chunk download, upload, and delete operation increments per-router statistics (`downloads`, `uploads`, `deletions`, `downloadAttempts`, `uploadAttempts`, `deleteAttempts`, and error variants). Size-based stats (`downloadsSize`, `uploadsSize`) track throughput in kilobytes.
+Every data packet download, upload, and delete operation increments per-router statistics (`downloads`, `uploads`, `deletions`, `downloadAttempts`, `uploadAttempts`, `deleteAttempts`, and error variants). Size-based stats (`downloadsSize`, `uploadsSize`) track throughput in kilobytes.

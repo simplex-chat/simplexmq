@@ -16,4 +16,4 @@ The `strP` parser uses `opt` for newer fields, defaulting missing fields to 0. T
 
 ### 3. PeriodStats for download tracking
 
-`filesDownloaded` uses `PeriodStats` (not a simple `IORef Int`) to track unique file downloads over time periods (day/week/month). This enables the CSV stats log to report distinct files downloaded per period, not just total download count.
+`filesDownloaded` uses `PeriodStats` (not a simple `IORef Int`) to track unique data packet downloads over time periods (day/week/month). This enables the CSV stats log to report distinct data packets downloaded per period, not just total download count.

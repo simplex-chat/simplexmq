@@ -18,9 +18,9 @@
 
 `receive` tracks a `depth` parameter starting at 1. After following one redirect, `depth` becomes 0. A second redirect throws "Redirect chain too long". This prevents infinite redirect loops from malicious file descriptions.
 
-### 4. Parallel chunk uploads with router grouping
+### 4. Parallel data packet uploads with router grouping
 
-`uploadFile` groups chunks by router via `groupAllOn`, then uses `pooledForConcurrentlyN 16` to process up to 16 router-groups concurrently. Within each group, chunks are uploaded sequentially (`mapM`). Errors from any chunk are collected and the first one is thrown.
+`uploadFile` groups data packets by router via `groupAllOn`, then uses `pooledForConcurrentlyN 16` to process up to 16 router-groups concurrently. Within each group, data packets are uploaded sequentially (`mapM`). Errors from any upload are collected and the first one is thrown.
 
 ### 5. Random router selection
 
@@ -36,8 +36,8 @@
 
 ### 8. File description auto-deletion prompt
 
-After successful receive or delete, `removeFD` either auto-deletes the file description (if `--yes` flag) or prompts the user. This prevents accidental reuse of one-time file descriptions — each receive consumes the description by ACKing chunks on the router.
+After successful receive or delete, `removeFD` either auto-deletes the file description (if `--yes` flag) or prompts the user. This prevents accidental reuse of one-time file descriptions — each receive consumes the description by ACKing data packets on the router.
 
 ### 9. Sender description uses first replica's router
 
-`createSndFileDescription` takes the router from the first replica of each chunk for the sender's `FileChunkReplica`. This reflects the current limitation that each chunk is uploaded to exactly one router — the sender description records that single router.
+`createSndFileDescription` takes the router from the first replica of each chunk for the sender's `FileChunkReplica`. This reflects the current limitation that each data packet is uploaded to exactly one router — the sender description records that single router.

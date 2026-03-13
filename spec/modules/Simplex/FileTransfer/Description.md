@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Description
 
-> File description: YAML encoding/decoding, validation, URI format, and replica optimization.
+> File description: YAML encoding/decoding, validation, URI format, and replica optimization. A file description maps a file's chunks to data packets stored on XFTP routers — each chunk corresponds to one data packet, and each data packet may have multiple replicas on different routers.
 
 **Source**: [`FileTransfer/Description.hs`](../../../../src/Simplex/FileTransfer/Description.hs)
 
@@ -24,7 +24,7 @@ The top-level `FileDescription` has a `chunkSize` field. Individual chunk replic
 
 ### 4. YAML encoding groups replicas by router
 
-`groupReplicasByServer` groups all chunk replicas by their router, producing `FileServerReplica` records. This is the serialization format — replicas are organized by router, not by chunk. The parser (`foldReplicasToChunks`) reverses this grouping back to per-chunk replica lists.
+`groupReplicasByServer` groups all data packet replicas by their router, producing `FileServerReplica` records. This is the serialization format — replicas are organized by router, not by chunk. The parser (`foldReplicasToChunks`) reverses this grouping back to per-chunk replica lists.
 
 ### 5. FileDescriptionURI uses query-string encoding
 
@@ -40,4 +40,4 @@ Two limits exist: `maxFileSize = 1GB` (soft limit, checked by CLI client) and `m
 
 ### 8. Redirect file descriptions
 
-A `FileDescription` can contain a `redirect` field pointing to another file's metadata (`RedirectFileInfo` with size and digest). The outer description downloads an encrypted YAML file that, once decrypted, yields the actual `FileDescription` for the real file. This adds one level of indirection for privacy — the relay routers hosting the redirect don't know the actual file's routers.
+A `FileDescription` can contain a `redirect` field pointing to another file's metadata (`RedirectFileInfo` with size and digest). The outer description downloads an encrypted YAML data packet that, once decrypted, yields the actual `FileDescription` for the real file. This adds one level of indirection for privacy — the routers hosting the redirect data packet don't know the actual file's routers.

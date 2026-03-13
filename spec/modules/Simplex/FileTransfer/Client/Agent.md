@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Client.Agent
 
-> XFTP client connection management with TMVar-based sharing, async retry, and connection lifecycle.
+> XFTP client: router connection management with TMVar-based sharing, async retry, and connection lifecycle.
 
 **Source**: [`FileTransfer/Client/Agent.hs`](../../../../../src/Simplex/FileTransfer/Client/Agent.hs)
 
@@ -24,4 +24,4 @@ On permanent error, `newXFTPClient` puts the `Left error` into the `TMVar` (unbl
 
 ### 5. closeXFTPServerClient removes from TMap
 
-Closing a router client deletes its entry from the TMap, so the next request will establish a fresh connection. This is called on connection errors during file operations to force reconnection.
+Closing a router client deletes its entry from the TMap, so the next request will establish a fresh connection. This is called on connection errors during data packet operations to force reconnection.
