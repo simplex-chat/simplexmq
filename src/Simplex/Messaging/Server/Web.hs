@@ -22,7 +22,7 @@ import qualified Codec.Compression.GZip as GZip
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
-import Data.ByteString.Builder (byteString)
+import Data.ByteString.Builder (byteString, lazyByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (toUpper)
@@ -35,7 +35,7 @@ import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
-import Network.Wai (Application, Request (..), responseFile)
+import Network.Wai (Application, Request (..), responseLBS)
 import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
@@ -129,26 +129,22 @@ staticFiles root = do
           }
       _ -> req
 
--- | WAI middleware that serves pre-compressed .gz files when client accepts gzip.
+-- | WAI middleware that gzip-compresses static files on the fly when client accepts gzip.
 -- Falls through to the wrapped app for non-compressible files or when gzip is not accepted.
 withGzipFiles :: FilePath -> Application -> Application
 withGzipFiles canonRoot app req respond
   | acceptsGzipWAI req =
-      resolveStaticFile canonRoot (rawPathInfo req) True >>= \case
-        Just (file, mime, True) ->
-          respond $
-            responseFile
-              N.ok200
-              (staticResponseHeaders mime True)
-              file
-              Nothing
+      resolveStaticFile canonRoot (rawPathInfo req) >>= \case
+        Just (file, mime) | isCompressible file -> do
+          content <- B.readFile file
+          respond $ responseLBS N.ok200 (staticResponseHeaders mime True) (GZip.compress $ LB.fromStrict content)
         _ -> app req respond
   | otherwise = app req respond
 
 generateSite :: EmbeddedContent -> ByteString -> [String] -> FilePath -> IO ()
 generateSite embedded indexContent linkPages sitePath = do
   createDirectoryIfMissing True sitePath
-  writeWithGz (sitePath </> "index.html") indexContent
+  B.writeFile (sitePath </> "index.html") indexContent
   copyDir "media" $ mediaContent embedded
   -- `.well-known` path is re-written in changeWellKnownPath,
   -- staticApp does not allow hidden folders.
@@ -158,14 +154,10 @@ generateSite embedded indexContent linkPages sitePath = do
   where
     copyDir dir content = do
       createDirectoryIfMissing True $ sitePath </> dir
-      forM_ content $ \(path, s) -> writeWithGz (sitePath </> dir </> path) s
+      forM_ content $ \(path, s) -> B.writeFile (sitePath </> dir </> path) s
     createLinkPage path = do
       createDirectoryIfMissing True $ sitePath </> path
-      writeWithGz (sitePath </> path </> "index.html") $ linkHtml embedded
-    writeWithGz path content = do
-      B.writeFile path content
-      when (isCompressible path) $
-        LB.writeFile (path <> ".gz") $ GZip.compress $ LB.fromStrict content
+      B.writeFile (sitePath </> path </> "index.html") $ linkHtml embedded
 
 -- | Serve static files via HTTP/2 directly (without WAI).
 -- Path traversal protection: resolved path must stay under canonicalRoot.
@@ -173,20 +165,22 @@ generateSite embedded indexContent linkPages sitePath = do
 serveStaticPageH2 :: FilePath -> H.Request -> (H.Response -> IO ()) -> IO Bool
 serveStaticPageH2 canonRoot req sendResponse = do
   let rawPath = rewriteWellKnown $ fromMaybe "/" $ H.requestPath req
-      gzip = acceptsGzipH2 req
-  resolveStaticFile canonRoot rawPath gzip >>= \case
-    Just (file, mime, gz) -> do
+  resolveStaticFile canonRoot rawPath >>= \case
+    Just (file, mime) -> do
       content <- B.readFile file
-      sendResponse $ H.responseBuilder N.ok200 (staticResponseHeaders mime gz) (byteString content)
+      let gz = acceptsGzipH2 req && isCompressible file
+          body
+            | gz = lazyByteString $ GZip.compress $ LB.fromStrict content
+            | otherwise = byteString content
+      sendResponse $ H.responseBuilder N.ok200 (staticResponseHeaders mime gz) body
       pure True
     Nothing -> pure False
 
 -- | Resolve a static file request to a file path.
--- Handles index.html fallback, path traversal protection,
--- and gzip pre-compressed file selection.
+-- Handles index.html fallback and path traversal protection.
 -- canonRoot must be pre-computed via 'canonicalizePath'.
-resolveStaticFile :: FilePath -> ByteString -> Bool -> IO (Maybe (FilePath, ByteString, Bool))
-resolveStaticFile canonRoot path gzip = do
+resolveStaticFile :: FilePath -> ByteString -> IO (Maybe (FilePath, ByteString))
+resolveStaticFile canonRoot path = do
   let relPath = B.unpack $ B.dropWhile (== '/') path
       requestedPath
         | null relPath = canonRoot </> "index.html"
@@ -200,11 +194,7 @@ resolveStaticFile canonRoot path gzip = do
         then do
           canonFile <- canonicalizePath filePath
           if (canonRoot <> "/") `isPrefixOf` canonFile || canonRoot == canonFile
-            then do
-              let mime = staticMimeType canonFile
-                  gzFile = canonFile <> ".gz"
-              useGz <- if gzip && isCompressible canonFile then doesFileExist gzFile else pure False
-              pure $ Just (if useGz then gzFile else canonFile, mime, useGz)
+            then pure $ Just (canonFile, staticMimeType canonFile)
             else pure Nothing -- path traversal attempt
         else pure Nothing
 
