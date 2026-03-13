@@ -12,7 +12,7 @@
 
 ### 2. Send file status state machine
 
-`SndFileStatus` progresses: `SFSNew` → `SFSEncrypting` → `SFSEncrypted` → `SFSUploading` → `SFSComplete`, with `SFSError` as terminal. The prepare worker handles `SFSNew` → `SFSEncrypted` (including retry from `SFSEncrypting`), while per-server upload workers handle `SFSUploading` → `SFSComplete`.
+`SndFileStatus` progresses: `SFSNew` → `SFSEncrypting` → `SFSEncrypted` → `SFSUploading` → `SFSComplete`, with `SFSError` as terminal. The prepare worker handles `SFSNew` → `SFSEncrypted` (including retry from `SFSEncrypting`), while per-router upload workers handle `SFSUploading` → `SFSComplete`.
 
 ### 3. Encrypted file path convention
 

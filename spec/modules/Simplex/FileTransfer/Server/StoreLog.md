@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Server.StoreLog
 
-> Append-only store log for XFTP file operations with error-resilient replay and compaction.
+> Append-only store log for XFTP router file operations with error-resilient replay and compaction.
 
 **Source**: [`FileTransfer/Server/StoreLog.hs`](../../../../../src/Simplex/FileTransfer/Server/StoreLog.hs)
 
@@ -8,7 +8,7 @@
 
 ### 1. Error-resilient replay
 
-`readFileStore` parses the store log line-by-line. Lines that fail to parse or fail to process (e.g., referencing a nonexistent sender ID) are logged as errors but do not halt replay. The store is reconstructed from whatever valid entries exist. This allows the server to recover from partial log corruption.
+`readFileStore` parses the store log line-by-line. Lines that fail to parse or fail to process (e.g., referencing a nonexistent sender ID) are logged as errors but do not halt replay. The store is reconstructed from whatever valid entries exist. This allows the router to recover from partial log corruption.
 
 ### 2. Sender ID validation on recipient writes
 
@@ -16,7 +16,7 @@
 
 ### 3. Backward-compatible status parsing
 
-`AddFile` log entries include an `EntityStatus` field. The parser uses `<|> pure EntityActive` as a fallback, defaulting to `EntityActive` when the status field is missing. This allows reading store logs from older server versions that didn't record entity status.
+`AddFile` log entries include an `EntityStatus` field. The parser uses `<|> pure EntityActive` as a fallback, defaulting to `EntityActive` when the status field is missing. This allows reading store logs from older router versions that didn't record entity status.
 
 ### 4. Compaction on restart
 

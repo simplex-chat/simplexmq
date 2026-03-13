@@ -29,7 +29,7 @@ Even for single transmissions, `xftpEncodeBatch1` wraps the encoded transmission
 
 ### 5. FileParty GADT partitions command space
 
-Commands are indexed by `FileParty` (`SFSender` / `SFRecipient`) at the type level via `FileCmd`. This ensures at compile time that sender commands (FNEW, FADD, FPUT, FDEL) and recipient commands (FGET, FACK, PING) cannot be confused. The server pattern-matches on `SFileParty` to determine which index (sender vs recipient) to look up in the file store.
+Commands are indexed by `FileParty` (`SFSender` / `SFRecipient`) at the type level via `FileCmd`. This ensures at compile time that sender commands (FNEW, FADD, FPUT, FDEL) and recipient commands (FGET, FACK, PING) cannot be confused. The router pattern-matches on `SFileParty` to determine which index (sender vs recipient) to look up in the file store.
 
 ### 6. Empty corrId and implicit session ID
 

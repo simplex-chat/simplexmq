@@ -36,7 +36,7 @@ When `stmDeleteNtfToken` removes a token, it deletes the entry from the inner `T
 
 ### 8. deleteTokenSubs returns SMP queues for upstream unsubscription
 
-`deleteTokenSubs` atomically collects all `SMPQueueNtf` values from the deleted subscriptions and returns them. This is how the server layer knows which SMP notifier subscriptions to tear down. `stmRemoveInactiveTokenRegistrations` discards this list (`void $`), meaning rival-token cleanup does **not** trigger SMP unsubscription — only explicit token deletion does.
+`deleteTokenSubs` atomically collects all `SMPQueueNtf` values from the deleted subscriptions and returns them. This is how the router layer knows which SMP notifier subscriptions to tear down. `stmRemoveInactiveTokenRegistrations` discards this list (`void $`), meaning rival-token cleanup does **not** trigger SMP unsubscription — only explicit token deletion does.
 
 ### 9. stmAddNtfSubscription always returns Just (vestigial Maybe)
 
@@ -48,7 +48,7 @@ When `stmDeleteNtfSubscription` removes a subscription, it deletes the `subId` f
 
 ### 11. stmSetNtfService — asymmetric cleanup with Postgres store
 
-`stmSetNtfService` uses `maybe TM.delete TM.insert` to either remove or set the service association for an SMP server. This is purely a key-value update with no cascading effects on subscriptions. The Postgres store's `removeServiceAndAssociations` handles subscription cleanup separately, meaning the STM and Postgres stores have **different cleanup semantics** for service removal.
+`stmSetNtfService` uses `maybe TM.delete TM.insert` to either remove or set the service association for an SMP router. This is purely a key-value update with no cascading effects on subscriptions. The Postgres store's `removeServiceAndAssociations` handles subscription cleanup separately, meaning the STM and Postgres stores have **different cleanup semantics** for service removal.
 
 ### 12. Subscription index triple-write invariant
 

@@ -1,12 +1,12 @@
 # Simplex.Messaging.Notifications.Server
 
-> NTF server: manages tokens, subscriptions, SMP subscriber connections, and push notification delivery.
+> NTF router: manages tokens, subscriptions, SMP subscriber connections, and push notification delivery.
 
 **Source**: [`Notifications/Server.hs`](../../../../../src/Simplex/Messaging/Notifications/Server.hs)
 
 ## Architecture
 
-The NTF server runs several concurrent threads via `raceAny_`:
+The NTF router runs several concurrent threads via `raceAny_`:
 
 | Thread | Purpose |
 |--------|---------|
@@ -26,7 +26,7 @@ When `verifyNtfTransmission` encounters an AUTH error (entity not found), it cal
 
 ### 2. TNEW idempotent re-registration
 
-When TNEW is received for an already-registered token, the server:
+When TNEW is received for an already-registered token, the router:
 1. Looks up the existing token via `findNtfTokenRegistration` (matches on push provider, device token, AND verify key)
 2. Verifies the DH secret matches (recomputed from the new `dhPubKey` and stored `tknDhPrivKey`)
 3. If DH secrets differ → AUTH error (prevents token hijacking)
@@ -36,7 +36,7 @@ If the verify key doesn't match in step 1, the lookup returns `Nothing` and a ne
 
 ### 3. SNEW idempotent subscription
 
-When SNEW is received for an existing subscription (same token + SMP queue), the server returns the existing `ntfSubId` if the notifier key matches. If keys differ, AUTH error. New subscriptions are only created when no match exists in `findNtfSubscription`.
+When SNEW is received for an existing subscription (same token + SMP queue), the router returns the existing `ntfSubId` if the notifier key matches. If keys differ, AUTH error. New subscriptions are only created when no match exists in `findNtfSubscription`.
 
 ### 4. PPApnsNull suppresses statistics
 
@@ -44,7 +44,7 @@ When SNEW is received for an existing subscription (same token + SMP queue), the
 
 ### 5. END requires active session validation
 
-SMP END messages are only processed when the originating session is the currently active session for that server (`activeClientSession'` check). This prevents stale END messages from previous (reconnected) sessions from incorrectly marking subscriptions as ended.
+SMP END messages are only processed when the originating session is the currently active session for that router (`activeClientSession'` check). This prevents stale END messages from previous (reconnected) sessions from incorrectly marking subscriptions as ended.
 
 ### 6. waitForSMPSubscriber two-phase wait
 
@@ -52,9 +52,9 @@ SMP END messages are only processed when the originating session is the currentl
 
 ### 7. CAServiceUnavailable triggers individual resubscription
 
-When a service subscription becomes unavailable (SMP server rejects service credentials), the NTF server:
+When a service subscription becomes unavailable (SMP router rejects service credentials), the NTF router:
 1. Removes the service association from the database
-2. Resubscribes all individual queues for that server via `subscribeSrvSubs`
+2. Resubscribes all individual queues for that router via `subscribeSrvSubs`
 
 This is the fallback path from service-level to queue-level SMP subscriptions.
 
@@ -70,9 +70,9 @@ On the second failure, the error is logged and returned. `PPTokenInvalid` marks 
 
 Cron notification interval has a hard minimum of 20 minutes. `TCRN 0` disables cron notifications. `TCRN n` where `1 <= n < 20` returns `QUOTA` error.
 
-### 10. Startup resubscription is concurrent per server
+### 10. Startup resubscription is concurrent per router
 
-`resubscribe` uses `mapConcurrently` to resubscribe to all known SMP servers in parallel. Within each server, subscriptions are paginated via `subscribeLoop` using cursor-based pagination (`afterSubId_`).
+`resubscribe` uses `mapConcurrently` to resubscribe to all known SMP routers in parallel. Within each router, subscriptions are paginated via `subscribeLoop` using cursor-based pagination (`afterSubId_`).
 
 ### 11. receive separates error responses from commands
 
@@ -80,7 +80,7 @@ The `receive` function processes incoming transmissions and partitions results: 
 
 ### 12. Maintenance mode saves state then exits immediately
 
-When `maintenance` is set in `startOptions`, the server restores stats, calls `stopServer` (closes DB, saves stats), and exits with `exitSuccess`. It never starts transport listeners, subscriber threads, or resubscription. This provides a way to run database migrations without the server serving traffic.
+When `maintenance` is set in `startOptions`, the router restores stats, calls `stopServer` (closes DB, saves stats), and exits with `exitSuccess`. It never starts transport listeners, subscriber threads, or resubscription. This provides a way to run database migrations without the router serving traffic.
 
 ### 13. Resubscription runs as a detached fork
 
@@ -88,7 +88,7 @@ When `maintenance` is set in `startOptions`, the server restores stats, calls `s
 
 ### 14. TNEW re-registration resets status for non-verifiable tokens
 
-When a re-registration TNEW matches on DH secret but `allowTokenVerification tknStatus` is `False` (token is `NTNew`, `NTInvalid`, or `NTExpired`), the server resets status to `NTRegistered` before sending the verification push. This makes TNEW a "status repair" mechanism — clients with stuck tokens can restart the verification flow by re-registering with the same DH key.
+When a re-registration TNEW matches on DH secret but `allowTokenVerification tknStatus` is `False` (token is `NTNew`, `NTInvalid`, or `NTExpired`), the router resets status to `NTRegistered` before sending the verification push. This makes TNEW a "status repair" mechanism — clients with stuck tokens can restart the verification flow by re-registering with the same DH key.
 
 ### 15. DELD unconditionally updates status (no session validation)
 
@@ -96,7 +96,7 @@ Unlike `SMP.END` which checks `activeClientSession'` to prevent stale session me
 
 ### 16. TRPL generates new code but reuses the DH key
 
-`TRPL` (token replace) creates a new registration code and resets status to `NTRegistered`, but does NOT generate a new server DH key pair. The existing `tknDhPrivKey` and `tknDhSecret` are preserved — only the push provider token and registration code change. The encrypted channel between client and NTF router persists across device token replacements.
+`TRPL` (token replace) creates a new registration code and resets status to `NTRegistered`, but does NOT generate a new router DH key pair. The existing `tknDhPrivKey` and `tknDhSecret` are preserved — only the push provider token and registration code change. The encrypted channel between client and NTF router persists across device token replacements.
 
 ### 17. PNMessage delivery requires NTActive, verification and cron do not
 
@@ -112,7 +112,7 @@ When a service subscription is confirmed, the NTF router compares expected and c
 
 ### 20. subscribeLoop calls exitFailure on database error
 
-If `getServerNtfSubscriptions` returns `Left _` during startup resubscription, the server terminates via `exitFailure`. Since `resubscribe` runs in a forked thread (pattern 13), this `exitFailure` terminates the entire process — a transient database error during startup resubscription kills the server.
+If `getServerNtfSubscriptions` returns `Left _` during startup resubscription, the router terminates via `exitFailure`. Since `resubscribe` runs in a forked thread (pattern 13), this `exitFailure` terminates the entire process — a transient database error during startup resubscription kills the router.
 
 ### 21. Stats log aligns to wall-clock time of day
 
@@ -120,7 +120,7 @@ The stats logging thread calculates an `initialDelay` to synchronize the first f
 
 ### 22. NMSG AUTH errors silently counted, not logged
 
-When `addTokenLastNtf` returns `Left AUTH` (notification for a queue whose subscription/token association is invalid), the server increments `ntfReceivedAuth` but takes no corrective action. Other error types are silently ignored. This is expected — subscriptions may be deleted while messages are in-flight.
+When `addTokenLastNtf` returns `Left AUTH` (notification for a queue whose subscription/token association is invalid), the router increments `ntfReceivedAuth` but takes no corrective action. Other error types are silently ignored. This is expected — subscriptions may be deleted while messages are in-flight.
 
 ### 23. PNVerification delivery transitions token to NTConfirmed
 

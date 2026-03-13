@@ -1,6 +1,6 @@
 # Simplex.Messaging.Notifications.Server.Env
 
-> NTF server environment: configuration, subscriber state, and push provider management.
+> NTF router environment: configuration, subscriber state, and push provider management.
 
 **Source**: [`Notifications/Server/Env.hs`](../../../../../../src/Simplex/Messaging/Notifications/Server/Env.hs)
 
@@ -8,7 +8,7 @@
 
 ### 1. Service credentials are lazily generated
 
-`mkDbService` in `newNtfServerEnv` generates service credentials on demand: when `getCredentials` is called for an SMP server, it checks the database. If the server is known and already has credentials, they are reused. If the server is known but has no credentials yet (first connection), new credentials are generated via `genCredentials`, stored in the database, and returned. If the server is not in the database at all, `PCEServiceUnavailable` is thrown (this case should not occur in practice, as clients only connect to servers already tracked in the database).
+`mkDbService` in `newNtfServerEnv` generates service credentials on demand: when `getCredentials` is called for an SMP router, it checks the database. If the router is known and already has credentials, they are reused. If the router is known but has no credentials yet (first connection), new credentials are generated via `genCredentials`, stored in the database, and returned. If the router is not in the database at all, `PCEServiceUnavailable` is thrown (this case should not occur in practice, as clients only connect to routers already tracked in the database).
 
 Service credentials are only used when `useServiceCreds` is enabled in the config.
 
@@ -18,7 +18,7 @@ Service credentials are only used when `useServiceCreds` is enabled in the confi
 
 ### 3. getPushClient lazy initialization
 
-`getPushClient` looks up the push client by provider in `pushClients` TMap. If not found, it calls `newPushClient` to create and register one. Push provider connections are established on first use, not at server startup.
+`getPushClient` looks up the push client by provider in `pushClients` TMap. If not found, it calls `newPushClient` to create and register one. Push provider connections are established on first use, not at router startup.
 
 ### 4. Service credential validity: 25h backdating, ~2700yr forward
 

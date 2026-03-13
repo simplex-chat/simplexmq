@@ -29,7 +29,7 @@ The module is consumed by Agent.hs (which passes specific worker bodies, task qu
 - **Operation states**: `ntfNetworkOp`, `rcvNetworkOp`, `msgDeliveryOp`, `sndNetworkOp`, `databaseOp`
 - **Locking**: `connLocks`, `invLocks`, `deleteLock`, `getMsgLocks`, `clientNoticesLock`
 - **Service state**: `useClientServices` (per-user boolean controlling whether service certificates are used)
-- **Proxy routing**: `smpProxiedRelays` (maps destination transport session → proxy server used)
+- **Proxy routing**: `smpProxiedRelays` (maps destination transport session → proxy router used)
 - **Network state**: `userNetworkInfo`, `userNetworkUpdated`, `useNetworkConfig` (slow/fast pair)
 
 All TVars are initialized in `newAgentClient`. The `active` TVar is the global kill switch — `closeAgentClient` sets it to `False`, and all protocol client getters check it first.
@@ -56,11 +56,11 @@ When `newProtocolClient` fails and `persistErrorInterval > 0`, the error is cach
 
 1. **Session ID registration**: `SS.setSessionId` records the TLS session ID in `currentSubs`, linking the transport session to the actual TLS connection for later session validation.
 
-2. **Service credential synchronization** (`updateClientService`): After connecting, compares client-side and server-side service state. Four cases:
+2. **Service credential synchronization** (`updateClientService`): After connecting, compares client-side and router-side service state. Four cases:
    - Both have service and IDs match → update DB (no-op if same)
    - Both have service but IDs differ → update DB and remove old queue-service associations
-   - Client has service, server doesn't → delete client service (handles server version downgrade)
-   - Server has service, client doesn't → log error (should not happen in normal flow)
+   - Client has service, router doesn't → delete client service (handles router version downgrade)
+   - Router has service, client doesn't → log error (should not happen in normal flow)
 
 On connection failure, `smpConnectClient` triggers `resubscribeSMPSession` before re-throwing the error. This ensures pending subscriptions get retry logic even when the initial connection attempt fails.
 
@@ -182,7 +182,7 @@ The `clientNoticesLock` TMVar serializes notice processing across concurrent sub
 ### processSubResults — partitioning
 
 Subscription results are partitioned into five categories:
-1. **Failed with client notice** — error has an associated server-side notice (e.g., queue status change). Queue is treated as failed (removed from pending, added to `removedSubs`) AND the notice is recorded for processing.
+1. **Failed with client notice** — error has an associated router-side notice (e.g., queue status change). Queue is treated as failed (removed from pending, added to `removedSubs`) AND the notice is recorded for processing.
 2. **Failed permanently** — non-temporary error without notice, queue is removed from pending and added to `removedSubs`
 3. **Failed temporarily** — error is transient, queue stays in pending unchanged for retry on reconnect
 4. **Subscribed** — moved from pending to active. Further split into: queues whose service ID matches the session service (added as service-associated) and others. If the queue had a tracked `clientNoticeId`, it is cleared (notice resolved by successful subscription).
@@ -205,18 +205,18 @@ Subscription results are partitioned into five categories:
 
 Implements SMP proxy/direct routing with fallback:
 
-1. `shouldUseProxy` checks `smpProxyMode` (Always/Unknown/Unprotected/Never) and whether the destination server is "known" (in the user's server list)
+1. `shouldUseProxy` checks `smpProxyMode` (Always/Unknown/Unprotected/Never) and whether the destination router is "known" (in the user's router list)
 2. If proxying: `getSMPProxyClient` creates or reuses a proxy connection, then `connectSMPProxiedRelay` establishes the relay session. On `NO_SESSION` error, re-creates the relay session through the same proxy.
 3. If proxying fails with a host error and `smpProxyFallback` allows it: falls back to direct connection
 4. `deleteRelaySession` carefully validates that the current relay session matches the one that failed before removing it (prevents removing a concurrently-created replacement session)
 
-**NO_SESSION retry limit**: On `NO_SESSION`, `sendViaProxy` is called recursively with `Just proxySrv` to reuse the same proxy server. If the recursive call also gets `NO_SESSION`, it throws `proxyError` instead of recursing again — `proxySrv_` is `Just`, so the `Nothing` branch (which recurses) is not taken. This limits retry to exactly one attempt.
+**NO_SESSION retry limit**: On `NO_SESSION`, `sendViaProxy` is called recursively with `Just proxySrv` to reuse the same proxy router. If the recursive call also gets `NO_SESSION`, it throws `proxyError` instead of recursing again — `proxySrv_` is `Just`, so the `Nothing` branch (which recurses) is not taken. This limits retry to exactly one attempt.
 
 **Proxy selection caching** (`smpProxiedRelays`): When `getSMPProxyClient` selects a proxy for a destination, it atomically inserts the proxy→destination mapping into `smpProxiedRelays`. If a mapping already exists (another thread selected a proxy for the same destination), the existing mapping is used. On relay creation failure with non-host errors, both the relay session and proxy mapping are removed. On host errors, they are preserved to allow fallback logic.
 
 ## Service credentials lifecycle
 
-`getServiceCredentials` manages per-user, per-server service certificate credentials:
+`getServiceCredentials` manages per-user, per-router service certificate credentials:
 
 1. Checks `useClientServices` — if the user has services disabled, returns `Nothing`
 2. Looks up existing credentials in DB via `getClientServiceCredentials`
@@ -235,15 +235,15 @@ The generated credentials are Ed25519 self-signed certificates with `simplex` or
 
 `withStoreBatch` / `withStoreBatch'` run multiple DB operations in a single transaction, catching exceptions per-operation to report individual failures. The entire batch is within one `agentOperationBracket`.
 
-## Server selection — getNextServer / withNextSrv
+## Router selection — getNextServer / withNextSrv
 
-Server selection has two-level diversity:
-1. **Operator diversity**: prefer servers from operators not already used (tracked by `usedOperators` set)
-2. **Host diversity**: prefer servers with hosts not already used (tracked by `usedHosts` set)
+Router selection has two-level diversity:
+1. **Operator diversity**: prefer routers from operators not already used (tracked by `usedOperators` set)
+2. **Host diversity**: prefer routers with hosts not already used (tracked by `usedHosts` set)
 
-`filterOrAll` ensures that if all servers are "used," the full list is returned rather than an empty one.
+`filterOrAll` ensures that if all routers are "used," the full list is returned rather than an empty one.
 
-`withNextSrv` is designed for retry loops — it re-reads user servers on each call (allowing configuration changes during retries) and tracks `triedHosts` across attempts. When all hosts are tried, the tried set is reset (`S.empty`), creating a round-robin effect.
+`withNextSrv` is designed for retry loops — it re-reads user routers on each call (allowing configuration changes during retries) and tracks `triedHosts` across attempts. When all hosts are tried, the tried set is reset (`S.empty`), creating a round-robin effect.
 
 ## Locking primitives
 
@@ -295,6 +295,6 @@ Classifies errors as temporary (retryable) or permanent. Notable non-obvious cla
 - `CRITICAL True` is temporary — `True` means the error shows a restart button, implying the user should retry. `CRITICAL False` is permanent.
 - `INACTIVE` is temporary — the agent may be reactivated
 - `SMP.PROXY NO_SESSION` via proxy is temporary — session can be re-established
-- `SMP.STORE _` is temporary — server-side store error, not a client issue
+- `SMP.STORE _` is temporary — router-side store error, not a client issue
 
 `temporaryOrHostError` extends `temporaryAgentError` to also include host-related errors (`HOST`, `TRANSPORT TEVersion`). Used in subscription management where host errors should trigger resubscription rather than permanent failure.

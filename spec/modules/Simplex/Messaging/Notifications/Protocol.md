@@ -28,7 +28,7 @@ When encoding `NRTkn` responses, the `NTInvalid` reason is only included if the 
 
 ### 4. subscribeNtfStatuses migration invariant
 
-The comment on `subscribeNtfStatuses` (`[NSNew, NSPending, NSActive, NSInactive]`) warns that changing these statuses requires a new database migration for queue ID hashes (see `m20250830_queue_ids_hash`). This is a cross-module invariant between protocol types and server storage.
+The comment on `subscribeNtfStatuses` (`[NSNew, NSPending, NSActive, NSInactive]`) warns that changing these statuses requires a new database migration for queue ID hashes (see `m20250830_queue_ids_hash`). This is a cross-module invariant between protocol types and router storage.
 
 ### 5. allowNtfSubCommands permits NTInvalid and NTExpired
 
@@ -36,7 +36,7 @@ Token status `NTInvalid` allows subscription commands (SNEW, SCHK, SDEL), which 
 
 ### 6. PPApnsNull test provider
 
-`PPApnsNull` is a push provider that never communicates with APNS. It's used for end-to-end testing of the notification server from clients without requiring actual push infrastructure.
+`PPApnsNull` is a push provider that never communicates with APNS. It's used for end-to-end testing of the notification router from clients without requiring actual push infrastructure.
 
 ### 7. DeviceToken hex validation
 
@@ -44,7 +44,7 @@ Token status `NTInvalid` allows subscription commands (SNEW, SCHK, SDEL), which 
 
 ### 8. SMPQueueNtf parsing applies updateSMPServerHosts
 
-Both `smpP` and `strP` for `SMPQueueNtf` apply `updateSMPServerHosts` to the parsed SMP server. This normalizes server host addresses on deserialization, ensuring consistent comparison even if the on-wire format uses different host representations.
+Both `smpP` and `strP` for `SMPQueueNtf` apply `updateSMPServerHosts` to the parsed SMP server. This normalizes router host addresses on deserialization, ensuring consistent comparison even if the on-wire format uses different host representations.
 
 ### 9. NRTknId response tag comment
 

@@ -8,15 +8,15 @@
 
 The XFTP agent uses five worker types organized in three categories:
 
-| Worker | Key (server) | Purpose |
+| Worker | Key (router) | Purpose |
 |--------|-------------|---------|
-| `xftpRcvWorker` | `Just server` | Download chunks from a specific XFTP server |
+| `xftpRcvWorker` | `Just server` | Download chunks from a specific XFTP router |
 | `xftpRcvLocalWorker` | `Nothing` | Decrypt completed downloads locally |
-| `xftpSndPrepareWorker` | `Nothing` | Encrypt files and create chunks on servers |
-| `xftpSndWorker` | `Just server` | Upload chunks to a specific XFTP server |
-| `xftpDelWorker` | `Just server` | Delete chunks from a specific XFTP server |
+| `xftpSndPrepareWorker` | `Nothing` | Encrypt files and create chunks on routers |
+| `xftpSndWorker` | `Just server` | Upload chunks to a specific XFTP router |
+| `xftpDelWorker` | `Just server` | Delete chunks from a specific XFTP router |
 
-Workers are created on-demand via `getAgentWorker` and keyed by server address. The local workers (keyed by `Nothing`) handle CPU-bound operations that don't require network access.
+Workers are created on-demand via `getAgentWorker` and keyed by router address. The local workers (keyed by `Nothing`) handle CPU-bound operations that don't require network access.
 
 ## Non-obvious behavior
 
@@ -71,7 +71,7 @@ During upload, `addRecipients` recursively calls itself if a chunk needs more re
 
 ### 12. Delete workers skip files older than rcvFilesTTL
 
-`runXFTPDelWorker` uses `rcvFilesTTL` (not a dedicated delete TTL) to filter pending deletions. Files older than this TTL would already be expired on the server, so attempting deletion is pointless. This reuses the receive TTL as a proxy for server-side expiration.
+`runXFTPDelWorker` uses `rcvFilesTTL` (not a dedicated delete TTL) to filter pending deletions. Files older than this TTL would already be expired on the router, so attempting deletion is pointless. This reuses the receive TTL as a proxy for router-side expiration.
 
 ### 13. closeXFTPAgent atomically swaps worker maps
 
@@ -81,6 +81,6 @@ During upload, `addRecipients` recursively calls itself if a chunk needs more re
 
 `assertAgentForeground` both throws if the agent is inactive (`throwWhenInactive`) and blocks until it's in the foreground (`waitUntilForeground`). This is called before every chunk operation to ensure the agent isn't suspended or backgrounded during file transfers.
 
-### 15. Per-server stats tracking
+### 15. Per-router stats tracking
 
-Every chunk download, upload, and delete operation increments per-server statistics (`downloads`, `uploads`, `deletions`, `downloadAttempts`, `uploadAttempts`, `deleteAttempts`, and error variants). Size-based stats (`downloadsSize`, `uploadsSize`) track throughput in kilobytes.
+Every chunk download, upload, and delete operation increments per-router statistics (`downloads`, `uploads`, `deletions`, `downloadAttempts`, `uploadAttempts`, `deleteAttempts`, and error variants). Size-based stats (`downloadsSize`, `uploadsSize`) track throughput in kilobytes.

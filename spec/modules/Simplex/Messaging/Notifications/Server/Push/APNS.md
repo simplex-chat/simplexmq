@@ -72,4 +72,4 @@ The comment explicitly states `APNSErrorResponse` is `data` rather than `newtype
 
 ### 17. Connection initialization is fire-and-forget
 
-`createAPNSPushClient` calls `connectHTTPS2` and discards the result with `void`. If the initial connection fails, the error is only logged — the client is still created. The first push delivery triggers `getApnsHTTP2Client` which reconnects. This means the server can start even if APNS is unreachable.
+`createAPNSPushClient` calls `connectHTTPS2` and discards the result with `void`. If the initial connection fails, the error is only logged — the client is still created. The first push delivery triggers `getApnsHTTP2Client` which reconnects. This means the router can start even if APNS is unreachable.

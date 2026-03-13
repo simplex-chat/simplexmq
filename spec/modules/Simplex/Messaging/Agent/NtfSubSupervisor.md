@@ -6,7 +6,7 @@
 
 ## Architecture
 
-The notification system uses a supervisor with **three worker pools**, each keyed by server address:
+The notification system uses a supervisor with **three worker pools**, each keyed by router address:
 
 | Pool | Key | Purpose |
 |------|-----|---------|
@@ -23,7 +23,7 @@ The supervisor (`runNtfSupervisor`) reads commands from `ntfSubQ` and dispatches
 `partitionQueueSubActions` classifies each (queue, subscription) pair into one of four buckets:
 
 - **New sub**: no existing subscription record — create from scratch
-- **Reset sub**: credentials mismatch (SMP server changed, notifier ID changed, action was nulled by error, or action is a delete) — wipe and restart from SMP key exchange
+- **Reset sub**: credentials mismatch (SMP router changed, notifier ID changed, action was nulled by error, or action is a delete) — wipe and restart from SMP key exchange
 - **Continue SMP work**: existing action is `NSASMP` and credentials are consistent — kick the SMP worker
 - **Continue NTF work**: existing action is `NSANtf` and credentials are consistent — kick the NTF worker
 
@@ -54,11 +54,11 @@ Successful check responses with statuses not in `subscribeNtfStatuses` also trig
 
 Token deletion splits into two phases:
 1. **Store phase**: Remove token from active store, persist `(server, privateKey, tokenId)` to a deletion queue via `addNtfTokenToDelete`
-2. **Network phase**: `runNtfTknDelWorker` reads from the queue and performs the actual server-side deletion
+2. **Network phase**: `runNtfTknDelWorker` reads from the queue and performs the actual router-side deletion
 
 On supervisor startup, `startTknDelete` scans for any pending deletion queue entries and launches workers. This ensures token cleanup survives agent restarts.
 
-If the token has no server-side ID (`ntfTokenId = Nothing`), only the store phase runs — no worker is launched.
+If the token has no router-side ID (`ntfTokenId = Nothing`), only the store phase runs — no worker is launched.
 
 ### 6. workerErrors nulls subscription action
 
@@ -88,7 +88,7 @@ When token deletion gets a permanent (non-temporary, non-host) error, the deleti
 
 ### 12. getNtfServer — random selection from multiple
 
-When multiple notification routers are configured, one is selected randomly using `randomR` with a session-stable `TVar` generator. Single-server configurations skip the randomness.
+When multiple notification routers are configured, one is selected randomly using `randomR` with a session-stable `TVar` generator. Single-router configurations skip the randomness.
 
 ### 13. closeNtfSupervisor — atomic swap then cancel
 

@@ -8,7 +8,7 @@
 
 ### 1. TMVar-based connection sharing
 
-`getXFTPServerClient` first checks the `TMap XFTPServer (TMVar (Either XFTPClientAgentError XFTPClient))`. If no entry exists, it atomically inserts an empty `TMVar` and initiates connection. Other threads requesting the same server block on `readTMVar` until the connection is established or fails. This prevents duplicate connections to the same server.
+`getXFTPServerClient` first checks the `TMap XFTPServer (TMVar (Either XFTPClientAgentError XFTPClient))`. If no entry exists, it atomically inserts an empty `TMVar` and initiates connection. Other threads requesting the same router block on `readTMVar` until the connection is established or fails. This prevents duplicate connections to the same router.
 
 ### 2. Async retry on temporary errors
 
@@ -20,8 +20,8 @@ On permanent error, `newXFTPClient` puts the `Left error` into the `TMVar` (unbl
 
 ### 4. Connection timeout
 
-`waitForXFTPClient` wraps `readTMVar` in a timeout. If the connection establishment takes too long (e.g., server unreachable and retry loop is slow), the caller gets a timeout error rather than blocking indefinitely. The underlying connection attempt continues in the background.
+`waitForXFTPClient` wraps `readTMVar` in a timeout. If the connection establishment takes too long (e.g., router unreachable and retry loop is slow), the caller gets a timeout error rather than blocking indefinitely. The underlying connection attempt continues in the background.
 
 ### 5. closeXFTPServerClient removes from TMap
 
-Closing a server client deletes its entry from the TMap, so the next request will establish a fresh connection. This is called on connection errors during file operations to force reconnection.
+Closing a router client deletes its entry from the TMap, so the next request will establish a fresh connection. This is called on connection errors during file operations to force reconnection.

@@ -64,9 +64,9 @@ The semicolon separator for SMP queues in the URI query string is deliberate —
 
 Short links encode `ContactConnType` as a single lowercase letter in the URL path: `a` (contact), `c` (channel), `g` (group), `r` (relay). Invitation links use `i`. The parser uses `toUpper` before dispatching to `ctTypeP` (which expects uppercase), while the encoder uses `toLower` on `ctTypeChar` output. This case dance happens because the wire format wants lowercase URLs but the internal representation uses uppercase.
 
-## Short link server shortening
+## Short link router shortening
 
-`shortenShortLink` strips port and key hash from preset servers, leaving only the hostname (`SMPServerOnlyHost` pattern). This makes short links shorter for well-known servers. `restoreShortLink` reverses this by looking up the full server definition from the preset list. Both functions match on primary hostname only (first in the `NonEmpty` list).
+`shortenShortLink` strips port and key hash from preset routers, leaving only the hostname (`SMPServerOnlyHost` pattern). This makes short links shorter for well-known routers. `restoreShortLink` reverses this by looking up the full router definition from the preset list. Both functions match on primary hostname only (first in the `NonEmpty` list).
 
 `isPresetServer` has a non-obvious port matching rule: empty port in the preset matches `"443"` or `"5223"` in the link. This handles servers that use default ports without explicitly listing them.
 

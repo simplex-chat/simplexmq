@@ -33,6 +33,6 @@ NTF uses a 512-byte block size (`ntfBlockSize`), significantly smaller than SMP.
 
 `ntfTHandle` creates a THandle with `thVersion = VersionNTF 0` — a version that no real protocol supports. This is a placeholder value that gets overwritten during version negotiation. All feature gates check `v >= authBatchCmdsNTFVersion` (v2), so the v0 placeholder disables all optional features.
 
-### 6. Server handshake always sends authPubKey
+### 6. Router handshake always sends authPubKey
 
-`ntfServerHandshake` always includes `authPubKey = Just sk` in the server handshake, regardless of the advertised version range. The encoding functions (`encodeAuthEncryptCmds`) then decide whether to actually serialize it based on the max version. This means the key is computed even when it won't be sent.
+`ntfServerHandshake` always includes `authPubKey = Just sk` in the router handshake, regardless of the advertised version range. The encoding functions (`encodeAuthEncryptCmds`) then decide whether to actually serialize it based on the max version. This means the key is computed even when it won't be sent.

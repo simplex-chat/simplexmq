@@ -36,4 +36,4 @@ File timestamps use `RoundedFileTime` which is `RoundedSystemTime 3600` — syst
 
 ### 8. blockFile conditional storage adjustment
 
-`blockFile` takes a `deleted :: Bool` parameter. When `True` (file blocked with physical deletion), it subtracts the file size from `usedStorage`. When `False` (block without deletion), storage is unchanged. This allows blocking without physical deletion for audit purposes. Currently, both the server's `blockServerFile` and the store log replay path pass `True`.
+`blockFile` takes a `deleted :: Bool` parameter. When `True` (file blocked with physical deletion), it subtracts the file size from `usedStorage`. When `False` (block without deletion), storage is unchanged. This allows blocking without physical deletion for audit purposes. Currently, both the router's `blockServerFile` and the store log replay path pass `True`.

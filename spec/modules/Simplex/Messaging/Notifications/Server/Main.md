@@ -1,6 +1,6 @@
 # Simplex.Messaging.Notifications.Server.Main
 
-> CLI interface and INI configuration parsing for the NTF server.
+> CLI interface and INI configuration parsing for the NTF router.
 
 **Source**: [`Notifications/Server/Main.hs`](../../../../../../src/Simplex/Messaging/Notifications/Server/Main.hs)
 

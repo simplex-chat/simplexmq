@@ -15,7 +15,7 @@ This module is the top-level SimpleX agent, consumed by simplex-chat and other c
 ### Agent startup — backgroundMode
 
 `getSMPAgentClient_` accepts a `backgroundMode` flag that fundamentally changes agent capabilities:
-- **Normal mode** (`backgroundMode = False`): starts four threads raced via `raceAny_` — `subscriber` (main event loop), `runNtfSupervisor` (notification management), `cleanupManager` (garbage collection), `logServersStats` (statistics). Also restores persisted server statistics. If any thread crashes, all are cancelled; statistics are saved in a `finally` block.
+- **Normal mode** (`backgroundMode = False`): starts four threads raced via `raceAny_` — `subscriber` (main event loop), `runNtfSupervisor` (notification management), `cleanupManager` (garbage collection), `logServersStats` (statistics). Also restores persisted router statistics. If any thread crashes, all are cancelled; statistics are saved in a `finally` block.
 - **Background mode** (`backgroundMode = True`): starts only the `subscriber` thread. No cleanup, no notifications, no stats persistence. Used when the agent needs minimal receive-only operation.
 
 Thread crashes are caught by the `run` wrapper: if the agent is still active (`acThread` is set), the exception is reported as `CRITICAL True` to `subQ`. If the agent is being disposed, crashes are silently ignored.

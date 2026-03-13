@@ -1,6 +1,6 @@
 # Simplex.Messaging.Notifications.Server.Control
 
-> Control port command protocol for NTF server administration.
+> Control port command protocol for NTF router administration.
 
 **Source**: [`Notifications/Server/Control.hs`](../../../../../../src/Simplex/Messaging/Notifications/Server/Control.hs)
 

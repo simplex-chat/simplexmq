@@ -1,6 +1,6 @@
 # Simplex.FileTransfer.Server.Stats
 
-> XFTP server statistics: IORef-based counters with backward-compatible persistence.
+> XFTP router statistics: IORef-based counters with backward-compatible persistence.
 
 **Source**: [`FileTransfer/Server/Stats.hs`](../../../../../src/Simplex/FileTransfer/Server/Stats.hs)
 
@@ -8,11 +8,11 @@
 
 ### 1. setFileServerStats is not thread safe
 
-`setFileServerStats` directly writes to IORefs without synchronization. It is explicitly intended for server startup only (restoring from backup file), before any concurrent threads are running.
+`setFileServerStats` directly writes to IORefs without synchronization. It is explicitly intended for router startup only (restoring from backup file), before any concurrent threads are running.
 
 ### 2. Backward-compatible parsing
 
-The `strP` parser uses `opt` for newer fields, defaulting missing fields to 0. This allows reading stats files from older server versions that don't include fields like `filesBlocked` or `fileDownloadAcks`.
+The `strP` parser uses `opt` for newer fields, defaulting missing fields to 0. This allows reading stats files from older router versions that don't include fields like `filesBlocked` or `fileDownloadAcks`.
 
 ### 3. PeriodStats for download tracking
 

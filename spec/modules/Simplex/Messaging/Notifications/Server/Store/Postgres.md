@@ -8,7 +8,7 @@
 
 ### 1. deleteNtfToken exclusive row lock
 
-`deleteNtfToken` acquires `FOR UPDATE` on the token row before cascading deletes. This prevents concurrent subscription inserts for this token during the deletion window. The subscriptions are aggregated by SMP server and returned for in-memory subscription cleanup.
+`deleteNtfToken` acquires `FOR UPDATE` on the token row before cascading deletes. This prevents concurrent subscription inserts for this token during the deletion window. The subscriptions are aggregated by SMP router and returned for in-memory subscription cleanup.
 
 ### 2. addTokenLastNtf atomic CTE
 
@@ -47,11 +47,11 @@ Only non-service-associated subscriptions (`NOT ntf_service_assoc`) are returned
 
 ### 9. Server upsert optimization
 
-`addNtfSubscription` first tries a plain SELECT for the SMP server, then falls back to INSERT with ON CONFLICT only if the server doesn't exist. This avoids the upsert overhead in the common case where the server already exists.
+`addNtfSubscription` first tries a plain SELECT for the SMP router, then falls back to INSERT with ON CONFLICT only if the router doesn't exist. This avoids the upsert overhead in the common case where the router already exists.
 
 ### 10. Service association tracking
 
-`batchUpdateSrvSubStatus` atomically updates both subscription status and `ntf_service_assoc` flag. When notifications arrive via a service subscription (`newServiceId` is `Just`), all affected subscriptions are marked as service-associated. `removeServiceAndAssociations` resets all subscriptions for a server to `NSInactive` with `ntf_service_assoc = FALSE`.
+`batchUpdateSrvSubStatus` atomically updates both subscription status and `ntf_service_assoc` flag. When notifications arrive via a service subscription (`newServiceId` is `Just`), all affected subscriptions are marked as service-associated. `removeServiceAndAssociations` resets all subscriptions for a router to `NSInactive` with `ntf_service_assoc = FALSE`.
 
 ### 11. uninterruptibleMask_ wraps most store operations
 
@@ -63,7 +63,7 @@ Only non-service-associated subscriptions (`NOT ntf_service_assoc`) are returned
 
 ### 13. getUsedSMPServers uncorrelated EXISTS
 
-The `EXISTS` subquery in `getUsedSMPServers` has no join condition to the outer `smp_servers` table — it returns ALL servers if ANY subscription anywhere has a subscribable status. This is intentional for server startup: the server needs all SMP server records (including `ServiceSub` data) to rebuild in-memory state, and the EXISTS clause is a cheap guard against an empty subscription table.
+The `EXISTS` subquery in `getUsedSMPServers` has no join condition to the outer `smp_servers` table — it returns ALL servers if ANY subscription anywhere has a subscribable status. This is intentional for router startup: the router needs all SMP router records (including `ServiceSub` data) to rebuild in-memory state, and the EXISTS clause is a cheap guard against an empty subscription table.
 
 ### 14. Trigger-maintained XOR hash aggregates
 

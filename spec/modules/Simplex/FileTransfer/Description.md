@@ -22,9 +22,9 @@ When encoding chunks to YAML via `unfoldChunksToReplicas`, the `digest` and non-
 
 The top-level `FileDescription` has a `chunkSize` field. Individual chunk replicas only serialize their `chunkSize` if it differs from this default. This saves space in the common case where most chunks are the same size (only the last chunk may be smaller).
 
-### 4. YAML encoding groups replicas by server
+### 4. YAML encoding groups replicas by router
 
-`groupReplicasByServer` groups all chunk replicas by their server, producing `FileServerReplica` records. This is the serialization format — replicas are organized by server, not by chunk. The parser (`foldReplicasToChunks`) reverses this grouping back to per-chunk replica lists.
+`groupReplicasByServer` groups all chunk replicas by their router, producing `FileServerReplica` records. This is the serialization format — replicas are organized by router, not by chunk. The parser (`foldReplicasToChunks`) reverses this grouping back to per-chunk replica lists.
 
 ### 5. FileDescriptionURI uses query-string encoding
 
@@ -40,4 +40,4 @@ Two limits exist: `maxFileSize = 1GB` (soft limit, checked by CLI client) and `m
 
 ### 8. Redirect file descriptions
 
-A `FileDescription` can contain a `redirect` field pointing to another file's metadata (`RedirectFileInfo` with size and digest). The outer description downloads an encrypted YAML file that, once decrypted, yields the actual `FileDescription` for the real file. This adds one level of indirection for privacy — the relay servers hosting the redirect don't know the actual file's servers.
+A `FileDescription` can contain a `redirect` field pointing to another file's metadata (`RedirectFileInfo` with size and digest). The outer description downloads an encrypted YAML file that, once decrypted, yields the actual `FileDescription` for the real file. This adds one level of indirection for privacy — the relay routers hosting the redirect don't know the actual file's routers.
