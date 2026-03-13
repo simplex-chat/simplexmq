@@ -20,10 +20,10 @@ The Agent turns simplex (unidirectional) SMP queues into duplex connections, imp
 
 The Agent provides end-to-end encryption with forward secrecy and break-in recovery, specified in the [Post-Quantum Double Ratchet protocol](../protocol/pqdr.md):
 
-- **Double ratchet**: messages are encrypted using a double ratchet protocol derived from the Signal protocol. Each message uses a unique key; compromising one key does not reveal past or future messages. See the [PQDR specification](../protocol/pqdr.md) for the full ratchet state machine.
+- **Double ratchet**: messages are encrypted using a double ratchet protocol. Each message uses a unique key; compromising one key does not reveal past or future messages. See the [PQDR specification](../protocol/pqdr.md) for the full ratchet state machine.
 - **Post-quantum extensions**: the ratchet supports hybrid key exchange using SNTRUP761 (a lattice-based KEM) combined with X25519 DH. This provides protection against future quantum computers that could break classical DH. See the [SNTRUP761 module spec](../spec/modules/Simplex/Messaging/Crypto/SNTRUP761.md) and [Ratchet module spec](../spec/modules/Simplex/Messaging/Crypto/Ratchet.md) for implementation details.
 - **Ratchet synchronization**: if the ratchet state becomes desynchronized (e.g., due to message loss or device restore), the Agent detects this and can negotiate resynchronization with the peer.
-- **Per-queue encryption**: in addition to end-to-end encryption, each queue has a separate encryption layer between sender and router, preventing traffic correlation even if TLS is compromised. See the [SMP protocol security model](../protocol/simplex-messaging.md).
+- **Per-queue encryption**: in addition to end-to-end encryption, the [SMP protocol](../protocol/simplex-messaging.md) provides a separate encryption layer on each queue between sender and router, preventing traffic correlation even if TLS is compromised.
 
 ## File Transfer
 
@@ -66,7 +66,7 @@ The Agent is designed to be embedded as a Haskell library:
 | Encryption | Application's responsibility | Double ratchet with PQ extensions |
 | File transfer | Raw data packet send/receive | Chunking, encryption, reassembly |
 | Identity | Per-queue keys | Per-connection, rotatable |
-| Notifications | Not available | NTF router integration |
+| Notifications | Direct NTF protocol operations | Automated subscription supervision |
 
 ## Protocol references
 
@@ -76,7 +76,9 @@ The Agent is designed to be embedded as a Haskell library:
 - [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) — SMP queue operations used by the Agent
 - [XFTP Protocol](../protocol/xftp.md) — data packet operations for file transfer
 - [Push Notifications Protocol](../protocol/push-notifications.md) — NTF token and subscription management
-- [XRCP Protocol](../protocol/xrcp.md) — remote control protocol for cross-device Agent access
+## Peer library: Remote Control
+
+The Agent exposes the [XRCP protocol](../protocol/xrcp.md) API for cross-device remote control (e.g., controlling a mobile app from a desktop). The actual logic is in the standalone [`Simplex.RemoteControl.Client`](../src/Simplex/RemoteControl/Client.hs) library — the Agent provides thin wrappers that pass through its random and multicast state. XRCP is not a managed Agent capability (no workers, persistence, or background supervision). See the [RemoteControl module specs](../spec/modules/Simplex/RemoteControl/Types.md).
 
 ## Module specs
 
