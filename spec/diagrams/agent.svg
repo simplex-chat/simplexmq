@@ -75,20 +75,20 @@
         fill="none" stroke="#888" stroke-dasharray="6,3" />
   <text x="30" y="174" fill="#888" font-size="10">SMP</text>
 
-  <!-- msgQ queue box (inside SMP column, at top) -->
-  <rect x="200" y="180" width="110" height="30" rx="4"
+  <!-- msgQ queue box (inside SMP column, left side) -->
+  <rect x="35" y="180" width="110" height="30" rx="4"
         fill="#fef7e0" stroke="#f9ab00" />
-  <text x="255" y="194" text-anchor="middle" font-weight="bold" font-size="10">msgQ</text>
-  <text x="255" y="206" text-anchor="middle" font-size="8">(TBQueue)</text>
+  <text x="90" y="194" text-anchor="middle" font-weight="bold" font-size="10">msgQ</text>
+  <text x="90" y="206" text-anchor="middle" font-size="8">(TBQueue)</text>
 
-  <!-- subscriber (green, singleton) -->
-  <rect x="35" y="180" width="150" height="44" rx="4"
+  <!-- subscriber (green, singleton, right side) -->
+  <rect x="160" y="180" width="150" height="44" rx="4"
         fill="#e6f4ea" stroke="#34a853" />
-  <text x="110" y="198" text-anchor="middle">subscriber</text>
-  <text x="110" y="212" text-anchor="middle" font-size="9" fill="#666">(reads msgQ)</text>
+  <text x="235" y="198" text-anchor="middle">subscriber</text>
+  <text x="235" y="212" text-anchor="middle" font-size="9" fill="#666">(reads msgQ)</text>
 
   <!-- msgQ -> subscriber -->
-  <line x1="200" y1="198" x2="187" y2="198"
+  <line x1="147" y1="198" x2="158" y2="198"
         stroke="#333" marker-end="url(#arr)" />
 
   <!-- SMP worker pools label -->
@@ -143,24 +143,24 @@
         fill="none" stroke="#888" stroke-dasharray="6,3" />
   <text x="651" y="174" fill="#888" font-size="10">NTF</text>
 
-  <!-- ntfSubQ queue box (inside NTF column, at top) -->
-  <rect x="836" y="180" width="88" height="30" rx="4"
+  <!-- ntfSubQ queue box (inside NTF column, left side) -->
+  <rect x="656" y="180" width="88" height="30" rx="4"
         fill="#fef7e0" stroke="#f9ab00" />
-  <text x="880" y="194" text-anchor="middle" font-weight="bold" font-size="10">ntfSubQ</text>
-  <text x="880" y="206" text-anchor="middle" font-size="8">(TBQueue)</text>
+  <text x="700" y="194" text-anchor="middle" font-weight="bold" font-size="10">ntfSubQ</text>
+  <text x="700" y="206" text-anchor="middle" font-size="8">(TBQueue)</text>
 
-  <!-- ntfSupervisor (green, singleton) -->
-  <rect x="656" y="180" width="168" height="44" rx="4"
+  <!-- ntfSupervisor (green, singleton, right side) -->
+  <rect x="756" y="180" width="168" height="44" rx="4"
         fill="#e6f4ea" stroke="#34a853" />
-  <text x="740" y="198" text-anchor="middle">ntfSupervisor</text>
-  <text x="740" y="212" text-anchor="middle" font-size="9" fill="#666">(reads ntfSubQ)</text>
+  <text x="840" y="198" text-anchor="middle">ntfSupervisor</text>
+  <text x="840" y="212" text-anchor="middle" font-size="9" fill="#666">(reads ntfSubQ)</text>
 
   <!-- ntfSubQ -> ntfSupervisor -->
-  <line x1="836" y1="198" x2="826" y2="198"
+  <line x1="746" y1="198" x2="754" y2="198"
         stroke="#333" marker-end="url(#arr)" />
 
   <!-- NTF API -> ntfSubQ -->
-  <line x1="860" y1="126" x2="880" y2="178"
+  <line x1="700" y1="126" x2="700" y2="178"
         stroke="#333" marker-end="url(#arr)" />
 
   <!-- NTF worker pools label -->
@@ -185,9 +185,9 @@
   <text x="718" y="338" text-anchor="middle" font-size="8" fill="#666">(per NTF server)</text>
 
   <!-- ===== CROSS-PROTOCOL: asyncCmd -> ntfSubQ (ICQDelete) ===== -->
-  <polyline points="310,272 490,198 834,198"
+  <polyline points="310,272 500,195 654,195"
             fill="none" stroke="#c62828" stroke-dasharray="4,3" marker-end="url(#arr-x)" />
-  <text x="500" y="220" font-size="9" fill="#c62828">ntfSubQ (queue rotation)</text>
+  <text x="420" y="218" font-size="9" fill="#c62828">ntfSubQ (queue rotation)</text>
 
   <!-- ===== SHARED SINGLETON THREADS ===== -->
   <text x="30" y="448" fill="#888" font-size="9">shared singletons (all green run in raceAny_)</text>
@@ -249,10 +249,9 @@
   <line x1="786" y1="604" x2="786" y2="620"
         stroke="#999" marker-end="url(#arr-g)" />
 
-  <!-- ===== msgQ: smpClients -> subscriber (left margin) ===== -->
-  <polyline points="25,581 8,581 8,198 33,198"
+  <!-- ===== smpClients -> msgQ (left margin) ===== -->
+  <polyline points="25,581 8,581 8,195 33,195"
             fill="none" stroke="#333" marker-end="url(#arr)" />
-  <text x="1" y="216" font-size="10" fill="#555">msgQ</text>
 
   <!-- ===== LEGEND ===== -->
   <rect x="20" y="654" width="920" height="60" rx="4"
