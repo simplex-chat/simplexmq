@@ -29,18 +29,15 @@
   <line x1="560" y1="27" x2="532" y2="27"
         stroke="#333" marker-end="url(#arr)" />
 
-  <!-- ===== THREE subQ INTAKE ARROWS (one from each column) ===== -->
+  <!-- ===== subQ BUS: three stubs up from columns → horizontal → up → into subQ ===== -->
 
-  <!-- SMP -> subQ: through gap between SMP and XFTP API boxes -->
-  <polyline points="325,158 325,64 575,64 575,44"
-            fill="none" stroke="#333" marker-end="url(#arr)" />
+  <!-- Three vertical stubs from column tops up to bus at y=142 -->
+  <line x1="172" y1="158" x2="172" y2="142" stroke="#333" />
+  <line x1="483" y1="158" x2="483" y2="142" stroke="#333" />
+  <line x1="788" y1="158" x2="788" y2="142" stroke="#333" />
 
-  <!-- XFTP -> subQ: through gap between XFTP and NTF API boxes -->
-  <polyline points="633,158 633,54 645,54 645,44"
-            fill="none" stroke="#333" marker-end="url(#arr)" />
-
-  <!-- NTF -> subQ: along right margin -->
-  <polyline points="940,158 940,27 682,27"
+  <!-- Bus: horizontal across, right margin up, into subQ -->
+  <polyline points="172,142 940,142 940,27 682,27"
             fill="none" stroke="#333" marker-end="url(#arr)" />
 
   <!-- ===== App -> API arrows (down) ===== -->
