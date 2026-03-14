@@ -12,9 +12,9 @@ For deployment and usage, see [docs/CLIENT.md](../docs/CLIENT.md). For protocol 
 
 Generic protocol client used for both SMP and NTF connections. Manages a single TLS connection with multiplexed command/response matching via correlation IDs.
 
-### Component topology
+### SMP Client components
 
-![SMP Client - Component Topology](diagrams/smp-client.svg)
+![SMP Client components](diagrams/smp-client.svg)
 
 ### Command/result flow
 
@@ -63,9 +63,9 @@ sequenceDiagram
 
 Connection manager that multiplexes multiple ProtocolClient connections. Tracks subscriptions, handles reconnection with backoff, and forwards server messages and connection events upward. Used by SMP router (proxying) and NTF router (subscriptions).
 
-### Component topology
+### SMPClientAgent components
 
-![SMPClientAgent - Component Topology](diagrams/smp-client-agent.svg)
+![SMPClientAgent components](diagrams/smp-client-agent.svg)
 
 ### Connection lifecycle
 
@@ -118,9 +118,9 @@ sequenceDiagram
 
 Stateless wrapper around HTTP2Client. XFTPClient adds no threads of its own; each operation is a synchronous HTTP/2 request/response. Serialization and multiplexing happen inside HTTP2Client's internal request queue and process thread.
 
-### Component topology
+### XFTP Client components
 
-![XFTP Client - Component Topology](diagrams/xftp-client.svg)
+![XFTP Client components](diagrams/xftp-client.svg)
 
 ### Packet delivery flow
 

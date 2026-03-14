@@ -8,9 +8,9 @@ For usage and API overview, see [docs/AGENT.md](../docs/AGENT.md). For protocol 
 
 **Module specs**: [Agent](modules/Simplex/Messaging/Agent.md) · [Agent Client](modules/Simplex/Messaging/Agent/Client.md) · [Agent Protocol](modules/Simplex/Messaging/Agent/Protocol.md) · [Store Interface](modules/Simplex/Messaging/Agent/Store/Interface.md) · [NtfSubSupervisor](modules/Simplex/Messaging/Agent/NtfSubSupervisor.md) · [XFTP Agent](modules/Simplex/FileTransfer/Agent.md) · [Ratchet](modules/Simplex/Messaging/Crypto/Ratchet.md)
 
-### Component topology
+### Agent components
 
-![Agent - Component Topology](diagrams/agent.svg)
+![Agent components](diagrams/agent.svg)
 
 ### Message receive flow
 

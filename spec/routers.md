@@ -10,9 +10,9 @@ For deployment and configuration, see [docs/ROUTERS.md](../docs/ROUTERS.md). For
 
 **Module specs**: [Server](modules/Simplex/Messaging/Server.md) · [Main](modules/Simplex/Messaging/Server/Main.md) · [QueueStore](modules/Simplex/Messaging/Server/QueueStore.md) · [QueueStore Postgres](modules/Simplex/Messaging/Server/QueueStore/Postgres.md) · [MsgStore](modules/Simplex/Messaging/Server/MsgStore.md) · [StoreLog](modules/Simplex/Messaging/Server/StoreLog.md) · [Control](modules/Simplex/Messaging/Server/Control.md) · [Prometheus](modules/Simplex/Messaging/Server/Prometheus.md) · [Stats](modules/Simplex/Messaging/Server/Stats.md)
 
-### Component topology
+### SMP Router components
 
-![SMP Router - Component Topology](diagrams/smp-router.svg)
+![SMP Router components](diagrams/smp-router.svg)
 
 ### Packet delivery flow
 
@@ -72,9 +72,9 @@ sequenceDiagram
 
 **Module specs**: [Server](modules/Simplex/FileTransfer/Server.md) · [Main](modules/Simplex/FileTransfer/Server/Main.md) · [Store](modules/Simplex/FileTransfer/Server/Store.md) · [StoreLog](modules/Simplex/FileTransfer/Server/StoreLog.md) · [Stats](modules/Simplex/FileTransfer/Server/Stats.md) · [Transport](modules/Simplex/FileTransfer/Transport.md)
 
-### Component topology
+### XFTP Router components
 
-![XFTP Router - Component Topology](diagrams/xftp-router.svg)
+![XFTP Router components](diagrams/xftp-router.svg)
 
 ### Data packet delivery flow
 
@@ -122,9 +122,9 @@ sequenceDiagram
 
 **Module specs**: [Server](modules/Simplex/Messaging/Notifications/Server.md) · [Main](modules/Simplex/Messaging/Notifications/Server/Main.md) · [Store Postgres](modules/Simplex/Messaging/Notifications/Server/Store/Postgres.md) · [APNS](modules/Simplex/Messaging/Notifications/Server/Push/APNS.md) · [Control](modules/Simplex/Messaging/Notifications/Server/Control.md) · [Client](modules/Simplex/Messaging/Notifications/Client.md) · [Protocol](modules/Simplex/Messaging/Notifications/Protocol.md)
 
-### Component topology
+### NTF Router components
 
-![NTF Router - Component Topology](diagrams/ntf-router.svg)
+![NTF Router components](diagrams/ntf-router.svg)
 
 ### Token registration and notification delivery
 
