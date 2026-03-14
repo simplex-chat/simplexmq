@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 590" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="430" y="22" text-anchor="middle" font-size="15" font-weight="bold">SMP Router -- Component Topology</text>
+
+  <!-- ===== PER-CLIENT GROUP ===== -->
+  <rect x="25" y="38" width="570" height="210" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="53" fill="#888" font-size="10">per client connection (raceAny_ -- any thread exit tears down connection)</text>
+
+  <!-- receive -->
+  <rect x="45" y="68" width="90" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="90" y="90" text-anchor="middle">receive</text>
+
+  <!-- rcvQ arrow: receive -> client -->
+  <line x1="135" y1="85" x2="198" y2="85"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="166" y="79" text-anchor="middle" font-size="10" fill="#555">rcvQ</text>
+
+  <!-- client -->
+  <rect x="200" y="68" width="100" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="250" y="90" text-anchor="middle">client</text>
+
+  <!-- sndQ arrow: client -> send -->
+  <line x1="300" y1="78" x2="388" y2="78"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="344" y="72" text-anchor="middle" font-size="10" fill="#555">sndQ</text>
+
+  <!-- send -->
+  <rect x="390" y="62" width="70" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="425" y="84" text-anchor="middle">send</text>
+
+  <!-- msgQ arrow: client -> sendMsg -->
+  <line x1="300" y1="93" x2="388" y2="113"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="336" y="112" text-anchor="middle" font-size="10" fill="#555">msgQ</text>
+
+  <!-- sendMsg -->
+  <rect x="390" y="102" width="90" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="435" y="124" text-anchor="middle">sendMsg</text>
+
+  <!-- network in label + arrow -->
+  <text x="13" y="81" font-size="9" fill="#999">net</text>
+  <line x1="12" y1="85" x2="45" y2="85"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- network out arrows -->
+  <line x1="460" y1="79" x2="498" y2="79"
+        stroke="#999" marker-end="url(#arr-g)" />
+  <line x1="480" y1="119" x2="498" y2="119"
+        stroke="#999" marker-end="url(#arr-g)" />
+  <text x="504" y="100" font-size="9" fill="#999">net</text>
+
+  <!-- client -> QueueStore (down-left) -->
+  <line x1="228" y1="102" x2="130" y2="150"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- client -> MsgStore (down-right) -->
+  <line x1="278" y1="102" x2="395" y2="150"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- QueueStore -->
+  <rect x="45" y="150" width="155" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="122" y="171" text-anchor="middle" font-weight="bold">QueueStore</text>
+  <text x="122" y="189" text-anchor="middle" font-size="10">(STM or Postgres)</text>
+
+  <!-- MsgStore -->
+  <rect x="320" y="150" width="155" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="397" y="171" text-anchor="middle" font-weight="bold">MsgStore</text>
+  <text x="397" y="189" text-anchor="middle" font-size="10">(STM or Postgres)</text>
+
+  <!-- StoreLog under QueueStore only (queues are logged, msgs stored directly) -->
+  <rect x="45" y="208" width="155" height="18" rx="3"
+        fill="#f5f5f5" stroke="#ccc" />
+  <text x="122" y="221" text-anchor="middle" font-size="9" fill="#888">StoreLog (optional)</text>
+
+  <!-- subQ arrow: from client bottom-center, through gap between stores, to serverThread -->
+  <!-- Gap between stores: x=200..320 -->
+  <line x1="250" y1="102" x2="250" y2="296"
+        stroke="#4285f4" stroke-width="1.5" stroke-dasharray="5,3"
+        marker-end="url(#arr)" />
+  <text x="262" y="238" font-size="10" fill="#4285f4">subQ</text>
+
+  <!-- ===== SINGLETON GROUP ===== -->
+  <rect x="25" y="258" width="810" height="195" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="273" fill="#888" font-size="10">singleton threads (one instance each, all in raceAny_)</text>
+
+  <!-- serverThread (SMP subs) -->
+  <rect x="45" y="288" width="175" height="46" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="132" y="308" text-anchor="middle">serverThread</text>
+  <text x="132" y="324" text-anchor="middle" font-size="10">(SMP subscriptions)</text>
+
+  <!-- serverThread (NTF subs) -->
+  <rect x="240" y="288" width="175" height="46" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="327" y="308" text-anchor="middle">serverThread</text>
+  <text x="327" y="324" text-anchor="middle" font-size="10">(NTF subscriptions)</text>
+
+  <!-- pendingEvents: serverThread -> sendPendingEvts -->
+  <line x1="195" y1="334" x2="230" y2="355"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="176" y="352" font-size="9" fill="#555">pendingEvents</text>
+
+  <!-- deliverNtfs -->
+  <rect x="45" y="352" width="128" height="30" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="109" y="372" text-anchor="middle" font-size="11">deliverNtfs</text>
+
+  <!-- sendPendingEvts -->
+  <rect x="195" y="352" width="148" height="30" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="269" y="372" text-anchor="middle" font-size="11">sendPendingEvts</text>
+
+  <!-- expireMessages -->
+  <rect x="365" y="352" width="138" height="30" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="434" y="372" text-anchor="middle" font-size="11">expireMessages</text>
+
+  <!-- expireNtfs -->
+  <rect x="45" y="396" width="115" height="30" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="102" y="416" text-anchor="middle" font-size="11">expireNtfs</text>
+
+  <!-- proxyAgent -->
+  <rect x="180" y="396" width="118" height="30" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="239" y="416" text-anchor="middle" font-size="11">proxyAgent</text>
+
+  <!-- ===== OPTIONAL (nested inside singleton, right side) ===== -->
+  <rect x="610" y="278" width="215" height="130" rx="6"
+        fill="none" stroke="#bbb" stroke-dasharray="4,3" />
+  <text x="620" y="293" fill="#bbb" font-size="10">optional</text>
+
+  <!-- logServerStats -->
+  <rect x="625" y="302" width="140" height="24" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="695" y="319" text-anchor="middle" font-size="10">logServerStats</text>
+
+  <!-- prometheus -->
+  <rect x="625" y="336" width="140" height="24" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="695" y="353" text-anchor="middle" font-size="10">prometheus</text>
+
+  <!-- controlPort -->
+  <rect x="625" y="370" width="140" height="24" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="695" y="387" text-anchor="middle" font-size="10">controlPort</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="25" y="472" width="810" height="60" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="40" y="486" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="60" y="496" font-size="10">per-client thread</text>
+
+  <rect x="195" y="486" width="14" height="11" rx="2"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="215" y="496" font-size="10">singleton thread</text>
+
+  <rect x="350" y="486" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="370" y="496" font-size="10">storage</text>
+
+  <rect x="445" y="486" width="14" height="11" rx="2"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="465" y="496" font-size="10">optional</text>
+
+  <text x="40" y="522" font-size="10" fill="#666">
+    Solid arrows: TBQueue connections.  Dashed blue: subQ linking per-client to singleton threads.
+  </text>
+
+</svg>

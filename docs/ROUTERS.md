@@ -2,11 +2,11 @@
 
 SimpleX routers are the network infrastructure of the [SimpleX Network](../protocol/overview-tjr.md). They accept, buffer, and deliver data packets between endpoints. Each router operates independently and can be run by any party on standard computing hardware.
 
-This document covers deployment and advanced configuration. For an overview of the router architecture and trust model, see the [SimpleX Network overview](../protocol/overview-tjr.md).
+This document covers deployment and advanced configuration. For an overview of the router architecture and trust model, see the [SimpleX Network overview](../protocol/overview-tjr.md). For internal architecture diagrams (thread topology, command processing flows), see [`spec/routers.md`](../spec/routers.md).
 
 ## SMP Router
 
-The SMP router provides messaging queues — unidirectional, ordered sequences of fixed-size packets (16,384 bytes each). It implements the [SimpleX Messaging Protocol](../protocol/simplex-messaging.md). **Module spec**: [`spec/modules/Simplex/Messaging/Server.md`](../spec/modules/Simplex/Messaging/Server.md).
+The SMP router provides messaging queues — unidirectional, ordered sequences of fixed-size packets (16,384 bytes each). It implements the [SimpleX Messaging Protocol](../protocol/simplex-messaging.md). For architecture and module specs, see [SMP Router](../spec/routers.md#smp-router).
 
 ### Advanced configuration
 
@@ -35,13 +35,13 @@ echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile
 
 ## XFTP Router
 
-The XFTP router accepts and delivers data packets over HTTP/2 — individually addressed blocks in fixed sizes (64KB, 256KB, 1MB, 4MB). It implements the [XFTP protocol](../protocol/xftp.md). Data packets are used for larger payload delivery (files, media) where SMP queue packet sizes would be inefficient. The use of HTTP/2 simplifies browser integration. **Module spec**: [`spec/modules/Simplex/FileTransfer/Server.md`](../spec/modules/Simplex/FileTransfer/Server.md).
+The XFTP router accepts and delivers data packets over HTTP/2 — individually addressed blocks in fixed sizes (64KB, 256KB, 1MB, 4MB). It implements the [XFTP protocol](../protocol/xftp.md). Data packets are used for larger payload delivery (files, media) where SMP queue packet sizes would be inefficient. The use of HTTP/2 simplifies browser integration. For architecture and module specs, see [XFTP Router](../spec/routers.md#xftp-router).
 
 Initialize with `xftp-server init` and configure storage quota in `xftp-server.ini`.
 
 ## NTF Router
 
-The NTF router bridges SimpleX Network to platform push notification services (APNS). It implements the [Push Notifications protocol](../protocol/push-notifications.md). Mobile clients register push tokens with the NTF router, which subscribes to their SMP queues and sends push notifications when messages arrive. The push notification contains only a notification ID, not message content. **Module spec**: [`spec/modules/Simplex/Messaging/Notifications/Server.md`](../spec/modules/Simplex/Messaging/Notifications/Server.md).
+The NTF router bridges SimpleX Network to platform push notification services (APNS). It implements the [Push Notifications protocol](../protocol/push-notifications.md). Mobile clients register push tokens with the NTF router, which subscribes to their SMP queues and sends push notifications when messages arrive. The push notification contains only a notification ID, not message content. For architecture and module specs, see [NTF Router](../spec/routers.md#ntf-router).
 
 Initialize with `ntf-server init` and configure APNS credentials in `ntf-server.ini`.
 
@@ -184,7 +184,7 @@ smp-server init [-l] -n <fqdn>
 
 ## Monitoring
 
-SMP and XFTP routers expose Prometheus metrics via a control port. The control port also supports commands for runtime inspection (queue counts, client counts, statistics). See [SMP Server Prometheus](../spec/modules/Simplex/Messaging/Server/Prometheus.md), [SMP Server Control](../spec/modules/Simplex/Messaging/Server/Control.md), and [NTF Server Control](../spec/modules/Simplex/Messaging/Notifications/Server/Control.md) module specs for available metrics and control commands.
+SMP and XFTP routers expose Prometheus metrics via a control port. The control port also supports commands for runtime inspection (queue counts, client counts, statistics). See module specs linked from each router section in [`spec/routers.md`](../spec/routers.md) (Control, Prometheus, Stats).
 
 ## Protocol references
 
@@ -192,30 +192,3 @@ SMP and XFTP routers expose Prometheus metrics via a control port. The control p
 - [XFTP Protocol](../protocol/xftp.md) — data packet protocol
 - [Push Notifications Protocol](../protocol/push-notifications.md) — NTF protocol
 - [SimpleX Network overview](../protocol/overview-tjr.md) — architecture and trust model
-
-## Module specs
-
-### SMP Router
-- [Server](../spec/modules/Simplex/Messaging/Server.md) — main server module, client handling, message routing
-- [Server Main](../spec/modules/Simplex/Messaging/Server/Main.md) — server startup, initialization
-- [QueueStore](../spec/modules/Simplex/Messaging/Server/QueueStore.md) — queue persistence abstraction
-- [QueueStore Postgres](../spec/modules/Simplex/Messaging/Server/QueueStore/Postgres.md) — PostgreSQL queue store
-- [MsgStore](../spec/modules/Simplex/Messaging/Server/MsgStore.md) — message storage abstraction
-- [StoreLog](../spec/modules/Simplex/Messaging/Server/StoreLog.md) — append-only store log for queue persistence
-- [Server Control](../spec/modules/Simplex/Messaging/Server/Control.md) — control port commands
-- [Server Prometheus](../spec/modules/Simplex/Messaging/Server/Prometheus.md) — metrics export
-- [Server Stats](../spec/modules/Simplex/Messaging/Server/Stats.md) — statistics collection
-
-### XFTP Router
-- [Server](../spec/modules/Simplex/FileTransfer/Server.md) — main server module, data packet handling
-- [Server Main](../spec/modules/Simplex/FileTransfer/Server/Main.md) — server startup
-- [Server Store](../spec/modules/Simplex/FileTransfer/Server/Store.md) — data packet storage
-- [Server StoreLog](../spec/modules/Simplex/FileTransfer/Server/StoreLog.md) — store log for packet persistence
-- [Server Stats](../spec/modules/Simplex/FileTransfer/Server/Stats.md) — statistics
-
-### NTF Router
-- [Server](../spec/modules/Simplex/Messaging/Notifications/Server.md) — main server module
-- [Server Main](../spec/modules/Simplex/Messaging/Notifications/Server/Main.md) — server startup
-- [Server Store Postgres](../spec/modules/Simplex/Messaging/Notifications/Server/Store/Postgres.md) — PostgreSQL store for tokens and subscriptions
-- [APNS Push](../spec/modules/Simplex/Messaging/Notifications/Server/Push/APNS.md) — Apple push notification delivery
-- [Server Control](../spec/modules/Simplex/Messaging/Notifications/Server/Control.md) — control port commands

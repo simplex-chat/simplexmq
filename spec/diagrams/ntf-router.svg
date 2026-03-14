@@ -1,0 +1,208 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 830 610" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="415" y="22" text-anchor="middle" font-size="15" font-weight="bold">NTF Router -- Component Topology</text>
+
+  <!-- ===== PER-CLIENT GROUP (left) ===== -->
+  <rect x="25" y="40" width="300" height="170" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="55" fill="#888" font-size="10">per client (raceAny_)</text>
+
+  <!-- network in -->
+  <text x="13" y="78" font-size="9" fill="#999">net</text>
+  <line x1="12" y1="82" x2="40" y2="82"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- receive -->
+  <rect x="42" y="66" width="78" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="81" y="88" text-anchor="middle">receive</text>
+
+  <!-- rcvQ -->
+  <line x1="120" y1="83" x2="158" y2="83"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="139" y="77" text-anchor="middle" font-size="10" fill="#555">rcvQ</text>
+
+  <!-- client -->
+  <rect x="160" y="66" width="78" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="199" y="88" text-anchor="middle">client</text>
+
+  <!-- sndQ -->
+  <line x1="238" y1="83" x2="268" y2="83"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="253" y="77" text-anchor="middle" font-size="10" fill="#555">sndQ</text>
+
+  <!-- send -->
+  <rect x="270" y="66" width="48" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="294" y="88" text-anchor="middle">send</text>
+
+  <!-- network out -->
+  <text x="326" y="88" font-size="9" fill="#999">net</text>
+
+  <!-- commands label -->
+  <text x="52" y="120" font-size="10" fill="#666">TNEW, TVFY, TRPL, TDEL</text>
+  <text x="52" y="134" font-size="10" fill="#666">SNEW, SCHK, SDEL</text>
+
+  <!-- client -> store (down) -->
+  <line x1="199" y1="100" x2="199" y2="280"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="211" y="230" font-size="10" fill="#555">store</text>
+
+  <!-- ===== SMP CLIENT AGENT GROUP (right) ===== -->
+  <rect x="370" y="40" width="435" height="220" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="380" y="55" fill="#888" font-size="10">SMP Client Agent (connects to SMP routers)</text>
+
+  <!-- SMP routers external label -->
+  <text x="620" y="38" font-size="9" fill="#999">SMP routers</text>
+  <line x1="620" y1="40" x2="620" y2="62"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- SMPClientAgent -->
+  <rect x="530" y="64" width="220" height="34" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="640" y="86" text-anchor="middle">SMPClientAgent</text>
+
+  <!-- msgQ arrow: SMPClientAgent -> receiveSMP -->
+  <line x1="580" y1="98" x2="510" y2="128"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="530" y="112" font-size="10" fill="#555">msgQ</text>
+
+  <!-- agentQ arrow: SMPClientAgent -> receiveAgent -->
+  <line x1="690" y1="98" x2="690" y2="128"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="702" y="117" font-size="10" fill="#555">agentQ</text>
+
+  <!-- ntfSubscriber/receiveSMP -->
+  <rect x="390" y="130" width="195" height="34" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="487" y="152" text-anchor="middle" font-size="11">ntfSubscriber/receiveSMP</text>
+
+  <!-- ntfSubscriber/receiveAgent -->
+  <rect x="605" y="130" width="185" height="34" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="697" y="152" text-anchor="middle" font-size="11">receiveAgent</text>
+
+  <!-- race_ label between them -->
+  <text x="597" y="144" font-size="9" fill="#888">race_</text>
+
+  <!-- receiveSMP -> pushQ (down) -->
+  <line x1="487" y1="164" x2="487" y2="195"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="500" y="183" font-size="10" fill="#555">pushQ</text>
+
+  <!-- receiveAgent -> store (down) -->
+  <line x1="697" y1="164" x2="697" y2="195"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="709" y="183" font-size="10" fill="#555">store</text>
+
+  <!-- per-SMP-server subscriber -->
+  <rect x="390" y="200" width="200" height="44" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="490" y="219" text-anchor="middle" font-size="11">runSMPSubscriber</text>
+  <text x="490" y="236" text-anchor="middle" font-size="9" fill="#666">(one per SMP router)</text>
+
+  <!-- subscriberSubQ label -->
+  <text x="408" y="196" font-size="9" fill="#555">subscriberSubQ</text>
+
+  <!-- ===== CENTRAL STORE ===== -->
+  <rect x="100" y="280" width="600" height="50" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="400" y="301" text-anchor="middle" font-weight="bold">tokens / subscriptions / tokenLastNtfs</text>
+  <text x="400" y="319" text-anchor="middle" font-size="10">(in-memory TMap + PostgreSQL)</text>
+
+  <!-- ===== PUSH DELIVERY ===== -->
+  <rect x="25" y="355" width="780" height="90" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="370" fill="#888" font-size="10">push delivery pipeline</text>
+
+  <!-- pushQ hub: store -> ntfPush -->
+  <line x1="400" y1="330" x2="400" y2="388"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="412" y="365" font-size="10" fill="#555">pushQ</text>
+
+  <!-- ntfPush -->
+  <rect x="350" y="390" width="110" height="34" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="405" y="412" text-anchor="middle">ntfPush</text>
+
+  <!-- APNS provider -->
+  <line x1="460" y1="407" x2="528" y2="407"
+        stroke="#333" marker-end="url(#arr)" />
+  <rect x="530" y="390" width="135" height="34" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="597" y="412" text-anchor="middle">APNS provider</text>
+
+  <!-- periodicNtfsThread -->
+  <rect x="45" y="390" width="175" height="34" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="132" y="412" text-anchor="middle" font-size="11">periodicNtfsThread</text>
+
+  <!-- periodic -> pushQ -->
+  <line x1="220" y1="407" x2="348" y2="407"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="284" y="401" font-size="10" fill="#555">pushQ</text>
+
+  <!-- periodic reads store -->
+  <line x1="132" y1="390" x2="132" y2="330"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="117" y="365" font-size="9" fill="#555">reads</text>
+
+  <!-- ===== OPTIONAL ===== -->
+  <rect x="25" y="462" width="780" height="45" rx="6"
+        fill="none" stroke="#bbb" stroke-dasharray="4,3" />
+  <text x="35" y="477" fill="#bbb" font-size="10">optional</text>
+
+  <rect x="45" y="484" width="128" height="18" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="109" y="497" text-anchor="middle" font-size="9">logServerStats</text>
+
+  <rect x="190" y="484" width="108" height="18" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="244" y="497" text-anchor="middle" font-size="9">prometheus</text>
+
+  <rect x="315" y="484" width="108" height="18" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="369" y="497" text-anchor="middle" font-size="9">controlPort</text>
+
+  <rect x="440" y="484" width="108" height="18" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="494" y="497" text-anchor="middle" font-size="9">resubscribe</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="25" y="525" width="780" height="55" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="40" y="540" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="60" y="550" font-size="10">per-client thread</text>
+
+  <rect x="195" y="540" width="14" height="11" rx="2"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="215" y="550" font-size="10">singleton thread</text>
+
+  <rect x="350" y="540" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="370" y="550" font-size="10">storage</text>
+
+  <rect x="445" y="540" width="14" height="11" rx="2"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="465" y="550" font-size="10">external connection</text>
+
+  <text x="40" y="572" font-size="10" fill="#666">
+    Solid arrows: TBQueue connections.  Dashed: store access.
+  </text>
+
+</svg>

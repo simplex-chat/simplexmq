@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 460" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="370" y="22" text-anchor="middle" font-size="15" font-weight="bold">XFTP Router -- Component Topology</text>
+
+  <!-- ===== REQUEST HANDLING (no persistent threads) ===== -->
+  <rect x="25" y="38" width="510" height="280" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="53" fill="#888" font-size="10">per request (inline HTTP/2 callback, no spawned threads)</text>
+
+  <!-- network in -->
+  <text x="13" y="78" font-size="9" fill="#999">net</text>
+  <line x1="12" y1="82" x2="45" y2="82"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- HTTP/2 Transport -->
+  <rect x="45" y="66" width="190" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="140" y="88" text-anchor="middle">HTTP/2 handler</text>
+
+  <!-- Handshake state -->
+  <rect x="280" y="60" width="240" height="48" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="400" y="78" text-anchor="middle" font-size="11">Handshake State (per session)</text>
+  <text x="400" y="96" text-anchor="middle" font-size="10" fill="#666">None -> Sent -> Accepted</text>
+
+  <!-- sessions TMap link -->
+  <line x1="235" y1="80" x2="278" y2="80"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="256" y="74" text-anchor="middle" font-size="9" fill="#555">sessions</text>
+
+  <!-- HTTP/2 handler -> Command Processing -->
+  <line x1="140" y1="100" x2="140" y2="118"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- Command Processing -->
+  <rect x="45" y="120" width="475" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="282" y="143" text-anchor="middle">Command Processing (FNEW, FADD, FPUT, FGET, FACK, FDEL)</text>
+
+  <!-- Command Processing -> FileStore -->
+  <line x1="160" y1="156" x2="130" y2="180"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- Command Processing -> Disk Storage -->
+  <line x1="380" y1="156" x2="390" y2="180"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- FileStore -->
+  <rect x="45" y="182" width="180" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="135" y="203" text-anchor="middle" font-weight="bold">FileStore</text>
+  <text x="135" y="221" text-anchor="middle" font-size="10">(TMap in STM)</text>
+
+  <!-- Disk Storage -->
+  <rect x="300" y="182" width="220" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="410" y="203" text-anchor="middle" font-weight="bold">Disk Storage</text>
+  <text x="410" y="221" text-anchor="middle" font-size="10">filesPath / senderId / data</text>
+
+  <!-- Quota note -->
+  <text x="410" y="246" text-anchor="middle" font-size="9" fill="#888">quota-managed via usedStorage TVar</text>
+
+  <!-- StoreLog -->
+  <rect x="45" y="260" width="180" height="18" rx="3"
+        fill="#f5f5f5" stroke="#ccc" />
+  <text x="135" y="273" text-anchor="middle" font-size="9" fill="#888">StoreLog (append-only)</text>
+
+  <!-- FileStore -> StoreLog -->
+  <line x1="135" y1="230" x2="135" y2="258"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+
+  <!-- network out (command result) -->
+  <line x1="520" y1="138" x2="548" y2="138"
+        stroke="#999" marker-end="url(#arr-g)" />
+  <text x="555" y="143" font-size="9" fill="#999">net</text>
+
+  <!-- ===== BACKGROUND THREADS ===== -->
+  <rect x="25" y="335" width="690" height="50" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="350" fill="#888" font-size="10">background threads (singleton, in raceAny_)</text>
+
+  <!-- expireFiles -->
+  <rect x="45" y="358" width="118" height="22" rx="3"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="104" y="374" text-anchor="middle" font-size="10">expireFiles</text>
+
+  <!-- logServerStats -->
+  <rect x="180" y="358" width="128" height="22" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="244" y="374" text-anchor="middle" font-size="10">logServerStats</text>
+
+  <!-- prometheus -->
+  <rect x="325" y="358" width="118" height="22" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="384" y="374" text-anchor="middle" font-size="10">prometheus</text>
+
+  <!-- controlPort -->
+  <rect x="460" y="358" width="118" height="22" rx="3"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="519" y="374" text-anchor="middle" font-size="10">controlPort</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="25" y="400" width="690" height="50" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="40" y="414" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="60" y="424" font-size="10">request handler (no threads)</text>
+
+  <rect x="250" y="414" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="270" y="424" font-size="10">storage</text>
+
+  <rect x="350" y="414" width="14" height="11" rx="2"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="370" y="424" font-size="10">per-session state</text>
+
+  <rect x="500" y="414" width="14" height="11" rx="2"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="520" y="424" font-size="10">background thread</text>
+
+</svg>

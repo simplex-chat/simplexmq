@@ -16,6 +16,8 @@ The XFTP router runs several concurrent threads via `raceAny_`:
 | `savePrometheusMetrics` | Periodic Prometheus metrics dump |
 | `runCPServer` | Control port for admin commands |
 
+See [spec/routers.md](../../routers.md) for component and sequence diagrams.
+
 ## Non-obvious behavior
 
 ### 1. Three-state handshake with session caching

@@ -10,6 +10,8 @@
 
 The router runs as `raceAny_` over many threads — any thread exit stops the entire router process. The thread set includes: one `serverThread` per subscription type (SMP, NTF), a notification delivery thread, a pending events thread, a proxy agent receiver, a SIGINT handler, plus per-transport listener threads and optional expiration/stats/prometheus/control-port threads. `E.finally` ensures `stopServer` runs on any exit.
 
+See [spec/routers.md](../../routers.md) for component and sequence diagrams.
+
 ## serverThread — subscription lifecycle with split STM
 
 See comment on `serverThread`. It reads the subscription request from `subQ`, then looks up the client **outside** STM (via `getServerClient`), then enters an STM transaction (`updateSubscribers`) to compute which old subscriptions to end, then runs `endPreviousSubscriptions` in IO. If the client disconnects between lookup and transaction, `updateSubscribers` handles `Nothing` by still sending END/DELD to other subscribed clients.

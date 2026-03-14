@@ -18,6 +18,8 @@ The NTF router runs several concurrent threads via `raceAny_`:
 
 Each client connection spawns `receive`, `send`, and `client` threads via `raceAny_`.
 
+See [spec/routers.md](../../../routers.md) for component and sequence diagrams.
+
 ## Non-obvious behavior
 
 ### 1. Timing attack mitigation on entity lookup
