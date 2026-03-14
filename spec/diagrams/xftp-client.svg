@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 280" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="310" y="22" text-anchor="middle" font-size="15" font-weight="bold">XFTP Client -- Component Topology</text>
+
+  <!-- ===== CLIENT WRAPPER ===== -->
+  <rect x="120" y="40" width="380" height="130" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="130" y="55" fill="#888" font-size="10">per connection (XFTPClient adds no threads; serialization in HTTP2Client)</text>
+
+  <!-- caller label -->
+  <text x="15" y="95" font-size="9" fill="#999">caller</text>
+  <text x="10" y="108" font-size="9" fill="#999">(Agent/</text>
+  <text x="10" y="121" font-size="9" fill="#999"> router)</text>
+
+  <!-- caller -> XFTPClient -->
+  <line x1="55" y1="100" x2="138" y2="100"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- XFTPClient -->
+  <rect x="140" y="68" width="150" height="48" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="215" y="89" text-anchor="middle" font-weight="bold">XFTPClient</text>
+  <text x="215" y="107" text-anchor="middle" font-size="10">sendXFTPCommand</text>
+
+  <!-- XFTPClient -> HTTP2Client -->
+  <line x1="290" y1="92" x2="328" y2="92"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- HTTP2Client -->
+  <rect x="330" y="68" width="150" height="48" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="405" y="89" text-anchor="middle" font-weight="bold">HTTP2Client</text>
+  <text x="405" y="107" text-anchor="middle" font-size="10">(TLS + HTTP/2 streams)</text>
+
+  <!-- HTTP2Client -> network -->
+  <line x1="480" y1="92" x2="518" y2="92"
+        stroke="#999" marker-end="url(#arr-g)" />
+  <text x="525" y="88" font-size="9" fill="#999">XFTP</text>
+  <text x="525" y="101" font-size="9" fill="#999">Router</text>
+  <text x="525" y="114" font-size="9" fill="#999">(HTTP/2)</text>
+
+  <!-- Handshake state -->
+  <rect x="140" y="130" width="150" height="32" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="215" y="151" text-anchor="middle" font-size="10">thParams (negotiated)</text>
+
+  <!-- upload/download note -->
+  <text x="330" y="143" font-size="10" fill="#666">uploads: streaming request body</text>
+  <text x="330" y="157" font-size="10" fill="#666">downloads: ephemeral DH + streaming</text>
+  <text x="330" y="171" font-size="10" fill="#666">  response body (per-chunk forward secrecy)</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="25" y="195" width="570" height="70" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="40" y="210" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="60" y="220" font-size="10">client wrapper</text>
+
+  <rect x="195" y="210" width="14" height="11" rx="2"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="215" y="220" font-size="10">external connection</text>
+
+  <rect x="385" y="210" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="405" y="220" font-size="10">state</text>
+
+  <text x="40" y="248" font-size="10" fill="#666">
+    XFTPClient adds no threads. HTTP2Client has internal reqQ + process thread.
+  </text>
+
+</svg>

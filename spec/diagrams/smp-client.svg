@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="360" y="22" text-anchor="middle" font-size="15" font-weight="bold">SMP Client (ProtocolClient) -- Component Topology</text>
+
+  <!-- ===== PER-CONNECTION GROUP ===== -->
+  <rect x="120" y="38" width="480" height="240" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="130" y="53" fill="#888" font-size="10">per connection (raceAny_ -- any thread exit tears down connection)</text>
+
+  <!-- caller label + arrow -->
+  <text x="15" y="105" font-size="9" fill="#999">caller</text>
+  <text x="10" y="118" font-size="9" fill="#999">(Agent/</text>
+  <text x="10" y="131" font-size="9" fill="#999"> router)</text>
+
+  <!-- caller -> sndQ (sendProtocolCommand) -->
+  <line x1="55" y1="115" x2="138" y2="115"
+        stroke="#999" marker-end="url(#arr-g)" />
+  <text x="73" y="109" font-size="9" fill="#999">commands</text>
+
+  <!-- sndQ -->
+  <rect x="140" y="90" width="120" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="200" y="111" text-anchor="middle" font-weight="bold">sndQ</text>
+  <text x="200" y="129" text-anchor="middle" font-size="10">(TBQueue, 64)</text>
+
+  <!-- sndQ -> send -->
+  <line x1="260" y1="114" x2="298" y2="114"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- send thread -->
+  <rect x="300" y="68" width="100" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="350" y="90" text-anchor="middle">send</text>
+
+  <!-- send -> network -->
+  <line x1="400" y1="85" x2="498" y2="85"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- receive thread -->
+  <rect x="300" y="118" width="100" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="350" y="140" text-anchor="middle">receive</text>
+
+  <!-- network -> receive -->
+  <line x1="498" y1="135" x2="400" y2="135"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- network label -->
+  <text x="505" y="113" font-size="9" fill="#999">SMP</text>
+  <text x="505" y="126" font-size="9" fill="#999">Router</text>
+  <text x="505" y="139" font-size="9" fill="#999">(TLS)</text>
+
+  <!-- receive -> rcvQ -->
+  <line x1="350" y1="152" x2="350" y2="168"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- rcvQ -->
+  <rect x="290" y="170" width="120" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="350" y="191" text-anchor="middle" font-weight="bold">rcvQ</text>
+  <text x="350" y="209" text-anchor="middle" font-size="10">(TBQueue, 64)</text>
+
+  <!-- rcvQ -> process -->
+  <line x1="350" y1="218" x2="350" y2="234"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- process thread -->
+  <rect x="300" y="236" width="100" height="34" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="350" y="258" text-anchor="middle">process</text>
+
+  <!-- sentCommands -->
+  <rect x="140" y="170" width="130" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="205" y="191" text-anchor="middle" font-weight="bold">sentCommands</text>
+  <text x="205" y="209" text-anchor="middle" font-size="10">(TMap CorrId Request)</text>
+
+  <!-- process -> sentCommands (match CorrId) -->
+  <line x1="300" y1="253" x2="270" y2="220"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="268" y="244" font-size="9" fill="#555">match</text>
+
+  <!-- process -> responseVar (back to caller) -->
+  <line x1="300" y1="260" x2="60" y2="145"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="130" y="220" font-size="9" fill="#555">responseVar</text>
+  <text x="130" y="232" font-size="9" fill="#555">(TMVar)</text>
+
+  <!-- monitor thread (optional) -->
+  <rect x="430" y="190" width="100" height="34" rx="4"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="480" y="212" text-anchor="middle" font-size="11">monitor</text>
+
+  <!-- monitor -> sndQ (sends PING) -->
+  <line x1="430" y1="207" x2="260" y2="130"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="370" y="180" font-size="9" fill="#555">PING</text>
+
+  <!-- monitor optional label -->
+  <text x="540" y="210" font-size="9" fill="#bbb">optional</text>
+
+  <!-- ===== msgQ (server events to agent) ===== -->
+  <rect x="250" y="310" width="200" height="38" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="350" y="327" text-anchor="middle" font-weight="bold">msgQ (optional)</text>
+  <text x="350" y="341" text-anchor="middle" font-size="10">(TBQueue, server events)</text>
+
+  <!-- process -> msgQ (events with empty CorrId) -->
+  <line x1="340" y1="270" x2="340" y2="308"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="280" y="293" font-size="9" fill="#555">events (empty CorrId)</text>
+
+  <!-- msgQ -> consumer -->
+  <line x1="250" y1="329" x2="60" y2="329"
+        stroke="#999" marker-end="url(#arr-g)" />
+  <text x="100" y="323" font-size="9" fill="#999">to Agent / SMPClientAgent</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="25" y="365" width="670" height="45" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="40" y="378" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="60" y="388" font-size="10">thread</text>
+
+  <rect x="130" y="378" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="150" y="388" font-size="10">queue / state</text>
+
+  <rect x="275" y="378" width="14" height="11" rx="2"
+        fill="#f5f5f5" stroke="#bbb" />
+  <text x="295" y="388" font-size="10">optional</text>
+
+  <text x="40" y="404" font-size="10" fill="#666">
+    Solid arrows: TBQueue flow.  Dashed: STM lookups / TMVar responses.
+  </text>
+
+</svg>

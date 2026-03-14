@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 750 480" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="375" y="22" text-anchor="middle" font-size="15" font-weight="bold">SMPClientAgent -- Component Topology</text>
+
+  <!-- ===== CONSUMER (top) ===== -->
+  <text x="15" y="55" font-size="9" fill="#999">consumer</text>
+  <text x="15" y="68" font-size="9" fill="#999">(NTF router /</text>
+  <text x="15" y="81" font-size="9" fill="#999"> SMP proxy /</text>
+  <text x="15" y="94" font-size="9" fill="#999"> application)</text>
+
+  <!-- msgQ -->
+  <rect x="105" y="45" width="200" height="38" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="205" y="63" text-anchor="middle" font-weight="bold">msgQ</text>
+  <text x="205" y="77" text-anchor="middle" font-size="10">(TBQueue, server messages)</text>
+
+  <!-- consumer <- msgQ -->
+  <line x1="105" y1="64" x2="80" y2="64"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- agentQ -->
+  <rect x="340" y="45" width="230" height="38" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="455" y="63" text-anchor="middle" font-weight="bold">agentQ</text>
+  <text x="455" y="77" text-anchor="middle" font-size="10">(TBQueue SMPClientAgentEvent)</text>
+
+  <!-- consumer <- agentQ -->
+  <line x1="340" y1="55" x2="80" y2="55"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- agentQ events note -->
+  <text x="580" y="50" font-size="9" fill="#666">CAConnected</text>
+  <text x="580" y="61" font-size="9" fill="#666">CADisconnected</text>
+  <text x="580" y="72" font-size="9" fill="#666">CASubscribed / CASubError</text>
+  <text x="580" y="83" font-size="9" fill="#666">CAServiceDisconnected</text>
+  <text x="580" y="94" font-size="9" fill="#666">CAServiceSubscribed / SubError</text>
+
+  <!-- ===== AGENT CORE ===== -->
+  <rect x="25" y="105" width="700" height="175" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="120" fill="#888" font-size="10">SMPClientAgent (connection manager)</text>
+
+  <!-- smpClients -->
+  <rect x="45" y="135" width="220" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="155" y="156" text-anchor="middle" font-weight="bold">smpClients</text>
+  <text x="155" y="174" text-anchor="middle" font-size="10">(TMap SMPServer SMPClientVar)</text>
+
+  <!-- subscription tracking -->
+  <rect x="290" y="135" width="250" height="56" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="415" y="149" text-anchor="middle" font-size="10">activeQueueSubs / pendingQueueSubs</text>
+  <text x="415" y="161" text-anchor="middle" font-size="9" fill="#666">(TMap SMPServer (TMap QueueId ...))</text>
+  <text x="415" y="174" text-anchor="middle" font-size="10">activeServiceSubs / pendingServiceSubs</text>
+  <text x="415" y="186" text-anchor="middle" font-size="9" fill="#666">(TMap SMPServer (TVar (Maybe ...)))</text>
+
+  <!-- smpClients -> msgQ (server messages forwarded up) -->
+  <line x1="155" y1="135" x2="155" y2="85"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- subscription state -> agentQ (connection events forwarded up) -->
+  <line x1="415" y1="135" x2="415" y2="85"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- reconnect workers -->
+  <rect x="565" y="135" width="140" height="48" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="635" y="156" text-anchor="middle" font-size="11">smpSubWorkers</text>
+  <text x="635" y="174" text-anchor="middle" font-size="9" fill="#666">(one per server)</text>
+
+  <!-- workers -> smpClients (reconnect) -->
+  <line x1="565" y1="159" x2="265" y2="159"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="390" y="155" font-size="9" fill="#555">reconnect + resubscribe</text>
+
+  <!-- getSMPServerClient'' label -->
+  <text x="50" y="210" font-size="10" fill="#666">getSMPServerClient'': get or create client</text>
+  <text x="50" y="224" font-size="10" fill="#666">connectClient: create ProtocolClient, register disconnect handler</text>
+  <text x="50" y="238" font-size="10" fill="#666">on disconnect: filter by SessionId, move active → pending, notify agentQ, spawn worker</text>
+  <text x="50" y="252" font-size="10" fill="#666">worker: retry connect with backoff, resubscribe pending subs</text>
+  <text x="50" y="266" font-size="10" fill="#666">subscribeQueuesNtfs / subscribeServiceNtfs: subscribe + track state</text>
+
+  <!-- ===== PROTOCOL CLIENTS (bottom) ===== -->
+  <rect x="25" y="300" width="700" height="95" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="35" y="315" fill="#888" font-size="10">ProtocolClient connections (one per SMP Router)</text>
+
+  <!-- Client 1 -->
+  <rect x="45" y="330" width="150" height="48" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="120" y="351" text-anchor="middle">ProtocolClient</text>
+  <text x="120" y="369" text-anchor="middle" font-size="10">→ SMP Router A</text>
+
+  <!-- Client 2 -->
+  <rect x="220" y="330" width="150" height="48" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="295" y="351" text-anchor="middle">ProtocolClient</text>
+  <text x="295" y="369" text-anchor="middle" font-size="10">→ SMP Router B</text>
+
+  <!-- Client N -->
+  <rect x="395" y="330" width="150" height="48" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="470" y="351" text-anchor="middle">ProtocolClient</text>
+  <text x="470" y="369" text-anchor="middle" font-size="10">→ SMP Router N</text>
+
+  <!-- dots -->
+  <text x="560" y="360" font-size="14" fill="#888">...</text>
+
+  <!-- smpClients -> clients -->
+  <line x1="100" y1="183" x2="100" y2="328"
+        stroke="#333" marker-end="url(#arr)" />
+  <line x1="200" y1="183" x2="295" y2="328"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="25" y="415" width="700" height="50" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="40" y="428" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="60" y="438" font-size="10">ProtocolClient</text>
+
+  <rect x="185" y="428" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="205" y="438" font-size="10">state / queue</text>
+
+  <rect x="310" y="428" width="14" height="11" rx="2"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="330" y="438" font-size="10">background worker</text>
+
+  <text x="40" y="456" font-size="10" fill="#666">
+    Solid arrows: TBQueue flow.  Dashed: reconnection / resubscription.
+  </text>
+
+</svg>

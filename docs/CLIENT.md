@@ -2,11 +2,11 @@
 
 SimpleX client libraries provide low-level protocol access to SimpleX routers. They implement the wire protocols ([SMP](../protocol/simplex-messaging.md), [XFTP](../protocol/xftp.md), [NTF](../protocol/push-notifications.md)) and handle connection lifecycle, but leave encryption, identity management, and connection orchestration to the application.
 
-This is **Layer 2** of the [SimpleX Network architecture](../protocol/overview-tjr.md). Layer 1 is the routers themselves; Layer 3 is the [Agent](AGENT.md), which builds duplex encrypted connections on top of these libraries.
+This is **Layer 2** of the [SimpleX Network architecture](../protocol/overview-tjr.md). Layer 1 is the routers themselves; Layer 3 is the [Agent](AGENT.md), which builds duplex encrypted connections on top of these libraries. For internal architecture diagrams (thread topology, command processing flows), see [`spec/clients.md`](../spec/clients.md).
 
 ## SMP Client
 
-**Source**: [`Simplex.Messaging.Client`](../src/Simplex/Messaging/Client.hs) — **Module spec**: [`spec/modules/Simplex/Messaging/Client.md`](../spec/modules/Simplex/Messaging/Client.md)
+**Source**: [`Simplex.Messaging.Client`](../src/Simplex/Messaging/Client.hs). For architecture and module specs, see [SMP Client](../spec/clients.md#smp-client-protocolclient).
 
 The SMP client connects to SMP routers and manages simplex messaging queues — the fundamental addressing primitive of the SimpleX Network. Each simplex queue is a unidirectional, ordered sequence of fixed-size packets (16,384 bytes) with separate cryptographic credentials for sending and receiving. The queue model and command set are defined in the [SMP protocol](../protocol/simplex-messaging.md).
 
@@ -33,7 +33,7 @@ Routers are identified by the SHA-256 hash of their CA certificate fingerprint, 
 
 ## XFTP Client
 
-**Source**: [`Simplex.FileTransfer.Client`](../src/Simplex/FileTransfer/Client.hs) — **Module spec**: [`spec/modules/Simplex/FileTransfer/Client.md`](../spec/modules/Simplex/FileTransfer/Client.md)
+**Source**: [`Simplex.FileTransfer.Client`](../src/Simplex/FileTransfer/Client.hs). For architecture and module specs, see [XFTP Client](../spec/clients.md#xftp-client).
 
 The XFTP client connects to XFTP routers and manages data packets — individually addressed blocks used for larger payload delivery. Data packets come in fixed sizes (64KB, 256KB, 1MB, 4MB), hiding the actual payload size. The XFTP protocol runs over HTTP/2, simplifying browser integration. The data packet lifecycle and command set are defined in the [XFTP protocol](../protocol/xftp.md).
 
@@ -46,7 +46,7 @@ The XFTP client connects to XFTP routers and manages data packets — individual
 
 ## NTF Client
 
-**Source**: [`Simplex.Messaging.Notifications.Client`](../src/Simplex/Messaging/Notifications/Client.hs) — **Module spec**: [`spec/modules/Simplex/Messaging/Notifications/Client.md`](../spec/modules/Simplex/Messaging/Notifications/Client.md)
+**Source**: [`Simplex.Messaging.Notifications.Client`](../src/Simplex/Messaging/Notifications/Client.hs). For architecture and module specs, see [NTF Client](../spec/clients.md#ntf-client).
 
 The NTF client connects to NTF (notification) routers and manages push notification tokens and subscriptions. It implements the [Push Notifications protocol](../protocol/push-notifications.md).
 
@@ -81,15 +81,3 @@ The following capabilities require the [Agent](AGENT.md) (Layer 3):
 - [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) — SMP wire format, commands, and security properties
 - [XFTP Protocol](../protocol/xftp.md) — XFTP wire format, data packet lifecycle
 - [SimpleX Network overview](../protocol/overview-tjr.md) — architecture, trust model, and design rationale
-
-## Module specs
-
-- [SMP Client](../spec/modules/Simplex/Messaging/Client.md) — proxy forwarding, batching, connection lifecycle, keepalive
-- [XFTP Client](../spec/modules/Simplex/FileTransfer/Client.md) — handshake, data packet operations, forward secrecy
-- [NTF Client](../spec/modules/Simplex/Messaging/Notifications/Client.md) — token and subscription operations, batch commands
-- [SMP Protocol types](../spec/modules/Simplex/Messaging/Protocol.md) — command types, queue addresses, message encoding
-- [XFTP Protocol types](../spec/modules/Simplex/FileTransfer/Protocol.md) — data packet types, XFTP commands
-- [NTF Protocol types](../spec/modules/Simplex/Messaging/Notifications/Protocol.md) — notification commands, token/subscription types
-- [Transport](../spec/modules/Simplex/Messaging/Transport.md) — TLS transport, session handshake
-- [HTTP/2 Client](../spec/modules/Simplex/Messaging/Transport/HTTP2/Client.md) — HTTP/2 transport layer
-- [Crypto](../spec/modules/Simplex/Messaging/Crypto.md) — cryptographic primitives used by clients
