@@ -30,7 +30,7 @@ All agent background processing - async commands, message delivery, notification
 
 **Error classification**: `withWork` distinguishes two failure modes:
 - *Work-item error* (`isWorkItemError`): the task itself is broken (likely recurring). Worker stops and sends `CRITICAL False`.
-- *Store error*: transient database issue. Worker re-signals `doWork` and reports `INTERNAL` (retry may succeed).
+- *Other error*: any non-work-item error (e.g., transient database issue). Worker re-signals `doWork` and reports `INTERNAL` (retry may succeed).
 
 **Restart rate limiting**: On worker exit, `restartOrDelete` checks the `restarts` counter against `maxWorkerRestartsPerMin`. Under the limit: reset action, re-signal, restart. Over the limit: delete the worker from the map and send `CRITICAL True` (escalation to the application). A restart only proceeds if the `workerId` in the map still matches the current worker - a stale restart from a replaced worker is a no-op.
 
@@ -54,7 +54,7 @@ Async commands handle state transitions that require network calls but shouldn't
 - *Client commands* (`AClientCommand`): `NEW`, `JOIN`, `LET` (allow connection), `ACK`, `LSET`/`LGET` (set/get connection link data), `SWCH` (switch queue), `DEL`. Triggered by application API calls.
 - *Internal commands* (`AInternalCommand`): `ICAck` (ack to router), `ICAckDel` (ack + delete local message), `ICAllowSecure`/`ICDuplexSecure` (secure after confirmation), `ICQSecure` (secure queue during switch), `ICQDelete` (delete old queue after switch), `ICDeleteConn` (delete connection), `ICDeleteRcvQueue` (delete specific receive queue). Generated *during* message processing to handle state transitions asynchronously.
 
-**Retry and movement**: `tryMoveableCommand` wraps execution with `withRetryInterval`. On `temporaryOrHostError`, it retries with backoff. On cross-server errors (e.g., queue moved to different router), it updates the command's server field in the store (`CCMoved`) and retries against the new server.
+**Retry and movement**: `tryMoveableCommand` wraps execution with `withRetryInterval`. On `temporaryOrHostError`, it retries with backoff. Individual command handlers can return `CCMoved` (e.g., when a queue has moved to a different router) after updating the command's server field in the store - `tryMoveableCommand` then exits cleanly, letting the moved command be picked up by the appropriate worker.
 
 **Locking**: State-sensitive commands use `tryWithLock` / `tryMoveableWithLock`, which acquire `withConnLock` before execution. This serializes operations on the same connection, preventing races between concurrent command processing and message receipt.
 
@@ -73,8 +73,7 @@ Message delivery uses a split-phase encryption design: the ratchet advances in t
 2. Call `agentRatchetEncryptHeader` - advances the double ratchet, produces a message encryption key (MEK), padded length, and PQ encryption status
 3. Store `SndMsg` with `SndMsgPrepData` (MEK, paddedLen, sndMsgBodyId) in the database
 4. Create `SndMsgDelivery` record for each send queue
-5. Increment `msgDeliveryOp.opsInProgress` (for suspension tracking)
-6. Signal delivery workers via `getDeliveryWorker`
+5. `submitPendingMsg` - increments `msgDeliveryOp.opsInProgress` (for suspension tracking) and signals delivery workers via `getDeliveryWorker`
 
 **Phase 2 - delivery worker** (`runSmpQueueMsgDelivery`):
 1. `throwWhenNoDelivery` - kills the worker thread if the queue's address has been removed from `smpDeliveryWorkers` (prevents delivery to queues replaced during switch)
@@ -82,9 +81,9 @@ Message delivery uses a split-phase encryption design: the ratchet advances in t
 3. Re-encode the message with `internalSndId`/`prevMsgHash`, then `rcEncryptMsg` to encrypt with the stored MEK (no ratchet access needed)
 4. `sendAgentMessage` - per-queue encrypt + SEND to the router
 
-**Connection info messages** (`AM_CONN_INFO`, `AM_CONN_INFO_REPLY`) skip split-phase encryption entirely - they are sent as plaintext confirmation bodies via `sendConfirmation`.
+**Connection info messages** (`AM_CONN_INFO`, `AM_CONN_INFO_REPLY`) skip split-phase encryption entirely - they are sent as per-queue E2E encrypted confirmation bodies via `sendConfirmation` (encrypted with `agentCbEncrypt`, not with the double ratchet).
 
-**Retry with dual intervals**: Delivery uses `withRetryLock2`, which maintains two independent retry clocks (slow and fast). A background thread sleeps for the current interval, then signals the delivery worker via `tryPutTMVar`. When the router sends `QCONT` (queue buffer cleared), the agent calls `tryPutTMVar retryLock ()` to wake the delivery thread immediately, avoiding unnecessary delay.
+**Retry with dual intervals**: Delivery uses `withRetryLock2`, which maintains two retry interval states (slow and fast) but only one wait is active at a time. A background thread sleeps for the current interval, then signals the delivery worker via `tryPutTMVar`. When the router sends `QCONT` (queue buffer cleared), the agent calls `tryPutTMVar retryLock ()` to wake the delivery thread immediately, avoiding unnecessary delay.
 
 **Error handling**:
 - `SMP QUOTA` - switch to slow retry, don't penalize (backpressure from router)
@@ -115,7 +114,7 @@ SessSubs
 
 - **Active → Pending**: When `setSessionId` is called with a *different* session ID (TLS reconnect), all active subscriptions are atomically demoted to pending. Session ID is updated to the new value.
 
-- **Pending → Removed**: `failSubscriptions` moves permanently-failed queues (non-temporary SMP errors) to `removedSubs`. The removal is tracked for diagnostic reporting via `getSubscriptions`.
+- **Pending → Removed**: `failSubscriptions` moves permanently-failed queues (non-temporary SMP errors) to `removedSubs` - a separate `TMap` in `AgentClient`, not part of `TSessionSubs`. The removal is tracked for diagnostic reporting via `getSubscriptions`.
 
 **Service-associated queues**: Queues with `serviceAssoc=True` are *not* added to `activeSubs` individually. Instead, the service subscription's count is incremented and its `idsHash` XOR-accumulates the queue's hash. The router tracks individual queues via the service subscription; the agent only tracks the aggregate. Consequence: `hasActiveSub(rId)` returns `False` for service-associated queues - callers must check the service subscription separately.
 

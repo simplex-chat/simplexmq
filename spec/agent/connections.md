@@ -37,7 +37,7 @@ Connection creation is split into two phases to satisfy both design constraints:
 
 **`prepareConnectionLink`** (no network, no database): generates root Ed25519 signing key pair and queue-level X25519 DH keys. Derives a short link key as `SHA3_256` of the encoded fixed link data. Returns the connection link URI and `PreparedLinkParams` in memory. The application can now embed the link in link data (e.g., for short link resolution) before the queue exists.
 
-**`createConnectionForLink`** (single network call): uses the prepared parameters to create the queue on the router with SKEY (root signature). The sender ID is deterministically derived from the correlation nonce (`SMP.EntityId $ B.take 24 $ C.sha3_384 corrId`), so a lost response can be retried - the router validates the same sender ID.
+**`createConnectionForLink`** (single network call): uses the prepared parameters to create the queue on the router with NEW (root signing key as owner auth). The sender ID is deterministically derived from the correlation nonce (`SMP.EntityId $ B.take 24 $ C.sha3_384 corrId`), so a lost response can be retried - the router validates the same sender ID.
 
 Without split-phase, the application would need to create the queue first, get the link, then update the queue with link data containing the link - requiring an extra round-trip.
 
@@ -83,7 +83,7 @@ Queue rotation replaces a receive queue with a new one on a different router, pr
 
 ### Protocol sequence
 
-Rotation is initiated by `switchConnectionAsync` (client API) or by receiving QADD from the peer. Preconditions: connection must be duplex, no switch already in progress, ratchet must not be syncing.
+Rotation is initiated by the switching party calling `switchConnectionAsync` (client API), which sends QADD. The peer responds to QADD by creating a new send queue and replying with QKEY. Preconditions: connection must be duplex, no switch already in progress, ratchet must not be syncing.
 
 ```
 Receiver (switching party)              Sender (peer)
@@ -157,7 +157,7 @@ Both parties compute `rkHash = SHA256(pubKeyBytes k1 || pubKeyBytes k2)` for the
 
 ### EREADY completion
 
-`EREADY` carries `lastExternalSndId` - the ID of the last message sent with the old ratchet. The receiving party uses this to know when the old ratchet's messages are exhausted and the new ratchet is fully active. Until EREADY arrives, messages may arrive encrypted with either the old or new ratchet.
+`EREADY` carries `lastExternalSndId` - the ID of the last message the sender received from the peer before switching ratchets. The receiving party uses this to know when the old ratchet's messages are exhausted and the new ratchet is fully active. Until EREADY arrives, messages may arrive encrypted with either the old or new ratchet.
 
 ### Error recovery
 
@@ -179,17 +179,17 @@ Four variants with single-character discriminants:
 
 | Variant | Disc. | Encryption | When |
 |---------|-------|-----------|------|
-| `AgentConfirmation` | `'C'` | Per-queue E2E only | Connection handshake |
+| `AgentConfirmation` | `'C'` | Per-queue E2E (outer) + double ratchet (inner `encConnInfo`) | Connection handshake |
 | `AgentMsgEnvelope` | `'M'` | Double ratchet | Normal messages |
 | `AgentInvitation` | `'I'` | Per-queue E2E only | Contact URI join |
 | `AgentRatchetKey` | `'R'` | Per-queue E2E only | Ratchet sync |
 
-Only `AgentMsgEnvelope` is double-ratchet encrypted. The other three use only the per-queue E2E encryption (DH shared secret from queue creation). This is because during handshake and ratchet sync, the double ratchet is either not yet established or being replaced.
+`AgentMsgEnvelope` is fully double-ratchet encrypted. `AgentConfirmation` uses per-queue E2E for the outer envelope but also contains `encConnInfo` which is double-ratchet encrypted (the ratchet is initialized during confirmation processing). `AgentInvitation` and `AgentRatchetKey` use only per-queue E2E - the double ratchet is either not yet established or being replaced.
 
 ### Level 2: AgentMessage (application)
 
 Inside the decrypted envelope:
-- `AgentConnInfo` / `AgentConnInfoReply` - connection info during handshake (not double-ratchet encrypted)
+- `AgentConnInfo` / `AgentConnInfoReply` - connection info during handshake (double-ratchet encrypted inside `encConnInfo`)
 - `AgentRatchetInfo` - ratchet sync payload (not double-ratchet encrypted)
 - `AgentMessage APrivHeader AMessage` - user and control messages (double-ratchet encrypted)
 
