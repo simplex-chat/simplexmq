@@ -107,7 +107,7 @@ The `setQueueService` function in QueueStore updates `rcvServiceId` on the queue
 ### SUBS command processing
 
 1. `subscribeServiceMessages` receives `SUBS count idsHash` from the client.
-2. `sharedSubscribeService` queries `getServiceQueueCountHash` for the router's actual count and hash, sets `clientServiceSubscribed = True`, and enqueues a `CSService` event to `subQ`. `serverThread` processes this asynchronously: adds the client to `subClients`, adjusts `totalServiceSubs`, and upserts into `serviceSubscribers` (displacing any previous subscriber).
+2. `sharedSubscribeService` queries `getServiceQueueCountHash` for the router's actual count and hash. In one STM transaction, sets `clientServiceSubscribed = True` and swaps the client's service subs counter to the server's actual values (computing a delta). In a separate STM transaction, enqueues a `CSService` event (carrying the delta) to `subQ`. `serverThread` processes this asynchronously: adds the client to `subClients`, subtracts the delta from `totalServiceSubs` (preventing double-counting of per-queue accumulated counts), and upserts into `serviceSubscribers` (displacing any previous subscriber).
 3. Returns `SOKS count' idsHash'` immediately - the client can compare expected vs actual to detect drift.
 
 ### deliverServiceMessages and ALLS
@@ -115,7 +115,7 @@ The `setQueueService` function in QueueStore updates `rcvServiceId` on the queue
 If this is a new subscription (not duplicate), the router forks `deliverServiceMessages`:
 
 1. `foldRcvServiceMessages` iterates all queues associated with the service.
-2. For each queue with a pending message: `getSubscription` creates a `Sub` in the client's `subscriptions` TMap (if not already present), sets `delivered`, and writes the MSG event to `msgQ` immediately.
+2. For each queue with a pending message: `getSubscription` creates a `Sub` in the client's `subscriptions` TMap if not already present (returning `Nothing` for duplicates). If a new Sub is created, `setDelivered` records the message and the MSG event is written to `msgQ` immediately.
 3. Queue errors are accumulated in a list whose initial value is `[(NoCorrId, NoEntity, ALLS)]`. Errors are prepended, so ALLS ends up as the last event.
 4. After the fold completes, the accumulated events (errors plus ALLS) are written to `msgQ` in one batch.
 
@@ -129,7 +129,7 @@ When a new message arrives for a service-associated queue via `tryDeliverMessage
 
 ### Service displacement
 
-When a new service client subscribes to the same ServiceId and the previous subscriber is a different, still-connected client, `cancelServiceSubs` atomically zeros out the old client's `clientServiceSubs` counter and prepares an `ENDS count idsHash` event. `endPreviousSubscriptions` then swaps out the old client's individual subscription map, cancels per-queue Subs, and places ENDS in `pendingEvents` for deferred delivery via `sendPendingEvtsThread`. The old client's fold thread (if still running from `deliverServiceMessages`) continues writing to the old client's `msgQ` until ALLS, then exits.
+When a new service client subscribes to the same ServiceId and the previous subscriber is a different, still-connected client, `cancelServiceSubs` atomically zeros out the old client's service subs counter and prepares an `ENDS count idsHash` event. `endPreviousSubscriptions` first inserts ENDS into `pendingEvents` (for deferred delivery via `sendPendingEvtsThread`), then subtracts the changed subs from `totalServiceSubs`, swaps out the old client's individual subscription map to empty, and cancels per-queue Subs. The old client's fold thread (if still running from `deliverServiceMessages`) continues writing to the old client's `msgQ` until ALLS, then exits.
 
 ---
 
@@ -214,7 +214,7 @@ If a stored service subscription exists, `subscribeSrvSubs` sends `NSUBS` first 
 
 ### Recovery path
 
-On `CAServiceUnavailable` (irrecoverable service error, e.g., ServiceId mismatch after cert rotation), `removeServiceAndAssociations` performs nuclear recovery: clears all service credentials, resets counters, removes all `ntf_service_assoc` flags, and resubscribes all queues individually. The Postgres schema uses `xor_combine` triggers (equivalent to the agent's SQLite triggers) to maintain per-SMP-server notifier count and hash.
+On `CAServiceUnavailable` (irrecoverable service error, e.g., ServiceId mismatch after cert rotation), `removeServiceAndAssociations` performs nuclear DB cleanup: clears all service credentials, resets counters, and removes all `ntf_service_assoc` flags. The caller then resubscribes all queues individually via `subscribeSrvSubs`. The Postgres schema uses `xor_combine` triggers (equivalent to the agent's SQLite triggers) to maintain per-SMP-server notifier count and hash.
 
 ### NSUBS vs SUBS
 

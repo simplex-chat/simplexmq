@@ -24,7 +24,7 @@ The router tracks which client connection is subscribed to each queue. At most o
 
 1. **STM re-evaluation**: any transaction reading the TVar automatically re-evaluates when the subscriber changes (disconnects, gets displaced). This is used by `tryDeliverMessage` - if the subscriber disconnects mid-delivery, the STM transaction retries and sees `Nothing`.
 
-2. **Reconnection continuity**: when a mobile client disconnects and reconnects, the TVar is reused rather than recreated. Subscriptions that were made at any point are never removed from the map - this is a deliberate trade-off for intermittently connected mobile clients.
+2. **Reconnection continuity**: when a mobile client disconnects and reconnects, the TVar can be reused rather than recreated if a new subscription is established before cleanup. On disconnect, `deleteSubcribedClient` removes entries from the map (with a `sameClient` guard to avoid removing a newer subscriber).
 
 The `SubscribedClients` constructor is not exported from `Server/Env/STM.hs` (only the type is). All access goes through `getSubscribedClient` (IO, outside STM) and `upsertSubscribedClient` (STM). This prevents accidental use of `TM.lookup` inside STM transactions, which would add the entire TMap to the transaction's read set.
 
@@ -82,12 +82,12 @@ The router delivers at most one unacknowledged message per subscription. The `de
 
 **Phase 1 - outside STM**: `getSubscribedClient` reads the `SubscribedClients` TMap via `readTVarIO` (IO, not STM). If no subscriber exists, the function returns immediately without entering any STM transaction. This avoids transaction overhead for queues with no active subscriber.
 
-**Phase 2 - STM transaction** (`deliverToSub`): reads the client TVar (inside STM, so the transaction re-evaluates if the subscriber changes), checks `subThread == NoSub` and `delivered == Nothing`. Then:
+**Phase 2 - STM transaction** (`deliverToSub`): reads the client TVar (inside STM, so the transaction re-evaluates if the subscriber changes), checks that `subThread` is `ServerSub` (not `ProhibitSub`), reads the inner `SubscriptionThread` TVar for `NoSub`, and checks `delivered == Nothing`. Then:
 
 - If the client's `sndQ` is **not full**: delivers the message directly in the same STM transaction (`writeTBQueue sndQ`), sets `delivered`. No thread is needed. This is the fast path.
 - If the client's `sndQ` is **full**: sets `subThread = SubPending` and returns the client + sub for phase 3.
 
-**Phase 3 - forked thread** (`forkDeliver`): a `deliverThread` is spawned that blocks until the `sndQ` has room. Before delivering, it re-checks that the subscriber is still the same client and `delivered` is still `Nothing` - handling the race where the client disconnected and a new one subscribed between phases 2 and 3.
+**Phase 3 - forked thread** (`forkDeliver`): a `deliverThread` is spawned that blocks until the `sndQ` has room. Before delivering, it re-checks that the subscriber is still the same client and `delivered` is still `Nothing` - handling the race where the client disconnected and a new one subscribed between phases 2 and 3. Note: for service-subscribed queues, phase 1 dispatches to `serviceSubscribers` (by ServiceId), but `deliverThread` in phase 3 always uses `queueSubscribers` (by QueueId) - if the queue is only service-subscribed, the phase 3 lookup silently no-ops.
 
 ### Per-queue encryption
 
@@ -137,9 +137,9 @@ Router MSG → TLS → protocol client rcvQ
 ```
 
 The protocol client's `processMsg` thread classifies each incoming transmission:
-- **Non-empty corrId**: response to a pending command - delivered to the waiting `getResponse` caller via `responseVar`.
+- **Non-empty corrId, matching pending command**: response to a pending command - delivered to the waiting `getResponse` caller via `responseVar`.
 - **Empty corrId**: server-initiated push (MSG, END, DELD, ENDS) - wrapped as `STEvent` and forwarded to `msgQ`.
-- **Expired/unexpected responses**: also forwarded to `msgQ` as `STResponse`.
+- **Non-empty corrId, no matching command**: forwarded to `msgQ` as `STUnexpectedError`. Expired responses (command was pending but timed out) are forwarded as `STResponse` only if the entity ID matches.
 
 The agent's `subscriber` thread reads from `msgQ` and processes all events under `agentOperationBracket AORcvNetwork`.
 
@@ -173,8 +173,7 @@ After disconnect, the queue's messages remain stored. The next client to SUB the
 
 When the protocol client detects a TLS disconnect, `smpClientDisconnected` fires in the agent:
 
-1. `removeSessVar` with CAS check (monotonic `sessionVarId` prevents stale callbacks from removing newer clients).
-2. `setSubsPending` demotes all active subscriptions for the matching session to pending in `currentSubs`.
+1-2. Atomically (single STM transaction via `removeClientAndSubs`): `removeSessVar` with CAS check (monotonic `sessionVarId` prevents stale callbacks from removing newer clients), then `setSubsPending` demotes all active subscriptions for the matching session to pending in `currentSubs`.
 3. `DOWN srv connIds` is sent to the application for affected connections.
 4. Resubscription begins - the mechanism depends on transport session mode:
    - **Entity-session mode**: `resubscribeSMPSession` spawns a persistent worker thread.
@@ -213,7 +212,7 @@ Service subscriptions are a bulk mechanism where one `SUBS n idsHash` command su
 
 ### SUBS flow on the router
 
-1. `sharedSubscribeService` checks the actual queue count and IDs hash against the stored service state, and enqueues a `CSService` event to `subQ` for `serverThread` to process (registration in `serviceSubscribers` happens asynchronously).
+1. `sharedSubscribeService` queries the actual queue count and IDs hash from the store, computes drift statistics (for monitoring, not enforcement), and enqueues a `CSService` event to `subQ` for `serverThread` to process (registration in `serviceSubscribers` happens asynchronously).
 2. If this is a new service subscription (not previously subscribed): `deliverServiceMessages` iterates all service-associated queues via `foldRcvServiceMessages`, creates per-queue `Sub` entries, and delivers pending messages.
 3. After iteration completes, `ALLS` is sent to signal the client that all pending messages have been delivered.
 
