@@ -131,3 +131,55 @@ sequenceDiagram
     SMP->>AB: MSG (HELLO)
     AB->>B: CON (connected)
 ```
+
+### File delivery flow (XFTP)
+
+```mermaid
+sequenceDiagram
+    participant SA as Sender App
+
+    box Sender Agent
+        participant S as xftpSnd workers
+        participant SS as Store
+    end
+
+    participant XFTP as XFTP Routers
+    participant SMP as SMP Router
+
+    box Receiver Agent
+        participant RS as Store
+        participant R as xftpRcv workers
+    end
+
+    participant RA as Receiver App
+
+    SA->>S: xftpSendFile(file)
+    S->>S: encrypt file<br>(XSalsa20-Poly1305, random key + nonce)
+    S->>S: split into chunks<br>(fixed sizes: 64KB - 4MB)
+    S->>SS: store SndFile + chunks
+
+    loop each chunk
+        S->>XFTP: FNEW (create data packet)
+        XFTP->>S: sender ID + recipient IDs
+        S->>XFTP: FPUT (upload encrypted chunk)
+    end
+
+    S->>S: assemble FileDescription<br>(chunk locations, replicas,<br>encryption key + nonce)
+    S->>SA: SFDONE<br>(sender + recipient descriptions)
+
+    Note over SA,RA: recipient description sent as<br>SMP message (encrypted, via double ratchet)
+
+    SA->>SMP: description in A_MSG
+    SMP->>RA: description in MSG
+
+    RA->>R: xftpReceiveFile(description)
+    R->>RS: store RcvFile + chunks
+
+    loop each chunk (parallel per server)
+        R->>XFTP: FGET (per-recipient auth key)
+        XFTP->>R: encrypted chunk stream
+    end
+
+    R->>R: stream chunks through<br>stateful decrypt (key + nonce),<br>verify auth tag at end
+    R->>RA: RFDONE (decrypted file path)
+```
