@@ -64,7 +64,7 @@ sequenceDiagram
 
     participant R as SMP Router
 
-    App->>API: sendMessage(connId, body)
+    App->>API: sendMessage<br>(connId, body)
     API->>St: agentRatchetEncryptHeader<br>(advance ratchet, store<br>encrypt key + pending message)
     API->>DW: signal doWork (TMVar)
     API->>App: return msgId
@@ -99,16 +99,16 @@ sequenceDiagram
     participant B as Bob (joiner)
 
     A->>AA: createConnection
-    AA->>SMP: NEW (Alice's receive queue)
+    AA->>SMP: NEW<br>(Alice's receive queue)
     SMP->>AA: queue ID + keys
     AA->>A: invitation URI<br>(queue address + DH keys)
 
     Note over A,B: invitation passed out-of-band<br>(QR code, link)
 
-    B->>AB: joinConnection(invitation)
+    B->>AB: joinConnection<br>(invitation)
     AB->>AB: initSndRatchet<br>(PQ X3DH key agreement)
     AB->>SMP: SKEY (sender auth on<br>Alice's queue)
-    AB->>SMP: NEW (Bob's receive queue)
+    AB->>SMP: NEW<br>(Bob's receive queue)
     SMP->>AB: queue ID
     AB->>SMP: SEND confirmation to<br>Alice's queue (Bob's queue<br>address + ratchet keys)
 
@@ -172,7 +172,7 @@ sequenceDiagram
     SA->>SMP: description in A_MSG
     SMP->>RA: description in MSG
 
-    RA->>R: xftpReceiveFile(description)
+    RA->>R: xftpReceiveFile<br>(description)
     R->>RS: store RcvFile + chunks
 
     loop each chunk (parallel per server)
@@ -181,5 +181,5 @@ sequenceDiagram
     end
 
     R->>R: stream chunks through<br>stateful decrypt (key + nonce),<br>verify auth tag at end
-    R->>RA: RFDONE (decrypted file path)
+    R->>RA: RFDONE<br>(decrypted file path)
 ```
