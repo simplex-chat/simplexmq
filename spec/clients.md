@@ -122,7 +122,7 @@ Stateless wrapper around HTTP2Client. XFTPClient adds no threads of its own; eac
 
 ![XFTP Client - Component Topology](diagrams/xftp-client.svg)
 
-### Upload/download flow
+### Packet delivery flow
 
 ```mermaid
 sequenceDiagram

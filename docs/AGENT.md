@@ -2,7 +2,7 @@
 
 The SimpleX Agent builds duplex encrypted connections on top of [SimpleX client libraries](CLIENT.md). It manages the full lifecycle of secure communication: connection establishment, end-to-end encryption, queue rotation, file transfer, and push notifications.
 
-This is **Layer 3** of the [SimpleX Network architecture](../protocol/overview-tjr.md). Layer 1 is the routers; Layer 2 is the [client libraries](CLIENT.md) that speak the wire protocols. The Agent adds the connection semantics that applications need.
+This is **Layer 3** of the [SimpleX Network architecture](../protocol/overview-tjr.md). Layer 1 is the routers; Layer 2 is the [client libraries](CLIENT.md) that speak the wire protocols. The Agent adds the connection semantics that applications need. For internal architecture diagrams (thread topology, message processing flows), see [`spec/agent.md`](../spec/agent.md).
 
 **Source**: [`Simplex.Messaging.Agent`](../src/Simplex/Messaging/Agent.hs). **Module spec**: [`spec/modules/Simplex/Messaging/Agent.md`](../spec/modules/Simplex/Messaging/Agent.md)
 

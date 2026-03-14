@@ -1,0 +1,202 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333" />
+    </marker>
+    <marker id="arr-g" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999" />
+    </marker>
+  </defs>
+
+  <!-- ===== APPLICATION (external) ===== -->
+  <rect x="350" y="10" width="260" height="34" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="480" y="32" text-anchor="middle">Application</text>
+
+  <!-- ===== subQ: subscriber -> Application ===== -->
+  <polyline points="114,78 114,27 348,27"
+            fill="none" stroke="#333" marker-end="url(#arr)" />
+  <text x="128" y="58" font-size="10" fill="#555">subQ</text>
+
+  <!-- ===== MAIN THREADS GROUP ===== -->
+  <rect x="20" y="56" width="920" height="88" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="30" y="69" fill="#888" font-size="10">main threads (raceAny_: any exit tears down all)</text>
+
+  <!-- subscriber -->
+  <rect x="40" y="78" width="148" height="46" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="114" y="98" text-anchor="middle">subscriber</text>
+  <text x="114" y="112" text-anchor="middle" font-size="9" fill="#666">(reads msgQ)</text>
+
+  <!-- ntfSubQ label + arrow -->
+  <text x="222" y="98" font-size="10" fill="#555" text-anchor="end">ntfSubQ</text>
+  <line x1="228" y1="101" x2="278" y2="101"
+        stroke="#333" marker-end="url(#arr)" />
+
+  <!-- ntfSupervisor -->
+  <rect x="280" y="78" width="168" height="46" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="364" y="98" text-anchor="middle">ntfSupervisor</text>
+  <text x="364" y="112" text-anchor="middle" font-size="9" fill="#666">(reads ntfSubQ)</text>
+
+  <!-- cleanupManager -->
+  <rect x="540" y="78" width="168" height="46" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="624" y="98" text-anchor="middle">cleanupManager</text>
+  <text x="624" y="112" text-anchor="middle" font-size="9" fill="#666">(periodic cleanup)</text>
+
+  <!-- logServersStats -->
+  <rect x="760" y="78" width="165" height="46" rx="4"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="842" y="98" text-anchor="middle">logServersStats</text>
+  <text x="842" y="112" text-anchor="middle" font-size="9" fill="#666">(periodic stats)</text>
+
+  <!-- ===== WORKER POOLS GROUP ===== -->
+  <rect x="20" y="155" width="920" height="148" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="30" y="168" fill="#888" font-size="10">worker pools (on-demand, one per queue/connection/server)</text>
+
+  <!-- Sub-row A: SMP workers -->
+  <rect x="40" y="180" width="120" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="100" y="196" text-anchor="middle" font-size="11">delivery</text>
+  <text x="100" y="209" text-anchor="middle" font-size="8" fill="#666">(per send queue)</text>
+
+  <rect x="170" y="180" width="115" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="227" y="196" text-anchor="middle" font-size="11">asyncCmd</text>
+  <text x="227" y="209" text-anchor="middle" font-size="8" fill="#666">(per connection)</text>
+
+  <rect x="295" y="180" width="98" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="344" y="196" text-anchor="middle" font-size="11">smpSub</text>
+  <text x="344" y="209" text-anchor="middle" font-size="8" fill="#666">(per session)</text>
+
+  <!-- Sub-row A: XFTP workers -->
+  <rect x="435" y="180" width="92" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="481" y="196" text-anchor="middle" font-size="11">xftpRcv</text>
+  <text x="481" y="209" text-anchor="middle" font-size="8" fill="#666">(per server)</text>
+
+  <rect x="537" y="180" width="92" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="583" y="196" text-anchor="middle" font-size="11">xftpSnd</text>
+  <text x="583" y="209" text-anchor="middle" font-size="8" fill="#666">(per server)</text>
+
+  <rect x="639" y="180" width="92" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="685" y="196" text-anchor="middle" font-size="11">xftpDel</text>
+  <text x="685" y="209" text-anchor="middle" font-size="8" fill="#666">(per server)</text>
+
+  <!-- Sub-row B: NTF workers (split by protocol client column) -->
+  <rect x="40" y="234" width="120" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="100" y="250" text-anchor="middle" font-size="11">ntfSMP</text>
+  <text x="100" y="263" text-anchor="middle" font-size="8" fill="#666">(per SMP server)</text>
+
+  <rect x="639" y="234" width="115" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="696" y="250" text-anchor="middle" font-size="11">ntfWorkers</text>
+  <text x="696" y="263" text-anchor="middle" font-size="8" fill="#666">(per NTF server)</text>
+
+  <rect x="764" y="234" width="120" height="36" rx="4"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="824" y="250" text-anchor="middle" font-size="11">ntfTknDel</text>
+  <text x="824" y="263" text-anchor="middle" font-size="8" fill="#666">(per NTF server)</text>
+
+  <!-- ntf dispatch note -->
+  <text x="415" y="257" text-anchor="middle" font-size="9" fill="#888">
+    ntf workers (dispatched by ntfSupervisor)
+  </text>
+
+  <!-- ntfSupervisor dispatch arrow: through gap at x=415 -->
+  <line x1="415" y1="124" x2="415" y2="240"
+        stroke="#888" stroke-dasharray="3,2" marker-end="url(#arr-g)" />
+
+  <!-- store access: representative dashed line from asyncCmd to Store -->
+  <line x1="227" y1="216" x2="200" y2="318"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
+  <text x="225" y="272" font-size="9" fill="#555">store</text>
+
+  <!-- ===== CENTRAL STATE ===== -->
+  <rect x="40" y="318" width="280" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="180" y="338" text-anchor="middle" font-weight="bold">Store</text>
+  <text x="180" y="354" text-anchor="middle" font-size="10">(SQLite / Postgres)</text>
+
+  <rect x="345" y="318" width="250" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="470" y="338" text-anchor="middle" font-weight="bold">currentSubs</text>
+  <text x="470" y="354" text-anchor="middle" font-size="10">(TSessionSubs)</text>
+
+  <rect x="620" y="318" width="280" height="48" rx="4"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="760" y="338" text-anchor="middle" font-weight="bold">Operation State</text>
+  <text x="760" y="354" text-anchor="middle" font-size="10">(5-op suspension cascade)</text>
+
+  <!-- ===== PROTOCOL CLIENT POOLS ===== -->
+  <rect x="20" y="382" width="920" height="80" rx="6"
+        fill="none" stroke="#888" stroke-dasharray="6,3" />
+  <text x="30" y="395" fill="#888" font-size="10">protocol client pools (lazy singleton per router)</text>
+
+  <rect x="40" y="404" width="270" height="46" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="175" y="424" text-anchor="middle">smpClients</text>
+  <text x="175" y="438" text-anchor="middle" font-size="9" fill="#666">(TMap SMPTransportSession)</text>
+
+  <rect x="340" y="404" width="270" height="46" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="475" y="424" text-anchor="middle">xftpClients</text>
+  <text x="475" y="438" text-anchor="middle" font-size="9" fill="#666">(TMap XFTPTransportSession)</text>
+
+  <rect x="640" y="404" width="270" height="46" rx="4"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="775" y="424" text-anchor="middle">ntfClients</text>
+  <text x="775" y="438" text-anchor="middle" font-size="9" fill="#666">(TMap NtfTransportSession)</text>
+
+  <!-- ===== EXTERNAL ROUTERS ===== -->
+  <text x="175" y="478" text-anchor="middle" font-size="9" fill="#999">SMP Routers</text>
+  <line x1="175" y1="450" x2="175" y2="468"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <text x="475" y="478" text-anchor="middle" font-size="9" fill="#999">XFTP Routers</text>
+  <line x1="475" y1="450" x2="475" y2="468"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <text x="775" y="478" text-anchor="middle" font-size="9" fill="#999">NTF Routers</text>
+  <line x1="775" y1="450" x2="775" y2="468"
+        stroke="#999" marker-end="url(#arr-g)" />
+
+  <!-- ===== msgQ: smpClients -> subscriber (left margin) ===== -->
+  <polyline points="40,427 15,427 15,101 38,101"
+            fill="none" stroke="#333" marker-end="url(#arr)" />
+  <text x="7" y="118" font-size="10" fill="#555">msgQ</text>
+
+  <!-- ===== LEGEND ===== -->
+  <rect x="20" y="497" width="920" height="55" rx="4"
+        fill="none" stroke="#ddd" />
+
+  <rect x="35" y="512" width="14" height="11" rx="2"
+        fill="#e8f0fe" stroke="#4285f4" />
+  <text x="55" y="522" font-size="10">on-demand worker</text>
+
+  <rect x="190" y="512" width="14" height="11" rx="2"
+        fill="#e6f4ea" stroke="#34a853" />
+  <text x="210" y="522" font-size="10">singleton thread</text>
+
+  <rect x="340" y="512" width="14" height="11" rx="2"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="360" y="522" font-size="10">storage / state</text>
+
+  <rect x="470" y="512" width="14" height="11" rx="2"
+        fill="#fce8e6" stroke="#ea4335" />
+  <text x="490" y="522" font-size="10">external connection</text>
+
+  <text x="35" y="544" font-size="10" fill="#666">
+    Solid arrows: TBQueue connections.  Dashed: store access / dispatch.  Workers connect to protocol clients in their column.
+  </text>
+
+</svg>
