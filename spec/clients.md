@@ -14,9 +14,9 @@ Generic protocol client used for both SMP and NTF connections. Manages a single 
 
 ### Component topology
 
-![SMP Client — Component Topology](diagrams/smp-client.svg)
+![SMP Client - Component Topology](diagrams/smp-client.svg)
 
-### Command/response flow
+### Command/result flow
 
 ```mermaid
 sequenceDiagram
@@ -33,7 +33,7 @@ sequenceDiagram
 
     participant Router as SMP Router
 
-    C->>SC: mkTransmission (generate CorrId, create Request with empty responseVar)
+    C->>SC: mkTransmission<br/>(generate CorrId, create Request<br/>with empty responseVar)
     C->>SQ: write (Request, encoded command)
     S->>SQ: read
     S-->>S: check pending flag (drop if timed out)
@@ -65,15 +65,19 @@ Connection manager that multiplexes multiple ProtocolClient connections. Tracks 
 
 ### Component topology
 
-![SMPClientAgent — Component Topology](diagrams/smp-client-agent.svg)
+![SMPClientAgent - Component Topology](diagrams/smp-client-agent.svg)
 
 ### Connection lifecycle
 
 ```mermaid
 sequenceDiagram
     participant C as Consumer<br>(router / app)
-    participant A as SMPClientAgent
-    participant PC as ProtocolClient
+
+    box
+        participant A as SMPClientAgent
+        participant PC as ProtocolClient
+    end
+
     participant Router as SMP Router
 
     C->>A: getSMPServerClient'' (server)
@@ -112,11 +116,11 @@ sequenceDiagram
 
 **Module specs**: [Client](modules/Simplex/FileTransfer/Client.md) · [Protocol](modules/Simplex/FileTransfer/Protocol.md) · [HTTP/2 Client](modules/Simplex/Messaging/Transport/HTTP2/Client.md)
 
-Stateless wrapper around HTTP2Client. XFTPClient adds no threads of its own — each operation is a synchronous HTTP/2 request/response. Serialization and multiplexing happen inside HTTP2Client's internal request queue and process thread.
+Stateless wrapper around HTTP2Client. XFTPClient adds no threads of its own; each operation is a synchronous HTTP/2 request/response. Serialization and multiplexing happen inside HTTP2Client's internal request queue and process thread.
 
 ### Component topology
 
-![XFTP Client — Component Topology](diagrams/xftp-client.svg)
+![XFTP Client - Component Topology](diagrams/xftp-client.svg)
 
 ### Upload/download flow
 
@@ -156,7 +160,7 @@ sequenceDiagram
 
 **Module specs**: [Client](modules/Simplex/Messaging/Notifications/Client.md) · [Protocol](modules/Simplex/Messaging/Notifications/Protocol.md)
 
-Type alias for ProtocolClient — same architecture as SMP Client:
+Type alias for ProtocolClient - same architecture as SMP Client:
 
 ```haskell
 type NtfClient = ProtocolClient NTFVersion ErrorType NtfResponse

@@ -10,9 +10,6 @@
     </marker>
   </defs>
 
-  <!-- Title -->
-  <text x="310" y="22" text-anchor="middle" font-size="15" font-weight="bold">XFTP Client -- Component Topology</text>
-
   <!-- ===== CLIENT WRAPPER ===== -->
   <rect x="120" y="40" width="380" height="130" rx="6"
         fill="none" stroke="#888" stroke-dasharray="6,3" />

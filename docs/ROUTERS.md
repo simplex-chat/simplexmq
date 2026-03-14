@@ -1,4 +1,4 @@
-# SimpleX Routers — Deployment and Configuration
+# SimpleX Routers: Deployment and Configuration
 
 SimpleX routers are the network infrastructure of the [SimpleX Network](../protocol/overview-tjr.md). They accept, buffer, and deliver data packets between endpoints. Each router operates independently and can be run by any party on standard computing hardware.
 
@@ -6,7 +6,7 @@ This document covers deployment and advanced configuration. For an overview of t
 
 ## SMP Router
 
-The SMP router provides messaging queues — unidirectional, ordered sequences of fixed-size packets (16,384 bytes each). It implements the [SimpleX Messaging Protocol](../protocol/simplex-messaging.md). For architecture and module specs, see [SMP Router](../spec/routers.md#smp-router).
+The SMP router provides messaging queues - unidirectional, ordered sequences of fixed-size packets (16,384 bytes each). It implements the [SimpleX Messaging Protocol](../protocol/simplex-messaging.md). For architecture and module specs, see [SMP Router](../spec/routers.md#smp-router).
 
 ### Advanced configuration
 
@@ -35,7 +35,7 @@ echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile
 
 ## XFTP Router
 
-The XFTP router accepts and delivers data packets over HTTP/2 — individually addressed blocks in fixed sizes (64KB, 256KB, 1MB, 4MB). It implements the [XFTP protocol](../protocol/xftp.md). Data packets are used for larger payload delivery (files, media) where SMP queue packet sizes would be inefficient. The use of HTTP/2 simplifies browser integration. For architecture and module specs, see [XFTP Router](../spec/routers.md#xftp-router).
+The XFTP router accepts and delivers data packets over HTTP/2 - individually addressed blocks in fixed sizes (64KB, 256KB, 1MB, 4MB). It implements the [XFTP protocol](../protocol/xftp.md). Data packets are used for larger payload delivery (files, media) where SMP queue packet sizes would be inefficient. The use of HTTP/2 simplifies browser integration. For architecture and module specs, see [XFTP Router](../spec/routers.md#xftp-router).
 
 Initialize with `xftp-server init` and configure storage quota in `xftp-server.ini`.
 
@@ -66,7 +66,7 @@ Prebuilt images are available from [Docker Hub](https://hub.docker.com/r/simplex
 
 2. Run:
 
-   **SMP router** — change `your_ip_or_domain`; `-e "PASS=password"` is optional:
+   **SMP router** - change `your_ip_or_domain`; `-e "PASS=password"` is optional:
    ```sh
    docker run -d \
        -e "ADDR=your_ip_or_domain" \
@@ -77,7 +77,7 @@ Prebuilt images are available from [Docker Hub](https://hub.docker.com/r/simplex
        simplexchat/smp-server:latest
    ```
 
-   **XFTP router** — change `your_ip_or_domain` and `maximum_storage`:
+   **XFTP router** - change `your_ip_or_domain` and `maximum_storage`:
    ```sh
    docker run -d \
        -e "ADDR=your_ip_or_domain" \
@@ -160,12 +160,12 @@ Then run with the same Docker commands as above, replacing `simplexchat/smp-serv
 
 ### Linode StackScript
 
-[Deploy via Linode StackScript](https://cloud.linode.com/stackscripts/748014) — Shared CPU Nanode with 1GB is sufficient.
+[Deploy via Linode StackScript](https://cloud.linode.com/stackscripts/748014). Shared CPU Nanode with 1GB is sufficient.
 
 Configuration options:
 - SMP Server store log flag for queue persistence (recommended)
 - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) for automatic DNS and tagging (scopes: read/write for "linodes" and "domains")
-- Domain name (e.g., `smp1.example.com`) — the [domain must exist](https://cloud.linode.com/domains/create) in your Linode account
+- Domain name (e.g., `smp1.example.com`) - the [domain must exist](https://cloud.linode.com/domains/create) in your Linode account
 
 After deployment (up to 5 minutes), get the server address from Linode tags or SSH: `smp://<fingerprint>@<fqdn>`.
 
@@ -188,7 +188,7 @@ SMP and XFTP routers expose Prometheus metrics via a control port. The control p
 
 ## Protocol references
 
-- [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) — SMP wire format and security properties
-- [XFTP Protocol](../protocol/xftp.md) — data packet protocol
-- [Push Notifications Protocol](../protocol/push-notifications.md) — NTF protocol
-- [SimpleX Network overview](../protocol/overview-tjr.md) — architecture and trust model
+- [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) - SMP wire format and security properties
+- [XFTP Protocol](../protocol/xftp.md) - data packet protocol
+- [Push Notifications Protocol](../protocol/push-notifications.md) - NTF protocol
+- [SimpleX Network overview](../protocol/overview-tjr.md) - architecture and trust model

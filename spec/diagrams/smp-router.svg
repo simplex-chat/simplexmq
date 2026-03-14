@@ -10,13 +10,10 @@
     </marker>
   </defs>
 
-  <!-- Title -->
-  <text x="430" y="22" text-anchor="middle" font-size="15" font-weight="bold">SMP Router -- Component Topology</text>
-
   <!-- ===== PER-CLIENT GROUP ===== -->
   <rect x="25" y="38" width="570" height="210" rx="6"
         fill="none" stroke="#888" stroke-dasharray="6,3" />
-  <text x="35" y="53" fill="#888" font-size="10">per client connection (raceAny_ -- any thread exit tears down connection)</text>
+  <text x="35" y="53" fill="#888" font-size="10">per client connection (raceAny_: any exit tears down connection)</text>
 
   <!-- receive -->
   <rect x="45" y="68" width="90" height="34" rx="4"

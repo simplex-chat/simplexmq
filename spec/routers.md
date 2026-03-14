@@ -12,7 +12,7 @@ For deployment and configuration, see [docs/ROUTERS.md](../docs/ROUTERS.md). For
 
 ### Component topology
 
-![SMP Router — Component Topology](diagrams/smp-router.svg)
+![SMP Router - Component Topology](diagrams/smp-router.svg)
 
 ### Packet delivery flow
 
@@ -74,7 +74,7 @@ sequenceDiagram
 
 ### Component topology
 
-![XFTP Router — Component Topology](diagrams/xftp-router.svg)
+![XFTP Router - Component Topology](diagrams/xftp-router.svg)
 
 ### Data packet delivery flow
 
@@ -124,7 +124,7 @@ sequenceDiagram
 
 ### Component topology
 
-![NTF Router — Component Topology](diagrams/ntf-router.svg)
+![NTF Router - Component Topology](diagrams/ntf-router.svg)
 
 ### Token registration and notification delivery
 

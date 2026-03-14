@@ -10,9 +10,6 @@
     </marker>
   </defs>
 
-  <!-- Title -->
-  <text x="370" y="22" text-anchor="middle" font-size="15" font-weight="bold">XFTP Router -- Component Topology</text>
-
   <!-- ===== REQUEST HANDLING (no persistent threads) ===== -->
   <rect x="25" y="38" width="510" height="280" rx="6"
         fill="none" stroke="#888" stroke-dasharray="6,3" />

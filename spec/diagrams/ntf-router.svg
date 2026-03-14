@@ -10,9 +10,6 @@
     </marker>
   </defs>
 
-  <!-- Title -->
-  <text x="415" y="22" text-anchor="middle" font-size="15" font-weight="bold">NTF Router -- Component Topology</text>
-
   <!-- ===== PER-CLIENT GROUP (left) ===== -->
   <rect x="25" y="40" width="300" height="170" rx="6"
         fill="none" stroke="#888" stroke-dasharray="6,3" />

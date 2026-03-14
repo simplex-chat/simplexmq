@@ -8,7 +8,7 @@ This is **Layer 2** of the [SimpleX Network architecture](../protocol/overview-t
 
 **Source**: [`Simplex.Messaging.Client`](../src/Simplex/Messaging/Client.hs). For architecture and module specs, see [SMP Client](../spec/clients.md#smp-client-protocolclient).
 
-The SMP client connects to SMP routers and manages simplex messaging queues — the fundamental addressing primitive of the SimpleX Network. Each simplex queue is a unidirectional, ordered sequence of fixed-size packets (16,384 bytes) with separate cryptographic credentials for sending and receiving. The queue model and command set are defined in the [SMP protocol](../protocol/simplex-messaging.md).
+The SMP client connects to SMP routers and manages simplex messaging queues, the fundamental addressing primitive of the SimpleX Network. Each simplex queue is a unidirectional, ordered sequence of fixed-size packets (16,384 bytes) with separate cryptographic credentials for sending and receiving. The queue model and command set are defined in the [SMP protocol](../protocol/simplex-messaging.md).
 
 ### Capabilities
 
@@ -31,17 +31,30 @@ The client uses a functional Haskell API with STM queues for asynchronous event 
 
 Routers are identified by the SHA-256 hash of their CA certificate fingerprint, not by hostname. The client validates the full X.509 certificate chain on every TLS connection and compares the CA fingerprint against the expected hash from the queue address. This means a DNS or IP-level attacker who cannot produce the correct certificate is detected at connection time.
 
+## SMPClientAgent
+
+**Source**: [`Simplex.Messaging.Client.Agent`](../src/Simplex/Messaging/Client/Agent.hs). For architecture and module specs, see [SMPClientAgent](../spec/clients.md#smpclientagent).
+
+Connection manager that multiplexes multiple SMP client connections. Maintains one ProtocolClient per SMP router, tracks queue and service subscriptions, and handles reconnection with exponential backoff. Used by the SMP router (for proxy forwarding) and the NTF router (for message subscriptions).
+
+### Capabilities
+
+- **Connection pooling**: maintains a pool of ProtocolClient connections keyed by SMP router, creating connections on demand and reusing existing ones
+- **Subscription tracking**: tracks active and pending subscriptions (both queue-based and service-based) with automatic state transitions on connect/disconnect
+- **Automatic reconnection**: on connection loss, moves subscriptions from active to pending, then spawns a background worker that retries with backoff and resubscribes
+- **Session-scoped disconnect handling**: uses session IDs to ensure only subscriptions belonging to the disconnected session are affected, preventing races with newly established connections
+
 ## XFTP Client
 
 **Source**: [`Simplex.FileTransfer.Client`](../src/Simplex/FileTransfer/Client.hs). For architecture and module specs, see [XFTP Client](../spec/clients.md#xftp-client).
 
-The XFTP client connects to XFTP routers and manages data packets — individually addressed blocks used for larger payload delivery. Data packets come in fixed sizes (64KB, 256KB, 1MB, 4MB), hiding the actual payload size. The XFTP protocol runs over HTTP/2, simplifying browser integration. The data packet lifecycle and command set are defined in the [XFTP protocol](../protocol/xftp.md).
+The XFTP client connects to XFTP routers and manages data packets, individually addressed blocks used for larger payload delivery. Data packets come in fixed sizes (64KB, 256KB, 1MB, 4MB), hiding the actual payload size. The XFTP protocol runs over HTTP/2, simplifying browser integration. The data packet lifecycle and command set are defined in the [XFTP protocol](../protocol/xftp.md).
 
 ### Capabilities
 
 - **Data packet creation**: create data packets on routers with sender, recipient, and optional additional recipient credentials. See the [XFTP protocol](../protocol/xftp.md) for credential roles and packet lifecycle.
 - **Send** (FPUT): send encrypted data to the router in a single HTTP/2 streaming request (command + body)
-- **Receive** (FGET): receive data packets with per-request ephemeral Diffie-Hellman key exchange, providing forward secrecy — compromising one DH key does not reveal other received data packets
+- **Receive** (FGET): receive data packets with per-request ephemeral Diffie-Hellman key exchange, providing forward secrecy: compromising one DH key does not reveal other received data packets
 - **Acknowledgment and deletion**: recipients acknowledge receipt; senders delete data packets after delivery
 
 ## NTF Client
@@ -69,15 +82,15 @@ These libraries are appropriate when the application manages its own encryption 
 
 The following capabilities require the [Agent](AGENT.md) (Layer 3):
 
-- **Duplex connections** — the Agent pairs two simplex queues into a duplex connection
-- **End-to-end encryption** — the Agent manages double ratchet with post-quantum extensions
-- **File transfer** — the Agent handles chunking, encryption, padding, multi-router distribution, and reassembly
-- **Queue rotation** — the Agent transparently rotates queues to limit metadata correlation
-- **Connection discovery** — connection links, short links, and contact addresses are Agent-level abstractions
-- **Push notifications** — notification token management and subscription is Agent-level
+- **Duplex connections** - the Agent pairs two simplex queues into a duplex connection
+- **End-to-end encryption** - the Agent manages double ratchet with post-quantum extensions
+- **File transfer** - the Agent handles chunking, encryption, padding, multi-router distribution, and reassembly
+- **Queue rotation** - the Agent transparently rotates queues to limit metadata correlation
+- **Connection discovery** - connection links, short links, and contact addresses are Agent-level abstractions
+- **Push notifications** - notification token management and subscription is Agent-level
 
 ## Protocol references
 
-- [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) — SMP wire format, commands, and security properties
-- [XFTP Protocol](../protocol/xftp.md) — XFTP wire format, data packet lifecycle
-- [SimpleX Network overview](../protocol/overview-tjr.md) — architecture, trust model, and design rationale
+- [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) - SMP wire format, commands, and security properties
+- [XFTP Protocol](../protocol/xftp.md) - XFTP wire format, data packet lifecycle
+- [SimpleX Network overview](../protocol/overview-tjr.md) - architecture, trust model, and design rationale

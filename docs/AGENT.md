@@ -4,16 +4,16 @@ The SimpleX Agent builds duplex encrypted connections on top of [SimpleX client 
 
 This is **Layer 3** of the [SimpleX Network architecture](../protocol/overview-tjr.md). Layer 1 is the routers; Layer 2 is the [client libraries](CLIENT.md) that speak the wire protocols. The Agent adds the connection semantics that applications need.
 
-**Source**: [`Simplex.Messaging.Agent`](../src/Simplex/Messaging/Agent.hs) — **Module spec**: [`spec/modules/Simplex/Messaging/Agent.md`](../spec/modules/Simplex/Messaging/Agent.md)
+**Source**: [`Simplex.Messaging.Agent`](../src/Simplex/Messaging/Agent.hs). **Module spec**: [`spec/modules/Simplex/Messaging/Agent.md`](../spec/modules/Simplex/Messaging/Agent.md)
 
 ## Connections
 
 The Agent turns simplex (unidirectional) SMP queues into duplex connections, implementing the [Agent protocol](../protocol/agent-protocol.md):
 
-- **Duplex connections**: each connection uses a pair of SMP queues — one for each direction. The queues can be on different routers chosen independently by each party. See the [duplex connection procedure](../protocol/agent-protocol.md) for the full handshake.
+- **Duplex connections**: each connection uses a pair of SMP queues - one for each direction. The queues can be on different routers chosen independently by each party. See the [duplex connection procedure](../protocol/agent-protocol.md) for the full handshake.
 - **Connection establishment**: one party creates a connection and generates an invitation (containing router address, queue ID, and public keys). The invitation is passed out-of-band (QR code, link, etc.). The other party joins by creating a reverse queue and completing the handshake.
 - **Connection links**: the Agent supports connection links (long and short) for sharing connection invitations via URLs. Short links use a separate SMP queue to store the full invitation, allowing compact QR codes.
-- **Queue rotation**: the Agent periodically rotates the underlying SMP queues, limiting the window for metadata correlation. Rotation is transparent to the application — the connection identity is stable while the underlying queues change.
+- **Queue rotation**: the Agent periodically rotates the underlying SMP queues, limiting the window for metadata correlation. Rotation is transparent to the application - the connection identity is stable while the underlying queues change.
 - **Redundant queues**: connections can use multiple queues for reliability. If one router becomes unreachable, messages flow through the remaining queues.
 
 ## Encryption
@@ -46,7 +46,7 @@ The Agent manages push notification subscriptions for mobile devices, using the 
 
 The Agent is designed to be embedded as a Haskell library:
 
-- **STM queues**: the application communicates with the Agent via STM queues. Commands go in (`ACommand`), events come out (`AEvent`). No serialization or parsing — direct Haskell values. The command/event types are defined in the [Agent Protocol module](../spec/modules/Simplex/Messaging/Agent/Protocol.md).
+- **STM queues**: the application communicates with the Agent via STM queues. Commands go in (`ACommand`), events come out (`AEvent`). No serialization or parsing - direct Haskell values. The command/event types are defined in the [Agent Protocol module](../spec/modules/Simplex/Messaging/Agent/Protocol.md).
 - **Async operation**: all network operations are asynchronous. The Agent manages internal worker threads for each router connection, message processing, and background tasks (cleanup, statistics, notification supervision). See the [Agent Client module spec](../spec/modules/Simplex/Messaging/Agent/Client.md) for worker architecture.
 - **Background mode**: on mobile platforms, the Agent can run in a reduced mode with only the message receiver active, minimizing resource usage when the app is backgrounded.
 - **Dual database backends**: the Agent supports both SQLite (for mobile/desktop) and PostgreSQL (for server deployments) as persistence backends, selected at compile time. See [Agent Store Interface](../spec/modules/Simplex/Messaging/Agent/Store/Interface.md) and [Agent Store Postgres](../spec/modules/Simplex/Messaging/Agent/Store/Postgres.md).
@@ -70,24 +70,24 @@ The Agent is designed to be embedded as a Haskell library:
 
 ## Protocol references
 
-- [Agent Protocol](../protocol/agent-protocol.md) — duplex connection procedure, message format
-- [SimpleX Network overview](../protocol/overview-tjr.md) — architecture, trust model
-- [PQDR](../protocol/pqdr.md) — post-quantum double ratchet specification
-- [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) — SMP queue operations used by the Agent
-- [XFTP Protocol](../protocol/xftp.md) — data packet operations for file transfer
-- [Push Notifications Protocol](../protocol/push-notifications.md) — NTF token and subscription management
+- [Agent Protocol](../protocol/agent-protocol.md) - duplex connection procedure, message format
+- [SimpleX Network overview](../protocol/overview-tjr.md) - architecture, trust model
+- [PQDR](../protocol/pqdr.md) - post-quantum double ratchet specification
+- [SimpleX Messaging Protocol](../protocol/simplex-messaging.md) - SMP queue operations used by the Agent
+- [XFTP Protocol](../protocol/xftp.md) - data packet operations for file transfer
+- [Push Notifications Protocol](../protocol/push-notifications.md) - NTF token and subscription management
 ## Peer library: Remote Control
 
-The Agent exposes the [XRCP protocol](../protocol/xrcp.md) API for cross-device remote control (e.g., controlling a mobile app from a desktop). The actual logic is in the standalone [`Simplex.RemoteControl.Client`](../src/Simplex/RemoteControl/Client.hs) library — the Agent provides thin wrappers that pass through its random and multicast state. XRCP is not a managed Agent capability (no workers, persistence, or background supervision). See the [RemoteControl module specs](../spec/modules/Simplex/RemoteControl/Types.md).
+The Agent exposes the [XRCP protocol](../protocol/xrcp.md) API for cross-device remote control (e.g., controlling a mobile app from a desktop). The actual logic is in the standalone [`Simplex.RemoteControl.Client`](../src/Simplex/RemoteControl/Client.hs) library - the Agent provides thin wrappers that pass through its random and multicast state. XRCP is not a managed Agent capability (no workers, persistence, or background supervision). See the [RemoteControl module specs](../spec/modules/Simplex/RemoteControl/Types.md).
 
 ## Module specs
 
-- [Agent](../spec/modules/Simplex/Messaging/Agent.md) — main Agent module, connection lifecycle, message processing
-- [Agent Client](../spec/modules/Simplex/Messaging/Agent/Client.md) — worker threads, router connections, subscription management
-- [Agent Protocol](../spec/modules/Simplex/Messaging/Agent/Protocol.md) — ACommand/AEvent types, connection invitations
-- [Agent Store Interface](../spec/modules/Simplex/Messaging/Agent/Store/Interface.md) — database abstraction for SQLite/Postgres
-- [Agent Store (AgentStore)](../spec/modules/Simplex/Messaging/Agent/Store/AgentStore.md) — connection, queue, and message persistence
-- [NtfSubSupervisor](../spec/modules/Simplex/Messaging/Agent/NtfSubSupervisor.md) — notification subscription management
-- [XFTP Agent](../spec/modules/Simplex/FileTransfer/Agent.md) — file transfer orchestration
-- [Ratchet](../spec/modules/Simplex/Messaging/Crypto/Ratchet.md) — double ratchet implementation
-- [SNTRUP761](../spec/modules/Simplex/Messaging/Crypto/SNTRUP761.md) — post-quantum KEM
+- [Agent](../spec/modules/Simplex/Messaging/Agent.md) - main Agent module, connection lifecycle, message processing
+- [Agent Client](../spec/modules/Simplex/Messaging/Agent/Client.md) - worker threads, router connections, subscription management
+- [Agent Protocol](../spec/modules/Simplex/Messaging/Agent/Protocol.md) - ACommand/AEvent types, connection invitations
+- [Agent Store Interface](../spec/modules/Simplex/Messaging/Agent/Store/Interface.md) - database abstraction for SQLite/Postgres
+- [Agent Store (AgentStore)](../spec/modules/Simplex/Messaging/Agent/Store/AgentStore.md) - connection, queue, and message persistence
+- [NtfSubSupervisor](../spec/modules/Simplex/Messaging/Agent/NtfSubSupervisor.md) - notification subscription management
+- [XFTP Agent](../spec/modules/Simplex/FileTransfer/Agent.md) - file transfer orchestration
+- [Ratchet](../spec/modules/Simplex/Messaging/Crypto/Ratchet.md) - double ratchet implementation
+- [SNTRUP761](../spec/modules/Simplex/Messaging/Crypto/SNTRUP761.md) - post-quantum KEM
