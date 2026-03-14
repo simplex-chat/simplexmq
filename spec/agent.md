@@ -107,21 +107,21 @@ sequenceDiagram
 
     B->>AB: joinConnection(invitation)
     AB->>AB: initSndRatchet<br>(PQ X3DH key agreement)
+    AB->>SMP: SKEY (sender auth on<br>Alice's queue)
     AB->>SMP: NEW (Bob's receive queue)
     SMP->>AB: queue ID
-    AB->>SMP: KEY (secure Alice's queue)
     AB->>SMP: SEND confirmation to<br>Alice's queue (Bob's queue<br>address + ratchet keys)
 
     SMP->>AA: MSG (confirmation)
     AA->>AA: initRcvRatchet<br>(PQ X3DH key agreement),<br>decrypt confirmation
     AA->>A: CONF (request approval)
     A->>AA: allowConnection(confId)
-    AA->>SMP: SKEY (secure Alice's rcv queue)
-    AA->>SMP: NEW (Alice's send queue)
+    AA->>SMP: KEY (register sender key<br>on Alice's rcv queue)
+    AA->>SMP: SKEY (sender auth on<br>Bob's queue)
     AA->>SMP: SEND reply to Bob's queue<br>(Alice's connection info)
 
     SMP->>AB: MSG (reply)
-    AB->>SMP: SKEY (secure Bob's rcv queue)
+    AB->>SMP: KEY (register sender key<br>on Bob's rcv queue)
     AB->>SMP: SEND HELLO to Alice
 
     SMP->>AA: MSG (HELLO)
