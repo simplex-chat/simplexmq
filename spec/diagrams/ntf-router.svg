@@ -52,13 +52,18 @@
   <text x="326" y="88" font-size="9" fill="#999">net</text>
 
   <!-- commands label -->
-  <text x="52" y="120" font-size="10" fill="#666">TNEW, TVFY, TRPL, TDEL</text>
-  <text x="52" y="134" font-size="10" fill="#666">SNEW, SCHK, SDEL</text>
+  <text x="52" y="120" font-size="10" fill="#666">TNEW, TVFY, TCHK, TRPL, TDEL, TCRN</text>
+  <text x="52" y="134" font-size="10" fill="#666">SNEW, SCHK, SDEL, PING</text>
 
   <!-- client -> store (down) -->
-  <line x1="199" y1="100" x2="199" y2="280"
-        stroke="#333" marker-end="url(#arr)" />
+  <line x1="199" y1="100" x2="199" y2="278"
+        stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
   <text x="211" y="230" font-size="10" fill="#555">store</text>
+
+  <!-- client -> pushQ (PNVerification on TNEW/TRPL) -->
+  <line x1="160" y1="100" x2="50" y2="388"
+        stroke="#333" marker-end="url(#arr)" />
+  <text x="62" y="260" font-size="9" fill="#555">pushQ</text>
 
   <!-- ===== SMP CLIENT AGENT GROUP (right) ===== -->
   <rect x="370" y="40" width="435" height="220" rx="6"
@@ -104,9 +109,9 @@
   <text x="500" y="183" font-size="10" fill="#555">pushQ</text>
 
   <!-- receiveAgent -> store (down) -->
-  <line x1="697" y1="164" x2="697" y2="195"
+  <line x1="697" y1="164" x2="697" y2="278"
         stroke="#555" stroke-dasharray="3,2" marker-end="url(#arr)" />
-  <text x="709" y="183" font-size="10" fill="#555">store</text>
+  <text x="709" y="230" font-size="10" fill="#555">store</text>
 
   <!-- per-SMP-server subscriber -->
   <rect x="390" y="200" width="200" height="44" rx="4"
@@ -118,10 +123,10 @@
   <text x="408" y="196" font-size="9" fill="#555">subscriberSubQ</text>
 
   <!-- ===== CENTRAL STORE ===== -->
-  <rect x="100" y="280" width="600" height="50" rx="4"
+  <rect x="100" y="280" width="620" height="50" rx="4"
         fill="#fef7e0" stroke="#f9ab00" />
   <text x="400" y="301" text-anchor="middle" font-weight="bold">tokens / subscriptions / tokenLastNtfs</text>
-  <text x="400" y="319" text-anchor="middle" font-size="10">(in-memory TMap + PostgreSQL)</text>
+  <text x="400" y="319" text-anchor="middle" font-size="10">(PostgreSQL)</text>
 
   <!-- ===== PUSH DELIVERY ===== -->
   <rect x="25" y="355" width="780" height="90" rx="6"

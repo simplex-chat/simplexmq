@@ -46,7 +46,7 @@
   <!-- Command Processing -->
   <rect x="45" y="120" width="475" height="36" rx="4"
         fill="#e8f0fe" stroke="#4285f4" />
-  <text x="282" y="143" text-anchor="middle">Command Processing (FNEW, FADD, FPUT, FGET, FACK, FDEL)</text>
+  <text x="282" y="143" text-anchor="middle">Command Processing (FNEW, FADD, FPUT, FGET, FACK, FDEL, PING)</text>
 
   <!-- Command Processing -> FileStore -->
   <line x1="160" y1="156" x2="130" y2="180"
@@ -66,7 +66,7 @@
   <rect x="300" y="182" width="220" height="48" rx="4"
         fill="#fef7e0" stroke="#f9ab00" />
   <text x="410" y="203" text-anchor="middle" font-weight="bold">Disk Storage</text>
-  <text x="410" y="221" text-anchor="middle" font-size="10">filesPath / senderId / data</text>
+  <text x="410" y="221" text-anchor="middle" font-size="10">filesPath / base64(senderId)</text>
 
   <!-- Quota note -->
   <text x="410" y="246" text-anchor="middle" font-size="9" fill="#888">quota-managed via usedStorage TVar</text>

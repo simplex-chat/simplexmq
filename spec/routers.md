@@ -95,10 +95,11 @@ sequenceDiagram
     HS->>S: server DH key + version
 
     S->>CP: FNEW (create data packet)
-    CP->>FS: create FileRec, reserve quota
+    CP->>FS: create FileRec
     CP->>S: sender ID + recipient IDs
 
     S->>CP: FPUT (send encrypted data)
+    CP->>FS: reserve quota
     CP->>D: write to disk
     CP->>FS: commit filePath
     CP->>S: OK

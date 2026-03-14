@@ -90,6 +90,11 @@
         fill="#f5f5f5" stroke="#ccc" />
   <text x="122" y="221" text-anchor="middle" font-size="9" fill="#888">StoreLog (optional)</text>
 
+  <!-- NtfStore under MsgStore (in-memory notification queue, read by deliverNtfs/expireNtfs) -->
+  <rect x="320" y="208" width="155" height="18" rx="3"
+        fill="#fef7e0" stroke="#f9ab00" />
+  <text x="397" y="221" text-anchor="middle" font-size="9" fill="#888">NtfStore (STM TMap)</text>
+
   <!-- subQ arrow: from client bottom-center, through gap between stores, to serverThread -->
   <!-- Gap between stores: x=200..320 -->
   <line x1="250" y1="102" x2="250" y2="296"
