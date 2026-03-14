@@ -35,7 +35,7 @@ Together, these constraints explain why the agent separates key generation from 
 
 Connection creation is split into two phases to satisfy both design constraints:
 
-**`prepareConnectionLink`** (no network, no database): generates root Ed25519 signing key pair, queue-level X25519 DH keys, and short link key. Returns the connection link URI and `PreparedLinkParams` in memory. The application can now embed the link in link data (e.g., for short link resolution) before the queue exists.
+**`prepareConnectionLink`** (no network, no database): generates root Ed25519 signing key pair and queue-level X25519 DH keys. Derives a short link key as `SHA3_256` of the encoded fixed link data. Returns the connection link URI and `PreparedLinkParams` in memory. The application can now embed the link in link data (e.g., for short link resolution) before the queue exists.
 
 **`createConnectionForLink`** (single network call): uses the prepared parameters to create the queue on the router with SKEY (root signature). The sender ID is deterministically derived from the correlation nonce (`SMP.EntityId $ B.take 24 $ C.sha3_384 corrId`), so a lost response can be retried - the router validates the same sender ID.
 
@@ -49,7 +49,7 @@ The connection establishment flow is shown in [agent.md](../agent.md#connection-
 
 **Confirmation decryption proves key agreement**: In `smpConfirmation`, the initiator creates a fresh receiving ratchet from the responder's parameters and immediately uses it to decrypt the confirmation body. If decryption fails, the entire confirmation is rejected - there is no state where a connection has mismatched ratchets.
 
-**HELLO exchange completes the handshake**: After `allowConnection`, both sides have duplex queues but haven't confirmed liveness. The initiator sends HELLO (with `notification = True` in MsgFlags). The responder receives it and sends its own HELLO back (also with `notification = True`). The initiator emits `CON` when it receives the responder's HELLO. The responder emits `CON` when its own HELLO is *successfully delivered* (in the delivery callback, not on receiving a reply). There are exactly two HELLO messages, not three.
+**HELLO exchange completes the handshake**: After `allowConnection`, both sides have duplex queues but haven't confirmed liveness. The responder (Bob) sends the first HELLO (with `notification = True` in MsgFlags), triggered by `ICDuplexSecure`. The initiator (Alice) receives it and sends her own HELLO back (also with `notification = True`). The initiator emits `CON` in the *delivery callback* of her HELLO (her rcvQueue is already Active from receiving Bob's HELLO). The responder emits `CON` when he *receives* the initiator's reply HELLO (his sndQueue is already Active from his own HELLO delivery). There are exactly two HELLO messages.
 
 ### Contact URI async path
 
@@ -57,7 +57,7 @@ For contact URIs (`joinConnectionAsync` with `CRContactUri`), the join is enqueu
 
 ### PQ key agreement
 
-PQ support is negotiated via version numbers: `agentVersion >= pqdrSMPAgentVersion && e2eVersion >= pqRatchetE2EEncryptVersion`. When both sides support PQ, the KEM public key travels in the confirmation body (too large for invitation URI). The responder encapsulates, producing `(kemCiphertext, kemSharedKey)`, and the hybrid key is derived via `SHA3_256(dhSecret || kemSharedKey)`.
+PQ support is negotiated via version numbers: `agentVersion >= pqdrSMPAgentVersion && e2eVersion >= pqRatchetE2EEncryptVersion`. When both sides support PQ, the KEM public key travels in the confirmation body (too large for invitation URI). The responder encapsulates, producing `(kemCiphertext, kemSharedKey)`, and the hybrid key is derived via HKDF-SHA512 over the concatenation of three X3DH shared secrets plus the KEM shared secret, with info string `"SimpleXX3DH"`.
 
 **PQ support is monotonic**: once enabled for a connection (`PQSupport PQSupportOn`), it cannot be downgraded. This affects header padding size (88 bytes without PQ vs 2310 bytes with PQ).
 
@@ -108,7 +108,7 @@ Receiver (switching party)              Sender (peer)
 
 ### Consecutive rotation handling
 
-`dbReplaceQId` tracks which old queue a new one replaces. Each new queue stores `dbReplaceQId = Just oldQueueId`. When QADD is processed, send queues whose `dbReplaceQId` points to the current queue's `dbQueueId` are found and deleted in bulk. This handles consecutive rotation requests - only the latest rotation survives.
+`dbReplaceQueueId` tracks which old queue a new one replaces. Each new queue stores `dbReplaceQueueId = Just oldQueueId`. When QADD is processed, send queues whose `dbReplaceQueueId` points to the current queue's `dbQueueId` are found and deleted in bulk. This handles consecutive rotation requests - only the latest rotation survives.
 
 ### Old queue deletion
 
@@ -205,7 +205,7 @@ Message types with 1-2 character discriminants:
 
 - **User messages** (`A_MSG_`): NOT auto-ACKed. Agent returns `ACKPending`; application must call `ackMessage`.
 - **Receipts** (`A_RCVD`): returns `ACKPending` when valid receipts are present (application must ACK after processing); auto-ACKed only when all receipts fail.
-- **Other control messages** (HELLO, QADD, QKEY, QUSE, QTEST, EREADY): auto-ACKed by the agent.
+- **Other control messages** (HELLO, QADD, QKEY, QUSE, QTEST, EREADY, A_QCONT): auto-ACKed by the agent.
 - **Error during processing**: `handleNotifyAck` sends `ERR` to the application but still ACKs to the router, preventing re-delivery of a message that will fail again.
 
 ---
