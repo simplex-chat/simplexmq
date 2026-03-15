@@ -76,6 +76,7 @@ Cross-cutting concerns that span multiple modules:
 - [topics/notifications.md](topics/notifications.md) — Push notification flow
 - [topics/xftp.md](topics/xftp.md) — File transfer protocol
 - [topics/client-services.md](topics/client-services.md) — Service certificates for bulk operations
+- [topics/encryption.md](topics/encryption.md) — Encryption layers (TODO)
 
 ### Agent internals
 
