@@ -58,12 +58,30 @@ Module doc entry format:
 
 ## Index
 
+### Architecture
+
+Component topology and message flow diagrams for each layer:
+
+- [routers.md](routers.md) — Layer 1: SMP, XFTP, NTF routers
+- [clients.md](clients.md) — Layer 2: protocol client libraries
+- [agent.md](agent.md) — Layer 3: connection manager
+
 ### Topics
 
-- [rcv-services.md](rcv-services.md) — Service certificates for high-volume SMP clients (bulk subscription)
-- [encoding.md](encoding.md) — Binary and string encoding
-- [version.md](version.md) — Version ranges and negotiation
-- [compression.md](compression.md) — Zstd compression
+Cross-cutting concerns that span multiple modules:
+
+- [topics/transport.md](topics/transport.md) — TLS, HTTP/2, WebSocket transport layers
+- [topics/patterns.md](topics/patterns.md) — Exception handling, encoding, compression, TMap
+- [topics/subscriptions.md](topics/subscriptions.md) — Queue subscriptions and delivery
+- [topics/notifications.md](topics/notifications.md) — Push notification flow
+- [topics/xftp.md](topics/xftp.md) — File transfer protocol
+- [topics/client-services.md](topics/client-services.md) — Service certificates for bulk operations
+
+### Agent internals
+
+- [agent/infrastructure.md](agent/infrastructure.md) — Workers, store, operation suspension
+- [agent/connections.md](agent/connections.md) — Connection lifecycle and states
+- [agent/xrcp.md](agent/xrcp.md) — Remote control protocol
 
 ### Modules
 
