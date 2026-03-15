@@ -42,6 +42,25 @@ For CA + leaf chains (used by routers), a root CA certificate signs a leaf certi
 
 Both sides derive `sessionId` from the TLS-unique channel binding value (RFC 5929). The server reads `T.getPeerFinished`; the client reads `T.getFinished`. This `sessionId` is used throughout the session - in handshake validation, transmission signing, and block encryption key derivation.
 
+### Certificate chain semantics
+
+**Source**: [Transport/Shared.hs](../../src/Simplex/Messaging/Transport/Shared.hs)
+
+Routers use variable-length certificate chains. The `chainIdCaCerts` function extracts the identity certificate (`idCert`) based on chain length:
+
+| Chain length | Structure | Identity certificate |
+|--------------|-----------|---------------------|
+| 0 | `[]` | Rejected as CCEmpty |
+| 1 | `[cert]` | Self-signed: `idCert = cert` |
+| 2 | `[leaf, ca]` | Current online/offline pattern: `idCert = ca` |
+| 3 | `[leaf, id, ca]` | With operator certificate: `idCert = id` (second) |
+| 4 | `[leaf, id, net, ca]` | With network certificate: `idCert = id` (second, network cert ignored) |
+| 5+ | - | Rejected as CCLong |
+
+The **router identity** is always determined by `idCert` - its SHA256 fingerprint is compared against the `keyHash` the client expects. For 2-cert chains (the common case), `idCert` equals the CA. For 3+ cert chains, `idCert` is always the **second certificate** (index 1).
+
+The client verifies the router identity by computing `XV.getFingerprint idCert X.HashSHA256` and comparing against the expected `keyHash`. This allows operators to rotate leaf certificates without changing the router's public identity.
+
 ---
 
 ## Handshake protocol family
@@ -59,7 +78,7 @@ All three protocols (SMP, NTF, XFTP) use the same TLS transport, but their appli
 
 **Message 2 (client to router)**: `SMPClientHandshake` contains:
 - `smpVersion` - agreed maximum version from intersection
-- `keyHash` - SHA256 of router's root CA certificate (identity verification)
+- `keyHash` - SHA256 of router's identity certificate (`idCert`, see certificate chain semantics above)
 - `authPubKey` - client's X25519 public key for DH agreement (v7+)
 - `proxyServer` - boolean flag to disable transport block encryption (v14+)
 - `clientService` - service credentials with `serviceRole` and `serviceCertKey` (v16+)
@@ -73,7 +92,7 @@ The NTF handshake follows the same server-first pattern but is simpler:
 | Difference | SMP | NTF |
 |-----------|-----|-----|
 | Block size | 16384 bytes | 512 bytes |
-| Client auth key | X25519 DH public key | None |
+| Client auth key | X25519 DH public key | None (server sends key, client does not) |
 | Service certificates | v16+ | Not supported |
 | Block encryption | v11+ | Not supported |
 | Batching | v4+ | v2+ |
@@ -83,7 +102,43 @@ The NTF handshake follows the same server-first pattern but is simpler:
 
 ### XFTP handshake - HTTP/2 based
 
-XFTP does not use the block-based TLS handshake at all. It uses HTTP/2 POST with ALPN `"xftp/1"`. The client sends `XFTPClientHello` (optional 32-byte web challenge for identity proof); the server responds with `XFTPServerHandshake` containing a signed challenge response and `CertChainPubKey`. Block size is 16384 bytes (same as SMP).
+**Source**: [FileTransfer/Transport.hs](../../src/Simplex/FileTransfer/Transport.hs), [FileTransfer/Server.hs](../../src/Simplex/FileTransfer/Server.hs), [FileTransfer/Client.hs](../../src/Simplex/FileTransfer/Client.hs)
+
+XFTP does not use the block-based TLS handshake. It uses HTTP/2 POST with ALPN `"xftp/1"`. The handshake has two flows depending on client type.
+
+**Native client handshake** (standard two-step):
+
+1. Client sends POST with no body, server responds with `XFTPServerHandshake`:
+   - `xftpVersionRange` - negotiable version range
+   - `sessionId` - TLS-unique channel binding
+   - `authPubKey` - `CertChainPubKey` (always required, non-optional)
+   - `webIdentityProof` - absent for native clients
+
+2. Client sends POST with `XFTPClientHandshake`:
+   - `xftpVersion` - agreed version
+   - `keyHash` - SHA256 of router's identity certificate
+
+3. Server validates keyHash against `idCert` fingerprint (currently expects exactly 2-cert chain: `[leaf, ca]` where `ca` is identity)
+
+**Web client handshake** (three-step with identity proof):
+
+Web browsers cannot access the TLS certificate chain for verification. The web handshake adds a challenge-response mechanism:
+
+1. Client sends POST with `xftp-web-hello: 1` header and `XFTPClientHello`:
+   - `webChallenge` - optional 32-byte random challenge
+
+2. Server responds with `XFTPServerHandshake`:
+   - `webIdentityProof` - signature over `(webChallenge || sessionId)` using the router's signing key
+
+3. Client verifies `webIdentityProof` using the public key from `authPubKey`, confirming server identity without needing TLS certificate access
+
+4. Client sends POST with `xftp-handshake: 1` header and `XFTPClientHandshake` (same as native step 2)
+
+The server tracks handshake state per `sessionId` in a `TMap SessionId Handshake`:
+- `HandshakeSent pk` - hello received, awaiting client handshake
+- `HandshakeAccepted thParams` - handshake complete, ready for commands
+
+Web hello can be re-sent at any state (server reuses existing X25519 key if already generated). Block size is 16384 bytes (same as SMP).
 
 ### Block encryption setup (SMP only, v11+)
 
@@ -99,12 +154,14 @@ Each block encryption advances the chain key:
 ```
 sbcHkdf chainKey
   -> HKDF-SHA512(salt="", ikm=chainKey, info="SimpleXSbChain", len=88)
-  -> split into (newChainKey[32], aesKey[32], nonce[24])
+  -> split into (newChainKey[32], secretBoxKey[32], nonce[24])
 ```
+
+The keys are used with XSalsa20-Poly1305 (NaCl secret_box), not AES.
 
 This provides per-block forward secrecy - each block uses a different key, and old keys cannot be derived from new ones. The client swaps send/receive keys (its send key = server's receive key).
 
-Block encryption is disabled when `proxyServer == True` (proxy connections already have their own encryption layer) and when the version is below v11.
+Block encryption is disabled when `proxyServer == True` (proxy connections already have their own encryption layer), when the version is below v11, or when no DH session secret is available (no `thAuth` or missing `sessSecret`).
 
 ---
 
