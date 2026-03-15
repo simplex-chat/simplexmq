@@ -194,3 +194,18 @@ The agent supports SQLite and PostgreSQL via CPP compilation flags (`#if defined
 **Store access bracketing**: `withStore` wraps all database operations with `agentOperationBracket AODatabase`, connecting the store to the suspension cascade. `withStoreBatch` / `withStoreBatch'` run multiple operations in a single transaction with per-operation error catching.
 
 **Known bug**: `checkConfirmedSndQueueExists_` uses `#if defined(dpPostgres)` (typo - should be `dbPostgres`), so the `FOR UPDATE` clause is never included on either backend.
+
+### Migration framework
+
+**Source**: [Agent/Store/Migrations.hs](../../src/Simplex/Messaging/Agent/Store/Migrations.hs), [Agent/Store/Shared.hs](../../src/Simplex/Messaging/Agent/Store/Shared.hs)
+
+Migrations are Haskell modules under `Agent/Store/SQLite/Migrations/` and `Agent/Store/Postgres/Migrations/`. Each has `up` SQL and optional `down` SQL.
+
+**Key behaviors**:
+
+- `migrationsToRun` compares app migrations against the `migrations` table by name. Divergent histories (app has `[a,b]`, DB has `[a,c]`) produce `MTREDifferent` error - manual intervention required.
+- Each migration runs in its own transaction with the `migrations` insert *before* the schema change - failure rolls back both.
+- Downgrades require all intermediate migrations to have `down` SQL; missing any produces `MTRENoDown`.
+- `MigrationConfirmation` controls whether upgrades/downgrades auto-apply, prompt, or error.
+
+**Special case**: `m20220811_onion_hosts` triggers `updateServers` to expand host entries with Tor addresses - this is data migration, not just schema.

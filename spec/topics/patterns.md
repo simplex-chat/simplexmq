@@ -10,6 +10,8 @@ For protocol-specific encoding details, see [transport.md](transport.md). For cr
 - [Compression](#compression)
 - [Concurrent data structures](#concurrent-data-structures)
 - [Batch processing](#batch-processing)
+- [Time encoding](#time-encoding)
+- [Utilities](#utilities)
 
 ---
 
@@ -335,3 +337,21 @@ withStoreBatch' :: Traversable t
 ```
 
 Use when operations cannot fail (or failures should become `INTERNAL` errors).
+
+---
+
+## Time encoding
+
+**Source**: [SystemTime.hs](../../src/Simplex/Messaging/SystemTime.hs)
+
+`RoundedSystemTime t` uses a phantom type-level `Nat` for precision. `SystemDate` (precision 86400) provides k-anonymity for file creation times - all timestamps within a day collapse to the same value, preventing correlation attacks.
+
+---
+
+## Utilities
+
+**Source**: [Util.hs](../../src/Simplex/Messaging/Util.hs)
+
+**Functor combinators**: `<$$>` (double fmap), `<$$` (double fmap const), and `<$?>` (fmap with `MonadFail` on `Left`) are used throughout for nested functor manipulation and fallible parsing chains.
+
+**`threadDelay'`**: Handles `Int64` delays that exceed `maxBound::Int` by looping with `maxBound`-sized chunks.

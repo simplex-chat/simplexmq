@@ -10,6 +10,8 @@ For service certificate handshake extensions, see [client-services.md](client-se
 - [Transmission encoding and signing](#transmission-encoding-and-signing)
 - [Version negotiation](#version-negotiation)
 - [Connection management](#connection-management)
+- [HTTP/2 sessions](#http2-sessions)
+- [WebSocket adapter](#websocket-adapter)
 
 ---
 
@@ -321,3 +323,27 @@ All four threads run inside `raceAny_` with `E.finally disconnected`. When any t
 2. The agent callback demotes subscriptions, fires DOWN events, and initiates resubscription
 
 The `connected` TVar is set to `True` after the handshake succeeds and before the threads start. Note: in the protocol client, this TVar is not reset on disconnect - disconnect detection relies on thread cancellation via `raceAny_` and the `disconnected` callback, not STM re-evaluation. (The server-side `Client` type has a separate `connected` TVar that is reset in `clientDisconnected`.)
+
+---
+
+## HTTP/2 sessions
+
+**Source**: [Transport/HTTP2/Client.hs](../../src/Simplex/Messaging/Transport/HTTP2/Client.hs), [Transport/HTTP2/Server.hs](../../src/Simplex/Messaging/Transport/HTTP2/Server.hs)
+
+HTTP/2 is used for XFTP file transfers and notifications to push providers (APNs).
+
+**Why the request queue**: `sendRequest` serializes requests through a `TBQueue` because the underlying http2 library is not thread-safe for concurrent stream creation. `sendRequestDirect` exists but is explicitly marked unsafe.
+
+**Inactivity expiration**: Server connections track `activeAt` and are closed by a background thread when idle beyond `checkInterval`. This is necessary because HTTP/2 has no application-level keepalive - abandoned connections would otherwise persist indefinitely.
+
+---
+
+## WebSocket adapter
+
+**Source**: [Transport/WebSockets.hs](../../src/Simplex/Messaging/Transport/WebSockets.hs)
+
+WebSocket wraps TLS for browser clients, implementing the `Transport` typeclass.
+
+**Strict size matching**: Unlike raw TLS where `cGet` may accumulate multiple reads, WebSocket `cGet` expects a single `receiveData` to return exactly the requested size. Mismatch throws `TEBadBlock` immediately - WebSocket messages are atomic, so partial reads indicate a protocol error.
+
+**No compression**: `connectionCompressionOptions = NoCompression` because the payload is already encrypted. Compressing ciphertext wastes CPU and leaks information about plaintext structure.
