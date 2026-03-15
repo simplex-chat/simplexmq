@@ -2037,7 +2037,7 @@ client
                       labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " deliver/SEND"
                       -- lookup can be outside of STM transaction,
                       -- as long as the check that it is the same client is inside.
-                      getSubscribedClient rId (queueSubscribers subscribers) >>= mapM_ deliverIfSame
+                      getSubscribed >>= mapM_ deliverIfSame
                     deliverIfSame rcv = do
                       ts <- getSystemSeconds
                       atomically $ whenM (sameClient rc rcv) $
