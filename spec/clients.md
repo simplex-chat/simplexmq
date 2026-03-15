@@ -8,6 +8,10 @@ For deployment and usage, see [docs/CLIENT.md](../docs/CLIENT.md). For protocol 
 
 ## SMP Client (ProtocolClient)
 
+**Four threads**: Send and receive threads are separate to allow backpressure - a slow receiver doesn't block sending. The process thread decouples parsing from delivery, preventing a slow consumer from stalling the receive loop. The monitor thread provides application-level keepalive beyond TCP - detecting protocol-level stalls. See [transport.md](topics/transport.md#connection-management).
+
+**Correlation ID lifecycle**: IDs are generated before send and removed on response OR timeout. Removal on timeout prevents unbounded growth of `sentCommands` when the router is unresponsive.
+
 **Module specs**: [Client](modules/Simplex/Messaging/Client.md) · [Protocol](modules/Simplex/Messaging/Protocol.md) · [Transport](modules/Simplex/Messaging/Transport.md) · [Crypto](modules/Simplex/Messaging/Crypto.md)
 
 Generic protocol client used for both SMP and NTF connections. Manages a single TLS connection with multiplexed command/response matching via correlation IDs.
@@ -58,6 +62,10 @@ sequenceDiagram
 ---
 
 ## SMPClientAgent
+
+**Dual consumers**: Used by both SMP router (for proxy connections to relays) and NTF router (for NSUB subscriptions to SMP routers). Same connection pooling and reconnection logic, different command sets.
+
+**Session ID gating**: Subscription responses are validated against the current TLS session ID. A response from a stale session (connection dropped and reconnected between send and receive) is discarded rather than corrupting state. See [infrastructure.md](agent/infrastructure.md#subscription-tracking).
 
 **Module specs**: [Client Agent](modules/Simplex/Messaging/Client/Agent.md)
 
@@ -114,9 +122,11 @@ sequenceDiagram
 
 ## XFTP Client
 
+**No subscriptions**: File operations complete independently - no persistent server-side state to track. This allows XFTPClient to be a thin wrapper with no threads of its own.
+
 **Module specs**: [Client](modules/Simplex/FileTransfer/Client.md) · [Protocol](modules/Simplex/FileTransfer/Protocol.md) · [HTTP/2 Client](modules/Simplex/Messaging/Transport/HTTP2/Client.md)
 
-Stateless wrapper around HTTP2Client. XFTPClient adds no threads of its own; each operation is a synchronous HTTP/2 request/response. Serialization and multiplexing happen inside HTTP2Client's internal request queue and process thread.
+Stateless wrapper around HTTP2Client. XFTPClient adds no threads of its own. Serialization and multiplexing happen inside HTTP2Client's internal request queue and process thread.
 
 ### XFTP Client components
 
