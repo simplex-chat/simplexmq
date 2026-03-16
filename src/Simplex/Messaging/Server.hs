@@ -162,13 +162,7 @@ runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
-
--- | Callback to handle HTTP/WebSocket connections on TLS ports with SNI.
--- When a client connects with SNI (browser), this handler is called.
--- The WS handler is provided by the server for WebSocket upgrade support.
 type AttachHTTP = Socket -> TLS.Context -> Maybe WSHandler -> IO ()
-
--- | Handler for WebSocket connections (SMP over WebSocket)
 type WSHandler = WS 'TServer -> IO ()
 
 -- actions used in serverThread to reduce STM transaction scope
@@ -220,13 +214,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         (Just httpCreds, Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
-              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> do
-                labelMyThread "https client"
-                let wsHandler = Just $ \ws -> runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
-                attachHTTP s tlsContext wsHandler
+              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext wsHandler
               _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
+            wsHandler = Just $ \ws -> runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
 
