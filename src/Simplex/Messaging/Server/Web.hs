@@ -18,21 +18,24 @@ module Simplex.Messaging.Server.Web
     timedTTLText,
   ) where
 
+import qualified Codec.Compression.GZip as GZip
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
-import Data.ByteString.Builder (byteString)
+import Data.ByteString.Builder (byteString, lazyByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Char (toUpper)
 import Data.IORef (readIORef)
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
-import Network.Wai (Application, Request (..))
+import Network.Wai (Application, Request (..), responseLBS)
 import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
@@ -43,7 +46,7 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Util (ifM, tshow)
+import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
@@ -71,6 +74,7 @@ data EmbeddedContent = EmbeddedContent
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
 serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
+  app <- staticFiles webStaticPath
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
@@ -78,12 +82,12 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
     logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
     WT.runTLS (WT.tlsSettings cert key) (mkSettings port) app
   where
-    app = staticFiles webStaticPath
     mkSettings port = W.setPort port warpSettings
 
 -- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
 attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
-attachStaticFiles path action =
+attachStaticFiles path action = do
+  app <- staticFiles path
   -- Initialize global internal state for http server.
   WI.withII warpSettings $ \ii -> do
     action $ \socket cxt -> do
@@ -94,7 +98,6 @@ attachStaticFiles path action =
           -- Run Warp connection handler to process HTTP requests for static files.
           WI.serveConnection conn ii th addr transport warpSettings app
   where
-    app = staticFiles path
     -- from warp-tls
     withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
     -- from warp
@@ -108,8 +111,10 @@ attachStaticFiles path action =
 warpSettings :: W.Settings
 warpSettings = W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
 
-staticFiles :: FilePath -> Application
-staticFiles root = S.staticApp settings . changeWellKnownPath
+staticFiles :: FilePath -> IO Application
+staticFiles root = do
+  canonRoot <- canonicalizePath root
+  pure $ withGzipFiles canonRoot (S.staticApp settings) . changeWellKnownPath
   where
     settings = defSettings {ssListing = Nothing, ssGetMimeType = getMimeType}
     defSettings = S.defaultFileServerSettings root
@@ -120,10 +125,21 @@ staticFiles root = S.staticApp settings . changeWellKnownPath
       ".well-known" : rest ->
         req
           { pathInfo = "well-known" : rest,
-            rawPathInfo = "/well-known/" <> B.drop pfxLen (rawPathInfo req)
+            rawPathInfo = rewriteWellKnown (rawPathInfo req)
           }
       _ -> req
-    pfxLen = B.length "/.well-known/"
+
+-- | WAI middleware that gzip-compresses static files on the fly when client accepts gzip.
+-- Falls through to the wrapped app for non-compressible files or when gzip is not accepted.
+withGzipFiles :: FilePath -> Application -> Application
+withGzipFiles canonRoot app req respond
+  | acceptsGzipWAI req =
+      resolveStaticFile canonRoot (rawPathInfo req) >>= \case
+        Just (file, mime) | isCompressible file -> do
+          content <- B.readFile file
+          respond $ responseLBS N.ok200 (staticResponseHeaders mime True) (GZip.compress $ LB.fromStrict content)
+        _ -> app req respond
+  | otherwise = app req respond
 
 generateSite :: EmbeddedContent -> ByteString -> [String] -> FilePath -> IO ()
 generateSite embedded indexContent linkPages sitePath = do
@@ -147,43 +163,77 @@ generateSite embedded indexContent linkPages sitePath = do
 -- Path traversal protection: resolved path must stay under canonicalRoot.
 -- canonicalRoot must be pre-computed via 'canonicalizePath'.
 serveStaticPageH2 :: FilePath -> H.Request -> (H.Response -> IO ()) -> IO Bool
-serveStaticPageH2 canonicalRoot req sendResponse = do
-  let rawPath = fromMaybe "/" $ H.requestPath req
-      path = rewriteWellKnownH2 rawPath
-      relPath = B.unpack $ B.dropWhile (== '/') path
+serveStaticPageH2 canonRoot req sendResponse = do
+  let rawPath = rewriteWellKnown $ fromMaybe "/" $ H.requestPath req
+  resolveStaticFile canonRoot rawPath >>= \case
+    Just (file, mime) -> do
+      content <- B.readFile file
+      let gz = acceptsGzipH2 req && isCompressible file
+          body
+            | gz = lazyByteString $ GZip.compress $ LB.fromStrict content
+            | otherwise = byteString content
+      sendResponse $ H.responseBuilder N.ok200 (staticResponseHeaders mime gz) body
+      pure True
+    Nothing -> pure False
+
+-- | Resolve a static file request to a file path.
+-- Handles index.html fallback and path traversal protection.
+-- canonRoot must be pre-computed via 'canonicalizePath'.
+resolveStaticFile :: FilePath -> ByteString -> IO (Maybe (FilePath, ByteString))
+resolveStaticFile canonRoot path = do
+  let relPath = B.unpack $ B.dropWhile (== '/') path
       requestedPath
-        | null relPath || relPath == "/" = canonicalRoot </> "index.html"
-        | otherwise = canonicalRoot </> relPath
-      indexPath = requestedPath </> "index.html"
-  ifM
-    (doesFileExist requestedPath)
-    (serveSafe requestedPath)
-    (ifM (doesFileExist indexPath) (serveSafe indexPath) (pure False))
+        | null relPath = canonRoot </> "index.html"
+        | otherwise = canonRoot </> relPath
+  tryResolve requestedPath
+    >>= maybe (tryResolve (requestedPath </> "index.html")) (pure . Just)
   where
-    serveSafe filePath = do
-      canonicalFile <- canonicalizePath filePath
-      if (canonicalRoot <> "/") `isPrefixOf` canonicalFile || canonicalRoot == canonicalFile
+    tryResolve filePath = do
+      exists <- doesFileExist filePath
+      if exists
         then do
-          content <- B.readFile canonicalFile
-          sendResponse $ H.responseBuilder N.ok200 [("Content-Type", staticMimeType canonicalFile)] (byteString content)
-          pure True
-        else pure False -- path traversal attempt
-    rewriteWellKnownH2 p
-      | "/.well-known/" `B.isPrefixOf` p = "/well-known/" <> B.drop (B.length "/.well-known/") p
-      | otherwise = p
-    staticMimeType fp
-      | ".html" `isSuffixOf` fp = "text/html"
-      | ".css" `isSuffixOf` fp = "text/css"
-      | ".js" `isSuffixOf` fp = "application/javascript"
-      | ".svg" `isSuffixOf` fp = "image/svg+xml"
-      | ".png" `isSuffixOf` fp = "image/png"
-      | ".ico" `isSuffixOf` fp = "image/x-icon"
-      | ".json" `isSuffixOf` fp = "application/json"
-      | "apple-app-site-association" `isSuffixOf` fp = "application/json"
-      | ".woff" `isSuffixOf` fp = "font/woff"
-      | ".woff2" `isSuffixOf` fp = "font/woff2"
-      | ".ttf" `isSuffixOf` fp = "font/ttf"
-      | otherwise = "application/octet-stream"
+          canonFile <- canonicalizePath filePath
+          if (canonRoot <> "/") `isPrefixOf` canonFile || canonRoot == canonFile
+            then pure $ Just (canonFile, staticMimeType canonFile)
+            else pure Nothing -- path traversal attempt
+        else pure Nothing
+
+rewriteWellKnown :: ByteString -> ByteString
+rewriteWellKnown p
+  | "/.well-known/" `B.isPrefixOf` p = "/well-known/" <> B.drop (B.length "/.well-known/") p
+  | p == "/.well-known" = "/well-known"
+  | otherwise = p
+
+acceptsGzipH2 :: H.Request -> Bool
+acceptsGzipH2 req = any (\(t, v) -> tokenKey t == "accept-encoding" && "gzip" `B.isInfixOf` v) (fst $ H.requestHeaders req)
+
+acceptsGzipWAI :: Request -> Bool
+acceptsGzipWAI req = maybe False ("gzip" `B.isInfixOf`) $ lookup "Accept-Encoding" (requestHeaders req)
+
+isCompressible :: FilePath -> Bool
+isCompressible fp =
+  any (`isSuffixOf` fp) [".html", ".css", ".js", ".svg", ".json"]
+    || "apple-app-site-association" `isSuffixOf` fp
+
+staticResponseHeaders :: ByteString -> Bool -> [N.Header]
+staticResponseHeaders mime gz
+  | gz = [("Content-Type", mime), ("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]
+  | otherwise = [("Content-Type", mime)]
+
+staticMimeType :: FilePath -> ByteString
+staticMimeType fp
+  | ".html" `isSuffixOf` fp = "text/html"
+  | ".css" `isSuffixOf` fp = "text/css"
+  | ".js" `isSuffixOf` fp = "application/javascript"
+  | ".svg" `isSuffixOf` fp = "image/svg+xml"
+  | ".png" `isSuffixOf` fp = "image/png"
+  | ".ico" `isSuffixOf` fp = "image/x-icon"
+  | ".json" `isSuffixOf` fp = "application/json"
+  | "apple-app-site-association" `isSuffixOf` fp = "application/json"
+  | ".woff" `isSuffixOf` fp = "font/woff"
+  | ".woff2" `isSuffixOf` fp = "font/woff2"
+  | ".ttf" `isSuffixOf` fp = "font/ttf"
+  | otherwise = "application/octet-stream"
 
 -- | Substitutions for server information fields shared between SMP and XFTP pages.
 serverInfoSubsts :: String -> Maybe ServerPublicInfo -> [(ByteString, Maybe ByteString)]
