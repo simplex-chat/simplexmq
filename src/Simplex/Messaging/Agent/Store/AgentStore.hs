@@ -2354,18 +2354,28 @@ getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService =
 unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [RcvQueueSub]
 unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   deleteClientService db userId srv
+#if defined(dbPostgres)
   map toRcvQueueSub
     <$> DB.query
       db
-      (removeRcvAssocsQuery <> " " <> returningColums)
+      (removeRcvAssocsQuery <> " " <> returningColumns)
       (h, p, userId, kh)
   where
-    returningColums =
+    returningColumns =
       [sql|
         RETURNING c.user_id, rcv_queues.conn_id, rcv_queues.host, rcv_queues.port, COALESCE(rcv_queues.server_key_hash, s.key_hash),
           rcv_queues.rcv_id, rcv_queues.rcv_private_key, rcv_queues.status, c.enable_ntfs, rcv_queues.client_notice_id,
           rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
       |]
+#else
+  qs <- map toRcvQueueSub
+    <$> DB.query
+      db
+      (rcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
+      (userId, h, p, kh)
+  DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
+  pure qs
+#endif
 
 unassocUserServerRcvQueueSubs' :: DB.Connection -> UserId -> SMPServer -> IO ()
 unassocUserServerRcvQueueSubs' db userId srv@(SMPServer h p kh) = do
@@ -2376,7 +2386,7 @@ unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
 setRcvServiceAssocs :: SMPQueue q => DB.Connection -> [q] -> IO ()
-setRcvServiceAssocs db rqs =
+setRcvServiceAssocs db rqs = do
 #if defined(dbPostgres)
   DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN ?" $ Only $ In (map queueId rqs)
 #else

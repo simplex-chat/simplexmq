@@ -1731,8 +1731,10 @@ resubscribeClientService c tSess@(userId, srv, _) serviceSub =
       Just SSErrorServiceId {} -> unassocSubscribeQueues $> r
       _ -> pure r
     Left e -> do
-      when (clientServiceError e) $ unassocSubscribeQueues
       atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
+      when (clientServiceError e) $ do
+        atomically $ SS.deleteServiceSub tSess $ currentSubs c
+        unassocSubscribeQueues
       throwE e
   where
     unassocSubscribeQueues = do

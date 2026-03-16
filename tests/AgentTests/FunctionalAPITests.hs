@@ -101,7 +101,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, BrokerErrorType (..), ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
@@ -110,6 +110,7 @@ import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, authCmdsSMPVersion, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, sendingProxySMPVersion, sndAuthKeySMPVersion, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
@@ -491,6 +492,7 @@ functionalAPITests ps = do
   describe "Client service certificates" $ do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
+    it "should clear pending service sub when service unavailable" $ testServiceUnavailableClearsPending ps
     it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
@@ -3904,6 +3906,53 @@ testClientServiceIDChange ps@(_, ASType qs _) = do
       subscribeAllConnections user False Nothing
       ("", "", UP _ [_]) <- nGet user
       exchangeGreetingsMsgId 6 notService uId user sId
+
+-- | Test that service subscription is correctly cleared and re-established
+-- when server temporarily stops supporting services (askClientCert = False).
+testServiceUnavailableClearsPending :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceUnavailableClearsPending (t, msType) = do
+  -- Same agent across all phases to test pendingServiceSub persistence
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    -- Phase 1: Establish connection with active service subscription on normal server
+    (_sId, _uId) <- withSmpServerStoreLogOn (t, msType) testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    -- Phase 2: Server without service support: agent gets NO_SERVICE, queue resubscribed without service
+    let cfgNoService = updateCfg (cfgMS msType) $ \(cfg' :: ServerConfig s) ->
+          let ServerConfig {transportConfig} = cfg'
+           in cfg' {transportConfig = transportConfig {askClientCert = False}} :: ServerConfig s
+    withSmpServerConfigOn t cfgNoService testPort $ \_ -> do
+      ("", "", ERR (BROKER _ NO_SERVICE)) <- get service
+      ("", "", UP _ [_]) <- nGet service
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    ("", "", DOWN _ [_]) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    -- Phase 3: Server with service support restored: only queue subscription, no service subscription
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> do
+      e1 <- nGet service
+      case e1 of
+        ("", "", UP _ [_]) -> pure () -- Fixed: only queue subscription, no service subscription
+        ("", "", SERVICE_UP _ _) ->
+          expectationFailure "pendingServiceSub not cleared, service subscription attempted again"
+        ("", "", SERVICE_ALL _) ->
+          expectationFailure "pendingServiceSub not cleared, service subscription attempted again"
+        other -> expectationFailure $ "Unexpected first event: " <> show other
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    -- Phase 4: After another reconnect cycle, service subscription is re-established
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ _)) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
 
 testMigrateConnectionsToService :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testMigrateConnectionsToService ps = do
