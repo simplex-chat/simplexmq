@@ -145,11 +145,8 @@ serviceSignSendRecv h pk serviceKey t = do
 
 signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (NonEmpty (Transmission (Either ErrorType BrokerMsg)))
 signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
-  putStrLn "signSendRecv_: encoding"
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
-  putStrLn "signSendRecv_: sending"
   Right () <- tPut1 h (authorize tForAuth, tToSend)
-  putStrLn "signSendRecv_: receiving"
   liftIO $ tGetClient h
   where
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
@@ -1505,44 +1502,31 @@ testWebSocketAndTLS =
     let httpKeyHash = C.KeyHash fpHTTP
     attachStaticFilesWithWS "tests/fixtures" $ \attachHTTP ->
       withSmpServerConfig (cfgWebOn msType testPort) (Just attachHTTP) $ \_ -> do
-      putStrLn "1 - server started"
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      putStrLn "2 - keys generated"
 
       -- Connect via native TLS (useSNI=False, default) and create a queue
-      putStrLn "3 - before native TLS connect"
       (sId, rId, srvDh) <- testSMPClient @TLS $ \rh -> do
         Resp "1" _ (Ids rId sId srvDh) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
         Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, KEY sPub)
         pure (sId, rId, srvDh)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-      putStrLn "4 - after native TLS connect"
 
       -- Connect via WebSocket (useSNI=True) and send a message
-      putStrLn "5 - before WebSocket connect"
       Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
       let wsTcConfig = defaultTransportClientConfig {useSNI = True} :: TransportClientConfig
-      runTLSTransportClient defaultSupportedParamsHTTPS Nothing wsTcConfig Nothing useHost testPort (Just httpKeyHash) $ \(h :: WS 'TClient) -> do
-        putStrLn "5a - got WS handle"
+      runTLSTransportClient defaultSupportedParamsHTTPS Nothing wsTcConfig Nothing useHost testPort (Just httpKeyHash) $ \(h :: WS 'TClient) ->
         runExceptT (smpClientHandshake h Nothing testKeyHash supportedClientSMPRelayVRange False Nothing) >>= \case
           Right sh -> do
-            putStrLn "5b - SMP handshake done"
-            let msg = "hello from websocket"
-            Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND msg)
-            putStrLn "5c - message sent"
-          Left e -> do
-            putStrLn $ "5b - SMP handshake failed: " ++ show e
-            error $ show e
-      putStrLn "6 - after WebSocket connect"
+            Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND "hello from websocket")
+            pure ()
+          Left e -> error $ show e
 
       -- Verify message received via native TLS
-      putStrLn "7 - before verify"
       testSMPClient @TLS $ \rh -> do
         (Resp "4" _ (SOK Nothing), Resp "" _ (Msg mId msg)) <- signSendRecv2 rh rKey ("4", rId, SUB)
         dec mId msg `shouldBe` Right "hello from websocket"
         Resp "5" _ OK <- signSendRecv rh rKey ("5", rId, ACK mId)
         pure ()
-      putStrLn "8 - done"

@@ -216,28 +216,19 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
       srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
-      liftIO $ do
-        putStrLn $ "SERVER: httpCreds_=" ++ show (isJust httpCreds_) ++ " attachHTTP_=" ++ show (isJust attachHTTP_) ++ " addHTTP=" ++ show addHTTP
-        case (httpCreds_, attachHTTP_) of
-          (Just httpCreds, Just attachHTTP) | addHTTP -> do
-            putStrLn "SERVER: using combinedCreds branch"
-            runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
-              case cast h of
-                Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> do
-                  putStrLn "SERVER: SNI connection, handing to attachHTTP"
-                  labelMyThread "https client"
-                  let wsHandler = Just $ \ws -> do
-                        putStrLn "SERVER: wsHandler called"
-                        runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
-                  attachHTTP s tlsContext wsHandler
-                _ -> do
-                  putStrLn "SERVER: non-SNI connection, running SMP client"
-                  runClient srvCert srvSignKey t h `runReaderT` env
-            where
-              combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
-          _ -> do
-            putStrLn "SERVER: using smpCreds only branch"
-            runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+      liftIO $ case (httpCreds_, attachHTTP_) of
+        (Just httpCreds, Just attachHTTP) | addHTTP ->
+          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
+            case cast h of
+              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> do
+                labelMyThread "https client"
+                let wsHandler = Just $ \ws -> runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
+                attachHTTP s tlsContext wsHandler
+              _ -> runClient srvCert srvSignKey t h `runReaderT` env
+          where
+            combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
+        _ ->
+          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
 
     sigIntHandlerThread :: M s ()
     sigIntHandlerThread = do
@@ -747,11 +738,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> do
-          liftIO $ putStrLn "SERVER: SMP handshake completed, running client transport"
-          runClientTransport th
-        Just (Left e) -> liftIO $ putStrLn $ "SERVER: SMP handshake failed: " ++ show e
-        Nothing -> liftIO $ putStrLn "SERVER: SMP handshake timed out"
+        Just (Right th) -> runClientTransport th
+        _ -> pure ()
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
@@ -1156,17 +1144,13 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
   sa <- asks serverActive
   stats <- asks serverStats
   liftIO $ forever $ do
-    putStrLn "SERVER receive: waiting for command"
     ts <- tGetServer h
-    putStrLn "SERVER receive: got command"
     unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
-    putStrLn $ "SERVER receive: errors=" ++ show (length es) ++ " commands=" ++ show (length ts')
     errs' <- case ts' of
       (_, _, (_, _, Cmd p cmd)) : rest -> do
-        putStrLn $ "SERVER receive: verifying command"
         let service = peerClientService =<< thAuth
         (errs', cmds) <- partitionEithers <$> case batchParty p of
           Just Dict | not (null rest) && all (sameParty p) ts'-> do
@@ -1229,11 +1213,8 @@ sendMsg th c@Client {msgQ, clientTHParams = THandleParams {sessionId}} = do
 
 tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> NonEmpty (Transmission BrokerMsg) -> IO ()
 tSend th Client {sndActiveAt} ts = do
-  tid <- myThreadId
-  putStrLn $ "SERVER tSend [" ++ show tid ++ "]: sending " ++ show (length ts) ++ " transmissions"
   withMVar th $ \h@THandle {params} ->
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
-  putStrLn $ "SERVER tSend [" ++ show tid ++ "]: sent"
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
