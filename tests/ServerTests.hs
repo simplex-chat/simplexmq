@@ -55,7 +55,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint)
-import Simplex.Messaging.Server.Web (attachStaticFilesWithWS)
+import Simplex.Messaging.Server.Web (attachStaticAndWS)
 import Data.X509.Validation (Fingerprint (..))
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
@@ -1500,7 +1500,7 @@ testWebSocketAndTLS =
   it "native TLS and WebSocket clients work on same port" $ \(_t, msType) -> do
     Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let httpKeyHash = C.KeyHash fpHTTP
-    attachStaticFilesWithWS "tests/fixtures" $ \attachHTTP ->
+    attachStaticAndWS "tests/fixtures" $ \attachHTTP ->
       withSmpServerConfig (cfgWebOn msType testPort) (Just attachHTTP) $ \_ -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
