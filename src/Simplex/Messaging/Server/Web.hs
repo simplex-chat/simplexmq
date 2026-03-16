@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -9,6 +10,7 @@ module Simplex.Messaging.Server.Web
     EmbeddedContent (..),
     serveStaticFiles,
     attachStaticFiles,
+    attachStaticFilesWithWS,
     serveStaticPageH2,
     generateSite,
     serverInfoSubsts,
@@ -29,20 +31,27 @@ import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Data.X509 as X
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
+import qualified Network.TLS as TLS
 import Network.Wai (Application, Request (..))
 import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
+import qualified Network.Wai.Handler.WebSockets as WaiWS
+import Network.WebSockets (acceptRequest, defaultConnectionOptions, ConnectionOptions(..), SizeLimit(..), PendingConnection)
+import Network.WebSockets.Stream (Stream)
+import qualified Network.WebSockets.Stream as WSS
 import Simplex.Messaging.Encoding.String (strEncode)
-import Simplex.Messaging.Server (AttachHTTP)
+import Simplex.Messaging.Server (AttachHTTP, WSHandler)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport (TransportConfig (..), smpBlockSize, simplexMQVersion)
+import Simplex.Messaging.Transport.WebSockets (WS (..))
 import Simplex.Messaging.Util (ifM, tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
@@ -82,11 +91,12 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
     mkSettings port = W.setPort port warpSettings
 
 -- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
-attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
+-- This version does not support WebSocket upgrade (passes Nothing for wsHandler).
+attachStaticFiles :: FilePath -> (AttachHTTP -> IO a) -> IO a
 attachStaticFiles path action =
   -- Initialize global internal state for http server.
   WI.withII warpSettings $ \ii -> do
-    action $ \socket cxt -> do
+    action $ \socket cxt _wsHandler -> do
       -- Initialize internal per-connection resources.
       addr <- getPeerName socket
       withConnection addr cxt $ \(conn, transport) ->
@@ -96,6 +106,72 @@ attachStaticFiles path action =
   where
     app = staticFiles path
     -- from warp-tls
+    withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
+    -- from warp
+    withTimeout ii conn =
+      bracket
+        (WI.registerKillThread (WI.timeoutManager ii) (WI.connClose conn))
+        WI.cancel
+    -- shared clean up
+    terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
+
+-- | Like 'attachStaticFiles' but with WebSocket upgrade support for SMP.
+-- When wsHandler is provided via AttachHTTP, WebSocket connections are handed off to it.
+-- When wsHandler is Nothing, WebSocket upgrade requests are rejected (falls through to static files).
+attachStaticFilesWithWS :: FilePath -> (AttachHTTP -> IO a) -> IO a
+attachStaticFilesWithWS path action =
+  WI.withII warpSettings $ \ii -> do
+    action $ \socket cxt wsHandler_ -> do
+      -- Capture TLS info BEFORE Warp takes over
+      tlsUniq <- getTlsUnique cxt
+      wsALPN <- TLS.getNegotiatedProtocol cxt
+      let peerCert = X.CertificateChain [] -- Client certs not used for web widget
+
+      -- Create combined WAI app: WebSocket -> SMP (if handler provided), HTTP -> static files
+      let app = case wsHandler_ of
+            Just wsHandler -> WaiWS.websocketsOr wsOpts (handleWebSocket wsHandler tlsUniq wsALPN peerCert) (staticFiles path)
+            Nothing -> staticFiles path
+
+      addr <- getPeerName socket
+      withConnection addr cxt $ \(conn, transport) ->
+        withTimeout ii conn $ \th ->
+          WI.serveConnection conn ii th addr transport warpSettings app
+  where
+    wsOpts = defaultConnectionOptions
+      { connectionFramePayloadSizeLimit = SizeLimit $ fromIntegral smpBlockSize,
+        connectionMessageDataSizeLimit = SizeLimit 65536
+      }
+
+    handleWebSocket :: WSHandler -> ByteString -> Maybe ByteString -> X.CertificateChain -> PendingConnection -> IO ()
+    handleWebSocket wsHandler tlsUniq wsALPN peerCert pending = do
+      wsConn <- acceptRequest pending
+      -- Create a dummy stream for the WS type. In wai-websockets context,
+      -- connection lifecycle is managed externally, so this stream just
+      -- provides the interface for closeConnection.
+      dummyStream <- makeDummyStream
+      let ws = WS
+            { tlsUniq = tlsUniq,
+              wsALPN = wsALPN,
+              wsStream = dummyStream,
+              wsConnection = wsConn,
+              wsTransportConfig = defaultTransportConfig,
+              wsCertSent = False,
+              wsPeerCert = peerCert
+            }
+      wsHandler ws
+
+    -- Create a minimal stream that just returns EOF on read and ignores writes.
+    -- Close is a no-op since wai-websockets manages the connection lifecycle.
+    makeDummyStream :: IO Stream
+    makeDummyStream = WSS.makeStream (pure Nothing) (\_ -> pure ())
+
+    defaultTransportConfig = TransportConfig {logTLSErrors = True, transportTimeout = Nothing}
+
+    -- Get TLS unique value (used for channel binding)
+    getTlsUnique :: TLS.Context -> IO ByteString
+    getTlsUnique cxt = TLS.getPeerFinished cxt >>= maybe (fail "TLS not finished") pure
+
+    -- from warp-tls (socket is actually SockAddr here, matching original pattern)
     withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
     -- from warp
     withTimeout ii conn =

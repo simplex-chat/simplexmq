@@ -3,7 +3,7 @@ module Main where
 import Control.Logger.Simple
 import Simplex.Messaging.Server.CLI (getEnvPath)
 import Simplex.Messaging.Server.Main (smpServerCLI_)
-import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
+import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFilesWithWS)
 import SMPWeb (smpGenerateSite)
 
 defaultCfgPath :: FilePath
@@ -19,4 +19,4 @@ main :: IO ()
 main = do
   cfgPath <- getEnvPath "SMP_SERVER_CFG_PATH" defaultCfgPath
   logPath <- getEnvPath "SMP_SERVER_LOG_PATH" defaultLogPath
-  withGlobalLogging logCfg $ smpServerCLI_ smpGenerateSite serveStaticFiles attachStaticFiles cfgPath logPath
+  withGlobalLogging logCfg $ smpServerCLI_ smpGenerateSite serveStaticFiles attachStaticFilesWithWS cfgPath logPath

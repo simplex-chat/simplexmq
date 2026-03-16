@@ -23,6 +23,7 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
+import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class
 import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
@@ -42,6 +43,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Client (chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Server (exportMessages)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
@@ -50,6 +52,11 @@ import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..),
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient)
+import Simplex.Messaging.Transport.WebSockets (WS)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint)
+import Simplex.Messaging.Server.Web (attachStaticFilesWithWS)
+import Data.X509.Validation (Fingerprint (..))
 import Simplex.Messaging.Util (whenM)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
@@ -101,6 +108,7 @@ serverTests = do
   describe "Short links" $ do
     testInvQueueLinkData
     testContactQueueLinkData
+  describe "WebSocket and TLS on same port" testWebSocketAndTLS
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
@@ -137,8 +145,11 @@ serviceSignSendRecv h pk serviceKey t = do
 
 signSendRecv_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO (NonEmpty (Transmission (Either ErrorType BrokerMsg)))
 signSendRecv_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
+  putStrLn "signSendRecv_: encoding"
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  putStrLn "signSendRecv_: sending"
   Right () <- tPut1 h (authorize tForAuth, tToSend)
+  putStrLn "signSendRecv_: receiving"
   liftIO $ tGetClient h
   where
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
@@ -1484,3 +1495,54 @@ serverSyntaxTests (ATransport t) = do
       (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response
+
+-- | Test that both native TLS and WebSocket clients can connect to the same port.
+-- Native TLS uses useSNI=False, WebSocket uses useSNI=True for routing.
+testWebSocketAndTLS :: SpecWith (ASrvTransport, AStoreType)
+testWebSocketAndTLS =
+  it "native TLS and WebSocket clients work on same port" $ \(_t, msType) -> do
+    Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+    let httpKeyHash = C.KeyHash fpHTTP
+    attachStaticFilesWithWS "tests/fixtures" $ \attachHTTP ->
+      withSmpServerConfig (cfgWebOn msType testPort) (Just attachHTTP) $ \_ -> do
+      putStrLn "1 - server started"
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      putStrLn "2 - keys generated"
+
+      -- Connect via native TLS (useSNI=False, default) and create a queue
+      putStrLn "3 - before native TLS connect"
+      (sId, rId, srvDh) <- testSMPClient @TLS $ \rh -> do
+        Resp "1" _ (Ids rId sId srvDh) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
+        Resp "2" _ OK <- signSendRecv rh rKey ("2", rId, KEY sPub)
+        pure (sId, rId, srvDh)
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+      putStrLn "4 - after native TLS connect"
+
+      -- Connect via WebSocket (useSNI=True) and send a message
+      putStrLn "5 - before WebSocket connect"
+      Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
+      let wsTcConfig = defaultTransportClientConfig {useSNI = True} :: TransportClientConfig
+      runTLSTransportClient defaultSupportedParamsHTTPS Nothing wsTcConfig Nothing useHost testPort (Just httpKeyHash) $ \(h :: WS 'TClient) -> do
+        putStrLn "5a - got WS handle"
+        runExceptT (smpClientHandshake h Nothing testKeyHash supportedClientSMPRelayVRange False Nothing) >>= \case
+          Right sh -> do
+            putStrLn "5b - SMP handshake done"
+            let msg = "hello from websocket"
+            Resp "3" _ OK <- signSendRecv sh sKey ("3", sId, _SEND msg)
+            putStrLn "5c - message sent"
+          Left e -> do
+            putStrLn $ "5b - SMP handshake failed: " ++ show e
+            error $ show e
+      putStrLn "6 - after WebSocket connect"
+
+      -- Verify message received via native TLS
+      putStrLn "7 - before verify"
+      testSMPClient @TLS $ \rh -> do
+        (Resp "4" _ (SOK Nothing), Resp "" _ (Msg mId msg)) <- signSendRecv2 rh rKey ("4", rId, SUB)
+        dec mId msg `shouldBe` Right "hello from websocket"
+        Resp "5" _ OK <- signSendRecv rh rKey ("5", rId, ACK mId)
+        pure ()
+      putStrLn "8 - done"

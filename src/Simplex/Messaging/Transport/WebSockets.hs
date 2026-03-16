@@ -9,6 +9,7 @@
 
 module Simplex.Messaging.Transport.WebSockets (WS (..)) where
 
+import Control.Concurrent (myThreadId)
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -71,13 +72,19 @@ instance Transport WS where
 
   cGet :: WS p -> Int -> IO ByteString
   cGet c n = do
+    tid <- myThreadId
+    putStrLn $ "WS cGet [" ++ show tid ++ "]: expecting " ++ show n ++ " bytes"
     s <- receiveData (wsConnection c)
+    putStrLn $ "WS cGet [" ++ show tid ++ "]: received " ++ show (B.length s) ++ " bytes"
     if B.length s == n
       then pure s
       else E.throwIO TEBadBlock
 
   cPut :: WS p -> ByteString -> IO ()
-  cPut = sendBinaryData . wsConnection
+  cPut c s = do
+    tid <- myThreadId
+    putStrLn $ "WS cPut [" ++ show tid ++ "]: sending " ++ show (B.length s) ++ " bytes"
+    sendBinaryData (wsConnection c) s
 
   getLn :: WS p -> IO ByteString
   getLn c = do
@@ -90,8 +97,11 @@ getWS :: forall p. TransportPeerI p => TransportConfig -> Bool -> X.CertificateC
 getWS cfg wsCertSent wsPeerCert cxt = withTlsUnique @WS @p cxt connectWS
   where
     connectWS tlsUniq = do
+      putStrLn "getWS: creating stream"
       s <- makeTLSContextStream cxt
+      putStrLn "getWS: connecting peer"
       wsConnection <- connectPeer s
+      putStrLn "getWS: connected"
       wsALPN <- T.getNegotiatedProtocol cxt
       pure $ WS {tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsCertSent, wsPeerCert}
     connectPeer :: Stream -> IO Connection

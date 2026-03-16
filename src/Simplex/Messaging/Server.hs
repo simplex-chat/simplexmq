@@ -40,6 +40,7 @@ module Simplex.Messaging.Server
     dummyVerifyCmd,
     randomId,
     AttachHTTP,
+    WSHandler,
     MessageStats (..),
   )
 where
@@ -121,6 +122,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Transport.WebSockets (WS (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
@@ -160,7 +162,14 @@ runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
-type AttachHTTP = Socket -> TLS.Context -> IO ()
+
+-- | Callback to handle HTTP/WebSocket connections on TLS ports with SNI.
+-- When a client connects with SNI (browser), this handler is called.
+-- The WS handler is provided by the server for WebSocket upgrade support.
+type AttachHTTP = Socket -> TLS.Context -> Maybe WSHandler -> IO ()
+
+-- | Handler for WebSocket connections (SMP over WebSocket)
+type WSHandler = WS 'TServer -> IO ()
 
 -- actions used in serverThread to reduce STM transaction scope
 data ClientSubAction
@@ -207,16 +216,28 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       asks sockets >>= atomically . (`modifyTVar'` ((tcpPort, ss) :))
       srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
-      liftIO $ case (httpCreds_, attachHTTP_) of
-        (Just httpCreds, Just attachHTTP) | addHTTP ->
-          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
-            case cast h of
-              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
-              _ -> runClient srvCert srvSignKey t h `runReaderT` env
-          where
-            combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
-        _ ->
-          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+      liftIO $ do
+        putStrLn $ "SERVER: httpCreds_=" ++ show (isJust httpCreds_) ++ " attachHTTP_=" ++ show (isJust attachHTTP_) ++ " addHTTP=" ++ show addHTTP
+        case (httpCreds_, attachHTTP_) of
+          (Just httpCreds, Just attachHTTP) | addHTTP -> do
+            putStrLn "SERVER: using combinedCreds branch"
+            runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
+              case cast h of
+                Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> do
+                  putStrLn "SERVER: SNI connection, handing to attachHTTP"
+                  labelMyThread "https client"
+                  let wsHandler = Just $ \ws -> do
+                        putStrLn "SERVER: wsHandler called"
+                        runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
+                  attachHTTP s tlsContext wsHandler
+                _ -> do
+                  putStrLn "SERVER: non-SNI connection, running SMP client"
+                  runClient srvCert srvSignKey t h `runReaderT` env
+            where
+              combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
+          _ -> do
+            putStrLn "SERVER: using smpCreds only branch"
+            runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
 
     sigIntHandlerThread :: M s ()
     sigIntHandlerThread = do
@@ -726,8 +747,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> runClientTransport th
-        _ -> pure ()
+        Just (Right th) -> do
+          liftIO $ putStrLn "SERVER: SMP handshake completed, running client transport"
+          runClientTransport th
+        Just (Left e) -> liftIO $ putStrLn $ "SERVER: SMP handshake failed: " ++ show e
+        Nothing -> liftIO $ putStrLn "SERVER: SMP handshake timed out"
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
@@ -1132,13 +1156,17 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
   sa <- asks serverActive
   stats <- asks serverStats
   liftIO $ forever $ do
+    putStrLn "SERVER receive: waiting for command"
     ts <- tGetServer h
+    putStrLn "SERVER receive: got command"
     unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
+    putStrLn $ "SERVER receive: errors=" ++ show (length es) ++ " commands=" ++ show (length ts')
     errs' <- case ts' of
       (_, _, (_, _, Cmd p cmd)) : rest -> do
+        putStrLn $ "SERVER receive: verifying command"
         let service = peerClientService =<< thAuth
         (errs', cmds) <- partitionEithers <$> case batchParty p of
           Just Dict | not (null rest) && all (sameParty p) ts'-> do
@@ -1201,8 +1229,11 @@ sendMsg th c@Client {msgQ, clientTHParams = THandleParams {sessionId}} = do
 
 tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> NonEmpty (Transmission BrokerMsg) -> IO ()
 tSend th Client {sndActiveAt} ts = do
+  tid <- myThreadId
+  putStrLn $ "SERVER tSend [" ++ show tid ++ "]: sending " ++ show (length ts) ++ " transmissions"
   withMVar th $ \h@THandle {params} ->
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
+  putStrLn $ "SERVER tSend [" ++ show tid ++ "]: sent"
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
