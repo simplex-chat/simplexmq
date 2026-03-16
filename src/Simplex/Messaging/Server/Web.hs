@@ -130,10 +130,9 @@ attachStaticFilesWithWS path action =
       wsALPN <- TLS.getNegotiatedProtocol cxt
       let peerCert = X.CertificateChain [] -- Client certs not used for web widget
 
-      -- Create combined WAI app: WebSocket -> SMP (if handler provided), HTTP -> static files
-      let app = case wsHandler_ of
-            Just wsHandler -> WaiWS.websocketsOr wsOpts (handleWebSocket wsHandler tlsUniq wsALPN peerCert) (staticFiles path)
-            Nothing -> staticFiles path
+      app <- case wsHandler_ of
+        Just wsHandler -> WaiWS.websocketsOr wsOpts (handleWebSocket wsHandler tlsUniq wsALPN peerCert) <$> staticFiles path
+        Nothing -> staticFiles path
 
       addr <- getPeerName socket
       withConnection addr cxt $ \(conn, transport) ->
