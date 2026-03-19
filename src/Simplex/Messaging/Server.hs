@@ -91,7 +91,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Conc.Signal
 import GHC.IORef (atomicSwapIORef)
-import GHC.Stats (getRTSStats)
+import GHC.Stats (RTSStats (..), GCDetails (..), getRTSStats)
 import GHC.TypeLits (KnownNat)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
@@ -198,6 +198,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
+            <> [memoryDiagThread]
     )
     `finally` stopServer s
   where
@@ -718,6 +719,60 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               pure $ case delivered_ of
                 Nothing -> acc
                 Just (_, ts) -> (cnt + 1, updateTimeBuckets ts ts' times)
+
+    memoryDiagThread :: M s ()
+    memoryDiagThread = do
+      labelMyThread "memoryDiag"
+      Env
+        { ntfStore = NtfStore ntfMap,
+          server = srv@Server {subscribers, ntfSubscribers},
+          proxyAgent = ProxyAgent {smpAgent = pa},
+          msgStore_ = ms
+        } <- ask
+      let SMPClientAgent {smpClients, smpSessions, activeServiceSubs, activeQueueSubs, pendingServiceSubs, pendingQueueSubs, smpSubWorkers} = pa
+      liftIO $ forever $ do
+        threadDelay 300_000_000 -- 5 minutes
+        rts <- getRTSStats
+        let GCDetails {gcdetails_live_bytes, gcdetails_mem_in_use_bytes} = gc rts
+        clientCount <- IM.size <$> getServerClients srv
+        smpQSubs <- M.size <$> getSubscribedClients (queueSubscribers subscribers)
+        smpSSubs <- M.size <$> getSubscribedClients (serviceSubscribers subscribers)
+        ntfQSubs <- M.size <$> getSubscribedClients (queueSubscribers ntfSubscribers)
+        ntfSSubs <- M.size <$> getSubscribedClients (serviceSubscribers ntfSubscribers)
+        smpPending <- IM.size <$> readTVarIO (pendingEvents subscribers)
+        ntfPending <- IM.size <$> readTVarIO (pendingEvents ntfSubscribers)
+        ntfStoreSize <- M.size <$> readTVarIO ntfMap
+        paClients' <- M.size <$> readTVarIO smpClients
+        paSessions' <- M.size <$> readTVarIO smpSessions
+        paActSvc <- M.size <$> readTVarIO activeServiceSubs
+        paActQ <- M.size <$> readTVarIO activeQueueSubs
+        paPndSvc <- M.size <$> readTVarIO pendingServiceSubs
+        paPndQ <- M.size <$> readTVarIO pendingQueueSubs
+        paWorkers <- M.size <$> readTVarIO smpSubWorkers
+        lc <- loadedQueueCounts $ fromMsgStore ms
+        logInfo $
+          "MEMORY"
+            <> " rts_live=" <> tshow gcdetails_live_bytes
+            <> " rts_heap=" <> tshow gcdetails_mem_in_use_bytes
+            <> " rts_gc=" <> tshow (gcs rts)
+            <> " clients=" <> tshow clientCount
+            <> " smpQSubs=" <> tshow smpQSubs
+            <> " smpSSubs=" <> tshow smpSSubs
+            <> " ntfQSubs=" <> tshow ntfQSubs
+            <> " ntfSSubs=" <> tshow ntfSSubs
+            <> " smpPending=" <> tshow smpPending
+            <> " ntfPending=" <> tshow ntfPending
+            <> " ntfStore=" <> tshow ntfStoreSize
+            <> " paClients=" <> tshow paClients'
+            <> " paSessions=" <> tshow paSessions'
+            <> " paActSvc=" <> tshow paActSvc
+            <> " paActQ=" <> tshow paActQ
+            <> " paPndSvc=" <> tshow paPndSvc
+            <> " paPndQ=" <> tshow paPndQ
+            <> " paWorkers=" <> tshow paWorkers
+            <> " loadedQ=" <> tshow (loadedQueueCount lc)
+            <> " loadedNtf=" <> tshow (loadedNotifierCount lc)
+            <> " ntfLocks=" <> tshow (notifierLockCount lc)
 
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
     runClient srvCert srvSignKey tp h = do
