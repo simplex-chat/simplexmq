@@ -54,7 +54,7 @@ import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint)
+import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
 import Data.X509.Validation (Fingerprint (..))
 import Simplex.Messaging.Util (whenM)
