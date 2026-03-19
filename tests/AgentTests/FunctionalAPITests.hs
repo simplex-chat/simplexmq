@@ -101,7 +101,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
-import Simplex.Messaging.Protocol (BasicAuth, BrokerErrorType (..), ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
@@ -493,6 +493,7 @@ functionalAPITests ps = do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
     it "should clear pending service sub when service unavailable" $ testServiceUnavailableClearsPending ps
+    it "should recover when service ID changes on reconnect" $ testServiceIdChangeOnReconnect ps
     it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
@@ -3947,6 +3948,48 @@ testServiceUnavailableClearsPending (t, msType) = do
     ("", "", SERVICE_DOWN _ _) <- nGet service
     ("", "", DOWN _ [_]) <- nGet user
     withSmpServerStoreLogOn (t, msType) testPort $ \_ -> do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ _)) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+
+-- | Test that service subscription recovers when service ID changes on reconnect.
+-- Server restart with deleted service causes new service ID, triggering SSErrorServiceId.
+-- Queues should be unassociated, resubscribed, and re-associated with new service.
+testServiceIdChangeOnReconnect :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceIdChangeOnReconnect ps@(_, ASType qs _) = do
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    -- Phase 1: Establish connection with active service subscription
+    (_sId, _uId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    -- Delete service from server storage, keeping queues
+    _ :: () <- case qs of
+      SQSPostgres -> do
+#if defined(dbServerPostgres)
+        st <- either (error . show) pure =<< Postgres.createDBStore testStoreDBOpts serverMigrations (MigrationConfig MCError Nothing)
+        void $ Postgres.withTransaction st (`PSQL.execute_` "DELETE FROM services")
+#else
+        pure ()
+#endif
+      SQSMemory -> do
+        s <- readFile testStoreLogFile
+        removeFile testStoreLogFile
+        writeFile testStoreLogFile $ unlines $ filter (not . ("NEW_SERVICE" `isPrefixOf`)) $ lines s
+    -- Phase 2: Server restart with deleted service - new service ID, SSErrorServiceId
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      ("", "", SERVICE_UP _ _) <- nGet service
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    -- Phase 3: Normal reconnect - service should subscribe normally
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
       liftIO $ getInAnyOrder service
         [ \case ("", "", AEvt SAENone (SERVICE_UP _ _)) -> True; _ -> False,
           \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False

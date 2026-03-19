@@ -1726,9 +1726,10 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
 
 resubscribeClientService :: AgentClient -> SMPTransportSession -> ServiceSub -> AM ServiceSubResult
 resubscribeClientService c tSess@(userId, srv, _) serviceSub =
-  tryAllErrors (withServiceClient c tSess $ \smp _ -> subscribeClientService_ c True tSess smp serviceSub) >>= \case
+  tryAllErrors (withServiceClient c tSess subscribeOrUpdate) >>= \case
     Right r@(ServiceSubResult e _) -> case e of
-      Just SSErrorServiceId {} -> unassocSubscribeQueues $> r
+      Just SSErrorServiceId {} ->
+        r <$ withStore' c (\db -> removeRcvServiceAssocs db userId srv)
       _ -> pure r
     Left e -> do
       atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
@@ -1737,11 +1738,21 @@ resubscribeClientService c tSess@(userId, srv, _) serviceSub =
         unassocSubscribeQueues
       throwE e
   where
+    subscribeOrUpdate smp connServiceId
+      | connServiceId == SMP.smpServiceId serviceSub =
+          subscribeClientService_ c True tSess smp serviceSub
+      | otherwise = do
+          let newServiceSub = SMP.ServiceSub connServiceId 0 mempty
+              sessId = sessionId $ thParams smp
+              r = serviceSubResult serviceSub newServiceSub
+          atomically $ whenM (activeClientSession c tSess sessId) $
+            SS.setActiveServiceSub tSess sessId newServiceSub $ currentSubs c
+          notifySub c $ SERVICE_UP srv r
+          pure r
     unassocSubscribeQueues = do
       qs <- withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
       void $ lift $ subscribeUserServerQueues c userId srv qs
 
--- TODO [certs rcv] update service in the database if it has different ID and re-associate queues, and send event
 subscribeClientService :: AgentClient -> Bool -> UserId -> SMPServer -> ServiceSub -> AM ServiceSubResult
 subscribeClientService c withEvent userId srv (ServiceSub _ n idsHash) =
   withServiceClient c tSess $ \smp smpServiceId -> do
