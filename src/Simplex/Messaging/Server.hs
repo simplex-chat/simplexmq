@@ -162,7 +162,7 @@ runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
-type AttachHTTP = Socket -> TLS.Context -> Maybe WSHandler -> IO ()
+type AttachHTTP = Socket -> TLS 'TServer -> Maybe WSHandler -> IO ()
 type WSHandler = WS 'TServer -> IO ()
 
 -- actions used in serverThread to reduce STM transaction scope
@@ -214,7 +214,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         (Just httpCreds, Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
-              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext wsHandler
+              Just (tls :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tls wsHandler
               _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}

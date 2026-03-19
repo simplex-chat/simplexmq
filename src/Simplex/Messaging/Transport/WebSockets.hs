@@ -7,7 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Simplex.Messaging.Transport.WebSockets (WS (..)) where
+module Simplex.Messaging.Transport.WebSockets (WS (..), acceptWSConnection) where
 
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
@@ -20,6 +20,7 @@ import Network.WebSockets.Stream (Stream)
 import qualified Network.WebSockets.Stream as S
 import Simplex.Messaging.Transport
   ( ALPN,
+    TLS (TLS, tlsContext, tlsPeerCert, tlsTransportConfig),
     Transport (..),
     TransportConfig (..),
     TransportError (..),
@@ -100,6 +101,15 @@ getWS cfg wsCertSent wsPeerCert cxt = withTlsUnique @WS @p cxt connectWS
       STClient -> sendClientRequest
     acceptClientRequest s = makePendingConnectionFromStream s websocketsOpts >>= acceptRequest
     sendClientRequest s = newClientConnection s "" "/" websocketsOpts []
+
+acceptWSConnection :: TLS 'TServer -> PendingConnection -> IO (WS 'TServer)
+acceptWSConnection tls pending = withTlsUnique @WS @'TServer cxt $ \wsUniq -> do
+  wsStream <- makeTLSContextStream cxt
+  wsConnection <- acceptRequest pending
+  wsALPN <- T.getNegotiatedProtocol cxt
+  pure WS {tlsUniq = wsUniq, wsALPN, wsStream, wsConnection, wsTransportConfig = tlsTransportConfig tls, wsCertSent = False, wsPeerCert = tlsPeerCert tls}
+  where
+    cxt = tlsContext tls
 
 makeTLSContextStream :: T.Context -> IO Stream
 makeTLSContextStream cxt =

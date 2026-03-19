@@ -32,12 +32,10 @@ import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import qualified Data.X509 as X
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
-import qualified Network.TLS as TLS
 import Network.Wai (Application, Request (..), responseLBS)
 import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
@@ -45,15 +43,13 @@ import qualified Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
 import qualified Network.Wai.Handler.WebSockets as WaiWS
-import Network.WebSockets (acceptRequest, defaultConnectionOptions, ConnectionOptions(..), SizeLimit(..), PendingConnection)
-import Network.WebSockets.Stream (Stream)
-import qualified Network.WebSockets.Stream as WSS
+import Network.WebSockets (defaultConnectionOptions, ConnectionOptions(..), SizeLimit(..), PendingConnection)
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server (AttachHTTP, WSHandler)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Transport (TransportConfig (..), smpBlockSize, simplexMQVersion)
-import Simplex.Messaging.Transport.WebSockets (WS (..))
+import Simplex.Messaging.Transport (TLS (..), smpBlockSize, simplexMQVersion)
+import Simplex.Messaging.Transport.WebSockets (WS (..), acceptWSConnection)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
@@ -95,16 +91,13 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
 attachStaticAndWS :: FilePath -> (AttachHTTP -> IO a) -> IO a
 attachStaticAndWS path action =
   WI.withII warpSettings $ \ii -> do
-    action $ \socket cxt wsHandler_ -> do
+    action $ \socket tls wsHandler_ -> do
       app <- case wsHandler_ of
-        Just wsHandler -> do
-          tlsUniq <- getTlsUnique cxt
-          wsALPN <- TLS.getNegotiatedProtocol cxt
-          let peerCert = X.CertificateChain []
-          WaiWS.websocketsOr wsOpts (handleWebSocket wsHandler tlsUniq wsALPN peerCert) <$> staticFiles path
+        Just wsHandler ->
+          WaiWS.websocketsOr wsOpts (acceptWSConnection tls >=> wsHandler) <$> staticFiles path
         Nothing -> staticFiles path
       addr <- getPeerName socket
-      withConnection addr cxt $ \(conn, transport) ->
+      withConnection addr (tlsContext tls) $ \(conn, transport) ->
         withTimeout ii conn $ \th ->
           WI.serveConnection conn ii th addr transport warpSettings app
   where
@@ -112,25 +105,6 @@ attachStaticAndWS path action =
       { connectionFramePayloadSizeLimit = SizeLimit $ fromIntegral smpBlockSize,
         connectionMessageDataSizeLimit = SizeLimit 65536
       }
-
-    handleWebSocket :: WSHandler -> ByteString -> Maybe ByteString -> X.CertificateChain -> PendingConnection -> IO ()
-    handleWebSocket wsHandler tlsUniq wsALPN peerCert pending = do
-      wsConn <- acceptRequest pending
-      dummyStream <- WSS.makeStream (pure Nothing) (\_ -> pure ())
-      let ws = WS
-            { tlsUniq,
-              wsALPN,
-              wsStream = dummyStream,
-              wsConnection = wsConn,
-              wsTransportConfig = TransportConfig {logTLSErrors = True, transportTimeout = Nothing},
-              wsCertSent = False,
-              wsPeerCert = peerCert
-            }
-      wsHandler ws
-
-    getTlsUnique :: TLS.Context -> IO ByteString
-    getTlsUnique cxt = TLS.getPeerFinished cxt >>= maybe (fail "TLS not finished") pure
-
     -- from warp-tls
     withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
     -- from warp
