@@ -5,8 +5,6 @@ services:
       POSTGRES_USER: smp
       POSTGRES_DB: smp_bench
       POSTGRES_HOST_AUTH_METHOD: trust
-    ports:
-      - "15432:5432"
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
       - pgdata:/var/lib/postgresql/data
@@ -15,6 +13,34 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+
+  bench:
+    build:
+      context: ..
+      dockerfile: bench/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BENCH_PG: "postgresql://smp@postgres/smp_bench"
+      BENCH_CLIENTS: "${BENCH_CLIENTS:-5000}"
+      BENCH_MINUTES: "${BENCH_MINUTES:-5}"
+    command:
+      - "--pg"
+      - "postgresql://smp@postgres/smp_bench"
+      - "--clients"
+      - "${BENCH_CLIENTS:-5000}"
+      - "--minutes"
+      - "${BENCH_MINUTES:-5}"
+      - "--timeseries"
+      - "/results/timeseries.csv"
+      - "+RTS"
+      - "-N"
+      - "-A16m"
+      - "-T"
+      - "-RTS"
+    volumes:
+      - ./results:/results
 
 volumes:
   pgdata:
