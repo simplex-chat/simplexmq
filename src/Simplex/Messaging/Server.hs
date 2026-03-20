@@ -733,7 +733,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       liftIO $ forever $ do
         threadDelay 300_000_000 -- 5 minutes
         rts <- getRTSStats
-        let GCDetails {gcdetails_live_bytes, gcdetails_mem_in_use_bytes} = gc rts
+        let GCDetails {gcdetails_live_bytes, gcdetails_mem_in_use_bytes, gcdetails_large_objects_bytes, gcdetails_compact_bytes, gcdetails_block_fragmentation_bytes} = gc rts
         clientCount <- IM.size <$> getServerClients srv
         smpQSubs <- M.size <$> getSubscribedClients (queueSubscribers subscribers)
         smpSSubs <- M.size <$> getSubscribedClients (serviceSubscribers subscribers)
@@ -750,12 +750,27 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         paPndQ <- M.size <$> readTVarIO pendingQueueSubs
         paWorkers <- M.size <$> readTVarIO smpSubWorkers
         lc <- loadedQueueCounts $ fromMsgStore ms
+        -- per-client metrics: total subscriptions and queue fill
+        clients <- getServerClients srv
+        let clientsList = IM.elems clients
+        totalSubs <- sum <$> mapM (\Client {subscriptions} -> M.size <$> readTVarIO subscriptions) clientsList
+        totalSndQ <- sum <$> mapM (\Client {sndQ} -> fromIntegral <$> atomically (lengthTBQueue sndQ)) clientsList
+        totalMsgQ <- sum <$> mapM (\Client {msgQ} -> fromIntegral <$> atomically (lengthTBQueue msgQ)) clientsList
+        totalEndThreads <- sum <$> mapM (\Client {endThreads} -> IM.size <$> readTVarIO endThreads) clientsList
         logInfo $
           "MEMORY"
             <> " rts_live=" <> tshow gcdetails_live_bytes
             <> " rts_heap=" <> tshow gcdetails_mem_in_use_bytes
+            <> " rts_max_live=" <> tshow (max_live_bytes rts)
+            <> " rts_large=" <> tshow gcdetails_large_objects_bytes
+            <> " rts_compact=" <> tshow gcdetails_compact_bytes
+            <> " rts_frag=" <> tshow gcdetails_block_fragmentation_bytes
             <> " rts_gc=" <> tshow (gcs rts)
             <> " clients=" <> tshow clientCount
+            <> " clientSubs=" <> tshow totalSubs
+            <> " clientSndQ=" <> tshow (totalSndQ :: Int)
+            <> " clientMsgQ=" <> tshow (totalMsgQ :: Int)
+            <> " clientThreads=" <> tshow totalEndThreads
             <> " smpQSubs=" <> tshow smpQSubs
             <> " smpSSubs=" <> tshow smpSSubs
             <> " ntfQSubs=" <> tshow ntfQSubs
