@@ -214,11 +214,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         (Just httpCreds, Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
-              Just (tls :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tls wsHandler
+              Just (tls :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tls (Just wsHandler)
               _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
-            wsHandler = Just $ \ws -> runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
+            wsHandler ws = runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
 
