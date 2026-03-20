@@ -42,6 +42,7 @@ import XFTPWebTests (xftpWebTests)
 import Fixtures
 import SMPAgentClient (testDB)
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.App
+import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
 #endif
@@ -149,7 +150,11 @@ main = do
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
           describe "XFTP agent" xftpAgentTests
-        describe "XFTP Web Client" xftpWebTests
+#if defined(dbPostgres)
+        describe "XFTP Web Client" $ xftpWebTests (dropAllSchemasExceptSystem testDBConnectInfo)
+#else
+        describe "XFTP Web Client" $ xftpWebTests (pure ())
+#endif
         describe "XRCP" remoteControlTests
         describe "Web" webTests
         describe "Server CLIs" cliTests
