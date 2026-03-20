@@ -50,7 +50,7 @@ import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAge
 import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Protocol (AEvent (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
-import XFTPCLI (recipientFiles, senderFiles)
+import XFTPCLI (recipientFiles, senderFiles, testBracket)
 import qualified Simplex.Messaging.Crypto.File as CF
 
 xftpWebDir :: FilePath
@@ -167,8 +167,8 @@ impAddr = "import * as Addr from './dist/protocol/address.js';"
 jsOut :: String -> String
 jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
 
-xftpWebTests :: Spec
-xftpWebTests = do
+xftpWebTests :: IO () -> Spec
+xftpWebTests dbCleanup = do
   distExists <- runIO $ doesDirectoryExist (xftpWebDir <> "/dist")
   if distExists
     then do
@@ -187,7 +187,7 @@ xftpWebTests = do
       tsClientTests
       tsDownloadTests
       tsAddressTests
-      tsIntegrationTests
+      tsIntegrationTests dbCleanup
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
@@ -2829,8 +2829,9 @@ tsAddressTests = describe "protocol/address" $ do
 
 -- ── integration ───────────────────────────────────────────────────
 
-tsIntegrationTests :: Spec
-tsIntegrationTests = describe "integration" $ do
+tsIntegrationTests :: IO () -> Spec
+tsIntegrationTests dbCleanup = describe "integration" $
+  around_ testBracket . after_ dbCleanup $ do
   it "web handshake with Ed25519 identity verification" $
     webHandshakeTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "web handshake with Ed448 identity verification" $

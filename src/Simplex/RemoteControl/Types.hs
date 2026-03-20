@@ -13,7 +13,6 @@ module Simplex.RemoteControl.Types
     RCPVersion,
     VersionRCP,
     VersionRangeRCP,
-    IpProbe (..),
     RCHostHello (..),
     RCCtrlHello (..),
     RCHostPairing (..),
@@ -140,16 +139,6 @@ currentRCPVersion = VersionRCP 1
 
 supportedRCPVRange :: VersionRangeRCP
 supportedRCPVRange = mkVersionRange (VersionRCP 1) currentRCPVersion
-
-data IpProbe = IpProbe
-  { versionRange :: VersionRangeRCP,
-    randomNonce :: ByteString
-  }
-  deriving (Show)
-
-instance Encoding IpProbe where
-  smpEncode IpProbe {versionRange, randomNonce} = smpEncode (versionRange, 'I', randomNonce)
-  smpP = IpProbe <$> (smpP <* "I") *> smpP
 
 -- * Session
 
