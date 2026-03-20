@@ -131,11 +131,13 @@ instance MsgStoreClass PostgresMsgStore where
             q.status, q.updated_at, q.link_id, q.rcv_service_id,
             m.msg_id, m.msg_ts, m.msg_quota, m.msg_ntf_flag, m.msg_body
           FROM msg_queues q
-          LEFT JOIN (
-              SELECT recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body,
-                ROW_NUMBER() OVER (PARTITION BY recipient_id ORDER BY message_id ASC) AS row_num
+          LEFT JOIN LATERAL (
+              SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
               FROM messages
-          ) m ON q.recipient_id = m.recipient_id AND m.row_num = 1
+              WHERE recipient_id = q.recipient_id
+              ORDER BY message_id ASC
+              LIMIT 1
+          ) m ON true
           WHERE q.rcv_service_id = ? AND q.deleted_at IS NULL;
         |]
         (Only serviceId)

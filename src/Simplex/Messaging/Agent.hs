@@ -1633,11 +1633,11 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
               Left e -> do
                 atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
                 if clientServiceError e
-                  then unassocQueues
+                  then False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs' db userId srv)
                   else pure True
             where
               unassocQueues :: AM Bool
-              unassocQueues = False <$ withStore' c (\db -> unassocUserServerRcvQueueSubs' db userId srv)
+              unassocQueues = False <$ withStore' c (\db -> removeRcvServiceAssocs db userId srv)
           _ -> pure False
     subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
     subscribeUserServer maxPending currPending ((userId, srv), hasService) = do

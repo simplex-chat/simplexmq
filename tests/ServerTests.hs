@@ -717,7 +717,7 @@ testServiceDeliverSubscribe =
         signSend_ sh aServicePK Nothing ("11", serviceId, SUBS 1 idsHash)
         [mId3] <-
           fmap catMaybes $
-            receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
+            receiveInAnyOrder -- race between SOKS, MSG and ALLS (sndQ and msgQ are separate threads)
               sh
               [ \case
                   Resp "11" serviceId' (SOKS n idsHash') -> do
@@ -731,9 +731,11 @@ testServiceDeliverSubscribe =
                     rId'' `shouldBe` rId
                     dec mId3 msg3 `shouldBe` Right "hello 3"
                     pure $ Just $ Just mId3
+                  _ -> pure Nothing,
+                \case
+                  Resp "" NoEntity ALLS -> pure $ Just Nothing
                   _ -> pure Nothing
               ]
-        Resp "" NoEntity ALLS <- tGet1 sh
         Resp "12" _ OK <- signSendRecv sh rKey ("12", rId, ACK mId3)
         Resp "14" _ OK <- signSendRecv h sKey ("14", sId, _SEND "hello 4")
         Resp "" _ (Msg mId4 msg4) <- tGet1 sh
@@ -811,7 +813,7 @@ testServiceUpgradeAndDowngrade =
         signSend_ sh aServicePK Nothing ("14", serviceId, SUBS 3 idsHash)
         [(rKey3_1, rId3_1, mId3_1), (rKey3_2, rId3_2, mId3_2)] <-
           fmap catMaybes $
-            receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
+            receiveInAnyOrder -- race between SOKS, MSG and ALLS (sndQ and msgQ are separate threads)
               sh
               [ \case
                   Resp "14" serviceId' (SOKS n idsHash') -> do
@@ -829,9 +831,11 @@ testServiceUpgradeAndDowngrade =
                   Resp "" rId'' (Msg mId3 msg3) | rId'' == rId2 -> do
                     dec2 mId3 msg3 `shouldBe` Right "hello 3.2"
                     pure $ Just $ Just (rKey2, rId2, mId3)
+                  _ -> pure Nothing,
+                \case
+                  Resp "" NoEntity ALLS -> pure $ Just Nothing
                   _ -> pure Nothing
               ]
-        Resp "" NoEntity ALLS <- tGet1 sh
         Resp "15" _ OK <- signSendRecv sh rKey3_1 ("15", rId3_1, ACK mId3_1)
         Resp "16" _ OK <- signSendRecv sh rKey3_2 ("16", rId3_2, ACK mId3_2)
         pure ()
