@@ -575,7 +575,7 @@ checkConfirmedSndQueueExists_ db SndQueue {server, sndId} =
     DB.query
       db
       ( "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
-#if defined(dpPostgres)
+#if defined(dbPostgres)
           <> " FOR UPDATE"
 #endif
       )

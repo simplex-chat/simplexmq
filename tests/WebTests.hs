@@ -35,6 +35,9 @@ webTests = describe "Web module" $ do
       section_ "s" (Just "Y") "aaa<x-s>${s}</x-s>bbb" `shouldBe` "aaaYbbb"
     it "removes Nothing section preserving surroundings" $
       section_ "s" Nothing "aaa<x-s>gone</x-s>bbb" `shouldBe` "aaabbb"
+    it "removes multiple Nothing sections" $
+      section_ "s" Nothing "<x-s>first</x-s>mid<x-s>second</x-s>end"
+        `shouldBe` "midend"
 
   describe "render" $ do
     it "applies multiple substitutions" $
