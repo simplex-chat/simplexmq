@@ -37,6 +37,7 @@ import XFTPCLI
 import XFTPServerTests (xftpServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
+import SMPWebTests (smpWebTests)
 
 #if defined(dbPostgres)
 import Fixtures
@@ -157,6 +158,7 @@ main = do
 #else
         describe "XFTP Web Client" $ xftpWebTests (pure ())
 #endif
+        describe "SMP Web Client" smpWebTests
         describe "XRCP" remoteControlTests
         describe "Web" webTests
         describe "Server CLIs" cliTests
