@@ -391,13 +391,13 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_ntf_services_queues_count gauge\n\
       \simplex_smp_ntf_services_queues_count " <> mshow (ntfServiceQueuesCount entityCounts) <> "\n# ntfServiceQueuesCount\n\
       \\n\
-      \# HELP simplex_smp_rcv_services_sub_msg The count of subscribed service queues with messages.\n\
-      \# TYPE simplex_smp_rcv_services_sub_msg counter\n\
-      \simplex_smp_rcv_services_sub_msg " <> mshow _rcvServicesSubMsg <> "\n# rcvServicesSubMsg\n\
+      \# HELP simplex_smp_rcv_services_sub_msg_count The count of subscribed service queues with messages.\n\
+      \# TYPE simplex_smp_rcv_services_sub_msg_count counter\n\
+      \simplex_smp_rcv_services_sub_msg_count " <> mshow _rcvServicesSubMsg <> "\n# rcvServicesSubMsg\n\
       \\n\
-      \# HELP simplex_smp_rcv_services_sub_duplicate The count of duplicate subscribed service queues.\n\
-      \# TYPE simplex_smp_rcv_services_sub_duplicate counter\n\
-      \simplex_smp_rcv_services_sub_duplicate " <> mshow _rcvServicesSubDuplicate <> "\n# rcvServicesSubDuplicate\n\
+      \# HELP simplex_smp_rcv_services_sub_duplicate_count The count of duplicate subscribed service queues.\n\
+      \# TYPE simplex_smp_rcv_services_sub_duplicate_count counter\n\
+      \simplex_smp_rcv_services_sub_duplicate_count " <> mshow _rcvServicesSubDuplicate <> "\n# rcvServicesSubDuplicate\n\
       \\n"
         <> showServices _rcvServices "rcv" "receiving"
         <> showServices _ntfServices "ntf" "notification"
