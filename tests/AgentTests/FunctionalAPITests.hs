@@ -494,6 +494,7 @@ functionalAPITests ps = do
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
     it "should clear pending service sub when service unavailable" $ testServiceUnavailableClearsPending ps
     it "should recover when service ID changes on reconnect" $ testServiceIdChangeOnReconnect ps
+    it "should handle service unavailable on startup" $ testServiceUnavailableOnStartup ps
     it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
@@ -3996,6 +3997,42 @@ testServiceIdChangeOnReconnect ps@(_, ASType qs _) = do
         ]
       ("", "", UP _ [_]) <- nGet user
       pure ()
+
+-- | Test that subscribeAllConnections handles service unavailable on startup.
+-- Agent has service credentials but server doesn't support services (askClientCert = False).
+testServiceUnavailableOnStartup :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceUnavailableOnStartup (t, msType) = do
+  let srv = initAgentServersClientService
+      noSrv = initAgentServers
+  -- Phase 1: Establish connection with service
+  (sId, uId) <- withAgentClientsServers2 (agentCfg, srv) (agentCfg, noSrv) $ \service user ->
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+  -- Phase 2: Server without service support, new service agent
+  let cfgNoService = updateCfg (cfgMS msType) $ \(cfg' :: ServerConfig s) ->
+        let ServerConfig {transportConfig} = cfg'
+         in cfg' {transportConfig = transportConfig {askClientCert = False}} :: ServerConfig s
+  -- Phase 2: Server without service support, service agent gets NO_SERVICE
+  withAgentClientsServers2 (agentCfg, srv) (agentCfg, noSrv) $ \service user ->
+    withSmpServerConfigOn t cfgNoService testPort $ \_ -> runRight $ do
+      subscribeAllConnections service False Nothing
+      ("", "", ERR (BROKER _ NO_SERVICE)) <- get service
+      ("", "", UP _ [_]) <- nGet service
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 4 service uId user sId
+  -- Phase 3: Normal server - cert was deleted, new cert generated,
+  -- no service sub in DB yet, queues subscribed individually
+  withAgentClientsServers2 (agentCfg, srv) (agentCfg, noSrv) $ \service user ->
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
+      subscribeAllConnections service False Nothing
+      ("", "", UP _ [_]) <- nGet service
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 6 service uId user sId
 
 testMigrateConnectionsToService :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testMigrateConnectionsToService ps = do
