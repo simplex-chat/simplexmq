@@ -1710,7 +1710,7 @@ processRcvServiceAssocs :: SMPQueue q => AgentClient -> [q] -> AM' ()
 processRcvServiceAssocs _ [] = pure ()
 processRcvServiceAssocs c serviceQs =
   withStore' c (`setRcvServiceAssocs` serviceQs) `catchAllErrors'` \e -> do
-    logError $ "processClientNotices error: " <> tshow e
+    logError $ "processRcvServiceAssocs error: " <> tshow e
     notifySub' c "" $ ERR e
 
 processClientNotices :: AgentClient -> SMPTransportSession -> [(RcvQueueSub, Maybe ClientNotice)] -> AM' ()
