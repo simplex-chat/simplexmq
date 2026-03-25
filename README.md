@@ -1,321 +1,255 @@
-# SimpleXMQ
+<p align="center">
+  <img src=".github/assets/smp-web-banner.png" alt="SimpleGo SMP-Web" width="1500" height="230">
+</p>
 
-[![GitHub build](https://github.com/simplex-chat/simplexmq/actions/workflows/build.yml/badge.svg)](https://github.com/simplex-chat/simplexmq/actions/workflows/build.yml)
-[![GitHub release](https://img.shields.io/github/v/release/simplex-chat/simplexmq)](https://github.com/simplex-chat/simplexmq/releases)
+<h1 align="center">SimpleGo SMP-Web Experiment</h1>
 
-📢 SimpleXMQ v1 is released - with many security, privacy and efficiency improvements, new functionality - see [release notes](https://github.com/simplex-chat/simplexmq/releases/tag/v1.0.0).
+<p align="center">
+  <strong>Browser-native encrypted support chat using the SimpleX Messaging Protocol.</strong><br>
+  No app install. No registration. No user IDs. End-to-end encrypted from the first message.
+</p>
 
-**Please note**: v1 is not backwards compatible, but it has the version negotiation built into all protocol layers for forwards compatibility of this version and backwards compatibility of the future versions, that will be backwards compatible for at least two versions back.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/version-0.1.0--experiment-orange.svg" alt="Version"></a>
+  <a href="#upstream"><img src="https://img.shields.io/badge/upstream-simplexmq-lightgrey.svg" alt="Upstream"></a>
+  <a href="https://github.com/saschadaemgen/SimpleGo"><img src="https://img.shields.io/badge/parent-SimpleGo-green.svg" alt="SimpleGo"></a>
+  <a href="docs/PROTOCOL.md"><img src="https://img.shields.io/badge/docs-protocol-blue.svg" alt="Protocol"></a>
+</p>
 
-If you have a server deployed please deploy a new server to a new host and retire the previous version once it is no longer used.
+---
 
-## Message broker for unidirectional (simplex) queues
+Experimental fork of [SimpleXMQ](https://github.com/simplex-chat/simplexmq) by [SimpleX Chat](https://simplex.chat/). Building a web-based encrypted support messenger for the [SimpleGo](https://github.com/saschadaemgen/SimpleGo) project website.
 
-SimpleXMQ is a message broker for managing message queues and sending messages over public network. It consists of SMP server, SMP client library and SMP agent that implement [SMP protocol](./protocol/simplex-messaging.md) for client-server communication and [SMP agent protocol](./protocol/agent-protocol.md) to manage duplex connections via simplex queues on multiple SMP servers.
+Based on the `ep/smp-web-spike` branch by [@epoberezkin](https://github.com/epoberezkin) (SimpleX founder), which introduces browser-native SMP protocol support via WebSocket.
 
-SMP protocol is inspired by [Redis serialization protocol](https://redis.io/topics/protocol), but it is much simpler - it currently has only 10 client commands and 8 server responses.
+This is a sub-project of [SimpleGo](https://github.com/saschadaemgen/SimpleGo) - the world's first native C implementation of the SimpleX Messaging Protocol for encrypted communication on dedicated hardware.
 
-SimpleXMQ is implemented in Haskell - it benefits from robust software transactional memory (STM) and concurrency primitives that Haskell provides.
+---
 
-## SimpleXMQ roadmap
+## What we're building
 
-- SimpleX service protocol and application template - to enable users building services and chat bots that work over SimpleX protocol stack. The first such service will be a notification service for a mobile app.
-- SMP queue redundancy and rotation in SMP agent connections.
-- SMP agents synchronization to share connections and messages between multiple agents (it would allow using multiple devices for [simplex-chat](https://github.com/simplex-chat/simplex-chat)).
+A support chat that lives directly on the SimpleGo website. Visitors open a chat panel in the browser and talk to our support team through the SimpleX protocol - the same protocol that powers SimpleGo's hardware encryption stack.
 
-## Components
-
-### SMP server
-
-[SMP server](./apps/smp-server/Main.hs) can be run on any Linux distribution, including low power/low memory devices. OpenSSL library is required for initialization.
-
-To initialize the server use `smp-server init -n <fqdn>` (or `smp-server init --ip <ip>` for IP based address) command - it will generate keys and certificates for TLS transport. The fingerprint of offline certificate is used as part of the server address to protect client/server connection against man-in-the-middle attacks: `smp://<fingerprint>@<hostname>[:5223]`.
-
-SMP server uses in-memory persistence with an optional append-only log of created queues that allows to re-start the server without losing the connections. This log is compacted on every server restart, permanently removing suspended and removed queues.
-
-To enable store log, initialize server using `smp-server -l` command, or modify `smp-server.ini` created during initialization (uncomment `enable: on` option in the store log section). Use `smp-server --help` for other usage tips.
-
-Starting from version 2.3.0, when store log is enabled, the server would also enable saving undelivered messages on exit and restoring them on start. This can be disabled via a separate setting `restore_messages` in `smp-server.ini` file. Saving messages would only work if the server is stopped with SIGINT signal (keyboard interrupt), if it is stopped with SIGTERM signal the messages would not be saved.
-
-> **Please note:** On initialization SMP server creates a chain of two certificates: a self-signed CA certificate ("offline") and a server certificate used for TLS handshake ("online"). **You should store CA certificate private key securely and delete it from the server. If server TLS credential is compromised this key can be used to sign a new one, keeping the same server identity and established connections.** CA private key location by default is `/etc/opt/simplex/ca.key`.
-
-SMP server implements [SMP protocol](./protocol/simplex-messaging.md).
-
-#### Running SMP server on MacOS
-
-SMP server requires OpenSSL library for initialization. On MacOS OpenSSL library may be replaced with LibreSSL, which doesn't support required algorithms. Before initializing SMP server verify you have OpenSSL installed:
-
-```sh
-openssl version
+```
+Website visitor (browser)           SMP Relay Server            Support team
+        |                                 |                          |
+        |--- WebSocket (wss://443) ------>|                          |
+        |    E2E encrypted message        |--- SMP queue relay ----->|
+        |                                 |                          |  (SimpleX App)
+        |<-- WebSocket (wss://443) -------|<-- SMP queue relay ------|
+        |    E2E encrypted reply          |                          |
 ```
 
-If it says "LibreSSL", please install original OpenSSL:
+The relay server sees only encrypted blobs in anonymous queues. No user IDs, no metadata, no way to link sender and receiver.
 
-```sh
-brew update
-brew install openssl
-echo 'PATH="/opt/homebrew/opt/openssl@3/bin:$PATH"' >> ~/.zprofile # or follow whatever instructions brew suggests
-. ~/.zprofile # or restart your terminal to start a new session
+---
+
+## Why this approach
+
+| Traditional support chat | SimpleX web messenger |
+|:-------------------------|:----------------------|
+| User creates account | No account needed |
+| Chat provider reads messages | End-to-end encrypted, nobody can read |
+| Provider stores chat history | History only on user's device |
+| Single provider dependency | Self-hosted relay, no lock-in |
+| User tracked across sessions | No user identifiers of any kind |
+
+We originally planned to use the SimpleX Chat CLI as a WebSocket server with a Node.js bridge in between. Then we discovered the `ep/smp-web-spike` branch where the SimpleX team is building browser-native SMP protocol support. This eliminates the middleware entirely - the browser talks directly to the SMP relay.
+
+---
+
+## Architecture
+
+```
++---------------------------------------------------------------+
+|                      BROWSER CLIENT                           |
+|          Chat UI  /  Message Store  /  Key Storage            |
++---------------------------------------------------------------+
+|                     SMP-WEB LIBRARY                           |
+|    WebSocket Transport  /  SMP Commands  /  E2E Encryption    |
++---------------------------------------------------------------+
+|                  SHARED INFRASTRUCTURE                        |
+|   Binary Encoding  /  Crypto (X25519, NaCl)  /  Handshake    |
+|              (from xftp-web, production tested)               |
++---------------------------------------------------------------+
+|                      SMP RELAY SERVER                         |
+|    Queue Management  /  WebSocket + TLS on port 443           |
++---------------------------------------------------------------+
+|                      SIMPLEX APP                              |
+|         Support team (Desktop / Mobile / SimpleGo HW)         |
++---------------------------------------------------------------+
 ```
 
-Now `openssl version` should be saying "OpenSSL". You can now run `smp-server init` to initialize your SMP server.
+### Multi-user support
 
-### SMP client library
+Each website visitor connects via a permanent SimpleX contact address and receives their own isolated queue pair. The support team sees each visitor as a separate contact. 10, 50, or 100 concurrent conversations - the SMP server handles queue isolation natively.
 
-[SMP client](./src/Simplex/Messaging/Client.hs) is a Haskell library to connect to SMP servers that allows to:
+---
 
-- execute commands with a functional API.
-- receive messages and other notifications via STM queue.
-- automatically send keep-alive commands.
+## What exists vs. what we build
 
-### SMP agent
+### Done (from upstream spike + xftp-web)
 
-[SMP agent library](./src/Simplex/Messaging/Agent.hs) can be used to run SMP agent as part of another application and to communicate with the agent via STM queues, without serializing and parsing commands and responses.
+| Component | Source | Description |
+|:----------|:-------|:------------|
+| SMP server WebSocket support | PR #1738 | Browser WebSocket and native TLS on same port via SNI |
+| Binary encoding/decoding | xftp-web | Full SMP wire format in TypeScript |
+| Crypto stack | xftp-web | X25519 DH, NaCl secretbox, SHA-256, identity verification |
+| HTTP/2 transport + handshake | xftp-web | Server connection with retry and reconnect |
+| LGET/LNK commands | smp-web spike | Link retrieval for connection setup |
+| Transmission framing | xftp-web | Block encoding/decoding with session auth |
 
-Haskell type [ACommand](./src/Simplex/Messaging/Agent/Protocol.hs) represents SMP agent protocol to communicate via STM queues.
+### To do (our work)
 
-See [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI for the example of integrating SMP agent into another application.
+| Component | Task IDs | Description |
+|:----------|:---------|:------------|
+| WebSocket transport client | WS-1, WS-2, WS-3 | Browser-side WebSocket client for SMP protocol |
+| SMP commands | CMD-1 to CMD-5 | NEW, SUB, SEND, MSG, ACK, KEY, DEL |
+| Connection flow | CONN-1 to CONN-4 | Contact address parsing, queue pair setup, state machine |
+| E2E encryption | E2E-1 to E2E-3 | NaCl box MVP, key storage, later Double Ratchet upgrade |
+| Chat UI | UI-1 to UI-5 | Nose-bar panel, message bubbles, mobile layout |
+| Deployment | OPS-1 to OPS-3 | SMP server, TLS, contact address, monitoring |
 
-[SMP agent executable](./apps/smp-agent/Main.hs) can be used to run a standalone SMP agent process that implements plaintext [SMP agent protocol](./protocol/agent-protocol.md) via TCP port 5224, so it can be used via telnet. It can be deployed in private networks to share access to the connections between multiple applications and services.
+Full task breakdown with technical details: [docs/PROTOCOL.md](docs/PROTOCOL.md)
 
-## Using SMP server and SMP agent
+---
 
-You can either run your own SMP server locally or deploy using [Linode StackScript](https://cloud.linode.com/stackscripts/748014), or try local SMP agent with the deployed servers:
+## Season-based development
 
-`smp://u2dS9sG8nMNURyZwqASV4yROM28Er0luVTx5X1CsMrU=@smp4.simplex.im`
+We develop in seasons - each with a clear goal, defined scope, and a protocol document recording successes, failures, and learnings.
 
-`smp://hpq7_4gGJiilmz5Rf-CswuU5kZGkm_zOIooSw6yALRg=@smp5.simplex.im`
+| Season | Focus | Status |
+|:-------|:------|:-------|
+| **S1** | Planning and documentation | Current |
+| **S2** | WebSocket transport client | Upcoming |
+| **S3** | SMP commands | Planned |
+| **S4** | Connection flow (browser to SimpleX app) | Planned |
+| **S5** | End-to-end encryption | Planned |
+| **S6** | Chat UI | Planned |
+| **S7** | SimpleGo website integration | Planned |
+| **S8** | Production hardening | Planned |
 
-`smp://PQUV2eL0t7OStZOoAsPEV2QYWt4-xilbakvGUGOItUo=@smp6.simplex.im`
+**Critical path:** S1 - S2 - S3 - S4 - S7 - S8  
+**Parallel track:** S5 (encryption) and S6 (UI) can run alongside S4
 
-It's the easiest to try SMP agent via a prototype [simplex-chat](https://github.com/simplex-chat/simplex-chat) terminal UI.
+Full season plan: [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md)
 
-## Deploy SMP/XFTP servers on Linux
+---
 
-You can run your SMP/XFTP server as a Linux process, optionally using a service manager for booting and restarts.
+## Repository structure
 
-Notice that `smp-server` and `xftp-server` requires `openssl` as run-time dependency (it is used to generate server certificates during initialization). Install it with your packet manager:
-
-```sh
-# For Ubuntu
-apt update && apt install openssl
+```
+simplexmq-web-experiment/
++-- smp-web/                        # SMP browser client (spike + our work)
+|   +-- src/
+|       +-- index.ts                # Re-exports encoding primitives
+|       +-- protocol.ts             # SMP transmission encode/decode, LGET/LNK
++-- xftp-web/                       # Shared infrastructure (upstream)
+|   +-- src/
+|       +-- client.ts               # HTTP/2 transport, handshake, retry
+|       +-- protocol/               # Encoding, transmission, handshake
+|       +-- crypto/                 # X25519, NaCl, SHA-256, identity
++-- docs/
+|   +-- PROTOCOL.md                 # Main technical protocol document
+|   +-- seasons/
+|       +-- SEASON-PLAN.md          # Season overview and workflow
+|       +-- SEASON-01-planning.md   # Season 1 protocol (this phase)
++-- src/Simplex/Messaging/          # Haskell SMP server (upstream reference)
 ```
 
-### Install binaries
+---
 
-#### Using Docker
+## Getting started
 
-On Linux, you can deploy smp and xftp server using Docker. This will download image from [Docker Hub](https://hub.docker.com/r/simplexchat).
+**Clone and switch to the working branch:**
 
-1. Create directories for persistent Docker configuration:
-
-   ```sh
-   mkdir -p $HOME/simplex/{xftp,smp}/{config,logs} && mkdir -p $HOME/simplex/xftp/files
-   ```
-
-2. Run your Docker container.
-
-   - `smp-server`
-
-     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
-     ```sh
-     docker run -d \
-         -e "ADDR=your_ip_or_domain" \
-         -e "PASS=password" \
-         -p 5223:5223 \
-         -v $HOME/simplex/smp/config:/etc/opt/simplex:z \
-         -v $HOME/simplex/smp/logs:/var/opt/simplex:z \
-         simplexchat/smp-server:latest
-     ```
-
-   - `xftp-server`
-
-     You must change **your_ip_or_domain** and **maximum_storage**.
-     ```sh
-     docker run -d \
-         -e "ADDR=your_ip_or_domain" \
-         -e "QUOTA=maximum_storage" \
-         -p 443:443 \
-         -v $HOME/simplex/xftp/config:/etc/opt/simplex-xftp:z \
-         -v $HOME/simplex/xftp/logs:/var/opt/simplex-xftp:z \
-         -v $HOME/simplex/xftp/files:/srv/xftp:z \
-         simplexchat/xftp-server:latest
-     ```
-
-#### Using installation script
-
-**Please note** that currently, only Ubuntu distribution is supported.
-
-You can install and setup servers automatically using our script:
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/simplex-chat/simplexmq/stable/install.sh -o simplex-server-install.sh &&\
-if echo '53fcdb4ceab324316e2c4cda7e84dbbb344f32550a65975a7895425e5a1be757 simplex-server-install.sh' | sha256sum -c; then
-  chmod +x ./simplex-server-install.sh
-  ./simplex-server-install.sh
-  rm ./simplex-server-install.sh
-else
-  echo "SHA-256 checksum is incorrect!"
-  rm ./simplex-server-install.sh
-fi
+```powershell
+git clone https://github.com/saschadaemgen/simplexmq-web-experiment.git
+cd simplexmq-web-experiment
+git checkout feat/simplego-support-chat
 ```
 
-### Build from source
+**Explore the spike:**
 
-#### Using Docker
-
-> **Please note:** to build the app use source code from [stable branch](https://github.com/simplex-chat/simplexmq/tree/stable).
-
-On Linux, you can build smp server using Docker.
-
-1. Build your images:
-
-   ```sh
-   git clone https://github.com/simplex-chat/simplexmq
-   cd simplexmq
-   git checkout stable
-   DOCKER_BUILDKIT=1 docker build -t local/smp-server --build-arg APP="smp-server" --build-arg APP_PORT="5223" . # For xmp-server
-   DOCKER_BUILDKIT=1 docker build -t local/xftp-server --build-arg APP="xftp-server" --build-arg APP_PORT="443" . # For xftp-server
-   ```
-
-2. Create directories for persistent Docker configuration:
-
-   ```sh
-   mkdir -p $HOME/simplex/{xftp,smp}/{config,logs} && mkdir -p $HOME/simplex/xftp/files
-   ```
-
-3. Run your Docker container.
-
-   - `smp-server`
-
-     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
-     ```sh
-     docker run -d \
-         -e "ADDR=your_ip_or_domain" \
-         -e "PASS=password" \
-         -p 5223:5223 \
-         -v $HOME/simplex/smp/config:/etc/opt/simplex:z \
-         -v $HOME/simplex/smp/logs:/var/opt/simplex:z \
-         simplexchat/smp-server:latest
-     ```
-
-   - `xftp-server`
-
-     You must change **your_ip_or_domain** and **maximum_storage**.
-     ```sh
-     docker run -d \
-         -e "ADDR=your_ip_or_domain" \
-         -e "QUOTA=maximum_storage" \
-         -p 443:443 \
-         -v $HOME/simplex/xftp/config:/etc/opt/simplex-xftp:z \
-         -v $HOME/simplex/xftp/logs:/var/opt/simplex-xftp:z \
-         -v $HOME/simplex/xftp/files:/srv/xftp:z \
-         simplexchat/xftp-server:latest
-     ```
-
-#### Using your distribution
-
-1. Install dependencies and build tools (`GHC`, `cabal` and dev libs):
-
-   ```sh
-   # On Ubuntu. Depending on your distribution, use your package manager to determine package names.
-   sudo apt-get update && apt-get install -y build-essential curl libffi-dev libffi7 libgmp3-dev libgmp10 libncurses-dev libncurses5 libtinfo5 pkg-config zlib1g-dev libnuma-dev libssl-dev
-   export BOOTSTRAP_HASKELL_GHC_VERSION=9.6.3
-   export BOOTSTRAP_HASKELL_CABAL_VERSION=3.10.3.0
-   curl --proto '=https' --tlsv1.2 -sSf https://get-ghcup.haskell.org | BOOTSTRAP_HASKELL_NONINTERACTIVE=1 sh
-   ghcup set ghc "${BOOTSTRAP_HASKELL_GHC_VERSION}"
-   ghcup set cabal "${BOOTSTRAP_HASKELL_CABAL_VERSION}"
-   source ~/.ghcup/env
-   ```
-
-2. Build the project:
-
-   ```sh
-   git clone https://github.com/simplex-chat/simplexmq
-   cd simplexmq
-   git checkout stable
-   cabal update
-   cabal build exe:smp-server exe:xftp-server
-   ```
-
-3. List compiled binaries:
-
-   `smp-server`
-   ```sh
-   cabal list-bin exe:smp-server
-   ```
-
-   `xftp-server`
-   ```sh
-   cabal list-bin exe:xftp-server
-   ```
-
-- Initialize SMP server with `smp-server init [-l] -n <fqdn>` or `smp-server init [-l] --ip <ip>` - depending on how you initialize it, either FQDN or IP will be used for server's address.
-
-- Run `smp-server start` to start SMP server, or you can configure a service manager to run it as a service.
-
-- Optionally, `smp-server` can be setup for having an onion address in `tor` network. See: [`scripts/tor`](./scripts/tor/). In this case, the server address can have both public and onion hostname pointing to the same server, to allow two people connect when only one of them is using Tor. The server address would be: `smp://<fingerprint>@<public_hostname>,<onion_hostname>`
-
-See [this section](#smp-server) for more information. Run `smp-server -h` and `smp-server init -h` for explanation of commands and options.
-
-[<img alt="Linode" src="./img/linode.svg" align="right" width="200">](https://cloud.linode.com/stackscripts/748014)
-
-## Deploy SMP server on Linode
-
-\* You can use free credit Linode offers when [creating a new account](https://www.linode.com/) to deploy an SMP server.
-
-Deployment on Linode is performed via StackScripts, which serve as recipes for Linode instances, also called Linodes. To deploy SMP server on Linode:
-
-- Create a Linode account or login with an already existing one.
-- Open [SMP server StackScript](https://cloud.linode.com/stackscripts/748014) and click "Deploy New Linode".
-- You can optionally configure the following parameters:
-  - SMP Server store log flag for queue persistence on server restart, recommended.
-  - [Linode API token](https://www.linode.com/docs/guides/getting-started-with-the-linode-api#get-an-access-token) to attach server address etc. as tags to Linode and to add A record to your 2nd level domain (e.g. `example.com` [domain should be created](https://cloud.linode.com/domains/create) in your account prior to deployment). The API token access scopes:
-    - read/write for "linodes"
-    - read/write for "domains"
-  - Domain name to use instead of Linode IP address, e.g. `smp1.example.com`.
-- Choose the region and plan, Shared CPU Nanode with 1Gb is sufficient.
-- Provide ssh key to be able to connect to your Linode via ssh. If you haven't provided a Linode API token this step is required to login to your Linode and get the server's fingerprint either from the welcome message or from the file `/etc/opt/simplex/fingerprint` after server starts. See [Linode's guide on ssh](https://www.linode.com/docs/guides/use-public-key-authentication-with-ssh/) .
-- Deploy your Linode. After it starts wait for SMP server to start and for tags to appear (if a Linode API token was provided). It may take up to 5 minutes depending on the connection speed on the Linode. Connecting Linode IP address to provided domain name may take some additional time.
-- Get `address` and `fingerprint` either from Linode tags (click on a tag and copy it's value from the browser search panel) or via ssh.
-- Great, your own SMP server is ready! If you provided FQDN use `smp://<fingerprint>@<fqdn>` as SMP server address in the client, otherwise use `smp://<fingerprint>@<ip_address>`.
-
-Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
-
-[<img alt="DigitalOcean" src="/img/digitalocean.png" align="right" width="300">](https://marketplace.digitalocean.com/apps/simplex-server)
-
-## Deploy SMP server on DigitalOcean
-
-> 🚧 DigitalOcean snapshot is currently not up to date, it will soon be updated 🏗️
-
-\* When creating a DigitalOcean account you can use [this link](https://try.digitalocean.com/freetrialoffer/) to get free credit. (You would still be required either to provide your credit card details or make a confirmation pre-payment with PayPal)
-
-To deploy SMP server use [SimpleX Server 1-click app](https://marketplace.digitalocean.com/apps/simplex-server) from DigitalOcean marketplace:
-
-- Create a DigitalOcean account or login with an already existing one.
-- Click 'Create SimpleX server Droplet' button.
-- Choose the region and plan according to your requirements (Basic plan should be sufficient).
-- Finalize Droplet creation.
-- Open "Console" on your Droplet management page to get SMP server fingerprint - either from the welcome message or from `/etc/opt/simplex/fingerprint`. Alternatively you can manually SSH to created Droplet, see [DigitalOcean instruction](https://docs.digitalocean.com/products/droplets/how-to/connect-with-ssh/).
-- Great, your own SMP server is ready! Use `smp://<fingerprint>@<ip_address>` as SMP server address in the client.
-
-Please submit an [issue](https://github.com/simplex-chat/simplexmq/issues) if any problems occur.
-
-> **Please note:** SMP server uses server address as a Common Name for server certificate generated during initialization. If you would like your server address to be FQDN instead of IP address, you can log in to your Droplet and run the commands below to re-initialize the server. Alternatively you can use [Linode StackScript](https://cloud.linode.com/stackscripts/748014) which allows this parameterization.
-
-```sh
-smp-server delete
-smp-server init [-l] -n <fqdn>
+```powershell
+cat smp-web/src/protocol.ts         # SMP protocol in TypeScript
+cat smp-web/src/index.ts            # Shared encoding primitives
+cat xftp-web/src/client.ts          # Transport reference implementation
 ```
 
-## SMP server design
+---
 
-![SMP server design](./design/server.svg)
+## Upstream
 
-## SMP agent design
+This repository is a fork of [simplex-chat/simplexmq](https://github.com/simplex-chat/simplexmq) (AGPL-3.0).
 
-![SMP agent design](./design/agent2.svg)
+| | |
+|:--|:--|
+| Upstream repository | [simplex-chat/simplexmq](https://github.com/simplex-chat/simplexmq) |
+| Base branch | `ep/smp-web-spike` |
+| Key upstream PR | [#1738 - WebSocket on SMP server port](https://github.com/simplex-chat/simplexmq/pull/1738) |
+| Upstream license | AGPL-3.0 |
+| SimpleX website | [simplex.chat](https://simplex.chat/) |
+
+We intend to contribute our WebSocket transport client and SMP command implementations back to the upstream project.
+
+---
+
+## Status
+
+Early experimental phase. Season 1 (planning and documentation) is in progress. No functional chat code yet - first working code expected in Season 2.
+
+| Component | Status |
+|:----------|:-------|
+| Technical protocol document | Done |
+| Repository fork and branch setup | Done |
+| Season plan and workflow | Done |
+| WebSocket transport client | Season 2 |
+| SMP command implementation | Season 3 |
+| Browser-to-app connection | Season 4 |
+| End-to-end encryption | Season 5 |
+| Chat UI | Season 6 |
+| Website integration | Season 7 |
+| Production deployment | Season 8 |
+
+---
+
+## Documentation
+
+| Resource | Link |
+|:---------|:-----|
+| Technical protocol | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
+| Season plan | [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md) |
+| SimpleGo main project | [github.com/saschadaemgen/SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
+| SimpleGo documentation | [wiki.simplego.dev](https://wiki.simplego.dev) |
+| SimpleX Chat | [simplex.chat](https://simplex.chat/) |
+| SimpleX protocol specification | [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md) |
+
+---
 
 ## License
 
-[AGPL v3](./LICENSE)
+| Component | License |
+|:----------|:--------|
+| This repository (fork) | [AGPL-3.0](LICENSE) |
+| Upstream SimpleXMQ | [AGPL-3.0](https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE) |
+| SimpleGo parent project | [AGPL-3.0](https://github.com/saschadaemgen/SimpleGo/blob/main/LICENSE) |
+
+This project is a derivative work of SimpleXMQ by SimpleX Chat Ltd, licensed under AGPL-3.0. All modifications and additions are released under the same license. Source code for all server-side components is available in this repository as required by AGPL-3.0.
+
+## Acknowledgments
+
+[SimpleX Chat](https://simplex.chat/) (SimpleX Messaging Protocol and simplexmq reference implementation) - [Evgeny Poberezkin](https://github.com/epoberezkin) (smp-web spike and WebSocket server support) - [@noble/hashes](https://github.com/paulmillr/noble-hashes) (SHA-256, SHA-512 for browser crypto)
+
+---
+
+<p align="center">
+  <i>SimpleGo SMP-Web Experiment is a sub-project of <a href="https://github.com/saschadaemgen/SimpleGo">SimpleGo</a> by IT and More Systems, Recklinghausen, Germany.</i><br>
+  <i>Built on top of <a href="https://github.com/simplex-chat/simplexmq">SimpleXMQ</a> (AGPL-3.0) by <a href="https://simplex.chat/">SimpleX Chat</a>.</i><br>
+  <i>Not affiliated with or endorsed by SimpleX Chat Ltd.</i>
+</p>
+
+<p align="center">
+  <strong>Encrypted support chat - no app, no account, no compromises.</strong>
+</p>
