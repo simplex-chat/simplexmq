@@ -5,13 +5,13 @@
 <h1 align="center">GoChat</h1>
 
 <p align="center">
-  <strong>Encrypted web support messenger using the SimpleX Messaging Protocol.</strong><br>
+  <strong>The world's first browser-native encrypted support messenger using the SimpleX Messaging Protocol.</strong><br>
   No app install. No registration. No user IDs. End-to-end encrypted from the first message.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License"></a>
-  <a href="#status"><img src="https://img.shields.io/badge/version-0.1.0--experiment-orange.svg" alt="Version"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/version-0.0.1--alpha-orange.svg" alt="Version"></a>
   <a href="#upstream"><img src="https://img.shields.io/badge/upstream-simplexmq-lightgrey.svg" alt="Upstream"></a>
   <a href="https://github.com/saschadaemgen/SimpleGo"><img src="https://img.shields.io/badge/parent-SimpleGo-green.svg" alt="SimpleGo"></a>
   <a href="docs/PROTOCOL.md"><img src="https://img.shields.io/badge/docs-protocol-blue.svg" alt="Protocol"></a>
@@ -22,6 +22,8 @@
 GoChat is an experimental browser-native support messenger built on top of [SimpleXMQ](https://github.com/simplex-chat/simplexmq) by [SimpleX Chat](https://simplex.chat/). It is a sub-project of [SimpleGo](https://github.com/saschadaemgen/SimpleGo) - the world's first native C implementation of the SimpleX Messaging Protocol for encrypted communication on dedicated hardware.
 
 Based on the `ep/smp-web-spike` branch by [@epoberezkin](https://github.com/epoberezkin) (SimpleX founder), which introduces browser-native SMP protocol support via WebSocket.
+
+**No browser-native SMP client exists anywhere** - not from SimpleX, not from the community, not from any third party. No open-source support chat tool (Chatwoot, Rocket.Chat, Crisp, Intercom) offers E2E encryption on the customer-facing widget. GoChat aims to be first on both counts.
 
 ---
 
@@ -52,8 +54,28 @@ The relay server sees only encrypted blobs in anonymous queues. No user IDs, no 
 | Provider stores chat history | History only on user's device |
 | Single provider dependency | Self-hosted relay, no lock-in |
 | User tracked across sessions | No user identifiers of any kind |
+| No existing tool has widget E2E | **First E2E encrypted support widget** |
 
-We originally planned to use the SimpleX Chat CLI as a WebSocket server with a Node.js bridge in between. Then we discovered the `ep/smp-web-spike` branch where the SimpleX team is building browser-native SMP protocol support. This eliminates the middleware entirely - the browser talks directly to the SMP relay.
+---
+
+## Security model
+
+GoChat is transparent about both its strengths and the inherent limitations of browser-based encryption.
+
+**Strengths:**
+- E2E encryption using audited libraries (@noble/curves - 6 security audits, used by Proton Mail and MetaMask)
+- X25519/Ed25519 natively supported in all major browsers since 2025
+- Crypto operations isolated in a dedicated Web Worker
+- Strict Content Security Policy (no eval, no inline scripts)
+- Subresource Integrity on all external scripts
+- Minimal dependencies to reduce supply chain attack surface
+
+**Honest limitations:**
+- The server delivers the code - unlike native apps, a compromised web server could serve modified code. We mitigate with reproducible builds and SRI hashes.
+- XSS is the existential threat to browser E2E encryption. The Matrix "Nebuchadnezzar" vulnerabilities (2022) demonstrated this attack class in practice.
+- SMP's self-signed certificate model doesn't work in browsers. We use Let's Encrypt for TLS while SMP's own DH encryption layer provides security independent of the CA chain.
+
+Full security analysis: [docs/RESEARCH.md](docs/RESEARCH.md)
 
 ---
 
@@ -62,14 +84,16 @@ We originally planned to use the SimpleX Chat CLI as a WebSocket server with a N
 ```
 +---------------------------------------------------------------+
 |                      BROWSER CLIENT                           |
-|          Chat UI  /  Message Store  /  Key Storage            |
+|    Chat UI  /  Message Store  /  Encrypted Key Storage        |
++---------------------------------------------------------------+
+|                      WEB WORKER                               |
+|    Crypto Operations (isolated from main thread XSS)          |
++---------------------------------------------------------------+
+|                      SHARED WORKER                            |
+|    WebSocket Pool  /  Reconnection  /  Message Queue          |
 +---------------------------------------------------------------+
 |                      GoChat LIBRARY                           |
-|    WebSocket Transport  /  SMP Commands  /  E2E Encryption    |
-+---------------------------------------------------------------+
-|                  SHARED INFRASTRUCTURE                        |
-|   Binary Encoding  /  Crypto (X25519, NaCl)  /  Handshake    |
-|              (from xftp-web, production tested)               |
+|    SMP Commands  /  E2E Encryption  /  @noble/curves          |
 +---------------------------------------------------------------+
 |                      SMP RELAY SERVER                         |
 |    Queue Management  /  WebSocket + TLS on port 443           |
@@ -102,14 +126,15 @@ Each website visitor connects via a permanent SimpleX contact address and receiv
 
 | Component | Task IDs | Description |
 |:----------|:---------|:------------|
-| WebSocket transport client | WS-1, WS-2, WS-3 | Browser-side WebSocket client for SMP protocol |
+| WebSocket transport client | WS-1 to WS-4 | Browser-side WebSocket client + SharedWorker pool |
 | SMP commands | CMD-1 to CMD-5 | NEW, SUB, SEND, MSG, ACK, KEY, DEL |
 | Connection flow | CONN-1 to CONN-4 | Contact address parsing, queue pair setup, state machine |
-| E2E encryption | E2E-1 to E2E-3 | NaCl box MVP, key storage, later Double Ratchet upgrade |
-| Chat UI | UI-1 to UI-5 | Nose-bar panel, message bubbles, mobile layout |
+| E2E encryption | E2E-1 to E2E-3 | NaCl box MVP via @noble/ciphers, key storage, later Double Ratchet |
+| Security hardening | SEC-1 to SEC-5 | CSP, SRI, Web Worker isolation, TLS strategy |
+| Chat UI | UI-1 to UI-8 | Intercom-level panel, animations, encryption badge, accessibility |
 | Deployment | OPS-1 to OPS-3 | SMP server, TLS, contact address, monitoring |
 
-Full task breakdown with technical details: [docs/PROTOCOL.md](docs/PROTOCOL.md)
+Full task breakdown: [docs/PROTOCOL.md](docs/PROTOCOL.md)
 
 ---
 
@@ -119,14 +144,14 @@ We develop in seasons - each with a clear goal, defined scope, and a protocol do
 
 | Season | Focus | Status |
 |:-------|:------|:-------|
-| **S1** | Planning and documentation | Current |
+| **S1** | Planning, documentation, and research | Current |
 | **S2** | WebSocket transport client | Upcoming |
 | **S3** | SMP commands | Planned |
 | **S4** | Connection flow (browser to SimpleX app) | Planned |
-| **S5** | End-to-end encryption | Planned |
-| **S6** | Chat UI | Planned |
+| **S5** | End-to-end encryption (@noble/curves) | Planned |
+| **S6** | Chat UI (Intercom-level design) | Planned |
 | **S7** | SimpleGo website integration | Planned |
-| **S8** | Production hardening | Planned |
+| **S8** | Production hardening + security review | Planned |
 
 **Critical path:** S1 - S2 - S3 - S4 - S7 - S8  
 **Parallel track:** S5 (encryption) and S6 (UI) can run alongside S4
@@ -152,6 +177,7 @@ GoChat/
 +-- protocol/                       # SMP protocol specification (upstream reference)
 +-- docs/
 |   +-- PROTOCOL.md                 # Main technical protocol document
+|   +-- RESEARCH.md                 # Browser crypto, security, and design research
 |   +-- seasons/
 |       +-- SEASON-PLAN.md          # Season overview and workflow
 |       +-- SEASON-01-planning.md   # Season 1 learnings
@@ -209,20 +235,21 @@ We intend to contribute our WebSocket transport client and SMP command implement
 
 ## Status
 
-Early experimental phase. Season 1 (planning and documentation) is in progress. No functional chat code yet - first working code expected in Season 2.
+Season 1 (planning, documentation, and research) is nearing completion. No functional chat code yet - first working code expected in Season 2.
 
 | Component | Status |
 |:----------|:-------|
 | Technical protocol document | Done |
 | Repository fork and branch setup | Done |
 | Season plan and workflow | Done |
+| Deep research (security, design, crypto) | Done |
 | WebSocket transport client | Season 2 |
 | SMP command implementation | Season 3 |
 | Browser-to-app connection | Season 4 |
 | End-to-end encryption | Season 5 |
-| Chat UI | Season 6 |
+| Chat UI (Intercom-level) | Season 6 |
 | Website integration | Season 7 |
-| Production deployment | Season 8 |
+| Production deployment + security review | Season 8 |
 
 ---
 
@@ -231,6 +258,7 @@ Early experimental phase. Season 1 (planning and documentation) is in progress. 
 | Resource | Link |
 |:---------|:-----|
 | Technical protocol | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
+| Research findings | [docs/RESEARCH.md](docs/RESEARCH.md) |
 | Season plan | [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md) |
 | SimpleGo main project | [github.com/saschadaemgen/SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
 | SimpleGo documentation | [wiki.simplego.dev](https://wiki.simplego.dev) |
@@ -256,9 +284,7 @@ type(scope): description
 | `refactor` | Code restructuring without behavior change |
 | `test` | Adding or updating tests |
 
-Examples: `feat(transport): add WebSocket client`, `fix(crypto): key exchange handshake`, `docs(seasons): add season 2 protocol`
-
-Each season produces a protocol document in `docs/seasons/` recording all successes, failures, and learnings so the development history remains traceable through the source code.
+Commits are made as granular as possible - each with its own descriptive title and professional commit message. Multiple files share a commit only when they are logically inseparable. Each season's protocol document lists all commits with hashes and descriptions.
 
 ---
 
@@ -274,7 +300,7 @@ This project is a derivative work of SimpleXMQ by SimpleX Chat Ltd, licensed und
 
 ## Acknowledgments
 
-[SimpleX Chat](https://simplex.chat/) (SimpleX Messaging Protocol and simplexmq reference implementation) - [Evgeny Poberezkin](https://github.com/epoberezkin) (smp-web spike and WebSocket server support) - [@noble/hashes](https://github.com/paulmillr/noble-hashes) (SHA-256, SHA-512 for browser crypto)
+[SimpleX Chat](https://simplex.chat/) (SimpleX Messaging Protocol and simplexmq reference implementation) - [Evgeny Poberezkin](https://github.com/epoberezkin) (smp-web spike and WebSocket server support) - [@noble/hashes](https://github.com/paulmillr/noble-hashes) (SHA-256, SHA-512 for browser crypto) - [@noble/curves](https://github.com/paulmillr/noble-curves) (Ed25519, X25519 for key exchange) - [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) (XSalsa20-Poly1305, AES-256-GCM for encryption)
 
 ---
 
