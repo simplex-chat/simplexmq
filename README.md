@@ -1,11 +1,11 @@
 <p align="center">
-  <img src=".github/assets/smp-web-banner.png" alt="SimpleGo SMP-Web" width="1500" height="230">
+  <img src=".github/assets/gochat_banner.png" alt="GoChat" width="1500" height="230">
 </p>
 
-<h1 align="center">SimpleGo SMP-Web Experiment</h1>
+<h1 align="center">GoChat</h1>
 
 <p align="center">
-  <strong>Browser-native encrypted support chat using the SimpleX Messaging Protocol.</strong><br>
+  <strong>Encrypted web support messenger using the SimpleX Messaging Protocol.</strong><br>
   No app install. No registration. No user IDs. End-to-end encrypted from the first message.
 </p>
 
@@ -19,11 +19,9 @@
 
 ---
 
-Experimental fork of [SimpleXMQ](https://github.com/simplex-chat/simplexmq) by [SimpleX Chat](https://simplex.chat/). Building a web-based encrypted support messenger for the [SimpleGo](https://github.com/saschadaemgen/SimpleGo) project website.
+GoChat is an experimental browser-native support messenger built on top of [SimpleXMQ](https://github.com/simplex-chat/simplexmq) by [SimpleX Chat](https://simplex.chat/). It is a sub-project of [SimpleGo](https://github.com/saschadaemgen/SimpleGo) - the world's first native C implementation of the SimpleX Messaging Protocol for encrypted communication on dedicated hardware.
 
 Based on the `ep/smp-web-spike` branch by [@epoberezkin](https://github.com/epoberezkin) (SimpleX founder), which introduces browser-native SMP protocol support via WebSocket.
-
-This is a sub-project of [SimpleGo](https://github.com/saschadaemgen/SimpleGo) - the world's first native C implementation of the SimpleX Messaging Protocol for encrypted communication on dedicated hardware.
 
 ---
 
@@ -47,8 +45,8 @@ The relay server sees only encrypted blobs in anonymous queues. No user IDs, no 
 
 ## Why this approach
 
-| Traditional support chat | SimpleX web messenger |
-|:-------------------------|:----------------------|
+| Traditional support chat | GoChat web messenger |
+|:-------------------------|:---------------------|
 | User creates account | No account needed |
 | Chat provider reads messages | End-to-end encrypted, nobody can read |
 | Provider stores chat history | History only on user's device |
@@ -66,7 +64,7 @@ We originally planned to use the SimpleX Chat CLI as a WebSocket server with a N
 |                      BROWSER CLIENT                           |
 |          Chat UI  /  Message Store  /  Key Storage            |
 +---------------------------------------------------------------+
-|                     SMP-WEB LIBRARY                           |
+|                      GoChat LIBRARY                           |
 |    WebSocket Transport  /  SMP Commands  /  E2E Encryption    |
 +---------------------------------------------------------------+
 |                  SHARED INFRASTRUCTURE                        |
@@ -117,7 +115,7 @@ Full task breakdown with technical details: [docs/PROTOCOL.md](docs/PROTOCOL.md)
 
 ## Season-based development
 
-We develop in seasons - each with a clear goal, defined scope, and a protocol document recording successes, failures, and learnings.
+We develop in seasons - each with a clear goal, defined scope, and a protocol document recording successes, failures, and learnings. Code is written by Claude Code, directed and reviewed by Sascha, planned by Prinzessin Mausi.
 
 | Season | Focus | Status |
 |:-------|:------|:-------|
@@ -140,7 +138,8 @@ Full season plan: [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md)
 ## Repository structure
 
 ```
-simplexmq-web-experiment/
+GoChat/
++-- .github/assets/                 # Banner and images
 +-- smp-web/                        # SMP browser client (spike + our work)
 |   +-- src/
 |       +-- index.ts                # Re-exports encoding primitives
@@ -150,12 +149,14 @@ simplexmq-web-experiment/
 |       +-- client.ts               # HTTP/2 transport, handshake, retry
 |       +-- protocol/               # Encoding, transmission, handshake
 |       +-- crypto/                 # X25519, NaCl, SHA-256, identity
++-- protocol/                       # SMP protocol specification (upstream reference)
 +-- docs/
 |   +-- PROTOCOL.md                 # Main technical protocol document
 |   +-- seasons/
 |       +-- SEASON-PLAN.md          # Season overview and workflow
-|       +-- SEASON-01-planning.md   # Season 1 protocol (this phase)
-+-- src/Simplex/Messaging/          # Haskell SMP server (upstream reference)
+|       +-- SEASON-01-planning.md   # Season 1 learnings
++-- LICENSE                         # AGPL-3.0
++-- README.md
 ```
 
 ---
@@ -165,8 +166,8 @@ simplexmq-web-experiment/
 **Clone and switch to the working branch:**
 
 ```powershell
-git clone https://github.com/saschadaemgen/simplexmq-web-experiment.git
-cd simplexmq-web-experiment
+git clone https://github.com/saschadaemgen/GoChat.git
+cd GoChat
 git checkout feat/simplego-support-chat
 ```
 
@@ -193,6 +194,16 @@ This repository is a fork of [simplex-chat/simplexmq](https://github.com/simplex
 | SimpleX website | [simplex.chat](https://simplex.chat/) |
 
 We intend to contribute our WebSocket transport client and SMP command implementations back to the upstream project.
+
+---
+
+## SimpleGo ecosystem
+
+| Project | Description | Repository |
+|:--------|:------------|:-----------|
+| **SimpleGo** | Native C implementation of SimpleX protocol on ESP32-S3 hardware | [SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
+| **GoRelay** | Self-hosted SimpleX relay server infrastructure | GoRelay |
+| **GoChat** | Browser-native encrypted web support messenger (this project) | [GoChat](https://github.com/saschadaemgen/GoChat) |
 
 ---
 
@@ -228,11 +239,34 @@ Early experimental phase. Season 1 (planning and documentation) is in progress. 
 
 ---
 
+## Commit convention
+
+All commits follow [Conventional Commits](https://www.conventionalcommits.org/) format:
+
+```
+type(scope): description
+```
+
+| Type | Usage |
+|:-----|:------|
+| `feat` | New feature or functionality |
+| `fix` | Bug fix |
+| `docs` | Documentation changes |
+| `chore` | Maintenance, cleanup, dependencies |
+| `refactor` | Code restructuring without behavior change |
+| `test` | Adding or updating tests |
+
+Examples: `feat(transport): add WebSocket client`, `fix(crypto): key exchange handshake`, `docs(seasons): add season 2 protocol`
+
+Each season produces a protocol document in `docs/seasons/` recording all successes, failures, and learnings so the development history remains traceable through the source code.
+
+---
+
 ## License
 
 | Component | License |
 |:----------|:--------|
-| This repository (fork) | [AGPL-3.0](LICENSE) |
+| GoChat (this repository) | [AGPL-3.0](LICENSE) |
 | Upstream SimpleXMQ | [AGPL-3.0](https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE) |
 | SimpleGo parent project | [AGPL-3.0](https://github.com/saschadaemgen/SimpleGo/blob/main/LICENSE) |
 
@@ -245,11 +279,11 @@ This project is a derivative work of SimpleXMQ by SimpleX Chat Ltd, licensed und
 ---
 
 <p align="center">
-  <i>SimpleGo SMP-Web Experiment is a sub-project of <a href="https://github.com/saschadaemgen/SimpleGo">SimpleGo</a> by IT and More Systems, Recklinghausen, Germany.</i><br>
+  <i>GoChat is a sub-project of <a href="https://github.com/saschadaemgen/SimpleGo">SimpleGo</a> by IT and More Systems, Recklinghausen, Germany.</i><br>
   <i>Built on top of <a href="https://github.com/simplex-chat/simplexmq">SimpleXMQ</a> (AGPL-3.0) by <a href="https://simplex.chat/">SimpleX Chat</a>.</i><br>
   <i>Not affiliated with or endorsed by SimpleX Chat Ltd.</i>
 </p>
 
 <p align="center">
-  <strong>Encrypted support chat - no app, no account, no compromises.</strong>
+  <strong>GoChat - Encrypted support chat. No app, no account, no compromises.</strong>
 </p>
