@@ -5,7 +5,7 @@
 <h1 align="center">GoChat</h1>
 
 <p align="center">
-  <strong>The world's first browser-native encrypted support messenger using the SimpleX Messaging Protocol.</strong><br>
+  <strong>Browser-native encrypted messenger for the SimpleX ecosystem.</strong><br>
   No app install. No registration. No user IDs. End-to-end encrypted from the first message.
 </p>
 
@@ -19,42 +19,162 @@
 
 ---
 
-GoChat is an experimental browser-native support messenger built on top of [SimpleXMQ](https://github.com/simplex-chat/simplexmq) by [SimpleX Chat](https://simplex.chat/). It is a sub-project of [SimpleGo](https://github.com/saschadaemgen/SimpleGo) - the world's first native C implementation of the SimpleX Messaging Protocol for encrypted communication on dedicated hardware.
+GoChat is a browser-native encrypted messenger built on top of [SimpleXMQ](https://github.com/simplex-chat/simplexmq) by [SimpleX Chat](https://simplex.chat/). It brings the SimpleX Messaging Protocol directly into the browser, allowing website visitors to communicate through end-to-end encrypted channels without installing any application.
+
+GoChat is part of the [SimpleGo ecosystem](#simplego-ecosystem) and extends the SimpleX network with an additional high-security communication layer for environments that demand post-quantum cryptography, zero-knowledge relay infrastructure, and dedicated hardware endpoints. This is not a replacement of the SimpleX protocol - it is a complementary extension that builds on top of it and remains fully compatible with all SimpleX clients and infrastructure.
+
+No dedicated mobile application is planned or needed. The SimpleX Chat apps for Android, iOS, and desktop already provide excellent clients for the SMP protocol. GoChat focuses exclusively on bringing encrypted messaging into the browser - the one platform SimpleX does not yet cover natively.
 
 Based on the `ep/smp-web-spike` branch by [@epoberezkin](https://github.com/epoberezkin) (SimpleX founder), which introduces browser-native SMP protocol support via WebSocket.
 
-**No browser-native SMP client exists anywhere** - not from SimpleX, not from the community, not from any third party. No open-source support chat tool (Chatwoot, Rocket.Chat, Crisp, Intercom) offers E2E encryption on the customer-facing widget. GoChat aims to be first on both counts.
+---
+
+## Two communication profiles
+
+GoChat supports two communication profiles, selectable per connection. Both profiles use the same chat interface - the difference is in the transport layer, encryption strength, and relay infrastructure.
+
+### SMP Profile - everyday encrypted communication
+
+The standard profile for daily use. Speaks the SimpleX Messaging Protocol over WebSocket, fully compatible with all SimpleX clients and any SMP relay server - including SimpleX's own public infrastructure, self-hosted servers, or [GoRelay](https://github.com/saschadaemgen/GoRelay).
+
+This is the profile for the broad range of everyday communication needs:
+
+- **Product support** - customers chat with support teams directly from the website
+- **Online shops** - shop operators manage customer inquiries, order questions, and returns through encrypted channels. Combined with a [SimpleGo hardware terminal](#simplego-ecosystem), shop staff can handle messages from a dedicated countertop device
+- **Communities and projects** - open-source projects, local groups, or hobby communities offer a private contact channel on their website
+- **Families and personal use** - a private chat widget on a family website or personal blog, reachable without accounts or phone numbers
+- **Small businesses** - freelancers, agencies, and consultancies provide clients with a secure way to discuss projects and share sensitive documents
+- **Education** - schools, tutors, and training providers offer private communication channels for students and parents
+
+On the receiving end, the support team or operator uses the regular SimpleX Chat app on their phone, desktop, or a SimpleGo hardware terminal. No special software required.
+
+```
+Website visitor (browser)          Any SMP Server           Receiving end
+        |                               |                        |
+        |--- WSS + SMP --------------->|                        |
+        |    E2E encrypted             |--- SMP relay --------->|
+        |                               |                        |  SimpleX App (phone/desktop)
+        |<-- WSS + SMP ----------------|<-- SMP relay ----------|  or SimpleGo terminal
+        |    E2E encrypted             |                        |
+```
+
+### GRP Profile - high-security environments
+
+An additional security layer for environments where standard encryption is not sufficient. Uses the GoRelay Protocol (GRP) over WebSocket, exclusively through [GoRelay](https://github.com/saschadaemgen/GoRelay) infrastructure. The GRP profile represents a significant security upgrade over standard SMP, adding multiple defense layers while maintaining interoperability with the SimpleX network through GoRelay's dual-protocol bridge.
+
+This profile is designed for sensitive and high-security communication needs:
+
+- **Journalism and source protection** - reporters and sources communicate without metadata traces, even if relay servers are seized
+- **Whistleblower channels** - organizations provide anonymous, quantum-resistant reporting channels on their website
+- **Government and public authorities** - secure citizen communication channels that meet elevated data protection requirements
+- **Healthcare and medical data** - patient communication and sensor data transmission compliant with strict medical data regulations
+- **Critical infrastructure** - energy, water treatment, and industrial control systems communicate through channels resistant to state-level adversaries
+- **Legal and financial services** - attorney-client and financial advisor communication with the strongest available encryption guarantees
+- **Defense and security organizations** - secure field communication where post-quantum protection and zero-knowledge infrastructure are operational requirements
+- **NGOs and human rights** - organizations operating in hostile environments where communication security is a matter of personal safety
+
+On the receiving end, a [SimpleGo hardware device](#simplego-ecosystem) provides a dedicated endpoint with no smartphone OS, no baseband processor, and hardware-backed key storage.
+
+```
+Website visitor (browser)          GoRelay Server           Receiving end
+        |                               |                        |
+        |--- WSS + GRP --------------->|                        |
+        |    Noise + Post-quantum      |--- GRP relay --------->|
+        |    Two-hop routing           |    Cover traffic       |  SimpleGo hardware
+        |    Cover traffic             |                        |  (ESP32-S3)
+        |<-- WSS + GRP ----------------|<-- GRP relay ----------|
+        |                               |                        |
+```
 
 ---
 
-## What we're building
+## What makes GRP different from SMP
 
-A support chat that lives directly on the SimpleGo website. Visitors open a chat panel in the browser and talk to our support team through the SimpleX protocol - the same protocol that powers SimpleGo's hardware encryption stack.
+The GRP profile is not simply "SMP but stronger." It is a fundamentally different transport architecture designed from the ground up for environments where the adversary has significant resources - intelligence agencies, state-sponsored attackers, or well-funded criminal organizations.
+
+### Noise Protocol instead of TLS
+
+Where SMP uses TLS 1.3 for transport encryption, GRP uses the [Noise Protocol Framework](https://noiseprotocol.org/) - the same cryptographic framework that powers WireGuard, WhatsApp's client-server encryption, and Slack's Nebula overlay network.
+
+| Property | SMP (TLS 1.3) | GRP (Noise IK) |
+|:---------|:--------------|:---------------|
+| Handshake size | 1-4 KB | 96-144 bytes |
+| Cipher negotiation | Yes (dozens of options) | No (fixed suite, cannot downgrade) |
+| Certificate authority | Required (X.509 chain) | Not needed (key IS identity) |
+| Identity hiding | Server visible via SNI | Both parties encrypted |
+| Deniability | No (signatures in handshake) | Yes (DH only, no signatures) |
+| Specification | 160+ pages (TLS RFC + dependencies) | 35 pages (complete spec) |
+
+The elimination of cipher negotiation is the most significant security improvement. TLS has spent two decades fighting downgrade attacks (POODLE, FREAK, Logjam, ROBOT) caused by its negotiation mechanism. Noise cannot have downgrade attacks because there is nothing to downgrade. One fixed cipher suite per protocol version: `Noise_IK_25519_ChaChaPoly_BLAKE2s`.
+
+### Mandatory post-quantum cryptography
+
+GRP mandates hybrid key exchange combining X25519 (classical) with ML-KEM-768 (post-quantum, FIPS 203). This is not optional and cannot be disabled. If a quantum computer capable of breaking Curve25519 is ever built, GRP messages remain secure because the ML-KEM-768 component protects independently.
+
+SMP currently does not include post-quantum key exchange at the transport level (SimpleGo's client-side sntrup761 is a separate layer). GRP adds this as a mandatory transport requirement.
+
+### Two-hop relay routing
+
+Every GRP message passes through two relay servers. The first server sees the sender's IP address but not the destination. The second server sees the destination but not the sender. No single server in the chain knows both ends of the communication.
 
 ```
-Website visitor (browser)           SMP Relay Server            Support team
-        |                                 |                          |
-        |--- WebSocket (wss://443) ------>|                          |
-        |    E2E encrypted message        |--- SMP queue relay ----->|
-        |                                 |                          |  (SimpleX App)
-        |<-- WebSocket (wss://443) -------|<-- SMP queue relay ------|
-        |    E2E encrypted reply          |                          |
+Sender --> Relay A (knows sender IP, not destination) --> Relay B (knows destination, not sender) --> Recipient
 ```
 
-The relay server sees only encrypted blobs in anonymous queues. No user IDs, no metadata, no way to link sender and receiver.
+This provides equivalent protection to three-hop onion routing (Tor) with lower latency, while being significantly harder to defeat through traffic analysis than a single-relay model.
+
+### Server-generated cover traffic
+
+GoRelay generates Poisson-distributed dummy messages that are cryptographically indistinguishable from real messages. An observer monitoring server traffic cannot determine which 16 KB blocks contain real messages and which are cover traffic. This defeats traffic analysis attacks that correlate message timing between sender and recipient.
+
+### Zero-knowledge relay
+
+GoRelay stores and forwards encrypted blobs without the ability to read, modify, or correlate message content. This is not a policy choice - it is a structural property of the code. There is no administrator backdoor, no debug mode that reveals plaintext, no logging facility that captures content, because the code to do these things does not exist. Per-message AES-256-GCM encryption with cryptographic deletion on acknowledgment ensures that even forensic recovery of deleted data produces only ciphertext with a destroyed key.
+
+### Future: Triple Shield architecture
+
+GoRelay's roadmap includes a Triple Shield layer that adds three additional defense mechanisms on top of the existing encryption stack:
+
+**Zero-Knowledge Queue Authentication** - clients prove queue ownership without revealing their public key to the server. The server learns exactly one bit: "this client has the right key" or not. Unlike standard signature verification, ZKP authentication prevents a compromised server from correlating queue access patterns by public key.
+
+**Shamir's Secret Sharing** - each encrypted message is split into N shares distributed across multiple independent servers (default: 2-of-3). Any single share contains mathematically zero information about the original message. A server seizure by law enforcement, a hack, or a coerced operator gains nothing without simultaneously compromising a second server. This is not computational security - it is information-theoretic security that holds even against unlimited computing power.
+
+**Steganographic Transport** - GRP traffic is wrapped in protocols that mimic legitimate web traffic (HTTPS browsing, WebSocket applications, CDN content). Deep packet inspection systems cannot distinguish GoRelay traffic from normal website activity. This uses the Pluggable Transport framework originally developed for Tor, with support for multiple disguise methods including domain fronting, WebSocket tunneling, and obfs4.
+
+When all three components are active, defeating a GoChat-to-SimpleGo communication requires simultaneously:
+
+1. Breaking end-to-end Double Ratchet encryption
+2. Breaking per-queue NaCl cryptobox encryption
+3. Breaking server-to-recipient NaCl encryption
+4. Breaking Noise + ML-KEM-768 transport on multiple hops
+5. Breaking per-message storage AES-256-GCM encryption
+6. Identifying the traffic despite steganographic wrapping
+7. Compromising at least 2 of 3 servers for Shamir reconstruction
+8. Linking queue access to a user despite zero-knowledge authentication
+
+All eight must succeed simultaneously. Failure at any single point leaves the attacker with nothing.
 
 ---
 
-## Why this approach
+## Profile comparison
 
-| Traditional support chat | GoChat web messenger |
-|:-------------------------|:---------------------|
-| User creates account | No account needed |
-| Chat provider reads messages | End-to-end encrypted, nobody can read |
-| Provider stores chat history | History only on user's device |
-| Single provider dependency | Self-hosted relay, no lock-in |
-| User tracked across sessions | No user identifiers of any kind |
-| No existing tool has widget E2E | **First E2E encrypted support widget** |
+| Feature | SMP Profile | GRP Profile |
+|:--------|:-----------|:------------|
+| Protocol | SimpleX Messaging Protocol | GoRelay Protocol |
+| Transport | WebSocket + TLS | WebSocket + Noise |
+| Key exchange | X25519 + Double Ratchet | X25519 + ML-KEM-768 (post-quantum) |
+| Relay servers | Any SMP server | GoRelay only |
+| Routing | Direct | Mandatory two-hop |
+| Cover traffic | No | Yes (Poisson-distributed) |
+| Cipher negotiation | TLS cipher suites | None (fixed, no downgrade possible) |
+| Identity hiding | Server visible via SNI | Both parties encrypted |
+| Server seizure resistance | Standard encryption | Shamir split across servers (future) |
+| Traffic disguise | None | Steganographic transport (future) |
+| Queue auth | Ed25519 signature | Zero-knowledge proof (future) |
+| Compatible with | All SimpleX clients | SimpleGo hardware |
+| Use case | Everyday communication | High-security environments |
+
+Both profiles can coexist on the same website. A visitor chooses the appropriate profile when starting a conversation, or the website operator configures which profile is available.
 
 ---
 
@@ -73,7 +193,9 @@ GoChat is transparent about both its strengths and the inherent limitations of b
 **Honest limitations:**
 - The server delivers the code - unlike native apps, a compromised web server could serve modified code. We mitigate with reproducible builds and SRI hashes.
 - XSS is the existential threat to browser E2E encryption. The Matrix "Nebuchadnezzar" vulnerabilities (2022) demonstrated this attack class in practice.
-- SMP's self-signed certificate model doesn't work in browsers. We use Let's Encrypt for TLS while SMP's own DH encryption layer provides security independent of the CA chain.
+- SMP's self-signed certificate model doesn't work in browsers. We use standard CA certificates for TLS while SMP's own DH encryption layer provides security independent of the CA chain.
+
+For the highest security requirements, the GRP profile combined with a SimpleGo hardware endpoint eliminates the browser trust boundary entirely on the receiving side - the hardware device runs auditable firmware with no server-delivered code, no smartphone OS, and hardware-backed key storage with optional eFuse protection.
 
 Full security analysis: [docs/RESEARCH.md](docs/RESEARCH.md)
 
@@ -92,20 +214,29 @@ Full security analysis: [docs/RESEARCH.md](docs/RESEARCH.md)
 |                      SHARED WORKER                            |
 |    WebSocket Pool  /  Reconnection  /  Message Queue          |
 +---------------------------------------------------------------+
-|                      GoChat LIBRARY                           |
-|    SMP Commands  /  E2E Encryption  /  @noble/curves          |
-+---------------------------------------------------------------+
-|                      SMP RELAY SERVER                         |
-|    Queue Management  /  WebSocket + TLS on port 443           |
-+---------------------------------------------------------------+
-|                      SIMPLEX APP                              |
-|         Support team (Desktop / Mobile / SimpleGo HW)         |
-+---------------------------------------------------------------+
+|                    TRANSPORT LAYER                             |
+|    SMP Profile: SMP over WSS     GRP Profile: GRP over WSS   |
+|    (@noble/curves, NaCl)         (Noise, ML-KEM-768)          |
++-------------------------------+-------------------------------+
+|        ANY SMP SERVER         |         GORELAY SERVER        |
+|    Queue Management           |    Queue Management           |
+|    WSS + TLS on port 443      |    Noise + PQ on port 7443    |
+|                               |    Two-hop routing            |
+|                               |    Cover traffic              |
+|                               |    Zero-knowledge storage     |
+|                               |    Cryptographic deletion     |
++-------------------------------+-------------------------------+
+|       SIMPLEX APP             |       SIMPLEGO HARDWARE       |
+|    Phone / Desktop            |    ESP32-S3 / Custom PCB      |
+|    Standard E2E               |    4-layer encryption         |
+|                               |    Post-quantum (sntrup761)   |
+|                               |    Hardware key storage       |
++-------------------------------+-------------------------------+
 ```
 
 ### Multi-user support
 
-Each website visitor connects via a permanent SimpleX contact address and receives their own isolated queue pair. The support team sees each visitor as a separate contact. 10, 50, or 100 concurrent conversations - the SMP server handles queue isolation natively.
+Each website visitor connects via a permanent contact address and receives their own isolated queue pair. The operator sees each visitor as a separate contact. Multiple concurrent conversations are handled natively by the relay server - no additional infrastructure needed.
 
 ---
 
@@ -132,6 +263,7 @@ Each website visitor connects via a permanent SimpleX contact address and receiv
 | E2E encryption | E2E-1 to E2E-3 | NaCl box MVP via @noble/ciphers, key storage, later Double Ratchet |
 | Security hardening | SEC-1 to SEC-5 | CSP, SRI, Web Worker isolation, TLS strategy |
 | Chat UI | UI-1 to UI-8 | Intercom-level panel, animations, encryption badge, accessibility |
+| GRP transport | GRP-1 to GRP-4 | Noise protocol, ML-KEM-768, two-hop routing (future) |
 | Deployment | OPS-1 to OPS-3 | SMP server, TLS, contact address, monitoring |
 
 Full task breakdown: [docs/PROTOCOL.md](docs/PROTOCOL.md)
@@ -145,16 +277,18 @@ We develop in seasons - each with a clear goal, defined scope, and a protocol do
 | Season | Focus | Status |
 |:-------|:------|:-------|
 | **S1** | Planning, documentation, and research | Current |
-| **S2** | WebSocket transport client | Upcoming |
+| **S2** | WebSocket transport client (SMP) | Upcoming |
 | **S3** | SMP commands | Planned |
 | **S4** | Connection flow (browser to SimpleX app) | Planned |
 | **S5** | End-to-end encryption (@noble/curves) | Planned |
 | **S6** | Chat UI (Intercom-level design) | Planned |
 | **S7** | SimpleGo website integration | Planned |
 | **S8** | Production hardening + security review | Planned |
+| **S9+** | GRP profile, Noise transport, post-quantum, Triple Shield | Future |
 
 **Critical path:** S1 - S2 - S3 - S4 - S7 - S8  
-**Parallel track:** S5 (encryption) and S6 (UI) can run alongside S4
+**Parallel track:** S5 (encryption) and S6 (UI) can run alongside S4  
+**GRP track:** Begins after SMP profile is production-ready
 
 Full season plan: [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md)
 
@@ -165,6 +299,7 @@ Full season plan: [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md)
 ```
 GoChat/
 +-- .github/assets/                 # Banner and images
++-- .claude/                        # Claude Code project instructions
 +-- smp-web/                        # SMP browser client (spike + our work)
 |   +-- src/
 |       +-- index.ts                # Re-exports encoding primitives
@@ -207,6 +342,50 @@ cat xftp-web/src/client.ts          # Transport reference implementation
 
 ---
 
+## SimpleGo ecosystem
+
+GoChat is one component of a larger ecosystem for encrypted communication across platforms - from dedicated microcontroller hardware to relay servers to the browser.
+
+| Project | What it does | Language | Repository |
+|:--------|:-------------|:---------|:-----------|
+| **[SimpleGo](https://github.com/saschadaemgen/SimpleGo)** | First native C implementation of SimpleX protocol on ESP32-S3 hardware. Autonomous encrypted messaging device with 4-layer encryption, Double Ratchet, and post-quantum key exchange (sntrup761). | C | [SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
+| **GoRelay** | Dual-protocol relay server. SMP on port 5223 for SimpleX compatibility, GRP on port 7443 with Noise transport, mandatory post-quantum crypto (ML-KEM-768), two-hop routing, cover traffic, and zero-knowledge storage with cryptographic deletion. | Go | GoRelay |
+| **GoChat** | Browser-native encrypted messenger. SMP profile for everyday use, GRP profile for high-security. No app install needed. (This project) | TypeScript | [GoChat](https://github.com/saschadaemgen/GoChat) |
+
+### How the ecosystem connects
+
+The three projects cover the complete communication chain from silicon to browser:
+
+```
++-----------+     +----------+     +-----------+     +----------+     +----------+
+|  GoChat   |     |  SMP     |     |  GoRelay  |     |  SMP     |     | SimpleX  |
+|  Browser  |---->|  Server  |---->|  (bridge) |---->|  Server  |---->|  App     |
+|  SMP mode |     |  (any)   |     |           |     |  (any)   |     | Phone/PC |
++-----------+     +----------+     +-----------+     +----------+     +----------+
+
++-----------+                      +-----------+                      +----------+
+|  GoChat   |                      |  GoRelay  |                      | SimpleGo |
+|  Browser  |--------------------->|  GRP      |--------------------->| Hardware |
+|  GRP mode |  Noise + PQ + 2-hop |  Server   |  Noise + PQ + 2-hop | ESP32-S3 |
++-----------+                      +-----------+                      +----------+
+```
+
+**SMP path (top):** Standard SimpleX-compatible communication. Any SMP server works as relay. On the receiving end: SimpleX Chat app on phone or desktop, or a SimpleGo terminal in a shop, office, or home. This is the path for everyday use - customer support, community engagement, family communication, business inquiries.
+
+**GRP path (bottom):** High-security communication with post-quantum protection, Noise transport, and two-hop routing. GoRelay is the exclusive relay. On the receiving end: SimpleGo hardware with no smartphone OS, no baseband processor, and hardware-backed key storage. This path is for environments where the threat model includes well-resourced adversaries.
+
+**GoRelay as bridge:** GoRelay's dual-protocol architecture allows cross-protocol message delivery. A message arriving via SMP can be delivered to a GRP subscriber, and vice versa. This means a visitor using the SMP profile in their browser can reach a SimpleGo hardware device behind GRP - GoRelay handles the translation transparently.
+
+### What SimpleX provides - and what we extend
+
+SimpleX Chat provides excellent mobile and desktop applications for Android, iOS, macOS, Windows, and Linux. The SimpleX protocol and its ecosystem of clients and servers form a robust foundation for private communication. GoChat does not replace any of this. Instead, it fills the one gap that remains: the browser.
+
+The GRP profile, available through GoRelay, is an extension of the SimpleX network - not a replacement. It adds a post-quantum, zero-knowledge communication layer on top of the existing infrastructure for environments where standard SMP encryption - while strong - does not meet the elevated requirements of certain sectors. Both layers coexist, interoperate through GoRelay, and share the fundamental SimpleX design principle: no user identifiers of any kind.
+
+There is no plan to develop dedicated mobile applications. SimpleX already covers mobile and desktop platforms with proven, audited software. The SimpleGo ecosystem contributes where SimpleX does not: dedicated hardware endpoints, a Go-based relay server with dual-protocol support, and now a browser-native client. Each project strengthens the overall network without duplicating what already works.
+
+---
+
 ## Upstream
 
 This repository is a fork of [simplex-chat/simplexmq](https://github.com/simplex-chat/simplexmq) (AGPL-3.0).
@@ -223,16 +402,6 @@ We intend to contribute our WebSocket transport client and SMP command implement
 
 ---
 
-## SimpleGo ecosystem
-
-| Project | Description | Repository |
-|:--------|:------------|:-----------|
-| **SimpleGo** | Native C implementation of SimpleX protocol on ESP32-S3 hardware | [SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
-| **GoRelay** | Self-hosted SimpleX relay server infrastructure | GoRelay |
-| **GoChat** | Browser-native encrypted web support messenger (this project) | [GoChat](https://github.com/saschadaemgen/GoChat) |
-
----
-
 ## Status
 
 Season 1 (planning, documentation, and research) is nearing completion. No functional chat code yet - first working code expected in Season 2.
@@ -243,6 +412,7 @@ Season 1 (planning, documentation, and research) is nearing completion. No funct
 | Repository fork and branch setup | Done |
 | Season plan and workflow | Done |
 | Deep research (security, design, crypto) | Done |
+| Dual-profile architecture design | Done |
 | WebSocket transport client | Season 2 |
 | SMP command implementation | Season 3 |
 | Browser-to-app connection | Season 4 |
@@ -250,6 +420,7 @@ Season 1 (planning, documentation, and research) is nearing completion. No funct
 | Chat UI (Intercom-level) | Season 6 |
 | Website integration | Season 7 |
 | Production deployment + security review | Season 8 |
+| GRP profile + post-quantum + Noise | Season 9+ |
 
 ---
 
@@ -262,6 +433,7 @@ Season 1 (planning, documentation, and research) is nearing completion. No funct
 | Season plan | [docs/seasons/SEASON-PLAN.md](docs/seasons/SEASON-PLAN.md) |
 | SimpleGo main project | [github.com/saschadaemgen/SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
 | SimpleGo documentation | [wiki.simplego.dev](https://wiki.simplego.dev) |
+| GoRelay documentation | [wiki.gorelay.dev](https://wiki.gorelay.dev) |
 | SimpleX Chat | [simplex.chat](https://simplex.chat/) |
 | SimpleX protocol specification | [SMP protocol](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md) |
 
@@ -300,7 +472,7 @@ This project is a derivative work of SimpleXMQ by SimpleX Chat Ltd, licensed und
 
 ## Acknowledgments
 
-[SimpleX Chat](https://simplex.chat/) (SimpleX Messaging Protocol and simplexmq reference implementation) - [Evgeny Poberezkin](https://github.com/epoberezkin) (smp-web spike and WebSocket server support) - [@noble/hashes](https://github.com/paulmillr/noble-hashes) (SHA-256, SHA-512 for browser crypto) - [@noble/curves](https://github.com/paulmillr/noble-curves) (Ed25519, X25519 for key exchange) - [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) (XSalsa20-Poly1305, AES-256-GCM for encryption)
+[SimpleX Chat](https://simplex.chat/) (SimpleX Messaging Protocol and simplexmq reference implementation) - [Evgeny Poberezkin](https://github.com/epoberezkin) (smp-web spike and WebSocket server support) - [@noble/hashes](https://github.com/paulmillr/noble-hashes) (SHA-256, SHA-512) - [@noble/curves](https://github.com/paulmillr/noble-curves) (Ed25519, X25519) - [@noble/ciphers](https://github.com/paulmillr/noble-ciphers) (XSalsa20-Poly1305, AES-256-GCM)
 
 ---
 
@@ -311,5 +483,5 @@ This project is a derivative work of SimpleXMQ by SimpleX Chat Ltd, licensed und
 </p>
 
 <p align="center">
-  <strong>GoChat - Encrypted support chat. No app, no account, no compromises.</strong>
+  <strong>GoChat - Encrypted messaging in the browser. No app, no account, no compromises.</strong>
 </p>
