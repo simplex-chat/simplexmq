@@ -64,3 +64,15 @@ export class SMPTransportError extends Error {
     this.name = "SMPTransportError"
   }
 }
+
+// -- SMPClient types (Season 2 Task 2)
+
+export type SMPClientState = "handshaking" | "ready" | "closed"
+
+export interface SMPResponseHandler {
+  (corrId: Uint8Array, entityId: Uint8Array, command: Uint8Array): void
+}
+
+export interface SMPPushHandler {
+  (entityId: Uint8Array, command: Uint8Array): void
+}
