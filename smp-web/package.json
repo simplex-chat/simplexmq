@@ -19,6 +19,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@noble/curves": "^2.0.1",
     "@noble/hashes": "^1.5.0",
     "@simplex-chat/xftp-web": "file:../xftp-web"
   },
