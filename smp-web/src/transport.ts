@@ -38,6 +38,7 @@ export class SMPWebSocketTransport implements ChatTransport {
   private ws: WebSocket | null = null
   private currentState: TransportState = "disconnected"
   private messageHandler: TransportEventHandler | null = null
+  private closeHandler: (() => void) | null = null
   private readonly config: Required<SMPTransportConfig>
 
   constructor(config?: SMPTransportConfig) {
@@ -117,6 +118,9 @@ export class SMPWebSocketTransport implements ChatTransport {
           } else {
             this.ws = null
             this.currentState = "disconnected"
+            if (this.closeHandler !== null) {
+              this.closeHandler()
+            }
           }
         })
 
@@ -164,6 +168,13 @@ export class SMPWebSocketTransport implements ChatTransport {
 
   onMessage(handler: TransportEventHandler): void {
     this.messageHandler = handler
+  }
+
+  // Register handler for connection close/disconnect events.
+  // Fires when WebSocket closes after connection was established
+  // (not during initial connect - those reject the connect Promise).
+  onClose(handler: () => void): void {
+    this.closeHandler = handler
   }
 
   close(): void {
