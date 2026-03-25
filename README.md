@@ -46,17 +46,23 @@ This is the profile for the broad range of everyday communication needs:
 - **Small businesses** - freelancers, agencies, and consultancies provide clients with a secure way to discuss projects and share sensitive documents
 - **Education** - schools, tutors, and training providers offer private communication channels for students and parents
 
-On the receiving end, the support team or operator uses the regular SimpleX Chat app on their phone, desktop, or a SimpleGo hardware terminal. No special software required.
+On the receiving end, the support team or operator has three options:
+
+- **SimpleX Chat app** on phone or desktop - no special software beyond the standard SimpleX client
+- **GoChat Admin Panel** in the browser - a multi-conversation dashboard where support agents manage all customer chats from any browser, with the same E2E encryption as the customer side. No app install needed on either end.
+- **SimpleGo hardware terminal** - a dedicated countertop device for shops and offices
 
 ```
 Website visitor (browser)          Any SMP Server           Receiving end
         |                               |                        |
-        |--- WSS + SMP --------------->|                        |
-        |    E2E encrypted             |--- SMP relay --------->|
-        |                               |                        |  SimpleX App (phone/desktop)
-        |<-- WSS + SMP ----------------|<-- SMP relay ----------|  or SimpleGo terminal
+        |--- WSS + SMP --------------->|                        |  SimpleX App (phone/desktop)
+        |    E2E encrypted             |--- SMP relay --------->|  GoChat Admin Panel (browser)
+        |                               |                        |  or SimpleGo terminal
+        |<-- WSS + SMP ----------------|<-- SMP relay ----------|
         |    E2E encrypted             |                        |
 ```
+
+The Admin Panel option means the entire communication chain - customer to support - runs in the browser with E2E encryption. No app installs on either side. This is unique among support chat tools: Chatwoot, Crisp, and Intercom all have unencrypted admin interfaces.
 
 ### GRP Profile - high-security environments
 
@@ -262,7 +268,8 @@ Each website visitor connects via a permanent contact address and receives their
 | Connection flow | CONN-1 to CONN-4 | Contact address parsing, queue pair setup, state machine |
 | E2E encryption | E2E-1 to E2E-3 | NaCl box MVP via @noble/ciphers, key storage, later Double Ratchet |
 | Security hardening | SEC-1 to SEC-5 | CSP, SRI, Web Worker isolation, TLS strategy |
-| Chat UI | UI-1 to UI-8 | Intercom-level panel, animations, encryption badge, accessibility |
+| Chat UI (customer) | UI-1 to UI-8 | Intercom-level panel, animations, encryption badge, accessibility |
+| Admin Panel (support) | ADM-1 to ADM-4 | Multi-conversation dashboard, agent management, E2E encrypted admin interface |
 | GRP transport | GRP-1 to GRP-4 | Noise protocol, ML-KEM-768, two-hop routing (future) |
 | Deployment | OPS-1 to OPS-3 | SMP server, TLS, contact address, monitoring |
 
@@ -276,13 +283,14 @@ We develop in seasons - each with a clear goal, defined scope, and a protocol do
 
 | Season | Focus | Status |
 |:-------|:------|:-------|
-| **S1** | Planning, documentation, and research | Current |
-| **S2** | WebSocket transport client (SMP) | Upcoming |
+| **S1** | Planning, documentation, and research | Complete |
+| **S2** | WebSocket transport client (SMP) | Current |
 | **S3** | SMP commands | Planned |
 | **S4** | Connection flow (browser to SimpleX app) | Planned |
 | **S5** | End-to-end encryption (@noble/curves) | Planned |
 | **S6** | Chat UI (Intercom-level design) | Planned |
 | **S7** | SimpleGo website integration | Planned |
+| **S7.5** | Admin Panel (browser-based support dashboard) | Planned |
 | **S8** | Production hardening + security review | Planned |
 | **S9+** | GRP profile, Noise transport, post-quantum, Triple Shield | Future |
 
@@ -304,6 +312,8 @@ GoChat/
 |   +-- src/
 |       +-- index.ts                # Re-exports encoding primitives
 |       +-- protocol.ts             # SMP transmission encode/decode, LGET/LNK
+|       +-- types.ts                # ChatTransport interface, SMP types
+|       +-- transport.ts            # SMPWebSocketTransport (16KB block framing)
 +-- xftp-web/                       # Shared infrastructure (upstream)
 |   +-- src/
 |       +-- client.ts               # HTTP/2 transport, handshake, retry
@@ -350,7 +360,7 @@ GoChat is one component of a larger ecosystem for encrypted communication across
 |:--------|:-------------|:---------|:-----------|
 | **[SimpleGo](https://github.com/saschadaemgen/SimpleGo)** | First native C implementation of SimpleX protocol on ESP32-S3 hardware. Autonomous encrypted messaging device with 4-layer encryption, Double Ratchet, and post-quantum key exchange (sntrup761). | C | [SimpleGo](https://github.com/saschadaemgen/SimpleGo) |
 | **GoRelay** | Dual-protocol relay server. SMP on port 5223 for SimpleX compatibility, GRP on port 7443 with Noise transport, mandatory post-quantum crypto (ML-KEM-768), two-hop routing, cover traffic, and zero-knowledge storage with cryptographic deletion. | Go | GoRelay |
-| **GoChat** | Browser-native encrypted messenger. SMP profile for everyday use, GRP profile for high-security. No app install needed. (This project) | TypeScript | [GoChat](https://github.com/saschadaemgen/GoChat) |
+| **GoChat** | Browser-native encrypted messenger. SMP profile for everyday use, GRP profile for high-security. Customer chat widget and admin support dashboard, both E2E encrypted. No app install needed. (This project) | TypeScript | [GoChat](https://github.com/saschadaemgen/GoChat) |
 
 ### How the ecosystem connects
 
@@ -370,7 +380,7 @@ The three projects cover the complete communication chain from silicon to browse
 +-----------+                      +-----------+                      +----------+
 ```
 
-**SMP path (top):** Standard SimpleX-compatible communication. Any SMP server works as relay. On the receiving end: SimpleX Chat app on phone or desktop, or a SimpleGo terminal in a shop, office, or home. This is the path for everyday use - customer support, community engagement, family communication, business inquiries.
+**SMP path (top):** Standard SimpleX-compatible communication. Any SMP server works as relay. On the receiving end: SimpleX Chat app on phone or desktop, GoChat Admin Panel in the browser, or a SimpleGo terminal in a shop, office, or home. This is the path for everyday use - customer support, community engagement, family communication, business inquiries.
 
 **GRP path (bottom):** High-security communication with post-quantum protection, Noise transport, and two-hop routing. GoRelay is the exclusive relay. On the receiving end: SimpleGo hardware with no smartphone OS, no baseband processor, and hardware-backed key storage. This path is for environments where the threat model includes well-resourced adversaries.
 
@@ -404,7 +414,7 @@ We intend to contribute our WebSocket transport client and SMP command implement
 
 ## Status
 
-Season 1 (planning, documentation, and research) is nearing completion. No functional chat code yet - first working code expected in Season 2.
+Season 1 (planning, documentation, and research) is complete. Season 2 (WebSocket transport) is in progress.
 
 | Component | Status |
 |:----------|:-------|
@@ -413,12 +423,13 @@ Season 1 (planning, documentation, and research) is nearing completion. No funct
 | Season plan and workflow | Done |
 | Deep research (security, design, crypto) | Done |
 | Dual-profile architecture design | Done |
-| WebSocket transport client | Season 2 |
+| WebSocket transport client | Season 2 (in progress) |
 | SMP command implementation | Season 3 |
 | Browser-to-app connection | Season 4 |
 | End-to-end encryption | Season 5 |
 | Chat UI (Intercom-level) | Season 6 |
 | Website integration | Season 7 |
+| Admin Panel (support dashboard) | Season 7.5 |
 | Production deployment + security review | Season 8 |
 | GRP profile + post-quantum + Noise | Season 9+ |
 
