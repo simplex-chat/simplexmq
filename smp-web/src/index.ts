@@ -10,3 +10,17 @@ export {
   encodeList, decodeList,
   concatBytes
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+
+// ChatTransport interface and SMP transport types
+export type {
+  ChatTransport,
+  SMPServerAddress,
+  TransportState,
+  TransportEventHandler,
+  SMPTransportErrorCode,
+} from "./types.js"
+export {SMPTransportError} from "./types.js"
+
+// WebSocket transport implementation
+export {SMPWebSocketTransport} from "./transport.js"
+export type {SMPTransportConfig} from "./transport.js"
