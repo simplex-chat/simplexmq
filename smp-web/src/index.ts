@@ -21,6 +21,8 @@ export type {
   SMPClientState,
   SMPResponseHandler,
   SMPPushHandler,
+  ConnectionEvent,
+  ConnectionChangeHandler,
 } from "./types.js"
 export {SMPTransportError} from "./types.js"
 
@@ -50,3 +52,7 @@ export {
 // SMP client with handshake and command dispatch
 export type {SMPClient, SMPClientConfig} from "./client.js"
 export {connectSMP, encodePING} from "./client.js"
+
+// SMPClientAgent with connection pooling and reconnection
+export type {SMPClientAgent, SMPAgentConfig} from "./agent.js"
+export {newSMPAgent, calculateBackoff, serverKey} from "./agent.js"
