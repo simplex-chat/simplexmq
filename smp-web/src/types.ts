@@ -76,3 +76,16 @@ export interface SMPResponseHandler {
 export interface SMPPushHandler {
   (entityId: Uint8Array, command: Uint8Array): void
 }
+
+// -- Connection event types (Season 2 Task 3 - SMPClientAgent)
+
+export type ConnectionEvent =
+  | {type: "connected"}
+  | {type: "disconnected"; reason: string}
+  | {type: "reconnecting"; attempt: number; maxAttempts: number; nextRetryMs: number}
+  | {type: "reconnect_failed"; reason: string}
+
+export type ConnectionChangeHandler = (
+  server: SMPServerAddress,
+  event: ConnectionEvent
+) => void
