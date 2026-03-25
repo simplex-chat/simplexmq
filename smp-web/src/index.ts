@@ -18,9 +18,35 @@ export type {
   TransportState,
   TransportEventHandler,
   SMPTransportErrorCode,
+  SMPClientState,
+  SMPResponseHandler,
+  SMPPushHandler,
 } from "./types.js"
 export {SMPTransportError} from "./types.js"
 
 // WebSocket transport implementation
 export {SMPWebSocketTransport} from "./transport.js"
 export type {SMPTransportConfig} from "./transport.js"
+
+// SMP handshake encoding/decoding
+export type {
+  VersionRange,
+  SMPServerHandshake,
+  SMPClientHandshake,
+  SignedKey,
+} from "./handshake.js"
+export {
+  decodeSMPServerHandshake,
+  encodeSMPClientHandshake,
+  compatibleVRange,
+  smpClientVersionRange,
+  verifyServerIdentity,
+  blockPad,
+  blockUnpad,
+  buildCommandBlock,
+  parseResponseBlock,
+} from "./handshake.js"
+
+// SMP client with handshake and command dispatch
+export type {SMPClient, SMPClientConfig} from "./client.js"
+export {connectSMP, encodePING} from "./client.js"

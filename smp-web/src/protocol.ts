@@ -6,7 +6,24 @@ import {
   encodeBytes, decodeBytes,
   decodeLarge
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
-import {readTag, readSpace} from "@simplex-chat/xftp-web/dist/protocol/commands.js"
+
+// readTag/readSpace inlined from xftp-web/protocol/commands.ts to avoid
+// pulling libsodium through the commands.ts -> keys.ts import chain.
+
+function readTag(d: Decoder): string {
+  const start = d.offset()
+  while (d.remaining() > 0) {
+    if (d.buf[d.offset()] === 0x20 || d.buf[d.offset()] === 0x0a) break
+    d.anyByte()
+  }
+  let s = ""
+  for (let i = start; i < d.offset(); i++) s += String.fromCharCode(d.buf[i])
+  return s
+}
+
+function readSpace(d: Decoder): void {
+  if (d.anyByte() !== 0x20) throw new Error("expected space")
+}
 
 // -- Transmission encoding (Protocol.hs:2201-2203)
 // encodeTransmission_ v (CorrId corrId, queueId, command) =
