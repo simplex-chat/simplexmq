@@ -2,12 +2,14 @@
 
 ## Project
 
-GoChat is the world's first browser-native encrypted support messenger using the SimpleX Messaging Protocol.
-- Browser-side SMP client in TypeScript
-- WebSocket transport to SMP relay servers
-- E2E encrypted chat between website visitors and support team
+GoChat is a browser-native encrypted messenger for the SimpleX ecosystem with two communication profiles.
+- **SMP Profile:** SimpleX Messaging Protocol over WebSocket for everyday use (shops, communities, support, families)
+- **GRP Profile:** GoRelay Protocol with Noise transport, post-quantum ML-KEM-768, two-hop routing for high-security (future)
+- Both profiles share the same chat UI - difference is transport and encryption layer
+- GoChat extends the SimpleX network, does not replace it. No mobile apps planned - SimpleX covers that.
 - Repository: github.com/saschadaemgen/GoChat
 - Parent project: github.com/saschadaemgen/SimpleGo
+- Ecosystem: SimpleGo (hardware) + GoRelay (server) + GoChat (browser)
 - License: AGPL-3.0 (derivative of SimpleXMQ)
 - Author: Sascha Daemgen, IT and More Systems, Recklinghausen
 
@@ -25,7 +27,7 @@ GoChat is the world's first browser-native encrypted support messenger using the
 - Each season protocol lists ALL commits with hashes and descriptions
 
 ### Code Style
-- NEVER use em dashes (—) - use regular hyphens (-) or rewrite the sentence
+- NEVER use em dashes - use regular hyphens (-) or rewrite the sentence
 - All code, comments, commits, and documentation in English
 - TypeScript strict mode always enabled
 - ES2022 target, ES modules
@@ -40,27 +42,27 @@ GoChat is the world's first browser-native encrypted support messenger using the
 - Subresource Integrity (SRI) on all external scripts
 - Minimal dependencies - every dependency is an attack surface
 - Store CryptoKey objects with extractable: false in IndexedDB
-- Use binary WebSocket frames (not text) for encrypted SMP payloads
+- Use binary WebSocket frames (not text) for encrypted payloads
 - Token-based WebSocket auth (not cookies) to prevent CSWSH
 - Document the browser trust boundary honestly in security docs
 
 ### Architecture
 - smp-web/src/ is the SMP browser client library
-- xftp-web/ is upstream shared infrastructure (encoding, crypto, transport) - DO NOT MODIFY
+- xftp-web/ is upstream shared infrastructure - DO NOT MODIFY
 - protocol/ is upstream SMP specification - DO NOT MODIFY
 - SharedWorker for WebSocket connection pool across tabs
 - Web Worker for crypto operations isolated from main thread
 - IndexedDB for persistent message and key storage
-- All SMP communication over WebSocket (wss://) with binary frames
 - Fixed 16,384-byte SMP blocks - same as native protocol
+- Design transport layer with interface abstraction to support both SMP and GRP profiles later
 
 ## Build and Test
 
 ```bash
 cd smp-web
 npm install
-npm run build      # TypeScript compilation
-npm test           # Unit tests
+npm run build
+npm test
 ```
 
 ## Technology Stack
@@ -91,6 +93,27 @@ smp-web/src/
   crypto/
     e2e.ts              # E2E encryption module (Season 5)
     keys-store.ts       # Browser key storage (Season 5)
+```
+
+## Dual-Profile Architecture (Important Context)
+
+GoChat will eventually support two profiles:
+
+**SMP Profile (Seasons 2-8):** Standard SimpleX protocol. This is the primary development focus. Everything built here must use a clean transport interface so GRP can be added later without refactoring.
+
+**GRP Profile (Season 9+):** GoRelay Protocol with Noise + ML-KEM-768. This comes AFTER the SMP profile is production-ready. When implementing transport and connection layers, design them with an abstract interface that can accept a second protocol implementation later.
+
+```typescript
+// Example: design transport as interface from day one
+interface ChatTransport {
+  connect(server: ServerAddress): Promise<void>
+  send(block: Uint8Array): Promise<void>
+  onMessage(handler: (block: Uint8Array) => void): void
+  close(): void
+}
+
+// Season 2: SMPWebSocketTransport implements ChatTransport
+// Season 9+: GRPWebSocketTransport implements ChatTransport
 ```
 
 ## Current State
@@ -124,19 +147,16 @@ Season 1 (Planning and Documentation) is nearing completion.
 - Season 6: Chat UI (UI-1 to UI-8)
 - Season 7: SimpleGo website integration
 - Season 8: Production hardening + security review
-
-Critical path: S1 -> S2 -> S3 -> S4 -> S7 -> S8
-Parallel track: S5 and S6 can run alongside S4
+- Season 9+: GRP profile (Noise, ML-KEM-768, two-hop)
 
 ## Season 2 Tasks (NEXT)
 
 ### WS-1: WebSocket transport class
 - Create smp-web/src/transport.ts
-- Connect to wss://server:443 with SNI header for WS routing
-- SMP block-based framing over WebSocket binary messages
+- Define ChatTransport interface (abstract, profile-agnostic)
+- Implement SMPWebSocketTransport implementing ChatTransport
+- Connect to wss://server:443, binary frames, 16KB block framing
 - Connection lifecycle: open, close, error, reconnect
-- Heartbeat via PING/PONG
-- Support concurrent send + async receive
 - Branch: feat/ws-transport
 
 ### WS-2: SMP client with handshake
@@ -147,7 +167,6 @@ Parallel track: S5 and S6 can run alongside S4
 - Branch: feat/smp-client
 
 ### WS-3: Connection pooling and reconnect
-- Reuse XFTPClientAgent pattern from xftp-web
 - Auto-reconnect with exponential backoff (500ms base, 2x, 30s cap, jitter)
 - Re-subscribe to queues after reconnect
 - Branch: feat/connection-pool
@@ -170,10 +189,6 @@ Padding character is '#' (0x23), NEVER zero bytes.
 ### SMP Transmission Format
 ```
 [auth: ByteString] [corrId: ByteString] [entityId: ByteString] [command: raw bytes]
-auth = authenticator (empty for unsigned)
-corrId = correlation ID (matches response to request)
-entityId = queue ID
-Encoding: 1-byte length prefix for short strings, 2-byte for large
 ```
 
 ### SMP Commands (to implement in Season 3)
@@ -188,11 +203,6 @@ DEL                                   -> OK
 LGET (entityId=linkId)                -> LNK <sndId> <encFixedData> <encUserData>
 PING                                  -> PONG
 ```
-
-### Subscription Rules
-- Only ONE connection per queue at any time
-- New SUB sends END to displaced connection
-- Messages delivered one at a time, wait for ACK
 
 ## Documentation
 
