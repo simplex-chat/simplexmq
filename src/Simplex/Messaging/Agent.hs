@@ -354,9 +354,9 @@ setConnShortLinkAsync :: AgentClient -> ACorrId -> ConnId -> UserConnLinkData 'C
 setConnShortLinkAsync c = withAgentEnv c .:: setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
--- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new connection id
-getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AE ConnId
-getConnShortLinkAsync c = withAgentEnv c .:. getConnShortLinkAsync' c
+-- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new/passed connection id
+getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AE ConnId
+getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id.
@@ -1001,14 +1001,22 @@ setConnShortLinkAsync' c corrId connId userLinkData clientData =
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
     enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET userLinkData clientData
 
-getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AM ConnId
-getConnShortLinkAsync' c userId corrId shortLink@(CSLContact _ _ srv _) = do
-  g <- asks random
-  connId <- withStore c $ \db -> do
-    -- server is created so the command is processed in server queue,
-    -- not blocking other "no server" commands
-    void $ createServer db srv
-    prepareNewConn db g
+getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AM ConnId
+getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) = do
+  connId <- case connId_ of
+    Just existingConnId -> do
+      -- connId and srv can be unrelated: connId is used as "mailbox" for LDATA delivery,
+      -- while srv is the short link's server for the LGET request.
+      -- E.g., owner's relay connection (connId, on server A) fetches relay's group link data (srv = server B).
+      -- This works because enqueueCommand stores (connId, srv) independently in the commands table,
+      -- the network request targets srv, and event delivery uses connId via corrId correlation.
+      withStore' c $ \db -> void $ createServer db srv
+      pure existingConnId
+    Nothing -> do
+      g <- asks random
+      withStore c $ \db -> do
+        void $ createServer db srv
+        prepareNewConn db g
   enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LGET shortLink
   pure connId
   where
