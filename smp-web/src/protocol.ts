@@ -4,7 +4,7 @@
 import {
   Decoder, concatBytes,
   encodeBytes, decodeBytes,
-  decodeLarge
+  encodeLarge, decodeLarge
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 import {readTag, readSpace} from "@simplex-chat/xftp-web/dist/protocol/commands.js"
 
@@ -19,6 +19,13 @@ export function encodeTransmission(corrId: Uint8Array, entityId: Uint8Array, com
     encodeBytes(entityId),
     command
   )
+}
+
+// Batch encoding (Protocol.hs:2175-2180)
+// Each transmission is Large-wrapped, then prefixed with 1-byte count.
+export function encodeBatch(...transmissions: Uint8Array[]): Uint8Array {
+  if (transmissions.length === 0 || transmissions.length > 255) throw new Error("encodeBatch: invalid count")
+  return concatBytes(new Uint8Array([transmissions.length]), ...transmissions.map(t => encodeLarge(t)))
 }
 
 // -- Transmission parsing (Protocol.hs:1629-1642)

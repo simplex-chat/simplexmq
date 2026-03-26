@@ -276,7 +276,21 @@ Wire steps 6-10 together: `parseShortLink` → `contactShortLinkKdf` → `connec
 
 **Test**: Haskell creates a contact address with short link (using agent), TypeScript fetches and decodes it via WebSocket. Profile displayName matches. This is the full spike proof: browser can fetch a SimpleX contact profile via SMP protocol.
 
-### Step 12: Block Encryption (DH + SbChainKeys)
+### Step 12: Server Certificate Verification
+
+**File**: `transport.ts`
+**Approach**: client sends a random challenge in an HTTP header on the WebSocket upgrade request. Server includes the signed challenge in the handshake response. Client verifies the signature using the server's certificate chain.
+
+**Implementation**:
+- Generate 32-byte random challenge, send as HTTP header (e.g. `smp-web-challenge`) on WebSocket upgrade
+- Parse `CertChainPubKey` from server handshake (already parsed in step 3 as `authPubKey`)
+- Verify certificate chain fingerprint matches `keyHash` (reuse xftp-web `caFingerprint`)
+- Verify challenge signature (reuse xftp-web `identity.ts` — `extractCertPublicKeyInfo`, signature verification)
+- Requires server-side change: detect the challenge header on WebSocket connections, sign `challenge || sessionId` with server key, include proof in handshake
+
+**Tests**: connect to test server, verify challenge-response succeeds. Connect with wrong keyHash, verify rejection.
+
+### Step 13: Block Encryption (DH + SbChainKeys)
 
 **File**: `transport.ts`
 **Haskell reference**: `Simplex.Messaging.Crypto` — `sbcInit`, `sbcHkdf`; `Simplex.Messaging.Transport` — `tPutBlock`, `tGetBlock`
@@ -290,14 +304,13 @@ Wire steps 6-10 together: `parseShortLink` → `contactShortLinkKdf` → `connec
 
 **Tests**: Haskell and TypeScript DH with same keys → identical chain keys. Haskell encrypts block → TypeScript decrypts (and vice versa). Chain key advances identically after each block.
 
-### Step 13: Full Handshake with Auth
+### Step 14: Full Handshake with Auth
 
 **File**: `transport.ts`
 **Haskell reference**: `Simplex.Messaging.Transport` — `smpClientHandshake` (lines 792-842)
 
 **Implementation**:
 - Update `smpHandshake` to generate ephemeral X25519 keypair and include public key in `encodeSMPClientHandshake` as authPubKey
-- Parse server's `CertChainPubKey` from handshake: extract DH public key, verify X.509 certificate chain (reuse xftp-web `identity.ts` — `verifyIdentityProof`, `extractCertPublicKeyInfo`)
 - Compute DH: `dh(serverDhPub, clientPrivKey)` → shared secret
 - `sbcInit(sessionId, dhSecret)` → chain keys (with client-side swap)
 - All subsequent `readBlock`/`sendBlock` go through `decryptBlock`/`encryptBlock`
