@@ -396,8 +396,8 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 {-# INLINE deleteConnectionsAsync #-}
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newConn c nm userId enableNtfs checkNotices
+createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Maybe ByteString -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (Maybe C.KeyPairEd25519, CreatedConnLink c, Maybe ClientServiceId))
+createConnection c nm userId linkEntityId enableNtfs checkNotices = withAgentEnv c .::. newConn c nm userId linkEntityId enableNtfs checkNotices
 {-# INLINE createConnection #-}
 
 -- | Prepare connection link for contact mode (no network call).
@@ -908,13 +908,13 @@ switchConnectionAsync' c corrId connId =
             connectionStats c $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
-newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKeys subMode = do
+newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Maybe ByteString -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, (Maybe C.KeyPairEd25519, CreatedConnLink c, Maybe ClientServiceId))
+newConn c nm userId linkEntityId enableNtfs checkNotices cMode linkData_ clientData pqInitKeys subMode = do
   srv <- getSMPServer c userId
   when (checkNotices && connMode cMode == CMContact) $ checkClientNotices c srv
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   (connId,)
-    <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys subMode srv
+    <$> newRcvConnSrv c nm userId linkEntityId connId enableNtfs cMode linkData_ clientData pqInitKeys subMode srv
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 -- | Prepare connection link for contact mode (no network, no database).
@@ -1131,23 +1131,23 @@ changeConnectionUser' c oldUserId connId newUserId = do
   where
     updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
 
-newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (CreatedConnLink c, Maybe ClientServiceId)
-newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
+newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Maybe ByteString -> ConnId -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (Maybe C.KeyPairEd25519, CreatedConnLink c, Maybe ClientServiceId)
+newRcvConnSrv c nm userId linkEntityId connId enableNtfs cMode userLinkData_ clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
   case userLinkData_ of
     Just d -> do
-      (nonce, qUri, cReq, qd) <- prepareLinkData d $ fst e2eKeys
+      (sigKeys, nonce, qUri, cReq, qd) <- prepareLinkData linkEntityId d $ fst e2eKeys
       (rq, qUri') <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just nonce) qd e2eKeys
       ccLink <- connReqWithShortLink qUri cReq qUri' (shortLink rq)
-      pure (ccLink, clientServiceId rq)
+      pure (Just sigKeys, ccLink, clientServiceId rq)
     Nothing -> do
       let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
       (rq, qUri) <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode Nothing qd e2eKeys
       cReq <- createConnReq qUri
-      pure (CCLink cReq Nothing, clientServiceId rq)
+      pure (Nothing, CCLink cReq Nothing, clientServiceId rq)
   where
     createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
     createConnReq qUri = do
@@ -1161,8 +1161,8 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
           (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
           withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
-    prepareLinkData :: UserConnLinkData c -> C.PublicKeyX25519 -> AM (C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
-    prepareLinkData userLinkData e2eDhKey = do
+    prepareLinkData :: Maybe ByteString -> UserConnLinkData c -> C.PublicKeyX25519 -> AM (C.KeyPairEd25519, C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
+    prepareLinkData linkEntityId_ userLinkData e2eDhKey = do
       g <- asks random
       nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
       sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
@@ -1172,14 +1172,14 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
       connReq <- createConnReq qUri
-      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing userLinkData
+      let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq linkEntityId_ userLinkData
       qd <- case cMode of
         SCMContact -> encryptContactLinkData g privSigKey linkKey sndId linkData
         SCMInvitation -> do
           let k = SL.invShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
-      pure (nonce, qUri, connReq, qd)
+      pure (sigKeys, nonce, qUri, connReq, qd)
     connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
@@ -1341,7 +1341,9 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
         SomeConn cType conn <- withStore c (`getConn` connId)
         let pqInitKeys = CR.joinContactInitialKeys (v >= pqdrSMPAgentVersion) pqSup
         (CCLink cReq _, service) <- case conn of
-          NewConnection _ -> newRcvConnSrv c NRMBackground userId connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys subMode srv
+          NewConnection _ -> do
+            (_, ccLink, service) <- newRcvConnSrv c NRMBackground userId Nothing connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys subMode srv
+            pure (ccLink, service)
           RcvConnection _ rq -> mkJoinInvitation rq pqInitKeys
           _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
         void $ sendInvitation c nm userId connId qInfo vrsn cReq cInfo
@@ -1788,7 +1790,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
-            (CCLink cReq _, service) <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
+            (_, CCLink cReq _, service) <- newRcvConnSrv c NRMBackground userId Nothing connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
             notify $ INV (ACR cMode cReq) service
         LSET userLinkData clientData ->
           withServer' . tryCommand $ do
