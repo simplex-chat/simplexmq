@@ -225,13 +225,13 @@ For encryption primitives, threat model, and detailed security analysis, see [Se
 
 SimpleX provides these security properties:
 
-- **End-to-end encryption** with forward secrecy via double ratchet protocol, with optional post-quantum protection.
+- **End-to-end encryption** using Double Ratchet algorithm with forward secrecy and post-quantum cryptography.
 
 - **No shared identifiers** across connections — contacts cannot prove they communicate with the same user.
 
 - **Sender deniability** — neither routers nor recipients can cryptographically prove message origin.
 
-- **Transport metadata protection** — fixed-size blocks, 2-hop onion routing, and connection isolation frustrate traffic correlation.
+- **Transport metadata protection** — fixed-size blocks, 2-hop onion routing, and optional connection isolation frustrate traffic correlation.
 
 - **Out-of-band key exchange** — connection requests passed outside the network protect against MITM attacks.
 
