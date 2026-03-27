@@ -388,7 +388,7 @@ data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> AEvent AEConn
   LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> AEvent AEConn
-  CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
+  CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake (no longer supported)
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
@@ -1024,6 +1024,7 @@ data AMessage
 
 aMessageType :: AMessage -> AgentMessageType
 aMessageType = \case
+  -- v1 slow handshake is no longer supported (minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion).
   -- HELLO is used both in v1 and in v2, but differently.
   -- - in v1 (and, possibly, in v2 for simplex connections) can be sent multiple times,
   --   until the queue is secured - the OK response from the server instead of initial AUTH errors confirms it.

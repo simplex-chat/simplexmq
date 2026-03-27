@@ -193,6 +193,7 @@ sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
   let reqTimeout = http2RequestTimeout config reqTimeout_
   maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resp))
 
+-- spec: spec/modules/Simplex/Messaging/Transport/HTTP2/Client.md#sendrequest-vs-sendrequestdirect--thread-safety
 -- | this function should not be used until HTTP2 is thread safe, use sendRequest
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req reqTimeout_ = do

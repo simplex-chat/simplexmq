@@ -24,6 +24,7 @@ data ChainCertificates
   | CCValid {leafCert :: X.SignedCertificate, idCert :: X.SignedCertificate, caCert :: X.SignedCertificate}
   | CCLong
 
+-- spec: spec/modules/Simplex/Messaging/Transport/Shared.md#chainidcacerts--certificate-chain-semantics
 chainIdCaCerts :: X.CertificateChain -> ChainCertificates
 chainIdCaCerts (X.CertificateChain chain) = case chain of
   [] -> CCEmpty

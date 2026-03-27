@@ -240,6 +240,7 @@ currentServerSMPRelayVersion = VersionSMP 19
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
+-- spec: spec/modules/Simplex/Messaging/Transport.md#proxiedsmprelayversion--anti-fingerprinting-cap
 -- SMP proxy sets it to lower than its current version
 -- to prevent client version fingerprinting by the
 -- destination relays when clients upgrade at different times.
@@ -376,6 +377,7 @@ getTLS cfg tlsCertSent tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS
       tlsALPN <- T.getNegotiatedProtocol cxt
       pure TLS {tlsContext = cxt, tlsALPN, tlsTransportConfig = cfg, tlsCertSent, tlsPeerCert, tlsUniq, tlsBuffer}
 
+-- spec: spec/modules/Simplex/Messaging/Transport.md#withtlsunique--different-api-calls-yield-same-value
 withTlsUnique :: forall c p. TransportPeerI p => T.Context -> (ByteString -> IO (c p)) -> IO (c p)
 withTlsUnique cxt f =
   cxtFinished cxt
@@ -722,6 +724,7 @@ instance Encoding TransportError where
     TENoServerAuth -> "NO_AUTH"
     TEHandshake e -> "HANDSHAKE " <> bshow e
 
+-- spec: spec/modules/Simplex/Messaging/Transport.md#tputblock--tgetblock--optional-block-encryption
 -- | Pad and send block to SMP transport.
 tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} block = do
@@ -797,6 +800,7 @@ smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX255
 smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ = do
   SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
   when (sessionId /= sessId) $ throwE TEBadSession
+  -- spec: spec/modules/Simplex/Messaging/Transport.md#proxy-version-downgrade-logic
   -- Below logic downgrades version range in case the "client" is SMP proxy server and it is
   -- connected to the destination server of the version 11 or older.
   -- It disables transport encryption between SMP proxy and destination relay.
@@ -857,6 +861,7 @@ smpTHandleClient :: forall c. THandleSMP c 'TClient -> VersionSMP -> VersionRang
 smpTHandleClient th v vr pk_ ck_ proxyServer clientService = do
   let thAuth = clientTHParams <$!> ck_
   be <- blockEncryption th v proxyServer thAuth
+  -- spec: spec/modules/Simplex/Messaging/Transport.md#smpthandleclient--chain-key-swap
   -- swap is needed to use client's sndKey as server's rcvKey and vice versa
   pure $ smpTHandle_ th v vr thAuth $ uncurry TSbChainKeys . swap <$> be
   where
@@ -893,6 +898,7 @@ smpTHandle_ th@THandle {params} v vr thAuth encryptBlock =
           }
    in (th :: THandleSMP c p) {params = params'}
 
+-- spec: spec/modules/Simplex/Messaging/Transport.md#forcecertchain--space-leak-prevention
 forceCertChain :: CertChainPubKey -> CertChainPubKey
 forceCertChain cert@(CertChainPubKey (X.CertificateChain cc) signedKey) = length (show cc) `seq` show signedKey `seq` cert
 {-# INLINE forceCertChain #-}
