@@ -66,7 +66,7 @@ Bottom-up, function-by-function. Each TypeScript function tested against its Has
 
 **Project location**: `simplexmq-2/smp-web/`
 **Tests**: `simplexmq-2/tests/SMPWebTests.hs` — reuses `callNode`/`jsOut`/`jsUint8` from XFTPWebTests (generalized, not copied)
-**xftp-web**: npm dependency (encoding, crypto, padding imported directly)
+**xftp-web**: npm dependency via `file:../xftp-web` (encoding, crypto, padding imported directly). Note: libsodium-wrappers-sumo is xftp-web's dependency; tests must init the same sodium instance that xftp-web's secretbox uses. If xftp-web is ever published to npm, libsodium should become a peerDependency.
 **File structure**: mirrors Haskell module hierarchy (see RFC section 2)
 
 **Pattern for each function**:

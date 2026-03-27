@@ -54,7 +54,11 @@ impAgentProto :: String
 impAgentProto = "import { connShortLinkStrP } from './dist/agent/protocol.js';"
 
 impCryptoShortLink :: String
-impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf } from './dist/crypto/shortLink.js';"
+impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf, decryptLinkData } from './dist/crypto/shortLink.js';"
+
+-- Init sodium from xftp-web's copy (same instance secretbox.ts uses)
+impSodium :: String
+impSodium = "import sodium from '@simplex-chat/xftp-web/node_modules/libsodium-wrappers-sumo/dist/modules-sumo/libsodium-wrappers.js'; await sodium.ready;"
 
 jsStr :: B.ByteString -> String
 jsStr bs = "'" <> BC.unpack bs <> "'"
@@ -175,6 +179,30 @@ smpWebTests = describe "SMP Web Client" $ do
         tsResult <- callNode $ impCryptoShortLink
           <> jsOut ("invShortLinkKdf(" <> jsUint8 (B.pack [50..81]) <> ")")
         tsResult `shouldBe` hsKey
+
+    describe "decryptLinkData" $ do
+      it "TypeScript decrypts Haskell-encrypted data" $ do
+        let sbKey = C.unsafeSbKey $ B.pack [1..32]
+            nonce = C.cbNonce $ B.pack [1..24]
+            -- Simulate encodeSign: smpEncode signature <> plaintext
+            fakeSig = B.pack [1..64] -- 64-byte "signature"
+            fixedPlain = "fixed-data-here"
+            userPlain = "user-data-here"
+            signedFixed = smpEncode fakeSig <> fixedPlain
+            signedUser = smpEncode fakeSig <> userPlain
+        case (,) <$> C.sbEncrypt sbKey nonce signedFixed 2008
+                 <*> C.sbEncrypt sbKey nonce signedUser 13784 of
+          Left e -> expectationFailure $ "encrypt failed: " <> show e
+          Right (ctFixed, ctUser) -> do
+            let encFixed = C.unCbNonce nonce <> ctFixed
+                encUser = C.unCbNonce nonce <> ctUser
+            tsResult <- callNode $ impSodium <> impCryptoShortLink
+              <> "const r = decryptLinkData("
+              <> jsUint8 (C.unSbKey sbKey) <> ","
+              <> jsUint8 encFixed <> ","
+              <> jsUint8 encUser <> ");"
+              <> jsOut ("new Uint8Array([...r.fixedData, 0, ...r.userData])")
+            tsResult `shouldBe` (fixedPlain <> B.singleton 0 <> userPlain)
 
   describe "agent/protocol" $ do
     describe "ConnShortLink" $ do
