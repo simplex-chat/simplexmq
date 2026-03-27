@@ -218,7 +218,9 @@ Each step produces working, tested code. Steps 1-11 work without block encryptio
 
 **Done**. Function: `connShortLinkStrP` in `agent/protocol.ts`. Uses `base64urlDecode` from xftp-web `description.ts`.
 
-**Future**: add long link parsing (`ConnectionRequestUri`) and an either-parser that handles both short and long links.
+**Future**:
+- Add long link parsing (`ConnectionRequestUri`) and an either-parser that handles both short and long links.
+- Add `restoreShortLink`: preset servers are shortened to host-only (`SMPServerOnlyHost` - no port, no keyHash). After parsing, `restoreShortLink` looks up the full server by hostname from a preset servers list. Without this, connections to preset servers will fail. See `Agent/Protocol.hs:1692`.
 
 ### Step 7: HKDF Key Derivation
 

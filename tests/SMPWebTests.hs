@@ -18,9 +18,10 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strEncode)
-import Simplex.Messaging.Protocol (SMPServer, pattern SMPServer)
+import Simplex.Messaging.Protocol (EntityId (..), SMPServer, pattern SMPServer)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
@@ -51,6 +52,9 @@ impWS = "import { connectSMP, sendBlock, receiveBlock } from './dist/transport/w
 
 impAgentProto :: String
 impAgentProto = "import { connShortLinkStrP } from './dist/agent/protocol.js';"
+
+impCryptoShortLink :: String
+impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf } from './dist/crypto/shortLink.js';"
 
 jsStr :: B.ByteString -> String
 jsStr bs = "'" <> BC.unpack bs <> "'"
@@ -153,6 +157,24 @@ smpWebTests = describe "SMP Web Client" $ do
           <> "clientService: null"
           <> "})")
         tsEncoded `shouldBe` hsEncoded
+
+  describe "crypto/shortLink" $ do
+    describe "contactShortLinkKdf" $ do
+      it "TypeScript produces same linkId and sbKey as Haskell" $ do
+        let linkKey = AP.LinkKey $ B.pack [1..32]
+            (EntityId hsLinkId, C.SbKey hsKey) = contactShortLinkKdf linkKey
+        tsResult <- callNode $ impCryptoShortLink
+          <> "const r = contactShortLinkKdf(" <> jsUint8 (B.pack [1..32]) <> ");"
+          <> jsOut ("new Uint8Array([...r.linkId, ...r.sbKey])")
+        tsResult `shouldBe` (hsLinkId <> hsKey)
+
+    describe "invShortLinkKdf" $ do
+      it "TypeScript produces same sbKey as Haskell" $ do
+        let linkKey = AP.LinkKey $ B.pack [50..81]
+            C.SbKey hsKey = invShortLinkKdf linkKey
+        tsResult <- callNode $ impCryptoShortLink
+          <> jsOut ("invShortLinkKdf(" <> jsUint8 (B.pack [50..81]) <> ")")
+        tsResult `shouldBe` hsKey
 
   describe "agent/protocol" $ do
     describe "ConnShortLink" $ do
