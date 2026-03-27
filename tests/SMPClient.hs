@@ -26,13 +26,15 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClie
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (runSMPServerBlocking)
+import Simplex.Messaging.Server (runSMPServerBlocking, AttachHTTP)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
+import Data.X509.Validation (Fingerprint (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
-import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFileFingerprint, loadFingerprint, loadServerCredential, mkTransportServerConfig)
+import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (ifM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
@@ -155,7 +157,8 @@ testSMPClientVR vr client = do
 
 testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient_ host port vr client = do
-  let tcConfig = defaultTransportClientConfig {clientALPN} :: TransportClientConfig
+  -- SMP clients use useSNI = False (matches defaultSMPClientConfig)
+  let tcConfig = defaultTransportClientConfig {clientALPN, useSNI = False} :: TransportClientConfig
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
     runExceptT (smpClientHandshake h Nothing testKeyHash vr False Nothing) >>= \case
       Right th -> client th
@@ -283,6 +286,16 @@ serverStoreConfig_ useDbStoreLog = \case
     dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
     storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
 
+cfgWebOn :: AStoreType -> ServiceName -> AServerConfig
+cfgWebOn msType port' = updateCfg (cfgMS msType) $ \cfg' ->
+  cfg' { transports = [(port', transport @TLS, True)],
+         httpCredentials = Just ServerCredentials
+           { caCertificateFile = Nothing,
+             privateKeyFile = "tests/fixtures/web.key",
+             certificateFile = "tests/fixtures/web.crt"
+           }
+       }
+
 cfgV7 :: AServerConfig
 cfgV7 = updateCfg cfg $ \cfg' -> cfg' {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
 
@@ -333,9 +346,12 @@ withServerCfg :: AServerConfig -> (forall s. ServerConfig s -> a) -> a
 withServerCfg (ASrvCfg _ _ cfg') f = f cfg'
 
 withSmpServerConfigOn :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
+withSmpServerConfigOn t cfg' port' = withSmpServerConfig (updateCfg cfg' $ \c -> c {transports = [(port', t, False)]}) Nothing
+
+withSmpServerConfig :: HasCallStack => AServerConfig -> Maybe AttachHTTP -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerConfig (ASrvCfg _ _ cfg') attachHTTP_ =
   serverBracket
-    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
+    (\started -> runSMPServerBlocking started cfg' attachHTTP_)
     (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
