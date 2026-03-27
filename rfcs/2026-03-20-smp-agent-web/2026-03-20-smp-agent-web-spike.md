@@ -248,19 +248,35 @@ Each step produces working, tested code. Steps 1-11 work without block encryptio
 
 **Tests**: Haskell `encodeSignLinkData` + `sbEncrypt` with known key/nonce → TypeScript decrypts → plaintext matches.
 
-### Step 9: FixedLinkData / ConnLinkData Parse
+### Step 9: ConnLinkData Parse
 
 **File**: `agent/protocol.ts`
-**Haskell reference**: `Simplex.Messaging.Agent.Protocol` — `FixedLinkData`, `ConnLinkData`, `UserContactData` Encoding instances
+**Haskell reference**: `Simplex.Messaging.Agent.Protocol` — `ConnLinkData`, `UserContactData`, `OwnerAuth`, `ConnShortLink`, `ProtocolServer` Encoding instances
 
-**Implementation**:
-- `decodeFixedLinkData(d)`: `decodeWord16` × 2 for agentVRange, `decodeBytes` for rootKey (32 bytes Ed25519), `decodeLarge` for linkConnReq, optional `decodeBytes` for linkEntityId (if bytes remaining)
+**Implementation** (proper decoding, not skipping):
 - `decodeConnLinkData(d)`: `anyByte` for connectionMode ('C'=Contact), `decodeWord16` × 2 for agentVRange, then `decodeUserContactData`
-- `decodeUserContactData(d)`: `decodeBool` for direct, `decodeList(decodeOwnerAuth, d)` for owners, `decodeList(decodeConnShortLink, d)` for relays, `decodeUserLinkData(d)` for userData
-- `decodeUserLinkData(d)`: peek first byte — if 0xFF, skip it and `decodeLarge(d)`; otherwise `decodeBytes(d)`
+- `decodeUserContactData(d)`: `decodeBool` for direct, `smpListP(decodeOwnerAuth, d)` for owners, `smpListP(decodeConnShortLink, d)` for relays, `decodeUserLinkData(d)` for userData
+- `decodeOwnerAuth(d)`: `decodeBytes` for outer wrapper, then parse inner: `(ownerId, ownerKey, authOwnerSig)` all as ByteStrings
+- `decodeConnShortLink(d)`: `anyByte` for mode, then Contact: `(ctTypeChar, srv, linkKey)` or Invitation: `(srv, linkId, linkKey)`
+- `decodeProtocolServer(d)`: `decodeBytes` for scheme+keyHash, `decodeBytes` for host, `decodeBytes` for port — need to verify exact encoding
+- `decodeUserLinkData(d)`: first byte 0xFF → `decodeLarge`; otherwise it's the 1-byte length of a ByteString
 - `parseProfile(userData)`: check first byte for 'X' (0x58, zstd compressed) — if so, decompress; otherwise `JSON.parse` directly
 
-**Tests**: Haskell encodes full `FixedLinkData` and `ContactLinkData` with known values → TypeScript decodes → all fields match.
+**Tests**: Haskell encodes `ContactLinkData` with known values → TypeScript decodes → all fields match.
+
+**FixedLinkData**: deferred to step 15. `linkConnReq` (ConnectionRequestUri) is NOT length-prefixed in the tuple encoding — it requires full parsing. FixedLinkData is also needed to validate mutable data signature using rootKey.
+
+### Step 15: FixedLinkData Parse
+
+**File**: `agent/protocol.ts`
+**Haskell reference**: `Simplex.Messaging.Agent.Protocol` — `FixedLinkData`, `ConnectionRequestUri`, `ConnReqUriData` Encoding instances
+
+**Implementation**:
+- `decodeFixedLinkData(d)`: `decodeWord16` × 2 for agentVRange, `decodeBytes` for rootKey (32 bytes Ed25519), then parse `ConnectionRequestUri` (mode byte + `ConnReqUriData`), optional `decodeBytes` for linkEntityId
+- `decodeConnectionRequestUri(d)`: full parsing of `ConnReqUriData` including SMP queue URIs
+- Needed for: connecting to the contact, and validating mutable data signature with rootKey
+
+**Tests**: Haskell encodes full `FixedLinkData` → TypeScript decodes → rootKey and linkConnReq fields match.
 
 ### Step 10: WebSocket Transport
 
