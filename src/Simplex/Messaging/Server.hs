@@ -1863,7 +1863,7 @@ client
                   let incSrvStat sel n = liftIO $ atomicModifyIORef'_ (sel $ servicesSel stats) (+ n)
                       diff = fromIntegral $ count' - count
                   if -- `count == -1` only for subscriptions by old NTF servers
-                    | count == -1 && (diff == 0 && idsHash == idsHash') -> incSrvStat srvSubOk 1
+                    | count == -1 || (diff == 0 && idsHash == idsHash') -> incSrvStat srvSubOk 1
                     | diff > 0 -> incSrvStat srvSubMore 1 >> incSrvStat srvSubMoreTotal diff
                     | diff < 0 -> incSrvStat srvSubFewer 1 >> incSrvStat srvSubFewerTotal (- diff)
                     | otherwise -> incSrvStat srvSubDiff 1

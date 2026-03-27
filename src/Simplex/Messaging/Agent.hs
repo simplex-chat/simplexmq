@@ -828,7 +828,7 @@ setUserService' c userId enable = do
         let changed = enable /= wasEnabled
         when changed $ TM.insert userId enable $ useClientServices c
         pure (True, changed)
-  unless ok $ throwE $ CMD PROHIBITED "setNetworkConfig"
+  unless ok $ throwE $ CMD PROHIBITED "setUserService"
   when (changed && not enable) $ withStore' c (`deleteClientServices` userId)
 
 newConnAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
