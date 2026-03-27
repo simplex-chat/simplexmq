@@ -1,4 +1,7 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | Per-function tests for the smp-web TypeScript SMP client library.
@@ -10,13 +13,19 @@
 module SMPWebTests (smpWebTests) where
 
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word16)
+import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Protocol (SMPServer, pattern SMPServer)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
 import Simplex.Messaging.Transport (TLS)
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 import SMPClient (cfgWebOn, testKeyHash, testPort, withSmpServerConfig)
 import Test.Hspec hiding (it)
 import Util
@@ -39,6 +48,12 @@ impTransport = "import { decodeSMPServerHandshake, encodeSMPClientHandshake } fr
 impWS :: String
 impWS = "import { connectSMP, sendBlock, receiveBlock } from './dist/transport/websockets.js';"
   <> "import { blockPad, blockUnpad } from '@simplex-chat/xftp-web/dist/protocol/transmission.js';"
+
+impAgentProto :: String
+impAgentProto = "import { connShortLinkStrP } from './dist/agent/protocol.js';"
+
+jsStr :: B.ByteString -> String
+jsStr bs = "'" <> BC.unpack bs <> "'"
 
 smpWebTests :: SpecWith ()
 smpWebTests = describe "SMP Web Client" $ do
@@ -138,6 +153,70 @@ smpWebTests = describe "SMP Web Client" $ do
           <> "clientService: null"
           <> "})")
         tsEncoded `shouldBe` hsEncoded
+
+  describe "agent/protocol" $ do
+    describe "ConnShortLink" $ do
+      it "parses simplex: contact link" $ do
+        let srv = SMPServer ("smp1.example.com" :| []) "" (C.KeyHash $ B.pack [1..32])
+            linkKey = AP.LinkKey $ B.pack [100..131]
+            link = AP.CSLContact AP.SLSSimplex AP.CCTContact srv linkKey
+            uri = strEncode link
+        tsResult <- callNode $ impAgentProto
+          <> "const r = connShortLinkStrP(" <> jsStr uri <> ");"
+          <> jsOut ("new Uint8Array([...r.linkKey, ...r.server.keyHash])")
+        tsResult `shouldBe` (B.pack [100..131] <> B.pack [1..32])
+
+      it "parses https: contact link with port" $ do
+        let srv = SMPServer ("smp2.example.com" :| []) "5223" (C.KeyHash $ B.pack [50..81])
+            linkKey = AP.LinkKey $ B.pack [200..231]
+            link = AP.CSLContact AP.SLSServer AP.CCTContact srv linkKey
+            uri = strEncode link
+        tsResult <- callNode $ impAgentProto
+          <> "const r = connShortLinkStrP(" <> jsStr uri <> ");"
+          <> "const enc = new TextEncoder();"
+          <> jsOut ("new Uint8Array([...r.linkKey, ...r.server.keyHash, ...enc.encode(r.server.port), 0, ...enc.encode(r.server.hosts.join(','))])")
+        let expected = B.pack [200..231] <> B.pack [50..81] <> "5223" <> B.singleton 0 <> "smp2.example.com"
+        tsResult `shouldBe` expected
+
+      it "parses simplex: contact link with multiple hosts" $ do
+        let srv = SMPServer ("host1.example.com" :| ["host2.example.com"]) "" (C.KeyHash $ B.pack [1..32])
+            linkKey = AP.LinkKey $ B.pack [10..41]
+            link = AP.CSLContact AP.SLSSimplex AP.CCTContact srv linkKey
+            uri = strEncode link
+        tsResult <- callNode $ impAgentProto
+          <> "const r = connShortLinkStrP(" <> jsStr uri <> ");"
+          <> "const enc = new TextEncoder();"
+          <> jsOut ("new Uint8Array([...r.linkKey, ...enc.encode(r.server.hosts.join(','))])")
+        tsResult `shouldBe` (B.pack [10..41] <> "host1.example.com,host2.example.com")
+
+      it "parses group link type" $ do
+        let srv = SMPServer ("smp.example.com" :| []) "" (C.KeyHash $ B.pack [1..32])
+            linkKey = AP.LinkKey $ B.pack [10..41]
+            link = AP.CSLContact AP.SLSSimplex AP.CCTGroup srv linkKey
+            uri = strEncode link
+        tsResult <- callNode $ impAgentProto
+          <> "const r = connShortLinkStrP(" <> jsStr uri <> ");"
+          <> "const enc = new TextEncoder();"
+          <> jsOut ("enc.encode(r.connType)")
+        tsResult `shouldBe` "group"
+
+      it "round-trips: Haskell encode -> TypeScript parse -> fields match" $ do
+        let srv = SMPServer ("server1.simplex.im" :| ["server2.simplex.im"]) "443" (C.KeyHash $ B.pack [1..32])
+            linkKey = AP.LinkKey $ B.pack [200..231]
+            link = AP.CSLContact AP.SLSServer AP.CCTContact srv linkKey
+            uri = strEncode link
+        -- TypeScript returns: mode, scheme, connType, host count, port, linkKey
+        tsResult <- callNode $ impAgentProto
+          <> "const r = connShortLinkStrP(" <> jsStr uri <> ");"
+          <> "const enc = new TextEncoder();"
+          <> jsOut ("new Uint8Array(["
+          <> "r.mode === 'contact' ? 1 : 0,"
+          <> "r.scheme === 'https' ? 1 : 0,"
+          <> "r.connType === 'contact' ? 1 : 0,"
+          <> "r.server.hosts.length,"
+          <> "...r.linkKey"
+          <> "])")
+        tsResult `shouldBe` B.pack ([1, 1, 1, 2] ++ [200..231])
 
     describe "WebSocket handshake" $ do
       it "TypeScript connects and completes SMP handshake" $ do

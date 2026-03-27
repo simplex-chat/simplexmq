@@ -214,7 +214,11 @@ Each step produces working, tested code. Steps 1-11 work without block encryptio
 - `base64UrlDecode(s)`: pad to multiple of 4, replace `-`→`+`, `_`→`/`, decode
 - Returns `{scheme, connType, server: {hosts, port, keyHash}, linkKey}`
 
-**Tests**: Haskell `strEncode` a `ConnShortLink` → TypeScript `parseShortLink` parses. All fields match. Test multiple formats: with/without query params, different type chars.
+**Tests**: Haskell `strEncode` a `ConnShortLink` → TypeScript `connShortLinkStrP` parses. All fields match. Test multiple formats: with/without query params, different type chars.
+
+**Done**. Function: `connShortLinkStrP` in `agent/protocol.ts`. Uses `base64urlDecode` from xftp-web `description.ts`.
+
+**Future**: add long link parsing (`ConnectionRequestUri`) and an either-parser that handles both short and long links.
 
 ### Step 7: HKDF Key Derivation
 
