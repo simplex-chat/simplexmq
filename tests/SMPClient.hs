@@ -33,6 +33,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..
 import Data.X509.Validation (Fingerprint (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFileFingerprint, loadFingerprint, loadServerCredential, mkTransportServerConfig)
 import Simplex.Messaging.Transport.WebSockets (WS)
 import Simplex.Messaging.Util (ifM)
@@ -293,7 +294,8 @@ cfgWebOn msType port' = updateCfg (cfgMS msType) $ \cfg' ->
            { caCertificateFile = Nothing,
              privateKeyFile = "tests/fixtures/web.key",
              certificateFile = "tests/fixtures/web.crt"
-           }
+           },
+         transportConfig = mkTransportServerConfig True (Just $ alpnSupportedSMPHandshakes <> httpALPN) True
        }
 
 cfgV7 :: AServerConfig
