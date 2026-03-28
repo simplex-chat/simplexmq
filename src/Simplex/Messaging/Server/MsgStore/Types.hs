@@ -41,6 +41,7 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
+import Data.Map.Strict (Map)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
@@ -86,6 +87,8 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   tryDeleteMsg_ :: StoreQueue s -> MsgQueue s -> Bool -> StoreMonad s ()
   isolateQueue :: s -> StoreQueue s -> Text -> StoreMonad s a -> ExceptT ErrorType IO a
   unsafeRunStore :: StoreQueue s -> Text -> StoreMonad s a -> IO a
+
+  tryPeekMsgs :: s -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId Message)
 
   -- default implementations are overridden for PostgreSQL storage of messages
   tryPeekMsg :: s -> StoreQueue s -> ExceptT ErrorType IO (Maybe Message)
