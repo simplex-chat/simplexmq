@@ -93,6 +93,7 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   tryPeekMsg :: s -> StoreQueue s -> ExceptT ErrorType IO (Maybe Message)
   tryPeekMsg st q = snd <$$> withPeekMsgQueue st q "tryPeekMsg" pure
   {-# INLINE tryPeekMsg #-}
+  
   tryPeekMsgs :: s -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId Message)
   tryPeekMsgs st qs = M.fromList . catMaybes <$> mapM (\q -> (recipientId q,) <$$> tryPeekMsg st q) qs
 
