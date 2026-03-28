@@ -246,7 +246,7 @@ instance MsgStoreClass PostgresMsgStore where
   tryPeekMsg ms q = isolateQueue ms q "tryPeekMsg" $ tryPeekMsg_ q ()
   {-# INLINE tryPeekMsg #-}
 
-  tryPeekMsgs :: PostgresMsgStore -> [PostgresQueue] -> ExceptT ErrorType IO (Map RecipientId Message)
+  tryPeekMsgs :: PostgresMsgStore -> [PostgresQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
   tryPeekMsgs _ms [] = pure M.empty
   tryPeekMsgs ms qs =
     uninterruptibleMask_ $

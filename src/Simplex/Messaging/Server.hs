@@ -1377,8 +1377,8 @@ client
   where
     prefetchMsgs :: NonEmpty (VerifiedTransmission s) -> M s (Either ErrorType (Map RecipientId Message))
     prefetchMsgs batch =
-      let subQueues = [q | (Just (q, _), (_, _, Cmd SRecipient SUB)) <- L.toList batch]
-       in liftIO $ runExceptT $ tryPeekMsgs ms subQueues
+      let subQs = [q | (Just (q, _), (_, _, Cmd SRecipient SUB)) <- L.toList batch]
+       in if null subQs then pure $ Right M.empty else liftIO $ runExceptT $ tryPeekMsgs ms subQs
 
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M s (Maybe ResponseAndMessage)
     processProxiedCmd (corrId, EntityId sessId, command) = (\t -> ((corrId, EntityId sessId, t), Nothing)) <$$> case command of
