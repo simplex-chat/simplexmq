@@ -921,13 +921,12 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 -- | Prepare connection link for contact mode (no network, no database).
 -- Caller provides root signing key pair and link entity ID.
 prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData = do
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData = do
   g <- asks random
   plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
-  let (_, plpRootPrivKey) = rootKey
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
