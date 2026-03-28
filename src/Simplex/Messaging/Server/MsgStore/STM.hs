@@ -24,7 +24,6 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
@@ -176,9 +175,6 @@ instance MsgStoreClass STMMsgStore where
   tryPeekMsg_ :: STMQueue -> STMMsgQueue -> STM (Maybe Message)
   tryPeekMsg_ _ = tryPeekTQueue . msgTQueue
   {-# INLINE tryPeekMsg_ #-}
-
-  tryPeekMsgs st qs =
-    M.fromList . catMaybes <$> mapM (\q -> (recipientId' q,) <$$> tryPeekMsg st q) qs
 
   tryDeleteMsg_ :: STMQueue -> STMMsgQueue -> Bool -> STM ()
   tryDeleteMsg_ _ STMMsgQueue {msgTQueue = q, size} _logState =

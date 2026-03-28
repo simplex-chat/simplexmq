@@ -64,7 +64,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (sort)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
@@ -671,9 +671,6 @@ instance MsgStoreClass (JournalMsgStore s) where
             ml@(msg, _) <- hGetMsgAt h $ bytePos rs
             atomically $ writeTVar tipMsg $ Just (Just ml)
             pure $ Just msg
-
-  tryPeekMsgs st qs =
-    M.fromList . catMaybes <$> mapM (\q -> (recipientId' q,) <$$> tryPeekMsg st q) qs
 
   tryDeleteMsg_ :: JournalQueue s -> JournalMsgQueue s -> Bool -> StoreIO s ()
   tryDeleteMsg_ q mq@JournalMsgQueue {tipMsg, handles} logState = StoreIO $ (`E.finally` when logState (updateActiveAt q)) $

@@ -1485,7 +1485,9 @@ client
               pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
       Cmd SRecipient command ->
         case command of
-          SUB -> withQueue' $ subscribeQueueAndDeliver (M.lookup entId <$> msgMap)
+          SUB -> case msgMap of
+            Left e -> pure $ Just (err e, Nothing)
+            Right msgs -> withQueue' $ subscribeQueueAndDeliver (M.lookup entId msgs)
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1626,8 +1628,8 @@ client
         suspendQueue_ :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         suspendQueue_ (q, _) = liftIO $ either err (const ok) <$> suspendQueue (queueStore ms) q
 
-        subscribeQueueAndDeliver :: Either ErrorType (Maybe Message) -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
-        subscribeQueueAndDeliver prefetchedMsg q qr@QueueRec {rcvServiceId} =
+        subscribeQueueAndDeliver :: Maybe Message -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
+        subscribeQueueAndDeliver msg_ q qr@QueueRec {rcvServiceId} =
           liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
             Nothing ->
               sharedSubscribeQueue q SRecipientService rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices >>= \case
@@ -1648,7 +1650,6 @@ client
             deliver (hasSub, sub_) = do
               stats <- asks serverStats
               fmap (either ((,Nothing) . err) id) $ liftIO $ runExceptT $ do
-                msg_ <- liftEither prefetchedMsg
                 msg' <- forM msg_ $ \msg -> liftIO $ do
                   ts <- getSystemSeconds
                   sub <- maybe (atomically getSub) pure sub_
