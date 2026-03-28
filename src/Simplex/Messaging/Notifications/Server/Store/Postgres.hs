@@ -270,7 +270,7 @@ getUsedSMPServers st =
             smp_host, smp_port, smp_keyhash, smp_server_id,
             ntf_service_id, smp_notifier_count, smp_notifier_ids_hash
           FROM smp_servers
-          WHERE EXISTS (SELECT 1 FROM subscriptions WHERE status IN ?)
+          WHERE EXISTS (SELECT 1 FROM subscriptions WHERE smp_server_id = smp_servers.smp_server_id AND status IN ?)
         |]
         (Only (In subscribeNtfStatuses))
   where
