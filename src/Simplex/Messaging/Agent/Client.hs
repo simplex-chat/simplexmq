@@ -625,9 +625,7 @@ getServiceCredentials c userId srv =
             Just service -> pure service
             Nothing -> do
               cred <- genCredentials g Nothing (25, 24 * 999999) "simplex"
-              let tlsCreds = tlsCredentials [cred]
-              createClientService db userId srv tlsCreds
-              pure (tlsCreds, Nothing)
+              createClientService db userId srv $ tlsCredentials [cred]
       serviceSignKey <- liftEitherWith INTERNAL $ C.x509ToPrivate' $ snd serviceCreds
       let creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
       pure (creds, serviceId_)

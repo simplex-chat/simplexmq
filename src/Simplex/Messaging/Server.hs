@@ -292,7 +292,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 pure $ as ++ as'
               CSService serviceId changedSubs -> do
                 modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
-                modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs -- server count and IDs hash for all services
+                modifyTVar' totalServiceSubs $ addServiceSubs changedSubs -- server count and IDs hash for all services
                 cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
             updateSubDisconnected = case clntSub of
                 -- do not insert client if it is already disconnected, but send END/DELD to any other client subscribed to this queue or service
@@ -701,12 +701,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       loadedCounts <- loadedQueueCounts $ fromMsgStore ms
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
       where
-        getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, subClients} = do
+        getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients} = do
           subsCount <- M.size <$> getSubscribedClients queueSubscribers
           subClientsCount <- IS.size <$> readTVarIO subClients
           subServicesCount <- M.size <$> getSubscribedClients serviceSubscribers
-          pure RTSubscriberMetrics {subsCount, subClientsCount, subServicesCount}
-        getDeliveredMetrics ts' = foldM countClnt (RTSubscriberMetrics 0 0 0, emptyTimeBuckets) =<< getServerClients srv
+          subServiceSubsCount <- fst <$> readTVarIO totalServiceSubs
+          pure RTSubscriberMetrics {subsCount, subClientsCount, subServicesCount, subServiceSubsCount}
+        getDeliveredMetrics ts' = foldM countClnt (RTSubscriberMetrics 0 0 0 0, emptyTimeBuckets) =<< getServerClients srv
           where
             countClnt acc@(metrics, times) Client {subscriptions} = do
               (cnt, times') <- foldM countSubs (0, times) =<< readTVarIO subscriptions
@@ -1863,7 +1864,7 @@ client
                   let incSrvStat sel n = liftIO $ atomicModifyIORef'_ (sel $ servicesSel stats) (+ n)
                       diff = fromIntegral $ count' - count
                   if -- `count == -1` only for subscriptions by old NTF servers
-                    | count == -1 && (diff == 0 && idsHash == idsHash') -> incSrvStat srvSubOk 1
+                    | count == -1 || (diff == 0 && idsHash == idsHash') -> incSrvStat srvSubOk 1
                     | diff > 0 -> incSrvStat srvSubMore 1 >> incSrvStat srvSubMoreTotal diff
                     | diff < 0 -> incSrvStat srvSubFewer 1 >> incSrvStat srvSubFewerTotal (- diff)
                     | otherwise -> incSrvStat srvSubDiff 1

@@ -410,23 +410,23 @@ deleteUsersWithoutConns db = do
   forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
   pure userIds
 
-createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ()
-createClientService db userId srv (kh, (cert, pk)) = do
+createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ((C.KeyHash, TLS.Credential), Maybe ServiceId)
+createClientService db userId srv tlsCreds@(kh, (cert, pk)) = do
   serverKeyHash_ <- createServer db srv
-  DB.execute
-    db
-    [sql|
-      INSERT INTO client_services
-        (user_id, host, port, server_key_hash, service_cert_hash, service_cert, service_priv_key)
-      VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT (user_id, host, port, server_key_hash)
-      DO UPDATE SET
-        service_cert_hash = EXCLUDED.service_cert_hash,
-        service_cert = EXCLUDED.service_cert,
-        service_priv_key = EXCLUDED.service_priv_key,
-        service_id = NULL
-    |]
-    (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
+  (rs :: [Only Int]) <-
+    DB.query
+      db
+      [sql|
+        INSERT INTO client_services
+          (user_id, host, port, server_key_hash, service_cert_hash, service_cert, service_priv_key)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT (user_id, host, port, server_key_hash) DO NOTHING
+        RETURNING 1
+      |]
+      (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
+  if null rs
+    then fromMaybe (tlsCreds, Nothing) <$> getClientServiceCredentials db userId srv
+    else pure (tlsCreds, Nothing)
 
 getClientServiceCredentials :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
 getClientServiceCredentials db userId srv =
