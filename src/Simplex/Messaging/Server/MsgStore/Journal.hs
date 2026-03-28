@@ -355,8 +355,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE setQueueService #-}
   getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
   {-# INLINE getQueueNtfServices #-}
-  getServiceQueueCount = withQS (getServiceQueueCount @(JournalQueue s))
-  {-# INLINE getServiceQueueCount #-}
+  getServiceQueueCountHash = withQS (getServiceQueueCountHash @(JournalQueue s))
+  {-# INLINE getServiceQueueCountHash #-}
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
 makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
@@ -443,6 +443,26 @@ instance MsgStoreClass (JournalMsgStore s) where
       -- Also see the comment in loadQueue in PostgresQueueStore
       getLoadedQueue :: JournalQueue s -> IO (JournalQueue s)
       getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
+
+  foldRcvServiceMessages :: JournalMsgStore s -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO (Either ErrorType a)
+  foldRcvServiceMessages ms serviceId f acc = case queueStore_ ms of
+    MQStore st -> fmap Right $ foldRcvServiceQueues st serviceId f' acc
+      where
+        f' a (q, qr) = runExceptT (tryPeekMsg ms q) >>= f a (recipientId q) . ((qr,) <$$>)
+#if defined(dbServerPostgres)
+    PQStore st -> foldRcvServiceQueueRecs st serviceId f' acc
+      where
+        JournalMsgStore {queueLocks, sharedLock} = ms
+        f' a (rId, qr) = do
+          q <- mkQueue ms False rId qr
+          qMsg_ <-
+            withSharedWaitLock rId queueLocks sharedLock $ runExceptT $ tryStore' "foldRcvServiceMessages" rId $
+              (qr,) . snd <$$> (getLoadedQueue q >>= unStoreIO . getPeekMsgQueue ms)
+          f a rId qMsg_
+        -- Use cached queue if available.
+        -- Also see the comment in loadQueue in PostgresQueueStore
+        getLoadedQueue q = fromMaybe q <$> TM.lookupIO (recipientId q) (loadedQueues $ queueStore_ ms)
+#endif
 
   logQueueStates :: JournalMsgStore s -> IO ()
   logQueueStates ms = withActiveMsgQueues ms $ unStoreIO . logQueueState

@@ -26,7 +26,6 @@ module Simplex.Messaging.Notifications.Server.Store
     stmAddNtfSubscription,
     stmDeleteNtfSubscription,
     stmStoreTokenLastNtf,
-    stmSetNtfService,
   )
 where
 
@@ -205,9 +204,6 @@ stmStoreTokenLastNtf (NtfSTMStore {tokens, tokenLastNtfs}) tknId ntf = do
       whenM (TM.member tknId tokens) $
         TM.insertM tknId (newTVar [ntf]) tokenLastNtfs
 
-stmSetNtfService :: NtfSTMStore -> SMPServer -> Maybe ServiceId -> STM ()
-stmSetNtfService (NtfSTMStore {ntfServices}) srv serviceId =
-  maybe (TM.delete srv) (TM.insert srv) serviceId ntfServices
 
 data TokenNtfMessageRecord = TNMRv1 NtfTokenId PNMessageData
 
