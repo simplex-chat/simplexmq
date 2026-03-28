@@ -41,7 +41,9 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
-import Data.Maybe (fromMaybe)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
@@ -91,6 +93,9 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   tryPeekMsg :: s -> StoreQueue s -> ExceptT ErrorType IO (Maybe Message)
   tryPeekMsg st q = snd <$$> withPeekMsgQueue st q "tryPeekMsg" pure
   {-# INLINE tryPeekMsg #-}
+  
+  tryPeekMsgs :: s -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId Message)
+  tryPeekMsgs st qs = M.fromList . catMaybes <$> mapM (\q -> (recipientId q,) <$$> tryPeekMsg st q) qs
 
   tryDelMsg :: s -> StoreQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message)
   tryDelMsg st q msgId' =
