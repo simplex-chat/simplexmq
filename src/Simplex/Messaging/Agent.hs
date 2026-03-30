@@ -401,10 +401,11 @@ createConnection c nm userId linkEntityId enableNtfs checkNotices = withAgentEnv
 {-# INLINE createConnection #-}
 
 -- | Prepare connection link for contact mode (no network call).
--- Returns root key pair (for signing OwnerAuth), the created link, and internal params.
+-- Caller provides root signing key pair and link entity ID.
+-- Returns the created link and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId linkEntityId checkNotices
+prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId rootKey linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId rootKey linkEntityId checkNotices
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
@@ -918,23 +919,22 @@ newConn c nm userId linkEntityId enableNtfs checkNotices cMode linkData_ clientD
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 -- | Prepare connection link for contact mode (no network, no database).
--- Generates all cryptographic material and returns the link that will be created.
-prepareConnectionLink' :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId linkEntityId checkNotices clientData = do
+-- Caller provides root signing key pair and link entity ID.
+prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData = do
   g <- asks random
   plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
-  sigKeys@(_, plpRootPrivKey) <- atomically $ C.generateKeyPair g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-      (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData sigKeys smpAgentVRange connReq linkEntityId
+      (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData rootKey smpAgentVRange connReq (Just linkEntityId)
       ccLink = CCLink connReq $ Just $ CSLContact SLSServer CCTContact srv plpLinkKey
       params = PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth}
-  pure (sigKeys, ccLink, params)
+  pure (ccLink, params)
 
 -- | Create connection for prepared link (single network call).
 createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
