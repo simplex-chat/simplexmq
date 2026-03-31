@@ -764,12 +764,15 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
         (Just <$> getSessVar workerSeq tSess smpSubWorkers ts)
     newSubWorker v = do
-      a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
+      a <- async $ void $ E.tryAny $ runSubWorker v
       atomically $ putTMVar (sessionVar v) a
-    runSubWorker = do
+    runSubWorker v = do
       ri <- asks $ reconnectInterval . config
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
-        pending <- atomically $ SS.getPendingSubs tSess $ currentSubs c
+        pending <- atomically $ do
+          qs <- SS.getPendingSubs tSess $ currentSubs c
+          when (M.null qs) $ cleanup v
+          pure qs
         unless (M.null pending) $ do
           liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c

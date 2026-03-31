@@ -307,11 +307,14 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
         (Just <$> getSessVar workerSeq srv smpSubWorkers ts)
     newSubWorker :: SessionVar (Async ()) -> IO ()
     newSubWorker v = do
-      a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
+      a <- async $ void $ E.tryAny $ runSubWorker v
       atomically $ putTMVar (sessionVar v) a
-    runSubWorker =
+    runSubWorker v =
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
-        subs <- getPending TM.lookupIO readTVarIO
+        subs <- atomically $ do
+          s <- getPending TM.lookup readTVar
+          when (noPending s) $ cleanup v
+          pure s
         unless (noPending subs) $ whenM (readTVarIO active) $ do
           void $ netTimeoutInt tcpConnectTimeout NRMBackground `timeout` runExceptT (reconnectSMPClient ca srv subs)
           loop
