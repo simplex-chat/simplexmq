@@ -47,6 +47,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Constraint (Dict (..))
+import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -328,11 +329,12 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
       atomically $ putTMVar (sessionVar v) a
     runSubWorker v =
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
-        subs <- atomically $ do
-          s <- getPending TM.lookup readTVar
-          when (noPending s) $ cleanup v
-          pure s
-        unless (noPending subs) $ whenM (readTVarIO active) $ do
+        subs_ <- atomically $ do                                                                                                                            
+          s <- getPending TM.lookup readTVar                                                                                                                
+          if noPending s                                                                                                                                    
+            then cleanup v $> Nothing                                                                                                                       
+            else pure $ Just s                                                                                                                              
+        forM_ subs_ $ \subs -> whenM (readTVarIO active) $ do  
           void $ netTimeoutInt tcpConnectTimeout NRMBackground `timeout` runExceptT (reconnectSMPClient ca srv subs)
           loop
     ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
