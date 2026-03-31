@@ -2740,7 +2740,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
         newLinkData = UserContactLinkData userCtData
     (_, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
     -- get link data async - creates new connection for bob
-    newId <- getConnShortLinkAsync bob 1 "1" shortLink
+    newId <- getConnShortLinkAsync bob 1 "1" Nothing shortLink
     ("1", newId', LDATA FixedLinkData {linkConnReq = qInfo'} (ContactLinkData _ userCtData')) <- get bob
     liftIO $ newId' `shouldBe` newId
     liftIO $ qInfo' `shouldBe` qInfo
