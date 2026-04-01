@@ -3,6 +3,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -17,6 +18,8 @@ module Simplex.FileTransfer.Server.Env
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
+    runWithStoreConfig,
+    checkFileStoreMode,
   ) where
 
 import Control.Logger.Simple
@@ -31,11 +34,17 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
+import Data.Ini (Ini)
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 #if defined(dbServerPostgres)
+import Data.Functor (($>))
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
-import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
+import Simplex.Messaging.Server.CLI (iniDBOptions, settingIsOn)
+import System.Directory (doesFileExist)
+import System.Exit (exitFailure)
 #endif
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
@@ -149,3 +158,45 @@ data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
+
+-- | Select and run the store config based on INI settings.
+-- CPP guards for Postgres are handled here so Main.hs stays CPP-free.
+runWithStoreConfig ::
+  Ini ->
+  String ->
+  Maybe FilePath ->
+  FilePath ->
+  MigrationConfirmation ->
+  (forall s. FileStoreClass s => XFTPStoreConfig s -> IO ()) ->
+  IO ()
+runWithStoreConfig _ini storeType storeLogFile_ _storeLogFilePath _confirmMigrations run = case storeType of
+  "memory" -> run $ XSCMemory storeLogFile_
+#if defined(dbServerPostgres)
+  "database" -> run $ XSCDatabase dbCfg
+    where
+      enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" _ini
+      dbStoreLogPath = enableDbStoreLog' $> _storeLogFilePath
+      dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions _ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations = _confirmMigrations}
+#else
+  "database" -> error "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
+#endif
+  _ -> error $ "Invalid store_files value: " <> storeType
+
+-- | Validate startup config when store_files=database.
+checkFileStoreMode :: Ini -> String -> FilePath -> IO ()
+#if defined(dbServerPostgres)
+checkFileStoreMode ini storeType storeLogFilePath = case storeType of
+  "database" -> do
+    storeLogExists <- doesFileExist storeLogFilePath
+    let dbStoreLogOn = settingIsOn "STORE_LOG" "db_store_log" ini
+    when (storeLogExists && isNothing_ dbStoreLogOn) $ do
+      putStrLn $ "Error: store log file " <> storeLogFilePath <> " exists but store_files is `database`."
+      putStrLn "Use `file-server database import` to migrate, or set `db_store_log: on`."
+      exitFailure
+  _ -> pure ()
+  where
+    isNothing_ Nothing = True
+    isNothing_ _ = False
+#else
+checkFileStoreMode _ _ _ = pure ()
+#endif
