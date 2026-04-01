@@ -51,6 +51,7 @@ import Simplex.FileTransfer.Server.Env
 import Simplex.FileTransfer.Server.Prometheus
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.Store.STM (STMFileStore)
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
@@ -500,12 +501,12 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds
       pure $ either FRErr id r
-    addFileRetry :: FileStore -> FileInfo -> Int -> RoundedFileTime -> M (Either XFTPErrorType XFTPFileId)
+    addFileRetry :: STMFileStore -> FileInfo -> Int -> RoundedFileTime -> M (Either XFTPErrorType XFTPFileId)
     addFileRetry st file n ts =
       retryAdd n $ \sId -> runExceptT $ do
         ExceptT $ addFile st sId file ts EntityActive
         pure sId
-    addRecipientRetry :: FileStore -> Int -> XFTPFileId -> RcvPublicAuthKey -> M (Either XFTPErrorType FileRecipient)
+    addRecipientRetry :: STMFileStore -> Int -> XFTPFileId -> RcvPublicAuthKey -> M (Either XFTPErrorType FileRecipient)
     addRecipientRetry st n sId rpk =
       retryAdd n $ \rId -> runExceptT $ do
         let rcp = FileRecipient rId rpk
@@ -616,7 +617,7 @@ blockServerFile fr@FileRec {senderId} info = do
   withFileLog $ \sl -> logBlockFile sl senderId info
   deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
 
-deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (FileStore -> IO (Either XFTPErrorType ())) -> M (Either XFTPErrorType ())
+deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (STMFileStore -> IO (Either XFTPErrorType ())) -> M (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
   path <- readTVarIO filePath
   stats <- asks serverStats

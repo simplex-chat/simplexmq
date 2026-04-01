@@ -30,6 +30,7 @@ import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
@@ -88,7 +89,7 @@ defaultInactiveClientExpiration =
 
 data XFTPEnv = XFTPEnv
   { config :: XFTPServerConfig,
-    store :: FileStore,
+    store :: STMFileStore,
     usedStorage :: TVar Int64,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
@@ -111,7 +112,7 @@ defaultFileExpiration =
 newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
 newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
-  store <- newFileStore
+  store <- newFileStore ()
   storeLog <- mapM (`readWriteFileStore` store) storeLogFile
   used <- getUsedStorage store
   usedStorage <- newTVarIO used

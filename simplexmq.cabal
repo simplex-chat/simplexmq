@@ -243,6 +243,7 @@ library
           Simplex.FileTransfer.Server.Prometheus
           Simplex.FileTransfer.Server.Stats
           Simplex.FileTransfer.Server.Store
+          Simplex.FileTransfer.Server.Store.STM
           Simplex.FileTransfer.Server.StoreLog
           Simplex.Messaging.Server
           Simplex.Messaging.Server.CLI
