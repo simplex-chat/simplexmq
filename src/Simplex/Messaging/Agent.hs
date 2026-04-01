@@ -365,9 +365,9 @@ setConnShortLinkAsync :: AgentClient -> ACorrId -> ConnId -> UserConnLinkData 'C
 setConnShortLinkAsync c = withAgentEnv c .:: setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
--- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new connection id
-getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AE ConnId
-getConnShortLinkAsync c = withAgentEnv c .:. getConnShortLinkAsync' c
+-- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new/passed connection id
+getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AE ConnId
+getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id.
@@ -1041,14 +1041,22 @@ setConnShortLinkAsync' c corrId connId userLinkData clientData =
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
     enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET userLinkData clientData
 
-getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AM ConnId
-getConnShortLinkAsync' c userId corrId shortLink@(CSLContact _ _ srv _) = do
-  g <- asks random
-  connId <- withStore c $ \db -> do
-    -- server is created so the command is processed in server queue,
-    -- not blocking other "no server" commands
-    void $ createServer db srv
-    prepareNewConn db g
+getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AM ConnId
+getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) = do
+  connId <- case connId_ of
+    Just existingConnId -> do
+      -- connId and srv can be unrelated: connId is used as "mailbox" for LDATA delivery,
+      -- while srv is the short link's server for the LGET request.
+      -- E.g., owner's relay connection (connId, on server A) fetches relay's group link data (srv = server B).
+      -- This works because enqueueCommand stores (connId, srv) independently in the commands table,
+      -- the network request targets srv, and event delivery uses connId via corrId correlation.
+      withStore' c $ \db -> void $ createServer db srv
+      pure existingConnId
+    Nothing -> do
+      g <- asks random
+      withStore c $ \db -> do
+        void $ createServer db srv
+        prepareNewConn db g
   enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LGET shortLink
   pure connId
   where
@@ -1589,8 +1597,7 @@ subscribeAllConnections' :: AgentClient -> Bool -> Maybe UserId -> AM ()
 subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   userSrvs <- withStore' c (`getSubscriptionServers` onlyNeeded)
   unless (null userSrvs) $ do
-    maxPending <- asks $ maxPendingSubscriptions . config
-    currPending <- newTVarIO 0
+    batchSize <- asks $ subsBatchSize . config
     let userSrvs' = case activeUserId_ of
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
@@ -1602,7 +1609,7 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     -- On successful service subscription, only unassociated queues will be subscribed.
     userSrvs2 <- withStore' c $ \db -> mapM (getService db useServices) userSrvs'
     userSrvs3 <- lift $ mapConcurrently subscribeService userSrvs2
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs3
+    rs <- lift $ mapConcurrently (subscribeUserServer batchSize) userSrvs3
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
@@ -1639,18 +1646,16 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
               unassocQueues :: AM Bool
               unassocQueues = False <$ withStore' c (\db -> removeRcvServiceAssocs db userId srv)
           _ -> pure False
-    subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
-    subscribeUserServer maxPending currPending ((userId, srv), hasService) = do
-      atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
-      tryAllErrors' $ do
-        qs <- withStore' c $ \db -> do
-          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded hasService
-          unless (null qs) $ atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
-          pure qs
-        let n = length qs
-        unless (null qs) $ lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
-        pure n
+    subscribeUserServer :: Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer batchSize ((userId, srv), hasService) = tryAllErrors' $ loop 0 Nothing
       where
+        loop !n cursor_ = do
+          qs <- withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv onlyNeeded hasService batchSize cursor_
+          if null qs then pure n else do
+            lift $ subscribe qs
+            let n' = n + length qs
+                lastRcvId = Just $ queueId $ last qs
+            if length qs < batchSize then pure n' else loop n' lastRcvId
         subscribe qs = do
           rs <- subscribeUserServerQueues c userId srv qs
           ns <- asks ntfSupervisor
