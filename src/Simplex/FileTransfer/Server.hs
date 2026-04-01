@@ -31,7 +31,6 @@ import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
-import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -642,26 +641,25 @@ expireServerFiles itemDelay expCfg = do
   us <- asks usedStorage
   usedStart <- readTVarIO us
   old <- liftIO $ expireBeforeEpoch expCfg
-  files' <- readTVarIO (files st)
-  logNote $ "Expiration check: " <> tshow (M.size files') <> " files"
-  forM_ (M.keys files') $ \sId -> do
-    mapM_ threadDelay itemDelay
-    atomically (expiredFilePath st sId old)
-      >>= mapM_ (maybeRemove $ delete st sId)
+  filesCount <- liftIO $ getFileCount st
+  logNote $ "Expiration check: " <> tshow filesCount <> " files"
+  expireLoop st us old
   usedEnd <- readTVarIO us
   logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
-    maybeRemove del = maybe del (remove del)
-    remove del filePath =
-      ifM
-        (doesFileExist filePath)
-        ((removeFile filePath >> del) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow filePath <> ": " <> tshow e)
-        del
-    delete st sId = do
-      withFileLog (`logDeleteFile` sId)
-      void . atomically $ deleteFile st sId -- will not update usedStorage if sId isn't in store
-      incFileStat filesExpired
+    expireLoop st us old = do
+      expired <- liftIO $ expiredFiles st old 10000
+      forM_ expired $ \(sId, filePath_, fileSize) -> do
+        mapM_ threadDelay itemDelay
+        forM_ filePath_ $ \fp ->
+          whenM (doesFileExist fp) $
+            removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+        withFileLog (`logDeleteFile` sId)
+        void . atomically $ deleteFile st sId
+        atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
+        incFileStat filesExpired
+      unless (null expired) $ expireLoop st us old
 
 randomId :: Int -> M ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
@@ -695,8 +693,8 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
-          FileStore {files} <- asks store
-          _filesCount <- M.size <$> readTVarIO files
+          st <- asks store
+          _filesCount <- liftIO $ getFileCount st
           _filesSize <- readTVarIO =<< asks usedStorage
           liftIO $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
