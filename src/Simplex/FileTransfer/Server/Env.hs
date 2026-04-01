@@ -20,6 +20,8 @@ module Simplex.FileTransfer.Server.Env
     newXFTPServerEnv,
     runWithStoreConfig,
     checkFileStoreMode,
+    importToDatabase,
+    exportFromDatabase,
   ) where
 
 import Control.Logger.Simple
@@ -40,7 +42,7 @@ import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 #if defined(dbServerPostgres)
 import Data.Functor (($>))
-import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
 import Simplex.Messaging.Server.CLI (iniDBOptions, settingIsOn)
 import System.Directory (doesFileExist)
@@ -199,4 +201,24 @@ checkFileStoreMode ini storeType storeLogFilePath = case storeType of
     isNothing_ _ = False
 #else
 checkFileStoreMode _ _ _ = pure ()
+#endif
+
+-- | Import StoreLog to PostgreSQL database.
+importToDatabase :: FilePath -> Ini -> MigrationConfirmation -> IO ()
+#if defined(dbServerPostgres)
+importToDatabase storeLogFilePath ini _confirmMigrations = do
+  let dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath = Nothing, confirmMigrations = _confirmMigrations}
+  importFileStore storeLogFilePath dbCfg
+#else
+importToDatabase _ _ _ = error "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
+#endif
+
+-- | Export PostgreSQL database to StoreLog.
+exportFromDatabase :: FilePath -> Ini -> MigrationConfirmation -> IO ()
+#if defined(dbServerPostgres)
+exportFromDatabase storeLogFilePath ini _confirmMigrations = do
+  let dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath = Nothing, confirmMigrations = _confirmMigrations}
+  exportFileStore storeLogFilePath dbCfg
+#else
+exportFromDatabase _ _ _ = error "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
 #endif
