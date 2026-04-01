@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
@@ -32,6 +33,10 @@ import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
+#if defined(dbServerPostgres)
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg)
+#endif
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
@@ -90,6 +95,9 @@ defaultInactiveClientExpiration =
 
 data XFTPStoreConfig s where
   XSCMemory :: Maybe FilePath -> XFTPStoreConfig STMFileStore
+#if defined(dbServerPostgres)
+  XSCDatabase :: PostgresFileStoreCfg -> XFTPStoreConfig PostgresFileStore
+#endif
 
 data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig,
@@ -121,6 +129,11 @@ newXFTPServerEnv storeCfg config@XFTPServerConfig {fileSizeQuota, xftpCredential
       st <- newFileStore ()
       sl <- mapM (`readWriteFileStore` st) storeLogPath
       pure (st, sl)
+#if defined(dbServerPostgres)
+    XSCDatabase dbCfg -> do
+      st <- newFileStore dbCfg
+      pure (st, Nothing)
+#endif
   used <- getUsedStorage store
   usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
