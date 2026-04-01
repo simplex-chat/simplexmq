@@ -28,7 +28,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -194,7 +194,8 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           when (isJust webHttpPort || isJust webHttpsParams') $
             serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
         Nothing -> pure ()
-      runXFTPServer serverConfig
+      let storeCfg = XSCMemory $ storeLogFile serverConfig
+      runXFTPServer storeCfg serverConfig
       where
         isOnion = \case THOnionHost _ -> True; _ -> False
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini

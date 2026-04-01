@@ -9,6 +9,7 @@
 
 module Simplex.FileTransfer.Server.Env
   ( XFTPServerConfig (..),
+    XFTPStoreConfig (..),
     XFTPEnv (..),
     XFTPRequest (..),
     defaultInactiveClientExpiration,
@@ -87,9 +88,12 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
-data XFTPEnv = XFTPEnv
+data XFTPStoreConfig s where
+  XSCMemory :: Maybe FilePath -> XFTPStoreConfig STMFileStore
+
+data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig,
-    store :: STMFileStore,
+    store :: s,
     usedStorage :: TVar Int64,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
@@ -109,11 +113,14 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
-newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials, httpCredentials} = do
+newXFTPServerEnv :: FileStoreClass s => XFTPStoreConfig s -> XFTPServerConfig -> IO (XFTPEnv s)
+newXFTPServerEnv storeCfg config@XFTPServerConfig {fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
-  store <- newFileStore ()
-  storeLog <- mapM (`readWriteFileStore` store) storeLogFile
+  (store, storeLog) <- case storeCfg of
+    XSCMemory storeLogPath -> do
+      st <- newFileStore ()
+      sl <- mapM (`readWriteFileStore` st) storeLogPath
+      pure (st, sl)
   used <- getUsedStorage store
   usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
