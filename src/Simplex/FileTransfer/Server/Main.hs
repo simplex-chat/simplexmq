@@ -12,7 +12,7 @@ module Simplex.FileTransfer.Server.Main
     xftpServerCLI_,
   ) where
 
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -28,7 +28,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, runWithStoreConfig, checkFileStoreMode)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -71,6 +71,10 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
       doesFileExist iniFile >>= \case
         True -> readIniFile iniFile >>= either exitError (runServer opts)
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
+    Database cmd ->
+      doesFileExist iniFile >>= \case
+        True -> readIniFile iniFile >>= either exitError (runDatabaseCmd cmd)
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
       confirmOrExit
         "WARNING: deleting the server will make all queues inaccessible, because the server identity (certificate fingerprint) will change.\nTHIS CANNOT BE UNDONE!"
@@ -85,6 +89,21 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
     defaultStaticPath = combine logPath "www"
+    runDatabaseCmd cmd ini = case cmd of
+      SCImport -> do
+        storeLogExists <- doesFileExist storeLogFilePath
+        unless storeLogExists $ exitError $ "Error: store log file " <> storeLogFilePath <> " does not exist."
+        confirmOrExit
+          ("Import store log " <> storeLogFilePath <> " to PostgreSQL database?")
+          "Import cancelled."
+        importToDatabase storeLogFilePath ini MCYesUp
+      SCExport -> do
+        storeLogExists <- doesFileExist storeLogFilePath
+        when storeLogExists $ exitError $ "Error: store log file " <> storeLogFilePath <> " already exists."
+        confirmOrExit
+          ("Export PostgreSQL database to store log " <> storeLogFilePath <> "?")
+          "Export cancelled."
+        exportFromDatabase storeLogFilePath ini MCConsole
     initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota, webStaticPath = webStaticPath_} = do
       clearDirIfExists cfgPath
       clearDirIfExists logPath
@@ -302,7 +321,10 @@ data CliCommand
   = Init InitOptions
   | OnlineCert CertOptions
   | Start StartOptions
+  | Database StoreCmd
   | Delete
+
+data StoreCmd = SCImport | SCExport
 
 newtype StartOptions = StartOptions
   { confirmMigrations :: MigrationConfirmation
@@ -325,6 +347,7 @@ cliCommandP cfgPath logPath iniFile =
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
         <> command "start" (info (Start <$> startOptsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "database" (info (Database <$> storeCmdP) (progDesc "Import/export file store to/from PostgreSQL database"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
   where
@@ -408,3 +431,9 @@ cliCommandP cfgPath logPath iniFile =
           "up" -> Right MCYesUp
           "down" -> Right MCYesUpDown
           _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
+    storeCmdP :: Parser StoreCmd
+    storeCmdP =
+      hsubparser
+        ( command "import" (info (pure SCImport) (progDesc "Import store log file into PostgreSQL database"))
+            <> command "export" (info (pure SCExport) (progDesc "Export PostgreSQL database to store log file"))
+        )
