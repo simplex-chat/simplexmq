@@ -527,6 +527,7 @@ test-suite simplexmq-test
   if flag(server_postgres)
       other-modules:
           AgentTests.NotificationTests
+          CoreTests.XFTPStoreTests
           NtfClient
           NtfServerTests
           PostgresSchemaDump

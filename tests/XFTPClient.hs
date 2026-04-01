@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -15,11 +16,18 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.Store (FileStoreClass)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
+#if defined(dbServerPostgres)
+import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+#endif
 
 xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
 xftpTest test = runXFTPTest test `shouldReturn` ()
@@ -192,3 +200,62 @@ testXFTPServerConfigEd25519SNI =
           { addCORSHeaders = True
           }
     }
+
+-- Store-parameterized server bracket
+
+withXFTPServerCfgStore :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfgStore storeCfg cfg =
+  serverBracket
+    (\started -> runXFTPServerBlocking started storeCfg cfg)
+    (threadDelay 10000)
+
+withXFTPServerStore :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> IO a -> IO a
+withXFTPServerStore storeCfg = withXFTPServerCfgStore storeCfg testXFTPServerConfig . const
+
+#if defined(dbServerPostgres)
+testXFTPDBConnectInfo :: ConnectInfo
+testXFTPDBConnectInfo =
+  defaultConnectInfo
+    { connectUser = "test_xftp_server_user",
+      connectDatabase = "test_xftp_server_db"
+    }
+
+testXFTPStoreDBOpts :: DBOpts
+testXFTPStoreDBOpts =
+  defaultXFTPDBOpts
+    { connstr = "postgresql://test_xftp_server_user@/test_xftp_server_db",
+      schema = "xftp_server_test",
+      poolSize = 10,
+      createSchema = True
+    }
+
+testXFTPPostgresCfg :: PostgresFileStoreCfg
+testXFTPPostgresCfg =
+  PostgresFileStoreCfg
+    { dbOpts = testXFTPStoreDBOpts,
+      dbStoreLogPath = Nothing,
+      confirmMigrations = MCYesUp
+    }
+
+withXFTPServerPg :: HasCallStack => IO a -> IO a
+withXFTPServerPg = withXFTPServerStore (XSCDatabase testXFTPPostgresCfg)
+
+xftpTestPg :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
+xftpTestPg test = runXFTPTestPg test `shouldReturn` ()
+
+runXFTPTestPg :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
+runXFTPTestPg test = withXFTPServerPg $ testXFTPClient test
+
+xftpTestPg2 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> IO ()) -> Expectation
+xftpTestPg2 test = xftpTestPgN 2 _test
+  where
+    _test [h1, h2] = test h1 h2
+    _test _ = error "expected 2 handles"
+
+xftpTestPgN :: forall a. HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO a) -> IO a
+xftpTestPgN nClients test = withXFTPServerPg $ run nClients []
+  where
+    run :: Int -> [XFTPClient] -> IO a
+    run 0 hs = test hs
+    run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
+#endif
