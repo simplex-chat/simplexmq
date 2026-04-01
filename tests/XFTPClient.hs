@@ -14,7 +14,7 @@ import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig (..), defaultFileExpiration, defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
@@ -58,7 +58,7 @@ withXFTPServerCfgNoALPN cfg = withXFTPServerCfg cfg {transportConfig = (transpor
 withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
   serverBracket
-    (\started -> runXFTPServerBlocking started cfg)
+    (\started -> runXFTPServerBlocking started (XSCMemory $ storeLogFile cfg) cfg)
     (threadDelay 10000)
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
