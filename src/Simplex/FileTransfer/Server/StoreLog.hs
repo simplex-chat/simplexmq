@@ -32,6 +32,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
@@ -87,10 +88,10 @@ logBlockFile s fId = logFileStoreRecord s . BlockFile fId
 logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
 
-readWriteFileStore :: FilePath -> FileStore -> IO (StoreLog 'WriteMode)
+readWriteFileStore :: FilePath -> STMFileStore -> IO (StoreLog 'WriteMode)
 readWriteFileStore = readWriteStoreLog readFileStore writeFileStore
 
-readFileStore :: FilePath -> FileStore -> IO ()
+readFileStore :: FilePath -> STMFileStore -> IO ()
 readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addFileLogRecord s = case strDecode s of
@@ -108,8 +109,8 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
       AckFile rId -> ackFile st rId
     addRecipients sId rcps = mapM_ (ExceptT . addRecipient st sId) rcps
 
-writeFileStore :: StoreLog 'WriteMode -> FileStore -> IO ()
-writeFileStore s FileStore {files, recipients} = do
+writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()
+writeFileStore s STMFileStore {files, recipients} = do
   allRcps <- readTVarIO recipients
   readTVarIO files >>= mapM_ (logFile allRcps)
   where
