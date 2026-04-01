@@ -15,7 +15,6 @@ module Simplex.FileTransfer.Server.Env
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
-    countUsedStorage,
   ) where
 
 import Control.Logger.Simple
@@ -23,7 +22,6 @@ import Control.Monad
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
@@ -115,7 +113,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   random <- C.newRandom
   store <- newFileStore
   storeLog <- mapM (`readWriteFileStore` store) storeLogFile
-  used <- countUsedStorage <$> readTVarIO (files store)
+  used <- getUsedStorage store
   usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
@@ -125,9 +123,6 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
-
-countUsedStorage :: M.Map k FileRec -> Int64
-countUsedStorage = M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)

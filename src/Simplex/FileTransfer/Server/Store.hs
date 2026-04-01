@@ -17,18 +17,24 @@ module Simplex.FileTransfer.Server.Store
     deleteFile,
     blockFile,
     deleteRecipient,
-    expiredFilePath,
     getFile,
     ackFile,
+    expiredFiles,
+    getUsedStorage,
+    getFileCount,
     fileTimePrecision,
   )
 where
 
 import Control.Concurrent.STM
+import Control.Monad (forM)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
+import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import qualified Data.Set as S
+import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -38,7 +44,7 @@ import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM, ($>>=))
+import Simplex.Messaging.Util (ifM)
 
 data FileStore = FileStore
   { files :: TMap SenderId FileRec,
@@ -133,14 +139,6 @@ getFile st party fId = case party of
       Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
       _ -> pure $ Left AUTH
 
-expiredFilePath :: FileStore -> XFTPFileId -> Int64 -> STM (Maybe (Maybe FilePath))
-expiredFilePath FileStore {files} sId old =
-  TM.lookup sId files
-    $>>= \FileRec {filePath, createdAt = RoundedSystemTime createdAt} ->
-      if createdAt + fileTimePrecision < old
-        then Just <$> readTVar filePath
-        else pure Nothing
-
 ackFile :: FileStore -> RecipientId -> STM (Either XFTPErrorType ())
 ackFile st@FileStore {recipients} recipientId = do
   TM.lookupDelete recipientId recipients >>= \case
@@ -149,6 +147,23 @@ ackFile st@FileStore {recipients} recipientId = do
         modifyTVar' recipientIds $ S.delete recipientId
         pure $ Right ()
     _ -> pure $ Left AUTH
+
+expiredFiles :: FileStore -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
+expiredFiles FileStore {files} old _limit = do
+  fs <- readTVarIO files
+  fmap catMaybes . forM (M.toList fs) $ \(sId, FileRec {fileInfo = FileInfo {size}, filePath, createdAt = RoundedSystemTime createdAt}) ->
+    if createdAt + fileTimePrecision < old
+      then do
+        path <- readTVarIO filePath
+        pure $ Just (sId, path, size)
+      else pure Nothing
+
+getUsedStorage :: FileStore -> IO Int64
+getUsedStorage FileStore {files} =
+  M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0 <$> readTVarIO files
+
+getFileCount :: FileStore -> IO Int
+getFileCount FileStore {files} = M.size <$> readTVarIO files
 
 withFile :: FileStore -> SenderId -> (FileRec -> STM (Either XFTPErrorType a)) -> STM (Either XFTPErrorType a)
 withFile FileStore {files} sId a =
