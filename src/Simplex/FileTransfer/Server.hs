@@ -549,7 +549,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                   | bs == 0 || bs > s -> pure $ FRErr SIZE
                   | otherwise -> drain (s - bs)
           reserve = do
-            us <- asks $ usedStorage . store
+            us <- asks usedStorage
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
             atomically . stateTVar us $
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
@@ -566,7 +566,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                 liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
                 pure FROk
               Left e -> do
-                us <- asks $ usedStorage . store
+                us <- asks usedStorage
                 atomically $ modifyTVar' us $ subtract (fromIntegral size)
                 liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
                 pure $ FRErr e
@@ -624,6 +624,9 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
   st <- asks store
   void $ atomically $ storeAction st
+  forM_ path $ \_ -> do
+    us <- asks usedStorage
+    atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
   lift $ incFileStat stat
   where
     deletedStats stats = do
@@ -636,7 +639,8 @@ getFileTime = getRoundedSystemTime
 expireServerFiles :: Maybe Int -> ExpirationConfig -> M ()
 expireServerFiles itemDelay expCfg = do
   st <- asks store
-  usedStart <- readTVarIO $ usedStorage st
+  us <- asks usedStorage
+  usedStart <- readTVarIO us
   old <- liftIO $ expireBeforeEpoch expCfg
   files' <- readTVarIO (files st)
   logNote $ "Expiration check: " <> tshow (M.size files') <> " files"
@@ -644,7 +648,7 @@ expireServerFiles itemDelay expCfg = do
     mapM_ threadDelay itemDelay
     atomically (expiredFilePath st sId old)
       >>= mapM_ (maybeRemove $ delete st sId)
-  usedEnd <- readTVarIO $ usedStorage st
+  usedEnd <- readTVarIO us
   logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
@@ -691,9 +695,9 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
-          FileStore {files, usedStorage} <- asks store
+          FileStore {files} <- asks store
           _filesCount <- M.size <$> readTVarIO files
-          _filesSize <- readTVarIO usedStorage
+          _filesSize <- readTVarIO =<< asks usedStorage
           liftIO $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logNote "server stats restored"

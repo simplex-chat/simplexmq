@@ -25,7 +25,6 @@ module Simplex.FileTransfer.Server.Store
 where
 
 import Control.Concurrent.STM
-import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import Data.Set (Set)
@@ -43,8 +42,7 @@ import Simplex.Messaging.Util (ifM, ($>>=))
 
 data FileStore = FileStore
   { files :: TMap SenderId FileRec,
-    recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey),
-    usedStorage :: TVar Int64
+    recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey)
   }
 
 data FileRec = FileRec
@@ -72,8 +70,7 @@ newFileStore :: IO FileStore
 newFileStore = do
   files <- TM.emptyIO
   recipients <- TM.emptyIO
-  usedStorage <- newTVarIO 0
-  pure FileStore {files, recipients, usedStorage}
+  pure FileStore {files, recipients}
 
 addFile :: FileStore -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM (Either XFTPErrorType ())
 addFile FileStore {files} sId fileInfo createdAt status =
@@ -91,9 +88,8 @@ newFileRec senderId fileInfo createdAt status = do
 
 setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
 setFilePath st sId fPath =
-  withFile st sId $ \FileRec {fileInfo, filePath} -> do
+  withFile st sId $ \FileRec {filePath} -> do
     writeTVar filePath (Just fPath)
-    modifyTVar' (usedStorage st) (+ fromIntegral (size fileInfo))
     pure $ Right ()
 
 addRecipient :: FileStore -> SenderId -> FileRecipient -> STM (Either XFTPErrorType ())
@@ -110,19 +106,17 @@ addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) =
 
 -- this function must be called after the file is deleted from the file system
 deleteFile :: FileStore -> SenderId -> STM (Either XFTPErrorType ())
-deleteFile FileStore {files, recipients, usedStorage} senderId = do
+deleteFile FileStore {files, recipients} senderId = do
   TM.lookupDelete senderId files >>= \case
-    Just FileRec {fileInfo, recipientIds} -> do
+    Just FileRec {recipientIds} -> do
       readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
-      modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
       pure $ Right ()
     _ -> pure $ Left AUTH
 
 -- this function must be called after the file is deleted from the file system
 blockFile :: FileStore -> SenderId -> BlockingInfo -> Bool -> STM (Either XFTPErrorType ())
-blockFile st@FileStore {usedStorage} senderId info deleted =
-  withFile st senderId $ \FileRec {fileInfo, fileStatus} -> do
-    when deleted $ modifyTVar' usedStorage $ subtract (fromIntegral $ size fileInfo)
+blockFile st senderId info _deleted =
+  withFile st senderId $ \FileRec {fileStatus} -> do
     writeTVar fileStatus $! EntityBlocked info
     pure $ Right ()
 

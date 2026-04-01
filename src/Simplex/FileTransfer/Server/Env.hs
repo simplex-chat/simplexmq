@@ -91,6 +91,7 @@ defaultInactiveClientExpiration =
 data XFTPEnv = XFTPEnv
   { config :: XFTPServerConfig,
     store :: FileStore,
+    usedStorage :: TVar Int64,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
@@ -115,7 +116,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   store <- newFileStore
   storeLog <- mapM (`readWriteFileStore` store) storeLogFile
   used <- countUsedStorage <$> readTVarIO (files store)
-  atomically $ writeTVar (usedStorage store) used
+  usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
@@ -123,7 +124,7 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 countUsedStorage :: M.Map k FileRec -> Int64
 countUsedStorage = M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0
