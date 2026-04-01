@@ -1564,12 +1564,11 @@ subscribeAllConnections' :: AgentClient -> Bool -> Maybe UserId -> AM ()
 subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   userSrvs <- withStore' c (`getSubscriptionServers` onlyNeeded)
   unless (null userSrvs) $ do
-    maxPending <- asks $ maxPendingSubscriptions . config
-    currPending <- newTVarIO 0
+    batchSize <- asks $ subsBatchSize . config
     let userSrvs' = case activeUserId_ of
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs'
+    rs <- lift $ mapConcurrently (subscribeUserServer batchSize) userSrvs'
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
@@ -1578,18 +1577,16 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   resumeAllCommands c
   where
     handleErr = (`catchAllErrors` \e -> notifySub' c "" (ERR e) >> throwE e)
-    subscribeUserServer :: Int -> TVar Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
-    subscribeUserServer maxPending currPending (userId, srv) = do
-      atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
-      tryAllErrors' $ do
-        qs <- withStore' c $ \db -> do
-          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded
-          unless (null qs) $ atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
-          pure qs
-        let n = length qs
-        unless (null qs) $ lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
-        pure n
+    subscribeUserServer :: Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer batchSize (userId, srv) = tryAllErrors' $ loop 0 Nothing
       where
+        loop !n cursor_ = do
+          qs <- withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv onlyNeeded batchSize cursor_
+          if null qs then pure n else do
+            lift $ subscribe qs
+            let n' = n + length qs
+                lastRcvId = Just $ queueId $ last qs
+            if length qs < batchSize then pure n' else loop n' lastRcvId
         subscribe qs = do
           rs <- subscribeUserServerQueues c userId srv qs
           -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
