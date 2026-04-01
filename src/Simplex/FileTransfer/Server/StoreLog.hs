@@ -10,6 +10,7 @@ module Simplex.FileTransfer.Server.StoreLog
     FileStoreLogRecord (..),
     closeStoreLog,
     readWriteFileStore,
+    writeFileStore,
     logAddFile,
     logPutFile,
     logAddRecipients,

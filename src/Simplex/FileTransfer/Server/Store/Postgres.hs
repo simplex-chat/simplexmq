@@ -180,7 +180,7 @@ instance FileStoreClass PostgresFileStore where
 
   getUsedStorage st =
     withTransaction (dbStore st) $ \db -> do
-      [Only total] <- DB.query_ db "SELECT COALESCE(SUM(file_size::INT8), 0) FROM files"
+      [Only total] <- DB.query_ db "SELECT COALESCE(SUM(file_size::INT8), 0)::INT8 FROM files"
       pure total
 
   getFileCount st =

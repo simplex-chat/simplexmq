@@ -46,12 +46,15 @@ import AgentTests.SchemaDump (schemaDumpTest)
 #endif
 
 #if defined(dbServerPostgres)
+import CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests)
 import NtfServerTests (ntfServerTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestStoreDBOpts)
 import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
+import XFTPClient (testXFTPDBConnectInfo)
+import XFTPServerTests (xftpServerTestsPg)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -152,6 +155,12 @@ main = do
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
           describe "XFTP agent" xftpAgentTests
+#if defined(dbServerPostgres)
+        around_ (postgressBracket testXFTPDBConnectInfo) $ do
+          describe "XFTP Postgres store operations" xftpStoreTests
+          describe "XFTP migration round-trip" xftpMigrationTests
+          describe "XFTP server (PostgreSQL backend)" xftpServerTestsPg
+#endif
 #if defined(dbPostgres)
         describe "XFTP Web Client" $ xftpWebTests (dropAllSchemasExceptSystem testDBConnectInfo)
 #else
