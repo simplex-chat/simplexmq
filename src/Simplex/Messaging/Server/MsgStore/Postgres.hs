@@ -41,7 +41,7 @@ import Data.List (intersperse)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
-import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.SqlQQ (sql)
@@ -245,6 +245,25 @@ instance MsgStoreClass PostgresMsgStore where
   tryPeekMsg :: PostgresMsgStore -> PostgresQueue -> ExceptT ErrorType IO (Maybe Message)
   tryPeekMsg ms q = isolateQueue ms q "tryPeekMsg" $ tryPeekMsg_ q ()
   {-# INLINE tryPeekMsg #-}
+
+  tryPeekMsgs :: PostgresMsgStore -> [PostgresQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
+  tryPeekMsgs _ms [] = pure M.empty
+  tryPeekMsgs ms qs =
+    uninterruptibleMask_ $
+      withDB' "tryPeekMsgs" (queueStore_ ms) $ \db ->
+        M.fromList . map toRcvMsg <$>
+          DB.query
+            db
+            [sql|
+              SELECT DISTINCT ON (recipient_id)
+                recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+              FROM messages
+              WHERE recipient_id IN ?
+              ORDER BY recipient_id, message_id ASC
+            |]
+            (Only (In (map recipientId' qs)))
+    where
+      toRcvMsg (Only rId :. msg) = (rId, toMessage msg)
 
   tryDelMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message)
   tryDelMsg ms q msgId =
