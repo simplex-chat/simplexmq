@@ -20,7 +20,7 @@ IO-based typeclass following the `QueueStoreClass` pattern — each method is a 
 
 ```haskell
 class FileStoreClass s where
-  type FileStoreConfig s :: Type
+  type FileStoreConfig s
 
   -- Lifecycle
   newFileStore :: FileStoreConfig s -> IO s
@@ -53,8 +53,8 @@ No polymorphic monad or `runStore` dispatcher needed — unlike `MsgStoreClass`,
 
 ```haskell
 data PostgresFileStore = PostgresFileStore
-  { dbStore :: DBStore
-  , dbStoreLog :: Maybe (StoreLog 'WriteMode)
+  { dbStore :: DBStore,
+    dbStoreLog :: Maybe (StoreLog 'WriteMode)
   }
 ```
 
@@ -69,8 +69,8 @@ After extracting from current `Store.hs`, `STMFileStore` retains the file and re
 
 ```haskell
 data STMFileStore = STMFileStore
-  { files :: TMap SenderId FileRec
-  , recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey)
+  { files :: TMap SenderId FileRec,
+    recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey)
   }
 ```
 
@@ -81,11 +81,14 @@ data STMFileStore = STMFileStore
 Postgres operations follow SMP's `withDB` / `handleDuplicate` pattern:
 
 ```haskell
-withDB :: Text -> PostgresFileStore -> (DB.Connection -> IO (Either XFTPErrorType a)) -> IO (Either XFTPErrorType a)
+withDB :: Text -> PostgresFileStore -> (DB.Connection -> IO (Either XFTPErrorType a)) -> ExceptT XFTPErrorType IO a
 withDB op st action =
-  E.try (withTransaction (dbStore st) action) >>= \case
-    Right r -> pure r
-    Left (e :: SomeException) -> logError ("STORE: " <> op <> ", " <> tshow e) $> Left INTERNAL
+  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+  where
+    logErr :: E.SomeException -> IO (Either XFTPErrorType a)
+    logErr e = logError ("STORE: " <> err) $> Left INTERNAL
+      where
+        err = op <> ", withDB, " <> tshow e
 
 handleDuplicate :: SqlError -> IO (Either XFTPErrorType a)
 handleDuplicate e = case constraintViolation e of
@@ -104,12 +107,12 @@ handleDuplicate e = case constraintViolation e of
 
 ```haskell
 data FileRec = FileRec
-  { senderId :: SenderId
-  , fileInfo :: FileInfo
-  , filePath :: TVar (Maybe FilePath)
-  , recipientIds :: TVar (Set RecipientId)
-  , createdAt :: RoundedFileTime
-  , fileStatus :: TVar ServerEntityStatus
+  { senderId :: SenderId,
+    fileInfo :: FileInfo,
+    filePath :: TVar (Maybe FilePath),
+    recipientIds :: TVar (Set RecipientId),
+    createdAt :: RoundedFileTime,
+    fileStatus :: TVar ServerEntityStatus
   }
 ```
 
@@ -164,11 +167,11 @@ data XFTPStoreConfig s where
 
 ```haskell
 data XFTPEnv s = XFTPEnv
-  { config :: XFTPServerConfig
-  , store :: s
-  , usedStorage :: TVar Int64
-  , storeLog :: Maybe (StoreLog 'WriteMode)
-  , ...
+  { config :: XFTPServerConfig,
+    store :: s,
+    usedStorage :: TVar Int64,
+    storeLog :: Maybe (StoreLog 'WriteMode),
+    ...
   }
 ```
 
@@ -290,23 +293,34 @@ CREATE INDEX idx_files_created_at ON files (created_at);
 Following SMP's `QueueStore/Postgres/Migrations.hs` pattern:
 
 ```haskell
-module Simplex.FileTransfer.Server.Store.Postgres.Migrations (xftpServerMigrations) where
+module Simplex.FileTransfer.Server.Store.Postgres.Migrations
+  ( xftpServerMigrations,
+  )
+where
 
 import Data.List (sortOn)
 import Data.Text (Text)
-import Simplex.Messaging.Agent.Store.Shared (Migration (..))
+import Simplex.Messaging.Agent.Store.Shared
 import Text.RawString.QQ (r)
 
-xftpServerMigrations :: [Migration]
-xftpServerMigrations = sortOn name $ map (\(name, up, down) -> Migration {name, up, down}) schemaMigrations
-
-schemaMigrations :: [(String, Text, Maybe Text)]
-schemaMigrations =
-  [ ("20260325_initial", m20260325_initial, Nothing)  -- no down migration for initial
+xftpSchemaMigrations :: [(String, Text, Maybe Text)]
+xftpSchemaMigrations =
+  [ ("20260325_initial", m20260325_initial, Nothing)
   ]
 
+xftpServerMigrations :: [Migration]
+xftpServerMigrations = sortOn name $ map migration xftpSchemaMigrations
+  where
+    migration (name, up, down) = Migration {name, up, down = down}
+
 m20260325_initial :: Text
-m20260325_initial = [r| ... CREATE TABLE files ... |]
+m20260325_initial =
+  [r|
+CREATE TABLE files (
+  sender_id BYTEA NOT NULL PRIMARY KEY,
+  ...
+);
+  |]
 ```
 
 The `Migration` type (from `Simplex.Messaging.Agent.Store.Shared`) has fields `{name :: String, up :: Text, down :: Maybe Text}`. Initial migration has `Nothing` for `down`. Future migrations should include `Just down_migration` for rollback support. Called via `createDBStore dbOpts xftpServerMigrations (MigrationConfig confirmMigrations Nothing)`.
@@ -371,9 +385,9 @@ Reuses `iniDBOptions` from `Simplex.Messaging.Server.CLI` for runtime parsing (f
 
 ```haskell
 data PostgresFileStoreCfg = PostgresFileStoreCfg
-  { dbOpts :: DBOpts          -- connstr, schema, poolSize, createSchema
-  , dbStoreLogPath :: Maybe FilePath
-  , confirmMigrations :: MigrationConfirmation
+  { dbOpts :: DBOpts,
+    dbStoreLogPath :: Maybe FilePath,
+    confirmMigrations :: MigrationConfirmation
   }
 ```
 
@@ -383,12 +397,13 @@ No `deletedTTL` (hard deletes).
 
 ```haskell
 defaultXFTPDBOpts :: DBOpts
-defaultXFTPDBOpts = DBOpts
-  { connstr = "postgresql://xftp@/xftp_server_store"
-  , schema = "xftp_server"
-  , poolSize = 10
-  , createSchema = False
-  }
+defaultXFTPDBOpts =
+  DBOpts
+    { connstr = "postgresql://xftp@/xftp_server_store",
+      schema = "xftp_server",
+      poolSize = 10,
+      createSchema = False
+    }
 ```
 
 ## Migration CLI
