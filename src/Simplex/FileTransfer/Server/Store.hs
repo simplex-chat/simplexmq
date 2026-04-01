@@ -78,8 +78,8 @@ newFileStore = do
   recipients <- TM.emptyIO
   pure FileStore {files, recipients}
 
-addFile :: FileStore -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM (Either XFTPErrorType ())
-addFile FileStore {files} sId fileInfo createdAt status =
+addFile :: FileStore -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
+addFile FileStore {files} sId fileInfo createdAt status = atomically $
   ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
     f <- newFileRec sId fileInfo createdAt status
     TM.insert sId f files
@@ -92,14 +92,14 @@ newFileRec senderId fileInfo createdAt status = do
   fileStatus <- newTVar status
   pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus}
 
-setFilePath :: FileStore -> SenderId -> FilePath -> STM (Either XFTPErrorType ())
-setFilePath st sId fPath =
+setFilePath :: FileStore -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
+setFilePath st sId fPath = atomically $
   withFile st sId $ \FileRec {filePath} -> do
     writeTVar filePath (Just fPath)
     pure $ Right ()
 
-addRecipient :: FileStore -> SenderId -> FileRecipient -> STM (Either XFTPErrorType ())
-addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) =
+addRecipient :: FileStore -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
+addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) = atomically $
   withFile st senderId $ \FileRec {recipientIds} -> do
     rIds <- readTVar recipientIds
     mem <- TM.member rId recipients
@@ -111,8 +111,8 @@ addRecipient st@FileStore {recipients} senderId (FileRecipient rId rKey) =
         pure $ Right ()
 
 -- this function must be called after the file is deleted from the file system
-deleteFile :: FileStore -> SenderId -> STM (Either XFTPErrorType ())
-deleteFile FileStore {files, recipients} senderId = do
+deleteFile :: FileStore -> SenderId -> IO (Either XFTPErrorType ())
+deleteFile FileStore {files, recipients} senderId = atomically $ do
   TM.lookupDelete senderId files >>= \case
     Just FileRec {recipientIds} -> do
       readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
@@ -120,27 +120,27 @@ deleteFile FileStore {files, recipients} senderId = do
     _ -> pure $ Left AUTH
 
 -- this function must be called after the file is deleted from the file system
-blockFile :: FileStore -> SenderId -> BlockingInfo -> Bool -> STM (Either XFTPErrorType ())
-blockFile st senderId info _deleted =
+blockFile :: FileStore -> SenderId -> BlockingInfo -> Bool -> IO (Either XFTPErrorType ())
+blockFile st senderId info _deleted = atomically $
   withFile st senderId $ \FileRec {fileStatus} -> do
     writeTVar fileStatus $! EntityBlocked info
     pure $ Right ()
 
-deleteRecipient :: FileStore -> RecipientId -> FileRec -> STM ()
-deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = do
+deleteRecipient :: FileStore -> RecipientId -> FileRec -> IO ()
+deleteRecipient FileStore {recipients} rId FileRec {recipientIds} = atomically $ do
   TM.delete rId recipients
   modifyTVar' recipientIds $ S.delete rId
 
-getFile :: FileStore -> SFileParty p -> XFTPFileId -> STM (Either XFTPErrorType (FileRec, C.APublicAuthKey))
-getFile st party fId = case party of
+getFile :: FileStore -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
+getFile st party fId = atomically $ case party of
   SFSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
   SFRecipient ->
     TM.lookup fId (recipients st) >>= \case
       Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
       _ -> pure $ Left AUTH
 
-ackFile :: FileStore -> RecipientId -> STM (Either XFTPErrorType ())
-ackFile st@FileStore {recipients} recipientId = do
+ackFile :: FileStore -> RecipientId -> IO (Either XFTPErrorType ())
+ackFile st@FileStore {recipients} recipientId = atomically $ do
   TM.lookupDelete recipientId recipients >>= \case
     Just (sId, _) ->
       withFile st sId $ \FileRec {recipientIds} -> do
