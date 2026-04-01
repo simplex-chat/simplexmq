@@ -1597,8 +1597,7 @@ subscribeAllConnections' :: AgentClient -> Bool -> Maybe UserId -> AM ()
 subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   userSrvs <- withStore' c (`getSubscriptionServers` onlyNeeded)
   unless (null userSrvs) $ do
-    maxPending <- asks $ maxPendingSubscriptions . config
-    currPending <- newTVarIO 0
+    batchSize <- asks $ subsBatchSize . config
     let userSrvs' = case activeUserId_ of
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
@@ -1610,7 +1609,7 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     -- On successful service subscription, only unassociated queues will be subscribed.
     userSrvs2 <- withStore' c $ \db -> mapM (getService db useServices) userSrvs'
     userSrvs3 <- lift $ mapConcurrently subscribeService userSrvs2
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs3
+    rs <- lift $ mapConcurrently (subscribeUserServer batchSize) userSrvs3
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
@@ -1647,18 +1646,16 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
               unassocQueues :: AM Bool
               unassocQueues = False <$ withStore' c (\db -> removeRcvServiceAssocs db userId srv)
           _ -> pure False
-    subscribeUserServer :: Int -> TVar Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
-    subscribeUserServer maxPending currPending ((userId, srv), hasService) = do
-      atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
-      tryAllErrors' $ do
-        qs <- withStore' c $ \db -> do
-          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded hasService
-          unless (null qs) $ atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
-          pure qs
-        let n = length qs
-        unless (null qs) $ lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
-        pure n
+    subscribeUserServer :: Int -> ((UserId, SMPServer), ServiceAssoc) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer batchSize ((userId, srv), hasService) = tryAllErrors' $ loop 0 Nothing
       where
+        loop !n cursor_ = do
+          qs <- withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv onlyNeeded hasService batchSize cursor_
+          if null qs then pure n else do
+            lift $ subscribe qs
+            let n' = n + length qs
+                lastRcvId = Just $ queueId $ last qs
+            if length qs < batchSize then pure n' else loop n' lastRcvId
         subscribe qs = do
           rs <- subscribeUserServerQueues c userId srv qs
           ns <- asks ntfSupervisor

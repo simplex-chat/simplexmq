@@ -1661,9 +1661,15 @@ checkQueues c = fmap partitionEithers . mapM checkQueue
 resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> AM' ()
 resubscribeSessQueues _ _ [] = pure ()
 resubscribeSessQueues c tSess qs = do
+  batchSize <- asks $ subsBatchSize . config
   (errs, qs_) <- checkQueues c qs
-  forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c True (tSess, qs')
+  subscribeChunks $ toChunks batchSize qs_
   forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
+  where
+    subscribeChunks [] = pure ()
+    subscribeChunks (qs' : rest) = do
+      (_, active) <- subscribeSessQueues_ c True (tSess, qs')
+      when active $ subscribeChunks rest
 
 subscribeSessQueues_ :: AgentClient -> Bool -> (SMPTransportSession, NonEmpty RcvQueueSub) -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
 subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c NRMBackground qs

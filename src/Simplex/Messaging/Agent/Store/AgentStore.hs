@@ -2336,14 +2336,14 @@ getSubscriptionServers db onlyNeeded =
     toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
 
 -- TODO [certs rcv] check index for getting queues with service present
-getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService =
-  map toRcvQueueSub
-    <$> DB.query
-      db
-      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond)
-      (userId, h, p, kh)
+getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> Int -> Maybe SMP.RecipientId -> IO [RcvQueueSub]
+getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService limit cursor_ =
+  map toRcvQueueSub <$> case cursor_ of
+    Nothing -> DB.query db (q <> orderLimit) (userId, h, p, kh, limit)
+    Just cursor -> DB.query db (q <> " AND q.rcv_id > ? " <> orderLimit) (userId, h, p, kh, cursor, limit)
   where
+    q = rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond
+    orderLimit = " ORDER BY q.rcv_id LIMIT ?"
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
       | otherwise = " WHERE "
