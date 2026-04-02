@@ -560,12 +560,17 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
               Right () -> do
                 stats <- asks serverStats
                 st <- asks store
-                withFileLog $ \sl -> logPutFile sl senderId fPath
-                void $ liftIO $ setFilePath st senderId fPath
-                incFileStat filesUploaded
-                incFileStat filesCount
-                liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
-                pure FROk
+                liftIO (setFilePath st senderId fPath) >>= \case
+                  Right () -> do
+                    withFileLog $ \sl -> logPutFile sl senderId fPath
+                    incFileStat filesUploaded
+                    incFileStat filesCount
+                    liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
+                    pure FROk
+                  Left _e -> do
+                    us <- asks usedStorage
+                    atomically $ modifyTVar' us $ subtract (fromIntegral size)
+                    pure $ FRErr AUTH
               Left e -> do
                 us <- asks usedStorage
                 atomically $ modifyTVar' us $ subtract (fromIntegral size)
