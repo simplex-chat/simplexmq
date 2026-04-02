@@ -630,7 +630,7 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
   stats <- asks serverStats
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
   st <- asks store
-  void $ liftIO $ storeAction st
+  ExceptT $ liftIO $ storeAction st
   forM_ path $ \_ -> do
     us <- asks usedStorage
     atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
