@@ -664,10 +664,12 @@ expireServerFiles itemDelay expCfg = do
           whenM (doesFileExist fp) $
             removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
         withFileLog (`logDeleteFile` sId)
-        void $ liftIO $ deleteFile st sId
-        forM_ filePath_ $ \_ ->
-          atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
-        incFileStat filesExpired
+        liftIO (deleteFile st sId) >>= \case
+          Right () -> do
+            forM_ filePath_ $ \_ ->
+              atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
+            incFileStat filesExpired
+          Left _ -> pure ()
       unless (null expired) $ expireLoop st us old
 
 randomId :: Int -> M s ByteString
