@@ -241,6 +241,11 @@ importFileStore storeLogFilePath dbCfg = do
   putStrLn $ "Loaded " <> show fileCount <> " files, " <> show rcpCount <> " recipients."
   let dbCfg' = dbCfg {dbOpts = (dbOpts dbCfg) {createSchema = True}, confirmMigrations = MCYesUp}
   pgStore <- newFileStore dbCfg' :: IO PostgresFileStore
+  existingCount <- getFileCount pgStore
+  when (existingCount > 0) $ do
+    putStrLn $ "WARNING: database already contains " <> show existingCount <> " files. Import will fail on duplicate keys."
+    putStrLn "Drop the existing schema first or use a fresh database."
+    exitFailure
   putStrLn "Importing files..."
   fCnt <- withTransaction (dbStore pgStore) $ \db -> do
     DB.copy_
