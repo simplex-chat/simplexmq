@@ -217,6 +217,7 @@ assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
 handleDuplicate :: SqlError -> IO (Either XFTPErrorType a)
 handleDuplicate e = case constraintViolation e of
   Just (UniqueViolation _) -> pure $ Left DUPLICATE_
+  Just (ForeignKeyViolation _ _) -> pure $ Left AUTH
   _ -> E.throwIO e
 
 withLog :: MonadIO m => Text -> PostgresFileStore -> (StoreLog 'WriteMode -> IO ()) -> m ()
