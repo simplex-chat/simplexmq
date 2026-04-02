@@ -337,7 +337,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         mapM_ (removeServiceQueue st serviceSel qId) prevSrvId
         mapM_ (addServiceQueue st serviceSel qId) serviceId
 
-  setQueueServices _ _ _ _ = pure $ Right M.empty -- TODO loop implementation
+  setQueueServices st party serviceId qs = Right . M.fromList <$> mapM setOne qs
+    where
+      setOne sq = (recipientId sq,) <$> setQueueService st sq party serviceId
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do
