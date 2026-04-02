@@ -353,6 +353,8 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE getCreateService #-}
   setQueueService = withQS setQueueService
   {-# INLINE setQueueService #-}
+  setQueueServices = withQS setQueueServices
+  {-# INLINE setQueueServices #-}
   getQueueNtfServices = withQS (getQueueNtfServices @(JournalQueue s))
   {-# INLINE getQueueNtfServices #-}
   getServiceQueueCountHash = withQS (getServiceQueueCountHash @(JournalQueue s))
