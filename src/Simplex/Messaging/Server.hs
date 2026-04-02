@@ -1366,25 +1366,41 @@ client
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     let THandleParams {thVersion} = thParams'
         clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
-        process msgMap assocResults t acc@(rs, msgs) =
+        process prepared t acc@(rs, msgs) =
           (maybe acc (\(!r, !msg_) -> (r : rs, maybe msgs (: msgs) msg_)))
-            <$> processCommand clntServiceId thVersion msgMap assocResults t
+            <$> processCommand clntServiceId thVersion prepared t
     forever $ do
       batch <- atomically (readTBQueue rcvQ)
-      (msgMap, assocResults) <- prepareBatch clntServiceId batch
-      foldrM (process msgMap assocResults) ([], []) batch
+      prepared <- prepareBatch clntServiceId batch
+      foldrM (process prepared) ([], []) batch
         >>= \(rs_, msgs) -> mapM_ (atomically . writeTBQueue sndQ . (,msgs)) (L.nonEmpty rs_)
   where
-    prepareBatch :: Maybe ServiceId -> NonEmpty (VerifiedTransmission s) -> M s (Either ErrorType (Map RecipientId Message), Map RecipientId (Either ErrorType ()))
+    prepareBatch :: Maybe ServiceId -> NonEmpty (VerifiedTransmission s) -> M s (Either ErrorType (Map RecipientId (Maybe Message, Maybe (Either ErrorType ()))))
     prepareBatch clntServiceId_ batch = do
-      let ts = L.toList batch
-          subQs = [q | (Just (q, _), (_, _, Cmd SRecipient SUB)) <- ts]
-          updateQs = [q | (Just (q, qr), (_, _, Cmd SRecipient SUB)) <- ts, clntServiceId_ /= rcvServiceId qr]
-      msgMap <- if null subQs then pure $ Right M.empty else liftIO $ runExceptT $ tryPeekMsgs ms subQs
-      assocResults <- if null updateQs then pure M.empty else do
-        updated <- liftIO $ setQueueServices @(StoreQueue s) (queueStore ms) SRecipientService clntServiceId_ updateQs
-        pure $ M.fromList [(recipientId q, if S.member (recipientId q) updated then Right () else Left AUTH) | q <- updateQs]
-      pure (msgMap, assocResults)
+      let (subMsgQs, rcvAssocQs, ntfAssocQs) = foldl' classify ([], [], []) $ L.toList batch
+          classify (!msgQs, !rcvQs, !ntfQs) = \case
+            (Just (q, qr), (_, _, Cmd SRecipient SUB))
+              | clntServiceId_ /= rcvServiceId qr -> (q : msgQs, q : rcvQs, ntfQs)
+              | otherwise -> (q : msgQs, rcvQs, ntfQs)
+            (Just (q, qr), (_, _, Cmd SNotifier NSUB))
+              | clntServiceId_ /= (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, q : ntfQs)
+              | otherwise -> (msgQs, rcvQs, ntfQs)
+            _ -> (msgQs, rcvQs, ntfQs)
+      liftIO $ runExceptT $ do
+        msgs <- if null subMsgQs then pure M.empty else tryPeekMsgs ms subMsgQs
+        rcvUpdated <- if null rcvAssocQs then pure S.empty else ExceptT $ Right <$> setRcvQueueServices @(StoreQueue s) (queueStore ms) clntServiceId_ rcvAssocQs
+        ntfUpdated <- if null ntfAssocQs then pure S.empty else ExceptT $ Right <$> setNtfQueueServices @(StoreQueue s) (queueStore ms) clntServiceId_ ntfAssocQs
+        let rcvSet = S.fromList $ map recipientId rcvAssocQs
+            assocResult rId updated = if S.member rId updated then Right () else Left AUTH
+            mkEntry q =
+              let rId = recipientId q
+                  msg_ = M.lookup rId msgs
+                  assoc_
+                    | S.member rId rcvSet = Just $ assocResult rId rcvUpdated
+                    | otherwise = Nothing
+               in (rId, (msg_, assoc_))
+            mkNtfEntry q = let rId = recipientId q in (rId, (Nothing, Just $ assocResult rId ntfUpdated))
+        pure $ M.fromList $ map mkEntry subMsgQs <> map mkNtfEntry ntfAssocQs
 
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M s (Maybe ResponseAndMessage)
     processProxiedCmd (corrId, EntityId sessId, command) = (\t -> ((corrId, EntityId sessId, t), Nothing)) <$$> case command of
@@ -1466,8 +1482,8 @@ client
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    processCommand :: Maybe ServiceId -> VersionSMP -> Either ErrorType (Map RecipientId Message) -> Map RecipientId (Either ErrorType ()) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
-    processCommand clntServiceId clntVersion msgMap assocResults (q_, (corrId, entId, cmd)) = case cmd of
+    processCommand :: Maybe ServiceId -> VersionSMP -> Either ErrorType (Map RecipientId (Maybe Message, Maybe (Either ErrorType ()))) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
+    processCommand clntServiceId clntVersion prepared (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> case command of
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
@@ -1478,7 +1494,11 @@ client
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
       Cmd SNotifier NSUB -> response . (corrId,entId,) <$> case q_ of
-        Just (q, QueueRec {notifier = Just ntfCreds}) -> subscribeNotifications (M.lookup entId assocResults) q ntfCreds
+        Just (q, QueueRec {notifier = Just ntfCreds}) ->
+          let assoc_ = case prepared of
+                Left _ -> Nothing
+                Right prepMap -> M.lookup entId prepMap >>= snd
+           in subscribeNotifications assoc_ q ntfCreds
         _ -> pure $ ERR INTERNAL
       Cmd SNotifierService (NSUBS n idsHash) -> response . (corrId,entId,) <$> case clntServiceId of
         Just serviceId -> subscribeServiceNotifications serviceId (n, idsHash)
@@ -1491,9 +1511,10 @@ client
               pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
       Cmd SRecipient command ->
         case command of
-          SUB -> case msgMap of
+          SUB -> case prepared of
             Left e -> pure $ Just (err e, Nothing)
-            Right msgs -> withQueue' $ subscribeQueueAndDeliver (M.lookup entId msgs) (M.lookup entId assocResults)
+            Right prepMap -> let (msg_, assoc_) = maybe (Nothing, Nothing) id (M.lookup entId prepMap)
+                              in withQueue' $ subscribeQueueAndDeliver msg_ assoc_
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -2104,7 +2125,7 @@ client
               -- rejectOrVerify filters allowed commands, no need to repeat it here.
               -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
               -- `fst` removes empty message that is only returned for `SUB` command
-              Right t''@(_, (corrId', entId', _)) -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right M.empty) M.empty t'')
+              Right t''@(_, (corrId', entId', _)) -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right M.empty) t'')
           -- encode response
           r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
             [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right

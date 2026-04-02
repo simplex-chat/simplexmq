@@ -4,187 +4,123 @@ When a batch of SUB or NSUB commands arrives from a service client, each command
 
 ## Goal
 
-Reduce to 1 DB query per batch, using `UPDATE ... RETURNING recipient_id` to identify which queues were actually updated.
+Reduce to at most 2 DB queries per batch (one for rcv associations, one for ntf associations), using `UPDATE ... RETURNING recipient_id` to identify which queues were actually updated.
 
-`clntServiceId` is per-client (not per-queue), so all queues in a batch that need association changes share the same target value. The per-queue decision is binary: update or not.
+Also fuse message pre-fetch and association batching into a single batch preparation step with a clean contract.
 
-```haskell
-type NeedsAssocUpdate = Bool
-```
-
-## Current code
-
-### `sharedSubscribeQueue` (Server.hs:1757-1805)
-
-Called per SUB/NSUB command. Based on `clntServiceId` and `queueServiceId` from `QueueRec`:
-
-- `clntServiceId == Just sId`, `queueServiceId == Just sId` (line 1763): Already associated. No DB write. STM + stats only.
-
-- `clntServiceId == Just sId`, `queueServiceId /= Just sId` (line 1772): New/updated association. Calls `setQueueService q party (Just sId)` - **DB WRITE**. Then STM + stats.
-
-- `clntServiceId == Nothing`, `queueServiceId == Just _` (line 1787): Removing association. Calls `setQueueService q party Nothing` - **DB WRITE**. Then STM + stats.
-
-- `clntServiceId == Nothing`, `queueServiceId == Nothing` (line 1795): No service. No DB write. STM only.
-
-### Where `sharedSubscribeQueue` is called from
-
-Only from the `client` function's `foldrM` loop in `Server.hs` (via `processCommand` -> `subscribeQueueAndDeliver` or `subscribeNotifications`). The forwarded command handler (line 2094) only processes sender commands, never SUB/NSUB. So `prepareBatch` always runs before `sharedSubscribeQueue`.
-
-### `setQueueService` for Postgres (QueueStore/Postgres.hs:484-505)
-
-Per queue:
-1. `withQueueRec sq` - reads QueueRec TVar under queue lock, fails if deleted
-2. Checks if already set to target value - returns immediately if so
-3. `assertUpdated $ withDB' ... DB.execute "UPDATE ..."` - one DB query, asserts 1 row affected
-4. `atomically $ writeTVar (queueRec sq) $ Just q'` - updates in-memory QueueRec
-5. `withLog ... logQueueService` - writes store log entry
-
-### `setQueueService` for STM (QueueStore/STM.hs:312-338)
-
-Per queue:
-1. `atomically (readQueueRec qr $>>= setService)` - reads QueueRec, updates TVar, updates per-service queue sets
-2. `$>> withLog ... logQueueService` - writes store log entry
-
-## Implementation (top-down)
-
-### Step 1: Extend batch preparation in the `client` function (Server.hs)
-
-Currently (Server.hs:1372-1381):
-```haskell
-forever $ do
-  batch <- atomically (readTBQueue rcvQ)
-  msgMap <- prefetchMsgs batch
-  foldrM (process msgMap) ([], []) batch
-    >>= ...
-```
-
-Rename `prefetchMsgs` to `prepareBatch`. It returns an additional `Map RecipientId (Either ErrorType ())` for association results.
+## Contract
 
 ```haskell
-forever $ do
-  batch <- atomically (readTBQueue rcvQ)
-  (msgMap, assocResults) <- prepareBatch batch
-  foldrM (process msgMap assocResults) ([], []) batch
-    >>= ...
+prepareBatch :: Maybe ServiceId -> NonEmpty (VerifiedTransmission s) -> M s (Either ErrorType (Map RecipientId (Maybe Message, Maybe (Either ErrorType ()))))
 ```
 
-`assocResults` contains entries only for queues that needed an association update. Keyed by `RecipientId`. `Right ()` means the update succeeded. `Left e` means it failed.
+`Left e` = batch-level failure (message pre-fetch or association query failed entirely). All SUBs/NSUBs in the batch get this error.
 
-### Step 2: Implement `prepareBatch` (Server.hs)
+`Right map` = per-queue results as a tuple:
+- `Maybe Message` - pre-fetched message for SUB queues, `Nothing` for NSUB or no message
+- `Maybe (Either ErrorType ())` - association result. `Nothing` = no update needed. `Just (Right ())` = update succeeded. `Just (Left e)` = update failed for this queue.
 
-Replaces current `prefetchMsgs`. Does three things:
+One map, one lookup per queue. `processCommand` passes both values to `subscribeQueueAndDeliver` / `subscribeNotifications` -> `sharedSubscribeQueue`.
 
-1. Collects SUB queues for message pre-fetch (existing `tryPeekMsgs` logic, unchanged).
+Queues not in the map (non-SUB/NSUB commands, failed verification) are not affected.
 
-2. Classifies each SUB/NSUB queue's association need by reading `queueServiceId` from the already-loaded `QueueRec` in `VerifiedTransmission` and comparing with `clntServiceId`. Produces `NonEmpty (Either ErrorType NeedsAssocUpdate)` aligned with the batch. Error if `q_ = Nothing` for a SUB/NSUB command. `True` if the queue needs its association updated. `False` if no change needed.
+## prepareBatch implementation
 
-3. Collects `StoreQueue`s where classification produced `Right True`. If non-empty, calls `setQueueServices` with `clntServiceId` as target and this list. Gets back `Set RecipientId` of queues that were actually updated.
+One accumulating fold over the batch, collecting three lists:
+- `subMsgQs :: [StoreQueue s]` - SUB queues for message pre-fetch
+- `rcvAssocQs :: [StoreQueue s]` - SUB queues needing `rcv_service_id` update (`clntServiceId /= rcvServiceId qr`)
+- `ntfAssocQs :: [StoreQueue s]` - NSUB queues needing `ntf_service_id` update (`clntServiceId /= ntfServiceId` from `NtfCreds`)
 
-4. Builds `assocResults :: Map RecipientId (Either ErrorType ())`: for each queue that needed an update (`Right True`), if its `recipientId` is in the returned set then `Right ()`, otherwise `Left AUTH`.
+Classification reads from the already-loaded `QueueRec` in `VerifiedTransmission` - no extra DB query.
 
-### Step 3: Thread `assocResults` through `processCommand` (Server.hs:1463)
+Then three store calls (each skipped if its list is empty):
+1. `tryPeekMsgs ms subMsgQs` -> `Map RecipientId Message`
+2. `setRcvQueueServices (queueStore ms) clntServiceId rcvAssocQs` -> `Set RecipientId`
+3. `setNtfQueueServices (queueStore ms) clntServiceId ntfAssocQs` -> `Set RecipientId`
 
-Add parameter:
-```haskell
-processCommand :: Maybe ServiceId -> VersionSMP -> Either ErrorType (Map RecipientId Message) -> Map RecipientId (Either ErrorType ()) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
-```
+Then one pass to merge results into `Map RecipientId (Maybe Message, Maybe (Either ErrorType ()))`:
+- For each SUB queue: `(M.lookup rId msgMap, assocResult rId rcvUpdated rcvAssocQs)`
+- For each NSUB queue: `(Nothing, assocResult rId ntfUpdated ntfAssocQs)`
 
-In the SUB case, pass `M.lookup entId assocResults` to `subscribeQueueAndDeliver`.
-In the NSUB case, pass `M.lookup entId assocResults` to `subscribeNotifications`.
-In the forwarded command call (line 2094), pass `M.empty`.
-All other commands ignore it.
+Where `assocResult rId updated assocQs` = if the queue was in `assocQs` (needed update), then `Just (Right ())` if `rId` is in `updated`, else `Just (Left AUTH)`. If not in `assocQs` (no update needed), `Nothing`.
 
-### Step 4: Thread through `subscribeQueueAndDeliver` (Server.hs:1631) and `subscribeNotifications` (Server.hs:1737)
+If any of the three calls fails entirely, return `Left e`.
 
-Both gain `assocResult :: Maybe (Either ErrorType ())` and pass it to `sharedSubscribeQueue`.
+## Store interface
 
-`subscribeQueueAndDeliver` signature becomes:
-```haskell
-subscribeQueueAndDeliver :: Maybe Message -> Maybe (Either ErrorType ()) -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
-```
-
-### Step 5: Modify `sharedSubscribeQueue` (Server.hs:1757)
-
-Gains `assocResult :: Maybe (Either ErrorType ())`.
-
-Where the queue needs a new or changed association (line 1772), currently:
-```haskell
-| otherwise -> runExceptT $ do
-    ExceptT $ setQueueService (queueStore ms) q party (Just serviceId)
-    hasSub <- ...
-```
-
-Becomes:
-```haskell
-| otherwise -> case assocResult of
-    Just (Left e) -> pure $ Left e
-    _ -> runExceptT $ do
-      hasSub <- ...
-```
-
-`Just (Left e)` means the batch update failed for this queue - return the error.
-`Just (Right ())` means the batch update succeeded - skip `setQueueService`, proceed with STM work.
-`Nothing` cannot happen here because `prepareBatch` always runs before this code and classifies every SUB/NSUB queue.
-
-Same change where removing association (line 1787):
-```haskell
-Just _ -> case assocResult of
-  Just (Left e) -> pure $ Left e
-  _ -> runExceptT $ do
-    liftIO $ incSrvStat srvAssocRemoved
-    ...
-```
-
-Queues that are already associated correctly or have no service involvement have `assocResult = Nothing` (not in the map). These paths don't call `setQueueService` today, so nothing changes for them.
-
-### Step 6: Add `setQueueServices` to `QueueStoreClass` (QueueStore/Types.hs:53)
+Replace the polymorphic `setQueueServices` with two plain functions in `QueueStoreClass`:
 
 ```haskell
-setQueueServices :: (PartyI p, ServiceParty p) => s -> SParty p -> Maybe ServiceId -> [q] -> IO (Set RecipientId)
+setRcvQueueServices :: s -> Maybe ServiceId -> [q] -> IO (Set RecipientId)
+setNtfQueueServices :: s -> Maybe ServiceId -> [q] -> IO (Set RecipientId)
 ```
 
-Takes target `serviceId` and list of queues. Returns set of `RecipientId`s that were actually updated in the DB.
+No `SParty p` polymorphism. Each function knows its column.
 
-### Step 7: Postgres implementation (QueueStore/Postgres.hs)
+### Postgres implementation
 
-For `SRecipientService`:
+`setRcvQueueServices`:
 ```sql
 UPDATE msg_queues SET rcv_service_id = ?
 WHERE recipient_id IN ? AND deleted_at IS NULL
 RETURNING recipient_id
 ```
 
-For `SNotifierService`:
+`setNtfQueueServices`:
 ```sql
 UPDATE msg_queues SET ntf_service_id = ?
 WHERE recipient_id IN ? AND notifier_id IS NOT NULL AND deleted_at IS NULL
 RETURNING recipient_id
 ```
 
-Build `Set RecipientId` from RETURNING rows.
+After each batch query, for each queue in the returned set:
+1. Read QueueRec TVar, update with new serviceId
+2. Write store log entry
 
-After the batch query, for each queue whose `recipientId` is in the returned set:
-1. Read `QueueRec` from TVar, update with new `serviceId` (same as `updateQueueRec` at line 502-504)
-2. Write store log entry (same as `withLog` at line 505)
+### STM implementation
 
-Queues not in the returned set are not updated (deleted between verification and UPDATE). The caller sees them absent from the set and produces `Left AUTH`.
+Loop over queues, call existing per-item logic, collect succeeded `RecipientId`s into a Set.
 
-No per-queue lock needed: the batch UPDATE is a single SQL statement (Postgres handles row-level locking internally), and SUB/NSUB processing is single-threaded per connected client.
+## Downstream changes in Server.hs
 
-### Step 8: STM implementation (QueueStore/STM.hs)
+### processCommand
 
-Loop over queues. For each:
-1. Run existing `setService` STM logic from `setQueueService` (line 319-334): read QueueRec, update TVar, update per-service queue sets
-2. If succeeded, add `recipientId` to result set
-3. Write store log entry
+Gains one parameter: `Map RecipientId (Maybe Message, Maybe (Either ErrorType ()))`.
 
-Return accumulated `Set RecipientId`.
+SUB case: `M.lookup entId prepared` gives `Just (msg_, assocResult)` or `Nothing`. Pass both to `subscribeQueueAndDeliver`.
+
+NSUB case: `M.lookup entId prepared` gives `Just (Nothing, assocResult)` or `Nothing`. Pass `assocResult` to `subscribeNotifications`.
+
+Forwarded commands: pass `M.empty`.
+
+### subscribeQueueAndDeliver
+
+Takes `Maybe Message` and `Maybe (Either ErrorType ())` as before. No change in how it uses them.
+
+### sharedSubscribeQueue
+
+Takes `Maybe (Either ErrorType ())`. On paths needing association update:
+- `Just (Left e)` -> return error
+- `Just (Right ())` -> skip `setQueueService`, proceed with STM work
+- `Nothing` -> no update needed, proceed with existing logic
+
+## Implementation order (top-down)
+
+1. Define the `prepareBatch` contract and thread one map through `processCommand` -> `subscribeQueueAndDeliver` / `subscribeNotifications` -> `sharedSubscribeQueue` (Server.hs)
+2. Implement `prepareBatch` with the fold, three calls, and merge (Server.hs)
+3. Add `setRcvQueueServices` and `setNtfQueueServices` to `QueueStoreClass` (Types.hs)
+4. Implement for Postgres with batch `UPDATE ... RETURNING` (Postgres.hs)
+5. Implement for STM as loop (STM.hs)
+6. Implement for Journal as delegation (Journal.hs)
+
+At step 2, store functions can initially be stubs returning empty sets. Steps 3-6 fill in the real implementations.
 
 ## Files changed
 
 | File | Change |
 |---|---|
-| `src/Simplex/Messaging/Server.hs` | Rename `prefetchMsgs` to `prepareBatch` adding classification and `setQueueServices` call. Thread `assocResults` through `processCommand` -> `subscribeQueueAndDeliver` / `subscribeNotifications` -> `sharedSubscribeQueue`. Replace `setQueueService` calls with `assocResult` check. |
-| `src/Simplex/Messaging/Server/QueueStore/Types.hs` | Add `setQueueServices` to `QueueStoreClass` |
-| `src/Simplex/Messaging/Server/QueueStore/Postgres.hs` | Implement `setQueueServices` with batch `UPDATE ... RETURNING` + per-item TVar and store log updates |
-| `src/Simplex/Messaging/Server/QueueStore/STM.hs` | Implement `setQueueServices` as loop over existing STM logic |
+| `src/Simplex/Messaging/Server.hs` | `prepareBatch` with fold + merge; one map parameter through `processCommand` -> `subscribeQueueAndDeliver` / `subscribeNotifications` -> `sharedSubscribeQueue` |
+| `src/Simplex/Messaging/Server/QueueStore/Types.hs` | Add `setRcvQueueServices`, `setNtfQueueServices` to `QueueStoreClass` |
+| `src/Simplex/Messaging/Server/QueueStore/Postgres.hs` | Implement with batch `UPDATE ... RETURNING` + per-item TVar/log updates |
+| `src/Simplex/Messaging/Server/QueueStore/STM.hs` | Implement as loop |
+| `src/Simplex/Messaging/Server/MsgStore/Journal.hs` | Delegate to underlying store |
