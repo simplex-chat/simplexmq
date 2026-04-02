@@ -1654,9 +1654,7 @@ client
         subscribeQueueAndDeliver msg_ q qr@QueueRec {rcvServiceId} =
           liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
             Nothing ->
-              sharedSubscribeQueue q SRecipientService rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices >>= \case
-                Left e -> pure (err e, Nothing)
-                Right s -> deliver s
+              deliver =<< sharedSubscribeQueue q SRecipientService rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
             Just s@Sub {subThread} -> do
               stats <- asks serverStats
               case subThread of
@@ -1757,13 +1755,11 @@ client
                 else liftIO (updateQueueTime (queueStore ms) q t) >>= either (pure . err') (action q)
 
         subscribeNotifications :: StoreQueue s -> NtfCreds -> M s BrokerMsg
-        subscribeNotifications q NtfCreds {ntfServiceId} =
-          sharedSubscribeQueue q SNotifierService ntfServiceId ntfSubscribers ntfSubscriptions ntfServiceSubsCount (pure ()) ntfServices >>= \case
-            Left e -> pure $ ERR e
-            Right (hasSub, _) -> do
-              when (isNothing clntServiceId) $
-                asks serverStats >>= incStat . (if hasSub then ntfSubDuplicate else ntfSub)
-              pure $ SOK clntServiceId
+        subscribeNotifications q NtfCreds {ntfServiceId} = do
+          (hasSub, _) <- sharedSubscribeQueue q SNotifierService ntfServiceId ntfSubscribers ntfSubscriptions ntfServiceSubsCount (pure ()) ntfServices
+          when (isNothing clntServiceId) $
+            asks serverStats >>= incStat . (if hasSub then ntfSubDuplicate else ntfSub)
+          pure $ SOK clntServiceId
 
         sharedSubscribeQueue ::
           (PartyI p, ServiceParty p) =>
@@ -1775,7 +1771,7 @@ client
           (Client s -> TVar (Int64, IdsHash)) ->
           STM sub ->
           (ServerStats -> ServiceStats) ->
-          M s (Either ErrorType (Bool, Maybe sub))
+          M s (Bool, Maybe sub)
         sharedSubscribeQueue q party queueServiceId srvSubscribers clientSubs clientServiceSubs mkSub servicesSel = do
           stats <- asks serverStats
           let incSrvStat sel = incStat $ sel $ servicesSel stats
@@ -1790,33 +1786,32 @@ client
                     incSrvStat srvSubCount
                     incSrvStat srvSubQueues
                   incSrvStat srvAssocDuplicate
-                  pure $ Right (hasSub, Nothing)
-              | otherwise -> runExceptT $ do
-                    -- association already done in prepareBatch
-                    hasSub <- atomically $ (<$ incServiceQueueSubs) =<< hasServiceSub
-                    atomically writeSub
-                    liftIO $ do
-                      unless hasSub $ incSrvStat srvSubCount
-                      incSrvStat srvSubQueues
-                      incSrvStat $ maybe srvAssocNew (const srvAssocUpdated) queueServiceId
-                    pure (hasSub, Nothing)
+                  pure (hasSub, Nothing)
+              | otherwise -> do
+                  -- association already done in prepareBatchSubs
+                  hasSub <- atomically $ (<$ incServiceQueueSubs) =<< hasServiceSub
+                  atomically writeSub
+                  unless hasSub $ incSrvStat srvSubCount
+                  incSrvStat srvSubQueues
+                  incSrvStat $ maybe srvAssocNew (const srvAssocUpdated) queueServiceId
+                  pure (hasSub, Nothing)
               where
                 hasServiceSub = ((0 /=) . fst) <$> readTVar (clientServiceSubs clnt)
                 -- This function is used when queue association with the service is created.
                 incServiceQueueSubs = modifyTVar' (clientServiceSubs clnt) $ addServiceSubs (1, queueIdHash (recipientId q)) -- service count and IDS hash
             Nothing -> case queueServiceId of
-              Just _ -> runExceptT $ do
-                  -- unassociation already done in prepareBatch
-                  liftIO $ incSrvStat srvAssocRemoved
-                  -- getSubscription may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
-                  -- For notification service it can only be Just if storage and session states diverge.
-                  r <- atomically $ getSubscription >>= newSub
-                  atomically writeSub
-                  pure r
+              Just _ -> do
+                -- unassociation already done in prepareBatchSubs
+                incSrvStat srvAssocRemoved
+                -- getSubscription may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
+                -- For notification service it can only be Just if storage and session states diverge.
+                r <- atomically $ getSubscription >>= newSub
+                atomically writeSub
+                pure r
               Nothing -> do
                 r@(hasSub, _) <- atomically $ getSubscription >>= newSub
                 unless hasSub $ atomically writeSub
-                pure $ Right r
+                pure r
               where
                 getSubscription = TM.lookup entId $ clientSubs clnt
                 newSub = \case
