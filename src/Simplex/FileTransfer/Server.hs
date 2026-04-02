@@ -570,6 +570,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                   Left _e -> do
                     us <- asks usedStorage
                     atomically $ modifyTVar' us $ subtract (fromIntegral size)
+                    liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
                     pure $ FRErr AUTH
               Left e -> do
                 us <- asks usedStorage
