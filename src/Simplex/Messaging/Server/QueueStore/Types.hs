@@ -16,7 +16,7 @@ import Control.Concurrent.STM
 import Control.Monad
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Set (Set)
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
@@ -52,8 +52,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   deleteStoreQueue :: s -> q -> IO (Either ErrorType QueueRec)
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
   setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
-  setRcvQueueServices :: s -> Maybe ServiceId -> [q] -> IO (Set RecipientId)
-  setNtfQueueServices :: s -> Maybe ServiceId -> [q] -> IO (Set RecipientId)
+  setQueueServices :: (PartyI p, ServiceParty p) => s -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (Map RecipientId (Either ErrorType ())))
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => s -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
 

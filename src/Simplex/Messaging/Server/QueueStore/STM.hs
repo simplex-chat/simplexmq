@@ -337,8 +337,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         mapM_ (removeServiceQueue st serviceSel qId) prevSrvId
         mapM_ (addServiceQueue st serviceSel qId) serviceId
 
-  setRcvQueueServices _ _ _ = pure S.empty -- TODO loop implementation
-  setNtfQueueServices _ _ _ = pure S.empty -- TODO loop implementation
+  setQueueServices _ _ _ _ = pure $ Right M.empty -- TODO loop implementation
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do

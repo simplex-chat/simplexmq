@@ -504,10 +504,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ writeTVar (queueRec sq) $ Just q'
         withLog "setQueueService" st $ \sl -> logQueueService sl rId party serviceId
 
-  setRcvQueueServices _ _ [] = pure S.empty
-  setRcvQueueServices _ _ _ = pure S.empty -- TODO batch implementation
-  setNtfQueueServices _ _ [] = pure S.empty
-  setNtfQueueServices _ _ _ = pure S.empty -- TODO batch implementation
+  setQueueServices _ _ _ [] = pure $ Right M.empty
+  setQueueServices _ _ _ _ = pure $ Right M.empty -- TODO batch implementation
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
