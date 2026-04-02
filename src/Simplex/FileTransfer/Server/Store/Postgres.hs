@@ -102,7 +102,7 @@ instance FileStoreClass PostgresFileStore where
 
   setFilePath st sId fPath = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "setFilePath" st $ \db ->
-      DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL" (fPath, sId)
+      DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
     withLog "setFilePath" st $ \s -> logPutFile s sId fPath
 
   addRecipient st senderId (FileRecipient rId rKey) = E.uninterruptibleMask_ $ runExceptT $ do
