@@ -1492,7 +1492,7 @@ client
       Cmd SNotifier NSUB -> response . (corrId,entId,) <$> case q_ of
         Just (q, QueueRec {notifier = Just ntfCreds}) ->
           either (pure . ERR) (\_ -> subscribeNotifications q ntfCreds)
-            $ batchSubs >>= sequence . M.lookup (recipientId q) . \(_, _, n) -> n
+            $ batchSubs >>= \(_, _, ntfAssocs) -> sequence (M.lookup (recipientId q) ntfAssocs)
         _ -> pure $ ERR INTERNAL
       Cmd SNotifierService (NSUBS n idsHash) -> response . (corrId,entId,) <$> case clntServiceId of
         Just serviceId -> subscribeServiceNotifications serviceId (n, idsHash)
@@ -1505,11 +1505,9 @@ client
               pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
       Cmd SRecipient command ->
         case command of
-          SUB -> case batchSubs of
+          SUB -> case batchSubs >>= \(msgs, rcvAssocs, _) -> sequence (M.lookup entId rcvAssocs) $> msgs of
             Left e -> pure $ Just (err e, Nothing)
-            Right (msgs, rcvAssocs, _) -> case sequence $ M.lookup entId rcvAssocs of
-              Left e -> pure $ Just (err e, Nothing)
-              Right _ -> withQueue' $ subscribeQueueAndDeliver (M.lookup entId msgs)
+            Right msgs -> withQueue' $ subscribeQueueAndDeliver $ M.lookup entId msgs
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1654,7 +1652,7 @@ client
         subscribeQueueAndDeliver msg_ q qr@QueueRec {rcvServiceId} =
           liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
             Nothing ->
-              deliver =<< sharedSubscribeQueue q SRecipientService rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
+              deliver =<< sharedSubscribeQueue q rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
             Just s@Sub {subThread} -> do
               stats <- asks serverStats
               case subThread of
@@ -1756,15 +1754,13 @@ client
 
         subscribeNotifications :: StoreQueue s -> NtfCreds -> M s BrokerMsg
         subscribeNotifications q NtfCreds {ntfServiceId} = do
-          (hasSub, _) <- sharedSubscribeQueue q SNotifierService ntfServiceId ntfSubscribers ntfSubscriptions ntfServiceSubsCount (pure ()) ntfServices
+          (hasSub, _) <- sharedSubscribeQueue q ntfServiceId ntfSubscribers ntfSubscriptions ntfServiceSubsCount (pure ()) ntfServices
           when (isNothing clntServiceId) $
             asks serverStats >>= incStat . (if hasSub then ntfSubDuplicate else ntfSub)
           pure $ SOK clntServiceId
 
         sharedSubscribeQueue ::
-          (PartyI p, ServiceParty p) =>
           StoreQueue s ->
-          SParty p ->
           Maybe ServiceId ->
           ServerSubscribers s ->
           (Client s -> TMap QueueId sub) ->
@@ -1772,7 +1768,7 @@ client
           STM sub ->
           (ServerStats -> ServiceStats) ->
           M s (Bool, Maybe sub)
-        sharedSubscribeQueue q party queueServiceId srvSubscribers clientSubs clientServiceSubs mkSub servicesSel = do
+        sharedSubscribeQueue q queueServiceId srvSubscribers clientSubs clientServiceSubs mkSub servicesSel = do
           stats <- asks serverStats
           let incSrvStat sel = incStat $ sel $ servicesSel stats
               writeSub = writeTQueue (subQ srvSubscribers) (CSClient entId queueServiceId clntServiceId, clientId)

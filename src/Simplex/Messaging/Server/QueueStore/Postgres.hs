@@ -91,7 +91,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>), ($>>=))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -504,6 +504,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ writeTVar (queueRec sq) $ Just q'
         withLog "setQueueService" st $ \sl -> logQueueService sl rId party serviceId
 
+  setQueueServices :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (M.Map RecipientId (Either ErrorType ())))
   setQueueServices _ _ _ [] = pure $ Right M.empty
   setQueueServices st party serviceId qs = E.uninterruptibleMask_ $ runExceptT $ do
     updated <- S.fromList <$> withDB' "setQueueServices" st (\db ->
