@@ -26,6 +26,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except (throwE)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as LB
@@ -331,7 +332,7 @@ fileRecToCSV sId FileRec {fileInfo = FileInfo {sndKey, size, digest}, filePath, 
         renderField (toField (Binary (C.encodePubKey sndKey))),
         nullable (toField <$> path),
         renderField (toField createdAt),
-        BB.char7 '"' <> renderField (toField status) <> BB.char7 '"'
+        quotedField (toField status)
       ]
 
 recipientToCSV :: RecipientId -> SenderId -> RcvPublicAuthKey -> ByteString
@@ -354,3 +355,10 @@ renderField = \case
 
 nullable :: Maybe Action -> Builder
 nullable = maybe mempty renderField
+
+quotedField :: Action -> Builder
+quotedField a = BB.char7 '"' <> escapeQuotes (renderField a) <> BB.char7 '"'
+  where
+    escapeQuotes bld =
+      let bs = LB.toStrict $ BB.toLazyByteString bld
+       in BB.byteString $ B.concatMap (\c -> if c == '"' then "\"\"" else B.singleton c) bs
