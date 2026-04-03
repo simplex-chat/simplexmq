@@ -641,6 +641,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
+          -- spec: spec/modules/Simplex/Messaging/Client.md#four-concurrent-threads--teardown-semantics
           raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
             `E.finally` disconnected c'
 
@@ -689,6 +690,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       forM_ msgQ $ \q ->
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
+    -- spec: spec/modules/Simplex/Messaging/Client.md#processmsg--server-events-vs-expired-responses
     processMsg :: ProtocolClient v err msg -> Transmission (Either err msg) -> IO (Maybe (EntityId, ServerTransmission err msg))
     processMsg ProtocolClient {client_ = PClient {sentCommands}} (corrId, entId, respOrErr)
       | B.null $ bs corrId = sendMsg $ STEvent clientResp
@@ -1338,11 +1340,13 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
             | batch = tEncodeBatch1 serviceAuth t
             | otherwise = tEncode serviceAuth t
 
+-- spec: spec/modules/Simplex/Messaging/Client.md#nonblockingwritetbqueue--fork-on-full
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
   sent <- atomically $ tryWriteTBQueue q x
   unless sent $ void $ forkIO $ atomically $ writeTBQueue q x
 
+-- spec: spec/modules/Simplex/Messaging/Client.md#getresponse--pending-flag-race-contract
 getResponse :: ProtocolClient v err msg -> NetworkRequestMode -> Maybe Int -> Request err msg -> IO (Response err msg)
 getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} nm tOut Request {entityId, pending, responseVar} = do
   r <- fromMaybe (netTimeoutInt tcpTimeout nm) tOut `timeout` atomically (takeTMVar responseVar)
@@ -1382,6 +1386,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       atomically $ TM.insert corrId r sentCommands
       pure r
 
+-- spec: spec/modules/Simplex/Messaging/Client.md#authtransmission--dual-auth-with-service-signature
 authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
 authTransmission thAuth serviceAuth pKey_ nonce t = traverse authenticate pKey_
   where

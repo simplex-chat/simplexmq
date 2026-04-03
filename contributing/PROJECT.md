@@ -13,7 +13,7 @@ Key components:
 - **SMP Client**: Functional API with STM-based message delivery ([code](../src/Simplex/Messaging/Client.hs)).
 - **SMP Agent**: High-level duplex connections via multiple simplex queues with E2E encryption ([code](../src/Simplex/Messaging/Agent.hs)). Implements Agent-to-agent protocol ([code](../src/Simplex/Messaging/Agent/Protocol.hs), [spec](../protocol/agent-protocol.md)) via intermediary agent client ([code](../src/Simplex/Messaging/Agent/Client.hs)).
 - **XFTP**: SimpleX File Transfer Protocol, server and CLI client ([code](../src/Simplex/FileTransfer/), [spec](../protocol/xftp.md)).
-- **XRCP**: SimpleX Remote Control Protocol ([code](`../src/Simplex/RemoteControl/`), [spec](../protocol/xrcp.md)).
+- **XRCP**: SimpleX Remote Control Protocol ([code](../src/Simplex/RemoteControl/), [spec](../protocol/xrcp.md)).
 - **Notifications**: Push notifications server requires PostgreSQL ([code](../src/Simplex/Messaging/Notifications), [executable](../apps/ntf-server/)). Client protocol is used for clients to communicate with the server ([code](../src/Simplex/Messaging/Notifications/Protocol.hs), [spec](../protocol/push-notifications.md)). For subscribing to SMP notifications the server uses [lightweight SMP client](../src/Simplex/Messaging/Client/Agent.hs).
 
 ## Architecture

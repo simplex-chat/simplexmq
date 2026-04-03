@@ -7,6 +7,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
+-- spec: spec/modules/Simplex/Messaging/Encoding.md
 module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),

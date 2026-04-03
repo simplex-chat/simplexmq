@@ -69,6 +69,7 @@ instance Transport WS where
   closeConnection = S.close . wsStream
   {-# INLINE closeConnection #-}
 
+  -- spec: spec/modules/Simplex/Messaging/Transport/WebSockets.md#cget--strict-size-check-unlike-tls
   cGet :: WS p -> Int -> IO ByteString
   cGet c n = do
     s <- receiveData (wsConnection c)
