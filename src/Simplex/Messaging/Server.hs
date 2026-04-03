@@ -40,6 +40,7 @@ module Simplex.Messaging.Server
     dummyVerifyCmd,
     randomId,
     AttachHTTP,
+    WSHandler,
     MessageStats (..),
   )
 where
@@ -121,6 +122,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
+import Simplex.Messaging.Transport.WebSockets (WS (..))
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
@@ -160,7 +162,8 @@ runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
-type AttachHTTP = Socket -> TLS.Context -> IO ()
+type AttachHTTP = Socket -> TLS 'TServer -> Maybe WSHandler -> IO ()
+type WSHandler = WS 'TServer -> IO ()
 
 -- actions used in serverThread to reduce STM transaction scope
 data ClientSubAction
@@ -211,10 +214,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         (Just httpCreds, Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
-              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
+              Just (tls :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tls (Just wsHandler)
               _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
+            wsHandler ws = runClient srvCert srvSignKey (TProxy :: TProxy WS 'TServer) ws `runReaderT` env
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
 
