@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 
@@ -54,9 +53,6 @@ testSenderId = EntityId "sender001_______"
 
 testRecipientId :: EntityId
 testRecipientId = EntityId "recipient001____"
-
-testRecipientId2 :: EntityId
-testRecipientId2 = EntityId "recipient002____"
 
 testFileInfo :: C.APublicAuthKey -> FileInfo
 testFileInfo sndKey =

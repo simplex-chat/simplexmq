@@ -45,7 +45,7 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile, removePathForcibly)
+import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
@@ -69,6 +69,7 @@ xftpServerTests =
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
+        --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
         it "prohibited when auth is incorrect" $ testFileBasicAuth True (Just "pwd") (Just "wrong") False
         it "prohibited when FNEW disabled" $ testFileBasicAuth False (Just "pwd") (Just "pwd") False
@@ -89,49 +90,49 @@ xftpServerTests =
 -- Tests parameterized over store backend (memory or PostgreSQL)
 xftpFileTests :: SpecWith XFTPTestBracket
 xftpFileTests = do
-    it "should create, upload and receive file chunk (1 client)" $ \(withSrv :: XFTPTestBracket) ->
+    it "should create, upload and receive file chunk (1 client)" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
-    it "should create, upload and receive file chunk (2 clients)" $ \(withSrv :: XFTPTestBracket) ->
+    it "should create, upload and receive file chunk (2 clients)" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r -> runRight_ $ runTestFileChunkDelivery s r
-    it "should create, add recipients, upload and receive file chunk" $ \(withSrv :: XFTPTestBracket) ->
+    it "should create, add recipients, upload and receive file chunk" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r1 -> testXFTPClient $ \r2 -> testXFTPClient $ \r3 ->
         runRight_ $ runTestFileChunkDeliveryAddRecipients s r1 r2 r3
-    it "should delete file chunk (1 client)" $ \(withSrv :: XFTPTestBracket) ->
+    it "should delete file chunk (1 client)" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelete c c
-    it "should delete file chunk (2 clients)" $ \(withSrv :: XFTPTestBracket) ->
+    it "should delete file chunk (2 clients)" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r -> runRight_ $ runTestFileChunkDelete s r
-    it "should acknowledge file chunk reception (1 client)" $ \(withSrv :: XFTPTestBracket) ->
+    it "should acknowledge file chunk reception (1 client)" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \c -> runRight_ $ runTestFileChunkAck c c
-    it "should acknowledge file chunk reception (2 clients)" $ \(withSrv :: XFTPTestBracket) ->
+    it "should acknowledge file chunk reception (2 clients)" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r -> runRight_ $ runTestFileChunkAck s r
-    it "should not allow chunks of wrong size" $ \(withSrv :: XFTPTestBracket) ->
+    it "should not allow chunks of wrong size" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient runTestWrongChunkSize
-    it "should expire chunks after set interval" $ \(withSrv :: XFTPTestBracket) ->
+    it "should expire chunks after set interval" $ \(XFTPTestBracket withSrv) ->
       withSrv (\c -> c {fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}) $
         testXFTPClient $ \c -> runRight_ $ runTestFileChunkExpiration c
-    it "should disconnect inactive clients" $ \(withSrv :: XFTPTestBracket) ->
+    it "should disconnect inactive clients" $ \(XFTPTestBracket withSrv) ->
       withSrv (\c -> c {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}) $
         runRight_ runTestInactiveClientExpiration
-    it "should not allow uploading chunks after specified storage quota" $ \(withSrv :: XFTPTestBracket) ->
+    it "should not allow uploading chunks after specified storage quota" $ \(XFTPTestBracket withSrv) ->
       withSrv (\c -> c {fileSizeQuota = Just $ chSize * 2}) $
         testXFTPClient $ \c -> runRight_ $ runTestFileStorageQuota c
     describe "XFTP basic auth" $ do
-      it "prohibited without basic auth" $ \(withSrv :: XFTPTestBracket) ->
+      it "prohibited without basic auth" $ \(XFTPTestBracket withSrv) ->
         withSrv (\c -> c {allowNewFiles = True, newFileBasicAuth = Just "pwd"}) $
           testXFTPClient $ runTestFileBasicAuth Nothing False
-      it "prohibited when auth is incorrect" $ \(withSrv :: XFTPTestBracket) ->
+      it "prohibited when auth is incorrect" $ \(XFTPTestBracket withSrv) ->
         withSrv (\c -> c {allowNewFiles = True, newFileBasicAuth = Just "pwd"}) $
           testXFTPClient $ runTestFileBasicAuth (Just "wrong") False
-      it "prohibited when FNEW disabled" $ \(withSrv :: XFTPTestBracket) ->
+      it "prohibited when FNEW disabled" $ \(XFTPTestBracket withSrv) ->
         withSrv (\c -> c {allowNewFiles = False, newFileBasicAuth = Just "pwd"}) $
           testXFTPClient $ runTestFileBasicAuth (Just "pwd") False
-      it "allowed with correct basic auth" $ \(withSrv :: XFTPTestBracket) ->
+      it "allowed with correct basic auth" $ \(XFTPTestBracket withSrv) ->
         withSrv (\c -> c {allowNewFiles = True, newFileBasicAuth = Just "pwd"}) $
           testXFTPClient $ runTestFileBasicAuth (Just "pwd") True
-      it "allowed with auth on server without auth" $ \(withSrv :: XFTPTestBracket) ->
+      it "allowed with auth on server without auth" $ \(XFTPTestBracket withSrv) ->
         withSrv (\c -> c {allowNewFiles = True, newFileBasicAuth = Nothing}) $
           testXFTPClient $ runTestFileBasicAuth (Just "any") True
-    it "should not change content for uploaded and committed files" $ \(withSrv :: XFTPTestBracket) ->
+    it "should not change content for uploaded and committed files" $ \(XFTPTestBracket withSrv) ->
       withSrv id $ testXFTPClient runTestFileSkipCommitted
 
 chSize :: Integral a => a
@@ -257,7 +258,7 @@ runTestFileChunkAck s r = do
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
 testWrongChunkSize :: Expectation
-testWrongChunkSize = xftpTest $ runTestWrongChunkSize
+testWrongChunkSize = xftpTest runTestWrongChunkSize
 
 runTestWrongChunkSize :: XFTPClient -> IO ()
 runTestWrongChunkSize c = do
@@ -479,10 +480,10 @@ runTestFileSkipCommitted c = do
   runRight_ $ do
     (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
     uploadXFTPChunk c spKey sId chunkSpec
-    void . liftIO $ createTestChunk testChunkPath
-    uploadXFTPChunk c spKey sId chunkSpec
+    void . liftIO $ createTestChunk testChunkPath -- trash chunk contents
+    uploadXFTPChunk c spKey sId chunkSpec -- upload again to get FROk without getting stuck
     downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk" chSize digest
-    liftIO $ B.readFile "tests/tmp/received_chunk" `shouldReturn` bytes
+    liftIO $ B.readFile "tests/tmp/received_chunk" `shouldReturn` bytes -- new chunk content got ignored
 
 -- SNI and CORS tests
 

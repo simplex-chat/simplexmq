@@ -1,4 +1,4 @@
-module XFTPCLI where
+module XFTPCLI (xftpCLITests, xftpCLIFileTests, xftpCLI, senderFiles, recipientFiles, testBracket) where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString as LB
@@ -11,7 +11,7 @@ import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import Test.Hspec hiding (fit, it)
 import Util
-import XFTPClient (testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
+import XFTPClient (XFTPTestBracket (..), testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLITests :: Spec
 xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
@@ -19,6 +19,16 @@ xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
   it "should send and receive file with 2 servers" testXFTPCLISendReceive2servers
   it "should delete file from 2 servers" testXFTPCLIDelete
   it "prepareChunkSizes should use 2 chunk sizes" testPrepareChunkSizes
+
+xftpCLIFileTests :: SpecWith (XFTPTestBracket, XFTPTestBracket)
+xftpCLIFileTests = around_ testBracket $ do
+  it "should send and receive file" $ \(XFTPTestBracket withSrv, _) ->
+    withSrv id testXFTPCLISendReceive_
+  it "should send and receive file with 2 servers" $ \(XFTPTestBracket withSrv1, XFTPTestBracket withSrv2) ->
+    withSrv1 id $ withSrv2 id testXFTPCLISendReceive2servers_
+  it "should delete file from 2 servers" $ \(XFTPTestBracket withSrv1, XFTPTestBracket withSrv2) ->
+    withSrv1 id $ withSrv2 id testXFTPCLIDelete_
+  it "prepareChunkSizes should use 2 chunk sizes" $ \(_, _) -> testPrepareChunkSizes
 
 testBracket :: IO () -> IO ()
 testBracket =
@@ -38,7 +48,10 @@ xftpCLI :: [String] -> IO [String]
 xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
 
 testXFTPCLISendReceive :: IO ()
-testXFTPCLISendReceive = withXFTPServer $ do
+testXFTPCLISendReceive = withXFTPServer testXFTPCLISendReceive_
+
+testXFTPCLISendReceive_ :: IO ()
+testXFTPCLISendReceive_ = do
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
@@ -74,7 +87,10 @@ testXFTPCLISendReceive = withXFTPServer $ do
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLISendReceive2servers :: IO ()
-testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
+testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ testXFTPCLISendReceive2servers_
+
+testXFTPCLISendReceive2servers_ :: IO ()
+testXFTPCLISendReceive2servers_ = do
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath
@@ -112,7 +128,10 @@ testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ do
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
 testXFTPCLIDelete :: IO ()
-testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ do
+testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ testXFTPCLIDelete_
+
+testXFTPCLIDelete_ :: IO ()
+testXFTPCLIDelete_ = do
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
   file <- LB.readFile filePath

@@ -8,6 +8,9 @@
 module XFTPClient where
 
 import Control.Concurrent (ThreadId, threadDelay)
+import Control.Exception (SomeException, catch)
+import System.Directory (removeFile)
+import Control.Monad (void)
 import Data.String (fromString)
 import Data.Time.Clock (getCurrentTime)
 import Network.Socket (ServiceName)
@@ -23,11 +26,75 @@ import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
 #if defined(dbServerPostgres)
+import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 #endif
+
+-- Parameterized server bracket
+
+newtype XFTPTestBracket = XFTPTestBracket
+  { runBracket :: forall a. (XFTPServerConfig -> XFTPServerConfig) -> IO a -> IO a
+  }
+
+-- Store-log-dependent agent tests need the bracket + a way to clear server state
+type XFTPTestBracketClear = (XFTPTestBracket, IO ())
+
+xftpMemoryBracket :: XFTPTestBracket
+xftpMemoryBracket = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg_ (XSCMemory Nothing) (cfgF testXFTPServerConfig) $ \_ -> test
+
+xftpMemoryBracketWithLog :: XFTPTestBracket
+xftpMemoryBracketWithLog = XFTPTestBracket $ \cfgF test ->
+  withXFTPServerCfg (cfgF testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}) $ \_ -> test
+
+xftpMemoryBracketClear :: XFTPTestBracketClear
+xftpMemoryBracketClear = (xftpMemoryBracketWithLog, removeFile testXFTPLogFile `catch` \(_ :: SomeException) -> pure ())
+
+xftpMemoryBracket2 :: XFTPTestBracket
+xftpMemoryBracket2 = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg_ (XSCMemory Nothing) (cfgF testXFTPServerConfig2) $ \_ -> test
+
+#if defined(dbServerPostgres)
+testXFTPDBConnectInfo :: ConnectInfo
+testXFTPDBConnectInfo =
+  defaultConnectInfo
+    { connectUser = "test_xftp_server_user",
+      connectDatabase = "test_xftp_server_db"
+    }
+
+testXFTPPostgresCfg :: PostgresFileStoreCfg
+testXFTPPostgresCfg =
+  PostgresFileStoreCfg
+    { dbOpts = defaultXFTPDBOpts
+        { connstr = "postgresql://test_xftp_server_user@/test_xftp_server_db",
+          schema = "xftp_server_test",
+          poolSize = 10,
+          createSchema = True
+        },
+      dbStoreLogPath = Nothing,
+      confirmMigrations = MCYesUp
+    }
+
+xftpPostgresBracket :: XFTPTestBracket
+xftpPostgresBracket = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg_ (XSCDatabase testXFTPPostgresCfg) (cfgF testXFTPServerConfig) $ \_ -> test
+
+xftpPostgresBracket2 :: XFTPTestBracket
+xftpPostgresBracket2 = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg_ (XSCDatabase testXFTPPostgresCfg) (cfgF testXFTPServerConfig2) $ \_ -> test
+
+xftpPostgresBracketClear :: XFTPTestBracketClear
+xftpPostgresBracketClear = (xftpPostgresBracket, clearXFTPPostgresStore)
+
+clearXFTPPostgresStore :: IO ()
+clearXFTPPostgresStore = do
+  let DBOpts {connstr} = dbOpts testXFTPPostgresCfg
+  conn <- PSQL.connectPostgreSQL connstr
+  void $ PSQL.execute_ conn "SET search_path TO xftp_server_test,public"
+  void $ PSQL.execute_ conn "DELETE FROM files"
+  PSQL.close conn
+#endif
+
+-- Original test helpers (memory backend)
 
 xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
 xftpTest test = runXFTPTest test `shouldReturn` ()
@@ -57,17 +124,24 @@ runXFTPTestN nClients test = withXFTPServer $ run nClients []
     run 0 hs = test hs
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
-withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
+-- Core server bracket (store-parameterized)
+
+withXFTPServerCfg_ :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfg_ storeCfg cfg =
+  serverBracket
+    (\started -> runXFTPServerBlocking started storeCfg cfg)
+    (threadDelay 10000)
+
+-- Memory-only server helpers (used by tests that don't parameterize)
+
+withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfg cfg = withXFTPServerCfg_ (XSCMemory $ storeLogFile cfg) cfg
 
 withXFTPServerCfgNoALPN :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfgNoALPN cfg = withXFTPServerCfg cfg {transportConfig = (transportConfig cfg) {serverALPN = Nothing}}
 
-withXFTPServerCfg :: HasCallStack => XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfg cfg =
-  serverBracket
-    (\started -> runXFTPServerBlocking started (XSCMemory $ storeLogFile cfg) cfg)
-    (threadDelay 10000)
+withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
@@ -76,7 +150,9 @@ withXFTPServer :: HasCallStack => IO a -> IO a
 withXFTPServer = withXFTPServerCfg testXFTPServerConfig . const
 
 withXFTPServer2 :: HasCallStack => IO a -> IO a
-withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig {xftpPort = xftpTestPort2, filesPath = xftpServerFiles2} . const
+withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig2 . const
+
+-- Constants
 
 xftpTestPort :: ServiceName
 xftpTestPort = "8000"
@@ -147,6 +223,9 @@ testXFTPServerConfig =
       webStaticPath = Nothing
     }
 
+testXFTPServerConfig2 :: XFTPServerConfig
+testXFTPServerConfig2 = testXFTPServerConfig {xftpPort = xftpTestPort2, filesPath = xftpServerFiles2}
+
 testXFTPClientConfig :: XFTPClientConfig
 testXFTPClientConfig = defaultXFTPClientConfig
 
@@ -200,45 +279,3 @@ testXFTPServerConfigEd25519SNI =
           { addCORSHeaders = True
           }
     }
-
--- Store-parameterized server bracket
-
-type XFTPTestBracket = (XFTPServerConfig -> XFTPServerConfig) -> IO () -> IO ()
-
-xftpMemoryBracket :: XFTPTestBracket
-xftpMemoryBracket cfgF test = withXFTPServerCfg (cfgF testXFTPServerConfig) $ \_ -> test
-
-withXFTPServerCfgStore :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfgStore storeCfg cfg =
-  serverBracket
-    (\started -> runXFTPServerBlocking started storeCfg cfg)
-    (threadDelay 10000)
-
-#if defined(dbServerPostgres)
-testXFTPDBConnectInfo :: ConnectInfo
-testXFTPDBConnectInfo =
-  defaultConnectInfo
-    { connectUser = "test_xftp_server_user",
-      connectDatabase = "test_xftp_server_db"
-    }
-
-testXFTPStoreDBOpts :: DBOpts
-testXFTPStoreDBOpts =
-  defaultXFTPDBOpts
-    { connstr = "postgresql://test_xftp_server_user@/test_xftp_server_db",
-      schema = "xftp_server_test",
-      poolSize = 10,
-      createSchema = True
-    }
-
-testXFTPPostgresCfg :: PostgresFileStoreCfg
-testXFTPPostgresCfg =
-  PostgresFileStoreCfg
-    { dbOpts = testXFTPStoreDBOpts,
-      dbStoreLogPath = Nothing,
-      confirmMigrations = MCYesUp
-    }
-
-xftpPostgresBracket :: XFTPTestBracket
-xftpPostgresBracket cfgF test = withXFTPServerCfgStore (XSCDatabase testXFTPPostgresCfg) (cfgF testXFTPServerConfig) $ \_ -> test
-#endif
