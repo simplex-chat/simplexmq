@@ -6,22 +6,17 @@
 module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 
 import Control.Monad
-import qualified Data.ByteString.Char8 as B
 import Data.Word (Word32)
-import qualified Data.Set as S
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
-import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg)
-import Simplex.FileTransfer.Server.StoreLog
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BlockingInfo (..), BlockingReason (..), EntityId (..))
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
-import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
-import Simplex.FileTransfer.Server.Store.Postgres (importFileStore, exportFileStore)
-import Simplex.FileTransfer.Server.StoreLog (readWriteFileStore, writeFileStore)
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import System.Directory (doesFileExist, removeFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM

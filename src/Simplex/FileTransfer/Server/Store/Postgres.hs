@@ -9,11 +9,6 @@
 
 module Simplex.FileTransfer.Server.Store.Postgres
   ( PostgresFileStore (..),
-    withDB,
-    withDB',
-    handleDuplicate,
-    assertUpdated,
-    withLog,
     importFileStore,
     exportFileStore,
   )

@@ -41,6 +41,7 @@ import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 #if defined(dbServerPostgres)
 import Data.Functor (($>))
+import Data.Maybe (isNothing)
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
 import Simplex.Messaging.Server.CLI (iniDBOptions, settingIsOn)
@@ -190,14 +191,11 @@ checkFileStoreMode ini storeType storeLogFilePath = case storeType of
   "database" -> do
     storeLogExists <- doesFileExist storeLogFilePath
     let dbStoreLogOn = settingIsOn "STORE_LOG" "db_store_log" ini
-    when (storeLogExists && isNothing_ dbStoreLogOn) $ do
+    when (storeLogExists && isNothing dbStoreLogOn) $ do
       putStrLn $ "Error: store log file " <> storeLogFilePath <> " exists but store_files is `database`."
       putStrLn "Use `file-server database import` to migrate, or set `db_store_log: on`."
       exitFailure
   _ -> pure ()
-  where
-    isNothing_ Nothing = True
-    isNothing_ _ = False
 #else
 checkFileStoreMode _ _ _ = pure ()
 #endif

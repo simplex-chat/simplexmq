@@ -97,9 +97,15 @@ instance FileStoreClass STMFileStore where
       pure $ Right ()
 
   setFilePath st sId fPath = atomically $
-    withSTMFile st sId $ \FileRec {filePath} -> do
-      writeTVar filePath (Just fPath)
-      pure $ Right ()
+    withSTMFile st sId $ \FileRec {filePath, fileStatus} -> do
+      readTVar filePath >>= \case
+        Just _ -> pure $ Left AUTH
+        Nothing ->
+          readTVar fileStatus >>= \case
+            EntityActive -> do
+              writeTVar filePath (Just fPath)
+              pure $ Right ()
+            _ -> pure $ Left AUTH
 
   addRecipient st@STMFileStore {recipients} senderId (FileRecipient rId rKey) = atomically $
     withSTMFile st senderId $ \FileRec {recipientIds} -> do
