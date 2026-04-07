@@ -65,6 +65,7 @@ module Simplex.Messaging.Agent
     setConnShortLink,
     deleteConnShortLink,
     getConnShortLink,
+    getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
     prepareConnectionToJoin,
@@ -438,6 +439,10 @@ deleteConnShortLink c = withAgentEnv c .:. deleteConnShortLink' c
 getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
+
+getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
+getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
+{-# INLINE getConnLinkPrivKey #-}
 
 -- | This irreversibly deletes short link data, and it won't be retrievable again
 deleteLocalInvShortLink :: AgentClient -> ConnShortLink 'CMInvitation -> AE ()
@@ -1126,6 +1131,14 @@ deleteConnShortLink' c nm connId cMode =
       (ContactConnection _ rq, SCMContact) -> deleteQueueLink c nm rq
       (RcvConnection _ rq, SCMInvitation) -> deleteQueueLink c nm rq
       _ -> throwE $ CMD PROHIBITED "deleteConnShortLink: not contact address"
+
+getConnLinkPrivKey' :: AgentClient -> ConnId -> AM (Maybe C.PrivateKeyEd25519)
+getConnLinkPrivKey' c connId = do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  pure $ case conn of
+    ContactConnection _ rq -> linkPrivSigKey <$> shortLink rq
+    RcvConnection _ rq -> linkPrivSigKey <$> shortLink rq
+    _ -> Nothing
 
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
 getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (FixedLinkData c, ConnLinkData c)
