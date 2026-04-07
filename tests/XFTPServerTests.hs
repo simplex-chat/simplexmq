@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -7,11 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module XFTPServerTests (xftpServerTests
-#if defined(dbServerPostgres)
-  , xftpServerTestsPg
-#endif
-  ) where
+module XFTPServerTests (xftpServerTests, xftpFileTests) where
 
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent (threadDelay)
@@ -50,35 +45,20 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
+import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
 import XFTPClient
-#if defined(dbServerPostgres)
-import Simplex.FileTransfer.Server.Env (XFTPStoreConfig (..))
-import XFTPClient (testXFTPPostgresCfg, withXFTPServerCfgStore, xftpTestPg, xftpTestPg2, xftpTestPgN)
-#endif
 
 xftpServerTests :: Spec
 xftpServerTests =
   before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $ do
     describe "XFTP file chunk delivery" $ do
-      it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
-      it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
-      it "should create, add recipients, upload and receive file chunk" testFileChunkDeliveryAddRecipients
-      it "should delete file chunk (1 client)" testFileChunkDelete
-      it "should delete file chunk (2 clients)" testFileChunkDelete2
-      it "should acknowledge file chunk reception (1 client)" testFileChunkAck
-      it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
-      it "should not allow chunks of wrong size" testWrongChunkSize
-      it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
-      it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
-        --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
         it "prohibited when auth is incorrect" $ testFileBasicAuth True (Just "pwd") (Just "wrong") False
         it "prohibited when FNEW disabled" $ testFileBasicAuth False (Just "pwd") (Just "pwd") False
@@ -95,6 +75,33 @@ xftpServerTests =
       it "should complete web handshake with challenge-response" testWebHandshake
       it "should re-handshake on same connection with xftp-web-hello header" testWebReHandshake
       it "should return padded SESSION error for stale web session" testStaleWebSession
+
+-- Tests parameterized over store backend (memory or PostgreSQL)
+xftpFileTests :: SpecWith XFTPTestBracket
+xftpFileTests = do
+    it "should create, upload and receive file chunk (1 client)" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
+    it "should create, upload and receive file chunk (2 clients)" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r -> runRight_ $ runTestFileChunkDelivery s r
+    it "should create, add recipients, upload and receive file chunk" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r1 -> testXFTPClient $ \r2 -> testXFTPClient $ \r3 ->
+        runRight_ $ runTestFileChunkDeliveryAddRecipients s r1 r2 r3
+    it "should delete file chunk (1 client)" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelete c c
+    it "should delete file chunk (2 clients)" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r -> runRight_ $ runTestFileChunkDelete s r
+    it "should acknowledge file chunk reception (1 client)" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \c -> runRight_ $ runTestFileChunkAck c c
+    it "should acknowledge file chunk reception (2 clients)" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient $ \s -> testXFTPClient $ \r -> runRight_ $ runTestFileChunkAck s r
+    it "should not allow chunks of wrong size" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv id $ testXFTPClient runTestWrongChunkSize
+    it "should expire chunks after set interval" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv (\c -> c {fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}) $
+        testXFTPClient $ \c -> runRight_ $ runTestFileChunkExpiration c
+    it "should not allow uploading chunks after specified storage quota" $ \(withSrv :: XFTPTestBracket) ->
+      withSrv (\c -> c {fileSizeQuota = Just $ chSize * 2}) $
+        testXFTPClient $ \c -> runRight_ $ runTestFileStorageQuota c
 
 chSize :: Integral a => a
 chSize = kb 128
@@ -139,7 +146,10 @@ runTestFileChunkDelivery s r = do
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
 testFileChunkDeliveryAddRecipients :: Expectation
-testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
+testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ runTestFileChunkDeliveryAddRecipients s r1 r2 r3
+
+runTestFileChunkDeliveryAddRecipients :: XFTPClient -> XFTPClient -> XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
+runTestFileChunkDeliveryAddRecipients s r1 r2 r3 = do
   g <- liftIO C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcvKey1, rpKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -216,7 +226,10 @@ runTestFileChunkAck s r = do
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
 testWrongChunkSize :: Expectation
-testWrongChunkSize = xftpTest $ \c -> do
+testWrongChunkSize = xftpTest $ runTestWrongChunkSize
+
+runTestWrongChunkSize :: XFTPClient -> IO ()
+runTestWrongChunkSize c = do
   g <- C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcvKey, _rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -228,28 +241,29 @@ testWrongChunkSize = xftpTest $ \c -> do
       `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
 
 testFileChunkExpiration :: Expectation
-testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration} $
-  \_ -> testXFTPClient $ \c -> runRight_ $ do
-    g <- liftIO C.newRandom
-    (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    bytes <- liftIO $ createTestChunk testChunkPath
-    digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-    let file = FileInfo {sndKey, size = chSize, digest}
-        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-    (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-    uploadXFTPChunk c spKey sId chunkSpec
-
-    downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-    liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
-
-    liftIO $ threadDelay 1000000
-    downloadXFTPChunk g c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
-      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-    deleteXFTPChunk c spKey sId
-      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration = shortExpiration} $
+  \_ -> testXFTPClient $ \c -> runRight_ $ runTestFileChunkExpiration c
   where
-    fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+    shortExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+runTestFileChunkExpiration :: XFTPClient -> ExceptT XFTPClientError IO ()
+runTestFileChunkExpiration c = do
+  g <- liftIO C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  bytes <- liftIO $ createTestChunk testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = chSize, digest}
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+  (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+  uploadXFTPChunk c spKey sId chunkSpec
+  downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
+  liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+  liftIO $ threadDelay 1000000
+  downloadXFTPChunk g c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
+    `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+  deleteXFTPChunk c spKey sId
+    `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
 testInactiveClientExpiration :: Expectation
 testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
@@ -269,31 +283,32 @@ testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveC
 
 testFileStorageQuota :: Expectation
 testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2} $
-  \_ -> testXFTPClient $ \c -> runRight_ $ do
-    g <- liftIO C.newRandom
-    (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    bytes <- liftIO $ createTestChunk testChunkPath
-    digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-    let file = FileInfo {sndKey, size = chSize, digest}
-        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-        download rId = do
-          downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-          liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
-    (sId1, [rId1]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-    uploadXFTPChunk c spKey sId1 chunkSpec
-    download rId1
-    (sId2, [rId2]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-    uploadXFTPChunk c spKey sId2 chunkSpec
-    download rId2
+  \_ -> testXFTPClient $ \c -> runRight_ $ runTestFileStorageQuota c
 
-    (sId3, [rId3]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-    uploadXFTPChunk c spKey sId3 chunkSpec
-      `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
-
-    deleteXFTPChunk c spKey sId1
-    uploadXFTPChunk c spKey sId3 chunkSpec
-    download rId3
+runTestFileStorageQuota :: XFTPClient -> ExceptT XFTPClientError IO ()
+runTestFileStorageQuota c = do
+  g <- liftIO C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  bytes <- liftIO $ createTestChunk testChunkPath
+  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = chSize, digest}
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      download rId = do
+        downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
+        liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+  (sId1, [rId1]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+  uploadXFTPChunk c spKey sId1 chunkSpec
+  download rId1
+  (sId2, [rId2]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+  uploadXFTPChunk c spKey sId2 chunkSpec
+  download rId2
+  (sId3, [rId3]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+  uploadXFTPChunk c spKey sId3 chunkSpec
+    `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
+  deleteXFTPChunk c spKey sId1
+  uploadXFTPChunk c spKey sId3 chunkSpec
+  download rId3
 
 testFileLog :: Expectation
 testFileLog = do
@@ -607,110 +622,4 @@ testStaleWebSession =
       decoded <- either (error . show) pure $ C.unPad respBody
       decoded `shouldBe` smpEncode SESSION
 
-#if defined(dbServerPostgres)
-xftpServerTestsPg :: Spec
-xftpServerTestsPg =
-  before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $ do
-    describe "XFTP file chunk delivery (PostgreSQL)" $ do
-      it "should create, upload and receive file chunk (1 client)" testFileChunkDeliveryPg
-      it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2Pg
-      it "should create, add recipients, upload and receive file chunk" testFileChunkDeliveryAddRecipientsPg
-      it "should delete file chunk (1 client)" testFileChunkDeletePg
-      it "should delete file chunk (2 clients)" testFileChunkDelete2Pg
-      it "should acknowledge file chunk reception (1 client)" testFileChunkAckPg
-      it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2Pg
-      it "should not allow uploading chunks after specified storage quota" testFileStorageQuotaPg
-      it "should expire chunks after set interval" testFileChunkExpirationPg
-
-testFileChunkDeliveryPg :: Expectation
-testFileChunkDeliveryPg = xftpTestPg $ \c -> runRight_ $ runTestFileChunkDelivery c c
-
-testFileChunkDelivery2Pg :: Expectation
-testFileChunkDelivery2Pg = xftpTestPg2 $ \s r -> runRight_ $ runTestFileChunkDelivery s r
-
-testFileChunkDeliveryAddRecipientsPg :: Expectation
-testFileChunkDeliveryAddRecipientsPg = xftpTestPgN 4 $ \hs -> case hs of
-  [s, r1, r2, r3] -> runRight_ $ do
-    g <- liftIO C.newRandom
-    (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (rcvKey1, rpKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (rcvKey2, rpKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (rcvKey3, rpKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    bytes <- liftIO $ createTestChunk testChunkPath
-    digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-    let file = FileInfo {sndKey, size = chSize, digest}
-        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-    (sId, [rId1]) <- createXFTPChunk s spKey file [rcvKey1] Nothing
-    [rId2, rId3] <- addXFTPRecipients s spKey sId [rcvKey2, rcvKey3]
-    uploadXFTPChunk s spKey sId chunkSpec
-    let testReceiveChunk r rpKey rId fPath = do
-          downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec fPath chSize digest
-          liftIO $ B.readFile fPath `shouldReturn` bytes
-    testReceiveChunk r1 rpKey1 rId1 "tests/tmp/received_chunk1"
-    testReceiveChunk r2 rpKey2 rId2 "tests/tmp/received_chunk2"
-    testReceiveChunk r3 rpKey3 rId3 "tests/tmp/received_chunk3"
-  _ -> error "expected 4 handles"
-
-testFileChunkDeletePg :: Expectation
-testFileChunkDeletePg = xftpTestPg $ \c -> runRight_ $ runTestFileChunkDelete c c
-
-testFileChunkDelete2Pg :: Expectation
-testFileChunkDelete2Pg = xftpTestPg2 $ \s r -> runRight_ $ runTestFileChunkDelete s r
-
-testFileChunkAckPg :: Expectation
-testFileChunkAckPg = xftpTestPg $ \c -> runRight_ $ runTestFileChunkAck c c
-
-testFileChunkAck2Pg :: Expectation
-testFileChunkAck2Pg = xftpTestPg2 $ \s r -> runRight_ $ runTestFileChunkAck s r
-
-testFileStorageQuotaPg :: Expectation
-testFileStorageQuotaPg = do
-  let cfg = testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2}
-  withXFTPServerCfgStore (XSCDatabase testXFTPPostgresCfg) cfg $ \_ ->
-    testXFTPClient $ \c -> runRight_ $ do
-      g <- liftIO C.newRandom
-      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      bytes <- liftIO $ createTestChunk testChunkPath
-      digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-      let file = FileInfo {sndKey, size = chSize, digest}
-          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-          download rId = do
-            downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-            liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
-      (sId1, [rId1]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-      uploadXFTPChunk c spKey sId1 chunkSpec
-      download rId1
-      (sId2, [rId2]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-      uploadXFTPChunk c spKey sId2 chunkSpec
-      download rId2
-      (sId3, [_rId3]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-      uploadXFTPChunk c spKey sId3 chunkSpec
-        `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
-      deleteXFTPChunk c spKey sId1
-      uploadXFTPChunk c spKey sId3 chunkSpec
-
-testFileChunkExpirationPg :: Expectation
-testFileChunkExpirationPg =
-  withXFTPServerCfgStore (XSCDatabase testXFTPPostgresCfg) testXFTPServerConfig {fileExpiration} $ \_ ->
-    testXFTPClient $ \c -> runRight_ $ do
-      g <- liftIO C.newRandom
-      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      bytes <- liftIO $ createTestChunk testChunkPath
-      digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-      let file = FileInfo {sndKey, size = chSize, digest}
-          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-      (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
-      uploadXFTPChunk c spKey sId chunkSpec
-      downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-      liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
-      liftIO $ threadDelay 1000000
-      downloadXFTPChunk g c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
-        `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-      deleteXFTPChunk c spKey sId
-        `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-  where
-    fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
-#endif
 

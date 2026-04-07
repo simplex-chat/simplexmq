@@ -38,7 +38,6 @@ import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Data.Ini (Ini)
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 #if defined(dbServerPostgres)
 import Data.Functor (($>))

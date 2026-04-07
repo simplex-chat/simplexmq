@@ -33,7 +33,6 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))

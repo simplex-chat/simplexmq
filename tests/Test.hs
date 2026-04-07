@@ -34,7 +34,8 @@ import Test.Hspec hiding (fit, it)
 import Util
 import XFTPAgent
 import XFTPCLI
-import XFTPServerTests (xftpServerTests)
+import XFTPClient (xftpMemoryBracket, xftpServerFiles)
+import XFTPServerTests (xftpServerTests, xftpFileTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
 
@@ -53,8 +54,7 @@ import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
-import XFTPClient (testXFTPDBConnectInfo)
-import XFTPServerTests (xftpServerTestsPg)
+import XFTPClient (testXFTPDBConnectInfo, xftpPostgresBracket)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -152,6 +152,9 @@ main = do
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" xftpServerTests
+          before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $
+            describe "XFTP file delivery (memory)" $
+              before (pure xftpMemoryBracket) xftpFileTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI" xftpCLITests
           describe "XFTP agent" xftpAgentTests
@@ -159,7 +162,9 @@ main = do
         around_ (postgressBracket testXFTPDBConnectInfo) $ do
           describe "XFTP Postgres store operations" xftpStoreTests
           describe "XFTP migration round-trip" xftpMigrationTests
-          describe "XFTP server (PostgreSQL backend)" xftpServerTestsPg
+          before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $
+            describe "XFTP file delivery (PostgreSQL)" $
+              before (pure xftpPostgresBracket) xftpFileTests
 #endif
 #if defined(dbPostgres)
         describe "XFTP Web Client" $ xftpWebTests (dropAllSchemasExceptSystem testDBConnectInfo)

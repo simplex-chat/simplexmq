@@ -203,14 +203,16 @@ testXFTPServerConfigEd25519SNI =
 
 -- Store-parameterized server bracket
 
+type XFTPTestBracket = (XFTPServerConfig -> XFTPServerConfig) -> IO () -> IO ()
+
+xftpMemoryBracket :: XFTPTestBracket
+xftpMemoryBracket cfgF test = withXFTPServerCfg (cfgF testXFTPServerConfig) $ \_ -> test
+
 withXFTPServerCfgStore :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfgStore storeCfg cfg =
   serverBracket
     (\started -> runXFTPServerBlocking started storeCfg cfg)
     (threadDelay 10000)
-
-withXFTPServerStore :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> IO a -> IO a
-withXFTPServerStore storeCfg = withXFTPServerCfgStore storeCfg testXFTPServerConfig . const
 
 #if defined(dbServerPostgres)
 testXFTPDBConnectInfo :: ConnectInfo
@@ -237,25 +239,6 @@ testXFTPPostgresCfg =
       confirmMigrations = MCYesUp
     }
 
-withXFTPServerPg :: HasCallStack => IO a -> IO a
-withXFTPServerPg = withXFTPServerStore (XSCDatabase testXFTPPostgresCfg)
-
-xftpTestPg :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
-xftpTestPg test = runXFTPTestPg test `shouldReturn` ()
-
-runXFTPTestPg :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
-runXFTPTestPg test = withXFTPServerPg $ testXFTPClient test
-
-xftpTestPg2 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> IO ()) -> Expectation
-xftpTestPg2 test = xftpTestPgN 2 _test
-  where
-    _test [h1, h2] = test h1 h2
-    _test _ = error "expected 2 handles"
-
-xftpTestPgN :: forall a. HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO a) -> IO a
-xftpTestPgN nClients test = withXFTPServerPg $ run nClients []
-  where
-    run :: Int -> [XFTPClient] -> IO a
-    run 0 hs = test hs
-    run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
+xftpPostgresBracket :: XFTPTestBracket
+xftpPostgresBracket cfgF test = withXFTPServerCfgStore (XSCDatabase testXFTPPostgresCfg) (cfgF testXFTPServerConfig) $ \_ -> test
 #endif

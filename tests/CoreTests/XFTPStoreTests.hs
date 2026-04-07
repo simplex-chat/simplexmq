@@ -13,7 +13,6 @@ import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg)
-import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C

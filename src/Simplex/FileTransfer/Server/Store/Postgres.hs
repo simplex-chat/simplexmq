@@ -48,7 +48,6 @@ import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres.Config
 import Simplex.FileTransfer.Server.Store.Postgres.Migrations (xftpServerMigrations)
-import Simplex.FileTransfer.Server.Store.STM (STMFileStore (..))
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
