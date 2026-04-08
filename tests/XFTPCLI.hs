@@ -1,4 +1,4 @@
-module XFTPCLI (xftpCLITests, xftpCLIFileTests, xftpCLI, senderFiles, recipientFiles, testBracket) where
+module XFTPCLI (xftpCLIFileTests, xftpCLI, senderFiles, recipientFiles, testBracket) where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString as LB
@@ -11,14 +11,7 @@ import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import Test.Hspec hiding (fit, it)
 import Util
-import XFTPClient (XFTPTestBracket (..), testXFTPServerStr, testXFTPServerStr2, withXFTPServer, withXFTPServer2, xftpServerFiles, xftpServerFiles2)
-
-xftpCLITests :: Spec
-xftpCLITests = around_ testBracket . describe "XFTP CLI" $ do
-  it "should send and receive file" testXFTPCLISendReceive
-  it "should send and receive file with 2 servers" testXFTPCLISendReceive2servers
-  it "should delete file from 2 servers" testXFTPCLIDelete
-  it "prepareChunkSizes should use 2 chunk sizes" testPrepareChunkSizes
+import XFTPClient (XFTPTestBracket (..), testXFTPServerStr, testXFTPServerStr2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLIFileTests :: SpecWith (XFTPTestBracket, XFTPTestBracket)
 xftpCLIFileTests = around_ testBracket $ do
@@ -46,9 +39,6 @@ recipientFiles = "tests/tmp/xftp-recipient-files"
 
 xftpCLI :: [String] -> IO [String]
 xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
-
-testXFTPCLISendReceive :: IO ()
-testXFTPCLISendReceive = withXFTPServer testXFTPCLISendReceive_
 
 testXFTPCLISendReceive_ :: IO ()
 testXFTPCLISendReceive_ = do
@@ -85,9 +75,6 @@ testXFTPCLISendReceive_ = do
       progress `shouldSatisfy` downloadProgress fileName
       recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
-
-testXFTPCLISendReceive2servers :: IO ()
-testXFTPCLISendReceive2servers = withXFTPServer . withXFTPServer2 $ testXFTPCLISendReceive2servers_
 
 testXFTPCLISendReceive2servers_ :: IO ()
 testXFTPCLISendReceive2servers_ = do
@@ -126,9 +113,6 @@ testXFTPCLISendReceive2servers_ = do
       progress `shouldSatisfy` downloadProgress fileName
       recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
-
-testXFTPCLIDelete :: IO ()
-testXFTPCLIDelete = withXFTPServer . withXFTPServer2 $ testXFTPCLIDelete_
 
 testXFTPCLIDelete_ :: IO ()
 testXFTPCLIDelete_ = do

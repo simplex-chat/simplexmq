@@ -94,36 +94,6 @@ clearXFTPPostgresStore = do
   PSQL.close conn
 #endif
 
--- Original test helpers (memory backend)
-
-xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> Expectation
-xftpTest test = runXFTPTest test `shouldReturn` ()
-
-xftpTestN :: HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO ()) -> Expectation
-xftpTestN n test = runXFTPTestN n test `shouldReturn` ()
-
-xftpTest2 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> IO ()) -> Expectation
-xftpTest2 test = xftpTestN 2 _test
-  where
-    _test [h1, h2] = test h1 h2
-    _test _ = error "expected 2 handles"
-
-xftpTest4 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> XFTPClient -> XFTPClient -> IO ()) -> Expectation
-xftpTest4 test = xftpTestN 4 _test
-  where
-    _test [h1, h2, h3, h4] = test h1 h2 h3 h4
-    _test _ = error "expected 4 handles"
-
-runXFTPTest :: HasCallStack => (HasCallStack => XFTPClient -> IO a) -> IO a
-runXFTPTest test = withXFTPServer $ testXFTPClient test
-
-runXFTPTestN :: forall a. HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO a) -> IO a
-runXFTPTestN nClients test = withXFTPServer $ run nClients []
-  where
-    run :: Int -> [XFTPClient] -> IO a
-    run 0 hs = test hs
-    run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
-
 -- Core server bracket (store-parameterized)
 
 withXFTPServerCfg_ :: (HasCallStack, FileStoreClass s) => XFTPStoreConfig s -> XFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
@@ -145,12 +115,6 @@ withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {storeLogFile 
 
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
-
-withXFTPServer :: HasCallStack => IO a -> IO a
-withXFTPServer = withXFTPServerCfg testXFTPServerConfig . const
-
-withXFTPServer2 :: HasCallStack => IO a -> IO a
-withXFTPServer2 = withXFTPServerCfg testXFTPServerConfig2 . const
 
 -- Constants
 

@@ -33,7 +33,7 @@ import System.Environment (setEnv)
 import Test.Hspec hiding (fit, it)
 import Util
 import XFTPAgent (xftpAgentTests, xftpAgentFileTests, xftpAgentRestoreTests)
-import XFTPCLI (xftpCLITests, xftpCLIFileTests)
+import XFTPCLI (xftpCLIFileTests)
 import XFTPClient (xftpMemoryBracket, xftpMemoryBracket2, xftpMemoryBracketClear, xftpServerFiles)
 import XFTPServerTests (xftpServerTests, xftpFileTests)
 import WebTests (webTests)
@@ -156,7 +156,6 @@ main = do
             describe "XFTP file delivery (memory)" $
               before (pure xftpMemoryBracket) xftpFileTests
           describe "XFTP file description" fileDescriptionTests
-          describe "XFTP CLI" xftpCLITests
           describe "XFTP CLI (memory)" $
             before (pure (xftpMemoryBracket, xftpMemoryBracket2)) xftpCLIFileTests
           describe "XFTP agent" xftpAgentTests
