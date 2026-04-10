@@ -251,6 +251,12 @@ import UnliftIO.STM
 
 type AE a = ExceptT AgentErrorType IO a
 
+rcvExpireCount :: Int
+rcvExpireCount = 5
+
+rcvExpireInterval :: NominalDiffTime
+rcvExpireInterval = 86400 -- 1 day
+
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
@@ -3158,18 +3164,27 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                                     pure conn''
                                 | otherwise = pure conn'
                           Right Nothing -> prohibited "msg: bad agent msg" >> ack
-                          Left e@(AGENT A_DUPLICATE) -> do
+                          Left e@(AGENT A_DUPLICATE {}) -> do
                             atomically $ incSMPServerStat c userId srv recvDuplicates
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
-                                | otherwise ->
-                                    liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
-                                      AgentMessage _ (A_MSG body) -> do
-                                        logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' srvMsgId
-                                        notify $ MSG msgMeta msgFlags body
-                                        pure ACKPending
-                                      _ -> ack
+                                | otherwise -> do
+                                    attempts <- withStore' c $ \db -> incMsgRcvAttempts db connId internalId
+                                    let firstTs = snd $ recipient msgMeta
+                                        brokerTs = snd $ broker msgMeta
+                                    now <- liftIO getCurrentTime
+                                    if attempts >= rcvExpireCount && diffUTCTime now firstTs >= rcvExpireInterval
+                                      then do
+                                        notify $ ERR (AGENT $ A_DUPLICATE $ Just DroppedMsg {brokerTs, attempts})
+                                        ackDel internalId
+                                      else
+                                        liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
+                                          AgentMessage _ (A_MSG body) -> do
+                                            logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' srvMsgId
+                                            notify $ MSG msgMeta msgFlags body
+                                            pure ACKPending
+                                          _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             atomically $ incSMPServerStat c userId srv recvCryptoErrs
