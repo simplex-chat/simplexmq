@@ -2125,7 +2125,7 @@ testDropMsgAfterRcvAttempts ps =
     -- bob disconnects again without acking
     disposeAgentClient bob2
     -- wait for rcvExpireInterval (1 second)
-    threadDelay 1500000
+    threadDelay 500000
     -- bob reconnects, agent sees duplicate, counter=2, interval exceeded -> drops
     bob3 <- getSMPAgentClient' 4 rcvCfg initAgentServers testDB2
     runRight_ $ do
