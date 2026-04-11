@@ -238,7 +238,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 
     stopServer :: M s ()
     stopServer = do
-      withFileLog closeStoreLog
       st <- asks store
       liftIO $ closeFileStore st
       saveServerStats

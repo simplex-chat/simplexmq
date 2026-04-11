@@ -140,6 +140,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCre
     XSCMemory storeLogPath -> do
       st <- newFileStore ()
       sl <- mapM (`readWriteFileStore` st) storeLogPath
+      atomically $ writeTVar (stmStoreLog st) sl
       pure (st, sl)
 #if defined(dbServerPostgres)
     XSCDatabase dbCfg -> do

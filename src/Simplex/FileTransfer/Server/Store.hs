@@ -31,6 +31,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
+import Simplex.Messaging.Server.StoreLog (StoreLog, closeStoreLog)
+import System.IO (IOMode (..))
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -77,7 +79,8 @@ class FileStoreClass s where
 
 data STMFileStore = STMFileStore
   { files :: TMap SenderId FileRec,
-    recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey)
+    recipients :: TMap RecipientId (SenderId, RcvPublicAuthKey),
+    stmStoreLog :: TVar (Maybe (StoreLog 'WriteMode))
   }
 
 instance FileStoreClass STMFileStore where
@@ -86,9 +89,10 @@ instance FileStoreClass STMFileStore where
   newFileStore () = do
     files <- TM.emptyIO
     recipients <- TM.emptyIO
-    pure STMFileStore {files, recipients}
+    stmStoreLog <- newTVarIO Nothing
+    pure STMFileStore {files, recipients, stmStoreLog}
 
-  closeFileStore _ = pure ()
+  closeFileStore STMFileStore {stmStoreLog} = readTVarIO stmStoreLog >>= mapM_ closeStoreLog
 
   addFile STMFileStore {files} sId fileInfo createdAt status = atomically $
     ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
