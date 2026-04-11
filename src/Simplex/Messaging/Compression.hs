@@ -7,6 +7,7 @@ module Simplex.Messaging.Compression
     compressionLevel,
     compress1,
     decompress1,
+    decompressedSize,
   ) where
 
 import qualified Codec.Compression.Zstd as Z1
@@ -41,6 +42,11 @@ compress1 :: ByteString -> Compressed
 compress1 bs
   | B.length bs <= maxLengthPassthrough = Passthrough bs
   | otherwise = Compressed . Large $ Z1.compress compressionLevel bs
+
+decompressedSize :: Compressed -> Maybe Int
+decompressedSize = \case
+  Passthrough bs -> Just $ B.length bs
+  Compressed (Large bs) -> Z1.decompressedSize bs
 
 decompress1 :: Int -> Compressed -> Either String ByteString
 decompress1 limit = \case
