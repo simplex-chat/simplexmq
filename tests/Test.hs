@@ -34,7 +34,7 @@ import Test.Hspec hiding (fit, it)
 import Util
 import XFTPAgent
 import XFTPCLI (xftpCLIFileTests)
-import XFTPClient (xftpMemoryBracket, xftpMemoryBracket2)
+import XFTPClient (xftpMemoryServer, xftpMemoryServer2)
 import XFTPServerTests (xftpServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
@@ -54,7 +54,7 @@ import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
-import XFTPClient (testXFTPDBConnectInfo, xftpPostgresBracket, xftpPostgresBracket2)
+import XFTPClient (testXFTPDBConnectInfo, xftpPostgresServer, xftpPostgresServer2)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -152,19 +152,19 @@ main = do
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" $
-            before (pure xftpMemoryBracket) xftpServerTests
+            before (pure xftpMemoryServer) xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI (memory)" $
-            before (pure (xftpMemoryBracket, xftpMemoryBracket2)) xftpCLIFileTests
+            before (pure (xftpMemoryServer, xftpMemoryServer2)) xftpCLIFileTests
           describe "XFTP agent" xftpAgentTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testXFTPDBConnectInfo) $ do
           describe "XFTP Postgres store operations" xftpStoreTests
           describe "XFTP migration round-trip" xftpMigrationTests
           describe "XFTP server (PostgreSQL)" $
-            before (pure xftpPostgresBracket) xftpServerTests
+            before (pure xftpPostgresServer) xftpServerTests
           describe "XFTP CLI (PostgreSQL)" $
-            before (pure (xftpPostgresBracket, xftpPostgresBracket2)) xftpCLIFileTests
+            before (pure (xftpPostgresServer, xftpPostgresServer2)) xftpCLIFileTests
 #endif
 #if defined(dbPostgres)
         describe "XFTP Web Client" $ xftpWebTests (dropAllSchemasExceptSystem testDBConnectInfo)

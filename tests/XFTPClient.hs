@@ -35,25 +35,25 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 
 -- Parameterized server bracket
 
-newtype XFTPTestBracket = XFTPTestBracket
-  { runBracket :: forall a. (forall s. XFTPServerConfig s -> XFTPServerConfig s) -> IO a -> IO a
+newtype XFTPTestServer = XFTPTestServer
+  { runServer :: forall a. (forall s. XFTPServerConfig s -> XFTPServerConfig s) -> IO a -> IO a
   }
 
 -- Store-log-dependent agent tests need the bracket + a way to clear server state
-type XFTPTestBracketClear = (XFTPTestBracket, IO ())
+type XFTPTestServerClear = (XFTPTestServer, IO ())
 
-xftpMemoryBracket :: XFTPTestBracket
-xftpMemoryBracket = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig) $ \_ -> test
+xftpMemoryServer :: XFTPTestServer
+xftpMemoryServer = XFTPTestServer $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig) $ \_ -> test
 
-xftpMemoryBracketWithLog :: XFTPTestBracket
-xftpMemoryBracketWithLog = XFTPTestBracket $ \cfgF test ->
+xftpMemoryServerWithLog :: XFTPTestServer
+xftpMemoryServerWithLog = XFTPTestServer $ \cfgF test ->
   withXFTPServerCfg (cfgF testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}) $ \_ -> test
 
-xftpMemoryBracketClear :: XFTPTestBracketClear
-xftpMemoryBracketClear = (xftpMemoryBracketWithLog, removeFile testXFTPLogFile `catch` \(_ :: SomeException) -> pure ())
+xftpMemoryServerClear :: XFTPTestServerClear
+xftpMemoryServerClear = (xftpMemoryServerWithLog, removeFile testXFTPLogFile `catch` \(_ :: SomeException) -> pure ())
 
-xftpMemoryBracket2 :: XFTPTestBracket
-xftpMemoryBracket2 = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig2) $ \_ -> test
+xftpMemoryServer2 :: XFTPTestServer
+xftpMemoryServer2 = XFTPTestServer $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig2) $ \_ -> test
 
 #if defined(dbServerPostgres)
 testXFTPDBConnectInfo :: ConnectInfo
@@ -76,14 +76,14 @@ testXFTPPostgresCfg =
       confirmMigrations = MCYesUp
     }
 
-xftpPostgresBracket :: XFTPTestBracket
-xftpPostgresBracket = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}) $ \_ -> test
+xftpPostgresServer :: XFTPTestServer
+xftpPostgresServer = XFTPTestServer $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}) $ \_ -> test
 
-xftpPostgresBracket2 :: XFTPTestBracket
-xftpPostgresBracket2 = XFTPTestBracket $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig2 {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}) $ \_ -> test
+xftpPostgresServer2 :: XFTPTestServer
+xftpPostgresServer2 = XFTPTestServer $ \cfgF test -> withXFTPServerCfg (cfgF testXFTPServerConfig2 {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}) $ \_ -> test
 
-xftpPostgresBracketClear :: XFTPTestBracketClear
-xftpPostgresBracketClear = (xftpPostgresBracket, clearXFTPPostgresStore)
+xftpPostgresServerClear :: XFTPTestServerClear
+xftpPostgresServerClear = (xftpPostgresServer, clearXFTPPostgresStore)
 
 clearXFTPPostgresStore :: IO ()
 clearXFTPPostgresStore = do
@@ -94,23 +94,23 @@ clearXFTPPostgresStore = do
   PSQL.close conn
 #endif
 
-xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> XFTPTestBracket -> Expectation
-xftpTest test (XFTPTestBracket withSrv) = withSrv id (testXFTPClient test) `shouldReturn` ()
+xftpTest :: HasCallStack => (HasCallStack => XFTPClient -> IO ()) -> XFTPTestServer -> Expectation
+xftpTest test (XFTPTestServer withSrv) = withSrv id (testXFTPClient test) `shouldReturn` ()
 
-xftpTestN :: HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO ()) -> XFTPTestBracket -> Expectation
-xftpTestN nClients test (XFTPTestBracket withSrv) = withSrv id (run nClients []) `shouldReturn` ()
+xftpTestN :: HasCallStack => Int -> (HasCallStack => [XFTPClient] -> IO ()) -> XFTPTestServer -> Expectation
+xftpTestN nClients test (XFTPTestServer withSrv) = withSrv id (run nClients []) `shouldReturn` ()
   where
     run :: Int -> [XFTPClient] -> IO ()
     run 0 hs = test hs
     run n hs = testXFTPClient $ \h -> run (n - 1) (h : hs)
 
-xftpTest2 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> IO ()) -> XFTPTestBracket -> Expectation
+xftpTest2 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> IO ()) -> XFTPTestServer -> Expectation
 xftpTest2 test = xftpTestN 2 _test
   where
     _test [h1, h2] = test h1 h2
     _test _ = error "expected 2 handles"
 
-xftpTest4 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> XFTPClient -> XFTPClient -> IO ()) -> XFTPTestBracket -> Expectation
+xftpTest4 :: HasCallStack => (HasCallStack => XFTPClient -> XFTPClient -> XFTPClient -> XFTPClient -> IO ()) -> XFTPTestServer -> Expectation
 xftpTest4 test = xftpTestN 4 _test
   where
     _test [h1, h2, h3, h4] = test h1 h2 h3 h4

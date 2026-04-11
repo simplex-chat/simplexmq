@@ -11,15 +11,15 @@ import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import Test.Hspec hiding (fit, it)
 import Util
-import XFTPClient (XFTPTestBracket (..), testXFTPServerStr, testXFTPServerStr2, xftpServerFiles, xftpServerFiles2)
+import XFTPClient (XFTPTestServer (..), testXFTPServerStr, testXFTPServerStr2, xftpServerFiles, xftpServerFiles2)
 
-xftpCLIFileTests :: SpecWith (XFTPTestBracket, XFTPTestBracket)
+xftpCLIFileTests :: SpecWith (XFTPTestServer, XFTPTestServer)
 xftpCLIFileTests = around_ testBracket $ do
-  it "should send and receive file" $ \(XFTPTestBracket withSrv, _) ->
+  it "should send and receive file" $ \(XFTPTestServer withSrv, _) ->
     withSrv id testXFTPCLISendReceive_
-  it "should send and receive file with 2 servers" $ \(XFTPTestBracket withSrv1, XFTPTestBracket withSrv2) ->
+  it "should send and receive file with 2 servers" $ \(XFTPTestServer withSrv1, XFTPTestServer withSrv2) ->
     withSrv1 id $ withSrv2 id testXFTPCLISendReceive2servers_
-  it "should delete file from 2 servers" $ \(XFTPTestBracket withSrv1, XFTPTestBracket withSrv2) ->
+  it "should delete file from 2 servers" $ \(XFTPTestServer withSrv1, XFTPTestServer withSrv2) ->
     withSrv1 id $ withSrv2 id testXFTPCLIDelete_
   it "prepareChunkSizes should use 2 chunk sizes" $ \(_, _) -> testPrepareChunkSizes
 

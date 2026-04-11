@@ -52,7 +52,7 @@ import UnliftIO.STM
 import Util
 import XFTPClient
 
-xftpServerTests :: SpecWith XFTPTestBracket
+xftpServerTests :: SpecWith XFTPTestServer
 xftpServerTests =
   before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $ do
     describe "XFTP file chunk delivery" $ do
@@ -103,10 +103,10 @@ createTestChunk fp = do
 readChunk :: XFTPFileId -> IO ByteString
 readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
 
-testFileChunkDelivery :: XFTPTestBracket -> Expectation
+testFileChunkDelivery :: XFTPTestServer -> Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c
 
-testFileChunkDelivery2 :: XFTPTestBracket -> Expectation
+testFileChunkDelivery2 :: XFTPTestServer -> Expectation
 testFileChunkDelivery2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkDelivery s r
 
 runTestFileChunkDelivery :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
@@ -129,7 +129,7 @@ runTestFileChunkDelivery s r = do
   downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
-testFileChunkDeliveryAddRecipients :: XFTPTestBracket -> Expectation
+testFileChunkDeliveryAddRecipients :: XFTPTestServer -> Expectation
 testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
   g <- liftIO C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -150,10 +150,10 @@ testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
   testReceiveChunk r2 rpKey2 rId2 "tests/tmp/received_chunk2"
   testReceiveChunk r3 rpKey3 rId3 "tests/tmp/received_chunk3"
 
-testFileChunkDelete :: XFTPTestBracket -> Expectation
+testFileChunkDelete :: XFTPTestServer -> Expectation
 testFileChunkDelete = xftpTest $ \c -> runRight_ $ runTestFileChunkDelete c c
 
-testFileChunkDelete2 :: XFTPTestBracket -> Expectation
+testFileChunkDelete2 :: XFTPTestServer -> Expectation
 testFileChunkDelete2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkDelete s r
 
 runTestFileChunkDelete :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
@@ -179,10 +179,10 @@ runTestFileChunkDelete s r = do
   deleteXFTPChunk s spKey sId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testFileChunkAck :: XFTPTestBracket -> Expectation
+testFileChunkAck :: XFTPTestServer -> Expectation
 testFileChunkAck = xftpTest $ \c -> runRight_ $ runTestFileChunkAck c c
 
-testFileChunkAck2 :: XFTPTestBracket -> Expectation
+testFileChunkAck2 :: XFTPTestServer -> Expectation
 testFileChunkAck2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkAck s r
 
 runTestFileChunkAck :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
@@ -206,7 +206,7 @@ runTestFileChunkAck s r = do
   ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testWrongChunkSize :: XFTPTestBracket -> Expectation
+testWrongChunkSize :: XFTPTestServer -> Expectation
 testWrongChunkSize = xftpTest $ \c -> do
   g <- C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -218,7 +218,7 @@ testWrongChunkSize = xftpTest $ \c -> do
     void (createXFTPChunk c spKey file [rcvKey] Nothing)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
 
-testFileChunkExpiration :: XFTPTestBracket -> Expectation
+testFileChunkExpiration :: XFTPTestServer -> Expectation
 testFileChunkExpiration _ = withXFTPServerCfg testXFTPServerConfig {fileExpiration} $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     g <- liftIO C.newRandom
@@ -242,7 +242,7 @@ testFileChunkExpiration _ = withXFTPServerCfg testXFTPServerConfig {fileExpirati
   where
     fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testInactiveClientExpiration :: XFTPTestBracket -> Expectation
+testInactiveClientExpiration :: XFTPTestServer -> Expectation
 testInactiveClientExpiration _ = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
   ts <- liftIO getCurrentTime
@@ -258,7 +258,7 @@ testInactiveClientExpiration _ = withXFTPServerCfg testXFTPServerConfig {inactiv
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testFileStorageQuota :: XFTPTestBracket -> Expectation
+testFileStorageQuota :: XFTPTestServer -> Expectation
 testFileStorageQuota _ = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2} $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     g <- liftIO C.newRandom
@@ -286,7 +286,7 @@ testFileStorageQuota _ = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota =
     uploadXFTPChunk c spKey sId3 chunkSpec
     download rId3
 
-testFileLog :: XFTPTestBracket -> Expectation
+testFileLog :: XFTPTestServer -> Expectation
 testFileLog _ = do
   g <- C.newRandom
   bytes <- liftIO $ createTestChunk testChunkPath
@@ -378,7 +378,7 @@ testFileLog _ = do
       downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
       liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
-testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> XFTPTestBracket -> IO ()
+testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> XFTPTestServer -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success _ =
   withXFTPServerCfg testXFTPServerConfig {allowNewFiles, newFileBasicAuth} $
     \_ -> testXFTPClient $ \c -> do
@@ -400,7 +400,7 @@ testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success _ =
             void (createXFTPChunk c spKey file [rcvKey] clntAuth)
               `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testFileSkipCommitted :: XFTPTestBracket -> IO ()
+testFileSkipCommitted :: XFTPTestServer -> IO ()
 testFileSkipCommitted _ =
   withXFTPServerCfg testXFTPServerConfig $
     \_ -> testXFTPClient $ \c -> do
