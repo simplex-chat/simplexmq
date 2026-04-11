@@ -527,7 +527,8 @@ CREATE TABLE smp_agent_test_protocol_schema.rcv_messages (
     external_prev_snd_hash bytea NOT NULL,
     integrity bytea NOT NULL,
     user_ack smallint DEFAULT 0,
-    rcv_queue_id bigint NOT NULL
+    rcv_queue_id bigint NOT NULL,
+    receive_attempts smallint DEFAULT 0 NOT NULL
 );
 
 
