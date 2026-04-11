@@ -1,12 +1,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260115_service_certs where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260411_service_certs where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20260115_service_certs :: Query
-m20260115_service_certs =
+m20260411_service_certs :: Query
+m20260411_service_certs =
   [sql|
 CREATE TABLE client_services(
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
@@ -76,8 +76,8 @@ BEGIN
 END;
   |]
 
-down_m20260115_service_certs :: Query
-down_m20260115_service_certs =
+down_m20260411_service_certs :: Query
+down_m20260411_service_certs =
   [sql|
 DROP TRIGGER tr_rcv_queue_insert;
 DROP TRIGGER tr_rcv_queue_delete;

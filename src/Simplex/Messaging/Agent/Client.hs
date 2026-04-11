@@ -2234,7 +2234,7 @@ cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE "CryptoLargeMsgError"
   C.CryptoHeaderError _ -> AGENT A_MESSAGE -- parsing error
-  C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
+  C.CERatchetDuplicateMessage -> AGENT $ A_DUPLICATE Nothing
   C.AESDecryptError -> c DECRYPT_AES
   C.CBDecryptError -> c DECRYPT_CB
   C.CERatchetHeader -> c RATCHET_HEADER

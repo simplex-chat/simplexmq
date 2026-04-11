@@ -140,6 +140,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setMsgUserAck,
     getRcvMsg,
     getLastMsg,
+    incMsgRcvAttempts,
     checkRcvMsgHashExists,
     getRcvMsgBrokerTs,
     deleteMsg,
@@ -1225,6 +1226,19 @@ toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, 
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
+
+incMsgRcvAttempts :: DB.Connection -> ConnId -> InternalId -> IO Int
+incMsgRcvAttempts db connId (InternalId msgId) =
+  fromOnly . head
+    <$> DB.query
+      db
+      [sql|
+        UPDATE rcv_messages
+        SET receive_attempts = receive_attempts + 1
+        WHERE conn_id = ? AND internal_id = ?
+        RETURNING receive_attempts
+      |]
+      (connId, msgId)
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash =
