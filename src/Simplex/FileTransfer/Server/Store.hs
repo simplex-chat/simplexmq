@@ -64,10 +64,10 @@ class FileStoreClass s where
   addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
-  getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
   blockFile :: s -> SenderId -> BlockingInfo -> Bool -> IO (Either XFTPErrorType ())
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
+  getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
   ackFile :: s -> RecipientId -> IO (Either XFTPErrorType ())
   expiredFiles :: s -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
   getUsedStorage :: s -> IO Int64
@@ -118,13 +118,6 @@ instance FileStoreClass STMFileStore where
           TM.insert rId (senderId, rKey) recipients
           pure $ Right ()
 
-  getFile st party fId = atomically $ case party of
-    SFSender -> withSTMFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
-    SFRecipient ->
-      TM.lookup fId (recipients st) >>= \case
-        Just (sId, rKey) -> withSTMFile st sId $ pure . Right . (,rKey)
-        _ -> pure $ Left AUTH
-
   deleteFile STMFileStore {files, recipients} senderId = atomically $ do
     TM.lookupDelete senderId files >>= \case
       Just FileRec {recipientIds} -> do
@@ -140,6 +133,13 @@ instance FileStoreClass STMFileStore where
   deleteRecipient STMFileStore {recipients} rId FileRec {recipientIds} = atomically $ do
     TM.delete rId recipients
     modifyTVar' recipientIds $ S.delete rId
+
+  getFile st party fId = atomically $ case party of
+    SFSender -> withSTMFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
+    SFRecipient ->
+      TM.lookup fId (recipients st) >>= \case
+        Just (sId, rKey) -> withSTMFile st sId $ pure . Right . (,rKey)
+        _ -> pure $ Left AUTH
 
   ackFile st@STMFileStore {recipients} recipientId = atomically $ do
     TM.lookupDelete recipientId recipients >>= \case

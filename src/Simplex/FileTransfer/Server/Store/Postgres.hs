@@ -110,6 +110,20 @@ instance FileStoreClass PostgresFileStore where
         >>= either handleDuplicate (pure . Right)
     withLog "addRecipient" st $ \s -> logAddRecipients s senderId (pure $ FileRecipient rId rKey)
 
+  deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
+    assertUpdated $ withDB' "deleteFile" st $ \db ->
+      DB.execute db "DELETE FROM files WHERE sender_id = ?" (Only sId)
+    withLog "deleteFile" st $ \s -> logDeleteFile s sId
+
+  blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
+    assertUpdated $ withDB' "blockFile" st $ \db ->
+      DB.execute db "UPDATE files SET status = ? WHERE sender_id = ?" (EntityBlocked info, sId)
+    withLog "blockFile" st $ \s -> logBlockFile s sId info
+
+  deleteRecipient st rId _fr =
+    void $ runExceptT $ withDB' "deleteRecipient" st $ \db ->
+      DB.execute db "DELETE FROM recipients WHERE recipient_id = ?" (Only rId)
+
   getFile st party fId = runExceptT $ case party of
     SFSender -> do
       row <- loadFileRow "SELECT sender_id, file_size, file_digest, sender_key, file_path, created_at, status FROM files WHERE sender_id = ?"
@@ -127,20 +141,6 @@ instance FileStoreClass PostgresFileStore where
       loadFileRow q =
         withDB "getFile" st $ \db ->
           firstRow id AUTH $ DB.query db q (Only fId)
-
-  deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "deleteFile" st $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id = ?" (Only sId)
-    withLog "deleteFile" st $ \s -> logDeleteFile s sId
-
-  blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "blockFile" st $ \db ->
-      DB.execute db "UPDATE files SET status = ? WHERE sender_id = ?" (EntityBlocked info, sId)
-    withLog "blockFile" st $ \s -> logBlockFile s sId info
-
-  deleteRecipient st rId _fr =
-    void $ runExceptT $ withDB' "deleteRecipient" st $ \db ->
-      DB.execute db "DELETE FROM recipients WHERE recipient_id = ?" (Only rId)
 
   ackFile st rId = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "ackFile" st $ \db ->
