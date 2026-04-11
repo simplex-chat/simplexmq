@@ -764,12 +764,15 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
         (Just <$> getSessVar workerSeq tSess smpSubWorkers ts)
     newSubWorker v = do
-      a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
+      a <- async $ void $ E.tryAny $ runSubWorker v
       atomically $ putTMVar (sessionVar v) a
-    runSubWorker = do
+    runSubWorker v = do
       ri <- asks $ reconnectInterval . config
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
-        pending <- atomically $ SS.getPendingSubs tSess $ currentSubs c
+        pending <- atomically $ do
+          qs <- SS.getPendingSubs tSess $ currentSubs c
+          when (M.null qs) $ cleanup v
+          pure qs
         unless (M.null pending) $ do
           liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
@@ -1595,9 +1598,15 @@ checkQueues c = fmap partitionEithers . mapM checkQueue
 -- and that they are already added to pending subscriptions.
 resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> AM' ()
 resubscribeSessQueues c tSess qs = do
+  batchSize <- asks $ subsBatchSize . config
   (errs, qs_) <- checkQueues c qs
-  forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c True (tSess, qs')
+  subscribeChunks $ toChunks batchSize qs_
   forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
+  where
+    subscribeChunks [] = pure ()
+    subscribeChunks (qs' : rest) = do
+      (_, active) <- subscribeSessQueues_ c True (tSess, qs')
+      when active $ subscribeChunks rest
 
 subscribeSessQueues_ :: AgentClient -> Bool -> (SMPTransportSession, NonEmpty RcvQueueSub) -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
 subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c NRMBackground qs
@@ -2096,7 +2105,7 @@ cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE "CryptoLargeMsgError"
   C.CryptoHeaderError _ -> AGENT A_MESSAGE -- parsing error
-  C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
+  C.CERatchetDuplicateMessage -> AGENT $ A_DUPLICATE Nothing
   C.AESDecryptError -> c DECRYPT_AES
   C.CBDecryptError -> c DECRYPT_CB
   C.CERatchetHeader -> c RATCHET_HEADER

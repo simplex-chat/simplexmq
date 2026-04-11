@@ -127,6 +127,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setMsgUserAck,
     getRcvMsg,
     getLastMsg,
+    incMsgRcvAttempts,
     checkRcvMsgHashExists,
     getRcvMsgBrokerTs,
     deleteMsg,
@@ -1109,6 +1110,19 @@ toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, 
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
+
+incMsgRcvAttempts :: DB.Connection -> ConnId -> InternalId -> IO Int
+incMsgRcvAttempts db connId (InternalId msgId) =
+  fromOnly . head
+    <$> DB.query
+      db
+      [sql|
+        UPDATE rcv_messages
+        SET receive_attempts = receive_attempts + 1
+        WHERE conn_id = ? AND internal_id = ?
+        RETURNING receive_attempts
+      |]
+      (connId, msgId)
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash =
@@ -2211,14 +2225,14 @@ getSubscriptionServers db onlyNeeded =
     toUserServer :: (UserId, NonEmpty TransportHost, ServiceName, C.KeyHash) -> (UserId, SMPServer)
     toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
 
-getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded =
-  map toRcvQueueSub
-    <$> DB.query
-      db
-      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?")
-      (userId, h, p, kh)
+getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> Int -> Maybe SMP.RecipientId -> IO [RcvQueueSub]
+getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded limit cursor_ =
+  map toRcvQueueSub <$> case cursor_ of
+    Nothing -> DB.query db (q <> orderLimit) (userId, h, p, kh, limit)
+    Just cursor -> DB.query db (q <> " AND q.rcv_id > ? " <> orderLimit) (userId, h, p, kh, cursor, limit)
   where
+    q = rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?"
+    orderLimit = " ORDER BY q.rcv_id LIMIT ?"
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
       | otherwise = " WHERE "

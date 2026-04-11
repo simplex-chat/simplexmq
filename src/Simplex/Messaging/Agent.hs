@@ -64,6 +64,7 @@ module Simplex.Messaging.Agent
     setConnShortLink,
     deleteConnShortLink,
     getConnShortLink,
+    getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
     prepareConnectionToJoin,
@@ -354,9 +355,9 @@ setConnShortLinkAsync :: AgentClient -> ACorrId -> ConnId -> UserConnLinkData 'C
 setConnShortLinkAsync c = withAgentEnv c .:: setConnShortLinkAsync' c
 {-# INLINE setConnShortLinkAsync #-}
 
--- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new connection id
-getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AE ConnId
-getConnShortLinkAsync c = withAgentEnv c .:. getConnShortLinkAsync' c
+-- | Get and verify data from short link (LGET/LKEY command) asynchronously, synchronous response is new/passed connection id
+getConnShortLinkAsync :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AE ConnId
+getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Join SMP agent connection (JOIN command) asynchronously, synchronous response is new connection id.
@@ -401,10 +402,11 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newCo
 {-# INLINE createConnection #-}
 
 -- | Prepare connection link for contact mode (no network call).
--- Returns root key pair (for signing OwnerAuth), the created link, and internal params.
+-- Caller provides root signing key pair and link entity ID.
+-- Returns the created link and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AE (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId linkEntityId checkNotices
+prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId rootKey linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId rootKey linkEntityId checkNotices
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
@@ -426,6 +428,10 @@ deleteConnShortLink c = withAgentEnv c .:. deleteConnShortLink' c
 getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
+
+getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
+getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
+{-# INLINE getConnLinkPrivKey #-}
 
 -- | This irreversibly deletes short link data, and it won't be retrievable again
 deleteLocalInvShortLink :: AgentClient -> ConnShortLink 'CMInvitation -> AE ()
@@ -918,23 +924,22 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 -- | Prepare connection link for contact mode (no network, no database).
--- Generates all cryptographic material and returns the link that will be created.
-prepareConnectionLink' :: AgentClient -> UserId -> Maybe ByteString -> Bool -> Maybe CRClientData -> AM (C.KeyPairEd25519, CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId linkEntityId checkNotices clientData = do
+-- Caller provides root signing key pair and link entity ID.
+prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData = do
   g <- asks random
   plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
-  sigKeys@(_, plpRootPrivKey) <- atomically $ C.generateKeyPair g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-      (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData sigKeys smpAgentVRange connReq linkEntityId
+      (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData rootKey smpAgentVRange connReq (Just linkEntityId)
       ccLink = CCLink connReq $ Just $ CSLContact SLSServer CCTContact srv plpLinkKey
       params = PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth}
-  pure (sigKeys, ccLink, params)
+  pure (ccLink, params)
 
 -- | Create connection for prepared link (single network call).
 createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> SubscriptionMode -> AM ConnId
@@ -1001,14 +1006,22 @@ setConnShortLinkAsync' c corrId connId userLinkData clientData =
       _ -> throwE $ CMD PROHIBITED "setConnShortLinkAsync: invalid connection or mode"
     enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET userLinkData clientData
 
-getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> ConnShortLink 'CMContact -> AM ConnId
-getConnShortLinkAsync' c userId corrId shortLink@(CSLContact _ _ srv _) = do
-  g <- asks random
-  connId <- withStore c $ \db -> do
-    -- server is created so the command is processed in server queue,
-    -- not blocking other "no server" commands
-    void $ createServer db srv
-    prepareNewConn db g
+getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AM ConnId
+getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) = do
+  connId <- case connId_ of
+    Just existingConnId -> do
+      -- connId and srv can be unrelated: connId is used as "mailbox" for LDATA delivery,
+      -- while srv is the short link's server for the LGET request.
+      -- E.g., owner's relay connection (connId, on server A) fetches relay's group link data (srv = server B).
+      -- This works because enqueueCommand stores (connId, srv) independently in the commands table,
+      -- the network request targets srv, and event delivery uses connId via corrId correlation.
+      withStore' c $ \db -> void $ createServer db srv
+      pure existingConnId
+    Nothing -> do
+      g <- asks random
+      withStore c $ \db -> do
+        void $ createServer db srv
+        prepareNewConn db g
   enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LGET shortLink
   pure connId
   where
@@ -1078,6 +1091,14 @@ deleteConnShortLink' c nm connId cMode =
       (ContactConnection _ rq, SCMContact) -> deleteQueueLink c nm rq
       (RcvConnection _ rq, SCMInvitation) -> deleteQueueLink c nm rq
       _ -> throwE $ CMD PROHIBITED "deleteConnShortLink: not contact address"
+
+getConnLinkPrivKey' :: AgentClient -> ConnId -> AM (Maybe C.PrivateKeyEd25519)
+getConnLinkPrivKey' c connId = do
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  pure $ case conn of
+    ContactConnection _ rq -> linkPrivSigKey <$> shortLink rq
+    RcvConnection _ rq -> linkPrivSigKey <$> shortLink rq
+    _ -> Nothing
 
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
 getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (FixedLinkData c, ConnLinkData c)
@@ -1556,12 +1577,11 @@ subscribeAllConnections' :: AgentClient -> Bool -> Maybe UserId -> AM ()
 subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   userSrvs <- withStore' c (`getSubscriptionServers` onlyNeeded)
   unless (null userSrvs) $ do
-    maxPending <- asks $ maxPendingSubscriptions . config
-    currPending <- newTVarIO 0
+    batchSize <- asks $ subsBatchSize . config
     let userSrvs' = case activeUserId_ of
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
-    rs <- lift $ mapConcurrently (subscribeUserServer maxPending currPending) userSrvs'
+    rs <- lift $ mapConcurrently (subscribeUserServer batchSize) userSrvs'
     let (errs, oks) = partitionEithers rs
     logInfo $ "subscribed " <> tshow (sum oks) <> " queues"
     forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map ("",)
@@ -1570,18 +1590,16 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
   resumeAllCommands c
   where
     handleErr = (`catchAllErrors` \e -> notifySub' c "" (ERR e) >> throwE e)
-    subscribeUserServer :: Int -> TVar Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
-    subscribeUserServer maxPending currPending (userId, srv) = do
-      atomically $ whenM ((maxPending <=) <$> readTVar currPending) retry
-      tryAllErrors' $ do
-        qs <- withStore' c $ \db -> do
-          qs <- getUserServerRcvQueueSubs db userId srv onlyNeeded
-          unless (null qs) $ atomically $ modifyTVar' currPending (+ length qs) -- update before leaving transaction
-          pure qs
-        let n = length qs
-        unless (null qs) $ lift $ subscribe qs `E.finally` atomically (modifyTVar' currPending $ subtract n)
-        pure n
+    subscribeUserServer :: Int -> (UserId, SMPServer) -> AM' (Either AgentErrorType Int)
+    subscribeUserServer batchSize (userId, srv) = tryAllErrors' $ loop 0 Nothing
       where
+        loop !n cursor_ = do
+          qs <- withStore' c $ \db -> getUserServerRcvQueueSubs db userId srv onlyNeeded batchSize cursor_
+          if null qs then pure n else do
+            lift $ subscribe qs
+            let n' = n + length qs
+                lastRcvId = Just $ queueId $ last qs
+            if length qs < batchSize then pure n' else loop n' lastRcvId
         subscribe qs = do
           rs <- subscribeUserServerQueues c userId srv qs
           -- TODO [certs rcv] storeClientServiceAssocs store associations of queues with client service ID
@@ -3140,18 +3158,28 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                                     pure conn''
                                 | otherwise = pure conn'
                           Right Nothing -> prohibited "msg: bad agent msg" >> ack
-                          Left e@(AGENT A_DUPLICATE) -> do
+                          Left e@(AGENT A_DUPLICATE {}) -> do
                             atomically $ incSMPServerStat c userId srv recvDuplicates
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
                               Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
-                                | otherwise ->
-                                    liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
-                                      AgentMessage _ (A_MSG body) -> do
-                                        logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' srvMsgId
-                                        notify $ MSG msgMeta msgFlags body
-                                        pure ACKPending
-                                      _ -> ack
+                                | otherwise -> do
+                                    attempts <- withStore' c $ \db -> incMsgRcvAttempts db connId internalId
+                                    AgentConfig {rcvExpireCount, rcvExpireInterval} <- asks config
+                                    let firstTs = snd $ recipient msgMeta
+                                        brokerTs = snd $ broker msgMeta
+                                    now <- liftIO getCurrentTime
+                                    if attempts >= rcvExpireCount && diffUTCTime now firstTs >= rcvExpireInterval
+                                      then do
+                                        notify $ ERR (AGENT $ A_DUPLICATE $ Just DroppedMsg {brokerTs, attempts})
+                                        ackDel internalId
+                                      else
+                                        liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
+                                          AgentMessage _ (A_MSG body) -> do
+                                            logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' srvMsgId
+                                            notify $ MSG msgMeta msgFlags body
+                                            pure ACKPending
+                                          _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             atomically $ incSMPServerStat c userId srv recvCryptoErrs
