@@ -251,12 +251,6 @@ import UnliftIO.STM
 
 type AE a = ExceptT AgentErrorType IO a
 
-rcvExpireCount :: Int
-rcvExpireCount = 5
-
-rcvExpireInterval :: NominalDiffTime
-rcvExpireInterval = 86400 -- 1 day
-
 -- | Creates an SMP agent client instance
 getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> IO AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
@@ -3171,6 +3165,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), _v, sessId
                                 | userAck -> ackDel internalId
                                 | otherwise -> do
                                     attempts <- withStore' c $ \db -> incMsgRcvAttempts db connId internalId
+                                    AgentConfig {rcvExpireCount, rcvExpireInterval} <- asks config
                                     let firstTs = snd $ recipient msgMeta
                                         brokerTs = snd $ broker msgMeta
                                     now <- liftIO getCurrentTime

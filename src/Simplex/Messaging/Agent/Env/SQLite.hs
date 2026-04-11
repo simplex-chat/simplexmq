@@ -172,6 +172,8 @@ data AgentConfig = AgentConfig
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    rcvExpireCount :: Int,
+    rcvExpireInterval :: NominalDiffTime,
     e2eEncryptVRange :: VersionRangeE2E,
     smpAgentVRange :: VersionRangeSMPA,
     smpClientVRange :: VersionRangeSMPC
@@ -247,6 +249,8 @@ defaultAgentConfig =
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
+      rcvExpireCount = 5,
+      rcvExpireInterval = nominalDay,
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
       smpClientVRange = supportedSMPClientVRange

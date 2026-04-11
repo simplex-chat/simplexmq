@@ -408,6 +408,7 @@ functionalAPITests ps = do
       it "should expire multiple messages" $ testExpireManyMessages ps
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota ps
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota ps
+    it "should drop message after too many receive attempts" $ testDropMsgAfterRcvAttempts ps
 #if !defined(dbPostgres)
     -- TODO [postgres] restore from outdated db backup (we use copyFile/renameFile for sqlite)
     describe "Ratchet synchronization" $ do
@@ -2101,6 +2102,38 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort 
   where
     cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
 
+testDropMsgAfterRcvAttempts :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testDropMsgAfterRcvAttempts ps =
+  withSmpServerStoreLogOn ps testPort $ \_ -> do
+    let rcvCfg = agentCfg {rcvExpireCount = 2, rcvExpireInterval = 1}
+    alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+    bob <- getSMPAgentClient' 2 rcvCfg initAgentServers testDB2
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    -- alice sends, bob receives but does NOT ack
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    -- bob disconnects without acking
+    disposeAgentClient bob
+    threadDelay 500000
+    -- bob reconnects, agent sees duplicate, counter=1
+    bob2 <- getSMPAgentClient' 3 rcvCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+      get bob2 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    -- bob disconnects again without acking
+    disposeAgentClient bob2
+    -- wait for rcvExpireInterval (1 second)
+    threadDelay 1500000
+    -- bob reconnects, agent sees duplicate, counter=2, interval exceeded -> drops
+    bob3 <- getSMPAgentClient' 4 rcvCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob3 aliceId
+      get bob3 =##> \case ("", c, ERR (AGENT (A_DUPLICATE (Just DroppedMsg {})))) -> c == aliceId; _ -> False
+    disposeAgentClient bob3
+    disposeAgentClient alice
+
 testRatchetSync :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testRatchetSync ps = withAgentClients2 $ \alice bob ->
   withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
@@ -3224,7 +3257,7 @@ phase c connId d p statsExpectation =
         d `shouldBe` d'
         p `shouldBe` p'
         statsExpectation stats
-      ERR (AGENT A_DUPLICATE) -> phase c connId d p statsExpectation
+      ERR (AGENT A_DUPLICATE {}) -> phase c connId d p statsExpectation
       r -> do
         liftIO . putStrLn $ "expected: " <> show p <> ", received: " <> show r
         SWITCH {} <- pure r
