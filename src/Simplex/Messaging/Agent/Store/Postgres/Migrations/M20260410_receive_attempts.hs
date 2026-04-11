@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 
 module Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260410_receive_attempts where
