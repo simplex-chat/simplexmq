@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Server.Main
@@ -28,7 +29,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -52,7 +53,7 @@ xftpServerCLI :: FilePath -> FilePath -> IO ()
 xftpServerCLI = xftpServerCLI_ (\_ _ _ _ -> pure ()) (\_ -> pure ())
 
 xftpServerCLI_ ::
-  (XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()) ->
+  (forall s. XFTPServerConfig s -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()) ->
   (EmbeddedWebParams -> IO ()) ->
   FilePath ->
   FilePath ->
@@ -211,21 +212,22 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
       printServiceInfo serverVersion srv
       let information = serverPublicInfo ini
       printSourceCode (sourceCode <$> information)
-      printXFTPConfig serverConfig
-      case webStaticPath' of
-        Just path -> do
-          let onionHost =
-                either (const Nothing) (find isOnion) $
-                  strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-              webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
-          generateSite serverConfig information onionHost path
-          when (isJust webHttpPort || isJust webHttpsParams') $
-            serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
-        Nothing -> pure ()
       let storeType = fromRight "memory" $ T.unpack <$> lookupValue "STORE_LOG" "store_files" ini
       checkFileStoreMode ini storeType storeLogFilePath
-      runWithStoreConfig ini storeType (storeLogFile serverConfig) storeLogFilePath confirmMigrations $
-        \storeCfg -> runXFTPServer storeCfg serverConfig
+      runWithStoreConfig ini storeType (enableStoreLog $> storeLogFilePath) storeLogFilePath confirmMigrations $ \storeCfg -> do
+        let cfg = serverConfig storeCfg
+        printXFTPConfig cfg
+        case webStaticPath' of
+          Just path -> do
+            let onionHost =
+                  either (const Nothing) (find isOnion) $
+                    strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+                webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
+            generateSite cfg information onionHost path
+            when (isJust webHttpPort || isJust webHttpsParams') $
+              serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
+          Nothing -> pure ()
+        runXFTPServer cfg
       where
         isOnion = \case THOnionHost _ -> True; _ -> False
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -267,11 +269,13 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
 
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
-        serverConfig =
+        serverConfig :: XFTPStoreConfig s -> XFTPServerConfig s
+        serverConfig serverStoreCfg =
           XFTPServerConfig
             { xftpPort = T.unpack $ strictIni "TRANSPORT" "port" ini,
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
               fileIdSize = 16,
+              serverStoreCfg,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,
               fileSizeQuota = either error unFileSize <$> strDecodeIni "FILES" "storage_quota" ini,

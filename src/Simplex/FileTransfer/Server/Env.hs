@@ -58,10 +58,11 @@ import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
-data XFTPServerConfig = XFTPServerConfig
+data XFTPServerConfig s = XFTPServerConfig
   { xftpPort :: ServiceName,
     controlPort :: Maybe ServiceName,
     fileIdSize :: Int,
+    serverStoreCfg :: XFTPStoreConfig s,
     storeLogFile :: Maybe FilePath,
     filesPath :: FilePath,
     -- | server storage quota
@@ -111,7 +112,7 @@ data XFTPStoreConfig s where
 #endif
 
 data XFTPEnv s = XFTPEnv
-  { config :: XFTPServerConfig,
+  { config :: XFTPServerConfig s,
     store :: s,
     usedStorage :: TVar Int64,
     storeLog :: Maybe (StoreLog 'WriteMode),
@@ -132,10 +133,10 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
-newXFTPServerEnv :: FileStoreClass s => XFTPStoreConfig s -> XFTPServerConfig -> IO (XFTPEnv s)
-newXFTPServerEnv storeCfg config@XFTPServerConfig {fileSizeQuota, xftpCredentials, httpCredentials} = do
+newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
+newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
-  (store, storeLog) <- case storeCfg of
+  (store, storeLog) <- case serverStoreCfg of
     XSCMemory storeLogPath -> do
       st <- newFileStore ()
       sl <- mapM (`readWriteFileStore` st) storeLogPath

@@ -34,7 +34,7 @@ xftpMediaContent = $(embedDir "apps/xftp-server/static/media/")
 -- xftpFilePageHtml :: ByteString
 -- xftpFilePageHtml = $(embedFile "apps/xftp-server/static/file.html")
 
-xftpGenerateSite :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()
+xftpGenerateSite :: XFTPServerConfig s -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()
 xftpGenerateSite cfg info onionHost path = do
   let substs = xftpSubsts cfg info onionHost
   Web.generateSite embeddedContent (render (Web.indexHtml embeddedContent) substs) [] path
@@ -50,10 +50,10 @@ xftpGenerateSite cfg info onionHost path = do
       createDirectoryIfMissing True dir
       forM_ content_ $ \(fp, content) -> B.writeFile (dir </> fp) content
 
-xftpServerInformation :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> ByteString
+xftpServerInformation :: XFTPServerConfig s -> Maybe ServerPublicInfo -> Maybe TransportHost -> ByteString
 xftpServerInformation cfg info onionHost = render (Web.indexHtml embeddedContent) (xftpSubsts cfg info onionHost)
 
-xftpSubsts :: XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> [(ByteString, Maybe ByteString)]
+xftpSubsts :: XFTPServerConfig s -> Maybe ServerPublicInfo -> Maybe TransportHost -> [(ByteString, Maybe ByteString)]
 xftpSubsts XFTPServerConfig {fileExpiration, logStatsInterval, allowNewFiles, newFileBasicAuth} information onionHost =
   [("smpConfig", Nothing), ("xftpConfig", Just "y")] <> substConfig <> serverInfoSubsts simplexmqSource information <> [("onionHost", strEncode <$> onionHost), ("iniFileName", Just "file-server.ini")]
   where

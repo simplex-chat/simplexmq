@@ -111,19 +111,19 @@ corsPreflightHeaders =
     ("Access-Control-Max-Age", "86400")
   ]
 
-runXFTPServer :: FileStoreClass s => XFTPStoreConfig s -> XFTPServerConfig -> IO ()
-runXFTPServer storeCfg cfg = do
+runXFTPServer :: FileStoreClass s => XFTPServerConfig s -> IO ()
+runXFTPServer cfg = do
   started <- newEmptyTMVarIO
-  runXFTPServerBlocking started storeCfg cfg
+  runXFTPServerBlocking started cfg
 
-runXFTPServerBlocking :: FileStoreClass s => TMVar Bool -> XFTPStoreConfig s -> XFTPServerConfig -> IO ()
-runXFTPServerBlocking started storeCfg cfg = newXFTPServerEnv storeCfg cfg >>= runReaderT (xftpServer cfg started)
+runXFTPServerBlocking :: FileStoreClass s => TMVar Bool -> XFTPServerConfig s -> IO ()
+runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
 
 data Handshake
   = HandshakeSent C.PrivateKeyX25519
   | HandshakeAccepted (THandleParams XFTPVersion 'TServer)
 
-xftpServer :: forall s. FileStoreClass s => XFTPServerConfig -> TMVar Bool -> M s ()
+xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
   mapM_ (expireServerFiles Nothing) fileExpiration
   restoreServerStats
@@ -244,7 +244,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       saveServerStats
       logNote "Server stopped"
 
-    expireFilesThread_ :: XFTPServerConfig -> [M s ()]
+    expireFilesThread_ :: XFTPServerConfig s -> [M s ()]
     expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]
     expireFilesThread_ _ = []
 
@@ -255,7 +255,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         liftIO $ threadDelay' interval
         expireServerFiles (Just 100000) expCfg
 
-    serverStatsThread_ :: XFTPServerConfig -> [M s ()]
+    serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
@@ -301,7 +301,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               ]
         liftIO $ threadDelay' interval
 
-    prometheusMetricsThread_ :: XFTPServerConfig -> [M s ()]
+    prometheusMetricsThread_ :: XFTPServerConfig s -> [M s ()]
     prometheusMetricsThread_ XFTPServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
       [savePrometheusMetrics interval prometheusMetricsFile]
     prometheusMetricsThread_ _ = []
@@ -325,7 +325,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let fd = periodStatDataCounts $ _filesDownloaded d
       pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
 
-    controlPortThread_ :: XFTPServerConfig -> [M s ()]
+    controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]
     controlPortThread_ _ = []
 
@@ -451,15 +451,16 @@ verifyXFTPTransmission thAuth (tAuth, authorized, (corrId, fId, cmd)) =
     verifyCmd :: SFileParty p -> M s VerificationResult
     verifyCmd party = do
       st <- asks store
-      liftIO (getFile st party fId) >>= \case
-        Right (fr, k) -> do
-          status <- readTVarIO (fileStatus fr)
-          pure $ case status of
-            EntityActive -> XFTPReqCmd fId fr cmd `verifyWith` k
-            EntityBlocked info -> VRFailed $ BLOCKED info
-            EntityOff -> noFileAuth
-        Left _ -> pure noFileAuth
+      liftIO $ verify =<< getFile st party fId
       where
+        verify = \case
+          Right (fr, k) -> result <$> readTVarIO (fileStatus fr)
+            where
+              result = \case
+                EntityActive -> XFTPReqCmd fId fr cmd `verifyWith` k
+                EntityBlocked info -> VRFailed $ BLOCKED info
+                EntityOff -> noFileAuth
+          Left _ -> pure noFileAuth
         noFileAuth = dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
     -- TODO verify with DH authorization
     req `verifyWith` k = if verifyCmdAuthorization thAuth tAuth authorized corrId k then VRVerified req else VRFailed AUTH
