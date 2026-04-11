@@ -33,7 +33,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Word (Word32)
-import Database.PostgreSQL.Simple (Binary (..), Only (..), SqlError)
+import Database.PostgreSQL.Simple (Binary (..), Only (..), SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
@@ -55,7 +55,7 @@ import Simplex.Messaging.Transport (EntityId (..))
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.QueueStore.Postgres ()
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
-import Simplex.Messaging.Util (tshow)
+import Simplex.Messaging.Util (firstRow, tshow)
 import System.Directory (renameFile)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -111,38 +111,22 @@ instance FileStoreClass PostgresFileStore where
     withLog "addRecipient" st $ \s -> logAddRecipients s senderId (pure $ FileRecipient rId rKey)
 
   getFile st party fId = runExceptT $ case party of
-    SFSender ->
-      withDB "getFile" st $ \db -> do
-        rs <-
-          DB.query
-            db
-            "SELECT file_size, file_digest, sender_key, file_path, created_at, status FROM files WHERE sender_id = ?"
-            (Only fId)
-        case rs of
-          [(size, digest, sndKeyBs, path, createdAt, status)] ->
-            case C.decodePubKey sndKeyBs of
-              Right sndKey -> do
-                let fileInfo = FileInfo {sndKey, size = fromIntegral (size :: Int32), digest}
-                fr <- mkFileRec fId fileInfo path createdAt status
-                pure $ Right (fr, sndKey)
-              Left _ -> pure $ Left INTERNAL
-          _ -> pure $ Left AUTH
-    SFRecipient ->
-      withDB "getFile" st $ \db -> do
-        rs <-
-          DB.query
-            db
-            "SELECT f.file_size, f.file_digest, f.sender_key, f.file_path, f.created_at, f.status, f.sender_id, r.recipient_key FROM recipients r JOIN files f ON r.sender_id = f.sender_id WHERE r.recipient_id = ?"
-            (Only fId)
-        case rs of
-          [(size, digest, sndKeyBs, path, createdAt, status, senderId, rcpKeyBs)] ->
-            case (C.decodePubKey sndKeyBs, C.decodePubKey rcpKeyBs) of
-              (Right sndKey, Right rcpKey) -> do
-                let fileInfo = FileInfo {sndKey, size = fromIntegral (size :: Int32), digest}
-                fr <- mkFileRec senderId fileInfo path createdAt status
-                pure $ Right (fr, rcpKey)
-              _ -> pure $ Left INTERNAL
-          _ -> pure $ Left AUTH
+    SFSender -> do
+      row <- loadFileRow "SELECT sender_id, file_size, file_digest, sender_key, file_path, created_at, status FROM files WHERE sender_id = ?"
+      fr <- ExceptT $ rowToFileRec row
+      pure (fr, sndKey (fileInfo fr))
+    SFRecipient -> do
+      row :. Only rcpKeyBs <-
+        loadFileRow
+          "SELECT f.sender_id, f.file_size, f.file_digest, f.sender_key, f.file_path, f.created_at, f.status, r.recipient_key FROM files f JOIN recipients r ON r.sender_id = f.sender_id WHERE r.recipient_id = ?"
+      fr <- ExceptT $ rowToFileRec row
+      rcpKey <- either (const $ throwE INTERNAL) pure $ C.decodePubKey rcpKeyBs
+      pure (fr, rcpKey)
+    where
+      loadFileRow :: DB.FromRow r => DB.Query -> ExceptT XFTPErrorType IO r
+      loadFileRow q =
+        withDB "getFile" st $ \db ->
+          firstRow id AUTH $ DB.query db q (Only fId)
 
   deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "deleteFile" st $ \db ->
@@ -191,6 +175,16 @@ mkFileRec senderId fileInfo path createdAt status = do
   recipientIds <- newTVarIO S.empty
   fileStatus <- newTVarIO status
   pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus}
+
+type FileRecRow = (SenderId, Int32, ByteString, ByteString, Maybe FilePath, RoundedFileTime, ServerEntityStatus)
+
+rowToFileRec :: FileRecRow -> IO (Either XFTPErrorType FileRec)
+rowToFileRec (sId, size, digest, sndKeyBs, path, createdAt, status) =
+  case C.decodePubKey sndKeyBs of
+    Right sndKey -> do
+      let fileInfo = FileInfo {sndKey, size = fromIntegral size, digest}
+      Right <$> mkFileRec sId fileInfo path createdAt status
+    Left _ -> pure $ Left INTERNAL
 
 -- DB helpers
 
