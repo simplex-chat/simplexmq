@@ -97,7 +97,7 @@ instance FileStoreClass STMFileStore where
       pure $ Right ()
 
   setFilePath st sId fPath = atomically $
-    withSTMFile st sId $ \FileRec {filePath, fileStatus} -> do
+    withFile st sId $ \FileRec {filePath, fileStatus} -> do
       readTVar filePath >>= \case
         Just _ -> pure $ Left AUTH
         Nothing ->
@@ -108,7 +108,7 @@ instance FileStoreClass STMFileStore where
             _ -> pure $ Left AUTH
 
   addRecipient st@STMFileStore {recipients} senderId (FileRecipient rId rKey) = atomically $
-    withSTMFile st senderId $ \FileRec {recipientIds} -> do
+    withFile st senderId $ \FileRec {recipientIds} -> do
       rIds <- readTVar recipientIds
       mem <- TM.member rId recipients
       if rId `S.member` rIds || mem
@@ -126,7 +126,7 @@ instance FileStoreClass STMFileStore where
       _ -> pure $ Left AUTH
 
   blockFile st senderId info _deleted = atomically $
-    withSTMFile st senderId $ \FileRec {fileStatus} -> do
+    withFile st senderId $ \FileRec {fileStatus} -> do
       writeTVar fileStatus $! EntityBlocked info
       pure $ Right ()
 
@@ -135,16 +135,16 @@ instance FileStoreClass STMFileStore where
     modifyTVar' recipientIds $ S.delete rId
 
   getFile st party fId = atomically $ case party of
-    SFSender -> withSTMFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
+    SFSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
     SFRecipient ->
       TM.lookup fId (recipients st) >>= \case
-        Just (sId, rKey) -> withSTMFile st sId $ pure . Right . (,rKey)
+        Just (sId, rKey) -> withFile st sId $ pure . Right . (,rKey)
         _ -> pure $ Left AUTH
 
   ackFile st@STMFileStore {recipients} recipientId = atomically $ do
     TM.lookupDelete recipientId recipients >>= \case
       Just (sId, _) ->
-        withSTMFile st sId $ \FileRec {recipientIds} -> do
+        withFile st sId $ \FileRec {recipientIds} -> do
           modifyTVar' recipientIds $ S.delete recipientId
           pure $ Right ()
       _ -> pure $ Left AUTH
@@ -172,8 +172,8 @@ newFileRec senderId fileInfo createdAt status = do
   fileStatus <- newTVar status
   pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus}
 
-withSTMFile :: STMFileStore -> SenderId -> (FileRec -> STM (Either XFTPErrorType a)) -> STM (Either XFTPErrorType a)
-withSTMFile STMFileStore {files} sId a =
+withFile :: STMFileStore -> SenderId -> (FileRec -> STM (Either XFTPErrorType a)) -> STM (Either XFTPErrorType a)
+withFile STMFileStore {files} sId a =
   TM.lookup sId files >>= \case
     Just f -> a f
     _ -> pure $ Left AUTH
