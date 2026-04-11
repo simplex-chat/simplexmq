@@ -32,10 +32,10 @@ import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive)
 import System.Environment (setEnv)
 import Test.Hspec hiding (fit, it)
 import Util
-import XFTPAgent (xftpAgentTests, xftpAgentFileTests, xftpAgentRestoreTests)
+import XFTPAgent
 import XFTPCLI (xftpCLIFileTests)
-import XFTPClient (xftpMemoryBracket, xftpMemoryBracket2, xftpMemoryBracketClear, xftpServerFiles)
-import XFTPServerTests (xftpServerTests, xftpFileTests)
+import XFTPClient (xftpMemoryBracket, xftpMemoryBracket2)
+import XFTPServerTests (xftpServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
 
@@ -54,7 +54,7 @@ import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
-import XFTPClient (testXFTPDBConnectInfo, xftpPostgresBracket, xftpPostgresBracket2, xftpPostgresBracketClear)
+import XFTPClient (testXFTPDBConnectInfo, xftpPostgresBracket, xftpPostgresBracket2)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -151,29 +151,18 @@ main = do
         describe "SMP proxy, jornal message store" $
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
-          describe "XFTP server" xftpServerTests
-          before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $
-            describe "XFTP file delivery (memory)" $
-              before (pure xftpMemoryBracket) xftpFileTests
+          describe "XFTP server" $
+            before (pure xftpMemoryBracket) xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI (memory)" $
             before (pure (xftpMemoryBracket, xftpMemoryBracket2)) xftpCLIFileTests
           describe "XFTP agent" xftpAgentTests
-          describe "XFTP agent (memory)" $
-            before (pure xftpMemoryBracket) xftpAgentFileTests
-          describe "XFTP agent restore (memory)" $
-            before (pure xftpMemoryBracketClear) xftpAgentRestoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testXFTPDBConnectInfo) $ do
           describe "XFTP Postgres store operations" xftpStoreTests
           describe "XFTP migration round-trip" xftpMigrationTests
-          before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $
-            describe "XFTP file delivery (PostgreSQL)" $
-              before (pure xftpPostgresBracket) xftpFileTests
-          describe "XFTP agent (PostgreSQL)" $
-            before (pure xftpPostgresBracket) xftpAgentFileTests
-          describe "XFTP agent restore (PostgreSQL)" $
-            before (pure xftpPostgresBracketClear) xftpAgentRestoreTests
+          describe "XFTP server (PostgreSQL)" $
+            before (pure xftpPostgresBracket) xftpServerTests
           describe "XFTP CLI (PostgreSQL)" $
             before (pure (xftpPostgresBracket, xftpPostgresBracket2)) xftpCLIFileTests
 #endif
