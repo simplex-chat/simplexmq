@@ -33,7 +33,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Word (Word32)
-import Database.PostgreSQL.Simple (Binary (..), Only (..), SqlError, (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), SqlError, (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.Errors (ConstraintViolation (..), constraintViolation)
@@ -114,6 +114,11 @@ instance FileStoreClass PostgresFileStore where
     assertUpdated $ withDB' "deleteFile" st $ \db ->
       DB.execute db "DELETE FROM files WHERE sender_id = ?" (Only sId)
     withLog "deleteFile" st $ \s -> logDeleteFile s sId
+
+  deleteFiles st sIds = E.uninterruptibleMask_ $ do
+    withTransaction (dbStore st) $ \db ->
+      DB.execute db "DELETE FROM files WHERE sender_id IN ?" (Only (In sIds))
+    withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s) sIds
 
   blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "blockFile" st $ \db ->

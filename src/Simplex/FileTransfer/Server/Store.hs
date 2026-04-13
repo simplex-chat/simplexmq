@@ -17,7 +17,7 @@ module Simplex.FileTransfer.Server.Store
 where
 
 import Control.Concurrent.STM
-import Control.Monad (forM)
+import Control.Monad (forM, void)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
@@ -67,6 +67,8 @@ class FileStoreClass s where
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
+  deleteFiles :: s -> [SenderId] -> IO ()
+  deleteFiles s = mapM_ (void . deleteFile s)
   blockFile :: s -> SenderId -> BlockingInfo -> Bool -> IO (Either XFTPErrorType ())
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
