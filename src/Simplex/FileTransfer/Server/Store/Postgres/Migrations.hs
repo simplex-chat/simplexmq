@@ -28,7 +28,7 @@ m20260325_initial =
   [r|
 CREATE TABLE files (
   sender_id BYTEA NOT NULL PRIMARY KEY,
-  file_size INT4 NOT NULL CHECK (file_size > 0),
+  file_size INT4 NOT NULL,
   file_digest BYTEA NOT NULL,
   sender_key BYTEA NOT NULL,
   file_path TEXT,

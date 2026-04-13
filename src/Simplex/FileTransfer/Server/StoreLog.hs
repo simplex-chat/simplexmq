@@ -33,6 +33,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
@@ -101,7 +102,9 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
           Left e -> B.putStrLn $ "Log processing error (" <> bshow e <> "): " <> B.take 100 s
           _ -> pure ()
     addToStore = \case
-      AddFile sId file createdAt status -> addFile st sId file createdAt status
+      AddFile sId file createdAt status
+        | size file > 0 -> addFile st sId file createdAt status
+        | otherwise -> pure $ Left SIZE
       PutFile qId path -> setFilePath st qId path
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
