@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
@@ -8,16 +9,23 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.FileTransfer.Server.Env
   ( XFTPServerConfig (..),
     XFTPStoreConfig (..),
     XFTPEnv (..),
     XFTPRequest (..),
+    XFTPStoreType,
+    FileStore (..),
+    AFStoreType (..),
+    fileStore,
+    fromFileStore,
     defaultInactiveClientExpiration,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
+    readFileStoreType,
     runWithStoreConfig,
     checkFileStoreMode,
     importToDatabase,
@@ -111,9 +119,31 @@ data XFTPStoreConfig s where
   XSCDatabase :: PostgresFileStoreCfg -> XFTPStoreConfig PostgresFileStore
 #endif
 
+type family XFTPStoreType (fs :: FSType) where
+  XFTPStoreType 'FSMemory = STMFileStore
+#if defined(dbServerPostgres)
+  XFTPStoreType 'FSPostgres = PostgresFileStore
+#endif
+
+data FileStore s where
+  StoreMemory :: STMFileStore -> FileStore STMFileStore
+#if defined(dbServerPostgres)
+  StoreDatabase :: PostgresFileStore -> FileStore PostgresFileStore
+#endif
+
+data AFStoreType = forall fs. FileStoreClass (XFTPStoreType fs) => AFSType (SFSType fs)
+
+fromFileStore :: FileStore s -> s
+fromFileStore = \case
+  StoreMemory s -> s
+#if defined(dbServerPostgres)
+  StoreDatabase s -> s
+#endif
+{-# INLINE fromFileStore #-}
+
 data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,
-    store :: s,
+    fileStore_ :: FileStore s,
     usedStorage :: TVar Int64,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
@@ -122,6 +152,10 @@ data XFTPEnv s = XFTPEnv
     httpServerCreds :: Maybe T.Credential,
     serverStats :: FileServerStats
   }
+
+fileStore :: XFTPEnv s -> s
+fileStore = fromFileStore . fileStore_
+{-# INLINE fileStore #-}
 
 defFileExpirationHours :: Int64
 defFileExpirationHours = 48
@@ -136,18 +170,18 @@ defaultFileExpiration =
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
 newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
-  (store, storeLog) <- case serverStoreCfg of
+  (fileStore_, storeLog) <- case serverStoreCfg of
     XSCMemory storeLogPath -> do
       st <- newFileStore ()
       sl <- mapM (`readWriteFileStore` st) storeLogPath
       atomically $ writeTVar (stmStoreLog st) sl
-      pure (st, sl)
+      pure (StoreMemory st, sl)
 #if defined(dbServerPostgres)
     XSCDatabase dbCfg -> do
       st <- newFileStore dbCfg
-      pure (st, Nothing)
+      pure (StoreDatabase st, Nothing)
 #endif
-  used <- getUsedStorage store
+  used <- getUsedStorage (fromFileStore fileStore_)
   usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
@@ -156,35 +190,45 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCre
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, fileStore_, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
 
--- | Select and run the store config based on INI settings.
+readFileStoreType :: String -> Either String AFStoreType
+readFileStoreType = \case
+  "memory" -> Right $ AFSType SFSMemory
+#if defined(dbServerPostgres)
+  "database" -> Right $ AFSType SFSPostgres
+#else
+  "database" -> Left "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
+#endif
+  other -> Left $ "Invalid store_files value: " <> other
+
+-- | Dispatch store config from AFStoreType singleton and run the callback.
 -- CPP guards for Postgres are handled here so Main.hs stays CPP-free.
 runWithStoreConfig ::
+  AFStoreType ->
   Ini ->
-  String ->
-  Maybe FilePath ->
   FilePath ->
   MigrationConfirmation ->
   (forall s. FileStoreClass s => XFTPStoreConfig s -> IO ()) ->
   IO ()
-runWithStoreConfig _ini storeType storeLogFile_ _storeLogFilePath _confirmMigrations run = case storeType of
-  "memory" -> run $ XSCMemory storeLogFile_
+runWithStoreConfig (AFSType fs) ini storeLogFilePath confirmMigrations run =
+  run $ iniStoreCfg fs
+  where
+    enableStoreLog' = settingIsOn "STORE_LOG" "enable" ini
+    iniStoreCfg :: SFSType fs -> XFTPStoreConfig (XFTPStoreType fs)
+    iniStoreCfg SFSMemory = XSCMemory (enableStoreLog' $> storeLogFilePath)
 #if defined(dbServerPostgres)
-  "database" -> run $ XSCDatabase dbCfg
-    where
-      enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" _ini
-      dbStoreLogPath = enableDbStoreLog' $> _storeLogFilePath
-      dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions _ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations = _confirmMigrations}
-#else
-  "database" -> error "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
+    iniStoreCfg SFSPostgres = XSCDatabase dbCfg
+      where
+        enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" ini
+        dbStoreLogPath = enableDbStoreLog' $> storeLogFilePath
+        dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
 #endif
-  _ -> error $ "Invalid store_files value: " <> storeType
 
 -- | Validate startup config when store_files=database.
 checkFileStoreMode :: Ini -> String -> FilePath -> IO ()

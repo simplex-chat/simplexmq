@@ -34,7 +34,8 @@ import Test.Hspec hiding (fit, it)
 import Util
 import XFTPAgent
 import XFTPCLI (xftpCLIFileTests)
-import XFTPClient (xftpMemoryServer, xftpMemoryServer2)
+import Simplex.FileTransfer.Server.Env (AFStoreType (..))
+import Simplex.FileTransfer.Server.Store (SFSType (..))
 import XFTPServerTests (xftpServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
@@ -54,7 +55,7 @@ import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (testServerDBConnectInfo, testStoreDBOpts)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
-import XFTPClient (testXFTPDBConnectInfo, xftpPostgresServer, xftpPostgresServer2)
+import XFTPClient (testXFTPDBConnectInfo)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -152,19 +153,22 @@ main = do
           before (pure $ ASType SQSMemory SMSJournal) smpProxyTests
         describe "XFTP" $ do
           describe "XFTP server" $
-            before (pure xftpMemoryServer) xftpServerTests
+            before (pure $ AFSType SFSMemory) xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI (memory)" $
-            before (pure (xftpMemoryServer, xftpMemoryServer2)) xftpCLIFileTests
-          describe "XFTP agent" xftpAgentTests
+            before (pure (AFSType SFSMemory, AFSType SFSMemory)) xftpCLIFileTests
+          describe "XFTP agent" $
+            before (pure $ AFSType SFSMemory) xftpAgentTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testXFTPDBConnectInfo) $ do
           describe "XFTP Postgres store operations" xftpStoreTests
           describe "XFTP migration round-trip" xftpMigrationTests
           describe "XFTP server (PostgreSQL)" $
-            before (pure xftpPostgresServer) xftpServerTests
+            before (pure $ AFSType SFSPostgres) xftpServerTests
+          describe "XFTP agent (PostgreSQL)" $
+            before (pure $ AFSType SFSPostgres) xftpAgentTests
           describe "XFTP CLI (PostgreSQL)" $
-            before (pure (xftpPostgresServer, xftpPostgresServer2)) xftpCLIFileTests
+            before (pure (AFSType SFSPostgres, AFSType SFSPostgres)) xftpCLIFileTests
 #endif
 #if defined(dbPostgres)
         describe "XFTP Web Client" $ xftpWebTests (dropAllSchemasExceptSystem testDBConnectInfo)

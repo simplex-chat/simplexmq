@@ -11,17 +11,18 @@ import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import Test.Hspec hiding (fit, it)
 import Util
-import XFTPClient (XFTPTestServer (..), testXFTPServerStr, testXFTPServerStr2, xftpServerFiles, xftpServerFiles2)
+import Simplex.FileTransfer.Server.Env (AFStoreType)
+import XFTPClient (cfgFS, cfgFS2, withXFTPServerConfigOn, testXFTPServerStr, testXFTPServerStr2, xftpServerFiles, xftpServerFiles2)
 
-xftpCLIFileTests :: SpecWith (XFTPTestServer, XFTPTestServer)
+xftpCLIFileTests :: SpecWith (AFStoreType, AFStoreType)
 xftpCLIFileTests = around_ testBracket $ do
-  it "should send and receive file" $ \(XFTPTestServer withSrv, _) ->
-    withSrv id testXFTPCLISendReceive_
-  it "should send and receive file with 2 servers" $ \(XFTPTestServer withSrv1, XFTPTestServer withSrv2) ->
-    withSrv1 id $ withSrv2 id testXFTPCLISendReceive2servers_
-  it "should delete file from 2 servers" $ \(XFTPTestServer withSrv1, XFTPTestServer withSrv2) ->
-    withSrv1 id $ withSrv2 id testXFTPCLIDelete_
-  it "prepareChunkSizes should use 2 chunk sizes" $ \(_, _) -> testPrepareChunkSizes
+  it "should send and receive file" $ \(fsType, _) ->
+    withXFTPServerConfigOn (cfgFS fsType) $ \_ -> testXFTPCLISendReceive_
+  it "should send and receive file with 2 servers" $ \(fsType1, fsType2) ->
+    withXFTPServerConfigOn (cfgFS fsType1) $ \_ -> withXFTPServerConfigOn (cfgFS2 fsType2) $ \_ -> testXFTPCLISendReceive2servers_
+  it "should delete file from 2 servers" $ \(fsType1, fsType2) ->
+    withXFTPServerConfigOn (cfgFS fsType1) $ \_ -> withXFTPServerConfigOn (cfgFS2 fsType2) $ \_ -> testXFTPCLIDelete_
+  it "prepareChunkSizes should use 2 chunk sizes" $ \_ -> testPrepareChunkSizes
 
 testBracket :: IO () -> IO ()
 testBracket =

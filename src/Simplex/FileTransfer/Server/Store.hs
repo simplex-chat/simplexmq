@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,7 +8,9 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Simplex.FileTransfer.Server.Store
-  ( FileStoreClass (..),
+  ( FSType (..),
+    SFSType (..),
+    FileStoreClass (..),
     FileRec (..),
     FileRecipient (..),
     STMFileStore (..),
@@ -15,6 +18,8 @@ module Simplex.FileTransfer.Server.Store
     fileTimePrecision,
   )
 where
+
+import Data.Kind (Type)
 
 import Control.Concurrent.STM
 import Control.Monad (forM, void)
@@ -37,6 +42,12 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM)
+
+data FSType = FSMemory | FSPostgres
+
+data SFSType :: FSType -> Type where
+  SFSMemory :: SFSType 'FSMemory
+  SFSPostgres :: SFSType 'FSPostgres
 
 data FileRec = FileRec
   { senderId :: SenderId,

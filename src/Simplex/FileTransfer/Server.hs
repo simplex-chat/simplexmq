@@ -238,7 +238,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 
     stopServer :: M s ()
     stopServer = do
-      st <- asks store
+      st <- asks fileStore
       liftIO $ closeFileStore st
       saveServerStats
       logNote "Server stopped"
@@ -366,13 +366,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                   XFTPServerConfig {controlPortUserAuth = user, controlPortAdminAuth = admin} = cfg
               CPStatsRTS -> E.tryAny getRTSStats >>= either (hPrint h) (hPrint h)
               CPDelete fileId -> withUserRole $ unliftIO u $ do
-                fs <- asks store
+                fs <- asks fileStore
                 r <- runExceptT $ do
                   (fr, _) <- ExceptT $ liftIO $ getFile fs SFRecipient fileId
                   ExceptT $ deleteServerFile_ fr
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
               CPBlock fileId info -> withUserRole $ unliftIO u $ do
-                fs <- asks store
+                fs <- asks fileStore
                 r <- runExceptT $ do
                   (fr, _) <- ExceptT $ liftIO $ getFile fs SFRecipient fileId
                   ExceptT $ blockServerFile fr info
@@ -449,7 +449,7 @@ verifyXFTPTransmission thAuth (tAuth, authorized, (corrId, fId, cmd)) =
   where
     verifyCmd :: SFileParty p -> M s VerificationResult
     verifyCmd party = do
-      st <- asks store
+      st <- asks fileStore
       liftIO $ verify =<< getFile st party fId
       where
         verify = \case
@@ -485,7 +485,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> M s FileResponse
     createFile file rks = do
-      st <- asks store
+      st <- asks fileStore
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
         unless (size file `elem` sizes) $ throwE SIZE
@@ -522,7 +522,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         r -> pure r
     addRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s FileResponse
     addRecipients sId rks = do
-      st <- asks store
+      st <- asks fileStore
       r <- runExceptT $ do
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> logAddRecipients sl sId rcps
@@ -559,7 +559,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
             receiveChunk (XFTPRcvChunkSpec fPath size digest) >>= \case
               Right () -> do
                 stats <- asks serverStats
-                st <- asks store
+                st <- asks fileStore
                 liftIO (setFilePath st senderId fPath) >>= \case
                   Right () -> do
                     withFileLog $ \sl -> logPutFile sl senderId fPath
@@ -608,7 +608,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     ackFileReception :: RecipientId -> FileRec -> M s FileResponse
     ackFileReception rId fr = do
       withFileLog (`logAckFile` rId)
-      st <- asks store
+      st <- asks fileStore
       liftIO $ deleteRecipient st rId fr
       incFileStat fileDownloadAcks
       pure FROk
@@ -629,7 +629,7 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
   path <- readTVarIO filePath
   stats <- asks serverStats
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
-  st <- asks store
+  st <- asks fileStore
   ExceptT $ liftIO $ storeAction st
   forM_ path $ \_ -> do
     us <- asks usedStorage
@@ -645,7 +645,7 @@ getFileTime = getRoundedSystemTime
 
 expireServerFiles :: FileStoreClass s => Maybe Int -> ExpirationConfig -> M s ()
 expireServerFiles itemDelay expCfg = do
-  st <- asks store
+  st <- asks fileStore
   us <- asks usedStorage
   usedStart <- readTVarIO us
   old <- liftIO $ expireBeforeEpoch expCfg
@@ -704,7 +704,7 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
-          st <- asks store
+          st <- asks fileStore
           _filesCount <- liftIO $ getFileCount st
           _filesSize <- readTVarIO =<< asks usedStorage
           liftIO $ setFileServerStats s d {_filesCount, _filesSize}

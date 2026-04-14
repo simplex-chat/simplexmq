@@ -26,7 +26,7 @@ import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Server.Store (STMFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
@@ -55,44 +55,44 @@ import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
 
-xftpAgentTests :: Spec
+xftpAgentTests :: SpecWith AFStoreType
 xftpAgentTests =
   around_ testBracket
 #if defined(dbPostgres)
     . after_ (dropAllSchemasExceptSystem testDBConnectInfo)
 #endif
     . describe "agent XFTP API" $ do
-      it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
+      it "should send and receive file" $ \fsType -> withXFTPServer fsType testXFTPAgentSendReceive
       -- uncomment CPP option slow_servers and run hpack to run this test
-      xit "should send and receive file with slow server responses" $
+      xit "should send and receive file with slow server responses" $ \_ ->
         withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
           \_ -> testXFTPAgentSendReceive
-      it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
-      it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
-      it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
-      describe "sending and receiving with version negotiation" testXFTPAgentSendReceiveMatrix
-      it "should resume receiving file after restart" testXFTPAgentReceiveRestore
-      it "should cleanup rcv tmp path after permanent error" testXFTPAgentReceiveCleanup
-      it "should resume sending file after restart" testXFTPAgentSendRestore
-      xit'' "should cleanup snd prefix path after permanent error" testXFTPAgentSendCleanup
-      it "should delete sent file on server" testXFTPAgentDelete
-      it "should resume deleting file after restart" testXFTPAgentDeleteRestore
+      it "should send and receive with encrypted local files" $ \fsType -> testXFTPAgentSendReceiveEncrypted fsType
+      it "should send and receive large file with a redirect" $ \fsType -> testXFTPAgentSendReceiveRedirect fsType
+      it "should send and receive small file without a redirect" $ \fsType -> testXFTPAgentSendReceiveNoRedirect fsType
+      describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
+      it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
+      it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
+      it "should resume sending file after restart" $ \_ -> testXFTPAgentSendRestore
+      xit'' "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
+      it "should delete sent file on server" $ \fsType -> testXFTPAgentDelete fsType
+      it "should resume deleting file after restart" $ \_ -> testXFTPAgentDeleteRestore
       -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
-      it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
-      it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
-      it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
+      it "if file is deleted on server, should limit retries and continue receiving next file" $ \fsType -> testXFTPAgentDeleteOnServer fsType
+      it "if file is expired on server, should report error and continue receiving next file" $ \fsType -> testXFTPAgentExpiredOnServer fsType
+      it "should request additional recipient IDs when number of recipients exceeds maximum per request" $ \fsType -> testXFTPAgentRequestAdditionalRecipientIDs fsType
       describe "XFTP server test via agent API" $ do
-        it "should pass without basic auth" $ testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
+        it "should pass without basic auth" $ \_ -> testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
         let srv1 = testXFTPServer2 {keyHash = "1234"}
-        it "should fail with incorrect fingerprint" $ do
+        it "should fail with incorrect fingerprint" $ \_ -> do
           testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
         describe "server with password" $ do
           let auth = Just "abcd"
               srv = ProtoServerWithAuth testXFTPServer2
               authErr = Just (ProtocolTestFailure TSCreateFile $ XFTP (B.unpack $ strEncode testXFTPServer2) AUTH)
-          it "should pass with correct password" $ testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
-          it "should fail without password" $ testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
-          it "should fail with incorrect password" $ testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr
+          it "should pass with correct password" $ \_ -> testXFTPServerTest auth (srv auth) `shouldReturn` Nothing
+          it "should fail without password" $ \_ -> testXFTPServerTest auth (srv Nothing) `shouldReturn` authErr
+          it "should fail with incorrect password" $ \_ -> testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` authErr
 
 testXFTPServerTest :: HasCallStack => Maybe BasicAuth -> XFTPServerWithAuth -> IO (Maybe ProtocolTestFailure)
 testXFTPServerTest newFileBasicAuth srv =
@@ -143,8 +143,8 @@ testXFTPAgentSendReceive = do
         rfId <- runRight $ testReceive rcp rfd originalFilePath
         xftpDeleteRcvFile rcp rfId
 
-testXFTPAgentSendReceiveEncrypted :: HasCallStack => IO ()
-testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
+testXFTPAgentSendReceiveEncrypted :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentSendReceiveEncrypted fsType = withXFTPServer fsType $ do
   g <- C.newRandom
   filePath <- createRandomFile
   s <- LB.readFile filePath
@@ -164,8 +164,8 @@ testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
         rfId <- runRight $ testReceiveCF rcp rfd cfArgs originalFilePath
         xftpDeleteRcvFile rcp rfId
 
-testXFTPAgentSendReceiveRedirect :: HasCallStack => IO ()
-testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
+testXFTPAgentSendReceiveRedirect :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentSendReceiveRedirect fsType = withXFTPServer fsType $ do
   --- sender
   filePathIn <- createRandomFile
   let fileSize = mb 17
@@ -222,8 +222,8 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
       inBytes <- B.readFile filePathIn
       B.readFile out `shouldReturn` inBytes
 
-testXFTPAgentSendReceiveNoRedirect :: HasCallStack => IO ()
-testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
+testXFTPAgentSendReceiveNoRedirect :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentSendReceiveNoRedirect fsType = withXFTPServer fsType $ do
   --- sender
   let fileSize = mb 5
   filePathIn <- createRandomFile_ fileSize "testfile"
@@ -506,9 +506,9 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
   doesDirectoryExist prefixPath `shouldReturn` False
   doesFileExist encPath `shouldReturn` False
 
-testXFTPAgentDelete :: HasCallStack => IO ()
-testXFTPAgentDelete = withGlobalLogging logCfgNoLogs $
-  withXFTPServer $ do
+testXFTPAgentDelete :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentDelete fsType = withGlobalLogging logCfgNoLogs $
+  withXFTPServer fsType $ do
     filePath <- createRandomFile
 
     -- send file
@@ -576,9 +576,9 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
           rfGet rcp2
         liftIO $ rfId' `shouldBe` rfId
 
-testXFTPAgentDeleteOnServer :: HasCallStack => IO ()
-testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
-  withXFTPServer $ do
+testXFTPAgentDeleteOnServer :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentDeleteOnServer fsType = withGlobalLogging logCfgNoLogs $
+  withXFTPServer fsType $ do
     filePath1 <- createRandomFile' "testfile1"
 
     -- send file 1
@@ -614,10 +614,9 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs $
           -- receive file 2
           testReceive' rcp rfd2 filePath2
 
-testXFTPAgentExpiredOnServer :: HasCallStack => IO ()
-testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
-  let fastExpiration = ExpirationConfig {ttl = 2, checkInterval = 1}
-  withXFTPServerCfg testXFTPServerConfig {fileExpiration = Just fastExpiration} . const $ do
+testXFTPAgentExpiredOnServer :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration = Just fastExpiration}) . const $ do
     filePath1 <- createRandomFile' "testfile1"
 
     -- send file 1
@@ -652,9 +651,11 @@ testXFTPAgentExpiredOnServer = withGlobalLogging logCfgNoLogs $ do
 
         -- receive file 2 successfully
         runRight_ . void $ testReceive' rcp rfd2 filePath2
+  where
+    fastExpiration = ExpirationConfig {ttl = 2, checkInterval = 1}
 
-testXFTPAgentRequestAdditionalRecipientIDs :: HasCallStack => IO ()
-testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
+testXFTPAgentRequestAdditionalRecipientIDs :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentRequestAdditionalRecipientIDs fsType = withXFTPServer fsType $ do
   filePath <- createRandomFile
 
   -- send file

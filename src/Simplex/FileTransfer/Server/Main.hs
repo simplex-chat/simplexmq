@@ -29,7 +29,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, readFileStoreType, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -214,20 +214,22 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
       printSourceCode (sourceCode <$> information)
       let storeType = fromRight "memory" $ T.unpack <$> lookupValue "STORE_LOG" "store_files" ini
       checkFileStoreMode ini storeType storeLogFilePath
-      runWithStoreConfig ini storeType (enableStoreLog $> storeLogFilePath) storeLogFilePath confirmMigrations $ \storeCfg -> do
-        let cfg = serverConfig storeCfg
-        printXFTPConfig cfg
-        case webStaticPath' of
-          Just path -> do
-            let onionHost =
-                  either (const Nothing) (find isOnion) $
-                    strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-                webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
-            generateSite cfg information onionHost path
-            when (isJust webHttpPort || isJust webHttpsParams') $
-              serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
-          Nothing -> pure ()
-        runXFTPServer cfg
+      case readFileStoreType storeType of
+        Left err -> error err
+        Right fsType -> runWithStoreConfig fsType ini storeLogFilePath confirmMigrations $ \storeCfg -> do
+          let cfg = serverConfig storeCfg
+          printXFTPConfig cfg
+          case webStaticPath' of
+            Just path -> do
+              let onionHost =
+                    either (const Nothing) (find isOnion) $
+                      strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+                  webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
+              generateSite cfg information onionHost path
+              when (isJust webHttpPort || isJust webHttpsParams') $
+                serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
+            Nothing -> pure ()
+          runXFTPServer cfg
       where
         isOnion = \case THOnionHost _ -> True; _ -> False
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
