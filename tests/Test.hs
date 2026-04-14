@@ -156,7 +156,7 @@ main = do
             before (pure $ AFSType SFSMemory) xftpServerTests
           describe "XFTP file description" fileDescriptionTests
           describe "XFTP CLI (memory)" $
-            before (pure (AFSType SFSMemory, AFSType SFSMemory)) xftpCLIFileTests
+            before (pure $ AFSType SFSMemory) xftpCLIFileTests
           describe "XFTP agent" $
             before (pure $ AFSType SFSMemory) xftpAgentTests
 #if defined(dbServerPostgres)
@@ -168,7 +168,7 @@ main = do
           describe "XFTP agent (PostgreSQL)" $
             before (pure $ AFSType SFSPostgres) xftpAgentTests
           describe "XFTP CLI (PostgreSQL)" $
-            before (pure (AFSType SFSPostgres, AFSType SFSPostgres)) xftpCLIFileTests
+            before (pure $ AFSType SFSPostgres) xftpCLIFileTests
 #endif
 #if defined(dbPostgres)
         describe "XFTP Web Client" $ xftpWebTests (dropAllSchemasExceptSystem testDBConnectInfo)

@@ -62,25 +62,25 @@ xftpAgentTests =
     . after_ (dropAllSchemasExceptSystem testDBConnectInfo)
 #endif
     . describe "agent XFTP API" $ do
-      it "should send and receive file" $ \fsType -> withXFTPServer fsType testXFTPAgentSendReceive
+      it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
       -- uncomment CPP option slow_servers and run hpack to run this test
       xit "should send and receive file with slow server responses" $ \_ ->
         withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
           \_ -> testXFTPAgentSendReceive
-      it "should send and receive with encrypted local files" $ \fsType -> testXFTPAgentSendReceiveEncrypted fsType
-      it "should send and receive large file with a redirect" $ \fsType -> testXFTPAgentSendReceiveRedirect fsType
-      it "should send and receive small file without a redirect" $ \fsType -> testXFTPAgentSendReceiveNoRedirect fsType
+      it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
+      it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
+      it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
       describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
       it "should resume sending file after restart" $ \_ -> testXFTPAgentSendRestore
       xit'' "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
-      it "should delete sent file on server" $ \fsType -> testXFTPAgentDelete fsType
+      it "should delete sent file on server" testXFTPAgentDelete
       it "should resume deleting file after restart" $ \_ -> testXFTPAgentDeleteRestore
       -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
-      it "if file is deleted on server, should limit retries and continue receiving next file" $ \fsType -> testXFTPAgentDeleteOnServer fsType
-      it "if file is expired on server, should report error and continue receiving next file" $ \fsType -> testXFTPAgentExpiredOnServer fsType
-      it "should request additional recipient IDs when number of recipients exceeds maximum per request" $ \fsType -> testXFTPAgentRequestAdditionalRecipientIDs fsType
+      it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
+      it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
+      it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
       describe "XFTP server test via agent API" $ do
         it "should pass without basic auth" $ \_ -> testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Nothing
         let srv1 = testXFTPServer2 {keyHash = "1234"}
@@ -144,7 +144,7 @@ testXFTPAgentSendReceive = do
         xftpDeleteRcvFile rcp rfId
 
 testXFTPAgentSendReceiveEncrypted :: HasCallStack => AFStoreType -> IO ()
-testXFTPAgentSendReceiveEncrypted fsType = withXFTPServer fsType $ do
+testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
   g <- C.newRandom
   filePath <- createRandomFile
   s <- LB.readFile filePath
@@ -165,7 +165,7 @@ testXFTPAgentSendReceiveEncrypted fsType = withXFTPServer fsType $ do
         xftpDeleteRcvFile rcp rfId
 
 testXFTPAgentSendReceiveRedirect :: HasCallStack => AFStoreType -> IO ()
-testXFTPAgentSendReceiveRedirect fsType = withXFTPServer fsType $ do
+testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
   --- sender
   filePathIn <- createRandomFile
   let fileSize = mb 17
@@ -223,7 +223,7 @@ testXFTPAgentSendReceiveRedirect fsType = withXFTPServer fsType $ do
       B.readFile out `shouldReturn` inBytes
 
 testXFTPAgentSendReceiveNoRedirect :: HasCallStack => AFStoreType -> IO ()
-testXFTPAgentSendReceiveNoRedirect fsType = withXFTPServer fsType $ do
+testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
   --- sender
   let fileSize = mb 5
   filePathIn <- createRandomFile_ fileSize "testfile"
@@ -508,7 +508,7 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentDelete :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentDelete fsType = withGlobalLogging logCfgNoLogs $
-  withXFTPServer fsType $ do
+  flip withXFTPServer fsType $ do
     filePath <- createRandomFile
 
     -- send file
@@ -578,7 +578,7 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentDeleteOnServer :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentDeleteOnServer fsType = withGlobalLogging logCfgNoLogs $
-  withXFTPServer fsType $ do
+  flip withXFTPServer fsType $ do
     filePath1 <- createRandomFile' "testfile1"
 
     -- send file 1
@@ -655,7 +655,7 @@ testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $
     fastExpiration = ExpirationConfig {ttl = 2, checkInterval = 1}
 
 testXFTPAgentRequestAdditionalRecipientIDs :: HasCallStack => AFStoreType -> IO ()
-testXFTPAgentRequestAdditionalRecipientIDs fsType = withXFTPServer fsType $ do
+testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
   filePath <- createRandomFile
 
   -- send file

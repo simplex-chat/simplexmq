@@ -113,6 +113,22 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
+data XFTPEnv s = XFTPEnv
+  { config :: XFTPServerConfig s,
+    store :: FileStore s,
+    usedStorage :: TVar Int64,
+    storeLog :: Maybe (StoreLog 'WriteMode),
+    random :: TVar ChaChaDRG,
+    serverIdentity :: C.KeyHash,
+    tlsServerCreds :: T.Credential,
+    httpServerCreds :: Maybe T.Credential,
+    serverStats :: FileServerStats
+  }
+
+fileStore :: XFTPEnv s -> s
+fileStore = fromFileStore . store
+{-# INLINE fileStore #-}
+
 data XFTPStoreConfig s where
   XSCMemory :: Maybe FilePath -> XFTPStoreConfig STMFileStore
 #if defined(dbServerPostgres)
@@ -141,22 +157,6 @@ fromFileStore = \case
 #endif
 {-# INLINE fromFileStore #-}
 
-data XFTPEnv s = XFTPEnv
-  { config :: XFTPServerConfig s,
-    fileStore_ :: FileStore s,
-    usedStorage :: TVar Int64,
-    storeLog :: Maybe (StoreLog 'WriteMode),
-    random :: TVar ChaChaDRG,
-    serverIdentity :: C.KeyHash,
-    tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe T.Credential,
-    serverStats :: FileServerStats
-  }
-
-fileStore :: XFTPEnv s -> s
-fileStore = fromFileStore . fileStore_
-{-# INLINE fileStore #-}
-
 defFileExpirationHours :: Int64
 defFileExpirationHours = 48
 
@@ -170,7 +170,7 @@ defaultFileExpiration =
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
 newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
-  (fileStore_, storeLog) <- case serverStoreCfg of
+  (store, storeLog) <- case serverStoreCfg of
     XSCMemory storeLogPath -> do
       st <- newFileStore ()
       sl <- mapM (`readWriteFileStore` st) storeLogPath
@@ -181,7 +181,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCre
       st <- newFileStore dbCfg
       pure (StoreDatabase st, Nothing)
 #endif
-  used <- getUsedStorage (fromFileStore fileStore_)
+  used <- getUsedStorage (fromFileStore store)
   usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
@@ -190,7 +190,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCre
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, fileStore_, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)

@@ -106,26 +106,26 @@ xftpTest4 test = xftpTestN 4 _test
     _test [h1, h2, h3, h4] = test h1 h2 h3 h4
     _test _ = error "expected 4 handles"
 
+withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
+
+withXFTPServerCfgNoALPN :: (HasCallStack, FileStoreClass s) => XFTPServerConfig s -> (HasCallStack => ThreadId -> IO a) -> IO a
+withXFTPServerCfgNoALPN cfg = withXFTPServerCfg cfg {transportConfig = (transportConfig cfg) {serverALPN = Nothing}}
+
 withXFTPServerCfg :: (HasCallStack, FileStoreClass s) => XFTPServerConfig s -> (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerCfg cfg =
   serverBracket
     (\started -> runXFTPServerBlocking started cfg)
     (threadDelay 10000)
 
-withXFTPServerCfgNoALPN :: (HasCallStack, FileStoreClass s) => XFTPServerConfig s -> (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerCfgNoALPN cfg = withXFTPServerCfg cfg {transportConfig = (transportConfig cfg) {serverALPN = Nothing}}
-
-withXFTPServer :: HasCallStack => AFStoreType -> IO a -> IO a
-withXFTPServer fsType = withXFTPServerConfigOn (cfgFS fsType) . const
-
-withXFTPServer2 :: HasCallStack => AFStoreType -> IO a -> IO a
-withXFTPServer2 fsType = withXFTPServerConfigOn (cfgFS2 fsType) . const
-
-withXFTPServerStoreLogOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
-withXFTPServerStoreLogOn = withXFTPServerCfg testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile, serverStatsBackupFile = Just testXFTPStatsBackupFile}
-
 withXFTPServerThreadOn :: HasCallStack => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig
+
+withXFTPServer :: HasCallStack => IO a -> AFStoreType -> IO a
+withXFTPServer test fsType = withXFTPServerConfigOn (cfgFS fsType) $ const test
+
+withXFTPServer2 :: HasCallStack => IO a -> AFStoreType -> IO a
+withXFTPServer2 test fsType = withXFTPServerConfigOn (cfgFS2 fsType) $ const test
 
 -- Constants
 
