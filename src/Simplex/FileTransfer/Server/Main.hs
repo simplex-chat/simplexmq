@@ -212,24 +212,24 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
       printServiceInfo serverVersion srv
       let information = serverPublicInfo ini
       printSourceCode (sourceCode <$> information)
-      let storeType = fromRight "memory" $ T.unpack <$> lookupValue "STORE_LOG" "store_files" ini
-      checkFileStoreMode ini storeType storeLogFilePath
-      case readFileStoreType storeType of
+      case readFileStoreType ini of
         Left err -> error err
-        Right fsType -> runWithStoreConfig fsType ini storeLogFilePath confirmMigrations $ \storeCfg -> do
-          let cfg = serverConfig storeCfg
-          printXFTPConfig cfg
-          case webStaticPath' of
-            Just path -> do
-              let onionHost =
-                    either (const Nothing) (find isOnion) $
-                      strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-                  webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
-              generateSite cfg information onionHost path
-              when (isJust webHttpPort || isJust webHttpsParams') $
-                serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
-            Nothing -> pure ()
-          runXFTPServer cfg
+        Right fsType -> do
+          checkFileStoreMode ini fsType storeLogFilePath
+          runWithStoreConfig fsType ini storeLogFilePath confirmMigrations $ \storeCfg -> do
+            let cfg = serverConfig storeCfg
+            printXFTPConfig cfg
+            case webStaticPath' of
+              Just path -> do
+                let onionHost =
+                      either (const Nothing) (find isOnion) $
+                        strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+                    webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
+                generateSite cfg information onionHost path
+                when (isJust webHttpPort || isJust webHttpsParams') $
+                  serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
+              Nothing -> pure ()
+            runXFTPServer cfg
       where
         isOnion = \case THOnionHost _ -> True; _ -> False
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -431,12 +431,6 @@ cliCommandP cfgPath logPath iniFile =
               <> value MCConsole
           )
       pure StartOptions {confirmMigrations}
-      where
-        parseConfirmMigrations :: ReadM MigrationConfirmation
-        parseConfirmMigrations = eitherReader $ \case
-          "up" -> Right MCYesUp
-          "down" -> Right MCYesUpDown
-          _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
     storeCmdP :: Parser StoreCmd
     storeCmdP =
       hsubparser

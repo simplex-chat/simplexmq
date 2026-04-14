@@ -507,36 +507,37 @@ testXFTPAgentSendCleanup = withGlobalLogging logCfgNoLogs $ do
   doesFileExist encPath `shouldReturn` False
 
 testXFTPAgentDelete :: HasCallStack => AFStoreType -> IO ()
-testXFTPAgentDelete fsType = withGlobalLogging logCfgNoLogs $
-  flip withXFTPServer fsType $ do
-    filePath <- createRandomFile
+testXFTPAgentDelete = withGlobalLogging logCfgNoLogs . withXFTPServer test
+  where
+    test = do
+      filePath <- createRandomFile
 
-    -- send file
-    withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-      (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
+      -- send file
+      withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+        (sfId, sndDescr, rfd1, rfd2) <- runRight $ testSend sndr filePath
 
-      -- receive file
-      withAgent 2 agentCfg initAgentServers testDB2 $ \rcp1 -> do
-        runRight_ . void $ testReceive rcp1 rfd1 filePath
+        -- receive file
+        withAgent 2 agentCfg initAgentServers testDB2 $ \rcp1 -> do
+          runRight_ . void $ testReceive rcp1 rfd1 filePath
 
-        length <$> listDirectory xftpServerFiles `shouldReturn` 6
+          length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
-        -- delete file
-        runRight_ $ xftpStartWorkers sndr (Just senderFiles)
-        xftpDeleteSndFileRemote sndr 1 sfId sndDescr
-        Nothing <- 100000 `timeout` sfGet sndr
-        pure ()
+          -- delete file
+          runRight_ $ xftpStartWorkers sndr (Just senderFiles)
+          xftpDeleteSndFileRemote sndr 1 sfId sndDescr
+          Nothing <- 100000 `timeout` sfGet sndr
+          pure ()
 
-      threadDelay 1000000
-      length <$> listDirectory xftpServerFiles `shouldReturn` 0
+        threadDelay 1000000
+        length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
-      -- receive file - should fail with AUTH error
-      withAgent 3 agentCfg initAgentServers testDB2 $ \rcp2 -> runRight $ do
-        xftpStartWorkers rcp2 (Just recipientFiles)
-        rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
-        ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
-          rfGet rcp2
-        liftIO $ rfId' `shouldBe` rfId
+        -- receive file - should fail with AUTH error
+        withAgent 3 agentCfg initAgentServers testDB2 $ \rcp2 -> runRight $ do
+          xftpStartWorkers rcp2 (Just recipientFiles)
+          rfId <- xftpReceiveFile rcp2 1 rfd2 Nothing True
+          ("", rfId', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
+            rfGet rcp2
+          liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteRestore :: HasCallStack => IO ()
 testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
@@ -577,42 +578,43 @@ testXFTPAgentDeleteRestore = withGlobalLogging logCfgNoLogs $ do
         liftIO $ rfId' `shouldBe` rfId
 
 testXFTPAgentDeleteOnServer :: HasCallStack => AFStoreType -> IO ()
-testXFTPAgentDeleteOnServer fsType = withGlobalLogging logCfgNoLogs $
-  flip withXFTPServer fsType $ do
-    filePath1 <- createRandomFile' "testfile1"
+testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs . withXFTPServer test
+  where
+    test = do
+      filePath1 <- createRandomFile' "testfile1"
 
-    -- send file 1
-    withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-      (_, _, rfd1_1, rfd1_2) <- runRight $ testSend sndr filePath1
+      -- send file 1
+      withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+        (_, _, rfd1_1, rfd1_2) <- runRight $ testSend sndr filePath1
 
-      -- receive file 1 successfully
-      withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> do
-        runRight_ . void $ testReceive rcp rfd1_1 filePath1
+        -- receive file 1 successfully
+        withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> do
+          runRight_ . void $ testReceive rcp rfd1_1 filePath1
 
-        serverFiles <- listDirectory xftpServerFiles
-        length serverFiles `shouldBe` 6
+          serverFiles <- listDirectory xftpServerFiles
+          length serverFiles `shouldBe` 6
 
-        -- delete file 1 on server from file system
-        forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
+          -- delete file 1 on server from file system
+          forM_ serverFiles (\file -> removeFile (xftpServerFiles </> file))
 
-        threadDelay 1000000
-        length <$> listDirectory xftpServerFiles `shouldReturn` 0
+          threadDelay 1000000
+          length <$> listDirectory xftpServerFiles `shouldReturn` 0
 
-        -- create and send file 2
-        filePath2 <- createRandomFile' "testfile2"
-        (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
+          -- create and send file 2
+          filePath2 <- createRandomFile' "testfile2"
+          (_, _, rfd2, _) <- runRight $ testSend sndr filePath2
 
-        length <$> listDirectory xftpServerFiles `shouldReturn` 6
+          length <$> listDirectory xftpServerFiles `shouldReturn` 6
 
-        runRight_ . void $ do
-          -- receive file 1 again
-          rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
-          ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
-            rfGet rcp
-          liftIO $ rfId1 `shouldBe` rfId1'
+          runRight_ . void $ do
+            -- receive file 1 again
+            rfId1 <- xftpReceiveFile rcp 1 rfd1_2 Nothing True
+            ("", rfId1', RFERR (XFTP "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:8000" AUTH)) <-
+              rfGet rcp
+            liftIO $ rfId1 `shouldBe` rfId1'
 
-          -- receive file 2
-          testReceive' rcp rfd2 filePath2
+            -- receive file 2
+            testReceive' rcp rfd2 filePath2
 
 testXFTPAgentExpiredOnServer :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $

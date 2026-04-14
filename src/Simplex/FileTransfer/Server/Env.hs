@@ -44,7 +44,9 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
-import Data.Ini (Ini)
+import Data.Either (fromRight)
+import Data.Ini (Ini, lookupValue)
+import qualified Data.Text as T
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
 #if defined(dbServerPostgres)
@@ -197,13 +199,11 @@ data XFTPRequest
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
 
-readFileStoreType :: String -> Either String AFStoreType
-readFileStoreType = \case
+readFileStoreType :: Ini -> Either String AFStoreType
+readFileStoreType ini = case fromRight "memory" $ T.unpack <$> lookupValue "STORE_LOG" "store_files" ini of
   "memory" -> Right $ AFSType SFSMemory
 #if defined(dbServerPostgres)
   "database" -> Right $ AFSType SFSPostgres
-#else
-  "database" -> Left "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
 #endif
   other -> Left $ "Invalid store_files value: " <> other
 
@@ -231,20 +231,17 @@ runWithStoreConfig (AFSType fs) ini storeLogFilePath confirmMigrations run =
 #endif
 
 -- | Validate startup config when store_files=database.
-checkFileStoreMode :: Ini -> String -> FilePath -> IO ()
+checkFileStoreMode :: Ini -> AFStoreType -> FilePath -> IO ()
 #if defined(dbServerPostgres)
-checkFileStoreMode ini storeType storeLogFilePath = case storeType of
-  "database" -> do
-    storeLogExists <- doesFileExist storeLogFilePath
-    let dbStoreLogOn = settingIsOn "STORE_LOG" "db_store_log" ini
-    when (storeLogExists && isNothing dbStoreLogOn) $ do
-      putStrLn $ "Error: store log file " <> storeLogFilePath <> " exists but store_files is `database`."
-      putStrLn "Use `file-server database import` to migrate, or set `db_store_log: on`."
-      exitFailure
-  _ -> pure ()
-#else
-checkFileStoreMode _ _ _ = pure ()
+checkFileStoreMode ini (AFSType SFSPostgres) storeLogFilePath = do
+  storeLogExists <- doesFileExist storeLogFilePath
+  let dbStoreLogOn = settingIsOn "STORE_LOG" "db_store_log" ini
+  when (storeLogExists && isNothing dbStoreLogOn) $ do
+    putStrLn $ "Error: store log file " <> storeLogFilePath <> " exists but store_files is `database`."
+    putStrLn "Use `file-server database import` to migrate, or set `db_store_log: on`."
+    exitFailure
 #endif
+checkFileStoreMode _ _ _ = pure ()
 
 -- | Import StoreLog to PostgreSQL database.
 importToDatabase :: FilePath -> Ini -> MigrationConfirmation -> IO ()
