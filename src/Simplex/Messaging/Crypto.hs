@@ -816,6 +816,13 @@ instance CryptoSignature (Signature s) => StrEncoding (Signature s) where
   strDecode = decodeSignature
   {-# INLINE strDecode #-}
 
+instance CryptoSignature (Signature s) => ToJSON (Signature s) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance CryptoSignature (Signature s) => FromJSON (Signature s) where
+  parseJSON = strParseJSON "Signature"
+
 instance CryptoSignature (Signature s) => Encoding (Signature s) where
   smpEncode = smpEncode . signatureBytes
   {-# INLINE smpEncode #-}
