@@ -108,9 +108,9 @@ instance StrEncoding RCSignedInvitation where
     mconcat
       [ strEncode invitation,
         "&ssig=",
-        strEncode $ C.signatureBytes ssig,
+        strEncode ssig,
         "&idsig=",
-        strEncode $ C.signatureBytes idsig
+        strEncode idsig
       ]
 
   strP = do
