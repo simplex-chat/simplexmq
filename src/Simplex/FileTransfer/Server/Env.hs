@@ -219,13 +219,15 @@ runWithStoreConfig (AFSType SFSMemory) ini storeLogFilePath _confirmMigrations r
   run $ XSCMemory (enableStoreLog' $> storeLogFilePath)
   where
     enableStoreLog' = settingIsOn "STORE_LOG" "enable" ini
-#if defined(dbServerPostgres)
 runWithStoreConfig (AFSType SFSPostgres) ini storeLogFilePath confirmMigrations run =
+#if defined(dbServerPostgres)
   run $ XSCDatabase dbCfg
   where
     enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" ini
     dbStoreLogPath = enableDbStoreLog' $> storeLogFilePath
     dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
+#else
+  error "server binary is compiled without support for PostgreSQL database"
 #endif
 
 -- | Validate startup config when store_files=database.
