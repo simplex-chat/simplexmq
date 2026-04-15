@@ -49,6 +49,7 @@ import Data.Ini (Ini, lookupValue)
 import qualified Data.Text as T
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
+import System.Exit (exitFailure)
 #if defined(dbServerPostgres)
 import Data.Functor (($>))
 import Data.Maybe (isNothing)
@@ -56,7 +57,6 @@ import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFile
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
 import Simplex.Messaging.Server.CLI (iniDBOptions, settingIsOn)
 import System.Directory (doesFileExist)
-import System.Exit (exitFailure)
 #endif
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
@@ -149,7 +149,7 @@ data FileStore s where
   StoreDatabase :: PostgresFileStore -> FileStore PostgresFileStore
 #endif
 
-data AFStoreType = forall fs. FileStoreClass (XFTPStoreType fs) => AFSType (SFSType fs)
+data AFStoreType = forall fs. AFSType (SFSType fs)
 
 fromFileStore :: FileStore s -> s
 fromFileStore = \case
@@ -202,9 +202,7 @@ data XFTPRequest
 readFileStoreType :: Ini -> Either String AFStoreType
 readFileStoreType ini = case fromRight "memory" $ T.unpack <$> lookupValue "STORE_LOG" "store_files" ini of
   "memory" -> Right $ AFSType SFSMemory
-#if defined(dbServerPostgres)
   "database" -> Right $ AFSType SFSPostgres
-#endif
   other -> Left $ "Invalid store_files value: " <> other
 
 -- | Dispatch store config from AFStoreType singleton and run the callback.
@@ -216,32 +214,35 @@ runWithStoreConfig ::
   MigrationConfirmation ->
   (forall s. FileStoreClass s => XFTPStoreConfig s -> IO ()) ->
   IO ()
-runWithStoreConfig (AFSType fs) ini storeLogFilePath confirmMigrations run =
-  run $ iniStoreCfg fs
+runWithStoreConfig (AFSType SFSMemory) ini storeLogFilePath _confirmMigrations run =
+  run $ XSCMemory (enableStoreLog' $> storeLogFilePath)
   where
     enableStoreLog' = settingIsOn "STORE_LOG" "enable" ini
-    iniStoreCfg :: SFSType fs -> XFTPStoreConfig (XFTPStoreType fs)
-    iniStoreCfg SFSMemory = XSCMemory (enableStoreLog' $> storeLogFilePath)
 #if defined(dbServerPostgres)
-    iniStoreCfg SFSPostgres = XSCDatabase dbCfg
-      where
-        enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" ini
-        dbStoreLogPath = enableDbStoreLog' $> storeLogFilePath
-        dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
+runWithStoreConfig (AFSType SFSPostgres) ini storeLogFilePath confirmMigrations run =
+  run $ XSCDatabase dbCfg
+  where
+    enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" ini
+    dbStoreLogPath = enableDbStoreLog' $> storeLogFilePath
+    dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
 #endif
 
 -- | Validate startup config when store_files=database.
 checkFileStoreMode :: Ini -> AFStoreType -> FilePath -> IO ()
-#if defined(dbServerPostgres)
 checkFileStoreMode ini (AFSType SFSPostgres) storeLogFilePath = do
+#if defined(dbServerPostgres)
   storeLogExists <- doesFileExist storeLogFilePath
   let dbStoreLogOn = settingIsOn "STORE_LOG" "db_store_log" ini
   when (storeLogExists && isNothing dbStoreLogOn) $ do
     putStrLn $ "Error: store log file " <> storeLogFilePath <> " exists but store_files is `database`."
     putStrLn "Use `file-server database import` to migrate, or set `db_store_log: on`."
     exitFailure
+#else
+  putStrLn "Error: server binary is compiled without support for PostgreSQL database."
+  putStrLn "Please re-compile with `cabal build -fserver_postgres`."
+  exitFailure
 #endif
-checkFileStoreMode _ _ _ = pure ()
+checkFileStoreMode _ (AFSType SFSMemory) _ = pure ()
 
 -- | Import StoreLog to PostgreSQL database.
 importToDatabase :: FilePath -> Ini -> MigrationConfirmation -> IO ()
