@@ -18,6 +18,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as LB
+import Data.ByteString.Base64 as B64
 import Data.Time.Clock.System (SystemTime)
 import Data.Word (Word16)
 import Network.HTTP.Types (parseSimpleQuery)
@@ -108,9 +109,9 @@ instance StrEncoding RCSignedInvitation where
     mconcat
       [ strEncode invitation,
         "&ssig=",
-        strEncode $ C.signatureBytes ssig,
+        strEncode ssig,
         "&idsig=",
-        strEncode $ C.signatureBytes idsig
+        strEncode idsig
       ]
 
   strP = do
@@ -131,7 +132,7 @@ signInvitation sKey idKey invitation = RCSignedInvitation {invitation, ssig, ids
       case C.sign (C.APrivateSignKey C.SEd25519 sKey) uri of
         C.ASignature C.SEd25519 s -> s
         _ -> error "signing with ed25519"
-    inviteUrlSigned = mconcat [uri, "&ssig=", strEncode ssig]
+    inviteUrlSigned = mconcat [uri, "&ssig=", B64.encode (C.signatureBytes ssig)] -- cannot use strEncode, as it would break backward compatibility
     idsig =
       case C.sign (C.APrivateSignKey C.SEd25519 idKey) inviteUrlSigned of
         C.ASignature C.SEd25519 s -> s
@@ -148,7 +149,7 @@ verifySignedInvitation RCSignedInvitation {invitation, ssig, idsig} =
   where
     RCInvitation {skey, idkey} = invitation
     inviteURL = strEncode invitation
-    inviteURLS = mconcat [inviteURL, "&ssig=", strEncode ssig]
+    inviteURLS = mconcat [inviteURL, "&ssig=", B64.encode (C.signatureBytes ssig)] -- cannot use strEncode, as it would break backward compatibility
 
 data RCEncInvitation = RCEncInvitation
   { dhPubKey :: C.PublicKeyX25519,
