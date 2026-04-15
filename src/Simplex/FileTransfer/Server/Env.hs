@@ -49,13 +49,14 @@ import Data.Ini (Ini, lookupValue)
 import qualified Data.Text as T
 import Simplex.FileTransfer.Server.Store
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
+import Data.Functor (($>))
+import Simplex.Messaging.Server.CLI (settingIsOn)
 import System.Exit (exitFailure)
 #if defined(dbServerPostgres)
-import Data.Functor (($>))
 import Data.Maybe (isNothing)
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
-import Simplex.Messaging.Server.CLI (iniDBOptions, settingIsOn)
+import Simplex.Messaging.Server.CLI (iniDBOptions)
 import System.Directory (doesFileExist)
 #endif
 import Simplex.FileTransfer.Server.StoreLog
