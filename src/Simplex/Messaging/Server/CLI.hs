@@ -27,6 +27,7 @@ module Simplex.Messaging.Server.CLI
     certOptionsP,
     dbOptsP,
     startOptionsP,
+    parseConfirmMigrations,
     parseLogLevel,
     genOnline,
     warnCAPrivateKeyFile,
@@ -288,12 +289,12 @@ startOptionsP = do
           <> value MCConsole
       )
   pure StartOptions {maintenance, compactLog, logLevel, skipWarnings, confirmMigrations}
-    where
-      parseConfirmMigrations :: ReadM MigrationConfirmation
-      parseConfirmMigrations = eitherReader $ \case
-        "up" -> Right MCYesUp
-        "down" -> Right MCYesUpDown
-        _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
+
+parseConfirmMigrations :: ReadM MigrationConfirmation
+parseConfirmMigrations = eitherReader $ \case
+  "up" -> Right MCYesUp
+  "down" -> Right MCYesUpDown
+  _ -> Left "invalid migration confirmation, pass 'up' or 'down'"
 
 parseLogLevel :: ReadM LogLevel
 parseLogLevel = eitherReader $ \case

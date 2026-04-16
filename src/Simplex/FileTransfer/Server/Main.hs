@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Server.Main
@@ -12,7 +13,7 @@ module Simplex.FileTransfer.Server.Main
     xftpServerCLI_,
   ) where
 
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (lookupValue, readIniFile)
@@ -28,11 +29,12 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, readFileStoreType, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
@@ -51,7 +53,7 @@ xftpServerCLI :: FilePath -> FilePath -> IO ()
 xftpServerCLI = xftpServerCLI_ (\_ _ _ _ -> pure ()) (\_ -> pure ())
 
 xftpServerCLI_ ::
-  (XFTPServerConfig -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()) ->
+  (forall s. XFTPServerConfig s -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()) ->
   (EmbeddedWebParams -> IO ()) ->
   FilePath ->
   FilePath ->
@@ -66,9 +68,13 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
       doesFileExist iniFile >>= \case
         True -> genOnline cfgPath certOpts
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
-    Start ->
+    Start opts ->
       doesFileExist iniFile >>= \case
-        True -> readIniFile iniFile >>= either exitError runServer
+        True -> readIniFile iniFile >>= either exitError (runServer opts)
+        _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
+    Database cmd ->
+      doesFileExist iniFile >>= \case
+        True -> readIniFile iniFile >>= either exitError (runDatabaseCmd cmd)
         _ -> exitError $ "Error: server is not initialized (" <> iniFile <> " does not exist).\nRun `" <> executableName <> " init`."
     Delete -> do
       confirmOrExit
@@ -84,6 +90,21 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
     executableName = "file-server"
     storeLogFilePath = combine logPath "file-server-store.log"
     defaultStaticPath = combine logPath "www"
+    runDatabaseCmd cmd ini = case cmd of
+      SCImport -> do
+        storeLogExists <- doesFileExist storeLogFilePath
+        unless storeLogExists $ exitError $ "Error: store log file " <> storeLogFilePath <> " does not exist."
+        confirmOrExit
+          ("Import store log " <> storeLogFilePath <> " to PostgreSQL database?")
+          "Import cancelled."
+        importToDatabase storeLogFilePath ini MCYesUp
+      SCExport -> do
+        storeLogExists <- doesFileExist storeLogFilePath
+        when storeLogExists $ exitError $ "Error: store log file " <> storeLogFilePath <> " already exists."
+        confirmOrExit
+          ("Export PostgreSQL database to store log " <> storeLogFilePath <> "?")
+          "Export cancelled."
+        exportFromDatabase storeLogFilePath ini MCConsole
     initializeServer InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota, webStaticPath = webStaticPath_} = do
       clearDirIfExists cfgPath
       clearDirIfExists logPath
@@ -126,6 +147,14 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
             <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> "# File storage mode: `memory` or `database` (PostgreSQL).\n\
+               \store_files: memory\n\n\
+               \# Database connection settings for PostgreSQL database (`store_files: database`).\n\
+               \# db_connection: postgresql://xftp@/xftp_server_store\n\
+               \# db_schema: xftp_server\n\
+               \# db_pool_size: 10\n\n\
+               \# Write database changes to store log file\n\
+               \# db_store_log: off\n\n"
             <> "# Expire files after the specified number of hours.\n"
             <> ("expire_files_hours: " <> tshow defFileExpirationHours <> "\n\n")
             <> "log_stats: off\n\
@@ -173,7 +202,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                \# TLS credentials for HTTPS web server on the same port as XFTP.\n\
                \# cert: " <> T.pack (cfgPath `combine` "web.crt") <> "\n\
                \# key: " <> T.pack (cfgPath `combine` "web.key") <> "\n"
-    runServer ini = do
+    runServer StartOptions {confirmMigrations} ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
@@ -183,18 +212,24 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
       printServiceInfo serverVersion srv
       let information = serverPublicInfo ini
       printSourceCode (sourceCode <$> information)
-      printXFTPConfig serverConfig
-      case webStaticPath' of
-        Just path -> do
-          let onionHost =
-                either (const Nothing) (find isOnion) $
-                  strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
-              webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
-          generateSite serverConfig information onionHost path
-          when (isJust webHttpPort || isJust webHttpsParams') $
-            serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
-        Nothing -> pure ()
-      runXFTPServer serverConfig
+      case readFileStoreType ini of
+        Left err -> error err
+        Right fsType -> do
+          checkFileStoreMode ini fsType storeLogFilePath
+          runWithStoreConfig fsType ini storeLogFilePath confirmMigrations $ \storeCfg -> do
+            let cfg = serverConfig storeCfg
+            printXFTPConfig cfg
+            case webStaticPath' of
+              Just path -> do
+                let onionHost =
+                      either (const Nothing) (find isOnion) $
+                        strDecode @(L.NonEmpty TransportHost) . encodeUtf8 =<< lookupValue "TRANSPORT" "host" ini
+                    webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
+                generateSite cfg information onionHost path
+                when (isJust webHttpPort || isJust webHttpsParams') $
+                  serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
+              Nothing -> pure ()
+            runXFTPServer cfg
       where
         isOnion = \case THOnionHost _ -> True; _ -> False
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
@@ -236,11 +271,13 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
 
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
-        serverConfig =
+        serverConfig :: XFTPStoreConfig s -> XFTPServerConfig s
+        serverConfig serverStoreCfg =
           XFTPServerConfig
             { xftpPort = T.unpack $ strictIni "TRANSPORT" "port" ini,
               controlPort = either (const Nothing) (Just . T.unpack) $ lookupValue "TRANSPORT" "control_port" ini,
               fileIdSize = 16,
+              serverStoreCfg,
               storeLogFile = enableStoreLog $> storeLogFilePath,
               filesPath = T.unpack $ strictIni "FILES" "path" ini,
               fileSizeQuota = either error unFileSize <$> strDecodeIni "FILES" "storage_quota" ini,
@@ -289,8 +326,15 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
 data CliCommand
   = Init InitOptions
   | OnlineCert CertOptions
-  | Start
+  | Start StartOptions
+  | Database StoreCmd
   | Delete
+
+data StoreCmd = SCImport | SCExport
+
+newtype StartOptions = StartOptions
+  { confirmMigrations :: MigrationConfirmation
+  }
 
 data InitOptions = InitOptions
   { enableStoreLog :: Bool,
@@ -308,7 +352,8 @@ cliCommandP cfgPath logPath iniFile =
   hsubparser
     ( command "init" (info (Init <$> initP) (progDesc $ "Initialize server - creates " <> cfgPath <> " and " <> logPath <> " directories and configuration files"))
         <> command "cert" (info (OnlineCert <$> certOptionsP) (progDesc $ "Generate new online TLS server credentials (configuration: " <> iniFile <> ")"))
-        <> command "start" (info (pure Start) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "start" (info (Start <$> startOptsP) (progDesc $ "Start server (configuration: " <> iniFile <> ")"))
+        <> command "database" (info (Database <$> storeCmdP) (progDesc "Import/export file store to/from PostgreSQL database"))
         <> command "delete" (info (pure Delete) (progDesc "Delete configuration and log files"))
     )
   where
@@ -375,3 +420,20 @@ cliCommandP cfgPath logPath iniFile =
               <> metavar "PATH"
           )
       pure InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota, webStaticPath}
+    startOptsP :: Parser StartOptions
+    startOptsP = do
+      confirmMigrations <-
+        option
+          parseConfirmMigrations
+          ( long "confirm-migrations"
+              <> metavar "CONFIRM_MIGRATIONS"
+              <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
+              <> value MCConsole
+          )
+      pure StartOptions {confirmMigrations}
+    storeCmdP :: Parser StoreCmd
+    storeCmdP =
+      hsubparser
+        ( command "import" (info (pure SCImport) (progDesc "Import store log file into PostgreSQL database"))
+            <> command "export" (info (pure SCExport) (progDesc "Export PostgreSQL database to store log file"))
+        )
