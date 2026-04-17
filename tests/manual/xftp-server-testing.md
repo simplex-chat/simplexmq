@@ -25,12 +25,12 @@ Helper functions for editing the INI config:
 
 ```bash
 ini_set() { sed -i "s|^${1}:.*|${1}: ${2}|" $XFTP_SERVER_CFG_PATH/file-server.ini; }
-ini_uncomment() { sed -i "s|^# ${1}:|${1}:|" $XFTP_SERVER_CFG_PATH/file-server.ini; }
-ini_comment() { sed -i "s|^${1}:|# ${1}:|" $XFTP_SERVER_CFG_PATH/file-server.ini; }
+ini_uncomment() { sed -i "s|^# ${1} =|${1} =|" $XFTP_SERVER_CFG_PATH/file-server.ini; }
+ini_comment() { sed -i "s|^${1} =|# ${1} =|" $XFTP_SERVER_CFG_PATH/file-server.ini; }
 
 enable_control_port() {
-  sed -i 's/^# control_port: 5226/control_port: 15230/' $XFTP_SERVER_CFG_PATH/file-server.ini
-  sed -i 's/^# control_port_admin_password:.*/control_port_admin_password: testadmin/' $XFTP_SERVER_CFG_PATH/file-server.ini
+  sed -i 's/^# control_port = 5226/control_port = 15230/' $XFTP_SERVER_CFG_PATH/file-server.ini
+  sed -i 's/^# control_port_admin_password =.*/control_port_admin_password = testadmin/' $XFTP_SERVER_CFG_PATH/file-server.ini
 }
 
 # Extract recipient IDs from a file description (chunk format: "- N:rcvId:privKey:digest")
