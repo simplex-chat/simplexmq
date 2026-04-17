@@ -434,6 +434,36 @@ executable smp-server
     , text
   default-language: Haskell2010
 
+executable smp-server-bench
+  if flag(client_library)
+      buildable: False
+  if flag(server_postgres)
+    cpp-options: -DdbServerPostgres
+  main-is: Main.hs
+  other-modules:
+      ClientSim
+      Report
+  hs-source-dirs:
+      bench
+  default-extensions:
+      StrictData
+  ghc-options: -O2 -threaded -rtsopts
+  build-depends:
+      base
+    , async
+    , bytestring
+    , containers
+    , crypton
+    , mtl
+    , network
+    , simple-logger
+    , simplexmq
+    , stm
+    , text
+    , time
+    , unliftio
+  default-language: Haskell2010
+
 executable xftp
   if flag(client_library)
       buildable: False
