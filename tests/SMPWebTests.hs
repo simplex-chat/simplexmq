@@ -33,7 +33,7 @@ import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (.
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
-import Simplex.Messaging.Transport (TLS)
+import Simplex.Messaging.Transport (TLS, smpBlockSize)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import SMPClient (cfgWebOn, testKeyHash, testPort, withSmpServerConfig)
@@ -73,6 +73,9 @@ impAgentProto = impEnc <> impAgentProto_
 
 impCryptoShortLink :: String
 impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf, decryptLinkData } from './dist/crypto/shortLink.js';"
+
+impCrypto :: String
+impCrypto = "import { sbcInit, sbcHkdf, sbEncryptBlock, sbDecryptBlock } from './dist/crypto.js';"
 
 -- Init sodium from xftp-web's copy (same instance secretbox.ts uses)
 impSodium :: String
@@ -234,6 +237,49 @@ smpWebTests_ = do
               <> jsOut ("new Uint8Array([...r.fixedData, 0, ...r.userData])")
             tsResult `shouldBe` (fixedPlain <> B.singleton 0 <> userPlain)
 
+  describe "crypto/blockEncryption" $ do
+    describe "sbcInit + sbcHkdf" $ do
+      it "TypeScript produces same sbKey/nonce via sbcInit+sbcHkdf as Haskell" $ do
+        let sessId = B.pack [1..32]
+            secret = B.pack [50..81]
+            (sndCk, _rcvCk) = C.sbcInit sessId secret
+            ((C.SbKey sbKey, C.CbNonce nonce), _nextCk) = C.sbcHkdf sndCk
+        -- TypeScript does sbcInit then sbcHkdf on sndKey, should produce same sbKey/nonce
+        tsResult <- callNode $ impSodium <> impCrypto
+          <> "const ck = sbcInit(" <> jsUint8 sessId <> "," <> jsUint8 secret <> ");"
+          <> "const r = sbcHkdf(ck.sndKey);"
+          <> jsOut ("new Uint8Array([...r.keyNonce.sbKey, ...r.keyNonce.nonce])")
+        tsResult `shouldBe` (sbKey <> nonce)
+
+    describe "block encrypt/decrypt" $ do
+      it "Haskell encrypts, TypeScript decrypts" $ do
+        let sessId = B.pack [1..32]
+            secret = B.pack [1..32]
+            (sndCk, _) = C.sbcInit sessId secret
+            msg = "hello encrypted block"
+            ((sk, nonce), _nextCk) = C.sbcHkdf sndCk
+        case C.sbEncrypt sk nonce msg (smpBlockSize - 16) of
+          Left e -> expectationFailure $ "encrypt failed: " <> show e
+          Right ct -> do
+            tsResult <- callNode $ impSodium <> impCrypto
+              <> "const ck = sbcInit(" <> jsUint8 sessId <> "," <> jsUint8 secret <> ");"
+              <> "const r = sbDecryptBlock(ck.sndKey," <> jsUint8 ct <> ");"
+              <> jsOut ("r.decrypted")
+            tsResult `shouldBe` msg
+
+      it "TypeScript encrypts, Haskell decrypts" $ do
+        let sessId = B.pack [10..41]
+            secret = B.pack [10..41]
+            (sndCk, _) = C.sbcInit sessId secret
+            msg = "hello from typescript"
+        tsResult <- callNode $ impSodium <> impCrypto
+          <> "const ck = sbcInit(" <> jsUint8 sessId <> "," <> jsUint8 secret <> ");"
+          <> jsOut ("sbEncryptBlock(ck.sndKey, new TextEncoder().encode('hello from typescript'), " <> show (smpBlockSize - 16) <> ").encrypted")
+        let ((sk, nonce), _nextCk) = C.sbcHkdf sndCk
+        case C.sbDecrypt sk nonce tsResult of
+          Left e -> expectationFailure $ "decrypt failed: " <> show e
+          Right plain -> plain `shouldBe` msg
+
   describe "agent/protocol" $ do
     describe "ProtocolServer binary" $ do
       it "decodes Haskell-encoded server" $ do
@@ -341,19 +387,20 @@ smpWebTests_ = do
         tsResult `shouldBe` B.pack ([1, 1, 1, 2] ++ [200..231])
 
     describe "WebSocket handshake" $ do
-      it "TypeScript connects, verifies server identity, and completes SMP handshake" $ do
+      it "TypeScript connects with block encryption, verifies identity, sends encrypted PING" $ do
         let msType = ASType SQSMemory SMSJournal
         attachStaticAndWS "tests/fixtures" $ \attachHTTP ->
           withSmpServerConfig (cfgWebOn msType testPort) (Just attachHTTP) $ \_ -> do
             let C.KeyHash kh = testKeyHash
             tsResult <- callNode $ impSodium <> impWS <> impProto
+              <> "import { sendEncryptedBlock, receiveEncryptedBlock } from './dist/transport/websockets.js';"
               <> "try {"
               <> "const conn = await connectSMP('wss://localhost:" <> testPort <> "', " <> jsUint8 kh <> ", {rejectUnauthorized: false, ALPNProtocols: ['http/1.1']});"
-              <> "const ping = encodeTransmission(new Uint8Array([0x31]), new Uint8Array(0), new Uint8Array([0x50,0x49,0x4E,0x47]));"
-              <> "sendBlock(conn.ws, blockPad(encodeBatch(ping), 16384));"
-              <> "const {decodeLarge} = await import('@simplex-chat/xftp-web/dist/protocol/encoding.js');"
-              <> "const resp = await receiveBlock(conn.ws);"
-              <> "const d = new Decoder(blockUnpad(resp));"
+              <> "if (!conn.sndKey || !conn.rcvKey) throw new Error('no block encryption keys');"
+              <> "const ping = encodeBatch(encodeTransmission(new Uint8Array([0x31]), new Uint8Array(0), new Uint8Array([0x50,0x49,0x4E,0x47])));"
+              <> "sendEncryptedBlock(conn, ping);"
+              <> "const resp = await receiveEncryptedBlock(conn);"
+              <> "const d = new Decoder(resp);"
               <> "d.anyByte();"  -- batch count
               <> "const inner = decodeLarge(d);"
               <> "const t = decodeTransmission(new Decoder(inner));"
@@ -376,25 +423,26 @@ smpWebTests_ = do
               runRight $ A.createConnection a NRMInteractive 1 True True AP.SCMContact (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
             let linkUri = strEncode shortLink
             tsResult <- callNode $ impSodium <> impWS <> impAgentProto <> impProto_ <> impCryptoShortLink
+              <> "import { sendEncryptedBlock, receiveEncryptedBlock } from './dist/transport/websockets.js';"
               <> "try {"
               -- 1. Parse short link URI
               <> "const link = connShortLinkStrP(" <> jsStr linkUri <> ");"
               -- 2. Derive keys
               <> "const {linkId, sbKey} = contactShortLinkKdf(link.linkKey);"
-              -- 3. Connect via WSS
+              -- 3. Connect via WSS (with block encryption)
               <> "const conn = await connectSMP('wss://localhost:" <> testPort <> "', " <> jsUint8 (C.unKeyHash testKeyHash) <> ", {rejectUnauthorized: false, ALPNProtocols: ['http/1.1']});"
-              -- 4. Send LGET
-              <> "const lget = encodeTransmission(new Uint8Array([0x31]), linkId, encodeLGET());"
-              <> "sendBlock(conn.ws, blockPad(encodeBatch(lget), 16384));"
-              -- 5. Receive LNK response
-              <> "const resp = await receiveBlock(conn.ws);"
-              <> "const rd = new Decoder(blockUnpad(resp));"
+              -- 4. Send LGET (encrypted)
+              <> "const lget = encodeBatch(encodeTransmission(new Uint8Array([0x31]), linkId, encodeLGET()));"
+              <> "sendEncryptedBlock(conn, lget);"
+              -- 5. Receive LNK response (encrypted)
+              <> "const resp = await receiveEncryptedBlock(conn);"
+              <> "const rd = new Decoder(resp);"
               <> "rd.anyByte();"  -- batch count
               <> "const inner = decodeLarge(rd);"
               <> "const t = decodeTransmission(new Decoder(inner));"
               <> "const r = decodeResponse(new Decoder(t.command));"
               <> "if (r.type !== 'LNK') throw new Error('expected LNK, got ' + r.type);"
-              -- 6. Decrypt
+              -- 6. Decrypt link data
               <> "const dec = decryptLinkData(sbKey, r.response.encFixedData, r.response.encUserData);"
               -- 7. Parse ConnLinkData to get UserLinkData
               <> "const cld = decodeConnLinkData(new Decoder(dec.userData));"
