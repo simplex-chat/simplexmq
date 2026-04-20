@@ -1,21 +1,35 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Simplex.FileTransfer.Server.Env
   ( XFTPServerConfig (..),
+    XFTPStoreConfig (..),
     XFTPEnv (..),
     XFTPRequest (..),
+    XFTPStoreType,
+    FileStore (..),
+    AFStoreType (..),
+    fileStore,
+    fromFileStore,
     defaultInactiveClientExpiration,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
-    countUsedStorage,
+    readFileStoreType,
+    runWithStoreConfig,
+    checkFileStoreMode,
+    importToDatabase,
+    exportFromDatabase,
   ) where
 
 import Control.Logger.Simple
@@ -23,7 +37,6 @@ import Control.Monad
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
@@ -31,7 +44,21 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
+import Data.Either (fromRight)
+import Data.Ini (Ini, lookupValue)
+import qualified Data.Text as T
 import Simplex.FileTransfer.Server.Store
+import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation)
+import Data.Functor (($>))
+import Simplex.Messaging.Server.CLI (settingIsOn)
+import System.Exit (exitFailure)
+#if defined(dbServerPostgres)
+import Data.Maybe (isNothing)
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
+import Simplex.Messaging.Server.CLI (iniDBOptions)
+import System.Directory (doesFileExist)
+#endif
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
@@ -42,10 +69,11 @@ import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
 
-data XFTPServerConfig = XFTPServerConfig
+data XFTPServerConfig s = XFTPServerConfig
   { xftpPort :: ServiceName,
     controlPort :: Maybe ServiceName,
     fileIdSize :: Int,
+    serverStoreCfg :: XFTPStoreConfig s,
     storeLogFile :: Maybe FilePath,
     filesPath :: FilePath,
     -- | server storage quota
@@ -88,9 +116,10 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
-data XFTPEnv = XFTPEnv
-  { config :: XFTPServerConfig,
-    store :: FileStore,
+data XFTPEnv s = XFTPEnv
+  { config :: XFTPServerConfig s,
+    store :: FileStore s,
+    usedStorage :: TVar Int64,
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
@@ -98,6 +127,38 @@ data XFTPEnv = XFTPEnv
     httpServerCreds :: Maybe T.Credential,
     serverStats :: FileServerStats
   }
+
+fileStore :: XFTPEnv s -> s
+fileStore = fromFileStore . store
+{-# INLINE fileStore #-}
+
+data XFTPStoreConfig s where
+  XSCMemory :: Maybe FilePath -> XFTPStoreConfig STMFileStore
+#if defined(dbServerPostgres)
+  XSCDatabase :: PostgresFileStoreCfg -> XFTPStoreConfig PostgresFileStore
+#endif
+
+type family XFTPStoreType (fs :: FSType) where
+  XFTPStoreType 'FSMemory = STMFileStore
+#if defined(dbServerPostgres)
+  XFTPStoreType 'FSPostgres = PostgresFileStore
+#endif
+
+data FileStore s where
+  StoreMemory :: STMFileStore -> FileStore STMFileStore
+#if defined(dbServerPostgres)
+  StoreDatabase :: PostgresFileStore -> FileStore PostgresFileStore
+#endif
+
+data AFStoreType = forall fs. AFSType (SFSType fs)
+
+fromFileStore :: FileStore s -> s
+fromFileStore = \case
+  StoreMemory s -> s
+#if defined(dbServerPostgres)
+  StoreDatabase s -> s
+#endif
+{-# INLINE fromFileStore #-}
 
 defFileExpirationHours :: Int64
 defFileExpirationHours = 48
@@ -109,13 +170,22 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
-newXFTPServerEnv :: XFTPServerConfig -> IO XFTPEnv
-newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCredentials, httpCredentials} = do
+newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
+newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCredentials, httpCredentials} = do
   random <- C.newRandom
-  store <- newFileStore
-  storeLog <- mapM (`readWriteFileStore` store) storeLogFile
-  used <- countUsedStorage <$> readTVarIO (files store)
-  atomically $ writeTVar (usedStorage store) used
+  (store, storeLog) <- case serverStoreCfg of
+    XSCMemory storeLogPath -> do
+      st <- newFileStore ()
+      sl <- mapM (`readWriteFileStore` st) storeLogPath
+      atomically $ writeTVar (stmStoreLog st) sl
+      pure (StoreMemory st, sl)
+#if defined(dbServerPostgres)
+    XSCDatabase dbCfg -> do
+      st <- newFileStore dbCfg
+      pure (StoreDatabase st, Nothing)
+#endif
+  used <- getUsedStorage (fromFileStore store)
+  usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
@@ -123,12 +193,76 @@ newXFTPServerEnv config@XFTPServerConfig {storeLogFile, fileSizeQuota, xftpCrede
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
-
-countUsedStorage :: M.Map k FileRec -> Int64
-countUsedStorage = M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0
+  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
+
+readFileStoreType :: Ini -> Either String AFStoreType
+readFileStoreType ini = case fromRight "memory" $ T.unpack <$> lookupValue "STORE_LOG" "store_files" ini of
+  "memory" -> Right $ AFSType SFSMemory
+  "database" -> Right $ AFSType SFSPostgres
+  other -> Left $ "Invalid store_files value: " <> other
+
+-- | Dispatch store config from AFStoreType singleton and run the callback.
+-- CPP guards for Postgres are handled here so Main.hs stays CPP-free.
+runWithStoreConfig ::
+  AFStoreType ->
+  Ini ->
+  FilePath ->
+  MigrationConfirmation ->
+  (forall s. FileStoreClass s => XFTPStoreConfig s -> IO ()) ->
+  IO ()
+runWithStoreConfig (AFSType SFSMemory) ini storeLogFilePath _confirmMigrations run =
+  run $ XSCMemory (enableStoreLog' $> storeLogFilePath)
+  where
+    enableStoreLog' = settingIsOn "STORE_LOG" "enable" ini
+runWithStoreConfig (AFSType SFSPostgres) ini storeLogFilePath confirmMigrations run =
+#if defined(dbServerPostgres)
+  run $ XSCDatabase dbCfg
+  where
+    enableDbStoreLog' = settingIsOn "STORE_LOG" "db_store_log" ini
+    dbStoreLogPath = enableDbStoreLog' $> storeLogFilePath
+    dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
+#else
+  error "server binary is compiled without support for PostgreSQL database"
+#endif
+
+-- | Validate startup config when store_files=database.
+checkFileStoreMode :: Ini -> AFStoreType -> FilePath -> IO ()
+checkFileStoreMode ini (AFSType SFSPostgres) storeLogFilePath = do
+#if defined(dbServerPostgres)
+  storeLogExists <- doesFileExist storeLogFilePath
+  let dbStoreLogOn = settingIsOn "STORE_LOG" "db_store_log" ini
+  when (storeLogExists && isNothing dbStoreLogOn) $ do
+    putStrLn $ "Error: store log file " <> storeLogFilePath <> " exists but store_files is `database`."
+    putStrLn "Use `file-server database import` to migrate, or set `db_store_log: on`."
+    exitFailure
+#else
+  putStrLn "Error: server binary is compiled without support for PostgreSQL database."
+  putStrLn "Please re-compile with `cabal build -fserver_postgres`."
+  exitFailure
+#endif
+checkFileStoreMode _ (AFSType SFSMemory) _ = pure ()
+
+-- | Import StoreLog to PostgreSQL database.
+importToDatabase :: FilePath -> Ini -> MigrationConfirmation -> IO ()
+#if defined(dbServerPostgres)
+importToDatabase storeLogFilePath ini _confirmMigrations = do
+  let dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath = Nothing, confirmMigrations = _confirmMigrations}
+  importFileStore storeLogFilePath dbCfg
+#else
+importToDatabase _ _ _ = error "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
+#endif
+
+-- | Export PostgreSQL database to StoreLog.
+exportFromDatabase :: FilePath -> Ini -> MigrationConfirmation -> IO ()
+#if defined(dbServerPostgres)
+exportFromDatabase storeLogFilePath ini _confirmMigrations = do
+  let dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath = Nothing, confirmMigrations = _confirmMigrations}
+  exportFileStore storeLogFilePath dbCfg
+#else
+exportFromDatabase _ _ _ = error "Error: server binary is compiled without support for PostgreSQL database.\nPlease re-compile with `cabal build -fserver_postgres`."
+#endif

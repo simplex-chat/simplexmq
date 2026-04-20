@@ -6,7 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module XFTPServerTests where
+module XFTPServerTests (xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent (threadDelay)
@@ -31,7 +31,7 @@ import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -52,7 +52,7 @@ import UnliftIO.STM
 import Util
 import XFTPClient
 
-xftpServerTests :: Spec
+xftpServerTests :: SpecWith AFStoreType
 xftpServerTests =
   before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $ do
     describe "XFTP file chunk delivery" $ do
@@ -76,7 +76,7 @@ xftpServerTests =
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
-    describe "XFTP SNI and CORS" $ do
+    describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
       it "should add CORS headers when SNI is used" testCORSHeaders
@@ -103,10 +103,10 @@ createTestChunk fp = do
 readChunk :: XFTPFileId -> IO ByteString
 readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
 
-testFileChunkDelivery :: Expectation
+testFileChunkDelivery :: AFStoreType -> Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c
 
-testFileChunkDelivery2 :: Expectation
+testFileChunkDelivery2 :: AFStoreType -> Expectation
 testFileChunkDelivery2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkDelivery s r
 
 runTestFileChunkDelivery :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
@@ -129,7 +129,7 @@ runTestFileChunkDelivery s r = do
   downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
   liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
-testFileChunkDeliveryAddRecipients :: Expectation
+testFileChunkDeliveryAddRecipients :: AFStoreType -> Expectation
 testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
   g <- liftIO C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -150,10 +150,10 @@ testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
   testReceiveChunk r2 rpKey2 rId2 "tests/tmp/received_chunk2"
   testReceiveChunk r3 rpKey3 rId3 "tests/tmp/received_chunk3"
 
-testFileChunkDelete :: Expectation
+testFileChunkDelete :: AFStoreType -> Expectation
 testFileChunkDelete = xftpTest $ \c -> runRight_ $ runTestFileChunkDelete c c
 
-testFileChunkDelete2 :: Expectation
+testFileChunkDelete2 :: AFStoreType -> Expectation
 testFileChunkDelete2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkDelete s r
 
 runTestFileChunkDelete :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
@@ -179,10 +179,10 @@ runTestFileChunkDelete s r = do
   deleteXFTPChunk s spKey sId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testFileChunkAck :: Expectation
+testFileChunkAck :: AFStoreType -> Expectation
 testFileChunkAck = xftpTest $ \c -> runRight_ $ runTestFileChunkAck c c
 
-testFileChunkAck2 :: Expectation
+testFileChunkAck2 :: AFStoreType -> Expectation
 testFileChunkAck2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkAck s r
 
 runTestFileChunkAck :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
@@ -206,7 +206,7 @@ runTestFileChunkAck s r = do
   ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testWrongChunkSize :: Expectation
+testWrongChunkSize :: AFStoreType -> Expectation
 testWrongChunkSize = xftpTest $ \c -> do
   g <- C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -218,8 +218,8 @@ testWrongChunkSize = xftpTest $ \c -> do
     void (createXFTPChunk c spKey file [rcvKey] Nothing)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
 
-testFileChunkExpiration :: Expectation
-testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration} $
+testFileChunkExpiration :: AFStoreType -> Expectation
+testFileChunkExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration}) $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     g <- liftIO C.newRandom
     (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -242,8 +242,8 @@ testFileChunkExpiration = withXFTPServerCfg testXFTPServerConfig {fileExpiration
   where
     fileExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testInactiveClientExpiration :: Expectation
-testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveClientExpiration} $ \_ -> runRight_ $ do
+testInactiveClientExpiration :: AFStoreType -> Expectation
+testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
   ts <- liftIO getCurrentTime
   c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> atomically $ putTMVar disconnected ())
@@ -258,8 +258,8 @@ testInactiveClientExpiration = withXFTPServerCfg testXFTPServerConfig {inactiveC
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testFileStorageQuota :: Expectation
-testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = Just $ chSize * 2} $
+testFileStorageQuota :: AFStoreType -> Expectation
+testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     g <- liftIO C.newRandom
     (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -286,8 +286,8 @@ testFileStorageQuota = withXFTPServerCfg testXFTPServerConfig {fileSizeQuota = J
     uploadXFTPChunk c spKey sId3 chunkSpec
     download rId3
 
-testFileLog :: Expectation
-testFileLog = do
+testFileLog :: AFStoreType -> Expectation
+testFileLog _ = do
   g <- C.newRandom
   bytes <- liftIO $ createTestChunk testChunkPath
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -378,9 +378,9 @@ testFileLog = do
       downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
       liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
 
-testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> IO ()
-testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success =
-  withXFTPServerCfg testXFTPServerConfig {allowNewFiles, newFileBasicAuth} $
+testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
+testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {allowNewFiles, newFileBasicAuth}) $
     \_ -> testXFTPClient $ \c -> do
       g <- C.newRandom
       (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -400,9 +400,9 @@ testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success =
             void (createXFTPChunk c spKey file [rcvKey] clntAuth)
               `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testFileSkipCommitted :: IO ()
-testFileSkipCommitted =
-  withXFTPServerCfg testXFTPServerConfig $
+testFileSkipCommitted :: AFStoreType -> IO ()
+testFileSkipCommitted fsType =
+  withXFTPServerConfigOn (cfgFS fsType) $
     \_ -> testXFTPClient $ \c -> do
       g <- C.newRandom
       (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -597,4 +597,5 @@ testStaleWebSession =
       B.length respBody `shouldBe` xftpBlockSize
       decoded <- either (error . show) pure $ C.unPad respBody
       decoded `shouldBe` smpEncode SESSION
+
 
