@@ -2,10 +2,12 @@
 // Mirrors: Simplex.Messaging.Transport.WebSockets (client side)
 
 import WebSocket from "ws"
+import {randomBytes} from "crypto"
 import {Decoder} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {base64urlEncode} from "@simplex-chat/xftp-web/dist/protocol/description.js"
 import {blockPad, blockUnpad} from "@simplex-chat/xftp-web/dist/protocol/transmission.js"
-import {decodeSMPServerHandshake, encodeSMPClientHandshake, SMP_BLOCK_SIZE} from "../transport.js"
-import type {SMPServerHandshake} from "../transport.js"
+import {verifyIdentityProof} from "@simplex-chat/xftp-web/dist/crypto/identity.js"
+import {decodeSMPServerHandshake, encodeSMPClientHandshake, SMP_BLOCK_SIZE, currentSMPVersion} from "../transport.js"
 
 export interface SMPConnection {
   ws: WebSocket
@@ -14,7 +16,11 @@ export interface SMPConnection {
 }
 
 export async function connectSMP(url: string, keyHash: Uint8Array, wsOptions?: object): Promise<SMPConnection> {
-  const ws = new WebSocket(url, wsOptions)
+  // Generate challenge and append to URL
+  const challenge = new Uint8Array(randomBytes(32))
+  const challengeUrl = url + (url.includes("?") ? "&" : "?") + "challenge=" + base64urlEncode(challenge).replace(/=+$/, "")
+
+  const ws = new WebSocket(challengeUrl, wsOptions)
   ws.binaryType = "arraybuffer"
 
   await new Promise<void>((resolve, reject) => {
@@ -27,8 +33,21 @@ export async function connectSMP(url: string, keyHash: Uint8Array, wsOptions?: o
   const serverHs = decodeSMPServerHandshake(new Decoder(blockUnpad(serverBlock)))
 
   // Negotiate version
-  const version = Math.min(serverHs.smpVersionRange.max, 18)
+  const version = Math.min(serverHs.smpVersionRange.max, currentSMPVersion)
   if (version < 6) throw new Error("Incompatible server version")
+
+  // Verify server identity if server supports it (v19+)
+  if (serverHs.authPubKey && serverHs.webIdentityProof) {
+    const ok = verifyIdentityProof({
+      certChainDer: serverHs.authPubKey.certChainDer,
+      signedKeyDer: serverHs.authPubKey.signedKeyDer,
+      sigBytes: serverHs.webIdentityProof,
+      challenge,
+      sessionId: serverHs.sessionId,
+      keyHash,
+    })
+    if (!ok) throw new Error("Server identity verification failed")
+  }
 
   // Send client handshake
   const clientHs = encodeSMPClientHandshake({

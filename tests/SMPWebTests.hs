@@ -331,12 +331,12 @@ smpWebTests = describe "SMP Web Client" $ do
         tsResult `shouldBe` B.pack ([1, 1, 1, 2] ++ [200..231])
 
     describe "WebSocket handshake" $ do
-      it "TypeScript connects and completes SMP handshake" $ do
+      it "TypeScript connects, verifies server identity, and completes SMP handshake" $ do
         let msType = ASType SQSMemory SMSJournal
         attachStaticAndWS "tests/fixtures" $ \attachHTTP ->
           withSmpServerConfig (cfgWebOn msType testPort) (Just attachHTTP) $ \_ -> do
             let C.KeyHash kh = testKeyHash
-            tsResult <- callNode $ impWS <> impProto
+            tsResult <- callNode $ impSodium <> impWS <> impProto
               <> "try {"
               <> "const conn = await connectSMP('wss://localhost:" <> testPort <> "', " <> jsUint8 kh <> ", {rejectUnauthorized: false, ALPNProtocols: ['http/1.1']});"
               <> "const ping = encodeTransmission(new Uint8Array([0x31]), new Uint8Array(0), new Uint8Array([0x50,0x49,0x4E,0x47]));"

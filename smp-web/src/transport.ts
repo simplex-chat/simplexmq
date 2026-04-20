@@ -14,7 +14,8 @@ import {
 // -- Version constants (Transport.hs:186-213)
 
 export const SMP_BLOCK_SIZE = 16384
-export const currentSMPVersion = 18
+export const currentSMPVersion = 19
+export const webClientSMPVersion = 19
 
 // -- SMPServerHandshake (Transport.hs:631-640)
 
@@ -22,6 +23,7 @@ export interface SMPServerHandshake {
   smpVersionRange: {min: number; max: number}
   sessionId: Uint8Array
   authPubKey: SMPAuthPubKey | null
+  webIdentityProof: Uint8Array | null // raw signature bytes (v19+)
 }
 
 export interface SMPAuthPubKey {
@@ -33,14 +35,19 @@ export function decodeSMPServerHandshake(d: Decoder): SMPServerHandshake {
   const min = decodeWord16(d)
   const max = decodeWord16(d)
   const sessionId = decodeBytes(d)
-  // authPubKey: encodeAuthEncryptCmds — present if bytes remain (v7+, always for current version)
+  // authPubKey: version-gated (v7+)
   let authPubKey: SMPAuthPubKey | null = null
-  if (d.remaining() > 0) {
+  if (max >= 7 && d.remaining() > 0) {
     const certChainDer = decodeNonEmpty(decodeLarge, d)
     const signedKeyDer = decodeLarge(d)
     authPubKey = {certChainDer, signedKeyDer}
   }
-  return {smpVersionRange: {min, max}, sessionId, authPubKey}
+  // webIdentityProof: version-gated (v19+)
+  let webIdentityProof: Uint8Array | null = null
+  if (max >= webClientSMPVersion && d.remaining() > 0) {
+    webIdentityProof = decodeBytes(d)
+  }
+  return {smpVersionRange: {min, max}, sessionId, authPubKey, webIdentityProof}
 }
 
 // -- SMPClientHandshake (Transport.hs:592-604)
