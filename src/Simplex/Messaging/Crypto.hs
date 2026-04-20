@@ -230,7 +230,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
-import Data.ByteString.Base64 (decode, encode)
+import Data.ByteString.Base64 (decode)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -805,16 +805,21 @@ data ASignature
 deriving instance Show ASignature
 
 class CryptoSignature s where
-  serializeSignature :: s -> ByteString
-  serializeSignature = encode . signatureBytes
   signatureBytes :: s -> ByteString
   decodeSignature :: ByteString -> Either String s
 
 instance CryptoSignature (Signature s) => StrEncoding (Signature s) where
-  strEncode = serializeSignature
+  strEncode = strEncode . signatureBytes
   {-# INLINE strEncode #-}
   strDecode = decodeSignature
   {-# INLINE strDecode #-}
+
+instance CryptoSignature (Signature s) => ToJSON (Signature s) where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance CryptoSignature (Signature s) => FromJSON (Signature s) where
+  parseJSON = strParseJSON "Signature"
 
 instance CryptoSignature (Signature s) => Encoding (Signature s) where
   smpEncode = smpEncode . signatureBytes
