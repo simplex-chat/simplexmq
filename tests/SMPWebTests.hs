@@ -16,6 +16,7 @@ import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.List.NonEmpty (NonEmpty (..))
+import System.Directory (doesDirectoryExist)
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Agent as A
 import qualified Simplex.Messaging.Agent.Protocol as AP
@@ -85,6 +86,15 @@ runRight action = runExceptT action >>= either (error . ("Unexpected error: " <>
 
 smpWebTests :: SpecWith ()
 smpWebTests = describe "SMP Web Client" $ do
+  distExists <- runIO $ doesDirectoryExist (smpWebDir <> "/dist")
+  if distExists
+    then smpWebTests_
+    else
+      it "skipped (run 'cd smp-web && npm install && npm run build' first)" $
+        pendingWith "TS project not compiled"
+
+smpWebTests_ :: SpecWith ()
+smpWebTests_ = do
   describe "protocol" $ do
     describe "transmission" $ do
       it "encodeTransmission matches Haskell" $ do
