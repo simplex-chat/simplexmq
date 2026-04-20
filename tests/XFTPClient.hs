@@ -42,6 +42,8 @@ cfgFS (AFSType fs) = case fs of
   SFSMemory -> AXFTPSrvCfg testXFTPServerConfig
 #if defined(dbServerPostgres)
   SFSPostgres -> AXFTPSrvCfg testXFTPServerConfig {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}
+#else
+  SFSPostgres -> error "no postgres support"
 #endif
 
 cfgFS2 :: AFStoreType -> AXFTPServerConfig
@@ -49,6 +51,8 @@ cfgFS2 (AFSType fs) = case fs of
   SFSMemory -> AXFTPSrvCfg testXFTPServerConfig2
 #if defined(dbServerPostgres)
   SFSPostgres -> AXFTPSrvCfg testXFTPServerConfig2 {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}
+#else
+  SFSPostgres -> error "no postgres support"
 #endif
 
 withXFTPServerConfigOn :: HasCallStack => AXFTPServerConfig -> (HasCallStack => ThreadId -> IO a) -> IO a
