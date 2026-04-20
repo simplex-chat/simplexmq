@@ -125,20 +125,20 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           \# available to the end users of the server.\n\
           \# LICENSE: https://github.com/simplex-chat/simplexmq/blob/stable/LICENSE\n\
           \# Include correct source code URI in case the server source code is modified in any way.\n\
-          \# source_code: https://github.com/simplex-chat/simplexmq\n\
+          \# source_code = https://github.com/simplex-chat/simplexmq\n\
           \\n\
           \# Declaring all below information is optional, any of these fields can be omitted.\n\
-          \# server_country: ISO-3166 2-letter code\n\
-          \# operator: entity (organization or person name)\n\
-          \# operator_country: ISO-3166 2-letter code\n\
-          \# website:\n\
-          \# admin_simplex: SimpleX address\n\
-          \# admin_email:\n\
-          \# complaints_simplex: SimpleX address\n\
-          \# complaints_email:\n\
-          \# hosting: entity (organization or person name)\n\
-          \# hosting_country: ISO-3166 2-letter code\n\
-          \# hosting_type: virtual\n\
+          \# server_country = ISO-3166 2-letter code\n\
+          \# operator = entity (organization or person name)\n\
+          \# operator_country = ISO-3166 2-letter code\n\
+          \# website =\n\
+          \# admin_simplex = SimpleX address\n\
+          \# admin_email =\n\
+          \# complaints_simplex = SimpleX address\n\
+          \# complaints_email =\n\
+          \# hosting = entity (organization or person name)\n\
+          \# hosting_country = ISO-3166 2-letter code\n\
+          \# hosting_type = virtual\n\
           \\n\
           \[STORE_LOG]\n\
           \# The server uses STM memory for persistence,\n\
@@ -146,62 +146,62 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           \# This option enables saving memory to append only log,\n\
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
-            <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> ("enable = " <> onOff enableStoreLog <> "\n\n")
             <> "# File storage mode: `memory` or `database` (PostgreSQL).\n\
-               \store_files: memory\n\n\
-               \# Database connection settings for PostgreSQL database (`store_files: database`).\n\
-               \# db_connection: postgresql://xftp@/xftp_server_store\n\
-               \# db_schema: xftp_server\n\
-               \# db_pool_size: 10\n\n\
+               \store_files = memory\n\n\
+               \# Database connection settings for PostgreSQL database (`store_files = database`).\n\
+               \# db_connection = postgresql://xftp@/xftp_server_store\n\
+               \# db_schema = xftp_server\n\
+               \# db_pool_size = 10\n\n\
                \# Write database changes to store log file\n\
-               \# db_store_log: off\n\n"
+               \# db_store_log = off\n\n"
             <> "# Expire files after the specified number of hours.\n"
-            <> ("expire_files_hours: " <> tshow defFileExpirationHours <> "\n\n")
-            <> "log_stats: off\n\
+            <> ("expire_files_hours = " <> tshow defFileExpirationHours <> "\n\n")
+            <> "log_stats = off\n\
                \\n\
                \# Log interval for real-time Prometheus metrics\n\
-               \# prometheus_interval: 60\n\
+               \# prometheus_interval = 60\n\
                \\n\
                \[AUTH]\n\
                \# Set new_files option to off to completely prohibit uploading new files.\n\
                \# This can be useful when you want to decommission the server, but still allow downloading the existing files.\n\
-               \new_files: on\n\
+               \new_files = on\n\
                \\n\
                \# Use create_password option to enable basic auth to upload new files.\n\
                \# The password should be used as part of server address in client configuration:\n\
                \# xftp://fingerprint:password@host1,host2\n\
                \# The password will not be shared with file recipients, you must share it only\n\
                \# with the users who you want to allow uploading files to your server.\n\
-               \# create_password: password to upload files (any printable ASCII characters without whitespace, '@', ':' and '/')\n\
+               \# create_password = password to upload files (any printable ASCII characters without whitespace, '@', ':' and '/')\n\
                \\n\
-               \# control_port_admin_password:\n\
-               \# control_port_user_password:\n\
+               \# control_port_admin_password =\n\
+               \# control_port_user_password =\n\
                \\n\
                \[TRANSPORT]\n\
                \# host is only used to print server address on start\n"
-            <> ("host: " <> T.pack host <> "\n")
-            <> ("port: " <> T.pack defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n\
-               \# control_port: 5226\n\
+            <> ("host = " <> T.pack host <> "\n")
+            <> ("port = " <> T.pack defaultServerPort <> "\n")
+            <> "log_tls_errors = off\n\
+               \# control_port = 5226\n\
                \\n\
                \[FILES]\n"
-            <> ("path: " <> T.pack filesPath <> "\n")
-            <> ("storage_quota: " <> safeDecodeUtf8 (strEncode fileSizeQuota) <> "\n")
+            <> ("path = " <> T.pack filesPath <> "\n")
+            <> ("storage_quota = " <> safeDecodeUtf8 (strEncode fileSizeQuota) <> "\n")
             <> "\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
-               \disconnect: off\n"
-            <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+               \disconnect = off\n"
+            <> ("# ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
             <> "\n\
                \[WEB]\n\
                \# Set path to generate static mini-site for server information\n"
-            <> ("static_path: " <> T.pack (fromMaybe defaultStaticPath webStaticPath_) <> "\n\n")
+            <> ("static_path = " <> T.pack (fromMaybe defaultStaticPath webStaticPath_) <> "\n\n")
             <> "# Run an embedded HTTP server on this port.\n\
-               \# http: 8000\n\n\
+               \# http = 8000\n\n\
                \# TLS credentials for HTTPS web server on the same port as XFTP.\n\
-               \# cert: " <> T.pack (cfgPath `combine` "web.crt") <> "\n\
-               \# key: " <> T.pack (cfgPath `combine` "web.key") <> "\n"
+               \# cert = " <> T.pack (cfgPath `combine` "web.crt") <> "\n\
+               \# key = " <> T.pack (cfgPath `combine` "web.key") <> "\n"
     runServer StartOptions {confirmMigrations} ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
