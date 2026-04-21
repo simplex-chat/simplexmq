@@ -2,3 +2,4 @@ node_modules/
 dist/
 dist-web/
 package-lock.json
+test-results
