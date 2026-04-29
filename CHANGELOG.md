@@ -1,3 +1,32 @@
+# 6.5.0
+
+Version 6.5.0.17
+
+SMP agent:
+- improve subscriptions
+  - reduce memory usage and retries during initial subscription (#1758)
+  - fix race resulting in pending subscriptions never subscribed (#1756)
+  - batch processing of subscription results and errors (#1652)
+  - reduce memory usage of active subscriptions.
+- drop message after N reception attempts (#1762)
+- fix possible deadlocks of queue overloading when processing messages (#1713)
+- improved APIs for short link management and creation.
+- support multiple link owners in link data (#1701)
+
+SMP server:
+- store messages in PostgreSQL (#1622).
+- reduce memory usage with PostgreSQL database - do not use queue cache (#1637)
+- fix in-memory server not restoring queue/service associations after 2+ restarts (#1618)
+
+XFTP server:
+- support PostgreSQL database.
+- add server page.
+- support uploads from web clients.
+
+Servers:
+- better socket leak prevention during TLS handshake, NetworkError type to bette diagnose connection errors (#1619)
+- use "=" as default INI key-value separator (#1767)
+
 # 6.4.4
 
 Servers:
