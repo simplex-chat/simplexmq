@@ -67,14 +67,14 @@ if [ ! -f "${confd}/smp-server.ini" ]; then
 
   # Fix path to certificates
   if [ -n "${WEB_MANUAL}" ]; then
-    sed -i -e 's|^[^#]*https: |#&|' \
-           -e 's|^[^#]*cert: |#&|' \
-           -e 's|^[^#]*key: |#&|' \
-           -e 's|^port:.*|port: 5223|' \
+    sed -i -e 's|^[^#]*https = |#&|' \
+           -e 's|^[^#]*cert = |#&|' \
+           -e 's|^[^#]*key = |#&|' \
+           -e 's|^port = .*|port = 5223|' \
            "${confd}/smp-server.ini"
   else
-    sed -i -e "s|cert: /etc/opt/simplex/web.crt|cert: $cert_path/$ADDR.crt|" \
-           -e "s|key: /etc/opt/simplex/web.key|key: $cert_path/$ADDR.key|" \
+    sed -i -e "s|cert = /etc/opt/simplex/web.crt|cert = $cert_path/$ADDR.crt|" \
+           -e "s|key = /etc/opt/simplex/web.key|key = $cert_path/$ADDR.key|" \
            "${confd}/smp-server.ini"
   fi
 fi

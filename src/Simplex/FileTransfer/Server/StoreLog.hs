@@ -10,6 +10,7 @@ module Simplex.FileTransfer.Server.StoreLog
     FileStoreLogRecord (..),
     closeStoreLog,
     readWriteFileStore,
+    writeFileStore,
     logAddFile,
     logPutFile,
     logAddRecipients,
@@ -32,6 +33,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
@@ -87,20 +89,22 @@ logBlockFile s fId = logFileStoreRecord s . BlockFile fId
 logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
 
-readWriteFileStore :: FilePath -> FileStore -> IO (StoreLog 'WriteMode)
+readWriteFileStore :: FilePath -> STMFileStore -> IO (StoreLog 'WriteMode)
 readWriteFileStore = readWriteStoreLog readFileStore writeFileStore
 
-readFileStore :: FilePath -> FileStore -> IO ()
+readFileStore :: FilePath -> STMFileStore -> IO ()
 readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.readFile f
   where
     addFileLogRecord s = case strDecode s of
       Left e -> B.putStrLn $ "Log parsing error (" <> B.pack e <> "): " <> B.take 100 s
       Right lr ->
-        atomically (addToStore lr) >>= \case
+        addToStore lr >>= \case
           Left e -> B.putStrLn $ "Log processing error (" <> bshow e <> "): " <> B.take 100 s
           _ -> pure ()
     addToStore = \case
-      AddFile sId file createdAt status -> addFile st sId file createdAt status
+      AddFile sId file createdAt status
+        | size file > 0 -> addFile st sId file createdAt status
+        | otherwise -> pure $ Left SIZE
       PutFile qId path -> setFilePath st qId path
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
@@ -108,8 +112,8 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
       AckFile rId -> ackFile st rId
     addRecipients sId rcps = mapM_ (ExceptT . addRecipient st sId) rcps
 
-writeFileStore :: StoreLog 'WriteMode -> FileStore -> IO ()
-writeFileStore s FileStore {files, recipients} = do
+writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()
+writeFileStore s STMFileStore {files, recipients} = do
   allRcps <- readTVarIO recipients
   readTVarIO files >>= mapM_ (logFile allRcps)
   where
