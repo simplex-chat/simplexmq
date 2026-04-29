@@ -97,50 +97,50 @@ ntfServerCLI cfgPath logPath =
           \# This option enables saving memory to append only log,\n\
           \# and restoring it when the server is started.\n\
           \# Log is compacted on start (deleted objects are removed).\n"
-            <> ("enable: " <> onOff enableStoreLog <> "\n\n")
+            <> ("enable = " <> onOff enableStoreLog <> "\n\n")
             <> "# Database connection settings for PostgreSQL database.\n"
             <> iniDbOpts dbOptions defaultNtfDBOpts
-            <> "Time to retain deleted entities in the database, days.\n"
-            <> ("# db_deleted_ttl: " <> tshow defaultDeletedTTL <> "\n\n")
-            <> "log_stats: off\n\n\
+            <> "# Time to retain deleted entities in the database, days.\n"
+            <> ("# db_deleted_ttl = " <> tshow defaultDeletedTTL <> "\n\n")
+            <> "log_stats = off\n\n\
                \# Log interval for real-time Prometheus metrics\n\
-               \# prometheus_interval: 60\n\
+               \# prometheus_interval = 60\n\
                \\n\
                \[AUTH]\n\
-               \# control_port_admin_password:\n\
-               \# control_port_user_password:\n\
+               \# control_port_admin_password =\n\
+               \# control_port_user_password =\n\
                \\n\
                \[TRANSPORT]\n\
                \# Host is only used to print server address on start.\n\
                \# You can specify multiple server ports.\n"
-            <> ("host: " <> T.pack host <> "\n")
-            <> ("port: " <> T.pack defaultServerPort <> "\n")
-            <> "log_tls_errors: off\n\n\
-               \# Use `websockets: 443` to run websockets server in addition to plain TLS.\n\
-               \websockets: off\n\n\
-               \# control_port: 5227\n\
+            <> ("host = " <> T.pack host <> "\n")
+            <> ("port = " <> T.pack defaultServerPort <> "\n")
+            <> "log_tls_errors = off\n\n\
+               \# Use `websockets = 443` to run websockets server in addition to plain TLS.\n\
+               \websockets = off\n\n\
+               \# control_port = 5227\n\
                \\n\
                \[SUBSCRIBER]\n\
                \# Network configuration for notification server client.\n\
                \# `host_mode` can be 'public' (default) or 'onion'.\n\
                \# It defines prefferred hostname for destination servers with multiple hostnames.\n\
-               \# host_mode: public\n\
-               \# required_host_mode: off\n\n\
+               \# host_mode = public\n\
+               \# required_host_mode = off\n\n\
                \# SOCKS proxy port for subscribing to SMP servers.\n\
                \# You may need a separate instance of SOCKS proxy for incoming single-hop requests.\n\
-               \# socks_proxy: localhost:9050\n\n\
+               \# socks_proxy = localhost:9050\n\n\
                \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
                \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
-               \# socks_mode: onion\n\n\
+               \# socks_mode = onion\n\n\
                \# The domain suffixes of the relays you operate (space-separated) to count as separate proxy statistics.\n\
-               \# own_server_domains: \n\n\
+               \# own_server_domains = \n\n\
                \# User service subscriptions with server certificate\n\n\
-               \# use_service_credentials: off\n\n\
+               \# use_service_credentials = off\n\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
-               \disconnect: off\n"
-            <> ("# ttl: " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval: " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+               \disconnect = off\n"
+            <> ("# ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("# check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
     runServer startOptions ini = do
       setLogLevel $ logLevel startOptions
