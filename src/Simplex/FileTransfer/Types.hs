@@ -46,6 +46,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Util (safeDecodeUtf8, (<$$>))
 import System.FilePath ((</>))
 
 type RcvFileId = ByteString -- Agent entity ID
@@ -65,7 +66,8 @@ data FileHeader = FileHeader
 instance Encoding FileHeader where
   smpEncode FileHeader {fileName, fileExtra} = smpEncode (fileName, fileExtra)
   smpP = do
-    (fileName, fileExtra) <- smpP
+    fileName <- safeDecodeUtf8 <$> smpP
+    fileExtra <- safeDecodeUtf8 <$$> smpP
     pure FileHeader {fileName, fileExtra}
 
 type DBRcvFileId = Int64
