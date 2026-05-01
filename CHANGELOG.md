@@ -1,3 +1,10 @@
+# 6.5.1
+
+Version 6.5.1.0
+
+XFTP client:
+- backwards compatible file header decoding.
+
 # 6.5.0
 
 Version 6.5.0.17
