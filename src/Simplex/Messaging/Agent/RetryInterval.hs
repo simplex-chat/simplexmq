@@ -9,6 +9,7 @@ module Simplex.Messaging.Agent.RetryInterval
     RI2State (..),
     withRetryInterval,
     withRetryIntervalCount,
+    withRetryIntervalLimit,
     withRetryForeground,
     withRetryLock2,
     updateRetryInterval2,
@@ -18,7 +19,7 @@ where
 
 import Control.Concurrent (forkIO)
 import Control.Concurrent.STM (retry)
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Int (Int64)
 import Simplex.Messaging.Util (threadDelay', unlessM, whenM)
@@ -64,6 +65,12 @@ withRetryIntervalCount ri action = callAction 0 0 $ initialInterval ri
           liftIO $ threadDelay' delay
           let elapsed' = elapsed + delay
           callAction (n + 1) elapsed' $ nextRetryDelay elapsed' delay ri
+
+-- The first call of action has n == 0, maxN is max number of retries
+withRetryIntervalLimit :: forall m. MonadIO m => Int -> RetryInterval -> (Int64 -> m () -> m ()) -> m ()
+withRetryIntervalLimit maxN ri action =
+  withRetryIntervalCount ri $ \n delay loop ->
+    when (n < maxN) $ action delay loop
 
 withRetryForeground :: forall m a. MonadIO m => RetryInterval -> STM Bool -> STM Bool -> (Int64 -> m a -> m a) -> m a
 withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInterval ri
