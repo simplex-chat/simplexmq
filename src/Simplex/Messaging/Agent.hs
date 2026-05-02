@@ -405,8 +405,8 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newCo
 -- Caller provides root signing key pair and link entity ID.
 -- Returns the created link and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId rootKey linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId rootKey linkEntityId checkNotices
+prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> Maybe SMPServerWithAuth -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData srv_ = withAgentEnv c $ prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData srv_
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
@@ -925,10 +925,10 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 
 -- | Prepare connection link for contact mode (no network, no database).
 -- Caller provides root signing key pair and link entity ID.
-prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData = do
+prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> Maybe SMPServerWithAuth -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData srv_ = do
   g <- asks random
-  plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
+  plpSrvWithAuth@(ProtoServerWithAuth srv _) <- maybe (getSMPServer c userId) pure srv_
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g

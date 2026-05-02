@@ -1658,7 +1658,7 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
   linkEntId <- atomically $ C.randomBytes 32 g
   runRight $ do
     (ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
-      A.prepareConnectionLink a 1 rootKey linkEntId True Nothing
+      A.prepareConnectionLink a 1 rootKey linkEntId True Nothing Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
     _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData CR.IKPQOn SMSubscribe
     (FixedLinkData {linkConnReq = connReq', linkEntityId}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink
