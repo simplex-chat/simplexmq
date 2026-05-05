@@ -31,8 +31,8 @@ xftpWebContent = $(embedDir "apps/xftp-server/static/xftp-web-bundle/")
 xftpMediaContent :: [(FilePath, ByteString)]
 xftpMediaContent = $(embedDir "apps/xftp-server/static/media/")
 
--- xftpFilePageHtml :: ByteString
--- xftpFilePageHtml = $(embedFile "apps/xftp-server/static/file.html")
+xftpFilePageHtml :: ByteString
+xftpFilePageHtml = $(embedFile "apps/xftp-server/static/file.html")
 
 xftpGenerateSite :: XFTPServerConfig s -> Maybe ServerPublicInfo -> Maybe TransportHost -> FilePath -> IO ()
 xftpGenerateSite cfg info onionHost path = do
@@ -44,7 +44,7 @@ xftpGenerateSite cfg info onionHost path = do
   filePage xftpDir xftpWebContent
   filePage mediaDir xftpMediaContent
   createDirectoryIfMissing True fileDir
-  -- B.writeFile (fileDir </> "index.html") $ render xftpFilePageHtml substs
+  B.writeFile (fileDir </> "index.html") $ render xftpFilePageHtml substs
   where
     filePage dir content_ = do
       createDirectoryIfMissing True dir
