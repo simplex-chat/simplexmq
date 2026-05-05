@@ -404,9 +404,9 @@ createConnection c nm userId enableNtfs checkNotices cMode linkData_ clientData 
 {-# INLINE createConnection #-}
 
 -- | Create SMP agent connection on a specific SMP server.
-createConnectionOnServer :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> SMPServerWithAuth -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
-createConnectionOnServer c nm userId enableNtfs checkNotices cMode linkData_ clientData srv pqInitKeys subMode =
-  withAgentEnv c $ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData (Just srv) pqInitKeys subMode
+createConnectionOnServer :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> Maybe SMPServerWithAuth -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, (CreatedConnLink c, Maybe ClientServiceId))
+createConnectionOnServer c nm userId enableNtfs checkNotices cMode linkData_ clientData srv_ pqInitKeys subMode =
+  withAgentEnv c $ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData srv_ pqInitKeys subMode
 {-# INLINE createConnectionOnServer #-}
 
 -- | Prepare connection link for contact mode (no network call).
