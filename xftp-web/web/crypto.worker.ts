@@ -18,6 +18,7 @@ const memoryChunks = new Map<number, Uint8Array>()
 async function getSessionDir(): Promise<FileSystemDirectoryHandle> {
   if (!sessionDir) {
     const root = await navigator.storage.getDirectory()
+    //XFTP behaves more like a real file-transfer system than a database app, and OPFS/file handles are much better for large chunked binary file operations.
     sessionDir = await root.getDirectoryHandle(SESSION_DIR, {create: true})
   }
   return sessionDir
