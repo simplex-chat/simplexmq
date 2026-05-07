@@ -9,9 +9,13 @@ import {
 import {getDescriptionServers, serverOrigin} from '../src/protocol/address.js'
 import {XFTPPermanentError} from '../src/client.js'
 
+//Maximum allowed upload size
 const MAX_SIZE = 100 * 1024 * 1024
+//How much progress bar reserved for encryption phase.
 const ENCRYPT_WEIGHT = 0.15
+// Only show encryption UI for files large enough to notice.
 const ENCRYPT_MIN_FILE_SIZE = 100 * 1024
+// Keep encryption progress visible long enough to feel smooth.
 const ENCRYPT_MIN_DISPLAY_MS = 1000
 
 export function initUpload(app: HTMLElement) {
@@ -61,7 +65,7 @@ export function initUpload(app: HTMLElement) {
   const copyBtn = document.getElementById('copy-btn')!
   const errorMsg = document.getElementById('error-msg')!
   const retryBtn = document.getElementById('retry-btn')!
-
+  //“ If the browser supports the native Web Share API, dynamically create and insert a Share button and store its reference; otherwise keep it null.”
   const shareBtn = typeof navigator.share === 'function'
     ? (() => {
         const btn = document.createElement('button')
@@ -71,7 +75,7 @@ export function initUpload(app: HTMLElement) {
         return btn
       })()
     : null
-
+ //aborted tracks whether the current async upload operation should stop, while pendingFile stores the currently selected file being processed or prepared for upload.
   let aborted = false
   let pendingFile: File | null = null
 
@@ -83,6 +87,8 @@ export function initUpload(app: HTMLElement) {
     const f = e.dataTransfer?.files[0]
     if (f) startUpload(f)
   })
+
+// This app currently supports single file upload
   fileInput.addEventListener('change', () => {
     if (fileInput.files?.[0]) startUpload(fileInput.files[0])
   })
@@ -92,6 +98,7 @@ export function initUpload(app: HTMLElement) {
     showStage(dropZone)
   })
 
+  //“Hide every application stage, then make only the requested stage visible.”
   function showStage(stage: HTMLElement) {
     for (const s of [dropZone, progressStage, completeStage, errorStage]) s.hidden = true
     stage.hidden = false
@@ -119,7 +126,9 @@ export function initUpload(app: HTMLElement) {
     const ring = createProgressRing()
     progressContainer.innerHTML = ''
     progressContainer.appendChild(ring.canvas)
-
+//adds the visual progress ring to the page, 
+// decides whether encryption progress should be shown based on file size, 
+// reserves part of the progress bar for encryption work, and updates the UI status text accordingly.
     const showEncrypt = file.size >= ENCRYPT_MIN_FILE_SIZE
     const encryptWeight = showEncrypt ? ENCRYPT_WEIGHT : 0
     statusText.textContent = showEncrypt
