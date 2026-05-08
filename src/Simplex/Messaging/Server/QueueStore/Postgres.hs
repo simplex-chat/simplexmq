@@ -24,9 +24,11 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     batchInsertServices,
     batchInsertQueues,
     foldServiceRecs,
+    foldRcvServiceQueueRecs,
     foldQueueRecs,
     foldRecentQueueRecs,
     handleDuplicate,
+    rowToQueueRec,
     withLog_,
     withDB,
     withDB',
@@ -89,7 +91,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>), ($>>=))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -502,6 +504,32 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ writeTVar (queueRec sq) $ Just q'
         withLog "setQueueService" st $ \sl -> logQueueService sl rId party serviceId
 
+  setQueueServices :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (M.Map RecipientId (Either ErrorType ())))
+  setQueueServices _ _ _ [] = pure $ Right M.empty
+  setQueueServices st party serviceId qs = E.uninterruptibleMask_ $ runExceptT $ do
+    updated <- S.fromList <$> withDB' "setQueueServices" st (\db ->
+      map fromOnly <$> DB.query db updateQuery (serviceId, In (map recipientId qs)))
+    results <- liftIO $ forM qs $ \sq -> do
+      let rId = recipientId sq
+      (rId,) <$> if S.member rId updated
+        then readQueueRecIO (queueRec sq) $>>= \q -> do
+          atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
+          withLog "setQueueServices" st $ \sl -> logQueueService sl rId party serviceId
+          pure $ Right ()
+        else pure $ Left AUTH
+    pure $ M.fromList results
+    where
+      updateQuery = case party of
+        SRecipientService ->
+          "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"
+        SNotifierService ->
+          "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id IN ? AND notifier_id IS NOT NULL AND deleted_at IS NULL RETURNING recipient_id"
+      updateRec q = case party of
+        SRecipientService -> q {rcvServiceId = serviceId}
+        SNotifierService -> case notifier q of
+          Just nc -> q {notifier = Just nc {ntfServiceId = serviceId}}
+          Nothing -> q
+
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
     snIds <-
@@ -522,15 +550,11 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
          in ((serviceId, sNtfs) : ssNtfs, restNtfs)
 
-  getServiceQueueCount :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType Int64)
-  getServiceQueueCount st party serviceId =
-    E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCount" st $ \db ->
-      maybeFirstRow' 0 fromOnly $
-        DB.query db query (Only serviceId)
-    where
-      query = case party of
-        SRecipientService -> "SELECT count(1) FROM msg_queues WHERE rcv_service_id = ? AND deleted_at IS NULL"
-        SNotifierService -> "SELECT count(1) FROM msg_queues WHERE ntf_service_id = ? AND deleted_at IS NULL"
+  getServiceQueueCountHash :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
+  getServiceQueueCountHash st party serviceId =
+    E.uninterruptibleMask_ $ runExceptT $ withDB' "getServiceQueueCountHash" st $ \db ->
+      maybeFirstRow' (0, mempty) id $
+        DB.query db ("SELECT queue_count, queue_ids_hash FROM services WHERE service_id = ? AND service_role = ?") (serviceId, partyServiceRole party)
 
 batchInsertServices :: [STMService] -> PostgresQueueStore q -> IO Int64
 batchInsertServices services' toStore =
@@ -577,11 +601,16 @@ insertServiceQuery =
     VALUES (?,?,?,?,?)
   |]
 
-foldServiceRecs :: forall a q. Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
+foldServiceRecs :: Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
 foldServiceRecs st f =
   withTransaction (dbStore st) $ \db ->
     DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
       \ !acc -> fmap (acc <>) . f . rowToServiceRec
+
+foldRcvServiceQueueRecs :: PostgresQueueStore q -> ServiceId -> (a -> (RecipientId, QueueRec) -> IO a) -> a -> IO (Either ErrorType a)
+foldRcvServiceQueueRecs st serviceId f acc =
+  runExceptT $ withDB' "foldRcvServiceQueueRecs" st $ \db ->
+    DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \a -> f a . rowToQueueRec
 
 foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs withData = foldQueueRecs_ foldRecs
@@ -769,10 +798,6 @@ instance ToField SMPServiceRole where toField = toField . decodeLatin1 . smpEnco
 
 instance FromField SMPServiceRole where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
-instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
-
-instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
-
 #if !defined(dbPostgres)
 instance ToField EntityId where toField (EntityId s) = toField $ Binary s
 
@@ -790,6 +815,10 @@ instance ToField C.APublicAuthKey where toField = toField . Binary . C.encodePub
 
 instance FromField C.APublicAuthKey where fromField = blobFieldDecoder C.decodePubKey
 
+instance ToField IdsHash where toField (IdsHash s) = toField (Binary s)
+
+deriving newtype instance FromField IdsHash
+
 instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s)
 
 deriving newtype instance FromField EncDataBytes
@@ -797,4 +826,8 @@ deriving newtype instance FromField EncDataBytes
 deriving newtype instance ToField (RoundedSystemTime t)
 
 deriving newtype instance FromField (RoundedSystemTime t)
+
+instance ToField X.CertificateChain where toField = toField . Binary . smpEncode . C.encodeCertChain
+
+instance FromField X.CertificateChain where fromField = blobFieldDecoder (parseAll C.certChainP)
 #endif

@@ -174,6 +174,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251010_client_notices
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251230_strict_tables
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260410_receive_attempts
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260411_service_certs
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -225,6 +226,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251010_client_notices
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251230_strict_tables
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260410_receive_attempts
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260411_service_certs
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:
@@ -232,6 +234,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Common
           Simplex.Messaging.Agent.Store.Postgres.DB
           Simplex.Messaging.Agent.Store.Postgres.Migrations
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.Util
           Simplex.Messaging.Agent.Store.Postgres.Util
   if !flag(client_library)
       exposed-modules:
@@ -282,7 +285,6 @@ library
               Simplex.Messaging.Notifications.Server.Store.Migrations
               Simplex.Messaging.Notifications.Server.Store.Postgres
               Simplex.Messaging.Notifications.Server.Store.Types
-              Simplex.Messaging.Notifications.Server.StoreLog
               Simplex.FileTransfer.Server.Store.Postgres
               Simplex.FileTransfer.Server.Store.Postgres.Config
               Simplex.FileTransfer.Server.Store.Postgres.Migrations
@@ -531,6 +533,8 @@ test-suite simplexmq-test
           CoreTests.XFTPStoreTests
           NtfClient
           NtfServerTests
+  if flag(client_postgres) || flag(server_postgres)
+      other-modules:
           PostgresSchemaDump
   hs-source-dirs:
       tests
@@ -579,6 +583,7 @@ test-suite simplexmq-test
     , text
     , time
     , timeit ==2.0.*
+    , tls >=1.9.0 && <1.10
     , transformers
     , unliftio
     , unliftio-core

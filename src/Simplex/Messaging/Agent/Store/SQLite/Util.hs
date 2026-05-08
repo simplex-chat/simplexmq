@@ -6,6 +6,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Util
     mkSQLiteAggFinal,
     createStaticFunction,
     createStaticAggregate,
+    mkSQLiteFunc,
   ) where
 
 import Control.Exception (SomeException, catch, mask_)

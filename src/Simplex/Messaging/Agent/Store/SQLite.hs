@@ -46,8 +46,11 @@ import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (bracketOnError, onException, throwIO)
 import Control.Monad
+import Data.Bits (xor)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import Data.Functor (($>))
 import Data.IORef
 import Data.Maybe (fromMaybe)
@@ -57,13 +60,17 @@ import Database.SQLite.Simple (Query (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
 import qualified Database.SQLite3 as SQLite3
+import Database.SQLite3.Bindings
+import Foreign.C.Types
+import Foreign.Ptr
 import Simplex.Messaging.Agent.Store.Migrations (DBMigrate (..), sharedMigrateSchema)
 import qualified Simplex.Messaging.Agent.Store.SQLite.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.SQLite.Common
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.SQLite.Util
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationError (..))
-import Simplex.Messaging.Util (ifM, safeDecodeUtf8)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Util (ifM, packZipWith, safeDecodeUtf8)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 import System.FilePath (takeDirectory, takeFileName, (</>))
 
@@ -119,13 +126,28 @@ connectDB path functions key track = do
           PRAGMA secure_delete = ON;
           PRAGMA auto_vacuum = FULL;
         |]
-      mapM_ addFunction functions
+      mapM_ addFunction functions'
       where
         db' = SQL.connectionHandle $ DB.conn db
+        functions' = SQLiteFuncDef "simplex_xor_md5_combine" 2 (SQLiteFuncPtr True sqliteXorMd5CombinePtr) : functions
         addFunction SQLiteFuncDef {funcName, argCount, funcPtrs} =
           either (throwIO . userError . show) pure =<< case funcPtrs of
             SQLiteFuncPtr isDet funcPtr -> createStaticFunction db' funcName argCount isDet funcPtr
             SQLiteAggrPtrs stepPtr finalPtr -> createStaticAggregate db' funcName argCount stepPtr finalPtr
+
+foreign export ccall "simplex_xor_md5_combine" sqliteXorMd5Combine :: SQLiteFunc
+
+foreign import ccall "&simplex_xor_md5_combine" sqliteXorMd5CombinePtr :: FunPtr SQLiteFunc
+
+sqliteXorMd5Combine :: SQLiteFunc
+sqliteXorMd5Combine = mkSQLiteFunc $ \cxt args -> do
+  idsHash <- SQLite3.funcArgBlob args 0
+  rId <- SQLite3.funcArgBlob args 1
+  SQLite3.funcResultBlob cxt $ xorMd5Combine idsHash rId
+
+xorMd5Combine :: ByteString -> ByteString -> ByteString
+xorMd5Combine idsHash rId = packZipWith xor idsHash $ C.md5Hash rId
+{-# INLINE xorMd5Combine #-}
 
 closeDBStore :: DBStore -> IO ()
 closeDBStore st@DBStore {dbClosed} =

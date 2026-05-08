@@ -311,7 +311,7 @@ runNtfWorker c srv Worker {doWork} =
               _ -> ((ntfSubConnId sub, INTERNAL "NSACheck - no subscription ID") : errs, subs, subIds)
         updateSub :: DB.Connection -> NtfServer -> UTCTime -> UTCTime -> (NtfSubscription, NtfSubStatus) -> IO (Maybe SMPServer)
         updateSub db ntfServer ts nextCheckTs (sub, status)
-          | ntfShouldSubscribe status =
+          | status `elem` subscribeNtfStatuses =
               let sub' = sub {ntfSubStatus = NASCreated status}
                in Nothing <$ updateNtfSubscription db sub' (NSANtf NSACheck) nextCheckTs
           -- ntf server stopped subscribing to this queue
