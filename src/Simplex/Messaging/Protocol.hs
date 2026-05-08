@@ -527,6 +527,7 @@ tEncodeAuth serviceAuth = \case
       TASignature s -> C.signatureBytes s
       TAAuthenticator (C.CbAuthenticator s) -> s
 
+-- spec: spec/modules/Simplex/Messaging/Protocol.md#transmissionauth--size-based-type-discrimination
 decodeTAuthBytes :: ByteString -> Maybe (C.Signature 'C.Ed25519) -> Either String (Maybe TAuthorizations)
 decodeTAuthBytes s serviceSig
   | B.null s = Right Nothing
@@ -1703,6 +1704,7 @@ instance ToJSON BlockingReason where
 instance FromJSON BlockingReason where
   parseJSON = strParseJSON "BlockingReason"
 
+-- spec: spec/modules/Simplex/Messaging/Protocol.md#transmissionp--implysessid
 -- | SMP transmission parser.
 transmissionP :: THandleParams v p -> Parser RawTransmission
 transmissionP THandleParams {sessionId, implySessId, serviceAuth} = do
@@ -2244,6 +2246,7 @@ batchTransmissions' THandleParams {batch, blockSize = bSize, serviceAuth} ts
           s = tEncode serviceAuth t
 
 -- | Pack encoded transmissions into batches
+-- spec: spec/modules/Simplex/Messaging/Protocol.md#batchtransmissions_--constraints-and-ordering
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
 batchTransmissions_ bSize = addBatch . foldr addTransmission ([], 0, 0, [], [])
   where

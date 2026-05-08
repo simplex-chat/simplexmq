@@ -1,0 +1,197 @@
+# How to Document a Module
+
+> Read this before writing any module doc. It defines what goes in, what stays out, and why.
+
+## Purpose
+
+Module docs exist for one reason: to capture knowledge that **cannot be obtained by reading the source code**. If reading the `.hs` file tells you everything you need to know, the module doc should be brief or empty.
+
+These docs are an investment — their value compounds over time as multiple people (and LLMs) work on the code. Optimize for long-term value, not for looking thorough today.
+
+## Process
+
+**Read every line of the source file.** The non-obvious filter applies to what you *write*, not to what you *read*. Without reading each line, you will produce documentation from inferences rather than facts. Many non-obvious behaviors only become visible when you see a specific line of code and recognize that its implications would surprise a reader who doesn't have the surrounding context.
+
+## File structure
+
+Module docs mirror `src/Simplex/` exactly. Same subfolder structure, `.hs` replaced with `.md`:
+
+```
+src/Simplex/Messaging/Server.hs    →  spec/modules/Simplex/Messaging/Server.md
+src/Simplex/Messaging/Crypto.hs    →  spec/modules/Simplex/Messaging/Crypto.md
+src/Simplex/FileTransfer/Agent.hs  →  spec/modules/Simplex/FileTransfer/Agent.md
+```
+
+## What to include
+
+### 1. Non-obvious behavior
+Things that would surprise a competent Haskell developer reading the code for the first time:
+- Subtle invariants maintained across function calls
+- Ordering dependencies ("must call X before Y because...")
+- Concurrency assumptions ("this TVar is only written from thread Z")
+- Implicit contracts between caller and callee not captured by types
+
+### 2. Usage considerations
+- When to use function X vs function Y
+- Common mistakes callers make
+- Caller obligations not enforced by the type system
+- Performance characteristics that affect usage decisions
+
+### 3. Cross-module relationships
+- Dependencies on other modules' behavior not visible from import lists
+- Assumptions about how other modules use this one
+- Coordination patterns (e.g., "Server.hs reads this TVar, Agent.hs writes it")
+
+### 4. Security notes
+- Trust boundaries this module enforces or relies on
+- What happens if inputs are malicious
+- Which functions are security-critical and why (reference SI-XX invariants)
+
+### 5. Design rationale
+- Why the code is structured this way (when not obvious)
+- Alternatives considered and rejected
+- Known limitations and their justification
+
+## Non-obvious threshold
+
+The guiding principle: **non-obvious state machines and flows require documentation; standard things don't.**
+
+Document:
+- Multi-step protocols and negotiation flows (e.g., KEM propose/accept round-trips)
+- Monotonic or irreversible state transitions (e.g., PQ support can only be enabled, never disabled)
+- Silent error behaviors (e.g., `verify` returns `False` on algorithm mismatch instead of an error)
+- Design rationale for non-standard choices (e.g., why byte-reverse a nonce, why hash-then-encrypt for authenticators)
+
+Do NOT document:
+- Standard algorithm properties (e.g., Ed25519 public key derivable from private key)
+- Well-known protocol mechanics (e.g., HKDF usage per RFC 5869, deterministic nonce derivation in double ratchet)
+- Implementation details that follow directly from the type signatures
+
+## What NOT to include
+
+- **Type signatures** — the code has them
+- **Code snippets** — if you're pasting code, you're making a stale copy
+- **Function-by-function prose that restates the implementation** — "this function takes X and returns Y by doing Z" adds nothing
+- **Line numbers** — they're brittle and break on every edit
+- **Comments that fit in one line in source** — put those in the source file instead as `-- spec:` comments
+- **Verbatim quotes of source comments** — reference them instead: "See comment on `functionName`." Then add only what the comment doesn't cover (cross-module implications, what breaks if violated). If the source comment says everything, the function doesn't need a doc entry.
+- **Tables that reproduce code structure** — if the information is self-evident from reading the code's pattern matching or type definitions, it doesn't belong in the doc (e.g., per-command credential requirements, version-conditional encoding branches)
+
+## Format
+
+Each module doc has a header, then entries for functions/types that need documentation.
+
+```markdown
+# Module.Name
+
+> One-line description of what this module does.
+
+**Source**: [`Path/To/Module.hs`](relative link to source)
+
+## Overview
+
+[Only if the module's purpose or architecture is non-obvious.
+Skip for simple modules.]
+
+## functionName
+
+**Purpose**: [What this does that isn't obvious from the name and type]
+**Calls**: [Qualified.Name.a](link), [Qualified.Name.b](link)
+**Called by**: [Qualified.Name.c](link)
+**Invariant**: SI-XX
+**Security**: [What this function ensures for the threat model]
+
+[Free-form notes about non-obvious behavior, gotchas, etc.]
+
+## anotherFunction
+
+...
+```
+
+**For trivial modules** (< 100 LOC, no non-obvious behavior):
+
+```markdown
+# Module.Name
+
+> One-line description.
+
+**Source**: [`Path/To/Module.hs`](relative link to source)
+
+No non-obvious behavior. See source.
+```
+
+This is valuable — it confirms someone looked and found nothing to document.
+
+## Linking conventions
+
+### Module doc → protocol docs
+When a module implements or is governed by a protocol specification in `protocol/`, link to it near the top of the module doc (after the overview). Do not duplicate protocol content — just reference it:
+```markdown
+**Protocol spec**: [`protocol/pqdr.md`](../../../../protocol/pqdr.md) — Post-quantum resistant augmented double ratchet algorithm.
+```
+
+This is especially important for modules in transport, protocol, client, server, and agent layers where behavior is defined by the protocol spec rather than being self-evident from the code.
+
+### Module doc → other module docs
+Use fully qualified names as link text:
+```markdown
+[Simplex.Messaging.Server.subscribeServiceMessages](./Simplex/Messaging/Server.md#subscribeServiceMessages)
+```
+
+### Module doc → topic docs
+```markdown
+See [rcv-services](../rcv-services.md) for the end-to-end service subscription flow.
+```
+
+### Source → module doc
+
+Add `-- spec:` comments as part of the module documentation work — when you document something non-obvious, add the link in source at the same time. Two levels:
+
+**Module-level** (below the module declaration): when the Overview section has value.
+```haskell
+module Simplex.Messaging.Util (...) where
+-- spec: spec/modules/Simplex/Messaging/Util.md
+```
+
+**Function-level** (above the function): when that function has a doc entry worth pointing to.
+```haskell
+-- spec: spec/modules/Simplex/Messaging/Util.md#catchOwn
+-- Catches all exceptions except async cancellations (misleading name)
+catchOwn :: ...
+```
+
+Only add `-- spec:` comments where the module doc actually says something the code doesn't. Don't add links to "No non-obvious behavior" docs or to entries that merely restate the source.
+
+## Topic candidate tracking
+
+While documenting modules, you will notice cross-cutting patterns — behaviors that span multiple modules and can't be understood from any single one. Note these in `spec/TOPICS.md` for later. Don't write the topic doc during module work; just record:
+
+```markdown
+- **Queue rotation**: Agent.hs initiates, Client.hs sends commands, Server.hs processes,
+  Protocol.hs defines types. End-to-end flow not obvious from any single module.
+```
+
+## Quality bar
+
+Before finishing a module doc, ask:
+1. Does every entry document something NOT in the source code?
+2. Would removing any entry lose information? If not, remove it.
+3. Are cross-module relationships captured that imports alone don't reveal?
+4. Are security-critical functions flagged with invariant IDs?
+5. Is this doc short enough that someone will actually read it?
+
+If any answer reveals a problem, fix it and repeat from question 1. Only finish when a full pass produces no changes.
+
+## Terminology — the spec as translation boundary
+
+The protocol documents (`protocol/overview-tjr.md`, `protocol/simplex-messaging.md`, `protocol/agent-protocol.md`) define the canonical terminology. Code uses different names for some of the same concepts. The spec is where the translation happens.
+
+The most important distinction: SimpleX protocol routers are referred to as "servers" in code. The term "server" was adopted historically because SimpleX routers were implemented as Linux-based software that is deployed in the same way as servers. But the similarity is entirely formal. Functionally, servers serve responses to the requests of their users - that is why the term "server" was adopted for computers and software that provide Internet services. SimpleX protocol routers don't serve responses - they route packets between endpoints, and they have no concept of a user. Functionally they are similar to Internet Protocol routers, but with a resource-based addressing scheme. Further, SimpleX protocol routers are hardware and software agnostic. SimpleX protocols are open and documented, so they can be implemented in any language and run on a different architecture. For example, [SimpleGo](https://simplego.dev) is a prototype implementation of the SimpleX protocol stack in C for a microcontroller architecture.
+
+**The rule**: use protocol terms for concepts, code terms for identifiers. Write "router" when describing the network node's role, `SMPServer` or `Server.hs` when referencing code. Similarly, "router identity" for the concept (called "server key hash" or "fingerprint" in code). When the distinction matters, bridge explicitly: "the SMP router (implemented by the `Server` module)" or "the `SMPServer` type (representing a router address)."
+
+## Exclusions
+
+- **Individual migration files** (M20XXXXXX_*.hs): Self-describing SQL. No per-migration docs.
+- **Auto-generated files** (GitCommit.hs): Skip.
+- **Pure boilerplate** (Prometheus.hs metrics, Web/Embedded.hs static files): Document only if non-obvious.

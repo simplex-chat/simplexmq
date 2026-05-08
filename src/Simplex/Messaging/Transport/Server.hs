@@ -183,6 +183,7 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
       atomically $ unlessM (readTVar closed) $ modifyTVar' clients $ IM.insert cId tId
 
+-- spec: spec/modules/Simplex/Messaging/Transport/Server.md#safeaccept--errno-based-retry
 -- | Recover from errors in `accept` whenever it is safe.
 -- Some errors are safe to ignore, while blindly restaring `accept` may trigger a busy loop.
 --
@@ -224,6 +225,7 @@ getSocketStats (accepted, closed, active) = do
   let socketsLeaked = socketsAccepted - socketsClosed - socketsActive
   pure SocketStats {socketsAccepted, socketsClosed, socketsActive, socketsLeaked}
 
+-- spec: spec/modules/Simplex/Messaging/Transport/Server.md#closeserver--weak-thread-references
 closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
   close sock

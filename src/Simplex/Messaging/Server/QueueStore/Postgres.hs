@@ -169,6 +169,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           (SRMessaging, SRNotifier)
       pure EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount}
 
+  -- spec: spec/modules/Simplex/Messaging/Server/QueueStore/Postgres.md#addqueue_--no-in-memory-duplicate-check-relies-on-db-constraint
   -- this implementation assumes that the lock is already taken by addQueue
   -- and relies on unique constraints in the database to prevent duplicate IDs.
   addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)

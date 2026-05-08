@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/SNTRUP761.md
 module Simplex.Messaging.Crypto.SNTRUP761
   ( KEMHybridSecret (..),
     kcbDecrypt,
@@ -22,6 +23,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 
 newtype KEMHybridSecret = KEMHybridSecret ScrubbedBytes
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/SNTRUP761.md#kcbencrypt--kcbdecrypt
 -- | NaCl @crypto_box@ decrypt with a shared hybrid DH + KEM secret and 192-bit nonce.
 kcbDecrypt :: KEMHybridSecret -> CbNonce -> ByteString -> Either CryptoError ByteString
 kcbDecrypt (KEMHybridSecret k) = sbDecrypt_ k
@@ -30,6 +32,7 @@ kcbDecrypt (KEMHybridSecret k) = sbDecrypt_ k
 kcbEncrypt :: KEMHybridSecret -> CbNonce -> ByteString -> Int -> Either CryptoError ByteString
 kcbEncrypt (KEMHybridSecret k) = sbEncrypt_ k
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/SNTRUP761.md#kemhybridsecret
 kemHybridSecret :: PublicKeyX25519 -> PrivateKeyX25519 -> KEMSharedKey -> KEMHybridSecret
 kemHybridSecret k pk (KEMSharedKey kem) =
   let DhSecretX25519 dh = C.dh' k pk

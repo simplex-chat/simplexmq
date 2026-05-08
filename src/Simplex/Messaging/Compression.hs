@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+-- spec: spec/modules/Simplex/Messaging/Compression.md
 module Simplex.Messaging.Compression
   ( Compressed,
     maxLengthPassthrough,
@@ -49,6 +50,8 @@ decompressedSize = \case
   Passthrough bs -> Just $ B.length bs
   Compressed (Large bs) -> Z1.decompressedSize bs
 
+-- spec: spec/modules/Simplex/Messaging/Compression.md#decompress1
+-- Decompression bomb protection: refuses data without declared size or exceeding limit
 decompress1 :: Compressed -> Either String ByteString
 decompress1 = \case
   Passthrough bs -> Right bs
