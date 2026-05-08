@@ -91,7 +91,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>))
+import Simplex.Messaging.Util (eitherToMaybe, firstRow, ifM, maybeFirstRow, maybeFirstRow', tshow, (<$$>), ($>>=))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -503,6 +503,32 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       updateQueueRec q' = do
         atomically $ writeTVar (queueRec sq) $ Just q'
         withLog "setQueueService" st $ \sl -> logQueueService sl rId party serviceId
+
+  setQueueServices :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (M.Map RecipientId (Either ErrorType ())))
+  setQueueServices _ _ _ [] = pure $ Right M.empty
+  setQueueServices st party serviceId qs = E.uninterruptibleMask_ $ runExceptT $ do
+    updated <- S.fromList <$> withDB' "setQueueServices" st (\db ->
+      map fromOnly <$> DB.query db updateQuery (serviceId, In (map recipientId qs)))
+    results <- liftIO $ forM qs $ \sq -> do
+      let rId = recipientId sq
+      (rId,) <$> if S.member rId updated
+        then readQueueRecIO (queueRec sq) $>>= \q -> do
+          atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
+          withLog "setQueueServices" st $ \sl -> logQueueService sl rId party serviceId
+          pure $ Right ()
+        else pure $ Left AUTH
+    pure $ M.fromList results
+    where
+      updateQuery = case party of
+        SRecipientService ->
+          "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"
+        SNotifierService ->
+          "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id IN ? AND notifier_id IS NOT NULL AND deleted_at IS NULL RETURNING recipient_id"
+      updateRec q = case party of
+        SRecipientService -> q {rcvServiceId = serviceId}
+        SNotifierService -> case notifier q of
+          Just nc -> q {notifier = Just nc {ntfServiceId = serviceId}}
+          Nothing -> q
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
