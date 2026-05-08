@@ -110,6 +110,7 @@ import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, authCmdsSMPVersion, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, sendingProxySMPVersion, sndAuthKeySMPVersion, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
@@ -405,6 +406,7 @@ functionalAPITests ps = do
       it "should expire multiple messages" $ testExpireManyMessages ps
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota ps
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota ps
+    it "should drop message after too many receive attempts" $ testDropMsgAfterRcvAttempts ps
 #if !defined(dbPostgres)
     -- TODO [postgres] restore from outdated db backup (we use copyFile/renameFile for sqlite)
     describe "Ratchet synchronization" $ do
@@ -491,6 +493,9 @@ functionalAPITests ps = do
   describe "Client service certificates" $ do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
+    it "should clear pending service sub when service unavailable" $ testServiceUnavailableClearsPending ps
+    it "should recover when service ID changes on reconnect" $ testServiceIdChangeOnReconnect ps
+    it "should handle service unavailable on startup" $ testServiceUnavailableOnStartup ps
     it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue" $
@@ -1653,10 +1658,11 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
       userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
       userLinkData = UserContactLinkData userCtData
   g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
   linkEntId <- atomically $ C.randomBytes 32 g
   runRight $ do
-    ((_rootPubKey, _rootPrivKey), ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
-      A.prepareConnectionLink a 1 (Just linkEntId) True Nothing
+    (ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
+      A.prepareConnectionLink a 1 rootKey linkEntId True Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
     _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData CR.IKPQOn SMSubscribe
     (FixedLinkData {linkConnReq = connReq', linkEntityId}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink
@@ -2099,6 +2105,38 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort 
   disposeAgentClient a
   where
     cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+
+testDropMsgAfterRcvAttempts :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testDropMsgAfterRcvAttempts ps =
+  withSmpServerStoreLogOn ps testPort $ \_ -> do
+    let rcvCfg = agentCfg {rcvExpireCount = 2, rcvExpireInterval = 1}
+    alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+    bob <- getSMPAgentClient' 2 rcvCfg initAgentServers testDB2
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    -- alice sends, bob receives but does NOT ack
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    -- bob disconnects without acking
+    disposeAgentClient bob
+    threadDelay 500000
+    -- bob reconnects, agent sees duplicate, counter=1
+    bob2 <- getSMPAgentClient' 3 rcvCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob2 aliceId
+      get bob2 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    -- bob disconnects again without acking
+    disposeAgentClient bob2
+    -- wait for rcvExpireInterval (1 second)
+    threadDelay 500000
+    -- bob reconnects, agent sees duplicate, counter=2, interval exceeded -> drops
+    bob3 <- getSMPAgentClient' 4 rcvCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob3 aliceId
+      get bob3 =##> \case ("", c, ERR (AGENT (A_DUPLICATE (Just DroppedMsg {})))) -> c == aliceId; _ -> False
+    disposeAgentClient bob3
+    disposeAgentClient alice
 
 testRatchetSync :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testRatchetSync ps = withAgentClients2 $ \alice bob ->
@@ -2735,7 +2773,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
         newLinkData = UserContactLinkData userCtData
     (_, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
     -- get link data async - creates new connection for bob
-    newId <- getConnShortLinkAsync bob 1 "1" shortLink
+    newId <- getConnShortLinkAsync bob 1 "1" Nothing shortLink
     ("1", newId', LDATA FixedLinkData {linkConnReq = qInfo'} (ContactLinkData _ userCtData')) <- get bob
     liftIO $ newId' `shouldBe` newId
     liftIO $ qInfo' `shouldBe` qInfo
@@ -3223,7 +3261,7 @@ phase c connId d p statsExpectation =
         d `shouldBe` d'
         p `shouldBe` p'
         statsExpectation stats
-      ERR (AGENT A_DUPLICATE) -> phase c connId d p statsExpectation
+      ERR (AGENT A_DUPLICATE {}) -> phase c connId d p statsExpectation
       r -> do
         liftIO . putStrLn $ "expected: " <> show p <> ", received: " <> show r
         SWITCH {} <- pure r
@@ -3904,6 +3942,131 @@ testClientServiceIDChange ps@(_, ASType qs _) = do
       subscribeAllConnections user False Nothing
       ("", "", UP _ [_]) <- nGet user
       exchangeGreetingsMsgId 6 notService uId user sId
+
+-- | Test that service subscription is correctly cleared and re-established
+-- when server temporarily stops supporting services (askClientCert = False).
+testServiceUnavailableClearsPending :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceUnavailableClearsPending (t, msType) = do
+  -- Same agent across all phases to test pendingServiceSub persistence
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    -- Phase 1: Establish connection with active service subscription on normal server
+    (_sId, _uId) <- withSmpServerStoreLogOn (t, msType) testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    -- Phase 2: Server without service support: agent gets NO_SERVICE, queue resubscribed without service
+    let cfgNoService = updateCfg (cfgMS msType) $ \(cfg' :: ServerConfig s) ->
+          let ServerConfig {transportConfig} = cfg'
+           in cfg' {transportConfig = transportConfig {askClientCert = False}} :: ServerConfig s
+    withSmpServerConfigOn t cfgNoService testPort $ \_ -> do
+      ("", "", ERR (BROKER _ NO_SERVICE)) <- get service
+      ("", "", UP _ [_]) <- nGet service
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    ("", "", DOWN _ [_]) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    -- Phase 3: Server with service support restored: only queue subscription, no service subscription
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> do
+      e1 <- nGet service
+      case e1 of
+        ("", "", UP _ [_]) -> pure () -- Fixed: only queue subscription, no service subscription
+        ("", "", SERVICE_UP _ _) ->
+          expectationFailure "pendingServiceSub not cleared, service subscription attempted again"
+        ("", "", SERVICE_ALL _) ->
+          expectationFailure "pendingServiceSub not cleared, service subscription attempted again"
+        other -> expectationFailure $ "Unexpected first event: " <> show other
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    -- Phase 4: After another reconnect cycle, service subscription is re-established
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ _)) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+
+-- | Test that service subscription recovers when service ID changes on reconnect.
+-- Server restart with deleted service causes new service ID, triggering SSErrorServiceId.
+-- Queues should be unassociated, resubscribed, and re-associated with new service.
+testServiceIdChangeOnReconnect :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceIdChangeOnReconnect ps@(_, ASType qs _) = do
+  withAgentClientsServers2 (agentCfg, initAgentServersClientService) (agentCfg, initAgentServers) $ \service user -> do
+    -- Phase 1: Establish connection with active service subscription
+    (_sId, _uId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    -- Delete service from server storage, keeping queues
+    _ :: () <- case qs of
+      SQSPostgres -> do
+#if defined(dbServerPostgres)
+        st <- either (error . show) pure =<< Postgres.createDBStore testStoreDBOpts serverMigrations (MigrationConfig MCError Nothing)
+        void $ Postgres.withTransaction st (`PSQL.execute_` "DELETE FROM services")
+#else
+        pure ()
+#endif
+      SQSMemory -> do
+        s <- readFile testStoreLogFile
+        removeFile testStoreLogFile
+        writeFile testStoreLogFile $ unlines $ filter (not . ("NEW_SERVICE" `isPrefixOf`)) $ lines s
+    -- Phase 2: Server restart with deleted service - new service ID, SSErrorServiceId
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      ("", "", SERVICE_UP _ _) <- nGet service
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+    -- Phase 3: Normal reconnect - service should subscribe normally
+    ("", "", SERVICE_DOWN _ _) <- nGet service
+    ("", "", DOWN _ [_]) <- nGet user
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      liftIO $ getInAnyOrder service
+        [ \case ("", "", AEvt SAENone (SERVICE_UP _ _)) -> True; _ -> False,
+          \case ("", "", AEvt SAENone (SERVICE_ALL _)) -> True; _ -> False
+        ]
+      ("", "", UP _ [_]) <- nGet user
+      pure ()
+
+-- | Test that subscribeAllConnections handles service unavailable on startup.
+-- Agent has service credentials but server doesn't support services (askClientCert = False).
+testServiceUnavailableOnStartup :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceUnavailableOnStartup (t, msType) = do
+  let srv = initAgentServersClientService
+      noSrv = initAgentServers
+  -- Phase 1: Establish connection with service
+  (sId, uId) <- withAgentClientsServers2 (agentCfg, srv) (agentCfg, noSrv) $ \service user ->
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> runRight $ do
+      conns@(sId, uId) <- makeConnection service user
+      exchangeGreetings service uId user sId
+      pure conns
+  -- Phase 2: Server without service support, new service agent
+  let cfgNoService = updateCfg (cfgMS msType) $ \(cfg' :: ServerConfig s) ->
+        let ServerConfig {transportConfig} = cfg'
+         in cfg' {transportConfig = transportConfig {askClientCert = False}} :: ServerConfig s
+  -- Phase 2: Server without service support, service agent gets NO_SERVICE
+  withAgentClientsServers2 (agentCfg, srv) (agentCfg, noSrv) $ \service user ->
+    withSmpServerConfigOn t cfgNoService testPort $ \_ -> runRight $ do
+      subscribeAllConnections service False Nothing
+      ("", "", ERR (BROKER _ NO_SERVICE)) <- get service
+      ("", "", UP _ [_]) <- nGet service
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 4 service uId user sId
+  -- Phase 3: Normal server - cert was deleted, new cert generated,
+  -- no service sub in DB yet, queues subscribed individually
+  withAgentClientsServers2 (agentCfg, srv) (agentCfg, noSrv) $ \service user ->
+    withSmpServerStoreLogOn (t, msType) testPort $ \_ -> runRight $ do
+      liftIO $ threadDelay 250000
+      subscribeAllConnections service False Nothing
+      ("", "", UP _ [_]) <- nGet service
+      subscribeAllConnections user False Nothing
+      ("", "", UP _ [_]) <- nGet user
+      exchangeGreetingsMsgId 6 service uId user sId
 
 testMigrateConnectionsToService :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testMigrateConnectionsToService ps = do

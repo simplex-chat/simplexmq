@@ -34,6 +34,7 @@ Routers are the network infrastructure — they accept, buffer, and deliver pack
 - **XFTP routers** accept and deliver data packets over HTTP/2 — individually addressed blocks in fixed sizes (64KB–4MB) for larger payloads. Protocol: [XFTP](./protocol/xftp.md). Module spec: [`Simplex.FileTransfer.Server`](./spec/modules/Simplex/FileTransfer/Server.md).
 - **NTF routers** bridge to platform push services (APNS) for mobile notification delivery. Protocol: [Push Notifications](./protocol/push-notifications.md). Module spec: [`Simplex.Messaging.Notifications.Server`](./spec/modules/Simplex/Messaging/Notifications/Server.md).
 
+
 #### Running an SMP router
 
 [SMP server](./apps/smp-server/Main.hs) runs on any Linux distribution. OpenSSL is required for initialization.

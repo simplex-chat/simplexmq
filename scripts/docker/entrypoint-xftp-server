@@ -76,7 +76,7 @@ if [ ! -f "${confd}/file-server.ini" ]; then
 
   # Optionally, set password
   if [ -n "${PASS}" ]; then
-    sed -i -e "/^# create_password:/a create_password: $PASS" \
+    sed -i -e "/^# create_password =/a create_password = $PASS" \
            "${confd}/file-server.ini"
   fi
 fi

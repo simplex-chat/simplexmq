@@ -143,6 +143,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionErrorType (..),
     BrokerErrorType (..),
     SMPAgentError (..),
+    DroppedMsg (..),
     AgentCryptoError (..),
     cryptoErrToSyncState,
     ATransmission,
@@ -795,6 +796,12 @@ data MsgMeta = MsgMeta
     broker :: (MsgId, UTCTime),
     sndMsgId :: AgentMsgId,
     pqEncryption :: PQEncryption
+  }
+  deriving (Eq, Show)
+
+data DroppedMsg = DroppedMsg
+  { brokerTs :: UTCTime,
+    attempts :: Int
   }
   deriving (Eq, Show)
 
@@ -2051,12 +2058,13 @@ data SMPAgentError
     A_LINK {linkErr :: String}
   | -- | cannot decrypt message
     A_CRYPTO {cryptoErr :: AgentCryptoError}
-  | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown
-    -- it may also indicate a loss of ratchet synchronization (when only one message is sent via copied ratchet)
-    A_DUPLICATE
+  | -- | duplicate message - this error is detected by ratchet decryption - this message will be ignored and not shown.
+    -- it may also indicate a loss of ratchet synchronization (when only one message is sent via copied ratchet).
+    -- when message is dropped after too many reception attempts, DroppedMsg is included.
+    A_DUPLICATE {droppedMsg_ :: Maybe DroppedMsg}
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
-  deriving (Eq, Read, Show, Exception)
+  deriving (Eq, Show, Exception)
 
 data AgentCryptoError
   = -- | AES decryption error
@@ -2165,6 +2173,8 @@ $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
+
+$(J.deriveJSON defaultJSON ''DroppedMsg)
 
 $(J.deriveJSON (sumTypeJSON id) ''SMPAgentError)
 

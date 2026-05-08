@@ -381,6 +381,7 @@ groupAllOn f = groupOn f . sortOn f
 -- n must be > 0
 toChunks :: Int -> [a] -> [NonEmpty a]
 toChunks _ [] = []
+toChunks 0 (x : xs) = [x :| xs]
 toChunks n xs =
   let (ys, xs') = splitAt n xs
    in maybe id (:) (L.nonEmpty ys) (toChunks n xs')

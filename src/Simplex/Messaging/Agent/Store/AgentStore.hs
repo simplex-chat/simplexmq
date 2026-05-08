@@ -140,6 +140,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setMsgUserAck,
     getRcvMsg,
     getLastMsg,
+    incMsgRcvAttempts,
     checkRcvMsgHashExists,
     getRcvMsgBrokerTs,
     deleteMsg,
@@ -410,23 +411,23 @@ deleteUsersWithoutConns db = do
   forM_ userIds $ DB.execute db "DELETE FROM users WHERE user_id = ?" . Only
   pure userIds
 
-createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ()
-createClientService db userId srv (kh, (cert, pk)) = do
+createClientService :: DB.Connection -> UserId -> SMPServer -> (C.KeyHash, TLS.Credential) -> IO ((C.KeyHash, TLS.Credential), Maybe ServiceId)
+createClientService db userId srv tlsCreds@(kh, (cert, pk)) = do
   serverKeyHash_ <- createServer db srv
-  DB.execute
-    db
-    [sql|
-      INSERT INTO client_services
-        (user_id, host, port, server_key_hash, service_cert_hash, service_cert, service_priv_key)
-      VALUES (?,?,?,?,?,?,?)
-      ON CONFLICT (user_id, host, port, server_key_hash)
-      DO UPDATE SET
-        service_cert_hash = EXCLUDED.service_cert_hash,
-        service_cert = EXCLUDED.service_cert,
-        service_priv_key = EXCLUDED.service_priv_key,
-        service_id = NULL
-    |]
-    (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
+  (rs :: [Only Int]) <-
+    DB.query
+      db
+      [sql|
+        INSERT INTO client_services
+          (user_id, host, port, server_key_hash, service_cert_hash, service_cert, service_priv_key)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT (user_id, host, port, server_key_hash) DO NOTHING
+        RETURNING 1
+      |]
+      (userId, host srv, port srv, serverKeyHash_, kh, cert, pk)
+  if null rs
+    then fromMaybe (tlsCreds, Nothing) <$> getClientServiceCredentials db userId srv
+    else pure (tlsCreds, Nothing)
 
 getClientServiceCredentials :: DB.Connection -> UserId -> SMPServer -> IO (Maybe ((C.KeyHash, TLS.Credential), Maybe ServiceId))
 getClientServiceCredentials db userId srv =
@@ -575,7 +576,7 @@ checkConfirmedSndQueueExists_ db SndQueue {server, sndId} =
     DB.query
       db
       ( "SELECT 1 FROM snd_queues WHERE host = ? AND port = ? AND snd_id = ? AND status != ? LIMIT 1"
-#if defined(dpPostgres)
+#if defined(dbPostgres)
           <> " FOR UPDATE"
 #endif
       )
@@ -1225,6 +1226,19 @@ toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, 
   let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
+
+incMsgRcvAttempts :: DB.Connection -> ConnId -> InternalId -> IO Int
+incMsgRcvAttempts db connId (InternalId msgId) =
+  fromOnly . head
+    <$> DB.query
+      db
+      [sql|
+        UPDATE rcv_messages
+        SET receive_attempts = receive_attempts + 1
+        WHERE conn_id = ? AND internal_id = ?
+        RETURNING receive_attempts
+      |]
+      (connId, msgId)
 
 checkRcvMsgHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRcvMsgHashExists db connId hash =
@@ -2336,14 +2350,14 @@ getSubscriptionServers db onlyNeeded =
     toUserServer (userId, host, port, keyHash) = (userId, SMPServer host port keyHash)
 
 -- TODO [certs rcv] check index for getting queues with service present
-getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService =
-  map toRcvQueueSub
-    <$> DB.query
-      db
-      (rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond)
-      (userId, h, p, kh)
+getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> Int -> Maybe SMP.RecipientId -> IO [RcvQueueSub]
+getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService limit cursor_ =
+  map toRcvQueueSub <$> case cursor_ of
+    Nothing -> DB.query db (q <> orderLimit) (userId, h, p, kh, limit)
+    Just cursor -> DB.query db (q <> " AND q.rcv_id > ? " <> orderLimit) (userId, h, p, kh, cursor, limit)
   where
+    q = rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond
+    orderLimit = " ORDER BY q.rcv_id LIMIT ?"
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
       | otherwise = " WHERE "
@@ -2354,18 +2368,28 @@ getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService =
 unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [RcvQueueSub]
 unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   deleteClientService db userId srv
+#if defined(dbPostgres)
   map toRcvQueueSub
     <$> DB.query
       db
-      (removeRcvAssocsQuery <> " " <> returningColums)
+      (removeRcvAssocsQuery <> " " <> returningColumns)
       (h, p, userId, kh)
   where
-    returningColums =
+    returningColumns =
       [sql|
         RETURNING c.user_id, rcv_queues.conn_id, rcv_queues.host, rcv_queues.port, COALESCE(rcv_queues.server_key_hash, s.key_hash),
           rcv_queues.rcv_id, rcv_queues.rcv_private_key, rcv_queues.status, c.enable_ntfs, rcv_queues.client_notice_id,
           rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
       |]
+#else
+  qs <- map toRcvQueueSub
+    <$> DB.query
+      db
+      (rcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
+      (userId, h, p, kh)
+  DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
+  pure qs
+#endif
 
 unassocUserServerRcvQueueSubs' :: DB.Connection -> UserId -> SMPServer -> IO ()
 unassocUserServerRcvQueueSubs' db userId srv@(SMPServer h p kh) = do
@@ -2376,7 +2400,7 @@ unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
 setRcvServiceAssocs :: SMPQueue q => DB.Connection -> [q] -> IO ()
-setRcvServiceAssocs db rqs =
+setRcvServiceAssocs db rqs = do
 #if defined(dbPostgres)
   DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN ?" $ Only $ In (map queueId rqs)
 #else

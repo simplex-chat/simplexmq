@@ -169,10 +169,12 @@ data AgentConfig = AgentConfig
     ntfBatchSize :: Int,
     ntfSubFirstCheckInterval :: NominalDiffTime,
     ntfSubCheckInterval :: NominalDiffTime,
-    maxPendingSubscriptions :: Int,
+    subsBatchSize :: Int,
     caCertificateFile :: FilePath,
     privateKeyFile :: FilePath,
     certificateFile :: FilePath,
+    rcvExpireCount :: Int,
+    rcvExpireInterval :: NominalDiffTime,
     e2eEncryptVRange :: VersionRangeE2E,
     smpAgentVRange :: VersionRangeSMPA,
     smpClientVRange :: VersionRangeSMPC
@@ -242,12 +244,14 @@ defaultAgentConfig =
       ntfBatchSize = 150,
       ntfSubFirstCheckInterval = nominalDay,
       ntfSubCheckInterval = 3 * nominalDay,
-      maxPendingSubscriptions = 35000,
+      subsBatchSize = 1350,
       -- CA certificate private key is not needed for initialization
       -- ! we do not generate these
       caCertificateFile = "/etc/opt/simplex-agent/ca.crt",
       privateKeyFile = "/etc/opt/simplex-agent/agent.key",
       certificateFile = "/etc/opt/simplex-agent/agent.crt",
+      rcvExpireCount = 8,
+      rcvExpireInterval = nominalDay,
       e2eEncryptVRange = supportedE2EEncryptVRange,
       smpAgentVRange = supportedSMPAgentVRange,
       smpClientVRange = supportedSMPClientVRange

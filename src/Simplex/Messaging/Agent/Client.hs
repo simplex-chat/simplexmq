@@ -625,9 +625,7 @@ getServiceCredentials c userId srv =
             Just service -> pure service
             Nothing -> do
               cred <- genCredentials g Nothing (25, 24 * 999999) "simplex"
-              let tlsCreds = tlsCredentials [cred]
-              createClientService db userId srv tlsCreds
-              pure (tlsCreds, Nothing)
+              createClientService db userId srv $ tlsCredentials [cred]
       serviceSignKey <- liftEitherWith INTERNAL $ C.x509ToPrivate' $ snd serviceCreds
       let creds = ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash = XV.Fingerprint kh, serviceSignKey}
       pure (creds, serviceId_)
@@ -810,13 +808,17 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
         (Just <$> getSessVar workerSeq tSess smpSubWorkers ts)
     newSubWorker v = do
-      a <- async $ void (E.tryAny runSubWorker) >> atomically (cleanup v)
+      a <- async $ void $ E.tryAny $ runSubWorker v
       atomically $ putTMVar (sessionVar v) a
-    runSubWorker = do
+    runSubWorker v = do
       ri <- asks $ reconnectInterval . config
       withRetryForeground ri isForeground (isNetworkOnline c) $ \_ loop -> do
-        (pendingSubs, pendingSS) <- atomically $ SS.getPendingSubs tSess $ currentSubs c
-        unless (M.null pendingSubs && isNothing pendingSS) $ do
+        pending_ <- atomically $ do
+          pending@(pendingSubs, pendingSS) <- SS.getPendingSubs tSess $ currentSubs c
+          if M.null pendingSubs && isNothing pendingSS
+            then cleanup v $> Nothing
+            else pure $ Just pending
+        forM_ pending_ $ \(pendingSubs, pendingSS) -> do
           liftIO $ waitUntilForeground c
           liftIO $ waitForUserNetwork c
           mapM_ (handleNotify . void . runExceptT . resubscribeClientService c tSess) pendingSS
@@ -1659,9 +1661,15 @@ checkQueues c = fmap partitionEithers . mapM checkQueue
 resubscribeSessQueues :: AgentClient -> SMPTransportSession -> [RcvQueueSub] -> AM' ()
 resubscribeSessQueues _ _ [] = pure ()
 resubscribeSessQueues c tSess qs = do
+  batchSize <- asks $ subsBatchSize . config
   (errs, qs_) <- checkQueues c qs
-  forM_ (L.nonEmpty qs_) $ \qs' -> void $ subscribeSessQueues_ c True (tSess, qs')
+  subscribeChunks $ toChunks batchSize qs_
   forM_ (L.nonEmpty errs) $ notifySub c . ERRS . L.map (first qConnId)
+  where
+    subscribeChunks [] = pure ()
+    subscribeChunks (qs' : rest) = do
+      (_, active) <- subscribeSessQueues_ c True (tSess, qs')
+      when active $ subscribeChunks rest
 
 subscribeSessQueues_ :: AgentClient -> Bool -> (SMPTransportSession, NonEmpty RcvQueueSub) -> AM' (BatchResponses RcvQueueSub AgentErrorType (Maybe ServiceId), Bool)
 subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c NRMBackground qs
@@ -1710,7 +1718,7 @@ processRcvServiceAssocs :: SMPQueue q => AgentClient -> [q] -> AM' ()
 processRcvServiceAssocs _ [] = pure ()
 processRcvServiceAssocs c serviceQs =
   withStore' c (`setRcvServiceAssocs` serviceQs) `catchAllErrors'` \e -> do
-    logError $ "processClientNotices error: " <> tshow e
+    logError $ "processRcvServiceAssocs error: " <> tshow e
     notifySub' c "" $ ERR e
 
 processClientNotices :: AgentClient -> SMPTransportSession -> [(RcvQueueSub, Maybe ClientNotice)] -> AM' ()
@@ -1726,20 +1734,33 @@ processClientNotices c@AgentClient {presetServers} tSess notices = do
 
 resubscribeClientService :: AgentClient -> SMPTransportSession -> ServiceSub -> AM ServiceSubResult
 resubscribeClientService c tSess@(userId, srv, _) serviceSub =
-  tryAllErrors (withServiceClient c tSess $ \smp _ -> subscribeClientService_ c True tSess smp serviceSub) >>= \case
+  tryAllErrors (withServiceClient c tSess subscribeOrUpdate) >>= \case
     Right r@(ServiceSubResult e _) -> case e of
-      Just SSErrorServiceId {} -> unassocSubscribeQueues $> r
+      Just SSErrorServiceId {} ->
+        r <$ withStore' c (\db -> removeRcvServiceAssocs db userId srv)
       _ -> pure r
     Left e -> do
-      when (clientServiceError e) $ unassocSubscribeQueues
       atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
+      when (clientServiceError e) $ do
+        atomically $ SS.deleteServiceSub tSess $ currentSubs c
+        unassocSubscribeQueues
       throwE e
   where
+    subscribeOrUpdate smp connServiceId
+      | connServiceId == SMP.smpServiceId serviceSub =
+          subscribeClientService_ c True tSess smp serviceSub
+      | otherwise = do
+          let newServiceSub = SMP.ServiceSub connServiceId 0 mempty
+              sessId = sessionId $ thParams smp
+              r = serviceSubResult serviceSub newServiceSub
+          atomically $ whenM (activeClientSession c tSess sessId) $
+            SS.setActiveServiceSub tSess sessId newServiceSub $ currentSubs c
+          notifySub c $ SERVICE_UP srv r
+          pure r
     unassocSubscribeQueues = do
       qs <- withStore' c $ \db -> unassocUserServerRcvQueueSubs db userId srv
       void $ lift $ subscribeUserServerQueues c userId srv qs
 
--- TODO [certs rcv] update service in the database if it has different ID and re-associate queues, and send event
 subscribeClientService :: AgentClient -> Bool -> UserId -> SMPServer -> ServiceSub -> AM ServiceSubResult
 subscribeClientService c withEvent userId srv (ServiceSub _ n idsHash) =
   withServiceClient c tSess $ \smp smpServiceId -> do
@@ -2213,7 +2234,7 @@ cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE "CryptoLargeMsgError"
   C.CryptoHeaderError _ -> AGENT A_MESSAGE -- parsing error
-  C.CERatchetDuplicateMessage -> AGENT A_DUPLICATE
+  C.CERatchetDuplicateMessage -> AGENT $ A_DUPLICATE Nothing
   C.AESDecryptError -> c DECRYPT_AES
   C.CBDecryptError -> c DECRYPT_CB
   C.CERatchetHeader -> c RATCHET_HEADER

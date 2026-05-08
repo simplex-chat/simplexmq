@@ -8,6 +8,8 @@ module Simplex.Messaging.Compression
     compressionLevel,
     compress1,
     decompress1,
+    limitDecompress1,
+    decompressedSize,
   ) where
 
 import qualified Codec.Compression.Zstd as Z1
@@ -43,14 +45,27 @@ compress1 bs
   | B.length bs <= maxLengthPassthrough = Passthrough bs
   | otherwise = Compressed . Large $ Z1.compress compressionLevel bs
 
+decompressedSize :: Compressed -> Maybe Int
+decompressedSize = \case
+  Passthrough bs -> Just $ B.length bs
+  Compressed (Large bs) -> Z1.decompressedSize bs
+
 -- spec: spec/modules/Simplex/Messaging/Compression.md#decompress1
 -- Decompression bomb protection: refuses data without declared size or exceeding limit
-decompress1 :: Int -> Compressed -> Either String ByteString
-decompress1 limit = \case
+decompress1 :: Compressed -> Either String ByteString
+decompress1 = \case
+  Passthrough bs -> Right bs
+  Compressed (Large bs) -> decompress_ bs
+
+limitDecompress1 :: Int -> Compressed -> Either String ByteString
+limitDecompress1 limit = \case
   Passthrough bs -> Right bs
   Compressed (Large bs) -> case Z1.decompressedSize bs of
-    Just sz | sz <= limit -> case Z1.decompress bs of
-      Z1.Error e -> Left e
-      Z1.Skip -> Right mempty
-      Z1.Decompress bs' -> Right bs'
+    Just sz | sz <= limit -> decompress_ bs
     _ -> Left $ "compressed size not specified or exceeds " <> show limit
+
+decompress_ :: ByteString -> Either String ByteString
+decompress_ bs = case Z1.decompress bs of
+  Z1.Error e -> Left e
+  Z1.Skip -> Right mempty
+  Z1.Decompress bs' -> Right bs'

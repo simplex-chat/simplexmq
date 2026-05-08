@@ -45,12 +45,13 @@ import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, 
 import Test.Hspec hiding (fit, it)
 import Util
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig)
+import Simplex.FileTransfer.Server.Store (STMFileStore)
 import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpTestPort)
 import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAgent)
 import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Protocol (AEvent (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
-import XFTPCLI (recipientFiles, senderFiles)
+import XFTPCLI (recipientFiles, senderFiles, testBracket)
 import qualified Simplex.Messaging.Crypto.File as CF
 
 xftpWebDir :: FilePath
@@ -167,8 +168,8 @@ impAddr = "import * as Addr from './dist/protocol/address.js';"
 jsOut :: String -> String
 jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
 
-xftpWebTests :: Spec
-xftpWebTests = do
+xftpWebTests :: IO () -> Spec
+xftpWebTests dbCleanup = do
   distExists <- runIO $ doesDirectoryExist (xftpWebDir <> "/dist")
   if distExists
     then do
@@ -187,7 +188,7 @@ xftpWebTests = do
       tsClientTests
       tsDownloadTests
       tsAddressTests
-      tsIntegrationTests
+      tsIntegrationTests dbCleanup
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
@@ -2829,8 +2830,9 @@ tsAddressTests = describe "protocol/address" $ do
 
 -- ── integration ───────────────────────────────────────────────────
 
-tsIntegrationTests :: Spec
-tsIntegrationTests = describe "integration" $ do
+tsIntegrationTests :: IO () -> Spec
+tsIntegrationTests dbCleanup = describe "integration" $
+  around_ testBracket . after_ dbCleanup $ do
   it "web handshake with Ed25519 identity verification" $
     webHandshakeTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "web handshake with Ed448 identity verification" $
@@ -2853,7 +2855,7 @@ tsIntegrationTests = describe "integration" $ do
   it "cross-language: Haskell upload, TS download" $
     haskellUploadTsDownloadTest testXFTPServerConfigSNI
 
-webHandshakeTest :: XFTPServerConfig -> FilePath -> Expectation
+webHandshakeTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 webHandshakeTest cfg caFile = do
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
@@ -2894,7 +2896,7 @@ webHandshakeTest cfg caFile = do
           <> jsOut "new Uint8Array([idOk ? 1 : 0, ack.length === 0 ? 1 : 0])"
     result `shouldBe` B.pack [1, 1]
 
-pingTest :: XFTPServerConfig -> FilePath -> Expectation
+pingTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 pingTest cfg caFile = do
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
@@ -2916,7 +2918,7 @@ pingTest cfg caFile = do
           <> jsOut "new Uint8Array([1])"
     result `shouldBe` B.pack [1]
 
-fullRoundTripTest :: XFTPServerConfig -> FilePath -> Expectation
+fullRoundTripTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 fullRoundTripTest cfg caFile = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
@@ -2997,7 +2999,7 @@ agentURIRoundTripTest = do
         <> jsOut "new Uint8Array([match])"
   result `shouldBe` B.pack [1]
 
-agentUploadDownloadTest :: XFTPServerConfig -> FilePath -> Expectation
+agentUploadDownloadTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 agentUploadDownloadTest cfg caFile = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
@@ -3030,7 +3032,7 @@ agentUploadDownloadTest cfg caFile = do
           <> jsOut "new Uint8Array([nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1]
 
-agentDeleteTest :: XFTPServerConfig -> FilePath -> Expectation
+agentDeleteTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 agentDeleteTest cfg caFile = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
@@ -3062,7 +3064,7 @@ agentDeleteTest cfg caFile = do
           <> jsOut "new Uint8Array([deleted])"
     result `shouldBe` B.pack [1]
 
-agentRedirectTest :: XFTPServerConfig -> FilePath -> Expectation
+agentRedirectTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 agentRedirectTest cfg caFile = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
@@ -3096,7 +3098,7 @@ agentRedirectTest cfg caFile = do
           <> jsOut "new Uint8Array([hasRedirect, nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1, 1]
 
-tsUploadHaskellDownloadTest :: XFTPServerConfig -> FilePath -> Expectation
+tsUploadHaskellDownloadTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 tsUploadHaskellDownloadTest cfg caFile = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   createDirectoryIfMissing False recipientFiles
@@ -3131,7 +3133,7 @@ tsUploadHaskellDownloadTest cfg caFile = do
       downloadedData <- B.readFile outPath
       downloadedData `shouldBe` originalData
 
-tsUploadRedirectHaskellDownloadTest :: XFTPServerConfig -> FilePath -> Expectation
+tsUploadRedirectHaskellDownloadTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
 tsUploadRedirectHaskellDownloadTest cfg caFile = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   createDirectoryIfMissing False recipientFiles
@@ -3166,7 +3168,7 @@ tsUploadRedirectHaskellDownloadTest cfg caFile = do
       downloadedData <- B.readFile outPath
       downloadedData `shouldBe` originalData
 
-haskellUploadTsDownloadTest :: XFTPServerConfig -> Expectation
+haskellUploadTsDownloadTest :: XFTPServerConfig STMFileStore -> Expectation
 haskellUploadTsDownloadTest cfg = do
   createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   createDirectoryIfMissing False senderFiles

@@ -33,8 +33,10 @@ import Data.Foldable (foldrM)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty)
+import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
+import Text.Read (readMaybe)
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
@@ -90,6 +92,7 @@ serverTests = do
   describe "Service message subscriptions" $ do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
+    testServiceSubsTotalCount
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -717,7 +720,7 @@ testServiceDeliverSubscribe =
         signSend_ sh aServicePK Nothing ("11", serviceId, SUBS 1 idsHash)
         [mId3] <-
           fmap catMaybes $
-            receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
+            receiveInAnyOrder -- race between SOKS, MSG and ALLS (sndQ and msgQ are separate threads)
               sh
               [ \case
                   Resp "11" serviceId' (SOKS n idsHash') -> do
@@ -731,9 +734,11 @@ testServiceDeliverSubscribe =
                     rId'' `shouldBe` rId
                     dec mId3 msg3 `shouldBe` Right "hello 3"
                     pure $ Just $ Just mId3
+                  _ -> pure Nothing,
+                \case
+                  Resp "" NoEntity ALLS -> pure $ Just Nothing
                   _ -> pure Nothing
               ]
-        Resp "" NoEntity ALLS <- tGet1 sh
         Resp "12" _ OK <- signSendRecv sh rKey ("12", rId, ACK mId3)
         Resp "14" _ OK <- signSendRecv h sKey ("14", sId, _SEND "hello 4")
         Resp "" _ (Msg mId4 msg4) <- tGet1 sh
@@ -811,7 +816,7 @@ testServiceUpgradeAndDowngrade =
         signSend_ sh aServicePK Nothing ("14", serviceId, SUBS 3 idsHash)
         [(rKey3_1, rId3_1, mId3_1), (rKey3_2, rId3_2, mId3_2)] <-
           fmap catMaybes $
-            receiveInAnyOrder -- race between SOKS and MSG, clients can handle it
+            receiveInAnyOrder -- race between SOKS, MSG and ALLS (sndQ and msgQ are separate threads)
               sh
               [ \case
                   Resp "14" serviceId' (SOKS n idsHash') -> do
@@ -829,9 +834,11 @@ testServiceUpgradeAndDowngrade =
                   Resp "" rId'' (Msg mId3 msg3) | rId'' == rId2 -> do
                     dec2 mId3 msg3 `shouldBe` Right "hello 3.2"
                     pure $ Just $ Just (rKey2, rId2, mId3)
+                  _ -> pure Nothing,
+                \case
+                  Resp "" NoEntity ALLS -> pure $ Just Nothing
                   _ -> pure Nothing
               ]
-        Resp "" NoEntity ALLS <- tGet1 sh
         Resp "15" _ OK <- signSendRecv sh rKey3_1 ("15", rId3_1, ACK mId3_1)
         Resp "16" _ OK <- signSendRecv sh rKey3_2 ("16", rId3_2, ACK mId3_2)
         pure ()
@@ -857,6 +864,86 @@ testServiceUpgradeAndDowngrade =
         dec mId6 msg6 `shouldBe` Right "hello 6"
         Resp "25" _ OK <- signSendRecv sh rKey ("25", rId, ACK mId6)
         pure ()
+
+testServiceSubsTotalCount :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCount =
+  it "should track totalServiceSubs correctly via SUBS and SUB" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \h -> do
+      -- Phase 1: create 2 queues as service, reconnect with SUBS, check metric = 2
+      (rPub1, rKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub1, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rPub2, rKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub2, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+
+      (rId1, rId2, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId1 _sId1 _srvDh1 serviceId) <- serviceSignSendRecv sh rKey1 servicePK ("1", NoEntity, New rPub1 dhPub1)
+        Resp "2" NoEntity (Ids_ rId2 _sId2 _srvDh2 serviceId') <- serviceSignSendRecv sh rKey2 servicePK ("2", NoEntity, New rPub2 dhPub2)
+        serviceId' `shouldBe` serviceId
+        pure (rId1, rId2, serviceId)
+
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        let idsHash = queueIdsHash [rId1, rId2]
+        signSend_ sh aServicePK Nothing ("3", serviceId, SUBS 2 idsHash)
+        void $
+          receiveInAnyOrder sh
+            [ \case
+                Resp "3" serviceId' (SOKS n idsHash') -> do
+                  n `shouldBe` 2
+                  idsHash' `shouldBe` idsHash
+                  serviceId' `shouldBe` serviceId
+                  pure $ Just ()
+                _ -> pure Nothing,
+              \case
+                Resp "" NoEntity ALLS -> pure $ Just ()
+                _ -> pure Nothing
+            ]
+        threadDelay 1500000
+        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 2
+
+      -- Phase 2: associate 1 more queue via SUB, reconnect with SUBS 3, check metric = 3
+      (rPub3, rKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub3, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (sPub3, sKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Resp "4" NoEntity (Ids rId3 sId3 _) <- signSendRecv h rKey3 ("4", NoEntity, New rPub3 dhPub3)
+      Resp "5" _ OK <- signSendRecv h sKey3 ("5", sId3, SKEY sPub3)
+
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "6" _ (SOK (Just serviceId')) <- serviceSignSendRecv sh rKey3 servicePK ("6", rId3, SUB)
+        serviceId' `shouldBe` serviceId
+
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        let idsHash = queueIdsHash [rId1, rId2, rId3]
+        signSend_ sh aServicePK Nothing ("7", serviceId, SUBS 3 idsHash)
+        void $
+          receiveInAnyOrder sh
+            [ \case
+                Resp "7" serviceId' (SOKS n idsHash') -> do
+                  n `shouldBe` 3
+                  idsHash' `shouldBe` idsHash
+                  serviceId' `shouldBe` serviceId
+                  pure $ Just ()
+                _ -> pure Nothing,
+              \case
+                Resp "" NoEntity ALLS -> pure $ Just ()
+                _ -> pure Nothing
+            ]
+        threadDelay 1500000
+        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 3
+
+readServiceSubsMetric :: String -> Maybe Int
+readServiceSubsMetric content =
+  case filter ("simplex_smp_subscribtion_service_subs_total " `isPrefixOf`) (lines content) of
+    (line : _) -> case words line of
+      [_, val, _] -> readMaybe val
+      [_, val] -> readMaybe val
+      _ -> Nothing
+    [] -> Nothing
 
 receiveInAnyOrder :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> [(CorrId, EntityId, Either ErrorType BrokerMsg) -> IO (Maybe b)] -> IO [b]
 receiveInAnyOrder h = fmap reverse . go []
