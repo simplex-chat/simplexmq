@@ -12,7 +12,7 @@ The SMP router provides messaging queues - unidirectional, ordered sequences of 
 
 `smp-server.ini` is created during initialization and controls all runtime behavior.
 
-**Message persistence**: when store log is enabled (`enable: on`), the server saves undelivered messages on exit and restores them on start. This only works with SIGINT (keyboard interrupt); SIGTERM does not trigger message saving. The `restore_messages` setting can be used to override this behavior independently of the store log setting.
+**Message persistence**: when store log is enabled (`enable = on`), the server saves undelivered messages on exit and restores them on start. This only works with SIGINT (keyboard interrupt); SIGTERM does not trigger message saving. The `restore_messages` setting can be used to override this behavior independently of the store log setting.
 
 **Tor onion addresses**: the server can have both a public hostname and an onion hostname, allowing two users to connect when only one is using Tor. Configure as: `smp://<fingerprint>@<public_hostname>,<onion_hostname>`. See [`scripts/tor/`](../scripts/tor/) for setup instructions.
 
