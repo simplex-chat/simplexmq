@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -11,6 +12,7 @@ module Simplex.Messaging.Transport.WebSockets (WS (..), acceptWSConnection) wher
 
 import qualified Control.Exception as E
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Base64.URL as B64
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.X509 as X
@@ -41,7 +43,8 @@ data WS (p :: TransportPeer) = WS
     wsConnection :: Connection,
     wsTransportConfig :: TransportConfig,
     wsCertSent :: Bool,
-    wsPeerCert :: X.CertificateChain
+    wsPeerCert :: X.CertificateChain,
+    wsWebChallenge :: Maybe ByteString
   }
 
 websocketsOpts :: ConnectionOptions
@@ -65,6 +68,8 @@ instance Transport WS where
   {-# INLINE getPeerCertChain #-}
   getSessionALPN = wsALPN
   {-# INLINE getSessionALPN #-}
+  getWebChallenge = wsWebChallenge
+  {-# INLINE getWebChallenge #-}
   tlsUnique = tlsUniq
   {-# INLINE tlsUnique #-}
   closeConnection = S.close . wsStream
@@ -94,7 +99,7 @@ getWS cfg wsCertSent wsPeerCert cxt = withTlsUnique @WS @p cxt connectWS
       s <- makeTLSContextStream cxt
       wsConnection <- connectPeer s
       wsALPN <- T.getNegotiatedProtocol cxt
-      pure $ WS {tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsCertSent, wsPeerCert}
+      pure $ WS {tlsUniq, wsALPN, wsStream = s, wsConnection, wsTransportConfig = cfg, wsCertSent, wsPeerCert, wsWebChallenge = Nothing}
     connectPeer :: Stream -> IO Connection
     connectPeer = case sTransportPeer @p of
       STServer -> acceptClientRequest
@@ -107,9 +112,19 @@ acceptWSConnection tls pending = withTlsUnique @WS @'TServer cxt $ \wsUniq -> do
   wsStream <- makeTLSContextStream cxt
   wsConnection <- acceptRequest pending
   wsALPN <- T.getNegotiatedProtocol cxt
-  pure WS {tlsUniq = wsUniq, wsALPN, wsStream, wsConnection, wsTransportConfig = tlsTransportConfig tls, wsCertSent = False, wsPeerCert = tlsPeerCert tls}
+  let wsWebChallenge = parseChallenge $ requestPath $ pendingRequest pending
+  pure WS {tlsUniq = wsUniq, wsALPN, wsStream, wsConnection, wsTransportConfig = tlsTransportConfig tls, wsCertSent = False, wsPeerCert = tlsPeerCert tls, wsWebChallenge}
   where
     cxt = tlsContext tls
+    -- Parse ?challenge=<base64url> from request path
+    parseChallenge path = case B.breakSubstring "challenge=" path of
+      (_, rest)
+        | B.null rest -> Nothing
+        | otherwise ->
+            let val = B.takeWhile (/= '&') $ B.drop 10 rest -- drop "challenge="
+             in case B64.decodeUnpadded val of
+                  Right ch | B.length ch == 32 -> Just ch
+                  _ -> Nothing
 
 makeTLSContextStream :: T.Context -> IO Stream
 makeTLSContextStream cxt =
