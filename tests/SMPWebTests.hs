@@ -66,7 +66,7 @@ impWS = "import { connectSMP, sendBlock, receiveBlock } from './dist/transport/w
   <> "import { blockPad, blockUnpad } from '@simplex-chat/xftp-web/dist/protocol/transmission.js';"
 
 impAgentProto_ :: String
-impAgentProto_ = "import { connShortLinkStrP, decodeConnLinkData, decodeProtocolServer, decodeConnShortLink, decodeOwnerAuth, decodeUserLinkData, parseProfile } from './dist/agent/protocol.js';"
+impAgentProto_ = "import { connShortLinkStrP, decodeConnLinkData, decodeFixedLinkData, decodeProtocolServer, decodeConnShortLink, decodeOwnerAuth, decodeUserLinkData, parseProfile } from './dist/agent/protocol.js';"
 
 impAgentProto :: String
 impAgentProto = impEnc <> impAgentProto_
@@ -444,9 +444,13 @@ smpWebTests_ = do
               <> "if (r.type !== 'LNK') throw new Error('expected LNK, got ' + r.type);"
               -- 6. Decrypt link data
               <> "const dec = decryptLinkData(sbKey, r.response.encFixedData, r.response.encUserData);"
-              -- 7. Parse ConnLinkData to get UserLinkData
+              -- 7. Parse FixedLinkData (rootKey) and ConnLinkData (userData)
+              <> "const fld = decodeFixedLinkData(new Decoder(dec.fixedData));"
               <> "const cld = decodeConnLinkData(new Decoder(dec.userData));"
-              <> jsOut ("cld.userContactData.userData")
+              -- Return rootKey length (44 = valid DER Ed25519) + userData
+              <> jsOut ("new Uint8Array([fld.rootKey.length, ...cld.userContactData.userData])")
               <> "conn.ws.close(); setTimeout(() => process.exit(0), 100);"
               <> "} catch(e) { process.stderr.write('ERROR: ' + e.message + '\\n'); process.exit(1); }"
-            tsResult `shouldBe` testData
+            -- First byte: rootKey DER length (44 for Ed25519), rest: userData
+            B.head tsResult `shouldBe` 44
+            B.tail tsResult `shouldBe` testData

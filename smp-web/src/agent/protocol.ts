@@ -143,6 +143,27 @@ export function decodeConnLinkData(d: Decoder): ConnLinkDataContact {
   return {mode: "contact", agentVRange: {min, max}, userContactData}
 }
 
+// -- FixedLinkData (Agent/Protocol.hs:1830-1836)
+// Encoding: smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
+// rootKey is DER-encoded Ed25519 public key (ByteString: 1-byte len + 44 bytes DER)
+// linkConnReq is ConnectionRequestUri (variable length, not length-prefixed)
+// For now, we parse agentVRange + rootKey and keep the rest as raw bytes.
+// Full ConnectionRequestUri parsing is future work.
+
+export interface FixedLinkData {
+  agentVRange: {min: number; max: number}
+  rootKey: Uint8Array // DER-encoded Ed25519 public key (44 bytes)
+  rest: Uint8Array    // raw linkConnReq + linkEntityId bytes
+}
+
+export function decodeFixedLinkData(d: Decoder): FixedLinkData {
+  const min = decodeWord16(d)
+  const max = decodeWord16(d)
+  const rootKey = decodeBytes(d)
+  const rest = d.takeAll()
+  return {agentVRange: {min, max}, rootKey, rest}
+}
+
 // -- Profile extraction
 
 export function parseProfile(userData: Uint8Array): unknown {
