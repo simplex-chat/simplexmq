@@ -1,0 +1,29 @@
+{
+  "name": "@simplex-chat/smp-web",
+  "version": "0.1.0",
+  "description": "SMP protocol client for web/browser environments",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simplex-chat/simplexmq.git",
+    "directory": "smp-web"
+  },
+  "type": "module",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.5.0",
+    "@simplex-chat/xftp-web": "file:../xftp-web"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.4.0",
+    "ws": "^8.0.0"
+  }
+}
