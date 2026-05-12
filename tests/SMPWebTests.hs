@@ -12,6 +12,7 @@
 -- Run: cabal test --test-option=--match="/SMP Web Client/"
 module SMPWebTests (smpWebTests) where
 
+import Control.Concurrent.STM (atomically)
 import Control.Monad.Except (ExceptT, runExceptT)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
@@ -29,11 +30,11 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strEncode)
-import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), pattern SMPServer)
+import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), pattern SMPServer, encodeProtocol, Command (..), NewQueueReq (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..))
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
-import Simplex.Messaging.Transport (TLS, smpBlockSize)
+import Simplex.Messaging.Transport (TLS, smpBlockSize, currentServerSMPRelayVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import SMPClient (cfgWebOn, testKeyHash, testPort, withSmpServerConfig)
@@ -52,7 +53,7 @@ impEnc :: String
 impEnc = "import { Decoder, decodeLarge } from '@simplex-chat/xftp-web/dist/protocol/encoding.js';"
 
 impProto_ :: String
-impProto_ = "import { encodeTransmission, encodeBatch, decodeTransmission, encodeLGET, decodeLNK, decodeResponse } from './dist/protocol.js';"
+impProto_ = "import { encodeTransmission, encodeBatch, decodeTransmission, encodeLGET, decodeLNK, decodeResponse, encodeNEW, encodeKEY, encodeSKEY, encodeSUB, encodeACK, encodeSEND, encodeOFF, encodeDEL } from './dist/protocol.js';"
 
 impProto :: String
 impProto = impEnc <> impProto_
@@ -73,6 +74,9 @@ impAgentProto = impEnc <> impAgentProto_
 
 impCryptoShortLink :: String
 impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf, decryptLinkData } from './dist/crypto/shortLink.js';"
+
+impRatchet :: String
+impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encodePubKeyX448, decodePubKeyX448 } from './dist/crypto/ratchet.js';"
 
 impCrypto :: String
 impCrypto = "import { sbcInit, sbcHkdf, sbEncryptBlock, sbDecryptBlock } from './dist/crypto.js';"
@@ -160,6 +164,67 @@ smpWebTests_ = do
           <> jsOut ("new Uint8Array([r.type === 'OK' ? 1 : 0])")
         tsResult `shouldBe` B.singleton 1
 
+    describe "commands" $ do
+      let v = currentServerSMPRelayVersion
+
+      it "encodeSUB matches Haskell" $ do
+        let hsEncoded = encodeProtocol v SUB
+        tsEncoded <- callNode $ impProto <> jsOut "encodeSUB()"
+        tsEncoded `shouldBe` hsEncoded
+
+      it "encodeKEY matches Haskell" $ do
+        let keyDer = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00] <> B.pack [1..32]
+            hsEncoded = "KEY " <> smpEncode keyDer
+        tsEncoded <- callNode $ impProto
+          <> jsOut ("encodeKEY(" <> jsUint8 keyDer <> ")")
+        tsEncoded `shouldBe` hsEncoded
+
+      it "encodeSKEY matches Haskell" $ do
+        let keyDer = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00] <> B.pack [1..32]
+            hsEncoded = "SKEY " <> smpEncode keyDer
+        tsEncoded <- callNode $ impProto
+          <> jsOut ("encodeSKEY(" <> jsUint8 keyDer <> ")")
+        tsEncoded `shouldBe` hsEncoded
+
+      it "encodeACK matches Haskell" $ do
+        let msgId = B.pack [1..24]
+            hsEncoded = encodeProtocol v (ACK msgId)
+        tsEncoded <- callNode $ impProto
+          <> jsOut ("encodeACK(" <> jsUint8 msgId <> ")")
+        tsEncoded `shouldBe` hsEncoded
+
+      it "encodeSEND matches Haskell" $ do
+        let flags = MsgFlags {notification = True}
+            body = "hello world"
+            hsEncoded = encodeProtocol v (SEND flags body)
+        tsEncoded <- callNode $ impProto
+          <> jsOut ("encodeSEND(true, new TextEncoder().encode('hello world'))")
+        tsEncoded `shouldBe` hsEncoded
+
+      it "decodes IDS response" $ do
+        let rcvId = B.pack [1..24]
+            sndId = B.pack [25..48]
+            srvDhKey = B.pack [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00] <> B.pack [50..81]
+            -- Manually encode IDS response: "IDS " <> rcvId <> sndId <> srvDhKey <> Maybe queueMode <> Maybe linkId ...
+            encoded = "IDS " <> smpEncode (EntityId rcvId) <> smpEncode (EntityId sndId) <> smpEncode srvDhKey
+              <> smpEncode (Nothing :: Maybe B.ByteString) <> smpEncode (Nothing :: Maybe B.ByteString)
+              <> smpEncode (Nothing :: Maybe B.ByteString) <> smpEncode (Nothing :: Maybe B.ByteString)
+        tsResult <- callNode $ impProto
+          <> "const r = decodeResponse(new Decoder(" <> jsUint8 encoded <> "));"
+          <> "if (r.type !== 'IDS') throw new Error('expected IDS, got ' + r.type);"
+          <> jsOut ("new Uint8Array([...r.response.rcvId, ...r.response.sndId])")
+        tsResult `shouldBe` (rcvId <> sndId)
+
+      it "decodes Haskell-encoded MSG response" $ do
+        let msgId = B.pack [1..24]
+            body = "encrypted message body"
+            hsEncoded = "MSG " <> smpEncode msgId <> body
+        tsResult <- callNode $ impProto
+          <> "const r = decodeResponse(new Decoder(" <> jsUint8 hsEncoded <> "));"
+          <> "if (r.type !== 'MSG') throw new Error('expected MSG, got ' + r.type);"
+          <> jsOut ("new Uint8Array([...r.response.msgId, ...r.response.msgBody])")
+        tsResult `shouldBe` (msgId <> body)
+
   describe "transport" $ do
     describe "SMPServerHandshake" $ do
       it "TypeScript parses Haskell-encoded server handshake (no authPubKey)" $ do
@@ -236,6 +301,34 @@ smpWebTests_ = do
               <> jsUint8 encUser <> ");"
               <> jsOut ("new Uint8Array([...r.fixedData, 0, ...r.userData])")
             tsResult `shouldBe` (fixedPlain <> B.singleton 0 <> userPlain)
+
+  describe "crypto/ratchet" $ do
+    describe "X3DH" $ do
+      it "pqX3dhSnd and pqX3dhRcv produce same ratchetKey" $ do
+        -- TypeScript generates two key pairs, computes X3DH from both sides, verifies match
+        tsResult <- callNode $ impSodium <> impRatchet
+          <> "const alice1 = generateX448KeyPair();"
+          <> "const alice2 = generateX448KeyPair();"
+          <> "const bob1 = generateX448KeyPair();"
+          <> "const bob2 = generateX448KeyPair();"
+          -- Bob (joiner) inits sending ratchet with Alice's public keys
+          <> "const snd = pqX3dhSnd(bob1.privateKey, bob2.privateKey, alice1.publicKey, alice2.publicKey);"
+          -- Alice (initiator) inits receiving ratchet with Bob's public keys
+          <> "const rcv = pqX3dhRcv(alice1.privateKey, alice2.privateKey, bob1.publicKey, bob2.publicKey);"
+          -- ratchetKey, sndHK, rcvNextHK should match
+          <> "const match = snd.ratchetKey.every((b, i) => b === rcv.ratchetKey[i]) && snd.sndHK.every((b, i) => b === rcv.sndHK[i]) && snd.rcvNextHK.every((b, i) => b === rcv.rcvNextHK[i]);"
+          <> jsOut ("new Uint8Array([match ? 1 : 0, snd.ratchetKey.length, snd.sndHK.length, snd.rcvNextHK.length])")
+        tsResult `shouldBe` B.pack [1, 32, 32, 32]
+
+    describe "DER encoding" $ do
+      it "X448 DER round-trips" $ do
+        tsResult <- callNode $ impRatchet
+          <> "const kp = generateX448KeyPair();"
+          <> "const der = encodePubKeyX448(kp.publicKey);"
+          <> "const raw = decodePubKeyX448(der);"
+          <> "const match = kp.publicKey.every((b, i) => b === raw[i]);"
+          <> jsOut ("new Uint8Array([match ? 1 : 0, der.length, raw.length])")
+        tsResult `shouldBe` B.pack [1, 68, 56]
 
   describe "crypto/blockEncryption" $ do
     describe "sbcInit + sbcHkdf" $ do

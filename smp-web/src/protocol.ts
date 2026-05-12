@@ -4,7 +4,9 @@
 import {
   Decoder, concatBytes,
   encodeBytes, decodeBytes,
-  encodeLarge, decodeLarge
+  encodeLarge, decodeLarge,
+  encodeBool, decodeBool,
+  encodeMaybe, decodeMaybe,
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 import {readTag, readSpace} from "@simplex-chat/xftp-web/dist/protocol/commands.js"
 
@@ -83,7 +85,12 @@ export function decodeLNK(d: Decoder): LNKResponse {
 
 export type SMPResponse =
   | {type: "LNK", response: LNKResponse}
+  | {type: "IDS", response: IDSResponse}
+  | {type: "MSG", response: MSGResponse}
   | {type: "OK"}
+  | {type: "PONG"}
+  | {type: "END"}
+  | {type: "DELD"}
   | {type: "ERR", message: string}
 
 export function decodeResponse(d: Decoder): SMPResponse {
@@ -93,11 +100,137 @@ export function decodeResponse(d: Decoder): SMPResponse {
       readSpace(d)
       return {type: "LNK", response: decodeLNK(d)}
     }
+    case "IDS": {
+      readSpace(d)
+      return {type: "IDS", response: decodeIDS(d)}
+    }
+    case "MSG": {
+      readSpace(d)
+      return {type: "MSG", response: decodeMSG(d)}
+    }
     case "OK": return {type: "OK"}
+    case "PONG": return {type: "PONG"}
+    case "END": return {type: "END"}
+    case "DELD": return {type: "DELD"}
     case "ERR": {
       readSpace(d)
       return {type: "ERR", message: readTag(d)}
     }
     default: throw new Error("unknown SMP response: " + tag)
   }
+}
+
+// -- SMP command encoders (Protocol.hs:1679-1715)
+
+// MsgFlags (Protocol.hs:884-892)
+// Single byte: Bool encoding of notification flag
+export function encodeMsgFlags(notification: boolean): Uint8Array {
+  return encodeBool(notification)
+}
+
+// SubscriptionMode (Protocol.hs:651-659)
+// 'S' = SMSubscribe, 'C' = SMOnlyCreate
+export function encodeSubMode(subscribe: boolean): Uint8Array {
+  return ascii(subscribe ? "S" : "C")
+}
+
+// NEW (Protocol.hs:1682-1689)
+// For v19: e(NEW_, ' ', rKey, dhKey) <> e(auth_, subMode, queueReqData, ntfCreds)
+// auth_ = Maybe SndPublicAuthKey (DER-encoded)
+// queueReqData = Maybe QueueReqData
+// ntfCreds = Maybe NewNtfCreds (not needed for widget)
+export function encodeNEW(
+  rcvAuthKey: Uint8Array,   // DER-encoded Ed25519 or X25519 public key
+  rcvDhKey: Uint8Array,     // DER-encoded X25519 public key
+  sndAuthKey: Uint8Array | null,  // DER-encoded, for TOFU sender auth
+  subscribe: boolean,
+): Uint8Array {
+  return concatBytes(
+    ascii("NEW "),
+    encodeBytes(rcvAuthKey),
+    encodeBytes(rcvDhKey),
+    encodeMaybe(encodeBytes, sndAuthKey),
+    encodeSubMode(subscribe),
+    encodeMaybe(() => new Uint8Array(0), null),  // queueReqData = Nothing (widget doesn't create links)
+    encodeMaybe(() => new Uint8Array(0), null),  // ntfCreds = Nothing
+  )
+}
+
+// KEY (Protocol.hs:1692)
+// KEY k -> e(KEY_, ' ', k)
+export function encodeKEY(senderKey: Uint8Array): Uint8Array {
+  return concatBytes(ascii("KEY "), encodeBytes(senderKey))
+}
+
+// SKEY (Protocol.hs:1703)
+// SKEY k -> e(SKEY_, ' ', k)
+export function encodeSKEY(senderKey: Uint8Array): Uint8Array {
+  return concatBytes(ascii("SKEY "), encodeBytes(senderKey))
+}
+
+// SUB (Protocol.hs:1690)
+export function encodeSUB(): Uint8Array {
+  return ascii("SUB")
+}
+
+// ACK (Protocol.hs:1699)
+// ACK msgId -> e(ACK_, ' ', msgId)
+export function encodeACK(msgId: Uint8Array): Uint8Array {
+  return concatBytes(ascii("ACK "), encodeBytes(msgId))
+}
+
+// SEND (Protocol.hs:1704)
+// SEND flags msg -> e(SEND_, ' ', flags, ' ', Tail msg)
+export function encodeSEND(notification: boolean, msgBody: Uint8Array): Uint8Array {
+  return concatBytes(
+    ascii("SEND "),
+    encodeMsgFlags(notification),
+    ascii(" "),
+    msgBody, // Tail - no length prefix
+  )
+}
+
+// OFF (Protocol.hs:1700)
+export function encodeOFF(): Uint8Array {
+  return ascii("OFF")
+}
+
+// DEL (Protocol.hs:1701)
+export function encodeDEL(): Uint8Array {
+  return ascii("DEL")
+}
+
+// -- SMP response decoders
+
+// IDS (Protocol.hs:1914-1921)
+// For v19: e(IDS_, ' ', rcvId, sndId, srvDh) <> e(queueMode, linkId, serviceId, ntfCreds)
+export interface IDSResponse {
+  rcvId: Uint8Array
+  sndId: Uint8Array
+  srvDhKey: Uint8Array
+  queueMode: Uint8Array | null
+  linkId: Uint8Array | null
+}
+
+export function decodeIDS(d: Decoder): IDSResponse {
+  const rcvId = decodeBytes(d)
+  const sndId = decodeBytes(d)
+  const srvDhKey = decodeBytes(d)
+  const queueMode = d.remaining() > 0 ? decodeMaybe(decodeBytes, d) : null
+  const linkId = d.remaining() > 0 ? decodeMaybe(decodeBytes, d) : null
+  // serviceId and ntfCreds - skip remaining
+  return {rcvId, sndId, srvDhKey, queueMode, linkId}
+}
+
+// MSG (Protocol.hs:1927-1928)
+// MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} -> e(MSG_, ' ', msgId, Tail body)
+export interface MSGResponse {
+  msgId: Uint8Array
+  msgBody: Uint8Array
+}
+
+export function decodeMSG(d: Decoder): MSGResponse {
+  const msgId = decodeBytes(d)
+  const msgBody = d.takeAll()
+  return {msgId, msgBody}
 }
