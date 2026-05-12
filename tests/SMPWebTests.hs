@@ -27,6 +27,8 @@ import Simplex.Messaging.Version (mkVersionRange)
 import Simplex.Messaging.Version.Internal (Version (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey (..), KEMSecretKey, KEMCiphertext (..), KEMSharedKey (..), sntrup761Keypair, sntrup761Enc, sntrup761Dec)
+import qualified Data.ByteArray as BA
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strEncode)
@@ -77,6 +79,9 @@ impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf, decryptLink
 
 impRatchet :: String
 impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encodePubKeyX448, decodePubKeyX448 } from './dist/crypto/ratchet.js';"
+
+impSntrup :: String
+impSntrup = "import { initSntrup761, sntrup761Keypair, sntrup761Enc, sntrup761Dec } from './dist/crypto/sntrup761.js'; await initSntrup761();"
 
 impCrypto :: String
 impCrypto = "import { sbcInit, sbcHkdf, sbEncryptBlock, sbDecryptBlock } from './dist/crypto.js';"
@@ -301,6 +306,36 @@ smpWebTests_ = do
               <> jsUint8 encUser <> ");"
               <> jsOut ("new Uint8Array([...r.fixedData, 0, ...r.userData])")
             tsResult `shouldBe` (fixedPlain <> B.singleton 0 <> userPlain)
+
+  describe "crypto/sntrup761" $ do
+    it "TypeScript encapsulates, Haskell decapsulates - shared secret matches" $ do
+      g <- C.newRandom
+      (KEMPublicKey pkBytes, sk) <- sntrup761Keypair g
+      tsResult <- callNode $ impSntrup
+        <> "const enc = sntrup761Enc(" <> jsUint8 pkBytes <> ");"
+        <> jsOut ("new Uint8Array([...enc.ciphertext, ...enc.sharedSecret])")
+      let (ctBytes, tsSharedSecret) = B.splitAt 1039 tsResult
+      KEMSharedKey hsSharedSecret <- sntrup761Dec (KEMCiphertext ctBytes) sk
+      (BA.convert hsSharedSecret :: B.ByteString) `shouldBe` tsSharedSecret
+
+    it "Haskell encapsulates, TypeScript decapsulates - shared secret matches" $ do
+      -- TypeScript generates keypair, passes public key to Haskell via stdout,
+      -- but callNode is one-shot. So: TypeScript generates keypair, outputs (pk, sk).
+      -- Then Haskell encapsulates against pk, passes (ct) to TypeScript.
+      -- TypeScript decapsulates with sk, outputs shared secret.
+      -- We compare with Haskell's shared secret.
+      --
+      -- Two callNode calls: first to get keypair, second to decapsulate.
+      kpResult <- callNode $ impSntrup
+        <> "const kp = sntrup761Keypair();"
+        <> jsOut ("new Uint8Array([...kp.publicKey, ...kp.secretKey])")
+      let (tsPk, tsSk) = B.splitAt 1158 kpResult
+      g <- C.newRandom
+      (KEMCiphertext ctBytes, KEMSharedKey hsSharedSecret) <- sntrup761Enc g (KEMPublicKey tsPk)
+      tsResult <- callNode $ impSntrup
+        <> "const ss = sntrup761Dec(" <> jsUint8 ctBytes <> "," <> jsUint8 tsSk <> ");"
+        <> jsOut ("ss")
+      tsResult `shouldBe` (BA.convert hsSharedSecret :: B.ByteString)
 
   describe "crypto/ratchet" $ do
     describe "X3DH" $ do
