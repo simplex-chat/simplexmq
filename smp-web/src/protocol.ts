@@ -208,7 +208,7 @@ export interface IDSResponse {
   rcvId: Uint8Array
   sndId: Uint8Array
   srvDhKey: Uint8Array
-  queueMode: Uint8Array | null
+  queueMode: string | null  // 'M' = Messaging, 'C' = Contact
   linkId: Uint8Array | null
 }
 
@@ -216,8 +216,20 @@ export function decodeIDS(d: Decoder): IDSResponse {
   const rcvId = decodeBytes(d)
   const sndId = decodeBytes(d)
   const srvDhKey = decodeBytes(d)
-  const queueMode = d.remaining() > 0 ? decodeMaybe(decodeBytes, d) : null
-  const linkId = d.remaining() > 0 ? decodeMaybe(decodeBytes, d) : null
+  // v19: queueMode (Maybe QueueMode), linkId (Maybe ByteString), serviceId, ntfCreds
+  // QueueMode is encoded as Maybe Char ('M'/'C'), not Maybe ByteString
+  let queueMode: string | null = null
+  if (d.remaining() > 0) {
+    const qmByte = d.anyByte()
+    if (qmByte === 0x31) { // '1' = Just
+      queueMode = String.fromCharCode(d.anyByte())
+    }
+    // '0' = Nothing, queueMode stays null
+  }
+  let linkId: Uint8Array | null = null
+  if (d.remaining() > 0) {
+    linkId = decodeMaybe(decodeBytes, d)
+  }
   // serviceId and ntfCreds - skip remaining
   return {rcvId, sndId, srvDhKey, queueMode, linkId}
 }
