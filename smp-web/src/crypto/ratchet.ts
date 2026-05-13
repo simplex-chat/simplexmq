@@ -3,7 +3,11 @@
 
 import {x448} from "@noble/curves/ed448.js"
 import {hkdf, encryptAEAD, decryptAEAD} from "../crypto.js"
-import {concatBytes} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {
+  Decoder, concatBytes,
+  encodeBytes, decodeBytes, decodeWord16, decodeWord32,
+  encodeLarge, decodeLarge,
+} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 
 // -- X448 key operations
 
@@ -135,4 +139,414 @@ const PADDED_HEADER_LEN_PQ = 2310
 
 export function paddedHeaderLen(pqSupport: boolean): number {
   return pqSupport ? PADDED_HEADER_LEN_PQ : PADDED_HEADER_LEN_NO_PQ
+}
+
+// -- Ratchet state (Ratchet.hs:512-565)
+
+export interface SndRatchet {
+  rcDHRr: Uint8Array   // peer's X448 public key (raw, 56 bytes)
+  rcCKs: Uint8Array    // sending chain key (32 bytes)
+  rcHKs: Uint8Array    // sending header key (32 bytes)
+}
+
+export interface RcvRatchet {
+  rcCKr: Uint8Array    // receiving chain key (32 bytes)
+  rcHKr: Uint8Array    // receiving header key (32 bytes)
+}
+
+export interface MessageKey {
+  mk: Uint8Array       // 32 bytes
+  iv: Uint8Array       // 16 bytes
+}
+
+// Skipped message keys: Map<headerKey, Map<msgNumber, MessageKey>>
+// Using string keys for the outer map (hex-encoded header key)
+export type SkippedMsgKeys = Map<string, Map<number, MessageKey>>
+
+export interface RatchetState {
+  // version
+  rcVersion: number    // current e2e version
+  rcMaxVersion: number // max supported e2e version
+  // associated data
+  rcAD: Uint8Array
+  // DH ratchet key pair (our private key)
+  rcDHRs: Uint8Array   // X448 private key (56 bytes)
+  // PQ support
+  rcSupportKEM: boolean
+  // root key
+  rcRK: Uint8Array     // 32 bytes
+  // sending ratchet (null before first message sent after ratchet advance)
+  rcSnd: SndRatchet | null
+  // receiving ratchet (null before first message received)
+  rcRcv: RcvRatchet | null
+  // counters
+  rcNs: number         // sending message number
+  rcNr: number         // receiving message number
+  rcPN: number         // previous sending chain length
+  // next header keys
+  rcNHKs: Uint8Array   // 32 bytes
+  rcNHKr: Uint8Array   // 32 bytes
+}
+
+const MAX_SKIP = 512
+
+function hexKey(k: Uint8Array): string {
+  return Array.from(k, b => b.toString(16).padStart(2, "0")).join("")
+}
+
+// -- Ratchet initialization (Ratchet.hs:643-699)
+
+// initSndRatchet (Ratchet.hs:643-666)
+// Used by joiner (Bob) after X3DH
+export function initSndRatchet(
+  version: number,
+  maxVersion: number,
+  rcDHRr: Uint8Array,    // peer's X448 public key (raw, from invitation)
+  rcDHRs: Uint8Array,    // our X448 private key (raw)
+  initParams: RatchetInitParams,
+  pqSupport: boolean,
+  kemSharedSecret: Uint8Array | null = null,
+): RatchetState {
+  const {rk, ck, nhk} = rootKdf(initParams.ratchetKey, rcDHRr, rcDHRs, kemSharedSecret)
+  return {
+    rcVersion: version,
+    rcMaxVersion: maxVersion,
+    rcAD: initParams.assocData,
+    rcDHRs,
+    rcSupportKEM: pqSupport,
+    rcRK: rk,
+    rcSnd: {rcDHRr, rcCKs: ck, rcHKs: initParams.sndHK},
+    rcRcv: null,
+    rcNs: 0,
+    rcNr: 0,
+    rcPN: 0,
+    rcNHKs: nhk,
+    rcNHKr: initParams.rcvNextHK,
+  }
+}
+
+// initRcvRatchet (Ratchet.hs:674-699)
+// Used by initiator (Alice) after receiving confirmation
+export function initRcvRatchet(
+  version: number,
+  maxVersion: number,
+  rcDHRs: Uint8Array,    // our X448 private key (raw)
+  initParams: RatchetInitParams,
+  pqSupport: boolean,
+): RatchetState {
+  return {
+    rcVersion: version,
+    rcMaxVersion: maxVersion,
+    rcAD: initParams.assocData,
+    rcDHRs,
+    rcSupportKEM: pqSupport,
+    rcRK: initParams.ratchetKey,
+    rcSnd: null,
+    rcRcv: null,
+    rcNs: 0,
+    rcNr: 0,
+    rcPN: 0,
+    rcNHKs: initParams.rcvNextHK,
+    rcNHKr: initParams.sndHK,
+  }
+}
+
+// -- Message header (Ratchet.hs:703-787)
+
+interface MsgHeader {
+  msgMaxVersion: number
+  msgDHRs: Uint8Array    // X448 public key (raw, 56 bytes)
+  msgPN: number
+  msgNs: number
+}
+
+function encodeMsgHeader(v: number, hdr: MsgHeader): Uint8Array {
+  const versionBytes = new Uint8Array(2)
+  versionBytes[0] = (hdr.msgMaxVersion >> 8) & 0xff
+  versionBytes[1] = hdr.msgMaxVersion & 0xff
+  const dhDer = encodePubKeyX448(hdr.msgDHRs)
+  const pn = new Uint8Array(4)
+  pn[0] = (hdr.msgPN >> 24) & 0xff; pn[1] = (hdr.msgPN >> 16) & 0xff
+  pn[2] = (hdr.msgPN >> 8) & 0xff; pn[3] = hdr.msgPN & 0xff
+  const ns = new Uint8Array(4)
+  ns[0] = (hdr.msgNs >> 24) & 0xff; ns[1] = (hdr.msgNs >> 16) & 0xff
+  ns[2] = (hdr.msgNs >> 8) & 0xff; ns[3] = hdr.msgNs & 0xff
+  // v >= pqRatchetE2EEncryptVersion (v3): includes KEM params (Maybe, encoded as Nothing for now)
+  if (v >= 3) {
+    return concatBytes(versionBytes, encodeBytes(dhDer), new Uint8Array([0x30]), pn, ns) // '0' = Nothing for KEM
+  }
+  return concatBytes(versionBytes, encodeBytes(dhDer), pn, ns)
+}
+
+function decodeMsgHeader(v: number, data: Uint8Array): MsgHeader {
+  const d = new Decoder(data)
+  const msgMaxVersion = decodeWord16(d)
+  const dhDer = decodeBytes(d)
+  const msgDHRs = decodePubKeyX448(dhDer)
+  // skip KEM params for v3+
+  if (v >= 3) {
+    const kemByte = d.anyByte()
+    if (kemByte === 0x31) {
+      // Just - skip KEM params (we don't process them in this simplified version)
+      decodeBytes(d) // KEM params
+    }
+    // else '0' = Nothing, already consumed
+  }
+  const msgPN = decodeWord32(d)
+  const msgNs = decodeWord32(d)
+  return {msgMaxVersion, msgDHRs, msgPN, msgNs}
+}
+
+// -- Encrypt (Ratchet.hs:902-975)
+
+export interface EncryptResult {
+  ciphertext: Uint8Array
+  state: RatchetState
+}
+
+export function rcEncrypt(
+  state: RatchetState,
+  plaintext: Uint8Array,
+  paddedMsgLen: number,
+): EncryptResult {
+  if (!state.rcSnd) throw new Error("rcEncrypt: no sending ratchet")
+  const snd = state.rcSnd
+  const v = state.rcVersion
+
+  // Advance chain: state.CKs, mk = KDF_CK(state.CKs)
+  const {ck: rcCKs, mk, iv, ehIV} = chainKdf(snd.rcCKs)
+
+  // Build and encrypt header
+  const headerPlain = encodeMsgHeader(v, {
+    msgMaxVersion: state.rcMaxVersion,
+    msgDHRs: x448.getPublicKey(state.rcDHRs),
+    msgPN: state.rcPN,
+    msgNs: state.rcNs,
+  })
+
+  const phl = paddedHeaderLen(state.rcSupportKEM)
+  const {authTag: ehAuthTag, ciphertext: ehBody} = encryptAEAD(snd.rcHKs, ehIV, phl, state.rcAD, headerPlain)
+
+  // Encode EncMessageHeader
+  const ehVersionBytes = new Uint8Array(2)
+  ehVersionBytes[0] = (v >> 8) & 0xff; ehVersionBytes[1] = v & 0xff
+  // IV and AuthTag are raw bytes (no length prefix). Body is Large for v3+, ByteString for older.
+  const encHeader = concatBytes(ehVersionBytes, ehIV, ehAuthTag, v >= 3 ? encodeLarge(ehBody) : encodeBytes(ehBody))
+
+  // Encrypt body: ENCRYPT(mk, plaintext, CONCAT(AD, enc_header))
+  const bodyAD = concatBytes(state.rcAD, encHeader)
+  const {authTag: emAuthTag, ciphertext: emBody} = encryptAEAD(mk, iv, paddedMsgLen, bodyAD, plaintext)
+
+  // Encode EncRatchetMessage
+  // AuthTag is raw 16 bytes (no length prefix), body is Tail (raw bytes)
+  const msgBytes = concatBytes(v >= 3 ? encodeLarge(encHeader) : encodeBytes(encHeader), emAuthTag, emBody)
+
+  // Update state
+  const newState: RatchetState = {
+    ...state,
+    rcSnd: {...snd, rcCKs},
+    rcNs: state.rcNs + 1,
+  }
+
+  return {ciphertext: msgBytes, state: newState}
+}
+
+// -- Decrypt (Ratchet.hs:990-1157)
+
+export interface DecryptResult {
+  plaintext: Uint8Array
+  state: RatchetState
+  skippedKeys: SkippedMsgKeys
+}
+
+interface EncRatchetMessage {
+  emHeader: Uint8Array
+  emAuthTag: Uint8Array
+  emBody: Uint8Array
+}
+
+interface EncMessageHeader {
+  ehVersion: number
+  ehIV: Uint8Array
+  ehAuthTag: Uint8Array
+  ehBody: Uint8Array
+}
+
+function parseEncRatchetMessage(data: Uint8Array): EncRatchetMessage {
+  const d = new Decoder(data)
+  // header is length-prefixed (Large for v3+, ByteString for older)
+  const firstByte = data[d.offset()]
+  const emHeader = firstByte < 32 ? decodeLarge(d) : decodeBytes(d)
+  // AuthTag is raw 16 bytes (no length prefix)
+  const emAuthTag = d.take(16)
+  const emBody = d.takeAll()
+  return {emHeader, emAuthTag, emBody}
+}
+
+function parseEncMessageHeader(data: Uint8Array): EncMessageHeader {
+  const d = new Decoder(data)
+  const ehVersion = decodeWord16(d)
+  // IV is raw 16 bytes, AuthTag is raw 16 bytes
+  const ehIV = d.take(16)
+  const ehAuthTag = d.take(16)
+  // body: Large for v3+ (first byte < 32), ByteString for older
+  const firstByte = data[d.offset()]
+  const ehBody = firstByte < 32 ? decodeLarge(d) : decodeBytes(d)
+  return {ehVersion, ehIV, ehAuthTag, ehBody}
+}
+
+function tryDecryptHeader(headerKey: Uint8Array, ad: Uint8Array, encHdr: EncMessageHeader): MsgHeader | null {
+  try {
+    const plainHeader = decryptAEAD(headerKey, encHdr.ehIV, ad, encHdr.ehBody, encHdr.ehAuthTag)
+    return decodeMsgHeader(encHdr.ehVersion, plainHeader)
+  } catch {
+    return null
+  }
+}
+
+function decryptMessage(mk: Uint8Array, iv: Uint8Array, ad: Uint8Array, encHeader: Uint8Array, encMsg: EncRatchetMessage): Uint8Array {
+  const bodyAD = concatBytes(ad, encHeader)
+  return decryptAEAD(mk, iv, bodyAD, encMsg.emBody, encMsg.emAuthTag)
+}
+
+export function rcDecrypt(
+  state: RatchetState,
+  skippedKeys: SkippedMsgKeys,
+  ciphertext: Uint8Array,
+): DecryptResult {
+  const encMsg = parseEncRatchetMessage(ciphertext)
+  const encHdr = parseEncMessageHeader(encMsg.emHeader)
+
+  // Try skipped message keys
+  for (const [hkHex, msgKeys] of skippedKeys) {
+    const hk = hexToBytes(hkHex)
+    const hdr = tryDecryptHeader(hk, state.rcAD, encHdr)
+    if (hdr) {
+      const mk = msgKeys.get(hdr.msgNs)
+      if (mk) {
+        // Found in skipped keys - decrypt and remove
+        const plaintext = decryptMessage(mk.mk, mk.iv, state.rcAD, encMsg.emHeader, encMsg)
+        const newMsgKeys = new Map(msgKeys)
+        newMsgKeys.delete(hdr.msgNs)
+        const newSkipped = new Map(skippedKeys)
+        if (newMsgKeys.size === 0) newSkipped.delete(hkHex)
+        else newSkipped.set(hkHex, newMsgKeys)
+        return {plaintext, state, skippedKeys: newSkipped}
+      }
+    }
+  }
+
+  // Try current receiving ratchet header key
+  let ratchetStep: "same" | "advance" = "advance"
+  let hdr: MsgHeader | null = null
+
+  if (state.rcRcv) {
+    hdr = tryDecryptHeader(state.rcRcv.rcHKr, state.rcAD, encHdr)
+    if (hdr) ratchetStep = "same"
+  }
+
+  // Try next header key (advance ratchet)
+  if (!hdr) {
+    hdr = tryDecryptHeader(state.rcNHKr, state.rcAD, encHdr)
+    if (!hdr) throw new Error("rcDecrypt: header decryption failed")
+    ratchetStep = "advance"
+  }
+
+  // Upgrade version
+  let rc = state
+  if (hdr.msgMaxVersion > rc.rcVersion) {
+    rc = {...rc, rcVersion: Math.max(rc.rcVersion, Math.min(hdr.msgMaxVersion, rc.rcMaxVersion))}
+  }
+
+  let newSkipped = new Map(skippedKeys)
+
+  if (ratchetStep === "advance") {
+    // Skip message keys for previous ratchet
+    const skipResult = skipMessageKeys(rc, newSkipped, hdr.msgPN)
+    rc = skipResult.state
+    newSkipped = skipResult.skippedKeys
+
+    // DH ratchet step
+    const rcDHRs_new = generateX448KeyPair()
+    // state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, header.dh))
+    const {rk: rcRK1, ck: rcCKr, nhk: rcNHKr} = rootKdf(rc.rcRK, hdr.msgDHRs, rc.rcDHRs, null)
+    // state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs', header.dh))
+    const {rk: rcRK2, ck: rcCKs, nhk: rcNHKs} = rootKdf(rcRK1, hdr.msgDHRs, rcDHRs_new.privateKey, null)
+
+    rc = {
+      ...rc,
+      rcDHRs: rcDHRs_new.privateKey,
+      rcRK: rcRK2,
+      rcSnd: {rcDHRr: hdr.msgDHRs, rcCKs, rcHKs: rc.rcNHKs},
+      rcRcv: {rcCKr, rcHKr: rc.rcNHKr},
+      rcPN: rc.rcNs,
+      rcNs: 0,
+      rcNr: 0,
+      rcNHKs,
+      rcNHKr,
+    }
+  }
+
+  // Skip message keys for current ratchet
+  const skipResult2 = skipMessageKeys(rc, newSkipped, hdr.msgNs)
+  rc = skipResult2.state
+  newSkipped = skipResult2.skippedKeys
+
+  if (!rc.rcRcv) throw new Error("rcDecrypt: no receiving ratchet after skip")
+
+  // Decrypt message
+  const {ck: rcCKr, mk, iv} = chainKdf(rc.rcRcv.rcCKr)
+  const plaintext = decryptMessage(mk, iv, rc.rcAD, encMsg.emHeader, encMsg)
+
+  rc = {
+    ...rc,
+    rcRcv: {...rc.rcRcv, rcCKr},
+    rcNr: rc.rcNr + 1,
+  }
+
+  return {plaintext, state: rc, skippedKeys: newSkipped}
+}
+
+function skipMessageKeys(
+  state: RatchetState,
+  skippedKeys: SkippedMsgKeys,
+  untilN: number,
+): {state: RatchetState; skippedKeys: SkippedMsgKeys} {
+  if (!state.rcRcv) return {state, skippedKeys}
+  const rcv = state.rcRcv
+  const rcNr = state.rcNr
+
+  if (rcNr > untilN + 1) throw new Error("rcDecrypt: earlier message")
+  if (rcNr === untilN + 1) throw new Error("rcDecrypt: duplicate message")
+  if (rcNr + MAX_SKIP < untilN) throw new Error("rcDecrypt: too many skipped")
+  if (rcNr === untilN) return {state, skippedKeys}
+
+  // Advance receiving ratchet, storing skipped keys
+  let ck = rcv.rcCKr
+  let nr = rcNr
+  const hkHex = hexKey(rcv.rcHKr)
+  const msgKeys = new Map(skippedKeys.get(hkHex) || new Map())
+
+  while (nr < untilN) {
+    const chain = chainKdf(ck)
+    msgKeys.set(nr, {mk: chain.mk, iv: chain.iv})
+    ck = chain.ck
+    nr++
+  }
+
+  const newSkipped = new Map(skippedKeys)
+  newSkipped.set(hkHex, msgKeys)
+
+  return {
+    state: {...state, rcRcv: {...rcv, rcCKr: ck}, rcNr: nr},
+    skippedKeys: newSkipped,
+  }
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16)
+  }
+  return bytes
 }

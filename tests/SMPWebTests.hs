@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 -- | Per-function tests for the smp-web TypeScript SMP client library.
@@ -26,13 +27,14 @@ import Simplex.Messaging.Client (pattern NRMInteractive)
 import Simplex.Messaging.Version (mkVersionRange)
 import Simplex.Messaging.Version.Internal (Version (..))
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto (Algorithm (..))
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey (..), KEMSecretKey, KEMCiphertext (..), KEMSharedKey (..), sntrup761Keypair, sntrup761Enc, sntrup761Dec)
 import qualified Crypto.Cipher.Types as AES
 import qualified Data.ByteArray as BA
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Encoding.String (Str (..), strEncode)
 import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), pattern SMPServer, encodeProtocol, Command (..), NewQueueReq (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..))
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
@@ -53,7 +55,7 @@ callNode :: String -> IO B.ByteString
 callNode = callNode_ smpWebDir
 
 impEnc :: String
-impEnc = "import { Decoder, decodeLarge } from '@simplex-chat/xftp-web/dist/protocol/encoding.js';"
+impEnc = "import { Decoder, decodeBytes, decodeLarge, encodeBytes, encodeWord16 } from '@simplex-chat/xftp-web/dist/protocol/encoding.js';"
 
 impProto_ :: String
 impProto_ = "import { encodeTransmission, encodeBatch, decodeTransmission, encodeLGET, decodeLNK, decodeResponse, encodeNEW, encodeKEY, encodeSKEY, encodeSUB, encodeACK, encodeSEND, encodeOFF, encodeDEL } from './dist/protocol.js';"
@@ -79,7 +81,7 @@ impCryptoShortLink :: String
 impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf, decryptLinkData } from './dist/crypto/shortLink.js';"
 
 impRatchet :: String
-impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encodePubKeyX448, decodePubKeyX448, chainKdf, rootKdf } from './dist/crypto/ratchet.js';"
+impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encodePubKeyX448, decodePubKeyX448, chainKdf, rootKdf, initSndRatchet, initRcvRatchet, rcEncrypt, rcDecrypt } from './dist/crypto/ratchet.js';"
   <> "import { encryptAEAD, decryptAEAD } from './dist/crypto.js';"
 
 impSntrup :: String
@@ -94,6 +96,9 @@ impSodium = "import sodium from '@simplex-chat/xftp-web/node_modules/libsodium-w
 
 jsStr :: B.ByteString -> String
 jsStr bs = "'" <> BC.unpack bs <> "'"
+
+paddedMsgLen :: Int
+paddedMsgLen = 100
 
 runRight :: (Show e, HasCallStack) => ExceptT e IO a -> IO a
 runRight action = runExceptT action >>= either (error . ("Unexpected error: " <>) . show) pure
@@ -431,6 +436,85 @@ smpWebTests_ = do
         let (tsTag, tsCt) = B.splitAt 16 tsResult
         Right hsPlain <- runExceptT $ C.decryptAEAD key iv ad tsCt (C.AuthTag $ AES.AuthTag $ BA.convert tsTag)
         hsPlain `shouldBe` msg
+
+    describe "ratchet encrypt/decrypt" $ do
+      it "TypeScript ratchet self-consistency: encrypt, decrypt, ratchet advance, skipped" $ do
+        tsResult <- callNode $ impRatchet
+          <> "const a1 = generateX448KeyPair(), a2 = generateX448KeyPair();"
+          <> "const b1 = generateX448KeyPair(), b2 = generateX448KeyPair();"
+          <> "const bp = pqX3dhSnd(b1.privateKey, b2.privateKey, a1.publicKey, a2.publicKey);"
+          <> "const ap = pqX3dhRcv(a1.privateKey, a2.privateKey, b1.publicKey, b2.publicKey);"
+          <> "const b3 = generateX448KeyPair();"
+          <> "let bob = initSndRatchet(3, 3, a2.publicKey, b3.privateKey, bp, false);"
+          <> "let alice = initRcvRatchet(3, 3, a2.privateKey, ap, false);"
+          <> "let sk = new Map();"
+          -- Bob sends 3
+          <> "const e1 = rcEncrypt(bob, new TextEncoder().encode('msg1'), 100); bob = e1.state;"
+          <> "const e2 = rcEncrypt(bob, new TextEncoder().encode('msg2'), 100); bob = e2.state;"
+          <> "const e3 = rcEncrypt(bob, new TextEncoder().encode('msg3'), 100); bob = e3.state;"
+          -- Alice decrypts msg3 first (skip 1,2)
+          <> "let d3 = rcDecrypt(alice, sk, e3.ciphertext); alice = d3.state; sk = d3.skippedKeys;"
+          -- Alice decrypts msg1 from skipped
+          <> "let d1 = rcDecrypt(alice, sk, e1.ciphertext); alice = d1.state; sk = d1.skippedKeys;"
+          -- Alice responds
+          <> "const ea = rcEncrypt(alice, new TextEncoder().encode('reply'), 100); alice = ea.state;"
+          <> "const da = rcDecrypt(bob, new Map(), ea.ciphertext); bob = da.state;"
+          -- Verify
+          <> "const ok = new TextDecoder().decode(d3.plaintext) === 'msg3'"
+          <> " && new TextDecoder().decode(d1.plaintext) === 'msg1'"
+          <> " && new TextDecoder().decode(da.plaintext) === 'reply';"
+          <> jsOut ("new Uint8Array([ok ? 1 : 0])")
+        tsResult `shouldBe` B.singleton 1
+
+      it "cross-language: Haskell encrypts, TypeScript decrypts" $ do
+        -- Round 1: TypeScript generates alice's keys, outputs private keys + smpEncoded E2E params
+        tsAliceOutput <- callNode $ impEnc <> impRatchet
+          <> "const a1 = generateX448KeyPair(), a2 = generateX448KeyPair();"
+          -- smpEncode E2ERatchetParams v3: (version, pk1, pk2, Maybe KEMParams)
+          -- Nothing = 0x30 ('0')
+          <> "const e2e = new Uint8Array([...encodeWord16(3), ...encodeBytes(encodePubKeyX448(a1.publicKey)), ...encodeBytes(encodePubKeyX448(a2.publicKey)), 0x30]);"
+          -- Output: a1.privateKey(56) + a2.privateKey(56) + e2e_len(2) + e2e_bytes
+          <> "const lenBuf = new Uint8Array(2); lenBuf[0] = (e2e.length >> 8) & 0xff; lenBuf[1] = e2e.length & 0xff;"
+          <> jsOut ("new Uint8Array([...a1.privateKey, ...a2.privateKey, ...lenBuf, ...e2e])")
+        let (alicePriv1, rest1) = B.splitAt 56 tsAliceOutput
+            (alicePriv2, rest2) = B.splitAt 56 rest1
+            e2eLen = fromIntegral (B.index rest2 0) * 256 + fromIntegral (B.index rest2 1)
+            aliceE2EBytes = B.take e2eLen $ B.drop 2 rest2
+
+        -- Round 2: Haskell decodes alice's E2E params, generates bob, encrypts
+        g <- C.newRandom
+        let v = CR.currentE2EEncryptVersion
+        Right (aliceE2E@(CR.E2ERatchetParams _ _ alicePk2 _) :: CR.E2ERatchetParams 'CR.RKSProposed 'X448) <- pure $ smpDecode aliceE2EBytes
+        (bobPk1, bobPk2, _pKem, CR.AE2ERatchetParams _ bobE2E) <- CR.generateSndE2EParams @'X448 g v Nothing
+        Right (bobInitParams, _) <- pure $ CR.pqX3dhSnd bobPk1 bobPk2 Nothing aliceE2E
+        (_, bobDHRs) <- atomically $ C.generateKeyPair @'X448 g
+        let bobRatchet = CR.initSndRatchet (CR.RatchetVersions v v) alicePk2 bobDHRs (bobInitParams, Nothing)
+        Right (mek, _) <- runExceptT $ CR.rcEncryptHeader bobRatchet Nothing v
+        Right ciphertext <- runExceptT $ CR.rcEncryptMsg mek paddedMsgLen "hello from haskell ratchet"
+        let bobE2EBytes = smpEncode bobE2E
+
+        -- Round 3: TypeScript decodes bob's params, inits ratchet, decrypts
+        tsResult <- callNode $ impEnc <> impRatchet
+          -- Parse bob's E2E params
+          <> "const d = new Decoder(" <> jsUint8 bobE2EBytes <> ");"
+          <> "const bobV = d.anyByte() * 256 + d.anyByte();"
+          <> "const bobPk1Raw = decodePubKeyX448(decodeBytes(d));"
+          <> "const bobPk2Raw = decodePubKeyX448(decodeBytes(d));"
+          <> "const a1Priv = " <> jsUint8 alicePriv1 <> ";"
+          <> "const a2Priv = " <> jsUint8 alicePriv2 <> ";"
+          <> "const ap = pqX3dhRcv(a1Priv, a2Priv, bobPk1Raw, bobPk2Raw);"
+          <> "const alice = initRcvRatchet(3, 3, a2Priv, ap, false);"
+          -- Debug: output rcAD length and first bytes to compare
+          <> "try {"
+          <> "const dec = rcDecrypt(alice, new Map(), " <> jsUint8 ciphertext <> ");"
+          <> jsOut ("dec.plaintext")
+          <> "} catch(e) {"
+          <> "console.warn('ERROR:', e.message);"
+          <> "console.warn('rcAD length:', alice.rcAD.length);"
+          <> "console.warn('rcAD first 10:', Array.from(alice.rcAD.subarray(0,10)));"
+          <> "process.exit(1);"
+          <> "}"
+        tsResult `shouldBe` "hello from haskell ratchet"
 
     describe "DER encoding" $ do
       it "X448 DER round-trips" $ do
