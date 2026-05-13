@@ -28,6 +28,7 @@ import Simplex.Messaging.Version.Internal (Version (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey (..), KEMSecretKey, KEMCiphertext (..), KEMSharedKey (..), sntrup761Keypair, sntrup761Enc, sntrup761Dec)
+import qualified Crypto.Cipher.Types as AES
 import qualified Data.ByteArray as BA
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
@@ -78,7 +79,8 @@ impCryptoShortLink :: String
 impCryptoShortLink = "import { contactShortLinkKdf, invShortLinkKdf, decryptLinkData } from './dist/crypto/shortLink.js';"
 
 impRatchet :: String
-impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encodePubKeyX448, decodePubKeyX448 } from './dist/crypto/ratchet.js';"
+impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encodePubKeyX448, decodePubKeyX448, chainKdf, rootKdf } from './dist/crypto/ratchet.js';"
+  <> "import { encryptAEAD, decryptAEAD } from './dist/crypto.js';"
 
 impSntrup :: String
 impSntrup = "import { initSntrup761, sntrup761Keypair, sntrup761Enc, sntrup761Dec } from './dist/crypto/sntrup761.js'; await initSntrup761();"
@@ -337,6 +339,29 @@ smpWebTests_ = do
         <> jsOut ("ss")
       tsResult `shouldBe` (BA.convert hsSharedSecret :: B.ByteString)
 
+  describe "crypto/aesGcm" $ do
+    it "Haskell encryptAEAD (16-byte IV), TypeScript decrypts" $ do
+      let key = C.Key $ B.pack [1..32]
+          iv = C.IV $ B.pack [1..16]
+          ad = "associated data"
+          msg = "hello from haskell aes-gcm"
+      Right (C.AuthTag authTag, ct) <- runExceptT $ C.encryptAEAD key iv 64 ad msg
+      let tagBytes = BA.convert authTag :: B.ByteString
+      tsResult <- callNode $ impEnc
+        <> "import { gcm } from '@noble/ciphers/aes.js';"
+        <> "const key = " <> jsUint8 (B.pack [1..32]) <> ";"
+        <> "const iv = " <> jsUint8 (B.pack [1..16]) <> ";"
+        <> "const ad = new TextEncoder().encode('associated data');"
+        <> "const ct = " <> jsUint8 ct <> ";"
+        <> "const tag = " <> jsUint8 tagBytes <> ";"
+        <> "const cipher = gcm(key, iv, ad);"
+        <> "const encrypted = new Uint8Array([...ct, ...tag]);"
+        <> "const decrypted = cipher.decrypt(encrypted);"
+        -- unpad: 2-byte BE length prefix + message + '#' padding
+        <> "const len = (decrypted[0] << 8) | decrypted[1];"
+        <> jsOut ("decrypted.subarray(2, 2 + len)")
+      tsResult `shouldBe` msg
+
   describe "crypto/ratchet" $ do
     describe "X3DH" $ do
       it "pqX3dhSnd and pqX3dhRcv produce same ratchetKey" $ do
@@ -354,6 +379,58 @@ smpWebTests_ = do
           <> "const match = snd.ratchetKey.every((b, i) => b === rcv.ratchetKey[i]) && snd.sndHK.every((b, i) => b === rcv.sndHK[i]) && snd.rcvNextHK.every((b, i) => b === rcv.rcvNextHK[i]);"
           <> jsOut ("new Uint8Array([match ? 1 : 0, snd.ratchetKey.length, snd.sndHK.length, snd.rcvNextHK.length])")
         tsResult `shouldBe` B.pack [1, 32, 32, 32]
+
+    describe "chainKdf" $ do
+      it "TypeScript chainKdf produces correct output via HKDF" $ do
+        -- chainKdf is hkdf3("", ck, "SimpleXChainRatchet") split into 32+32+16+16
+        -- Since hkdf is already tested against Haskell, test the split logic
+        tsResult <- callNode $ impRatchet
+          <> "const r = chainKdf(" <> jsUint8 (B.pack [1..32]) <> ");"
+          <> jsOut ("new Uint8Array([r.ck.length, r.mk.length, r.iv.length, r.ehIV.length])")
+        tsResult `shouldBe` B.pack [32, 32, 16, 16]
+
+    describe "encryptAEAD" $ do
+      it "TypeScript encrypt matches Haskell encrypt (same ciphertext)" $ do
+        let key = C.Key $ B.pack [1..32]
+            iv = C.IV $ B.pack [1..16]
+            ad = "test associated data"
+            msg = "ratchet plaintext"
+        Right (C.AuthTag hsTag, hsCt) <- runExceptT $ C.encryptAEAD key iv 64 ad msg
+        let hsTagBytes = BA.convert hsTag :: B.ByteString
+        tsResult <- callNode $ impRatchet
+          <> "const r = encryptAEAD(" <> jsUint8 (B.pack [1..32]) <> "," <> jsUint8 (B.pack [1..16]) <> ",64,"
+          <> "new TextEncoder().encode('test associated data'),"
+          <> "new TextEncoder().encode('ratchet plaintext'));"
+          <> jsOut ("new Uint8Array([...r.authTag, ...r.ciphertext])")
+        tsResult `shouldBe` (hsTagBytes <> hsCt)
+
+      it "TypeScript decrypts Haskell-encrypted" $ do
+        let key = C.Key $ B.pack [10..41]
+            iv = C.IV $ B.pack [10..25]
+            ad = "ad for decrypt test"
+            msg = "hello from haskell ratchet"
+        Right (C.AuthTag hsTag, hsCt) <- runExceptT $ C.encryptAEAD key iv 64 ad msg
+        let hsTagBytes = BA.convert hsTag :: B.ByteString
+        tsResult <- callNode $ impRatchet
+          <> "const plain = decryptAEAD(" <> jsUint8 (B.pack [10..41]) <> "," <> jsUint8 (B.pack [10..25]) <> ","
+          <> "new TextEncoder().encode('ad for decrypt test'),"
+          <> jsUint8 hsCt <> "," <> jsUint8 hsTagBytes <> ");"
+          <> jsOut ("plain")
+        tsResult `shouldBe` msg
+
+      it "Haskell decrypts TypeScript-encrypted" $ do
+        let key = C.Key $ B.pack [20..51]
+            iv = C.IV $ B.pack [20..35]
+            ad = "ad for ts encrypt"
+            msg = "hello from typescript ratchet"
+        tsResult <- callNode $ impRatchet
+          <> "const r = encryptAEAD(" <> jsUint8 (B.pack [20..51]) <> "," <> jsUint8 (B.pack [20..35]) <> ",64,"
+          <> "new TextEncoder().encode('ad for ts encrypt'),"
+          <> "new TextEncoder().encode('hello from typescript ratchet'));"
+          <> jsOut ("new Uint8Array([...r.authTag, ...r.ciphertext])")
+        let (tsTag, tsCt) = B.splitAt 16 tsResult
+        Right hsPlain <- runExceptT $ C.decryptAEAD key iv ad tsCt (C.AuthTag $ AES.AuthTag $ BA.convert tsTag)
+        hsPlain `shouldBe` msg
 
     describe "DER encoding" $ do
       it "X448 DER round-trips" $ do

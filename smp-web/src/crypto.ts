@@ -3,7 +3,10 @@
 
 import {hkdf as nobleHkdf} from "@noble/hashes/hkdf"
 import {sha512} from "@noble/hashes/sha512"
+import {gcm} from "@noble/ciphers/aes.js"
 import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {concatBytes} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {pad, unPad} from "@simplex-chat/xftp-web/dist/crypto/padding.js"
 
 // C.hkdf (Crypto.hs:1461-1464)
 // HKDF-SHA512 extract + expand
@@ -47,4 +50,40 @@ export function sbEncryptBlock(chainKey: Uint8Array, block: Uint8Array, paddedLe
 export function sbDecryptBlock(chainKey: Uint8Array, block: Uint8Array): {decrypted: Uint8Array; nextChainKey: Uint8Array} {
   const {keyNonce: {sbKey, nonce}, nextChainKey} = sbcHkdf(chainKey)
   return {decrypted: cbDecrypt(sbKey, nonce, block), nextChainKey}
+}
+
+// -- AES-256-GCM authenticated encryption (Crypto.hs:1035-1061)
+// Uses 16-byte IVs (GCM with GHASH path per NIST SP 800-38D for IVs != 96 bits)
+
+export const AUTH_TAG_SIZE = 16
+
+// encryptAEAD (Crypto.hs:1035-1039)
+export function encryptAEAD(
+  key: Uint8Array,     // 32 bytes
+  iv: Uint8Array,      // 16 bytes
+  paddedLen: number,
+  ad: Uint8Array,
+  plaintext: Uint8Array,
+): {authTag: Uint8Array; ciphertext: Uint8Array} {
+  const padded = pad(plaintext, paddedLen)
+  const cipher = gcm(key, iv, ad)
+  const encrypted = cipher.encrypt(padded)
+  return {
+    ciphertext: encrypted.subarray(0, encrypted.length - AUTH_TAG_SIZE),
+    authTag: encrypted.subarray(encrypted.length - AUTH_TAG_SIZE),
+  }
+}
+
+// decryptAEAD (Crypto.hs:1058-1061)
+export function decryptAEAD(
+  key: Uint8Array,
+  iv: Uint8Array,
+  ad: Uint8Array,
+  ciphertext: Uint8Array,
+  authTag: Uint8Array,
+): Uint8Array {
+  const cipher = gcm(key, iv, ad)
+  const encrypted = concatBytes(ciphertext, authTag)
+  const padded = cipher.decrypt(encrypted)
+  return unPad(padded)
 }
