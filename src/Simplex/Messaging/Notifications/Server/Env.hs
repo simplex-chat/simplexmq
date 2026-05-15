@@ -13,21 +13,24 @@ module Simplex.Messaging.Notifications.Server.Env
     SMPSubscriberVar,
     SMPSubscriber (..),
     NtfPushServer (..),
+    PushClientVar,
     NtfRequest (..),
     NtfServerClient (..),
     defaultInactiveClientExpiration,
     newNtfServerEnv,
     newNtfSubscriber,
     newNtfPushServer,
-    newPushClient,
     getPushClient,
+    getDeliveryLock,
     newNtfServerClient,
   ) where
 
 import Control.Concurrent (ThreadId)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as T
@@ -60,6 +63,7 @@ import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceC
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
+import UnliftIO.MVar
 import UnliftIO.STM
 
 data NtfServerConfig = NtfServerConfig
@@ -164,27 +168,53 @@ data SMPSubscriber = SMPSubscriber
 
 data NtfPushServer = NtfPushServer
   { pushQ :: TBQueue (Maybe T.Text, NtfTknRec, PushNotification), -- Maybe Text is a hostname of "own" server
-    pushClients :: TMap PushProvider PushProviderClient,
+    pushClients :: TMap PushProvider PushClientVar,
+    pushClientSeq :: TVar Int,
+    -- one lock per srvHost_ serializes per-server delivery while different servers proceed in parallel
+    srvDeliveryLocks :: TMap (Maybe T.Text) (MVar ()),
     apnsConfig :: APNSPushClientConfig
   }
+
+-- The Either communicates client-creation failure from the winner to the waiters.
+type PushClientVar = SessionVar (Either E.SomeException PushProviderClient)
 
 newNtfPushServer :: Natural -> APNSPushClientConfig -> IO NtfPushServer
 newNtfPushServer qSize apnsConfig = do
   pushQ <- newTBQueueIO qSize
   pushClients <- TM.emptyIO
-  pure NtfPushServer {pushQ, pushClients, apnsConfig}
+  pushClientSeq <- newTVarIO 0
+  srvDeliveryLocks <- TM.emptyIO
+  pure NtfPushServer {pushQ, pushClients, pushClientSeq, srvDeliveryLocks, apnsConfig}
 
-newPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-newPushClient NtfPushServer {apnsConfig, pushClients} pp = do
-  c <- case apnsProviderHost pp of
+getDeliveryLock :: TMap (Maybe T.Text) (MVar ()) -> Maybe T.Text -> IO (MVar ())
+getDeliveryLock locks k = do
+  newLock <- newMVar ()
+  atomically $ TM.lookup k locks >>= maybe (TM.insert k newLock locks $> newLock) pure
+
+-- | Single-flight access to the per-provider push client.
+-- take (getSessVar) → create (newPushClient) or wait (waitForPushClient).
+-- The returned PushClientVar is the handle retryDeliver passes to removeSessVar to evict
+-- this specific instance before re-fetching.
+getPushClient :: NtfPushServer -> PushProvider -> IO (PushProviderClient, PushClientVar)
+getPushClient s pp = do
+  ts <- getCurrentTime
+  atomically (getSessVar (pushClientSeq s) pp (pushClients s) ts) >>= either (newPushClient s pp) waitForPushClient
+
+newPushClient :: NtfPushServer -> PushProvider -> PushClientVar -> IO (PushProviderClient, PushClientVar)
+newPushClient NtfPushServer {pushClients, apnsConfig} pp v = do
+  r <- E.try $ case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
-  atomically $ TM.insert pp c pushClients
-  pure c
+  atomically $ do
+    putTMVar (sessionVar v) r
+    case r of
+      Left _ -> removeSessVar v pp pushClients
+      Right _ -> pure ()
+  either E.throwIO (\c -> pure (c, v)) r
 
-getPushClient :: NtfPushServer -> PushProvider -> IO PushProviderClient
-getPushClient s@NtfPushServer {pushClients} pp =
-  TM.lookupIO pp pushClients >>= maybe (newPushClient s pp) pure
+waitForPushClient :: PushClientVar -> IO (PushProviderClient, PushClientVar)
+waitForPushClient v =
+  atomically (readTMVar $ sessionVar v) >>= either E.throwIO (\c -> pure (c, v))
 
 data NtfRequest
   = NtfReqNew CorrId ANewNtfEntity

@@ -326,7 +326,7 @@ data PushProviderError
   | PPCryptoError C.CryptoError
   | PPResponseError (Maybe Status) Text
   | PPTokenInvalid NTInvalidReason
-  | PPRetryLater
+  | PPRetryLater Text
   | PPPermanentError
   deriving (Show, Exception)
 
@@ -343,8 +343,7 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect
-  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
+  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequestDirect http2 req Nothing
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead
   if status == Just N.ok200
@@ -373,8 +372,8 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
       | status == Just N.gone410 = throwE $ case reason' of
           "ExpiredToken" -> PPTokenInvalid NTIRExpiredToken
           "Unregistered" -> PPTokenInvalid NTIRUnregistered
-          _ -> PPRetryLater
-      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwE PPRetryLater
+          _ -> PPRetryLater $ "410 " <> reason'
+      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwE (PPRetryLater "503")
       -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token
       | otherwise = throwE $ PPResponseError status reason'
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a

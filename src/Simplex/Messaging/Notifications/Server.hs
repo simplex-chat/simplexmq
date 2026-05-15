@@ -89,6 +89,7 @@ import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, race_, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
+import UnliftIO.MVar (withMVar)
 import UnliftIO.STM
 #if MIN_VERSION_base(4,18,0)
 import GHC.Conc (listThreads)
@@ -633,18 +634,19 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 ntfPush :: NtfPushServer -> M ()
-ntfPush s@NtfPushServer {pushQ} = forever $ do
+ntfPush s@NtfPushServer {pushQ, srvDeliveryLocks} = forever $ do
   (srvHost_, tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
+  lock <- liftIO $ getDeliveryLock srvDeliveryLocks srvHost_
   st <- asks store
-  case ntf of
+  void $ forkIO $ withMVar lock $ \_ -> case ntf of
     PNVerification _ ->
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ setTknStatusConfirmed st tkn
           incNtfStatT t ntfVrfDelivered
         Left _ -> incNtfStatT t ntfVrfFailed
-    PNCheckMessages -> do
+    PNCheckMessages ->
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
@@ -660,7 +662,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
         Right () -> do
           incNtfStatT t ntfDelivered
           liftIO $ mapM_ (`incServerStat` ntfDeliveredOwn stats) srvHost_
-
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action
@@ -668,12 +669,12 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
     deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf = do
-      deliver <- getPushClient s pp
+      (deliver, clientVar) <- getPushClient s pp
       runExceptT (deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
         Left e -> case e of
-          PPConnection _ -> retryDeliver
-          PPRetryLater -> retryDeliver
+          PPConnection ce -> retryDeliver clientVar $ "connection " <> tshow ce
+          PPRetryLater r -> retryDeliver clientVar r
           PPCryptoError _ -> err e
           PPResponseError {} -> err e
           PPTokenInvalid r -> do
@@ -681,9 +682,13 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             err e
           PPPermanentError -> err e
       where
-        retryDeliver :: IO (Either PushProviderError ())
-        retryDeliver = do
-          deliver <- newPushClient s pp
+        -- removeSessVar checks identity, so concurrent retries collapse: the first
+        -- one removes the failing client, subsequent ones observe a fresh replacement
+        retryDeliver :: PushClientVar -> Text -> IO (Either PushProviderError ())
+        retryDeliver oldVar reason = do
+          logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
+          atomically $ removeSessVar oldVar pp (pushClients s)
+          (deliver, _) <- getPushClient s pp
           runExceptT (deliver tkn ntf) >>= \case
             Right _ -> pure $ Right ()
             Left e -> case e of
