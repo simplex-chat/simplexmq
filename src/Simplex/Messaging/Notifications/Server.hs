@@ -672,8 +672,8 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
       runExceptT (deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
         Left e -> case e of
-          PPConnection _ -> retryDeliver
-          PPRetryLater -> retryDeliver
+          PPConnection ce -> retryDeliver $ "connection " <> tshow ce
+          PPRetryLater r -> retryDeliver r
           PPCryptoError _ -> err e
           PPResponseError {} -> err e
           PPTokenInvalid r -> do
@@ -681,8 +681,9 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
             err e
           PPPermanentError -> err e
       where
-        retryDeliver :: IO (Either PushProviderError ())
-        retryDeliver = do
+        retryDeliver :: Text -> IO (Either PushProviderError ())
+        retryDeliver reason = do
+          logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
           deliver <- newPushClient s pp
           runExceptT (deliver tkn ntf) >>= \case
             Right _ -> pure $ Right ()
