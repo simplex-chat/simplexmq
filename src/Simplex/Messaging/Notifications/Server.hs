@@ -669,12 +669,12 @@ ntfPush s@NtfPushServer {pushQ, srvDeliveryLocks} = forever $ do
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
     deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf = do
-      deliver <- getPushClient s pp
+      (deliver, clientVar) <- getPushClient s pp
       runExceptT (deliver tkn ntf) >>= \case
         Right _ -> pure $ Right ()
         Left e -> case e of
-          PPConnection ce -> retryDeliver $ "connection " <> tshow ce
-          PPRetryLater r -> retryDeliver r
+          PPConnection ce -> retryDeliver clientVar $ "connection " <> tshow ce
+          PPRetryLater r -> retryDeliver clientVar r
           PPCryptoError _ -> err e
           PPResponseError {} -> err e
           PPTokenInvalid r -> do
@@ -682,10 +682,13 @@ ntfPush s@NtfPushServer {pushQ, srvDeliveryLocks} = forever $ do
             err e
           PPPermanentError -> err e
       where
-        retryDeliver :: Text -> IO (Either PushProviderError ())
-        retryDeliver reason = do
+        -- removeSessVar checks identity, so concurrent retries collapse: the first
+        -- one removes the failing client, subsequent ones observe a fresh replacement
+        retryDeliver :: PushClientVar -> Text -> IO (Either PushProviderError ())
+        retryDeliver oldVar reason = do
           logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
-          deliver <- newPushClient s pp
+          atomically $ removeSessVar oldVar pp (pushClients s)
+          (deliver, _) <- getPushClient s pp
           runExceptT (deliver tkn ntf) >>= \case
             Right _ -> pure $ Right ()
             Left e -> case e of
