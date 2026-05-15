@@ -31,6 +31,7 @@ import Simplex.Messaging.Crypto (Algorithm (..))
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings (KEMPublicKey (..), KEMSecretKey, KEMCiphertext (..), KEMSharedKey (..), sntrup761Keypair, sntrup761Enc, sntrup761Dec)
 import qualified Crypto.Cipher.Types as AES
+import qualified Data.Map.Strict as M
 import qualified Data.ByteArray as BA
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
@@ -445,8 +446,8 @@ smpWebTests_ = do
           <> "const bp = pqX3dhSnd(b1.privateKey, b2.privateKey, a1.publicKey, a2.publicKey);"
           <> "const ap = pqX3dhRcv(a1.privateKey, a2.privateKey, b1.publicKey, b2.publicKey);"
           <> "const b3 = generateX448KeyPair();"
-          <> "let bob = initSndRatchet(3, 3, a2.publicKey, b3.privateKey, bp, false);"
-          <> "let alice = initRcvRatchet(3, 3, a2.privateKey, ap, false);"
+          <> "let bob = initSndRatchet({current:3,maxSupported:3}, a2.publicKey, b3.privateKey, bp, null);"
+          <> "let alice = initRcvRatchet({current:3,maxSupported:3}, a2.privateKey, ap, null, false);"
           <> "let sk = new Map();"
           -- Bob sends 3
           <> "const e1 = rcEncrypt(bob, new TextEncoder().encode('msg1'), 100); bob = e1.state;"
@@ -503,18 +504,166 @@ smpWebTests_ = do
           <> "const a1Priv = " <> jsUint8 alicePriv1 <> ";"
           <> "const a2Priv = " <> jsUint8 alicePriv2 <> ";"
           <> "const ap = pqX3dhRcv(a1Priv, a2Priv, bobPk1Raw, bobPk2Raw);"
-          <> "const alice = initRcvRatchet(3, 3, a2Priv, ap, false);"
-          -- Debug: output rcAD length and first bytes to compare
-          <> "try {"
+          <> "const alice = initRcvRatchet({current:3,maxSupported:3}, a2Priv, ap, null, false);"
           <> "const dec = rcDecrypt(alice, new Map(), " <> jsUint8 ciphertext <> ");"
           <> jsOut ("dec.plaintext")
-          <> "} catch(e) {"
-          <> "console.warn('ERROR:', e.message);"
-          <> "console.warn('rcAD length:', alice.rcAD.length);"
-          <> "console.warn('rcAD first 10:', Array.from(alice.rcAD.subarray(0,10)));"
-          <> "process.exit(1);"
-          <> "}"
         tsResult `shouldBe` "hello from haskell ratchet"
+
+      it "cross-language: TypeScript encrypts, Haskell decrypts" $ do
+        -- Round 1: Haskell generates alice's keys, outputs encoded E2E params
+        g <- C.newRandom
+        let v = CR.currentE2EEncryptVersion
+        (alicePk1, alicePk2, _pKem, aliceE2E) <- CR.generateRcvE2EParams @'X448 g v CR.PQSupportOff
+        let aliceE2EBytes = smpEncode aliceE2E
+
+        -- Round 2: TypeScript generates bob's keys, does X3DH, inits snd ratchet, encrypts
+        tsOutput <- callNode $ impEnc <> impRatchet
+          -- Parse alice's E2E params
+          <> "const d = new Decoder(" <> jsUint8 aliceE2EBytes <> ");"
+          <> "const aliceV = d.anyByte() * 256 + d.anyByte();"
+          <> "const alicePk1Raw = decodePubKeyX448(decodeBytes(d));"
+          <> "const alicePk2Raw = decodePubKeyX448(decodeBytes(d));"
+          -- Bob generates keys
+          <> "const b1 = generateX448KeyPair(), b2 = generateX448KeyPair();"
+          <> "const b3 = generateX448KeyPair();"
+          -- X3DH (bob is sender)
+          <> "const bp = pqX3dhSnd(b1.privateKey, b2.privateKey, alicePk1Raw, alicePk2Raw);"
+          -- Init sending ratchet
+          <> "let bob = initSndRatchet({current:3,maxSupported:3}, alicePk2Raw, b3.privateKey, bp, null);"
+          -- Encrypt
+          <> "const enc = rcEncrypt(bob, new TextEncoder().encode('hello from typescript ratchet'), 100);"
+          -- Output: bob's E2E params (version + 2 DER keys + Nothing KEM) + ciphertext
+          <> "const bobE2E = new Uint8Array([...encodeWord16(3), ...encodeBytes(encodePubKeyX448(b1.publicKey)), ...encodeBytes(encodePubKeyX448(b2.publicKey)), 0x30]);"
+          <> "const lenBuf = new Uint8Array(2); lenBuf[0] = (bobE2E.length >> 8) & 0xff; lenBuf[1] = bobE2E.length & 0xff;"
+          <> "const ctLenBuf = new Uint8Array(2); ctLenBuf[0] = (enc.ciphertext.length >> 8) & 0xff; ctLenBuf[1] = enc.ciphertext.length & 0xff;"
+          <> jsOut ("new Uint8Array([...lenBuf, ...bobE2E, ...ctLenBuf, ...enc.ciphertext])")
+        -- Parse output: [2 bytes e2e len][e2e bytes][2 bytes ct len][ct bytes]
+        let (e2eLenBs, rest1) = B.splitAt 2 tsOutput
+            bobE2ELen = fromIntegral (B.index e2eLenBs 0) * 256 + fromIntegral (B.index e2eLenBs 1)
+            (bobE2EBytes, rest2) = B.splitAt bobE2ELen rest1
+            (ctLenBs, rest3) = B.splitAt 2 rest2
+            ctLen = fromIntegral (B.index ctLenBs 0) * 256 + fromIntegral (B.index ctLenBs 1)
+            ciphertext = B.take ctLen rest3
+
+        -- Round 3: Haskell decodes bob's params, does X3DH, inits rcv ratchet, decrypts
+        Right (CR.AE2ERatchetParams _ bobE2EParams :: CR.AE2ERatchetParams 'X448) <- pure $ smpDecode bobE2EBytes
+        Right (aliceInitParams, _) <- runExceptT $ CR.pqX3dhRcv alicePk1 alicePk2 Nothing bobE2EParams
+        let aliceRatchet = CR.initRcvRatchet (CR.RatchetVersions v v) alicePk2 (aliceInitParams, Nothing) CR.PQSupportOff
+        gAlice <- C.newRandom
+        Right (msg, _, _) <- runExceptT $ CR.rcDecrypt gAlice aliceRatchet M.empty ciphertext
+        msg `shouldBe` Right "hello from typescript ratchet"
+
+      it "cross-language: PQ X3DH - Haskell proposes KEM, TypeScript accepts, encrypts" $ do
+        -- Round 1: Haskell (alice) generates keys with PQ KEM proposal
+        g <- C.newRandom
+        let v = CR.currentE2EEncryptVersion
+        (alicePk1, alicePk2, alicePKem_@(Just _), aliceE2E) <- CR.generateRcvE2EParams @'X448 g v CR.PQSupportOn
+        let aliceE2EBytes = smpEncode aliceE2E
+
+        -- Round 2: TypeScript (bob) accepts KEM, does X3DH, inits snd ratchet, encrypts
+        tsOutput <- callNode $ impEnc <> impSodium <> impRatchet <> impSntrup
+          -- Parse alice's E2E params (v3: version + pk1 + pk2 + Maybe ARKEMParams)
+          <> "const d = new Decoder(" <> jsUint8 aliceE2EBytes <> ");"
+          <> "const aliceV = d.anyByte() * 256 + d.anyByte();"
+          <> "const alicePk1Raw = decodePubKeyX448(decodeBytes(d));"
+          <> "const alicePk2Raw = decodePubKeyX448(decodeBytes(d));"
+          -- Parse Maybe ARKEMParams: '1' + 'P' + KEMPublicKey(Large)
+          <> "const maybeByte = d.anyByte();"
+          <> "if (maybeByte !== 0x31) throw new Error('expected Just KEM');"
+          <> "const kemTag = d.anyByte();"
+          <> "if (kemTag !== 0x50) throw new Error('expected P (proposed), got ' + kemTag);"
+          <> "const aliceKemPk = decodeLarge(d);"
+          -- Bob generates DH keys
+          <> "const b1 = generateX448KeyPair(), b2 = generateX448KeyPair();"
+          <> "const b3 = generateX448KeyPair();"
+          -- Bob encapsulates against alice's KEM public key
+          <> "const kemEnc = sntrup761Enc(aliceKemPk);"
+          -- Bob generates his own KEM keypair for future ratchet steps
+          <> "const bobKem = sntrup761Keypair();"
+          -- Construct kemAccepted matching Haskell RatchetKEMAccepted:
+          -- rcPQRr = alice's KEM public key (received)
+          -- rcPQRss = shared secret (from encapsulation)
+          -- rcPQRct = ciphertext (sent to alice)
+          <> "const kemAccepted = {rcPQRr: aliceKemPk, rcPQRss: kemEnc.sharedSecret, rcPQRct: kemEnc.ciphertext};"
+          -- X3DH with kemAccepted (folds shared secret into HKDF AND stores in RatchetInitParams)
+          <> "const bp = pqX3dhSnd(b1.privateKey, b2.privateKey, alicePk1Raw, alicePk2Raw, kemAccepted);"
+          -- Init sending ratchet with bob's KEM keypair
+          <> "let bob = initSndRatchet({current:3,maxSupported:3}, alicePk2Raw, b3.privateKey, bp, bobKem);"
+          -- Encrypt
+          <> "const enc = rcEncrypt(bob, new TextEncoder().encode('hello with PQ'), 100);"
+          -- Build bob's E2E params: version + pk1 + pk2 + Just(Accepted(ct, bobKemPk))
+          -- smpEncode ('A', ct, bobKemPk) where ct and pk are Large-encoded
+          <> "const bobE2E = new Uint8Array(["
+          <> "  ...encodeWord16(3),"
+          <> "  ...encodeBytes(encodePubKeyX448(b1.publicKey)),"
+          <> "  ...encodeBytes(encodePubKeyX448(b2.publicKey)),"
+          <> "  0x31,"  -- Just
+          <> "  0x41,"  -- 'A' = Accepted
+          <> "  ...new Uint8Array([(kemEnc.ciphertext.length >> 8) & 0xff, kemEnc.ciphertext.length & 0xff]), ...kemEnc.ciphertext,"
+          <> "  ...new Uint8Array([(bobKem.publicKey.length >> 8) & 0xff, bobKem.publicKey.length & 0xff]), ...bobKem.publicKey,"
+          <> "]);"
+          <> "const lenBuf = new Uint8Array(2); lenBuf[0] = (bobE2E.length >> 8) & 0xff; lenBuf[1] = bobE2E.length & 0xff;"
+          <> "const ctLenBuf = new Uint8Array(2); ctLenBuf[0] = (enc.ciphertext.length >> 8) & 0xff; ctLenBuf[1] = enc.ciphertext.length & 0xff;"
+          <> jsOut ("new Uint8Array([...lenBuf, ...bobE2E, ...ctLenBuf, ...enc.ciphertext])")
+        let (e2eLenBs, rest1) = B.splitAt 2 tsOutput
+            bobE2ELen = fromIntegral (B.index e2eLenBs 0) * 256 + fromIntegral (B.index e2eLenBs 1)
+            (bobE2EBytes, rest2) = B.splitAt bobE2ELen rest1
+            (ctLenBs, rest3) = B.splitAt 2 rest2
+            ctLen = fromIntegral (B.index ctLenBs 0) * 256 + fromIntegral (B.index ctLenBs 1)
+            ciphertext = B.take ctLen rest3
+
+        -- Round 3: Haskell decodes bob's params (with KEM accepted), does X3DH with KEM, decrypts
+        Right (CR.AE2ERatchetParams _ bobE2EParams :: CR.AE2ERatchetParams 'X448) <- pure $ smpDecode bobE2EBytes
+        Right (aliceInitParams, aliceKemKp_) <- runExceptT $ CR.pqX3dhRcv alicePk1 alicePk2 alicePKem_ bobE2EParams
+        let aliceRatchet = CR.initRcvRatchet (CR.RatchetVersions v v) alicePk2 (aliceInitParams, aliceKemKp_) CR.PQSupportOn
+        gAlice <- C.newRandom
+        result <- runExceptT $ CR.rcDecrypt gAlice aliceRatchet M.empty ciphertext
+        case result of
+          Right (msg, _, _) -> msg `shouldBe` Right "hello with PQ"
+          Left e -> expectationFailure $ "rcDecrypt failed: " <> show e
+
+      it "TypeScript PQ ratchet self-consistency: multi-message with KEM ratchet steps" $ do
+        tsResult <- callNode $ impSodium <> impSntrup <> impRatchet
+          <> "const a1 = generateX448KeyPair(), a2 = generateX448KeyPair();"
+          <> "const b1 = generateX448KeyPair(), b2 = generateX448KeyPair();"
+          <> "const b3 = generateX448KeyPair();"
+          -- Alice proposes KEM
+          <> "const aliceKem = sntrup761Keypair();"
+          -- Bob accepts: encapsulate against alice's KEM public key
+          <> "const kemEnc = sntrup761Enc(aliceKem.publicKey);"
+          <> "const bobKem = sntrup761Keypair();"
+          <> "const kemAccepted = {rcPQRr: aliceKem.publicKey, rcPQRss: kemEnc.sharedSecret, rcPQRct: kemEnc.ciphertext};"
+          -- Alice receives bob's acceptance: decapsulate to get shared secret
+          <> "const aliceSS = sntrup761Dec(kemEnc.ciphertext, aliceKem.secretKey);"
+          <> "const aliceKemAccepted = {rcPQRr: bobKem.publicKey, rcPQRss: aliceSS, rcPQRct: kemEnc.ciphertext};"
+          -- X3DH for both sides
+          <> "const bp = pqX3dhSnd(b1.privateKey, b2.privateKey, a1.publicKey, a2.publicKey, kemAccepted);"
+          <> "const ap = pqX3dhRcv(a1.privateKey, a2.privateKey, b1.publicKey, b2.publicKey, aliceKemAccepted);"
+          -- Init ratchets with KEM keypairs
+          <> "let bob = initSndRatchet({current:3,maxSupported:3}, a2.publicKey, b3.privateKey, bp, bobKem);"
+          <> "let alice = initRcvRatchet({current:3,maxSupported:3}, a2.privateKey, ap, aliceKem, true);"
+          <> "let sk = new Map();"
+          -- Bob sends msg1 (has KEM params in header from initSndRatchet)
+          <> "const e1 = rcEncrypt(bob, new TextEncoder().encode('pq msg1'), 100); bob = e1.state;"
+          -- Alice decrypts msg1 (triggers ratchet advance with KEM)
+          <> "let d1 = rcDecrypt(alice, sk, e1.ciphertext); alice = d1.state; sk = d1.skippedKeys;"
+          -- Alice sends msg2 (ratchet advanced, has KEM params from pqRatchetStep)
+          <> "const e2 = rcEncrypt(alice, new TextEncoder().encode('pq msg2'), 100); alice = e2.state;"
+          -- Bob decrypts msg2 (triggers ratchet advance with KEM on bob's side)
+          <> "let d2 = rcDecrypt(bob, new Map(), e2.ciphertext); bob = d2.state;"
+          -- Bob sends msg3 (another ratchet advance with KEM)
+          <> "const e3 = rcEncrypt(bob, new TextEncoder().encode('pq msg3'), 100); bob = e3.state;"
+          -- Alice decrypts msg3
+          <> "let d3 = rcDecrypt(alice, sk, e3.ciphertext); alice = d3.state; sk = d3.skippedKeys;"
+          -- Verify all messages
+          <> "const ok = new TextDecoder().decode(d1.plaintext) === 'pq msg1'"
+          <> " && new TextDecoder().decode(d2.plaintext) === 'pq msg2'"
+          <> " && new TextDecoder().decode(d3.plaintext) === 'pq msg3'"
+          -- Verify KEM state is maintained
+          <> " && alice.rcKEM !== null && bob.rcKEM !== null"
+          <> " && alice.rcSndKEM === true && bob.rcSndKEM === true;"
+          <> jsOut ("new Uint8Array([ok ? 1 : 0])")
+        tsResult `shouldBe` B.singleton 1
 
     describe "DER encoding" $ do
       it "X448 DER round-trips" $ do
