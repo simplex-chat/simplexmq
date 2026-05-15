@@ -89,6 +89,7 @@ import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, race_, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
+import UnliftIO.MVar (withMVar)
 import UnliftIO.STM
 #if MIN_VERSION_base(4,18,0)
 import GHC.Conc (listThreads)
@@ -633,18 +634,19 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 ntfPush :: NtfPushServer -> M ()
-ntfPush s@NtfPushServer {pushQ} = forever $ do
+ntfPush s@NtfPushServer {pushQ, srvDeliveryLocks} = forever $ do
   (srvHost_, tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue pushQ)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
+  lock <- liftIO $ getDeliveryLock srvDeliveryLocks srvHost_
   st <- asks store
-  case ntf of
+  void $ forkIO $ withMVar lock $ \_ -> case ntf of
     PNVerification _ ->
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ setTknStatusConfirmed st tkn
           incNtfStatT t ntfVrfDelivered
         Left _ -> incNtfStatT t ntfVrfFailed
-    PNCheckMessages -> do
+    PNCheckMessages ->
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
@@ -660,7 +662,6 @@ ntfPush s@NtfPushServer {pushQ} = forever $ do
         Right () -> do
           incNtfStatT t ntfDelivered
           liftIO $ mapM_ (`incServerStat` ntfDeliveredOwn stats) srvHost_
-
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action
