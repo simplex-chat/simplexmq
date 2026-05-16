@@ -13,10 +13,17 @@
 -- Run: cabal test --test-option=--match="/SMP Web Client/"
 module SMPWebTests (smpWebTests) where
 
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM
+import Control.Monad (when)
+import Control.Exception (bracket)
 import Control.Monad.Except (ExceptT, runExceptT)
+import Crypto.Random (ChaChaDRG)
+import Data.IORef
+import System.IO (Handle, hFlush, hGetLine, hPutStr, hSetBuffering, BufferMode (..))
+import System.Process (CreateProcess (..), StdStream (..), ProcessHandle, createProcess, proc, terminateProcess)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
+import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import System.Directory (doesDirectoryExist)
 import Data.Word (Word16)
@@ -44,6 +51,7 @@ import Simplex.Messaging.Transport (TLS, smpBlockSize, currentServerSMPRelayVers
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import SMPClient (cfgWebOn, testKeyHash, testPort, withSmpServerConfig)
+import AgentTests.DoubleRatchetTests (testEncryptDecrypt, testSkippedMessages, testManyMessages, testSkippedAfterRatchetAdvance)
 import AgentTests.FunctionalAPITests (withAgent)
 import Test.Hspec hiding (it)
 import Util
@@ -101,8 +109,218 @@ jsStr bs = "'" <> BC.unpack bs <> "'"
 paddedMsgLen :: Int
 paddedMsgLen = 100
 
+-- -- TestPeer: sum type for cross-language ratchet tests
+
+type HsPeer a = TVar (TVar ChaChaDRG, CR.Ratchet a, CR.SkippedMsgKeys)
+
+data TestPeer
+  = forall a. (C.AlgorithmI a, C.DhAlgorithm a) => TestPeerHS (HsPeer a)
+  | TestPeerJS Handle Handle ProcessHandle  -- stdin, stdout, process
+
+-- dispatch functions
+
+tpEncrypt :: TestPeer -> B.ByteString -> IO (Either C.CryptoError B.ByteString)
+tpEncrypt (TestPeerHS tvar) msg = do
+  (_, rc, smks) <- readTVarIO tvar
+  result <- runExceptT $ do
+    (mek, rc') <- CR.rcEncryptHeader rc Nothing CR.currentE2EEncryptVersion
+    ct <- CR.rcEncryptMsg mek paddedMsgLen msg
+    pure (ct, rc')
+  case result of
+    Right (ct, rc') -> do
+      (g, _, smks') <- readTVarIO tvar
+      atomically $ writeTVar tvar (g, rc', smks')
+      pure $ Right ct
+    Left e -> pure $ Left e
+tpEncrypt (TestPeerJS hIn hOut _) msg = do
+  hPutStrLn' hIn $ "E " <> BC.unpack msg
+  resp <- hGetLine hOut
+  case parseResponse resp of
+    Right hex -> pure $ Right $ hexToBS hex
+    Left err -> error $ "tpEncrypt JS error: " <> err
+
+tpDecrypt :: TestPeer -> B.ByteString -> IO (Either C.CryptoError (Either C.CryptoError B.ByteString))
+tpDecrypt (TestPeerHS tvar) ct = do
+  (g, rc, smks) <- readTVarIO tvar
+  result <- runExceptT $ CR.rcDecrypt g rc smks ct
+  case result of
+    Right (msg, rc', smDiff) -> do
+      atomically $ writeTVar tvar (g, rc', CR.applySMDiff smks smDiff)
+      pure $ Right msg
+    Left e -> pure $ Left e
+tpDecrypt (TestPeerJS hIn hOut _) ct = do
+  hPutStrLn' hIn $ "D " <> bsToHex ct
+  resp <- hGetLine hOut
+  case parseResponse resp of
+    Right txt -> pure $ Right $ Right $ BC.pack txt
+    Left err -> parseJsError err
+
+-- Map JS REPL error strings to CryptoError at the correct Either level.
+-- Outer Left: errors that abort rcDecrypt (header failure, first skipMessageKeys).
+-- Inner Right (Left _): errors from second skipMessageKeys (duplicate/earlier in current ratchet state).
+parseJsError :: String -> IO (Either C.CryptoError (Either C.CryptoError B.ByteString))
+parseJsError err
+  -- Outer errors (ExceptT failures in Haskell rcDecrypt)
+  | has "CERatchetHeader" = pure $ Left C.CERatchetHeader
+  | has "CERatchetKEMState" = pure $ Left C.CERatchetKEMState
+  -- Inner errors (pure Left in second skipMessageKeys)
+  | has "CERatchetDuplicateMessage" = pure $ Right $ Left C.CERatchetDuplicateMessage
+  | has "CERatchetEarlierMessage" = pure $ Right $ Left $ C.CERatchetEarlierMessage 0
+  | has "CERatchetTooManySkipped" = pure $ Right $ Left $ C.CERatchetTooManySkipped 0
+  | has "CERatchetState" = pure $ Right $ Left C.CERatchetState
+  | otherwise = pure $ Left $ C.CryptoHeaderError err
+  where
+    has s = s `isInfixOf` err
+
+tpSndKEM :: TestPeer -> IO Bool
+tpSndKEM (TestPeerHS tvar) = do
+  (_, rc, _) <- readTVarIO tvar
+  pure $ CR.enablePQ $ CR.rcSndKEM rc
+tpSndKEM (TestPeerJS hIn hOut _) = do
+  hPutStrLn' hIn "SNDKEM"
+  resp <- hGetLine hOut
+  pure $ resp == "ok: 1"
+
+tpRcvKEM :: TestPeer -> IO Bool
+tpRcvKEM (TestPeerHS tvar) = do
+  (_, rc, _) <- readTVarIO tvar
+  pure $ CR.enablePQ $ CR.rcRcvKEM rc
+tpRcvKEM (TestPeerJS hIn hOut _) = do
+  hPutStrLn' hIn "RCVKEM"
+  resp <- hGetLine hOut
+  pure $ resp == "ok: 1"
+
+tpEncryptDecrypt :: Maybe CR.PQEncryption -> Bool -> Bool -> (TestPeer, B.ByteString) -> TestPeer -> Expectation
+tpEncryptDecrypt _pqEnc expectSndKEM expectRcvKEM (sender, msg) receiver = do
+  Right ct <- tpEncrypt sender msg
+  sndK <- tpSndKEM sender
+  when (sndK /= expectSndKEM) $ expectationFailure $ "sndKEM: expected " <> show expectSndKEM <> ", got " <> show sndK
+  Right (Right msg') <- tpDecrypt receiver ct
+  rcvK <- tpRcvKEM receiver
+  when (rcvK /= expectRcvKEM) $ expectationFailure $ "rcvKEM: expected " <> show expectRcvKEM <> ", got " <> show rcvK
+  msg' `shouldBe` msg
+
+-- TestPeer operators (matching Haskell DoubleRatchetTests)
+tp_noKEM, tp_hasKEM :: (TestPeer, B.ByteString) -> TestPeer -> Expectation
+tp_noKEM = tpEncryptDecrypt Nothing False False
+tp_hasKEM = tpEncryptDecrypt Nothing True True
+
+-- JS process helpers
+
+spawnJsRatchet :: IO (Handle, Handle, ProcessHandle)
+spawnJsRatchet = do
+  let cp = (proc "node" ["dist-test/ratchet-repl.js"]) {cwd = Just "smp-web", std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
+  (Just hIn, Just hOut, _, ph) <- createProcess cp
+  hSetBuffering hIn LineBuffering
+  hSetBuffering hOut LineBuffering
+  pure (hIn, hOut, ph)
+
+destroyJsRatchet :: TestPeer -> IO ()
+destroyJsRatchet (TestPeerJS _ _ ph) = terminateProcess ph
+destroyJsRatchet _ = pure ()
+
+jsCmd :: Handle -> Handle -> String -> IO String
+jsCmd hIn hOut cmd = do
+  hPutStrLn' hIn cmd
+  hGetLine hOut
+
+hPutStrLn' :: Handle -> String -> IO ()
+hPutStrLn' h s = do
+  hPutStr h (s <> "\n")
+  hFlush h
+
+parseResponse :: String -> Either String String
+parseResponse resp
+  | take 4 resp == "ok: " = Right $ drop 4 resp
+  | take 7 resp == "error: " = Left $ drop 7 resp
+  | otherwise = Left $ "unexpected response: " <> resp
+
+bsToHex :: B.ByteString -> String
+bsToHex = concatMap (\w -> let h = showHex' w in h) . B.unpack
+  where
+    showHex' w = [hexDigit (w `div` 16), hexDigit (w `mod` 16)]
+    hexDigit n | n < 10 = toEnum (fromEnum '0' + fromIntegral n)
+               | otherwise = toEnum (fromEnum 'a' + fromIntegral n - 10)
+
+hexToBS :: String -> B.ByteString
+hexToBS = B.pack . go
+  where
+    go [] = []
+    go (a:b:rest) = fromIntegral (hexVal a * 16 + hexVal b) : go rest
+    go _ = []
+    hexVal c
+      | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
+      | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
+      | c >= 'A' && c <= 'F' = fromEnum c - fromEnum 'A' + 10
+      | otherwise = 0
+
 runRight :: (Show e, HasCallStack) => ExceptT e IO a -> IO a
 runRight action = runExceptT action >>= either (error . ("Unexpected error: " <>) . show) pure
+
+-- -- Cross-language ratchet init functions and test patterns
+
+withCrossPeers :: IO (TestPeer, TestPeer) -> ((TestPeer, TestPeer) -> IO ()) -> IO ()
+withCrossPeers initPeers test = bracket initPeers cleanup test
+  where
+    cleanup (a, b) = destroyJsRatchet a >> destroyJsRatchet b
+
+-- HS (receiver) <-> JS (sender), no PQ
+initHsJs_noPQ :: IO (TestPeer, TestPeer)
+initHsJs_noPQ = do
+  g <- C.newRandom
+  let v = CR.currentE2EEncryptVersion
+      Version vNum = v
+  (pkAlice1, pkAlice2, Nothing, e2eAlice) <- CR.generateRcvE2EParams @'X448 g v CR.PQSupportOff
+  let aliceE2EHex = bsToHex $ smpEncode e2eAlice
+  (hIn, hOut, ph) <- spawnJsRatchet
+  bobE2EHex <- either error pure . parseResponse =<< jsCmd hIn hOut ("INIT_SND " ++ show vNum ++ " none " ++ aliceE2EHex)
+  Right (CR.AE2ERatchetParams _ bobE2E :: CR.AE2ERatchetParams 'X448) <- pure $ smpDecode $ hexToBS bobE2EHex
+  Right (aliceInitParams, _) <- runExceptT $ CR.pqX3dhRcv pkAlice1 pkAlice2 Nothing bobE2E
+  let aliceRatchet = CR.initRcvRatchet (CR.RatchetVersions v v) pkAlice2 (aliceInitParams, Nothing) CR.PQSupportOff
+  ga <- C.newRandom
+  aliceTVar <- newTVarIO (ga, aliceRatchet, M.empty :: CR.SkippedMsgKeys)
+  pure (TestPeerHS aliceTVar, TestPeerJS hIn hOut ph)
+
+-- HS (receiver) <-> JS (sender), PQ KEM accepted
+initHsJs_PQ :: IO (TestPeer, TestPeer)
+initHsJs_PQ = do
+  g <- C.newRandom
+  let v = CR.currentE2EEncryptVersion
+      Version vNum = v
+  (pkAlice1, pkAlice2, alicePKem_@(Just _), e2eAlice) <- CR.generateRcvE2EParams @'X448 g v CR.PQSupportOn
+  let aliceE2EHex = bsToHex $ smpEncode e2eAlice
+  (hIn, hOut, ph) <- spawnJsRatchet
+  bobE2EHex <- either error pure . parseResponse =<< jsCmd hIn hOut ("INIT_SND " ++ show vNum ++ " accept " ++ aliceE2EHex)
+  Right (CR.AE2ERatchetParams _ bobE2E :: CR.AE2ERatchetParams 'X448) <- pure $ smpDecode $ hexToBS bobE2EHex
+  Right (aliceInitParams, aliceKemKp_) <- runExceptT $ CR.pqX3dhRcv pkAlice1 pkAlice2 alicePKem_ bobE2E
+  let aliceRatchet = CR.initRcvRatchet (CR.RatchetVersions v v) pkAlice2 (aliceInitParams, aliceKemKp_) CR.PQSupportOn
+  ga <- C.newRandom
+  aliceTVar <- newTVarIO (ga, aliceRatchet, M.empty :: CR.SkippedMsgKeys)
+  pure (TestPeerHS aliceTVar, TestPeerJS hIn hOut ph)
+
+-- JS (receiver) <-> JS (sender), no PQ
+initTsTs_noPQ :: IO (TestPeer, TestPeer)
+initTsTs_noPQ = do
+  let Version vNum = CR.currentE2EEncryptVersion
+  (hInA, hOutA, phA) <- spawnJsRatchet
+  aliceE2EHex <- either error pure . parseResponse =<< jsCmd hInA hOutA ("INIT_RCV " ++ show vNum ++ " 0")
+  (hInB, hOutB, phB) <- spawnJsRatchet
+  bobE2EHex <- either error pure . parseResponse =<< jsCmd hInB hOutB ("INIT_SND " ++ show vNum ++ " none " ++ aliceE2EHex)
+  completeResp <- jsCmd hInA hOutA ("COMPLETE " ++ bobE2EHex)
+  when (completeResp /= "ok") $ error $ "COMPLETE failed: " ++ completeResp
+  pure (TestPeerJS hInA hOutA phA, TestPeerJS hInB hOutB phB)
+
+-- JS (receiver) <-> JS (sender), PQ KEM accepted
+initTsTs_PQ :: IO (TestPeer, TestPeer)
+initTsTs_PQ = do
+  let Version vNum = CR.currentE2EEncryptVersion
+  (hInA, hOutA, phA) <- spawnJsRatchet
+  aliceE2EHex <- either error pure . parseResponse =<< jsCmd hInA hOutA ("INIT_RCV " ++ show vNum ++ " 1")
+  (hInB, hOutB, phB) <- spawnJsRatchet
+  bobE2EHex <- either error pure . parseResponse =<< jsCmd hInB hOutB ("INIT_SND " ++ show vNum ++ " accept " ++ aliceE2EHex)
+  completeResp <- jsCmd hInA hOutA ("COMPLETE " ++ bobE2EHex)
+  when (completeResp /= "ok") $ error $ "COMPLETE failed: " ++ completeResp
+  pure (TestPeerJS hInA hOutA phA, TestPeerJS hInB hOutB phB)
 
 smpWebTests :: SpecWith ()
 smpWebTests = describe "SMP Web Client" $ do
@@ -674,6 +892,30 @@ smpWebTests_ = do
           <> "const match = kp.publicKey.every((b, i) => b === raw[i]);"
           <> jsOut ("new Uint8Array([match ? 1 : 0, der.length, raw.length])")
         tsResult `shouldBe` B.pack [1, 68, 56]
+
+    describe "cross-language ratchet advance" $ do
+      let run initPeers op test = withCrossPeers initPeers $ \(alice, bob) ->
+            test alice bob tpEncrypt tpDecrypt op
+      describe "HS rcv, JS snd, no PQ" $ do
+        it "encrypt and decrypt" $ run initHsJs_noPQ tp_noKEM testEncryptDecrypt
+        it "skipped messages" $ run initHsJs_noPQ tp_noKEM testSkippedMessages
+        it "many messages" $ run initHsJs_noPQ tp_noKEM testManyMessages
+        it "skipped after ratchet advance" $ run initHsJs_noPQ tp_noKEM testSkippedAfterRatchetAdvance
+      describe "HS rcv, JS snd, PQ" $ do
+        it "encrypt and decrypt" $ run initHsJs_PQ tp_hasKEM testEncryptDecrypt
+        it "skipped messages" $ run initHsJs_PQ tp_hasKEM testSkippedMessages
+        it "many messages" $ run initHsJs_PQ tp_hasKEM testManyMessages
+        it "skipped after ratchet advance" $ run initHsJs_PQ tp_hasKEM testSkippedAfterRatchetAdvance
+      describe "JS rcv, JS snd, no PQ" $ do
+        it "encrypt and decrypt" $ run initTsTs_noPQ tp_noKEM testEncryptDecrypt
+        it "skipped messages" $ run initTsTs_noPQ tp_noKEM testSkippedMessages
+        it "many messages" $ run initTsTs_noPQ tp_noKEM testManyMessages
+        it "skipped after ratchet advance" $ run initTsTs_noPQ tp_noKEM testSkippedAfterRatchetAdvance
+      describe "JS rcv, JS snd, PQ" $ do
+        it "encrypt and decrypt" $ run initTsTs_PQ tp_hasKEM testEncryptDecrypt
+        it "skipped messages" $ run initTsTs_PQ tp_hasKEM testSkippedMessages
+        it "many messages" $ run initTsTs_PQ tp_hasKEM testManyMessages
+        it "skipped after ratchet advance" $ run initTsTs_PQ tp_hasKEM testSkippedAfterRatchetAdvance
 
   describe "crypto/blockEncryption" $ do
     describe "sbcInit + sbcHkdf" $ do

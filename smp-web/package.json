@@ -16,7 +16,8 @@
   "scripts": {
     "build:wasm": "mkdir -p dist/wasm && npx emcc cbits/sntrup761_wasm.c ../cbits/sntrup761.c cbits/sha512.c -I../cbits -O2 -o dist/wasm/sntrup761.mjs -s EXPORTED_FUNCTIONS='[\"_sntrup761_wasm_keypair\",\"_sntrup761_wasm_enc\",\"_sntrup761_wasm_dec\",\"_malloc\",\"_free\"]' -s EXPORTED_RUNTIME_METHODS='[\"ccall\",\"cwrap\",\"HEAPU8\"]' -s MODULARIZE=1 -s EXPORT_NAME='createSntrup761' -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT='web,node' --js-library cbits/js_random.js && cp cbits/sntrup761.d.mts dist/wasm/",
     "build:ts": "tsc",
-    "build": "npm run build:wasm && npm run build:ts"
+    "build:test": "tsc -p tsconfig.test.json",
+    "build": "npm run build:wasm && npm run build:ts && npm run build:test"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
