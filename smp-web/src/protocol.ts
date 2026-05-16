@@ -4,8 +4,12 @@
 import {
   Decoder, concatBytes,
   encodeBytes, decodeBytes,
-  encodeLarge, decodeLarge
+  encodeLarge, decodeLarge,
+  encodeWord16, decodeWord16,
+  encodeBool, decodeBool,
+  encodeMaybe, decodeMaybe,
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
 import {readTag, readSpace} from "@simplex-chat/xftp-web/dist/protocol/commands.js"
 
 // -- Transmission encoding (Protocol.hs:2201-2203)
@@ -83,7 +87,12 @@ export function decodeLNK(d: Decoder): LNKResponse {
 
 export type SMPResponse =
   | {type: "LNK", response: LNKResponse}
+  | {type: "IDS", response: IDSResponse}
+  | {type: "MSG", response: MSGResponse}
   | {type: "OK"}
+  | {type: "PONG"}
+  | {type: "END"}
+  | {type: "DELD"}
   | {type: "ERR", message: string}
 
 export function decodeResponse(d: Decoder): SMPResponse {
@@ -93,11 +102,253 @@ export function decodeResponse(d: Decoder): SMPResponse {
       readSpace(d)
       return {type: "LNK", response: decodeLNK(d)}
     }
+    case "IDS": {
+      readSpace(d)
+      return {type: "IDS", response: decodeIDS(d)}
+    }
+    case "MSG": {
+      readSpace(d)
+      return {type: "MSG", response: decodeMSG(d)}
+    }
     case "OK": return {type: "OK"}
+    case "PONG": return {type: "PONG"}
+    case "END": return {type: "END"}
+    case "DELD": return {type: "DELD"}
     case "ERR": {
       readSpace(d)
       return {type: "ERR", message: readTag(d)}
     }
     default: throw new Error("unknown SMP response: " + tag)
   }
+}
+
+// -- SMP command encoders (Protocol.hs:1679-1715)
+
+// MsgFlags (Protocol.hs:884-892)
+// Single byte: Bool encoding of notification flag
+export function encodeMsgFlags(notification: boolean): Uint8Array {
+  return encodeBool(notification)
+}
+
+// SubscriptionMode (Protocol.hs:651-659)
+// 'S' = SMSubscribe, 'C' = SMOnlyCreate
+export function encodeSubMode(subscribe: boolean): Uint8Array {
+  return ascii(subscribe ? "S" : "C")
+}
+
+// NEW (Protocol.hs:1682-1689)
+// For v19: e(NEW_, ' ', rKey, dhKey) <> e(auth_, subMode, queueReqData, ntfCreds)
+// auth_ = Maybe SndPublicAuthKey (DER-encoded)
+// queueReqData = Maybe QueueReqData
+// ntfCreds = Maybe NewNtfCreds (not needed for widget)
+export function encodeNEW(
+  rcvAuthKey: Uint8Array,   // DER-encoded Ed25519 or X25519 public key
+  rcvDhKey: Uint8Array,     // DER-encoded X25519 public key
+  sndAuthKey: Uint8Array | null,  // DER-encoded, for TOFU sender auth
+  subscribe: boolean,
+): Uint8Array {
+  return concatBytes(
+    ascii("NEW "),
+    encodeBytes(rcvAuthKey),
+    encodeBytes(rcvDhKey),
+    encodeMaybe(encodeBytes, sndAuthKey),
+    encodeSubMode(subscribe),
+    encodeMaybe(() => new Uint8Array(0), null),  // queueReqData = Nothing (widget doesn't create links)
+    encodeMaybe(() => new Uint8Array(0), null),  // ntfCreds = Nothing
+  )
+}
+
+// KEY (Protocol.hs:1692)
+// KEY k -> e(KEY_, ' ', k)
+export function encodeKEY(senderKey: Uint8Array): Uint8Array {
+  return concatBytes(ascii("KEY "), encodeBytes(senderKey))
+}
+
+// SKEY (Protocol.hs:1703)
+// SKEY k -> e(SKEY_, ' ', k)
+export function encodeSKEY(senderKey: Uint8Array): Uint8Array {
+  return concatBytes(ascii("SKEY "), encodeBytes(senderKey))
+}
+
+// SUB (Protocol.hs:1690)
+export function encodeSUB(): Uint8Array {
+  return ascii("SUB")
+}
+
+// ACK (Protocol.hs:1699)
+// ACK msgId -> e(ACK_, ' ', msgId)
+export function encodeACK(msgId: Uint8Array): Uint8Array {
+  return concatBytes(ascii("ACK "), encodeBytes(msgId))
+}
+
+// SEND (Protocol.hs:1704)
+// SEND flags msg -> e(SEND_, ' ', flags, ' ', Tail msg)
+export function encodeSEND(notification: boolean, msgBody: Uint8Array): Uint8Array {
+  return concatBytes(
+    ascii("SEND "),
+    encodeMsgFlags(notification),
+    ascii(" "),
+    msgBody, // Tail - no length prefix
+  )
+}
+
+// OFF (Protocol.hs:1700)
+export function encodeOFF(): Uint8Array {
+  return ascii("OFF")
+}
+
+// DEL (Protocol.hs:1701)
+export function encodeDEL(): Uint8Array {
+  return ascii("DEL")
+}
+
+// -- SMP response decoders
+
+// IDS (Protocol.hs:1914-1921)
+// For v19: e(IDS_, ' ', rcvId, sndId, srvDh) <> e(queueMode, linkId, serviceId, ntfCreds)
+export interface IDSResponse {
+  rcvId: Uint8Array
+  sndId: Uint8Array
+  srvDhKey: Uint8Array
+  queueMode: string | null  // 'M' = Messaging, 'C' = Contact
+  linkId: Uint8Array | null
+}
+
+export function decodeIDS(d: Decoder): IDSResponse {
+  const rcvId = decodeBytes(d)
+  const sndId = decodeBytes(d)
+  const srvDhKey = decodeBytes(d)
+  // v19: queueMode (Maybe QueueMode), linkId (Maybe ByteString), serviceId, ntfCreds
+  // QueueMode is encoded as Maybe Char ('M'/'C'), not Maybe ByteString
+  let queueMode: string | null = null
+  if (d.remaining() > 0) {
+    const qmByte = d.anyByte()
+    if (qmByte === 0x31) { // '1' = Just
+      queueMode = String.fromCharCode(d.anyByte())
+    }
+    // '0' = Nothing, queueMode stays null
+  }
+  let linkId: Uint8Array | null = null
+  if (d.remaining() > 0) {
+    linkId = decodeMaybe(decodeBytes, d)
+  }
+  // serviceId and ntfCreds - skip remaining
+  return {rcvId, sndId, srvDhKey, queueMode, linkId}
+}
+
+// MSG (Protocol.hs:1927-1928)
+// MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body} -> e(MSG_, ' ', msgId, Tail body)
+export interface MSGResponse {
+  msgId: Uint8Array
+  msgBody: Uint8Array
+}
+
+export function decodeMSG(d: Decoder): MSGResponse {
+  const msgId = decodeBytes(d)
+  const msgBody = d.takeAll()
+  return {msgId, msgBody}
+}
+
+// -- Per-queue E2E encryption (Protocol.hs:1071-1114)
+
+// Protocol.hs:316-320
+export const e2eEncMessageLength = 16000
+export const e2eEncConfirmationLength = 15904
+
+// Protocol.hs:1078-1086
+export interface PubHeader {
+  phVersion: number                    // VersionSMPC (Word16)
+  phE2ePubDhKey: Uint8Array | null     // Maybe PublicKeyX25519 (DER-encoded ByteString)
+}
+
+export function encodePubHeader(h: PubHeader): Uint8Array {
+  return concatBytes(encodeWord16(h.phVersion), encodeMaybe(encodeBytes, h.phE2ePubDhKey))
+}
+
+export function decodePubHeader(d: Decoder): PubHeader {
+  return {phVersion: decodeWord16(d), phE2ePubDhKey: decodeMaybe(decodeBytes, d)}
+}
+
+// Protocol.hs:1097-1110
+export type PrivHeader =
+  | {type: "PHConfirmation", key: Uint8Array}  // 'K' + DER-encoded APublicAuthKey
+  | {type: "PHEmpty"}                           // '_'
+
+export function encodePrivHeader(h: PrivHeader): Uint8Array {
+  switch (h.type) {
+    case "PHConfirmation": return concatBytes(new Uint8Array([0x4B]), encodeBytes(h.key)) // 'K' + encodeBytes
+    case "PHEmpty": return new Uint8Array([0x5F]) // '_'
+  }
+}
+
+export function decodePrivHeader(d: Decoder): PrivHeader {
+  const tag = d.anyByte()
+  switch (tag) {
+    case 0x4B: return {type: "PHConfirmation", key: decodeBytes(d)} // 'K'
+    case 0x5F: return {type: "PHEmpty"} // '_'
+    default: throw new Error("decodePrivHeader: unknown tag " + tag)
+  }
+}
+
+// Protocol.hs:1095, 1112-1114
+export interface ClientMessage {
+  privHeader: PrivHeader
+  body: Uint8Array
+}
+
+// smpEncode (ClientMessage h msg) = smpEncode h <> msg
+export function encodeClientMessage(msg: ClientMessage): Uint8Array {
+  return concatBytes(encodePrivHeader(msg.privHeader), msg.body)
+}
+
+export function decodeClientMessage(d: Decoder): ClientMessage {
+  const privHeader = decodePrivHeader(d)
+  const body = d.takeAll()
+  return {privHeader, body}
+}
+
+// Protocol.hs:1071-1093
+export interface ClientMsgEnvelope {
+  cmHeader: PubHeader
+  cmNonce: Uint8Array       // CbNonce: raw 24 bytes
+  cmEncBody: Uint8Array     // encrypted body (Tail)
+}
+
+// smpEncode (cmHeader, cmNonce, Tail cmEncBody)
+export function encodeClientMsgEnvelope(env: ClientMsgEnvelope): Uint8Array {
+  return concatBytes(encodePubHeader(env.cmHeader), env.cmNonce, env.cmEncBody)
+}
+
+export function decodeClientMsgEnvelope(d: Decoder): ClientMsgEnvelope {
+  const cmHeader = decodePubHeader(d)
+  const cmNonce = d.take(24)  // CbNonce is raw 24 bytes
+  const cmEncBody = d.takeAll()
+  return {cmHeader, cmNonce, cmEncBody}
+}
+
+// -- Per-queue E2E encrypt/decrypt (Agent/Client.hs:2074-2102)
+
+// agentCbEncrypt: encrypt a ClientMessage and wrap in ClientMsgEnvelope
+export function agentCbEncrypt(
+  e2eDhSecret: Uint8Array,     // X25519 DH shared secret (32 bytes)
+  smpClientVersion: number,    // Word16
+  e2ePubKey: Uint8Array | null, // DER-encoded X25519 public key, null for normal messages
+  msg: Uint8Array,             // smpEncode(ClientMessage)
+): Uint8Array {
+  const cmNonce = crypto.getRandomValues(new Uint8Array(24))
+  const paddedLen = e2ePubKey !== null ? e2eEncConfirmationLength : e2eEncMessageLength
+  const cmEncBody = cbEncrypt(e2eDhSecret, cmNonce, msg, paddedLen)
+  const cmHeader: PubHeader = {phVersion: smpClientVersion, phE2ePubDhKey: e2ePubKey}
+  return encodeClientMsgEnvelope({cmHeader, cmNonce, cmEncBody})
+}
+
+// agentCbDecrypt: decrypt a ClientMsgEnvelope
+export function agentCbDecrypt(
+  dhSecret: Uint8Array,        // X25519 DH shared secret (32 bytes)
+  data: Uint8Array,            // raw ClientMsgEnvelope bytes
+): {pubHeader: PubHeader, clientMessage: ClientMessage} {
+  const env = decodeClientMsgEnvelope(new Decoder(data))
+  const plaintext = cbDecrypt(dhSecret, env.cmNonce, env.cmEncBody)
+  const clientMessage = decodeClientMessage(new Decoder(plaintext))
+  return {pubHeader: env.cmHeader, clientMessage}
 }
