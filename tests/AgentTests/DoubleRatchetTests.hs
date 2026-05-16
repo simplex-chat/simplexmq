@@ -73,15 +73,19 @@ runMessageTests ::
   Bool ->
   Spec
 runMessageTests initRatchets_ agreeRatchetKEMs = do
-  it "should encrypt and decrypt messages" $ run $ testEncryptDecrypt agreeRatchetKEMs
-  it "should encrypt and decrypt skipped messages" $ run $ testSkippedMessages agreeRatchetKEMs
-  it "should encrypt and decrypt many messages" $ run $ testManyMessages agreeRatchetKEMs
-  it "should allow skipped after ratchet advance" $ run $ testSkippedAfterRatchetAdvance agreeRatchetKEMs
+  it "should encrypt and decrypt messages" $ run testEncryptDecrypt
+  it "should encrypt and decrypt skipped messages" $ run testSkippedMessages
+  it "should encrypt and decrypt many messages" $ run testManyMessages
+  it "should allow skipped after ratchet advance" $ run testSkippedAfterRatchetAdvance
   where
     run :: (forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a) -> IO ()
     run test = do
-      withRatchets_ @X25519 initRatchets_ test
-      withRatchets_ @X448 initRatchets_ test
+      withRatchets_ @X25519 initRatchets_ (withKEM test)
+      withRatchets_ @X448 initRatchets_ (withKEM test)
+    withKEM :: (AlgorithmI a, DhAlgorithm a) => TestRatchets a -> TestRatchets a
+    withKEM test alice bob encrypt decrypt (#>) = do
+      when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
+      test alice bob encrypt decrypt (#>)
 
 testAlgs :: (forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()) -> IO ()
 testAlgs test = test C.SX25519 >> test C.SX448
@@ -146,6 +150,12 @@ type TestRatchets a =
   EncryptDecryptSpec a ->
   IO ()
 
+-- Peer-polymorphic types for cross-language testing
+type EncryptP p = p -> ByteString -> IO (Either CryptoError ByteString)
+type DecryptP p = p -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString))
+type EncryptDecryptSpecP p = (p, ByteString) -> p -> Expectation
+type TestRatchetsP p = p -> p -> EncryptP p -> DecryptP p -> EncryptDecryptSpecP p -> IO ()
+
 deriving instance Eq (Ratchet a)
 
 deriving instance Eq (SndRatchet a)
@@ -170,9 +180,8 @@ deriving instance Eq (MsgHeader a)
 initRatchetKEM :: (AlgorithmI a, DhAlgorithm a) => TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> TVar (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> IO ()
 initRatchetKEM s r = encryptDecrypt (Just $ PQEncOn) (const ()) (const ()) (s, "initialising ratchet") r
 
-testEncryptDecrypt :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
-testEncryptDecrypt agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
-  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
+testEncryptDecrypt :: TestRatchetsP p
+testEncryptDecrypt alice bob encrypt decrypt (#>) = do
   (bob, "hello alice") #> alice
   (alice, "hello bob") #> bob
   Right b1 <- encrypt bob "how are you, alice?"
@@ -191,9 +200,8 @@ testEncryptDecrypt agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
   (alice, "I'm here too, same") #> bob
   pure ()
 
-testSkippedMessages :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
-testSkippedMessages agreeRatchetKEMs alice bob encrypt decrypt _ = do
-  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
+testSkippedMessages :: TestRatchetsP p
+testSkippedMessages alice bob encrypt decrypt _ = do
   Right msg1 <- encrypt bob "hello alice"
   Right msg2 <- encrypt bob "hello there again"
   Right msg3 <- encrypt bob "are you there?"
@@ -203,9 +211,8 @@ testSkippedMessages agreeRatchetKEMs alice bob encrypt decrypt _ = do
   Decrypted "hello alice" <- decrypt alice msg1
   pure ()
 
-testManyMessages :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
-testManyMessages agreeRatchetKEMs alice bob _ _ (#>) = do
-  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
+testManyMessages :: TestRatchetsP p
+testManyMessages alice bob _ _ (#>) = do
   (bob, "b1") #> alice
   (bob, "b2") #> alice
   (bob, "b3") #> alice
@@ -222,9 +229,8 @@ testManyMessages agreeRatchetKEMs alice bob _ _ (#>) = do
   (bob, "b15") #> alice
   (bob, "b16") #> alice
 
-testSkippedAfterRatchetAdvance :: (AlgorithmI a, DhAlgorithm a) => Bool -> TestRatchets a
-testSkippedAfterRatchetAdvance agreeRatchetKEMs alice bob encrypt decrypt (#>) = do
-  when agreeRatchetKEMs $ initRatchetKEM bob alice >> initRatchetKEM alice bob
+testSkippedAfterRatchetAdvance :: TestRatchetsP p
+testSkippedAfterRatchetAdvance alice bob encrypt decrypt (#>) = do
   (bob, "b1") #> alice
   Right b2 <- encrypt bob "b2"
   Right b3 <- encrypt bob "b3"
