@@ -15,8 +15,9 @@ module SMPWebTests (smpWebTests) where
 
 import Control.Concurrent.STM
 import Control.Monad (when)
+import Data.Bifunctor (first)
 import Control.Exception (bracket)
-import Control.Monad.Except (ExceptT, runExceptT)
+import Control.Monad.Except (ExceptT, liftEither, runExceptT, throwError, withExceptT)
 import Crypto.Random (ChaChaDRG)
 import Data.IORef
 import System.IO (Handle, hFlush, hGetLine, hPutStr, hSetBuffering, BufferMode (..))
@@ -43,7 +44,7 @@ import qualified Data.ByteArray as BA
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (Str (..), strEncode)
-import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), pattern SMPServer, encodeProtocol, Command (..), NewQueueReq (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..))
+import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), pattern SMPServer, encodeProtocol, Command (..), NewQueueReq (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..), PubHeader (..), PrivHeader (..), ClientMessage (..), ClientMsgEnvelope (..), pattern VersionSMPC)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
@@ -95,6 +96,12 @@ impRatchet = "import { generateX448KeyPair, pqX3dhSnd, pqX3dhRcv, x448DH, encode
 
 impSntrup :: String
 impSntrup = "import { initSntrup761, sntrup761Keypair, sntrup761Enc, sntrup761Dec } from './dist/crypto/sntrup761.js'; await initSntrup761();"
+
+impAgentMsg :: String
+impAgentMsg = "import { encodeAMessage, decodeAMessage, encodeAPrivHeader, decodeAPrivHeader, encodeAgentMessage, decodeAgentMessage, encodeAgentMsgEnvelope, decodeAgentMsgEnvelope } from './dist/agent/message.js';"
+
+impProtoE2E :: String
+impProtoE2E = "import { encodePubHeader, decodePubHeader, encodePrivHeader, decodePrivHeader, encodeClientMessage, decodeClientMessage, encodeClientMsgEnvelope, decodeClientMsgEnvelope, agentCbEncrypt, agentCbDecrypt, e2eEncMessageLength } from './dist/protocol.js';"
 
 impCrypto :: String
 impCrypto = "import { sbcInit, sbcHkdf, sbEncryptBlock, sbDecryptBlock } from './dist/crypto.js';"
@@ -1134,3 +1141,303 @@ smpWebTests_ = do
             -- First byte: rootKey DER length (44 for Ed25519), rest: userData
             B.head tsResult `shouldBe` 44
             B.tail tsResult `shouldBe` testData
+
+  describe "agent/message" $ do
+    describe "AMessage" $ do
+      it "HELLO encoding matches Haskell" $ do
+        let hsBytes = smpEncode AP.HELLO
+        tsBytes <- callNode $ impAgentMsg <> jsOut "encodeAMessage({type: 'HELLO'})"
+        tsBytes `shouldBe` hsBytes
+
+      it "A_MSG encoding matches Haskell" $ do
+        let body = "hello world from agent"
+            hsBytes = smpEncode (AP.A_MSG body)
+        tsBytes <- callNode $ impAgentMsg <> jsOut ("encodeAMessage({type: 'A_MSG', body: new TextEncoder().encode('hello world from agent')})")
+        tsBytes `shouldBe` hsBytes
+
+      it "EREADY encoding matches Haskell" $ do
+        let hsBytes = smpEncode (AP.EREADY 42)
+        tsBytes <- callNode $ impEnc <> impAgentMsg <> jsOut ("encodeAMessage({type: 'EREADY', lastDecryptedMsgId: 42n})")
+        tsBytes `shouldBe` hsBytes
+
+      it "TypeScript decodes Haskell A_MSG" $ do
+        let body = "decode test"
+            hsBytes = smpEncode (AP.A_MSG body)
+        tsResult <- callNode $ impEnc <> impAgentMsg
+          <> "const msg = decodeAMessage(new Decoder(" <> jsUint8 hsBytes <> "));"
+          <> jsOut ("msg.body")
+        tsResult `shouldBe` body
+
+    describe "APrivHeader" $ do
+      it "encoding matches Haskell" $ do
+        let hdr = AP.APrivHeader 1 (B.replicate 32 0xAB)
+            hsBytes = smpEncode hdr
+        tsBytes <- callNode $ impEnc <> impAgentMsg
+          <> jsOut ("encodeAPrivHeader({sndMsgId: 1n, prevMsgHash: " <> jsUint8 (B.replicate 32 0xAB) <> "})")
+        tsBytes `shouldBe` hsBytes
+
+    describe "AgentMessage" $ do
+      it "M variant encoding matches Haskell" $ do
+        let hdr = AP.APrivHeader 5 (B.replicate 32 0)
+            msg = AP.AgentMessage hdr (AP.A_MSG "test body")
+            hsBytes = smpEncode msg
+        tsBytes <- callNode $ impEnc <> impAgentMsg
+          <> jsOut ("encodeAgentMessage({type: 'message', header: {sndMsgId: 5n, prevMsgHash: new Uint8Array(32)}, msg: {type: 'A_MSG', body: new TextEncoder().encode('test body')}})")
+        tsBytes `shouldBe` hsBytes
+
+      it "TypeScript decodes Haskell AgentMessage M" $ do
+        let hdr = AP.APrivHeader 99 (B.pack [1..32])
+            msg = AP.AgentMessage hdr (AP.A_MSG "cross-language message")
+            hsBytes = smpEncode msg
+        tsResult <- callNode $ impEnc <> impAgentMsg
+          <> "const m = decodeAgentMessage(new Decoder(" <> jsUint8 hsBytes <> "));"
+          <> "if (m.type !== 'message') throw new Error('expected message');"
+          <> "if (m.msg.type !== 'A_MSG') throw new Error('expected A_MSG');"
+          <> jsOut ("new Uint8Array([...new TextEncoder().encode(m.header.sndMsgId.toString()), 0, ...m.msg.body])")
+        let (idStr, rest) = B.break (== 0) tsResult
+        idStr `shouldBe` "99"
+        B.tail rest `shouldBe` "cross-language message"
+
+    describe "AgentMsgEnvelope" $ do
+      it "M variant encoding matches Haskell" $ do
+        let env = AP.AgentMsgEnvelope {AP.agentVersion = AP.currentSMPAgentVersion, AP.encAgentMessage = "encrypted payload"}
+            hsBytes = smpEncode env
+        tsBytes <- callNode $ impEnc <> impAgentMsg
+          <> jsOut ("encodeAgentMsgEnvelope({type: 'envelope', agentVersion: 7, encAgentMessage: new TextEncoder().encode('encrypted payload')})")
+        tsBytes `shouldBe` hsBytes
+
+      it "TypeScript decodes Haskell AgentMsgEnvelope M" $ do
+        let env = AP.AgentMsgEnvelope {AP.agentVersion = AP.currentSMPAgentVersion, AP.encAgentMessage = "decrypt me"}
+            hsBytes = smpEncode env
+        tsResult <- callNode $ impEnc <> impAgentMsg
+          <> "const e = decodeAgentMsgEnvelope(new Decoder(" <> jsUint8 hsBytes <> "));"
+          <> "if (e.type !== 'envelope') throw new Error('expected envelope');"
+          <> jsOut ("e.encAgentMessage")
+        tsResult `shouldBe` "decrypt me"
+
+  describe "protocol/e2e" $ do
+    describe "PubHeader" $ do
+      it "encoding without key matches Haskell" $ do
+        let h = PubHeader (VersionSMPC 19) Nothing
+            hsBytes = smpEncode h
+        tsBytes <- callNode $ impEnc <> impProtoE2E <> jsOut "encodePubHeader({phVersion: 19, phE2ePubDhKey: null})"
+        tsBytes `shouldBe` hsBytes
+
+      it "encoding with key matches Haskell" $ do
+        g <- C.newRandom
+        (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let derKey = C.encodePubKey k  -- raw DER bytes without smpEncode length prefix
+            h = PubHeader (VersionSMPC 19) (Just k)
+            hsBytes = smpEncode h
+        tsBytes <- callNode $ impEnc <> impProtoE2E
+          <> jsOut ("encodePubHeader({phVersion: 19, phE2ePubDhKey: " <> jsUint8 derKey <> "})")
+        tsBytes `shouldBe` hsBytes
+
+    describe "PrivHeader" $ do
+      it "PHEmpty encoding matches Haskell" $ do
+        let hsBytes = smpEncode PHEmpty
+        tsBytes <- callNode $ impProtoE2E <> jsOut "encodePrivHeader({type: 'PHEmpty'})"
+        tsBytes `shouldBe` hsBytes
+
+    describe "ClientMessage" $ do
+      it "encoding matches Haskell" $ do
+        let body = "agent envelope bytes here"
+            msg = ClientMessage PHEmpty body
+            hsBytes = smpEncode msg
+        tsBytes <- callNode $ impEnc <> impProtoE2E
+          <> jsOut ("encodeClientMessage({privHeader: {type: 'PHEmpty'}, body: new TextEncoder().encode('agent envelope bytes here')})")
+        tsBytes `shouldBe` hsBytes
+
+    describe "ClientMsgEnvelope" $ do
+      it "encoding matches Haskell" $ do
+        let nonce = C.cbNonce $ B.pack [1..24]
+            h = PubHeader (VersionSMPC 19) Nothing
+            env = ClientMsgEnvelope {cmHeader = h, cmNonce = nonce, cmEncBody = "encrypted body data"}
+            hsBytes = smpEncode env
+        tsBytes <- callNode $ impEnc <> impProtoE2E
+          <> jsOut ("encodeClientMsgEnvelope({cmHeader: {phVersion: 19, phE2ePubDhKey: null}, cmNonce: " <> jsUint8 (B.pack [1..24]) <> ", cmEncBody: new TextEncoder().encode('encrypted body data')})")
+        tsBytes `shouldBe` hsBytes
+
+      it "TypeScript decodes Haskell-encoded" $ do
+        let nonce = C.cbNonce $ B.pack [10..33]
+            h = PubHeader (VersionSMPC 19) Nothing
+            env = ClientMsgEnvelope {cmHeader = h, cmNonce = nonce, cmEncBody = "test ciphertext"}
+            hsBytes = smpEncode env
+        tsResult <- callNode $ impEnc <> impProtoE2E
+          <> "const env = decodeClientMsgEnvelope(new Decoder(" <> jsUint8 hsBytes <> "));"
+          <> jsOut ("new Uint8Array([env.cmHeader.phVersion >> 8, env.cmHeader.phVersion & 0xff, env.cmHeader.phE2ePubDhKey === null ? 1 : 0, ...env.cmNonce, ...env.cmEncBody])")
+        let (version, rest1) = B.splitAt 2 tsResult
+            (nullByte, rest2) = B.splitAt 1 rest1
+            (nonceBytes, bodyBytes) = B.splitAt 24 rest2
+        version `shouldBe` B.pack [0, 19]
+        nullByte `shouldBe` B.singleton 1
+        nonceBytes `shouldBe` B.pack [10..33]
+        bodyBytes `shouldBe` "test ciphertext"
+
+    describe "per-queue E2E encrypt/decrypt" $ do
+      it "TypeScript encrypts, Haskell decrypts" $ do
+        -- Haskell generates receiver keypair
+        g <- C.newRandom
+        (rcvPub, rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let rcvPubRaw = C.pubKeyBytes rcvPub
+        -- TypeScript generates sender keypair, computes DH, encrypts
+        tsOutput <- callNode $ impSodium <> impEnc <> impProtoE2E
+          <> "import { generateX25519KeyPair, dh, encodePubKeyX25519 } from '@simplex-chat/xftp-web/dist/crypto/keys.js';"
+          <> "const sndKp = generateX25519KeyPair();"
+          <> "const rcvPub = " <> jsUint8 rcvPubRaw <> ";"
+          <> "const dhSecret = dh(rcvPub, sndKp.privateKey);"
+          <> "const clientMsg = encodeClientMessage({privHeader: {type: 'PHEmpty'}, body: new TextEncoder().encode('hello from typescript e2e')});"
+          <> "const encrypted = agentCbEncrypt(dhSecret, 19, null, clientMsg);"
+          -- Output: DER-encoded sndPubKey (ByteString-encoded: 1-byte len + DER) + encrypted
+          <> "const sndDer = encodePubKeyX25519(sndKp.publicKey);"
+          <> jsOut ("new Uint8Array([sndDer.length, ...sndDer, ...encrypted])")
+        -- Parse output: [1 byte len][DER sndPubKey][encrypted]
+        let sndDerLen = fromIntegral $ B.head tsOutput
+            (sndDerBytes, encrypted) = B.splitAt sndDerLen $ B.drop 1 tsOutput
+        -- Haskell decodes sender's DER public key and decrypts
+        let decoded = do
+              apk <- C.decodePubKey sndDerBytes
+              dhSecret <- case apk of
+                C.APublicKey C.SX25519 pk -> Right $ C.dh' pk rcvPriv
+                _ -> Left "not X25519"
+              cme <- smpDecode encrypted
+              plaintext <- first show $ C.cbDecrypt dhSecret (cmNonce cme) (cmEncBody cme)
+              cm <- smpDecode plaintext
+              case cm of
+                ClientMessage PHEmpty body -> Right body
+                _ -> Left "unexpected PrivHeader"
+        decoded `shouldBe` Right "hello from typescript e2e"
+
+  describe "full-stack" $ do
+    it "Haskell encodes all layers, TypeScript decodes" $ do
+      g <- C.newRandom
+      let v = CR.currentE2EEncryptVersion
+      -- Alice (receiver) ratchet keys - extract raw private bytes for TypeScript
+      (alicePk1, alicePk2, Nothing, e2eAlice) <- CR.generateRcvE2EParams @'X448 g v CR.PQSupportOff
+      let C.PrivateKeyX448 sk1 = alicePk1; alicePriv1 = BA.convert sk1 :: B.ByteString
+          C.PrivateKeyX448 sk2 = alicePk2; alicePriv2 = BA.convert sk2 :: B.ByteString
+      -- Bob (sender) ratchet: X3DH + init
+      (bobPk1, bobPk2, Nothing, CR.AE2ERatchetParams _ e2eBob) <- CR.generateSndE2EParams @'X448 g v Nothing
+      Right bobInitParams <- pure $ CR.pqX3dhSnd bobPk1 bobPk2 Nothing e2eAlice
+      (_, bobDHRs) <- atomically $ C.generateKeyPair @'X448 g
+      let bobRatchet = CR.initSndRatchet (CR.RatchetVersions v v) (C.publicKey alicePk2) bobDHRs bobInitParams
+          bobE2EBytes = smpEncode e2eBob
+      -- Per-queue E2E: shared DH secret (pass raw bytes to both sides)
+      (_, e2eSndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (e2eRcvPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' e2eRcvPub e2eSndPriv
+          dhSecretBytes = C.dhBytes' dhSecret
+      -- Haskell: encode A_MSG through all layers
+      let aMsg = AP.AgentMessage (AP.APrivHeader 1 (B.replicate 32 0)) (AP.A_MSG "hello full stack")
+          agentMsgBytes = smpEncode aMsg
+      Right (mek, _) <- runExceptT $ CR.rcEncryptHeader bobRatchet Nothing CR.currentE2EEncryptVersion
+      Right encAgentMsg <- runExceptT $ CR.rcEncryptMsg mek (AP.e2eEncAgentMsgLength AP.currentSMPAgentVersion CR.PQSupportOff) agentMsgBytes
+      let envBytes = smpEncode $ AP.AgentMsgEnvelope {AP.agentVersion = AP.currentSMPAgentVersion, AP.encAgentMessage = encAgentMsg}
+          clientMsgBytes = smpEncode $ ClientMessage PHEmpty envBytes
+      cmNonce <- atomically $ C.randomCbNonce g
+      Right cmEncBody <- pure $ C.cbEncrypt dhSecret cmNonce clientMsgBytes 16000
+      let cmeBytes = smpEncode $ ClientMsgEnvelope (PubHeader (VersionSMPC 19) Nothing) cmNonce cmEncBody
+      -- TypeScript: init alice ratchet + decode all layers
+      tsResult <- callNode $ impSodium <> impEnc <> impRatchet <> impAgentMsg <> impProtoE2E
+        <> "import { cbDecrypt } from '@simplex-chat/xftp-web/dist/crypto/secretbox.js';"
+        -- Init alice's receiver ratchet
+        <> "const a1Priv = " <> jsUint8 alicePriv1 <> ";"
+        <> "const a2Priv = " <> jsUint8 alicePriv2 <> ";"
+        <> "const rd = new Decoder(" <> jsUint8 bobE2EBytes <> ");"
+        <> "rd.anyByte(); rd.anyByte();"  -- skip version
+        <> "const bpk1 = decodePubKeyX448(decodeBytes(rd));"
+        <> "const bpk2 = decodePubKeyX448(decodeBytes(rd));"
+        <> "const ap = pqX3dhRcv(a1Priv, a2Priv, bpk1, bpk2);"
+        <> "let alice = initRcvRatchet({current:3,maxSupported:3}, a2Priv, ap, null, false);"
+        <> "let sk = new Map();"
+        -- Layer 1: per-queue E2E decrypt
+        <> "const dhSecret = " <> jsUint8 dhSecretBytes <> ";"
+        <> "const {clientMessage} = agentCbDecrypt(dhSecret, " <> jsUint8 cmeBytes <> ");"
+        -- Layer 2: decode AgentMsgEnvelope
+        <> "const env = decodeAgentMsgEnvelope(new Decoder(clientMessage.body));"
+        <> "if (env.type !== 'envelope') throw new Error('expected envelope, got ' + env.type);"
+        -- Layer 3: ratchet decrypt
+        <> "const dec = rcDecrypt(alice, sk, env.encAgentMessage);"
+        -- Layer 4: decode AgentMessage + AMessage
+        <> "const agentMsg = decodeAgentMessage(new Decoder(dec.plaintext));"
+        <> "if (agentMsg.type !== 'message') throw new Error('expected message, got ' + agentMsg.type);"
+        <> "if (agentMsg.msg.type !== 'A_MSG') throw new Error('expected A_MSG, got ' + agentMsg.msg.type);"
+        <> jsOut ("agentMsg.msg.body")
+      tsResult `shouldBe` "hello full stack"
+
+    it "TypeScript encodes all layers, Haskell decodes" $ do
+      g <- C.newRandom
+      let v = CR.currentE2EEncryptVersion
+      -- Alice (receiver): Haskell generates ratchet rcv params + X25519 for per-queue E2E
+      (alicePk1, alicePk2, Nothing, e2eAlice) <- CR.generateRcvE2EParams @'X448 g v CR.PQSupportOff
+      let aliceE2EBytes = smpEncode e2eAlice
+      (e2eRcvPub, e2eRcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      -- TypeScript: init bob's sender ratchet, encode full stack, output keys + ciphertext
+      tsOutput <- callNode $ impSodium <> impEnc <> impRatchet <> impAgentMsg <> impProtoE2E
+        <> "import { generateX25519KeyPair, dh, encodePubKeyX25519 } from '@simplex-chat/xftp-web/dist/crypto/keys.js';"
+        -- Init bob's sender ratchet
+        <> "const d = new Decoder(" <> jsUint8 aliceE2EBytes <> ");"
+        <> "const aliceV = d.anyByte() * 256 + d.anyByte();"
+        <> "const alicePk1Raw = decodePubKeyX448(decodeBytes(d));"
+        <> "const alicePk2Raw = decodePubKeyX448(decodeBytes(d));"
+        <> "const b1 = generateX448KeyPair(), b2 = generateX448KeyPair(), b3 = generateX448KeyPair();"
+        <> "const bp = pqX3dhSnd(b1.privateKey, b2.privateKey, alicePk1Raw, alicePk2Raw);"
+        <> "let bob = initSndRatchet({current:3,maxSupported:3}, alicePk2Raw, b3.privateKey, bp, null);"
+        -- Layer 4: encode AgentMessage
+        <> "const agentMsg = encodeAgentMessage({type: 'message', header: {sndMsgId: 1n, prevMsgHash: new Uint8Array(32)}, msg: {type: 'A_MSG', body: new TextEncoder().encode('hello from ts full stack')}});"
+        -- Layer 3: ratchet encrypt
+        <> "const enc = rcEncrypt(bob, agentMsg, 15840);"
+        -- Layer 2: wrap in AgentMsgEnvelope
+        <> "const envBytes = encodeAgentMsgEnvelope({type: 'envelope', agentVersion: 7, encAgentMessage: enc.ciphertext});"
+        -- Layer 1: per-queue E2E encrypt
+        <> "const sndKp = generateX25519KeyPair();"
+        <> "const rcvPub = " <> jsUint8 (C.pubKeyBytes e2eRcvPub) <> ";"
+        <> "const dhSecret = dh(rcvPub, sndKp.privateKey);"
+        <> "const clientMsg = encodeClientMessage({privHeader: {type: 'PHEmpty'}, body: envBytes});"
+        <> "const cmeBytes = agentCbEncrypt(dhSecret, 19, null, clientMsg);"
+        -- Output: bob E2E params + snd DER pubkey + cmeBytes
+        <> "const bobE2E = new Uint8Array([...encodeWord16(3), ...encodeBytes(encodePubKeyX448(b1.publicKey)), ...encodeBytes(encodePubKeyX448(b2.publicKey)), 0x30]);"
+        <> "const sndDer = encodePubKeyX25519(sndKp.publicKey);"
+        <> "const out = new Uint8Array(["
+        <> "  (bobE2E.length >> 8) & 0xff, bobE2E.length & 0xff, ...bobE2E,"
+        <> "  sndDer.length, ...sndDer,"
+        <> "  ...cmeBytes"
+        <> "]);"
+        <> jsOut ("out")
+      -- Parse TypeScript output
+      let (e2eLenBs, r1) = B.splitAt 2 tsOutput
+          bobE2ELen = fromIntegral (B.index e2eLenBs 0) * 256 + fromIntegral (B.index e2eLenBs 1)
+          (bobE2EBytes, r2) = B.splitAt bobE2ELen r1
+          sndDerLen = fromIntegral $ B.head r2
+          (sndDerBytes, cmeBytes) = B.splitAt sndDerLen $ B.drop 1 r2
+      -- Haskell: init alice's receiver ratchet, decode all layers
+      Right (CR.AE2ERatchetParams _ bobE2E :: CR.AE2ERatchetParams 'X448) <- pure $ smpDecode bobE2EBytes
+      Right (aliceInitParams, _) <- runExceptT $ CR.pqX3dhRcv alicePk1 alicePk2 Nothing bobE2E
+      let aliceRatchet = CR.initRcvRatchet (CR.RatchetVersions v v) alicePk2 (aliceInitParams, Nothing) CR.PQSupportOff
+      -- Decode all layers using ExceptT to chain pure Either + IO
+      gAlice <- C.newRandom
+      result <- runExceptT $ do
+        -- Per-queue E2E decrypt (pure)
+        apk <- liftEither $ C.decodePubKey sndDerBytes
+        dhSecret <- case apk of
+          C.APublicKey C.SX25519 pk -> pure $ C.dh' pk e2eRcvPriv
+          _ -> throwError "not X25519"
+        cme <- liftEither $ smpDecode cmeBytes
+        plaintext <- liftEither $ first show $ C.cbDecrypt dhSecret (cmNonce cme) (cmEncBody cme)
+        cm <- liftEither $ smpDecode plaintext
+        envBody <- case cm of
+          ClientMessage PHEmpty b -> pure b
+          _ -> throwError "unexpected PrivHeader"
+        -- Decode envelope
+        env <- liftEither $ smpDecode envBody
+        encMsg <- case env of
+          AP.AgentMsgEnvelope {AP.encAgentMessage = m} -> pure m
+          _ -> throwError "unexpected AgentMsgEnvelope variant"
+        -- Ratchet decrypt (IO)
+        (msgBody_, _, _) <- withExceptT show $ CR.rcDecrypt gAlice aliceRatchet M.empty encMsg
+        liftEither $ first show msgBody_
+      -- Decode agent message from result
+      agentMsgBytes <- either (error . ("decode failed: " <>)) pure result
+      Right (AP.AgentMessage _ (AP.A_MSG body)) <- pure $ smpDecode agentMsgBytes
+      body `shouldBe` "hello from ts full stack"
+

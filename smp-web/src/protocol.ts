@@ -5,9 +5,11 @@ import {
   Decoder, concatBytes,
   encodeBytes, decodeBytes,
   encodeLarge, decodeLarge,
+  encodeWord16, decodeWord16,
   encodeBool, decodeBool,
   encodeMaybe, decodeMaybe,
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
 import {readTag, readSpace} from "@simplex-chat/xftp-web/dist/protocol/commands.js"
 
 // -- Transmission encoding (Protocol.hs:2201-2203)
@@ -245,4 +247,108 @@ export function decodeMSG(d: Decoder): MSGResponse {
   const msgId = decodeBytes(d)
   const msgBody = d.takeAll()
   return {msgId, msgBody}
+}
+
+// -- Per-queue E2E encryption (Protocol.hs:1071-1114)
+
+// Protocol.hs:316-320
+export const e2eEncMessageLength = 16000
+export const e2eEncConfirmationLength = 15904
+
+// Protocol.hs:1078-1086
+export interface PubHeader {
+  phVersion: number                    // VersionSMPC (Word16)
+  phE2ePubDhKey: Uint8Array | null     // Maybe PublicKeyX25519 (DER-encoded ByteString)
+}
+
+export function encodePubHeader(h: PubHeader): Uint8Array {
+  return concatBytes(encodeWord16(h.phVersion), encodeMaybe(encodeBytes, h.phE2ePubDhKey))
+}
+
+export function decodePubHeader(d: Decoder): PubHeader {
+  return {phVersion: decodeWord16(d), phE2ePubDhKey: decodeMaybe(decodeBytes, d)}
+}
+
+// Protocol.hs:1097-1110
+export type PrivHeader =
+  | {type: "PHConfirmation", key: Uint8Array}  // 'K' + DER-encoded APublicAuthKey
+  | {type: "PHEmpty"}                           // '_'
+
+export function encodePrivHeader(h: PrivHeader): Uint8Array {
+  switch (h.type) {
+    case "PHConfirmation": return concatBytes(new Uint8Array([0x4B]), encodeBytes(h.key)) // 'K' + encodeBytes
+    case "PHEmpty": return new Uint8Array([0x5F]) // '_'
+  }
+}
+
+export function decodePrivHeader(d: Decoder): PrivHeader {
+  const tag = d.anyByte()
+  switch (tag) {
+    case 0x4B: return {type: "PHConfirmation", key: decodeBytes(d)} // 'K'
+    case 0x5F: return {type: "PHEmpty"} // '_'
+    default: throw new Error("decodePrivHeader: unknown tag " + tag)
+  }
+}
+
+// Protocol.hs:1095, 1112-1114
+export interface ClientMessage {
+  privHeader: PrivHeader
+  body: Uint8Array
+}
+
+// smpEncode (ClientMessage h msg) = smpEncode h <> msg
+export function encodeClientMessage(msg: ClientMessage): Uint8Array {
+  return concatBytes(encodePrivHeader(msg.privHeader), msg.body)
+}
+
+export function decodeClientMessage(d: Decoder): ClientMessage {
+  const privHeader = decodePrivHeader(d)
+  const body = d.takeAll()
+  return {privHeader, body}
+}
+
+// Protocol.hs:1071-1093
+export interface ClientMsgEnvelope {
+  cmHeader: PubHeader
+  cmNonce: Uint8Array       // CbNonce: raw 24 bytes
+  cmEncBody: Uint8Array     // encrypted body (Tail)
+}
+
+// smpEncode (cmHeader, cmNonce, Tail cmEncBody)
+export function encodeClientMsgEnvelope(env: ClientMsgEnvelope): Uint8Array {
+  return concatBytes(encodePubHeader(env.cmHeader), env.cmNonce, env.cmEncBody)
+}
+
+export function decodeClientMsgEnvelope(d: Decoder): ClientMsgEnvelope {
+  const cmHeader = decodePubHeader(d)
+  const cmNonce = d.take(24)  // CbNonce is raw 24 bytes
+  const cmEncBody = d.takeAll()
+  return {cmHeader, cmNonce, cmEncBody}
+}
+
+// -- Per-queue E2E encrypt/decrypt (Agent/Client.hs:2074-2102)
+
+// agentCbEncrypt: encrypt a ClientMessage and wrap in ClientMsgEnvelope
+export function agentCbEncrypt(
+  e2eDhSecret: Uint8Array,     // X25519 DH shared secret (32 bytes)
+  smpClientVersion: number,    // Word16
+  e2ePubKey: Uint8Array | null, // DER-encoded X25519 public key, null for normal messages
+  msg: Uint8Array,             // smpEncode(ClientMessage)
+): Uint8Array {
+  const cmNonce = crypto.getRandomValues(new Uint8Array(24))
+  const paddedLen = e2ePubKey !== null ? e2eEncConfirmationLength : e2eEncMessageLength
+  const cmEncBody = cbEncrypt(e2eDhSecret, cmNonce, msg, paddedLen)
+  const cmHeader: PubHeader = {phVersion: smpClientVersion, phE2ePubDhKey: e2ePubKey}
+  return encodeClientMsgEnvelope({cmHeader, cmNonce, cmEncBody})
+}
+
+// agentCbDecrypt: decrypt a ClientMsgEnvelope
+export function agentCbDecrypt(
+  dhSecret: Uint8Array,        // X25519 DH shared secret (32 bytes)
+  data: Uint8Array,            // raw ClientMsgEnvelope bytes
+): {pubHeader: PubHeader, clientMessage: ClientMessage} {
+  const env = decodeClientMsgEnvelope(new Decoder(data))
+  const plaintext = cbDecrypt(dhSecret, env.cmNonce, env.cmEncBody)
+  const clientMessage = decodeClientMessage(new Decoder(plaintext))
+  return {pubHeader: env.cmHeader, clientMessage}
 }
