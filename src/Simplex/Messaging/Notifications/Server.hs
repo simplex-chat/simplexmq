@@ -86,7 +86,7 @@ import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import System.Timeout (timeout)
-import UnliftIO (IOMode (..), UnliftIO, askUnliftIO, race_, unliftIO, withFile)
+import UnliftIO (IOMode (..), UnliftIO (..), askUnliftIO, race_, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception

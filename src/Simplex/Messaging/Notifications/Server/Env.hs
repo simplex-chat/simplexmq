@@ -63,6 +63,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceCredentials (..), THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
+import Simplex.Messaging.Util (tshow)
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
@@ -209,7 +210,7 @@ getPushClient s pp =
             loop
         | otherwise -> E.throwIO e
   where
-    reconnectInterval = RetryInterval {initialInterval = 1_000_000, increaseAfter = 10_000_000, maxInterval = 10_000_000}
+    reconnectInterval = RetryInterval {initialInterval = 2000000, increaseAfter = 0, maxInterval = 10000000}
 
 newPushClient :: NtfPushServer -> PushProvider -> PushClientVar -> IO (PushProviderClient, PushClientVar)
 newPushClient NtfPushServer {pushClients, apnsConfig} pp v = do
