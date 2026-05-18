@@ -23,7 +23,7 @@ module Simplex.Messaging.Notifications.Server.Push.APNS
     apnsPushProviderClient,
   ) where
 
-import Control.Exception (Exception)
+import Control.Exception (Exception, throwIO)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -230,7 +230,7 @@ data APNSPushClient = APNSPushClient
 createAPNSPushClient :: HostName -> APNSPushClientConfig -> IO APNSPushClient
 createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
-  void $ connectHTTPS2 apnsHost apnsCfg https2Client
+  connectHTTPS2 apnsHost apnsCfg https2Client >>= either (throwIO . userError . show) (\_ -> pure ())
   privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}

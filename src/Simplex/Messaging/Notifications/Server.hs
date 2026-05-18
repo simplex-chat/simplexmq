@@ -535,7 +535,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       stats <- asks serverStats
       forever $ do
         ((_, srv@(SMPServer (h :| _) _ _), _), _thVersion, sessionId, ts) <- atomically $ readTBQueue msgQ
-        forM ts $ \(ntfId, t) -> case t of
+        forM_ ts $ \(ntfId, t) -> case t of
           STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
           STResponse {} -> pure () -- it was already reported as timeout error
           STEvent msgOrErr -> do
@@ -639,14 +639,14 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn ntf = do
-  q <- getOrCreatePushWorker s srvHost_ isOwn
+pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = DeviceToken pp _} ntf = do
+  q <- getOrCreatePushWorker s (srvHost_, pp) isOwn
   atomically $ writeTBQueue q (tkn, ntf)
 
-getOrCreatePushWorker :: NtfPushServer -> Maybe T.Text -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
-getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} srvHost_ isOwn = do
+getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
+getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
   ts <- liftIO getCurrentTime
-  atomically (getSessVar pushWorkerSeq srvHost_ pushWorkers ts) >>= \case
+  atomically (getSessVar pushWorkerSeq key pushWorkers ts) >>= \case
     Left v -> do
       q <- liftIO $ newTBQueueIO pushQSize
       tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)
@@ -716,7 +716,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
               _ -> err e
         err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
 
-pushWorkersQLength :: TMap (Maybe T.Text) PushWorkerVar -> IO Natural
+pushWorkersQLength :: TMap (Maybe T.Text, PushProvider) PushWorkerVar -> IO Natural
 pushWorkersQLength workers = do
   ws <- readTVarIO workers
   foldM addQLength 0 ws
@@ -731,11 +731,11 @@ periodicNtfsThread s = do
   st <- asks store
   ntfsInterval <- asks $ periodicNtfsInterval . config
   let interval = 1000000 * ntfsInterval
-  q <- getOrCreatePushWorker s Nothing False
+  UnliftIO unlift <- askUnliftIO
   liftIO $ forever $ do
     threadDelay interval
     now <- systemSeconds <$> getSystemTime
-    cnt <- withPeriodicNtfTokens st now $ \tkn -> atomically $ writeTBQueue q (tkn, PNCheckMessages)
+    cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
     logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()

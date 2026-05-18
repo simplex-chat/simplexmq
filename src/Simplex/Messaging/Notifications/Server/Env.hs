@@ -33,6 +33,7 @@ import Control.Monad
 import Crypto.Random
 import Data.Functor (($>))
 import Data.Int (Int64)
+import Simplex.Messaging.Agent.RetryInterval
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
@@ -167,7 +168,7 @@ data SMPSubscriber = SMPSubscriber
   }
 
 data NtfPushServer = NtfPushServer
-  { pushWorkers :: TMap (Maybe T.Text) PushWorkerVar, -- keyed by SMP server hostname, Nothing for non-server notifications
+  { pushWorkers :: TMap (Maybe T.Text, PushProvider) PushWorkerVar,
     pushWorkerSeq :: TVar Int,
     pushQSize :: Natural,
     pushClients :: TMap PushProvider PushClientVar,
@@ -193,14 +194,22 @@ newNtfPushServer pushQSize apnsConfig = do
   pushClientSeq <- newTVarIO 0
   pure NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize, pushClients, pushClientSeq, apnsConfig}
 
-
--- | Single-flight access to the per-provider push client.
+-- | Single-flight access to the per-provider push client with bounded retry.
 -- The returned PushClientVar is the handle retryDeliver passes to removeSessVar to evict
 -- this specific instance before re-fetching.
 getPushClient :: NtfPushServer -> PushProvider -> IO (PushProviderClient, PushClientVar)
-getPushClient s pp = do
-  ts <- getCurrentTime
-  atomically (getSessVar (pushClientSeq s) pp (pushClients s) ts) >>= either (newPushClient s pp) waitForPushClient
+getPushClient s pp =
+  withRetryIntervalCount reconnectInterval $ \n _delay loop -> do
+    ts <- getCurrentTime
+    E.try (atomically (getSessVar (pushClientSeq s) pp (pushClients s) ts) >>= either (newPushClient s pp) waitForPushClient) >>= \case
+      Right result -> pure result
+      Left e
+        | n < 2 -> do
+            logError $ "getPushClient error (" <> tshow pp <> "): " <> tshow (e :: E.SomeException)
+            loop
+        | otherwise -> E.throwIO e
+  where
+    reconnectInterval = RetryInterval {initialInterval = 1_000_000, increaseAfter = 10_000_000, maxInterval = 10_000_000}
 
 newPushClient :: NtfPushServer -> PushProvider -> PushClientVar -> IO (PushProviderClient, PushClientVar)
 newPushClient NtfPushServer {pushClients, apnsConfig} pp v = do
