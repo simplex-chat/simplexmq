@@ -346,7 +346,7 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
+  HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequestDirect http2 req Nothing
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead
   if status == Just N.ok200
