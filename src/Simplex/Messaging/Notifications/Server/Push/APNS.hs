@@ -217,7 +217,7 @@ defaultAPNSPushClientConfig =
       apnsPort = "443",
       http2cfg = defaultHTTP2ClientConfig {bufferSize = 16384},
       caStoreFile = "/etc/ssl/cert.pem",
-      reconnectInterval = RetryInterval {initialInterval = 2_000_000, increaseAfter = 0, maxInterval = 10_000_000}
+      reconnectInterval = RetryInterval {initialInterval = 2000000, increaseAfter = 0, maxInterval = 10000000}
     }
 
 data APNSPushClient = APNSPushClient
