@@ -23,7 +23,7 @@ module Simplex.Messaging.Notifications.Server.Push.APNS
     apnsPushProviderClient,
   ) where
 
-import Control.Exception (Exception)
+import Control.Exception (Exception, throwIO)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -66,6 +66,7 @@ import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Server.Store.Types (NtfTknRec (..))
 import Simplex.Messaging.Parsers (defaultJSON)
@@ -192,7 +193,8 @@ data APNSPushClientConfig = APNSPushClientConfig
     appTeamId :: Text,
     apnsPort :: ServiceName,
     http2cfg :: HTTP2ClientConfig,
-    caStoreFile :: FilePath
+    caStoreFile :: FilePath,
+    reconnectInterval :: RetryInterval
   }
 
 apnsProviderHost :: PushProvider -> Maybe HostName
@@ -214,7 +216,8 @@ defaultAPNSPushClientConfig =
       appTeamId = "5NN7GUYB6T",
       apnsPort = "443",
       http2cfg = defaultHTTP2ClientConfig {bufferSize = 16384},
-      caStoreFile = "/etc/ssl/cert.pem"
+      caStoreFile = "/etc/ssl/cert.pem",
+      reconnectInterval = RetryInterval {initialInterval = 2000000, increaseAfter = 0, maxInterval = 10000000}
     }
 
 data APNSPushClient = APNSPushClient
@@ -230,7 +233,7 @@ data APNSPushClient = APNSPushClient
 createAPNSPushClient :: HostName -> APNSPushClientConfig -> IO APNSPushClient
 createAPNSPushClient apnsHost apnsCfg@APNSPushClientConfig {authKeyFileEnv, authKeyAlg, authKeyIdEnv, appTeamId} = do
   https2Client <- newTVarIO Nothing
-  void $ connectHTTPS2 apnsHost apnsCfg https2Client
+  connectHTTPS2 apnsHost apnsCfg https2Client >>= either (throwIO . userError . show) (\_ -> pure ())
   privateKey <- readECPrivateKey =<< getEnv authKeyFileEnv
   authKeyId <- T.pack <$> getEnv authKeyIdEnv
   let jwtHeader = JWTHeader {alg = authKeyAlg, kid = authKeyId}
@@ -326,7 +329,7 @@ data PushProviderError
   | PPCryptoError C.CryptoError
   | PPResponseError (Maybe Status) Text
   | PPTokenInvalid NTInvalidReason
-  | PPRetryLater
+  | PPRetryLater Text
   | PPPermanentError
   deriving (Show, Exception)
 
@@ -343,7 +346,6 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
   nonce <- atomically $ C.randomCbNonce nonceDrg
   apnsNtf <- liftEither $ first PPCryptoError $ apnsNotification tkn nonce (paddedNtfLength apnsCfg) pn
   req <- liftIO $ apnsRequest c tknStr apnsNtf
-  -- TODO when HTTP2 client is thread-safe, we can use sendRequestDirect
   HTTP2Response {response, respBody = HTTP2Body {bodyHead}} <- liftHTTPS2 $ sendRequest http2 req Nothing
   let status = H.responseStatus response
       reason' = maybe "" reason $ J.decodeStrict' bodyHead
@@ -373,8 +375,8 @@ apnsPushProviderClient c@APNSPushClient {nonceDrg, apnsCfg} tkn@NtfTknRec {token
       | status == Just N.gone410 = throwE $ case reason' of
           "ExpiredToken" -> PPTokenInvalid NTIRExpiredToken
           "Unregistered" -> PPTokenInvalid NTIRUnregistered
-          _ -> PPRetryLater
-      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwE PPRetryLater
+          _ -> PPRetryLater $ "410 " <> reason'
+      | status == Just N.serviceUnavailable503 = liftIO (disconnectApnsHTTP2Client c) >> throwE (PPRetryLater "503")
       -- Just tooManyRequests429 -> TooManyRequests - too many requests for the same token
       | otherwise = throwE $ PPResponseError status reason'
     liftHTTPS2 a = ExceptT $ first PPConnection <$> a
