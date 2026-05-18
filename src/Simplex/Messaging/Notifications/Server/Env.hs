@@ -199,7 +199,7 @@ newNtfPushServer pushQSize apnsConfig = do
 -- The returned PushClientVar is the handle retryDeliver passes to removeSessVar to evict
 -- this specific instance before re-fetching.
 getPushClient :: NtfPushServer -> PushProvider -> IO (PushProviderClient, PushClientVar)
-getPushClient s pp =
+getPushClient s@NtfPushServer {apnsConfig = APNSPushClientConfig {reconnectInterval}} pp =
   withRetryIntervalCount reconnectInterval $ \n _delay loop -> do
     ts <- getCurrentTime
     E.try (atomically (getSessVar (pushClientSeq s) pp (pushClients s) ts) >>= either (newPushClient s pp) waitForPushClient) >>= \case
@@ -209,8 +209,6 @@ getPushClient s pp =
             logError $ "getPushClient error (" <> tshow pp <> "): " <> tshow (e :: E.SomeException)
             loop
         | otherwise -> E.throwIO e
-  where
-    reconnectInterval = RetryInterval {initialInterval = 2000000, increaseAfter = 0, maxInterval = 10000000}
 
 newPushClient :: NtfPushServer -> PushProvider -> PushClientVar -> IO (PushProviderClient, PushClientVar)
 newPushClient NtfPushServer {pushClients, apnsConfig} pp v = do

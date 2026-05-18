@@ -66,6 +66,7 @@ import qualified Network.HTTP2.Client as H
 import Network.Socket (HostName, ServiceName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Server.Store.Types (NtfTknRec (..))
 import Simplex.Messaging.Parsers (defaultJSON)
@@ -192,7 +193,8 @@ data APNSPushClientConfig = APNSPushClientConfig
     appTeamId :: Text,
     apnsPort :: ServiceName,
     http2cfg :: HTTP2ClientConfig,
-    caStoreFile :: FilePath
+    caStoreFile :: FilePath,
+    reconnectInterval :: RetryInterval
   }
 
 apnsProviderHost :: PushProvider -> Maybe HostName
@@ -214,7 +216,8 @@ defaultAPNSPushClientConfig =
       appTeamId = "5NN7GUYB6T",
       apnsPort = "443",
       http2cfg = defaultHTTP2ClientConfig {bufferSize = 16384},
-      caStoreFile = "/etc/ssl/cert.pem"
+      caStoreFile = "/etc/ssl/cert.pem",
+      reconnectInterval = RetryInterval {initialInterval = 2_000_000, increaseAfter = 0, maxInterval = 10_000_000}
     }
 
 data APNSPushClient = APNSPushClient
