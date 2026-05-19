@@ -223,7 +223,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16)
 import qualified Data.X509.Validation as XV
@@ -1677,13 +1677,18 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
     subscribe_ :: SMPClient -> NonEmpty RcvQueueSub -> IO (BatchResponses RcvQueueSub SMPClientError (Maybe ServiceId), Bool)
     subscribe_ smp qs' = do
       let (userId, srv, _) = tSess
-      atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
+          n = length qs'
+      atomically $ incSMPServerStat' c userId srv connSubAttempts n
+      tStart <- getCurrentTime
+      tNet0 <- getCurrentTime
       rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
+      tNet1 <- getCurrentTime
+      let (okN, permErrN, tempErrN) = countSubResults rs
       cs_ <-
         if withEvents
           then Just . S.fromList . map qConnId . M.elems <$> atomically (SS.getActiveSubs tSess $ currentSubs c)
           else pure Nothing
-      active <- E.uninterruptibleMask_ $ do
+      (active, svcN, tDb0, tDb1) <- E.uninterruptibleMask_ $ do
         (active, (serviceQs, notices)) <- atomically $ do
           r@(_, (_, notices)) <- ifM
             (activeClientSession c tSess sessId)
@@ -1691,12 +1696,16 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
             ((False, ([], [])) <$ incSMPServerStat' c userId srv connSubIgnored (length rs))
           unless (null notices) $ takeTMVar $ clientNoticesLock c
           pure r
+        tDb0' <- getCurrentTime
         unless (null serviceQs) $ void $
           processRcvServiceAssocs c serviceQs `runReaderT` agentEnv c
+        tDb1' <- getCurrentTime
         unless (null notices) $ void $
           (processClientNotices c tSess notices `runReaderT` agentEnv c)
             `E.finally` atomically (putTMVar (clientNoticesLock c) ())
-        pure active
+        pure (active, length serviceQs, tDb0', tDb1')
+      tEnd <- getCurrentTime
+      logSubBatchTiming c srv n okN permErrN tempErrN svcN active tStart tNet0 tNet1 tDb0 tDb1 tEnd
       forM_ cs_ $ \cs -> do
         let (errs, okConns) = partitionEithers $ map (\(RcvQueueSub {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
             conns = filter (`S.notMember` cs) okConns
@@ -1899,6 +1908,51 @@ logServer dir c srv = logServer' dir c srv . unEntityId
 logServer' :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> ByteString -> ByteString -> m ()
 logServer' dir AgentClient {clientId} srv qStr cmdStr =
   logInfo . decodeUtf8 $ B.unwords ["A", "(" <> bshow clientId <> ")", dir, showServer srv, ":", logSecret' qStr, cmdStr]
+
+countSubResults :: NonEmpty (q, Either SMPClientError r) -> (Int, Int, Int)
+countSubResults = foldl' f (0, 0, 0) . L.toList
+  where
+    f (ok, perm, temp) (_, Right _) = (ok + 1, perm, temp)
+    f (ok, perm, temp) (_, Left e)
+      | temporaryClientError e = (ok, perm, temp + 1)
+      | otherwise = (ok, perm + 1, temp)
+
+logSubBatchTiming ::
+  AgentClient ->
+  SMPServer ->
+  Int -> -- batch size
+  Int -> -- ok
+  Int -> -- permanent errors
+  Int -> -- temporary errors
+  Int -> -- service assoc rows
+  Bool -> -- active session (false = replaced/ignored)
+  UTCTime -> -- tStart
+  UTCTime -> -- tNet0 (before sendBatch)
+  UTCTime -> -- tNet1 (after sendBatch)
+  UTCTime -> -- tDb0 (before processRcvServiceAssocs)
+  UTCTime -> -- tDb1 (after processRcvServiceAssocs)
+  UTCTime -> -- tEnd
+  IO ()
+logSubBatchTiming AgentClient {clientId} srv n okN permErrN tempErrN svcN active tStart tNet0 tNet1 tDb0 tDb1 tEnd =
+  logInfo . decodeUtf8 $ B.unwords
+    [ "A",
+      "(" <> bshow clientId <> ")",
+      "SUB-TIMING",
+      showServer srv,
+      "n=" <> bshow n,
+      "ok=" <> bshow okN,
+      "perm=" <> bshow permErrN,
+      "temp=" <> bshow tempErrN,
+      "svc=" <> bshow svcN,
+      "replaced=" <> (if active then "false" else "true"),
+      "net_ms=" <> bshow (ms tNet0 tNet1),
+      "db_ms=" <> bshow (ms tDb0 tDb1),
+      "other_ms=" <> bshow (ms tStart tEnd - ms tNet0 tNet1 - ms tDb0 tDb1),
+      "total_ms=" <> bshow (ms tStart tEnd)
+    ]
+  where
+    ms :: UTCTime -> UTCTime -> Int
+    ms t0 t1 = round (realToFrac (diffUTCTime t1 t0) * 1000 :: Double)
 
 showServer :: ProtocolServer s -> ByteString
 showServer ProtocolServer {host, port} =
