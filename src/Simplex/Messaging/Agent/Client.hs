@@ -1692,7 +1692,7 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
           unless (null notices) $ takeTMVar $ clientNoticesLock c
           pure r
         unless (null serviceQs) $ void $
-          processRcvServiceAssocs c serviceQs `runReaderT` agentEnv c
+          processRcvServiceAssocs c srv serviceQs `runReaderT` agentEnv c
         unless (null notices) $ void $
           (processClientNotices c tSess notices `runReaderT` agentEnv c)
             `E.finally` atomically (putTMVar (clientNoticesLock c) ())
@@ -1714,10 +1714,10 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         tSess = transportSession' smp
         sessId = sessionId $ thParams smp
 
-processRcvServiceAssocs :: SMPQueue q => AgentClient -> [q] -> AM' ()
-processRcvServiceAssocs _ [] = pure ()
-processRcvServiceAssocs c serviceQs =
-  withStore' c (`setRcvServiceAssocs` serviceQs) `catchAllErrors'` \e -> do
+processRcvServiceAssocs :: SMPQueue q => AgentClient -> SMPServer -> [q] -> AM' ()
+processRcvServiceAssocs _ _ [] = pure ()
+processRcvServiceAssocs c srv serviceQs =
+  withStore' c (\db -> setRcvServiceAssocs db srv serviceQs) `catchAllErrors'` \e -> do
     logError $ "processRcvServiceAssocs error: " <> tshow e
     notifySub' c "" $ ERR e
 
