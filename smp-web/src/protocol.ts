@@ -1,5 +1,5 @@
 // SMP protocol commands and transmission format.
-// Mirrors: Simplex.Messaging.Protocol
+// Mirrors: Simplex.Messaging.Protocol + Simplex.Messaging.Client (auth)
 
 import {
   Decoder, concatBytes,
@@ -10,30 +10,113 @@ import {
   encodeMaybe, decodeMaybe,
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {sign} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
 import {readTag, readSpace} from "@simplex-chat/xftp-web/dist/protocol/commands.js"
+import {cbAuthenticator} from "./crypto.js"
 
-// -- Transmission encoding (Protocol.hs:2201-2203)
-// encodeTransmission_ v (CorrId corrId, queueId, command) =
-//   smpEncode (corrId, queueId) <> encodeProtocol v command
+// -- Auth key type for command authentication (Client.hs:1372-1391)
 
+export type AuthKey =
+  | {type: "x25519", key: Uint8Array}   // raw 32-byte private key → cbAuthenticator
+  | {type: "ed25519", key: Uint8Array}  // raw 64-byte private key → sign
+
+// -- Transmission encoding (Protocol.hs:2186-2198)
+
+// encodeTransmission_ (Protocol.hs:2194-2198)
+// smpEncode (corrId, entityId) <> encodeProtocol v command
+// (command is pre-encoded bytes)
 export function encodeTransmission(corrId: Uint8Array, entityId: Uint8Array, command: Uint8Array): Uint8Array {
-  return concatBytes(
-    encodeBytes(new Uint8Array(0)), // empty auth
-    encodeBytes(corrId),
-    encodeBytes(entityId),
-    command
-  )
+  return concatBytes(encodeBytes(corrId), encodeBytes(entityId), command)
 }
 
-// Batch encoding (Protocol.hs:2175-2180)
-// Each transmission is Large-wrapped, then prefixed with 1-byte count.
-export function encodeBatch(...transmissions: Uint8Array[]): Uint8Array {
-  if (transmissions.length === 0 || transmissions.length > 255) throw new Error("encodeBatch: invalid count")
-  return concatBytes(new Uint8Array([transmissions.length]), ...transmissions.map(t => encodeLarge(t)))
+// encodeTransmissionForAuth (Protocol.hs:2186-2192)
+// implySessId = true for v>=7 (always true for web client v19)
+// tForAuth = sessionId <> encodeTransmission_(...)
+// tToSend = encodeTransmission_(...)
+export function encodeTransmissionForAuth(
+  sessionId: Uint8Array, corrId: Uint8Array, entityId: Uint8Array, command: Uint8Array,
+): {tForAuth: Uint8Array, tToSend: Uint8Array} {
+  const tToSend = encodeTransmission(corrId, entityId, command)
+  const tForAuth = concatBytes(encodeBytes(sessionId), tToSend)
+  return {tForAuth, tToSend}
 }
 
-// -- Transmission parsing (Protocol.hs:1629-1642)
-// For implySessId = True (v7+): no sessId on wire
+// -- Command authentication (Client.hs:1372-1391)
+
+// authTransmission: produce auth bytes for a transmission
+// Returns null for unauthenticated commands, Uint8Array of auth bytes otherwise
+export function authTransmission(
+  serverPubKey: Uint8Array,  // server's X25519 public key from handshake
+  privKey: AuthKey | null,   // null for unauthenticated commands (LGET, SEND without key)
+  nonce: Uint8Array,         // 24-byte CorrId/nonce (same bytes)
+  tForAuth: Uint8Array,      // transmission bytes to authenticate
+): Uint8Array | null {
+  if (privKey === null) return null
+  switch (privKey.type) {
+    case "x25519":
+      // TAAuthenticator: cbAuthenticate(serverPubKey, entityPrivKey, nonce, tForAuth)
+      return cbAuthenticator(serverPubKey, privKey.key, nonce, tForAuth)
+    case "ed25519":
+      // TASignature: sign(entityPrivKey, tForAuth)
+      return sign(privKey.key, tForAuth)
+  }
+}
+
+// tEncodeAuth (Protocol.hs:507-516)
+// For v16+ (serviceAuth=true): when auth is present, encode serviceSig as Nothing (0x30) after auth.
+// When auth is absent: just empty ByteString.
+export function tEncodeAuth(auth: Uint8Array | null): Uint8Array {
+  if (auth === null) return encodeBytes(new Uint8Array(0))  // empty ByteString: [0x00]
+  // serviceAuth=true for v16+: smpEncode (authBytes, serviceSig) where serviceSig = Nothing
+  return concatBytes(encodeBytes(auth), new Uint8Array([0x30]))  // auth + Nothing
+}
+
+// tEncode (Protocol.hs:2171-2172)
+export function tEncode(auth: Uint8Array | null, tToSend: Uint8Array): Uint8Array {
+  return concatBytes(tEncodeAuth(auth), tToSend)
+}
+
+// tEncodeBatch1 (Protocol.hs:2179-2180)
+// Single-command batch: count=1 + Large(tEncode(...))
+export function tEncodeBatch1(auth: Uint8Array | null, tToSend: Uint8Array): Uint8Array {
+  return concatBytes(new Uint8Array([1]), encodeLarge(tEncode(auth, tToSend)))
+}
+
+// tEncodeForBatch (Protocol.hs:2175-2176)
+// Large(tEncode(...)) — for multi-command batches
+export function tEncodeForBatch(auth: Uint8Array | null, tToSend: Uint8Array): Uint8Array {
+  return encodeLarge(tEncode(auth, tToSend))
+}
+
+// batchTransmissions (Protocol.hs:2151-2168)
+// Pack multiple encoded transmissions into ≤blockSize blocks.
+// Each input is an already-encoded Large-wrapped transmission.
+// Returns array of blocks, each prefixed with count byte.
+export function batchTransmissions(blockSize: number, transmissions: Uint8Array[]): Uint8Array[] {
+  const maxPayload = blockSize - 19 // 2 pad + 1 count + 16 auth tag
+  const blocks: Uint8Array[] = []
+  let currentParts: Uint8Array[] = []
+  let currentLen = 0
+  let count = 0
+  for (const t of transmissions) {
+    const tLen = t.length
+    if (tLen > maxPayload) throw new Error("batchTransmissions: transmission too large")
+    if (currentLen + tLen > maxPayload || count >= 255) {
+      if (count > 0) blocks.push(concatBytes(new Uint8Array([count]), ...currentParts))
+      currentParts = [t]
+      currentLen = tLen
+      count = 1
+    } else {
+      currentParts.push(t)
+      currentLen += tLen
+      count++
+    }
+  }
+  if (count > 0) blocks.push(concatBytes(new Uint8Array([count]), ...currentParts))
+  return blocks
+}
+
+// -- Transmission parsing (Protocol.hs:1629-1643, 2211-2267)
 
 export interface RawTransmission {
   corrId: Uint8Array
@@ -41,12 +124,45 @@ export interface RawTransmission {
   command: Uint8Array
 }
 
-export function decodeTransmission(d: Decoder): RawTransmission {
-  const _auth = decodeBytes(d) // authenticator (empty for unsigned)
-  const corrId = decodeBytes(d)
-  const entityId = decodeBytes(d)
-  const command = d.takeAll()
+// transmissionP (Protocol.hs:1629-1642)
+// Parse a single transmission from block bytes.
+// implySessId=true, serviceAuth=false for web client.
+export function transmissionP(data: Uint8Array): RawTransmission {
+  const d = new Decoder(data)
+  const auth = decodeBytes(d)  // authenticator
+  // serviceAuth=true for v16+: if auth is non-empty, skip serviceSig (Maybe Signature)
+  if (auth.length > 0) {
+    decodeMaybe(decodeBytes, d)  // skip serviceSig
+  }
+  const rest = d.takeAll()      // authorized bytes
+  // re-parse authorized: corrId + entityId + command
+  const d2 = new Decoder(rest)
+  // implySessId=true: no sessionId in wire format
+  const corrId = decodeBytes(d2)
+  const entityId = decodeBytes(d2)
+  const command = d2.takeAll()
   return {corrId, entityId, command}
+}
+
+// tParse (Protocol.hs:2211-2217)
+// Parse a received block into individual transmissions.
+// batch=true: count byte + N Large-wrapped transmissions
+export function tParse(block: Uint8Array): RawTransmission[] {
+  const d = new Decoder(block)
+  const count = d.anyByte()
+  const transmissions: RawTransmission[] = []
+  for (let i = 0; i < count; i++) {
+    const data = decodeLarge(d)
+    transmissions.push(transmissionP(data))
+  }
+  return transmissions
+}
+
+// tDecodeClient (Protocol.hs:2256-2266)
+// Parse command bytes into typed response.
+export function tDecodeClient(raw: RawTransmission): {corrId: Uint8Array, entityId: Uint8Array, response: SMPResponse} {
+  const response = decodeResponse(new Decoder(raw.command))
+  return {corrId: raw.corrId, entityId: raw.entityId, response}
 }
 
 // -- SMP command tags
@@ -90,10 +206,17 @@ export type SMPResponse =
   | {type: "IDS", response: IDSResponse}
   | {type: "MSG", response: MSGResponse}
   | {type: "OK"}
+  | {type: "SOK", serviceId: Uint8Array | null}
   | {type: "PONG"}
   | {type: "END"}
   | {type: "DELD"}
-  | {type: "ERR", message: string}
+  | {type: "ERR", error: string}
+
+// protocolError check (Client.hs:710-712)
+// Returns the error string if this is an ERR response, null otherwise
+export function protocolError(resp: SMPResponse): string | null {
+  return resp.type === "ERR" ? resp.error : null
+}
 
 export function decodeResponse(d: Decoder): SMPResponse {
   const tag = readTag(d)
@@ -111,12 +234,20 @@ export function decodeResponse(d: Decoder): SMPResponse {
       return {type: "MSG", response: decodeMSG(d)}
     }
     case "OK": return {type: "OK"}
+    case "SOK": {
+      // SOK serviceId_ → e(SOK_, ' ', serviceId_)
+      readSpace(d)
+      const serviceId = d.remaining() > 0 ? decodeMaybe(decodeBytes, d) : null
+      return {type: "SOK", serviceId}
+    }
     case "PONG": return {type: "PONG"}
     case "END": return {type: "END"}
     case "DELD": return {type: "DELD"}
     case "ERR": {
       readSpace(d)
-      return {type: "ERR", message: readTag(d)}
+      // Read the full error string (may be multi-word like "AUTH" or "QUOTA")
+      const errBytes = d.takeAll()
+      return {type: "ERR", error: new TextDecoder().decode(errBytes)}
     }
     default: throw new Error("unknown SMP response: " + tag)
   }
@@ -138,23 +269,23 @@ export function encodeSubMode(subscribe: boolean): Uint8Array {
 
 // NEW (Protocol.hs:1682-1689)
 // For v19: e(NEW_, ' ', rKey, dhKey) <> e(auth_, subMode, queueReqData, ntfCreds)
-// auth_ = Maybe SndPublicAuthKey (DER-encoded)
-// queueReqData = Maybe QueueReqData
-// ntfCreds = Maybe NewNtfCreds (not needed for widget)
+// QueueReqData: QRMessaging Nothing = 'M' + Nothing(0x30)
 export function encodeNEW(
   rcvAuthKey: Uint8Array,   // DER-encoded Ed25519 or X25519 public key
   rcvDhKey: Uint8Array,     // DER-encoded X25519 public key
-  sndAuthKey: Uint8Array | null,  // DER-encoded, for TOFU sender auth
+  basicAuth: Uint8Array | null,  // Maybe BasicAuth (server auth, not a crypto key)
   subscribe: boolean,
 ): Uint8Array {
+  // QRMessaging Nothing: Just('M', Nothing) = 0x31 0x4D 0x30
+  const queueReqData = new Uint8Array([0x31, 0x4D, 0x30])
   return concatBytes(
     ascii("NEW "),
     encodeBytes(rcvAuthKey),
     encodeBytes(rcvDhKey),
-    encodeMaybe(encodeBytes, sndAuthKey),
+    encodeMaybe(encodeBytes, basicAuth),
     encodeSubMode(subscribe),
-    encodeMaybe(() => new Uint8Array(0), null),  // queueReqData = Nothing (widget doesn't create links)
-    encodeMaybe(() => new Uint8Array(0), null),  // ntfCreds = Nothing
+    queueReqData,
+    new Uint8Array([0x30]),  // ntfCreds = Nothing
   )
 }
 
@@ -200,6 +331,21 @@ export function encodeOFF(): Uint8Array {
 // DEL (Protocol.hs:1701)
 export function encodeDEL(): Uint8Array {
   return ascii("DEL")
+}
+
+// GET (Protocol.hs:1698)
+export function encodeGET(): Uint8Array {
+  return ascii("GET")
+}
+
+// QUE (Protocol.hs:1702)
+export function encodeQUE(): Uint8Array {
+  return ascii("QUE")
+}
+
+// PING (Protocol.hs:1705)
+export function encodePING(): Uint8Array {
+  return ascii("PING")
 }
 
 // -- SMP response decoders

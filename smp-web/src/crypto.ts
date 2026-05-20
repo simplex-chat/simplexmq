@@ -4,7 +4,8 @@
 import {hkdf as nobleHkdf} from "@noble/hashes/hkdf"
 import {sha512} from "@noble/hashes/sha512"
 import {gcm} from "@noble/ciphers/aes.js"
-import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {cbEncrypt, cbDecrypt, cryptoBox} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {dh} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
 import {concatBytes} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 import {pad, unPad} from "@simplex-chat/xftp-web/dist/crypto/padding.js"
 
@@ -86,4 +87,19 @@ export function decryptAEAD(
   const encrypted = concatBytes(ciphertext, authTag)
   const padded = cipher.decrypt(encrypted)
   return unPad(padded)
+}
+
+// -- SHA-512 hash (Crypto.hs:1016)
+
+export function sha512Hash(msg: Uint8Array): Uint8Array {
+  return sha512(msg)
+}
+
+// -- Command authentication (Crypto.hs:1366-1367)
+
+// cbAuthenticate (Crypto.hs:1367)
+// cryptoBox(dh(serverPubKey, entityPrivKey), nonce, sha512Hash(msg)) → 80 bytes (16 tag + 64 hash)
+export function cbAuthenticator(serverPubKey: Uint8Array, entityPrivKey: Uint8Array, nonce: Uint8Array, msg: Uint8Array): Uint8Array {
+  const dhSecret = dh(serverPubKey, entityPrivKey)
+  return cryptoBox(dhSecret, nonce, sha512Hash(msg))
 }

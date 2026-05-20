@@ -19,6 +19,8 @@ export interface SMPConnection {
   // Block encryption state (null if no auth)
   sndKey: Uint8Array | null
   rcvKey: Uint8Array | null
+  // Server's raw X25519 public key — needed for command auth (cbAuthenticate)
+  serverPubKey: Uint8Array | null
 }
 
 export async function connectSMP(url: string, keyHash: Uint8Array, wsOptions?: object): Promise<SMPConnection> {
@@ -46,6 +48,7 @@ export async function connectSMP(url: string, keyHash: Uint8Array, wsOptions?: o
   let sndKey: Uint8Array | null = null
   let rcvKey: Uint8Array | null = null
   let clientAuthPubKey: Uint8Array | null = null
+  let serverPubKey: Uint8Array | null = null
 
   if (serverHs.authPubKey) {
     // Verify server identity if server supports web challenge (v19+)
@@ -62,10 +65,10 @@ export async function connectSMP(url: string, keyHash: Uint8Array, wsOptions?: o
     }
 
     // DH key exchange for block encryption (v11+)
-    const serverDhKey = extractSignedKey(serverHs.authPubKey.signedKeyDer).dhKey
+    serverPubKey = extractSignedKey(serverHs.authPubKey.signedKeyDer).dhKey
     const clientKp = generateX25519KeyPair()
     clientAuthPubKey = encodePubKeyX25519(clientKp.publicKey)
-    const dhSecret = dh(serverDhKey, clientKp.privateKey)
+    const dhSecret = dh(serverPubKey, clientKp.privateKey)
     // Client swaps snd/rcv vs server (Transport.hs:880)
     const keys = sbcInit(serverHs.sessionId, dhSecret)
     sndKey = keys.rcvKey
@@ -82,7 +85,7 @@ export async function connectSMP(url: string, keyHash: Uint8Array, wsOptions?: o
   })
   sendBlock(ws, blockPad(clientHs, SMP_BLOCK_SIZE))
 
-  return {ws, sessionId: serverHs.sessionId, smpVersion: version, sndKey, rcvKey}
+  return {ws, sessionId: serverHs.sessionId, smpVersion: version, sndKey, rcvKey, serverPubKey}
 }
 
 export function receiveBlock(ws: WebSocket): Promise<Uint8Array> {
