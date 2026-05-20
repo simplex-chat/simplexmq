@@ -106,7 +106,7 @@ import System.Directory (renameFile)
 #endif
 
 smpServerCLI :: FilePath -> FilePath -> IO ()
-smpServerCLI = smpServerCLI_ (\_ _ _ -> pure ()) (\_ -> pure ()) (\_ -> error "attachStaticFiles not available")
+smpServerCLI = smpServerCLI_ (\_ _ _ -> pure ()) (\_ -> pure ()) (\_ -> error "attachStaticAndWS not available")
 
 smpServerCLI_ ::
   (ServerInformation -> Maybe TransportHost -> FilePath -> IO ()) ->
@@ -115,7 +115,7 @@ smpServerCLI_ ::
   FilePath ->
   FilePath ->
   IO ()
-smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
+smpServerCLI_ generateSite serveStaticFiles attachStaticAndWS cfgPath logPath =
   getCliCommand' (cliCommandP cfgPath logPath iniFile) serverVersion >>= \case
     Init opts ->
       doesFileExist iniFile >>= \case
@@ -489,7 +489,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           case webStaticPath' of
             Just path | sharedHTTP -> do
               runWebServer path Nothing ServerInformation {config, information}
-              attachStaticFiles path $ \attachHTTP -> do
+              attachStaticAndWS path $ \attachHTTP -> do
                 logDebug "Allocated web server resources"
                 runSMPServer cfg (Just attachHTTP) `finally` logDebug "Releasing web server resources..."
             Just path -> do

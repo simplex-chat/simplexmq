@@ -1,5 +1,4 @@
 node_modules/
 dist/
-dist-web/
+dist-test/
 package-lock.json
-test-results

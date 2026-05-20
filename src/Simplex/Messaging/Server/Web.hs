@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -8,7 +9,7 @@ module Simplex.Messaging.Server.Web
     WebHttpsParams (..),
     EmbeddedContent (..),
     serveStaticFiles,
-    attachStaticFiles,
+    attachStaticAndWS,
     serveStaticPageH2,
     generateSite,
     serverInfoSubsts,
@@ -41,11 +42,14 @@ import qualified Network.Wai.Application.Static as S
 import qualified Network.Wai.Handler.Warp as W
 import qualified Network.Wai.Handler.Warp.Internal as WI
 import qualified Network.Wai.Handler.WarpTLS as WT
+import qualified Network.Wai.Handler.WebSockets as WaiWS
+import Network.WebSockets (defaultConnectionOptions, ConnectionOptions(..), SizeLimit(..), PendingConnection)
 import Simplex.Messaging.Encoding.String (strEncode)
-import Simplex.Messaging.Server (AttachHTTP)
+import Simplex.Messaging.Server (AttachHTTP, WSHandler)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport (TLS (..), smpBlockSize, simplexMQVersion)
+import Simplex.Messaging.Transport.WebSockets (WS (..), acceptWSConnection)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
@@ -84,20 +88,23 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
   where
     mkSettings port = W.setPort port warpSettings
 
--- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
-attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
-attachStaticFiles path action = do
-  app <- staticFiles path
-  -- Initialize global internal state for http server.
+attachStaticAndWS :: FilePath -> (AttachHTTP -> IO a) -> IO a
+attachStaticAndWS path action =
   WI.withII warpSettings $ \ii -> do
-    action $ \socket cxt -> do
-      -- Initialize internal per-connection resources.
+    action $ \socket tls wsHandler_ -> do
+      app <- case wsHandler_ of
+        Just wsHandler ->
+          WaiWS.websocketsOr wsOpts (acceptWSConnection tls >=> wsHandler) <$> staticFiles path
+        Nothing -> staticFiles path
       addr <- getPeerName socket
-      withConnection addr cxt $ \(conn, transport) ->
+      withConnection addr (tlsContext tls) $ \(conn, transport) ->
         withTimeout ii conn $ \th ->
-          -- Run Warp connection handler to process HTTP requests for static files.
           WI.serveConnection conn ii th addr transport warpSettings app
   where
+    wsOpts = defaultConnectionOptions
+      { connectionFramePayloadSizeLimit = SizeLimit $ fromIntegral smpBlockSize,
+        connectionMessageDataSizeLimit = SizeLimit 65536
+      }
     -- from warp-tls
     withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
     -- from warp
@@ -105,7 +112,6 @@ attachStaticFiles path action = do
       bracket
         (WI.registerKillThread (WI.timeoutManager ii) (WI.connClose conn))
         WI.cancel
-    -- shared clean up
     terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
 
 warpSettings :: W.Settings

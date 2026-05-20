@@ -56,6 +56,7 @@ module Simplex.Messaging.Transport
     serviceCertsSMPVersion,
     newNtfCredsSMPVersion,
     clientNoticesSMPVersion,
+    webClientSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -140,7 +141,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -218,6 +219,9 @@ newNtfCredsSMPVersion = VersionSMP 17
 clientNoticesSMPVersion :: VersionSMP
 clientNoticesSMPVersion = VersionSMP 18
 
+webClientSMPVersion :: VersionSMP
+webClientSMPVersion = VersionSMP 19
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 6
 
@@ -225,13 +229,13 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 18
+currentClientSMPRelayVersion = VersionSMP 19
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 18
+currentServerSMPRelayVersion = VersionSMP 19
 
 -- Max SMP protocol version to be used in e2e encrypted
 -- connection between client and server, as defined by SMP proxy.
@@ -295,6 +299,10 @@ class Typeable c => Transport (c :: TransportPeer -> Type) where
 
   -- | ALPN value negotiated for the session
   getSessionALPN :: c p -> Maybe ALPN
+
+  -- | Web client challenge for server identity verification (WebSocket only)
+  getWebChallenge :: c p -> Maybe ByteString
+  getWebChallenge _ = Nothing
 
   -- | Close connection
   closeConnection :: c p -> IO ()
@@ -537,7 +545,9 @@ data SMPServerHandshake = SMPServerHandshake
     sessionId :: SessionId,
     -- pub key to agree shared secrets for command authorization and entity ID encryption.
     -- todo C.PublicKeyX25519
-    authPubKey :: Maybe CertChainPubKey
+    authPubKey :: Maybe CertChainPubKey,
+    -- | signed web client challenge for server identity verification (v19+)
+    webIdentityProof :: Maybe C.ASignature
   }
 
 -- This is the third handshake message that SMP server sends to services
@@ -629,15 +639,19 @@ ifHasService :: VersionSMP -> a -> a -> a
 ifHasService v a b = if v >= serviceCertsSMPVersion then a else b
 
 instance Encoding SMPServerHandshake where
-  smpEncode SMPServerHandshake {smpVersionRange, sessionId, authPubKey} =
-    smpEncode (smpVersionRange, sessionId) <> auth
+  smpEncode SMPServerHandshake {smpVersionRange, sessionId, authPubKey, webIdentityProof} =
+    smpEncode (smpVersionRange, sessionId) <> auth <> webProof
     where
-      auth = encodeAuthEncryptCmds (maxVersion smpVersionRange) authPubKey
+      v = maxVersion smpVersionRange
+      auth = encodeAuthEncryptCmds v authPubKey
+      webProof = encodeWebIdentityProof v webIdentityProof
   smpP = do
     (smpVersionRange, sessionId) <- smpP
+    let v = maxVersion smpVersionRange
     -- TODO drop SMP v6: remove special parser and make key non-optional
-    authPubKey <- authEncryptCmdsP (maxVersion smpVersionRange) smpP
-    pure SMPServerHandshake {smpVersionRange, sessionId, authPubKey}
+    authPubKey <- authEncryptCmdsP v smpP
+    webIdentityProof <- webIdentityProofP v
+    pure SMPServerHandshake {smpVersionRange, sessionId, authPubKey, webIdentityProof}
 
 -- newtype for CertificateChain and a session key signed with this certificate
 data CertChainPubKey = CertChainPubKey
@@ -660,6 +674,16 @@ encodeAuthEncryptCmds v k
 
 authEncryptCmdsP :: VersionSMP -> Parser a -> Parser (Maybe a)
 authEncryptCmdsP v p = if v >= authCmdsSMPVersion then optional p else pure Nothing
+
+encodeWebIdentityProof :: VersionSMP -> Maybe C.ASignature -> ByteString
+encodeWebIdentityProof v sig
+  | v >= webClientSMPVersion = maybe "" (smpEncode . C.signatureBytes) sig
+  | otherwise = ""
+
+webIdentityProofP :: VersionSMP -> Parser (Maybe C.ASignature)
+webIdentityProofP v
+  | v >= webClientSMPVersion = optional $ C.decodeSignature <$?> smpP
+  | otherwise = pure Nothing
 
 instance Encoding SMPServerHandshakeResponse where
   smpEncode = \case
@@ -758,7 +782,8 @@ smpServerHandshake ::
 smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVRange getService = do
   let sk = C.signX509 srvSignKey $ C.publicToX509 k
       smpVersionRange = maybe legacyServerSMPRelayVRange (const smpVRange) $ getSessionALPN c
-  sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = Just (CertChainPubKey srvCert sk)}
+      webIdentityProof = C.sign srvSignKey . (<> sessionId) <$> getWebChallenge c
+  sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = Just (CertChainPubKey srvCert sk), webIdentityProof}
   SMPClientHandshake {smpVersion = v, keyHash, authPubKey = k', proxyServer, clientService} <- getHandshake th
   when (keyHash /= kh) $ throwE $ TEHandshake IDENTITY
   case compatibleVRange' smpVersionRange v of
@@ -791,7 +816,7 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVRange getService = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleSMP c 'TClient)
 smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ = do
-  SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
+  SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey, webIdentityProof = _} <- getHandshake th
   when (sessionId /= sessId) $ throwE TEBadSession
   -- Below logic downgrades version range in case the "client" is SMP proxy server and it is
   -- connected to the destination server of the version 11 or older.

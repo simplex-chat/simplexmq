@@ -11,7 +11,7 @@
 --
 -- Prerequisites: cd xftp-web && npm install && npm run build
 -- Run: cabal test --test-option=--match="/XFTP Web Client/"
-module XFTPWebTests (xftpWebTests) where
+module XFTPWebTests (xftpWebTests, callNode_, jsOut, jsUint8, redirectConsole) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (replicateM, when)
@@ -61,9 +61,9 @@ xftpWebDir = "xftp-web"
 redirectConsole :: String
 redirectConsole = "console.log = console.warn = (...a) => process.stderr.write(a.map(String).join(' ') + '\\n');"
 
--- | Run an inline ES module script via node, return stdout as ByteString.
-callNode :: String -> IO B.ByteString
-callNode script = do
+-- | Run an inline ES module script via node in a given directory, return stdout as ByteString.
+callNode_ :: FilePath -> String -> IO B.ByteString
+callNode_ dir script = do
   baseEnv <- getEnvironment
   let nodeEnv = ("NODE_TLS_REJECT_UNAUTHORIZED", "0") : baseEnv
   (_, Just hout, Just herr, ph) <-
@@ -71,7 +71,7 @@ callNode script = do
       (proc "node" ["--input-type=module", "-e", redirectConsole <> script])
         { std_out = CreatePipe,
           std_err = CreatePipe,
-          cwd = Just xftpWebDir,
+          cwd = Just dir,
           env = Just nodeEnv
         }
   errVar <- newEmptyMVar
@@ -83,6 +83,9 @@ callNode script = do
     expectationFailure $
       "node " <> show ec <> "\nstderr: " <> map (toEnum . fromIntegral) (B.unpack err)
   pure out
+
+callNode :: String -> IO B.ByteString
+callNode = callNode_ xftpWebDir
 
 -- | Format a ByteString as a JS Uint8Array constructor.
 jsUint8 :: B.ByteString -> String

@@ -81,7 +81,7 @@ export function encodePING(): Uint8Array { return ascii("PING") }
 
 // -- Response decoding
 
-function readTag(d: Decoder): string {
+export function readTag(d: Decoder): string {
   const start = d.offset()
   while (d.remaining() > 0) {
     if (d.buf[d.offset()] === 0x20 || d.buf[d.offset()] === 0x0a) break
@@ -92,7 +92,7 @@ function readTag(d: Decoder): string {
   return s
 }
 
-function readSpace(d: Decoder): void {
+export function readSpace(d: Decoder): void {
   if (d.anyByte() !== 0x20) throw new Error("expected space")
 }
 
