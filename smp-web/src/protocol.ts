@@ -201,12 +201,21 @@ export function decodeLNK(d: Decoder): LNKResponse {
 
 // -- Response dispatch (same pattern as xftp-web decodeResponse)
 
+export interface PKEYResponse {
+  sessionId: Uint8Array
+  versionRange: {min: number, max: number}
+  certChainDer: Uint8Array   // Large-encoded DER certificate chain
+  signedKeyDer: Uint8Array   // Large-encoded DER signed public key
+}
+
 export type SMPResponse =
   | {type: "LNK", response: LNKResponse}
   | {type: "IDS", response: IDSResponse}
   | {type: "MSG", response: MSGResponse}
   | {type: "OK"}
   | {type: "SOK", serviceId: Uint8Array | null}
+  | {type: "PKEY", response: PKEYResponse}
+  | {type: "PRES", encResponse: Uint8Array}
   | {type: "PONG"}
   | {type: "END"}
   | {type: "DELD"}
@@ -239,6 +248,31 @@ export function decodeResponse(d: Decoder): SMPResponse {
       readSpace(d)
       const serviceId = d.remaining() > 0 ? decodeMaybe(decodeBytes, d) : null
       return {type: "SOK", serviceId}
+    }
+    case "PKEY": {
+      // PKEY sessionId versionRange certChainPubKey (Protocol.hs:1894)
+      // PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
+      // sessionId: ByteString, versionRange: (Word16, Word16)
+      // certChainPubKey: (NonEmpty Large, SignedObject) (Transport.hs:663-664)
+      //   certChain = NonEmpty Large = 1-byte count + N × Large(2-byte len + DER)
+      //   signedKey = Large(2-byte len + DER)
+      readSpace(d)
+      const sessionId = decodeBytes(d)
+      const min = decodeWord16(d)
+      const max = decodeWord16(d)
+      // certChain: NonEmpty Large (1-byte count + N × Large-encoded DER certs)
+      const certCount = d.anyByte()
+      const certChainDers: Uint8Array[] = []
+      for (let i = 0; i < certCount; i++) certChainDers.push(decodeLarge(d))
+      // signedKey: Large-encoded DER
+      const signedKeyDer = decodeLarge(d)
+      return {type: "PKEY", response: {sessionId, versionRange: {min, max}, certChainDer: certChainDers[0] ?? new Uint8Array(0), signedKeyDer}}
+    }
+    case "PRES": {
+      // PRES (EncResponse encBlock) (Protocol.hs:1896)
+      // PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
+      readSpace(d)
+      return {type: "PRES", encResponse: d.takeAll()}
     }
     case "PONG": return {type: "PONG"}
     case "END": return {type: "END"}
@@ -347,6 +381,43 @@ export function encodeQUE(): Uint8Array {
 export function encodePING(): Uint8Array {
   return ascii("PING")
 }
+
+// -- Proxy commands (Protocol.hs:1710-1711)
+
+// encodeProtocolServer (Protocol.hs:1264-1266)
+// smpEncode ProtocolServer {host, port, keyHash} = smpEncode (host, port, keyHash)
+// host :: NonEmpty TransportHost → smpEncodeList (1-byte count + encodeBytes(strEncode(host)) for each)
+// port :: ServiceName = ByteString → encodeBytes
+// keyHash :: KeyHash = ByteString → encodeBytes
+export function encodeProtocolServer(hosts: string[], port: string, keyHash: Uint8Array): Uint8Array {
+  const encodedHosts = hosts.map(h => encodeBytes(ascii(h)))
+  const hostList = concatBytes(new Uint8Array([hosts.length]), ...encodedHosts)
+  return concatBytes(hostList, encodeBytes(ascii(port)), encodeBytes(keyHash))
+}
+
+// PRXY (Protocol.hs:1710)
+// PRXY host auth_ -> e(PRXY_, ' ', host, auth_)
+export function encodePRXY(hosts: string[], port: string, keyHash: Uint8Array, basicAuth: Uint8Array | null): Uint8Array {
+  return concatBytes(
+    ascii("PRXY "),
+    encodeProtocolServer(hosts, port, keyHash),
+    encodeMaybe(encodeBytes, basicAuth),
+  )
+}
+
+// PFWD (Protocol.hs:1711)
+// PFWD fwdV pubKey (EncTransmission s) -> e(PFWD_, ' ', fwdV, pubKey, Tail s)
+export function encodePFWD(version: number, pubKeyDer: Uint8Array, encTransmission: Uint8Array): Uint8Array {
+  return concatBytes(
+    ascii("PFWD "),
+    encodeWord16(version),
+    encodeBytes(pubKeyDer),
+    encTransmission, // Tail — no length prefix
+  )
+}
+
+// paddedProxiedTLength (Protocol.hs:306-307)
+export const paddedProxiedTLength = 16226
 
 // -- SMP response decoders
 

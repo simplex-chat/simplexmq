@@ -4,7 +4,7 @@
 import {hkdf as nobleHkdf} from "@noble/hashes/hkdf"
 import {sha512} from "@noble/hashes/sha512"
 import {gcm} from "@noble/ciphers/aes.js"
-import {cbEncrypt, cbDecrypt, cryptoBox} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {cbEncrypt, cbDecrypt, cryptoBox, sbInit, sbDecryptChunk, sbAuth} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
 import {dh} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
 import {concatBytes} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 import {pad, unPad} from "@simplex-chat/xftp-web/dist/crypto/padding.js"
@@ -102,4 +102,29 @@ export function sha512Hash(msg: Uint8Array): Uint8Array {
 export function cbAuthenticator(serverPubKey: Uint8Array, entityPrivKey: Uint8Array, nonce: Uint8Array, msg: Uint8Array): Uint8Array {
   const dhSecret = dh(serverPubKey, entityPrivKey)
   return cryptoBox(dhSecret, nonce, sha512Hash(msg))
+}
+
+// -- reverseNonce (Crypto.hs:1409-1410)
+
+export function reverseNonce(nonce: Uint8Array): Uint8Array {
+  const reversed = new Uint8Array(nonce.length)
+  for (let i = 0; i < nonce.length; i++) reversed[i] = nonce[nonce.length - 1 - i]
+  return reversed
+}
+
+// -- cbDecryptNoPad (Crypto.hs:1330-1331)
+// Decrypt without unpadding. Used for proxy responses.
+// Same as cbDecrypt but returns raw decrypted bytes without unPad.
+
+export function cbDecryptNoPad(dhSecret: Uint8Array, nonce: Uint8Array, packet: Uint8Array): Uint8Array {
+  const tag = packet.subarray(0, 16)
+  const cipher = packet.subarray(16)
+  const state = sbInit(dhSecret, nonce)
+  const plaintext = sbDecryptChunk(state, cipher)
+  const computedTag = sbAuth(state)
+  // constant-time compare
+  let diff = 0
+  for (let i = 0; i < 16; i++) diff |= tag[i] ^ computedTag[i]
+  if (diff !== 0) throw new Error("cbDecryptNoPad: authentication failed")
+  return plaintext
 }

@@ -14,7 +14,7 @@
 module SMPWebTests (smpWebTests) where
 
 import Control.Concurrent.STM
-import Control.Monad (when)
+import Control.Monad (forM, forM_, when)
 import Data.Bifunctor (first)
 import Control.Exception (bracket)
 import Control.Monad.Except (ExceptT, liftEither, runExceptT, throwError, withExceptT)
@@ -24,14 +24,14 @@ import System.IO (Handle, hFlush, hGetLine, hPutStr, hSetBuffering, BufferMode (
 import System.Process (CreateProcess (..), StdStream (..), ProcessHandle, createProcess, proc, terminateProcess)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import System.Directory (doesDirectoryExist)
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Agent as A
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.Protocol (CreatedConnLink (..), UserLinkData (..), UserContactData (..), UserConnLinkData (..))
-import Simplex.Messaging.Client (pattern NRMInteractive, authTransmission)
+import Simplex.Messaging.Client (pattern NRMInteractive, authTransmission, getProtocolClient, defaultSMPClientConfig, ProtocolClientConfig (..), connectSMPProxiedRelay, proxySMPMessage, closeProtocolClient, ProxyClientError (..))
 import Simplex.Messaging.Version (mkVersionRange)
 import Simplex.Messaging.Version.Internal (Version (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -44,14 +44,18 @@ import qualified Data.ByteArray as BA
 import Simplex.Messaging.Crypto.ShortLink (contactShortLinkKdf, invShortLinkKdf)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (Str (..), strEncode)
-import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), pattern SMPServer, pattern NoEntity, encodeProtocol, Command (..), NewQueueReq (..), QueueReqData (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..), PubHeader (..), PrivHeader (..), ClientMessage (..), ClientMsgEnvelope (..), pattern VersionSMPC)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..))
+import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), noMsgFlags, pattern SMPServer, pattern NoEntity, encodeProtocol, Cmd (..), SParty (..), Command (..), NewQueueReq (..), QueueReqData (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..), PubHeader (..), PrivHeader (..), ClientMessage (..), ClientMsgEnvelope (..), pattern VersionSMPC)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
-import Simplex.Messaging.Transport (TLS, smpBlockSize, currentServerSMPRelayVersion)
+import Data.Time.Clock (getCurrentTime)
+import Simplex.Messaging.Transport (TLS, transport, smpBlockSize, currentServerSMPRelayVersion, currentClientSMPRelayVersion, minServerSMPRelayVersion, supportedClientSMPRelayVRange, alpnSupportedSMPHandshakes)
+import Simplex.Messaging.Version (mkVersionRange)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
+import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
-import SMPClient (cfgWebOn, testKeyHash, testPort, testSMPClient, withSmpServerConfig)
+import SMPClient (cfgWebOn, cfgMS, proxyCfgMS, updateCfg, testKeyHash, testPort, testPort2, testSMPClient, testSMPClient_, testHost2, testStoreLogFile2, testStoreMsgsDir2, journalCfg, withSmpServerConfig, withSmpServerConfigOn)
 import ServerTests (sendRecv, signSendRecv, tGet1, decryptMsgV3, _SEND, pattern Resp, pattern Ids, pattern Msg, pattern New)
 import AgentTests.DoubleRatchetTests (testEncryptDecrypt, testSkippedMessages, testManyMessages, testSkippedAfterRatchetAdvance)
 import AgentTests.FunctionalAPITests (withAgent)
@@ -69,7 +73,7 @@ impEnc :: String
 impEnc = "import { Decoder, decodeBytes, decodeLarge, encodeBytes, encodeWord16 } from '@simplex-chat/xftp-web/dist/protocol/encoding.js';"
 
 impProto_ :: String
-impProto_ = "import { encodeTransmission, encodeTransmissionForAuth, authTransmission, tEncodeAuth, tEncode, tEncodeBatch1, tEncodeForBatch, batchTransmissions, transmissionP, tParse, tDecodeClient, protocolError, encodeLGET, decodeLNK, decodeResponse, encodeNEW, encodeKEY, encodeSKEY, encodeSUB, encodeACK, encodeSEND, encodeOFF, encodeDEL, encodeGET, encodeQUE, encodePING } from './dist/protocol.js';"
+impProto_ = "import { encodeTransmission, encodeTransmissionForAuth, authTransmission, tEncodeAuth, tEncode, tEncodeBatch1, tEncodeForBatch, batchTransmissions, transmissionP, tParse, tDecodeClient, protocolError, encodeLGET, decodeLNK, decodeResponse, encodeNEW, encodeKEY, encodeSKEY, encodeSUB, encodeACK, encodeSEND, encodeOFF, encodeDEL, encodeGET, encodeQUE, encodePING, encodeProtocolServer, encodePRXY, encodePFWD, paddedProxiedTLength } from './dist/protocol.js';"
 
 impProto :: String
 impProto = impEnc <> impProto_
@@ -1401,6 +1405,33 @@ smpWebTests_ = do
           <> jsOut ("new Uint8Array([...ts[0].corrId, ...ts[0].entityId, ...ts[0].command])")
         tsResult `shouldBe` (corrId <> entityId <> command)
 
+    describe "reverseNonce" $ do
+      it "matches Haskell" $ do
+        let nonce = B.pack [1..24]
+            hsReversed = B.reverse nonce
+        tsReversed <- callNode $ impProto
+          <> "import { reverseNonce } from './dist/crypto.js';"
+          <> jsOut ("reverseNonce(" <> jsUint8 nonce <> ")")
+        tsReversed `shouldBe` hsReversed
+
+    describe "encodeProtocolServer" $ do
+      it "matches Haskell" $ do
+        let srv = SMPServer ("smp1.example.com" :| ["smp2.example.com"]) "5223" (C.KeyHash $ B.pack [1..32])
+            hsEncoded = smpEncode srv
+        tsEncoded <- callNode $ impProto
+          <> jsOut ("encodeProtocolServer(['smp1.example.com','smp2.example.com'], '5223', " <> jsUint8 (B.pack [1..32]) <> ")")
+        tsEncoded `shouldBe` hsEncoded
+
+    describe "encodePRXY" $ do
+      it "matches Haskell" $ do
+        let srv = SMPServer ("relay.example.com" :| []) "" (C.KeyHash $ B.pack [1..32])
+            cmd = Cmd SProxiedClient $ PRXY srv Nothing
+            v = currentServerSMPRelayVersion
+            hsEncoded = encodeProtocol v cmd
+        tsEncoded <- callNode $ impProto
+          <> jsOut ("encodePRXY(['relay.example.com'], '', " <> jsUint8 (B.pack [1..32]) <> ", null)")
+        tsEncoded `shouldBe` hsEncoded
+
   describe "full-stack" $ do
     it "Haskell encodes all layers, TypeScript decodes" $ do
       g <- C.newRandom
@@ -1687,4 +1718,120 @@ smpWebTests_ = do
             Resp "bcda" _ OK <- signSendRecv rh rKey ("bcda", _rId, ACK mId1)
             _ <- jsCmd sndIn sndOut "CLOSE"
             terminateProcess sndPh
+
+    it "cross-language: JS sends via proxy to HS receiver" $ do
+      let msType = ASType SQSMemory SMSJournal
+          -- Proxy server with WebSocket: enable proxy on the web-enabled config
+          proxyCfgWeb = updateCfg (cfgWebOn msType testPort) $ \cfg' ->
+            cfg' {allowSMPProxy = True}
+          -- Relay server on testPort2: standard config
+          relayCfg = journalCfg (cfgMS msType) testStoreLogFile2 testStoreMsgsDir2
+      attachStaticAndWS "tests/fixtures" $ \attachHTTP ->
+        withSmpServerConfig proxyCfgWeb (Just attachHTTP) $ \_ ->
+          withSmpServerConfigOn (transport @TLS) relayCfg testPort2 $ \_ -> do
+            g <- C.newRandom
+            -- HS receiver: create queue on RELAY server via TLS
+            let (h :| _) = testHost2
+            testSMPClient_ @TLS h testPort2 supportedClientSMPRelayVRange $ \rh -> do
+              (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+              (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+              Resp "abcd" _ (Ids _rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
+              let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+              -- JS sender: connect to PROXY via WebSocket, send PRXY for relay
+              (sndIn, sndOut, sndPh) <- spawnJsClient
+              "ok" <- jsCmd sndIn sndOut $ "CONNECT wss://localhost:" <> testPort <> " " <> bsToHex (C.unKeyHash testKeyHash) <> " {\"rejectUnauthorized\":false,\"ALPNProtocols\":[\"http/1.1\"]}"
+              -- Connect to relay via proxy
+              prxyResp <- jsCmd sndIn sndOut $ "PRXY localhost " <> testPort2 <> " " <> bsToHex (C.unKeyHash testKeyHash)
+              when (not $ "ok:" `isPrefixOf` prxyResp) $ expectationFailure $ "PRXY failed: " <> prxyResp
+              -- Send message via proxy
+              let testMsg = "hello via proxy"
+              sendResp <- jsCmd sndIn sndOut $ "PSEND " <> bsToHex (unEntityId sId) <> " none 1 " <> bsToHex testMsg
+              when (sendResp /= "ok") $ expectationFailure $ "PSEND failed: " <> sendResp
+              -- HS receiver: receive and decrypt
+              Resp "" _ (Msg mId1 msg1) <- tGet1 rh
+              dec mId1 msg1 `shouldBe` Right testMsg
+              _ <- jsCmd sndIn sndOut "CLOSE"
+              terminateProcess sndPh
+
+    it "JS batch subscribe: create 3 queues, batch subscribe, receive messages" $ do
+      let msType = ASType SQSMemory SMSJournal
+      attachStaticAndWS "tests/fixtures" $ \attachHTTP ->
+        withSmpServerConfig (cfgWebOn msType testPort) (Just attachHTTP) $ \_ -> do
+          g <- C.newRandom
+          -- JS receiver
+          (rcvIn, rcvOut, rcvPh) <- spawnJsClient
+          "ok" <- jsCmd rcvIn rcvOut $ "CONNECT wss://localhost:" <> testPort <> " " <> bsToHex (C.unKeyHash testKeyHash) <> " {\"rejectUnauthorized\":false,\"ALPNProtocols\":[\"http/1.1\"]}"
+          -- Create 3 queues
+          sndIds <- forM [1..3 :: Int] $ \_ -> do
+            (authPub, authPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+            let C.PrivateKeyX25519 sk = authPriv
+                privBytes = BA.convert sk :: B.ByteString
+            newResp <- jsCmd rcvIn rcvOut $ "NEW " <> bsToHex (C.encodePubKey authPub) <> " " <> bsToHex privBytes
+            let newParts = words newResp
+            when (head newParts /= "ok:") $ expectationFailure $ "NEW failed: " <> newResp
+            pure (newParts !! 1, newParts !! 2, bsToHex privBytes) -- rcvIdHex, sndIdHex, privKeyHex
+          -- Batch subscribe
+          let bsubArg = unwords [rcvId <> ":" <> pk | (rcvId, _, pk) <- sndIds]
+          bsubResp <- jsCmd rcvIn rcvOut $ "BSUB " <> bsubArg
+          when (bsubResp /= "ok") $ expectationFailure $ "BSUB failed: " <> bsubResp
+          -- HS sender: send a message to each queue
+          testSMPClient @TLS $ \sh -> do
+            forM_ (zip [1..] sndIds) $ \(i :: Int, (_, sndIdHex, _)) -> do
+              let sndId = hexToBS sndIdHex
+                  msg = "batch msg " <> BC.pack (show i)
+              Resp _ _ OK <- sendRecv sh (Nothing, BC.pack (show i), EntityId sndId, _SEND msg)
+              pure ()
+            -- JS receiver: receive 3 messages
+            forM_ [1..3 :: Int] $ \i -> do
+              recvResp <- jsCmd rcvIn rcvOut "RECV 5000"
+              let recvParts = words recvResp
+              head recvParts `shouldBe` "ok:"
+              let bodyHex = recvParts !! 3
+              hexToBS bodyHex `shouldBe` ("batch msg " <> BC.pack (show i))
+          _ <- jsCmd rcvIn rcvOut "CLOSE"
+          terminateProcess rcvPh
+
+    it "cross-language: HS sends via proxy to JS receiver (one server)" $ do
+      let msType = ASType SQSMemory SMSJournal
+          -- One server: WebSocket + proxy enabled (like oneServer in SMPProxyTests)
+          proxyCfgWeb = updateCfg (cfgWebOn msType testPort) $ \cfg' ->
+            cfg' {allowSMPProxy = True}
+      attachStaticAndWS "tests/fixtures" $ \attachHTTP ->
+        withSmpServerConfig proxyCfgWeb (Just attachHTTP) $ \_ -> do
+          g <- C.newRandom
+          -- JS receiver: create queue on server via WebSocket
+          (rcvIn, rcvOut, rcvPh) <- spawnJsClient
+          "ok" <- jsCmd rcvIn rcvOut $ "CONNECT wss://localhost:" <> testPort <> " " <> bsToHex (C.unKeyHash testKeyHash) <> " {\"rejectUnauthorized\":false,\"ALPNProtocols\":[\"http/1.1\"]}"
+          (rcvAuthPub, rcvAuthPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+          let C.PrivateKeyX25519 sk = rcvAuthPriv
+              rcvAuthPrivBytes = BA.convert sk :: B.ByteString
+          newResp <- jsCmd rcvIn rcvOut $ "NEW " <> bsToHex (C.encodePubKey rcvAuthPub) <> " " <> bsToHex rcvAuthPrivBytes
+          let newParts = words newResp
+          when (head newParts /= "ok:") $ expectationFailure $ "NEW failed: " <> newResp
+          let sndIdHex = newParts !! 2
+              rcvIdHex = newParts !! 1
+              sndId = hexToBS sndIdHex
+          -- JS receiver: subscribe
+          subResp <- jsCmd rcvIn rcvOut $ "SUB " <> rcvIdHex <> " " <> bsToHex rcvAuthPrivBytes
+          when (subResp /= "ok") $ expectationFailure $ "SUB failed: " <> subResp
+          -- HS sender: connect via TLS, use proxy to send to SAME server
+          let srv = SMPServer ("localhost" :| []) testPort testKeyHash
+          ts <- getCurrentTime
+          Right pc <- getProtocolClient g NRMInteractive (1, srv, Nothing)
+            defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
+            [] Nothing ts (\_ -> pure ())
+          -- Connect proxy session to same server
+          sess <- runRight $ connectSMPProxiedRelay pc NRMInteractive srv Nothing
+          -- Send via proxy
+          let testMsg = "hello from haskell via proxy"
+          Right (Right ()) <- runExceptT $ proxySMPMessage pc NRMInteractive sess Nothing (EntityId sndId) noMsgFlags testMsg
+          -- JS receiver: receive and decrypt
+          recvResp <- jsCmd rcvIn rcvOut "RECV 5000"
+          let recvParts = words recvResp
+          head recvParts `shouldBe` "ok:"
+          let bodyHex = recvParts !! 3
+          hexToBS bodyHex `shouldBe` testMsg
+          closeProtocolClient pc
+          _ <- jsCmd rcvIn rcvOut "CLOSE"
+          terminateProcess rcvPh
 

@@ -3,8 +3,9 @@
 
 import {
   encodeTransmission, encodeTransmissionForAuth, authTransmission,
-  tEncodeBatch1, tParse, tDecodeClient, protocolError, encodePING,
-  decodeResponse,
+  tEncodeBatch1, tEncodeForBatch, batchTransmissions, tEncode,
+  tParse, tDecodeClient, protocolError, encodePING,
+  decodeResponse, paddedProxiedTLength, encodePRXY, encodePFWD,
   type AuthKey, type SMPResponse, type RawTransmission,
   encodeNEW, encodeKEY, encodeSKEY, encodeSUB, encodeACK,
   encodeSEND, encodeOFF, encodeDEL, encodeGET, encodeQUE, encodeLGET,
@@ -15,12 +16,28 @@ import {
   type SMPConnection,
 } from "./transport/websockets.js"
 import {SMP_BLOCK_SIZE} from "./transport.js"
-import {sbEncryptBlock, sbDecryptBlock} from "./crypto.js"
+import {sbEncryptBlock, sbDecryptBlock, cbAuthenticator, reverseNonce, cbDecryptNoPad} from "./crypto.js"
 import {blockPad, blockUnpad} from "@simplex-chat/xftp-web/dist/protocol/transmission.js"
 import {Decoder} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
-import {x25519KeyPairFromPrivate, encodePubKeyX25519} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
+import {generateX25519KeyPair, x25519KeyPairFromPrivate, dh, encodePubKeyX25519} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
+import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {extractSignedKey} from "@simplex-chat/xftp-web/dist/protocol/handshake.js"
 
 // -- Error types (Client.hs:741-770)
+
+// ProxiedRelay (Client.hs:1095-1100)
+export interface ProxiedRelay {
+  sessionId: Uint8Array
+  version: number       // negotiated version with relay
+  basicAuth: Uint8Array | null
+  relayKey: Uint8Array  // relay's X25519 public key (raw 32 bytes)
+}
+
+// ProxyClientError (Client.hs:1102-1109)
+export type ProxyClientError =
+  | {type: "ProxyProtocolError", error: string}
+  | {type: "ProxyUnexpectedResponse", response: string}
+  | {type: "ProxyResponseError", error: string}
 
 export type SMPClientError =
   | {type: "PROTOCOL", error: string}    // ERR response from server
@@ -51,6 +68,15 @@ export interface SMPClient {
   getQueueLink(linkId: Uint8Array): Promise<SMPResponse>
   deleteQueue(privKey: AuthKey, rcvId: Uint8Array): Promise<void>
   suspendQueue(privKey: AuthKey, rcvId: Uint8Array): Promise<void>
+
+  // Batch commands (Client.hs:840-845, 1062-1065)
+  subscribeQueues(queues: Array<{rcvId: Uint8Array, privKey: AuthKey}>): Promise<void[]>
+  deleteQueues(queues: Array<{rcvId: Uint8Array, privKey: AuthKey}>): Promise<void[]>
+
+  // Proxy commands (Client.hs:1069-1206)
+  connectProxiedRelay(relayHosts: string[], relayPort: string, relayKeyHash: Uint8Array, basicAuth: Uint8Array | null): Promise<ProxiedRelay>
+  proxySMPCommand(relay: ProxiedRelay, privKey: AuthKey | null, entityId: Uint8Array, command: Uint8Array): Promise<SMPResponse>
+  proxySendMessage(relay: ProxiedRelay, privKey: AuthKey | null, sndId: Uint8Array, notification: boolean, msg: Uint8Array): Promise<void>
 
   close(): void
 }
@@ -204,33 +230,14 @@ export async function createSMPClient(
 
   // -- Send
 
-  function sendCommand(privKey: AuthKey | null, entityId: Uint8Array, command: Uint8Array): Promise<SMPResponse> {
-    if (closed) return Promise.reject({type: "NETWORK", error: "closed"} as SMPClientError)
-
-    // Generate random corrId/nonce (24 bytes)
-    const nonce = crypto.getRandomValues(new Uint8Array(24))
-
-    // Encode transmission
+  // mkTransmission (Client.hs:1349-1370)
+  // Encode, authenticate, register pending request. Returns encoded transmission + promise.
+  // nonce_ parameter: if provided, used as corrId (for proxy commands where nonce = corrId)
+  function mkTransmission(privKey: AuthKey | null, entityId: Uint8Array, command: Uint8Array, nonce_?: Uint8Array): {auth: Uint8Array | null, tToSend: Uint8Array, promise: Promise<SMPResponse>} {
+    const nonce = nonce_ ?? crypto.getRandomValues(new Uint8Array(24))
     const {tForAuth, tToSend} = encodeTransmissionForAuth(conn.sessionId, nonce, entityId, command)
-
-    // Authenticate
     const auth = authTransmission(serverPubKey, privKey, nonce, tForAuth)
-
-    // Encode as single-command batch
-    const block = tEncodeBatch1(auth, tToSend)
-
-    // Send encrypted block
-    if (conn.sndKey) {
-      const {encrypted, nextChainKey} = sbEncryptBlock(conn.sndKey, block, SMP_BLOCK_SIZE - 16)
-      conn.sndKey = nextChainKey
-      conn.ws.send(encrypted)
-    } else {
-      conn.ws.send(blockPad(block, SMP_BLOCK_SIZE))
-    }
-
-
-    // Create pending request with timeout
-    return new Promise<SMPResponse>((resolve, reject) => {
+    const promise = new Promise<SMPResponse>((resolve, reject) => {
       const key = toHex(nonce)
       const timer = setTimeout(() => {
         pending.delete(key)
@@ -239,6 +246,42 @@ export async function createSMPClient(
       }, timeout_)
       pending.set(key, {resolve, reject, timer})
     })
+    return {auth, tToSend, promise}
+  }
+
+  // Send a pre-encoded block (encrypt + write to WebSocket)
+  function sendBlock(block: Uint8Array): void {
+    if (conn.sndKey) {
+      const {encrypted, nextChainKey} = sbEncryptBlock(conn.sndKey, block, SMP_BLOCK_SIZE - 16)
+      conn.sndKey = nextChainKey
+      conn.ws.send(encrypted)
+    } else {
+      conn.ws.send(blockPad(block, SMP_BLOCK_SIZE))
+    }
+  }
+
+  // sendProtocolCommand (Client.hs:1300-1326) — single command
+  // nonce_: if provided, used as corrId (for proxy where nonce = corrId)
+  function sendCommand(privKey: AuthKey | null, entityId: Uint8Array, command: Uint8Array, nonce_?: Uint8Array): Promise<SMPResponse> {
+    if (closed) return Promise.reject({type: "NETWORK", error: "closed"} as SMPClientError)
+    const {auth, tToSend, promise} = mkTransmission(privKey, entityId, command, nonce_)
+    sendBlock(tEncodeBatch1(auth, tToSend))
+    return promise
+  }
+
+  // sendProtocolCommands (Client.hs:1262-1298) — batch multiple commands
+  function sendCommands(commands: Array<{privKey: AuthKey | null, entityId: Uint8Array, command: Uint8Array}>): Promise<SMPResponse>[] {
+    if (closed) return commands.map(() => Promise.reject({type: "NETWORK", error: "closed"} as SMPClientError))
+    // mkTransmission for each
+    const transmissions = commands.map(c => mkTransmission(c.privKey, c.entityId, c.command))
+    // Encode for batching: tEncodeForBatch each
+    const encoded = transmissions.map(t => tEncodeForBatch(t.auth, t.tToSend))
+    // Pack into blocks
+    const blocks = batchTransmissions(SMP_BLOCK_SIZE, encoded)
+    // Send each block
+    for (const block of blocks) sendBlock(block)
+    // Return all promises
+    return transmissions.map(t => t.promise)
   }
 
   // -- High-level commands
@@ -335,6 +378,102 @@ export async function createSMPClient(
     // suspendSMPQueue (Client.hs:1051-1052)
     async suspendQueue(privKey, rcvId) {
       await okCommand(privKey, rcvId, encodeOFF())
+    },
+
+    // subscribeSMPQueues (Client.hs:840-845)
+    async subscribeQueues(queues) {
+      const commands = queues.map(q => ({privKey: q.privKey, entityId: q.rcvId, command: encodeSUB()}))
+      const promises = sendCommands(commands)
+      return Promise.all(promises.map(async (p, i) => {
+        const resp = await p
+        // processSUBResponse_ (Client.hs:857-862)
+        if (resp.type === "MSG") {
+          onMessage(queues[i].rcvId, resp)
+          return
+        }
+        if (resp.type !== "OK" && resp.type !== "SOK") {
+          throw {type: "UNEXPECTED", raw: resp.type} as SMPClientError
+        }
+      }))
+    },
+
+    // deleteSMPQueues (Client.hs:1062-1065) via okSMPCommands (Client.hs:1245-1253)
+    async deleteQueues(queues) {
+      const commands = queues.map(q => ({privKey: q.privKey, entityId: q.rcvId, command: encodeDEL()}))
+      const promises = sendCommands(commands)
+      return Promise.all(promises.map(async (p) => {
+        const resp = await p
+        if (resp.type !== "OK") {
+          throw {type: "UNEXPECTED", raw: resp.type} as SMPClientError
+        }
+      }))
+    },
+
+    // connectSMPProxiedRelay (Client.hs:1069-1093)
+    async connectProxiedRelay(relayHosts, relayPort, relayKeyHash, basicAuth) {
+      // Send PRXY to proxy server
+      const command = encodePRXY(relayHosts, relayPort, relayKeyHash, basicAuth)
+      const resp = await sendCommand(null, new Uint8Array(0), command)
+      if (resp.type !== "PKEY") throw {type: "UNEXPECTED", raw: resp.type} as SMPClientError
+      const {sessionId: relaySessId, versionRange, signedKeyDer} = resp.response
+      // Check version compatibility
+      const version = Math.min(versionRange.max, conn.smpVersion)
+      if (version < versionRange.min) throw {type: "TRANSPORT", error: "incompatible relay version"} as SMPClientError
+      // Extract relay's X25519 DH key from signed key (same as connectSMP handshake)
+      const relayKey = extractSignedKey(signedKeyDer).dhKey
+      // TODO: full certificate chain validation against relayKeyHash
+      // For now we trust the proxy's PKEY response (proxy already validated the relay)
+      return {sessionId: relaySessId, version, basicAuth, relayKey}
+    },
+
+    // proxySMPCommand (Client.hs:1157-1206)
+    async proxySMPCommand(relay, privKey, entityId, command) {
+      // Prepare relay params — encode as if sending directly to relay
+      const relaySessionId = relay.sessionId
+      // Generate ephemeral X25519 keypair for this command
+      const cmdKp = generateX25519KeyPair()
+      const cmdSecret = dh(relay.relayKey, cmdKp.privateKey)
+      const nonce = crypto.getRandomValues(new Uint8Array(24))
+      // Encode transmission for relay (using relay's sessionId)
+      const {tForAuth, tToSend} = encodeTransmissionForAuth(relaySessionId, nonce, entityId, command)
+      // Authenticate against relay's key
+      const auth = privKey
+        ? cbAuthenticator(relay.relayKey, privKey.key, nonce, tForAuth)
+        : null
+      // Batch into single block (for relay)
+      const batchBlock = tEncodeBatch1(auth, tToSend)
+      // Encrypt for relay: cbEncrypt(cmdSecret, nonce, batchBlock, paddedProxiedTLength)
+      const encTransmission = cbEncrypt(cmdSecret, nonce, batchBlock, paddedProxiedTLength)
+      // Send PFWD to proxy (entityId = relay sessionId from PKEY)
+      // IMPORTANT: nonce is also used as corrId for PFWD (Client.hs:1175,1188)
+      // The relay extracts it from FwdTransmission.fwdCorrId to decrypt
+      const cmdPubKeyDer = encodePubKeyX25519(cmdKp.publicKey)
+      const pfwdCommand = encodePFWD(relay.version, cmdPubKeyDer, encTransmission)
+      const pfwdResp = await sendCommand(null, relay.sessionId, pfwdCommand, nonce)
+      // Handle response
+      if (pfwdResp.type === "PRES") {
+        // Decrypt relay's response: cbDecrypt(cmdSecret, reverseNonce(nonce), encResponse)
+        const decrypted = cbDecrypt(cmdSecret, reverseNonce(nonce), pfwdResp.encResponse)
+        // Parse as relay's response
+        const transmissions = tParse(decrypted)
+        if (transmissions.length !== 1) throw {type: "TRANSPORT", error: "bad proxy response block"} as SMPClientError
+        const decoded = tDecodeClient(transmissions[0])
+        const relayResp = decoded.response
+        const err = protocolError(relayResp)
+        if (err) throw {type: "PROTOCOL", error: err} as SMPClientError
+        return relayResp
+      }
+      if (pfwdResp.type === "ERR") {
+        throw {type: "PROTOCOL", error: pfwdResp.error} as SMPClientError
+      }
+      throw {type: "UNEXPECTED", raw: pfwdResp.type} as SMPClientError
+    },
+
+    // proxySMPMessage — convenience for SEND via proxy
+    async proxySendMessage(relay, privKey, sndId, notification, msg) {
+      const command = encodeSEND(notification, msg)
+      const resp = await client.proxySMPCommand(relay, privKey, sndId, command)
+      if (resp.type !== "OK") throw {type: "UNEXPECTED", raw: resp.type} as SMPClientError
     },
 
     close() {

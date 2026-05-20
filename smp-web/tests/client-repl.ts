@@ -22,9 +22,12 @@ import {generateX25519KeyPair, dh, encodePubKeyX25519, decodePubKeyX25519} from 
 import {cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
 import {Decoder, decodeBytes, decodeBool} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 
+import type {ProxiedRelay} from "../dist/client.js"
+
 // -- State
 
 let client: SMPClient | null = null
+let proxiedRelay: ProxiedRelay | null = null
 // Per-queue DH shared secrets for decrypting received messages (keyed by rcvId hex)
 const queueSecrets = new Map<string, Uint8Array>()
 const messageQueue: Array<{entityId: Uint8Array, msg: SMPResponse}> = []
@@ -186,6 +189,39 @@ async function parseLine(line: string): Promise<string> {
           return "ok: " + toHex(m.entityId) + " " + toHex(msgId) + " " + toHex(msgBody)
         }
         return "ok: " + toHex(m.entityId) + " " + m.msg.type
+      }
+
+      // BSUB <rcvId1Hex>:<privKey1Hex> <rcvId2Hex>:<privKey2Hex> ...
+      case "BSUB": {
+        if (!client) return "error: not connected"
+        const queues = parts.slice(1).map(p => {
+          const [rcvIdHex, privKeyHex] = p.split(":")
+          return {rcvId: fromHex(rcvIdHex), privKey: makeAuthKey(privKeyHex)}
+        })
+        await client.subscribeQueues(queues)
+        return "ok"
+      }
+
+      // PRXY <host1,host2,...> <port> <keyHashHex> [basicAuthHex]
+      case "PRXY": {
+        if (!client) return "error: not connected"
+        const hosts = parts[1].split(",")
+        const port = parts[2]
+        const keyHash = fromHex(parts[3])
+        const auth = parts[4] ? fromHex(parts[4]) : null
+        proxiedRelay = await client.connectProxiedRelay(hosts, port, keyHash, auth)
+        return "ok: " + toHex(proxiedRelay.sessionId) + " " + proxiedRelay.version
+      }
+
+      // PSEND <sndIdHex> <sndPrivKeyHex|none> <notification 0|1> <bodyHex>
+      case "PSEND": {
+        if (!client || !proxiedRelay) return "error: not connected or no proxy session"
+        const sndId = fromHex(parts[1])
+        const privKey: AuthKey | null = parts[2] === "none" ? null : makeAuthKey(parts[2])
+        const notification = parts[3] === "1"
+        const body = fromHex(parts[4])
+        await client.proxySendMessage(proxiedRelay, privKey, sndId, notification, body)
+        return "ok"
       }
 
       case "CLOSE": {
