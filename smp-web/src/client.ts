@@ -165,16 +165,13 @@ export async function createSMPClient(
   // Wire up WebSocket receive
   conn.ws.onmessage = (event) => onBlock(event.data as ArrayBuffer)
   conn.ws.onclose = () => {
-    process.stderr.write("WebSocket closed\n")
     if (!closed) {
       closed = true
       cleanup()
       onDisconnected()
     }
   }
-  conn.ws.onerror = (e) => {
-    process.stderr.write("WebSocket error: " + String(e) + "\n")
-  }
+  conn.ws.onerror = () => {}
 
   // -- Ping
 
@@ -246,9 +243,10 @@ export async function createSMPClient(
 
   // -- High-level commands
 
+  // okSMPCommand (Client.hs:1239-1243) — only accepts OK, not SOK
   async function okCommand(privKey: AuthKey | null, entityId: Uint8Array, command: Uint8Array): Promise<void> {
     const resp = await sendCommand(privKey, entityId, command)
-    if (resp.type !== "OK" && resp.type !== "SOK") {
+    if (resp.type !== "OK") {
       throw {type: "UNEXPECTED", raw: resp.type} as SMPClientError
     }
   }
