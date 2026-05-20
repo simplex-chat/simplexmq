@@ -2400,11 +2400,19 @@ unsetQueuesToSubscribe :: DB.Connection -> IO ()
 unsetQueuesToSubscribe db = DB.execute_ db "UPDATE rcv_queues SET to_subscribe = 0 WHERE to_subscribe = 1"
 
 setRcvServiceAssocs :: SMPQueue q => DB.Connection -> [q] -> IO ()
-setRcvServiceAssocs db rqs = do
+setRcvServiceAssocs _ [] = pure ()
+setRcvServiceAssocs db rqs@(q : _) =
+  let ProtocolServer {host, port} = qServer q
 #if defined(dbPostgres)
-  DB.execute db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id IN ?" $ Only $ In (map queueId rqs)
+   in DB.execute
+        db
+        "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE host = ? AND port = ? AND rcv_id IN ?"
+        (host, port, In (map queueId rqs))
 #else
-  DB.executeMany db "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE rcv_id = ?" $ map (Only . queueId) rqs
+   in DB.executeMany
+        db
+        "UPDATE rcv_queues SET rcv_service_assoc = 1 WHERE host = ? AND port = ? AND rcv_id = ?"
+        (map (\q' -> (host, port, queueId q')) rqs)
 #endif
 
 removeRcvServiceAssocs :: DB.Connection -> UserId -> SMPServer -> IO ()
