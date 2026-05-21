@@ -3106,7 +3106,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
   unless (null connIds) $ do
     notify' "" $ UP srv connIds
     atomically $ incSMPServerStat' c userId srv connSubscribed $ length connIds
-  readTVarIO serviceRQs >>= processRcvServiceAssocs c
+  readTVarIO serviceRQs >>= processRcvServiceAssocs c srv
   where
     withRcvConn :: SMP.RecipientId -> (forall c. RcvQueue -> Connection c -> AM ()) -> AM' ()
     withRcvConn rId a = do
