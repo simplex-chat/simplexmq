@@ -3,9 +3,9 @@
 ## Problem
 
 When sending an SMP confirmation a network timeout can lead to the following race condition:
-- server receives the confirmation while the joining party fails to receive the server's response;
+- router receives the confirmation while the joining party fails to receive the router's response;
 - joining party deletes the connection together with credentials sent in the confirmation for securing the queue;
-- initiating party will receive the confirmation from the server and secure the queue;
+- initiating party will receive the confirmation from the router and secure the queue;
 - on subsequent attempt to join via the same invitation link initiating party will generate new credentials and fail authorization.
 
 This renders the joining party permanently unable to join via that invitation link and complete the connection.

@@ -363,7 +363,7 @@ data ServerSubscribers s = ServerSubscribers
   { subQ :: TQueue (ClientSub, ClientId),
     queueSubscribers :: SubscribedClients s,
     serviceSubscribers :: SubscribedClients s, -- service clients with long-term certificates that have subscriptions
-    totalServiceSubs :: TVar Int64,
+    totalServiceSubs :: TVar (Int64, IdsHash),
     subClients :: TVar IntSet, -- clients with individual or service subscriptions
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
@@ -426,7 +426,7 @@ sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 data ClientSub
   = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
-  | CSService ServiceId Int64 -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
+  | CSService ServiceId (Int64, IdsHash) -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
 newtype ProxyAgent = ProxyAgent
   { smpAgent :: SMPClientAgent 'Sender
@@ -440,8 +440,8 @@ data Client s = Client
     ntfSubscriptions :: TMap NotifierId (),
     serviceSubscribed :: TVar Bool, -- set independently of serviceSubsCount, to track whether service subscription command was received
     ntfServiceSubscribed :: TVar Bool,
-    serviceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
-    ntfServiceSubsCount :: TVar Int64, -- only one service can be subscribed, based on its certificate, this is subscription count
+    serviceSubsCount :: TVar (Int64, IdsHash), -- only one service can be subscribed, based on its certificate, this is subscription count
+    ntfServiceSubsCount :: TVar (Int64, IdsHash), -- only one service can be subscribed, based on its certificate, this is subscription count
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
@@ -502,7 +502,7 @@ newServerSubscribers = do
   subQ <- newTQueueIO
   queueSubscribers <- SubscribedClients <$> TM.emptyIO
   serviceSubscribers <- SubscribedClients <$> TM.emptyIO
-  totalServiceSubs <- newTVarIO 0
+  totalServiceSubs <- newTVarIO (0, mempty)
   subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
@@ -513,8 +513,8 @@ newClient clientId qSize clientTHParams createdAt = do
   ntfSubscriptions <- TM.emptyIO
   serviceSubscribed <- newTVarIO False
   ntfServiceSubscribed <- newTVarIO False
-  serviceSubsCount <- newTVarIO 0
-  ntfServiceSubsCount <- newTVarIO 0
+  serviceSubsCount <- newTVarIO (0, mempty)
+  ntfServiceSubsCount <- newTVarIO (0, mempty)
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
@@ -706,7 +706,7 @@ mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount ma
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
-  smpAgent <- newSMPClientAgent SSender smpAgentCfg random
+  smpAgent <- newSMPClientAgent SSender smpAgentCfg Nothing random
   pure ProxyAgent {smpAgent}
 
 readWriteQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO (StoreLog 'WriteMode)

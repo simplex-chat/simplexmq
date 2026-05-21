@@ -41,7 +41,7 @@ import Data.List (intersperse)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
-import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.SqlQQ (sql)
@@ -118,6 +118,36 @@ instance MsgStoreClass PostgresMsgStore where
       batchSize = 10000 :: Int
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
+
+  foldRcvServiceMessages :: PostgresMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO (Either ErrorType a)
+  foldRcvServiceMessages ms serviceId f acc =
+    runExceptT $ withDB' "foldRcvServiceMessages" (queueStore_ ms) $ \db ->
+      DB.fold
+        db
+        [sql|
+          SELECT q.recipient_id, q.recipient_keys, q.rcv_dh_secret,
+            q.sender_id, q.sender_key, q.queue_mode,
+            q.notifier_id, q.notifier_key, q.rcv_ntf_dh_secret, q.ntf_service_id,
+            q.status, q.updated_at, q.link_id, q.rcv_service_id,
+            m.msg_id, m.msg_ts, m.msg_quota, m.msg_ntf_flag, m.msg_body
+          FROM msg_queues q
+          LEFT JOIN LATERAL (
+              SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+              FROM messages
+              WHERE recipient_id = q.recipient_id
+              ORDER BY message_id ASC
+              LIMIT 1
+          ) m ON true
+          WHERE q.rcv_service_id = ? AND q.deleted_at IS NULL;
+        |]
+        (Only serviceId)
+        acc
+        f'
+    where
+      f' a (qRow :. mRow) =
+        let (rId, qr) = rowToQueueRec qRow
+            msg_ = toMaybeMessage mRow
+         in f a rId $ Right ((qr,) <$> msg_)
 
   logQueueStates _ = error "logQueueStates not used"
 
@@ -216,6 +246,25 @@ instance MsgStoreClass PostgresMsgStore where
   tryPeekMsg ms q = isolateQueue ms q "tryPeekMsg" $ tryPeekMsg_ q ()
   {-# INLINE tryPeekMsg #-}
 
+  tryPeekMsgs :: PostgresMsgStore -> [PostgresQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
+  tryPeekMsgs _ms [] = pure M.empty
+  tryPeekMsgs ms qs =
+    uninterruptibleMask_ $
+      withDB' "tryPeekMsgs" (queueStore_ ms) $ \db ->
+        M.fromList . map toRcvMsg <$>
+          DB.query
+            db
+            [sql|
+              SELECT DISTINCT ON (recipient_id)
+                recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+              FROM messages
+              WHERE recipient_id IN ?
+              ORDER BY recipient_id, message_id ASC
+            |]
+            (Only (In (map recipientId' qs)))
+    where
+      toRcvMsg (Only rId :. msg) = (rId, toMessage msg)
+
   tryDelMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message)
   tryDelMsg ms q msgId =
     uninterruptibleMask_ $
@@ -246,6 +295,11 @@ instance MsgStoreClass PostgresMsgStore where
 uninterruptibleMask_ :: ExceptT ErrorType IO a -> ExceptT ErrorType IO a
 uninterruptibleMask_ = ExceptT . E.uninterruptibleMask_ . runExceptT
 {-# INLINE uninterruptibleMask_ #-}
+
+toMaybeMessage :: (Maybe (Binary MsgId), Maybe Int64, Maybe Bool, Maybe Bool, Maybe (Binary MsgBody)) -> Maybe Message
+toMaybeMessage = \case
+  (Just msgId, Just ts, Just msgQuota, Just ntf, Just body) -> Just $ toMessage (msgId, ts, msgQuota, ntf, body)
+  _ -> Nothing
 
 toMessage :: (Binary MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
 toMessage (Binary msgId, ts, msgQuota, ntf, Binary body)

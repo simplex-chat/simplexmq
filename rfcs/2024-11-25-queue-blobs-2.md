@@ -5,7 +5,7 @@ This document evolves the design proposed [here](./2024-09-09-smp-blobs.md).
 ## Problems
 
 In addition to problems in the first doc, we have these issues with in-memory queue record storage:
-- many queues are idle or rarely used, but they are loaded to memory, and currently just loading all queues uses 20gb RAM on each server, and takes 10 min to process, increasing downtimes during restarts.
+- many queues are idle or rarely used, but they are loaded to memory, and currently just loading all queues uses 20gb RAM on each router, and takes 10 min to process, increasing downtimes during restarts.
 - adding blobs to memory would make this problem much worse.
 
 ## Proposed solution

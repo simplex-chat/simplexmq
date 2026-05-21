@@ -52,7 +52,8 @@ data RealTimeMetrics = RealTimeMetrics
 data RTSubscriberMetrics = RTSubscriberMetrics
   { subsCount :: Int,
     subClientsCount :: Int,
-    subServicesCount :: Int
+    subServicesCount :: Int,
+    subServiceSubsCount :: Int64
   }
 
 {-# FOURMOLU_DISABLE\n#-}
@@ -123,6 +124,8 @@ prometheusMetrics sm rtm ts =
         _pMsgFwdsRecv,
         _rcvServices,
         _ntfServices,
+        _rcvServicesSubMsg,
+        _rcvServicesSubDuplicate,
         _qCount,
         _msgCount,
         _ntfCount
@@ -388,6 +391,14 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_ntf_services_queues_count The count of queues associated with notification services.\n\
       \# TYPE simplex_smp_ntf_services_queues_count gauge\n\
       \simplex_smp_ntf_services_queues_count " <> mshow (ntfServiceQueuesCount entityCounts) <> "\n# ntfServiceQueuesCount\n\
+      \\n\
+      \# HELP simplex_smp_rcv_services_sub_msg_count The count of subscribed service queues with messages.\n\
+      \# TYPE simplex_smp_rcv_services_sub_msg_count counter\n\
+      \simplex_smp_rcv_services_sub_msg_count " <> mshow _rcvServicesSubMsg <> "\n# rcvServicesSubMsg\n\
+      \\n\
+      \# HELP simplex_smp_rcv_services_sub_duplicate_count The count of duplicate subscribed service queues.\n\
+      \# TYPE simplex_smp_rcv_services_sub_duplicate_count counter\n\
+      \simplex_smp_rcv_services_sub_duplicate_count " <> mshow _rcvServicesSubDuplicate <> "\n# rcvServicesSubDuplicate\n\
       \\n"
         <> showServices _rcvServices "rcv" "receiving"
         <> showServices _ntfServices "ntf" "notification"
@@ -423,6 +434,30 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_" <> pfx <> "_services_sub_end Ended subscriptions with " <> name <> " services.\n\
       \# TYPE simplex_smp_" <> pfx <> "_services_sub_end gauge\n\
       \simplex_smp_" <> pfx <> "_services_sub_end " <> mshow (_srvSubEnd ss) <> "\n# " <> pfx <> ".srvSubEnd\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_ok Service subscriptions for " <> name <> " services.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_ok gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_ok " <> mshow (_srvSubOk ss) <> "\n# " <> pfx <> ".srvSubOk\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_more Service subscriptions for " <> name <> " services with more queues than in the client.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_more gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_more " <> mshow (_srvSubMore ss) <> "\n# " <> pfx <> ".srvSubMore\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_fewer Service subscriptions for " <> name <> " services with fewer queues than in the client.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_fewer gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_fewer " <> mshow (_srvSubFewer ss) <> "\n# " <> pfx <> ".srvSubFewer\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_diff Service subscriptions for " <> name <> " services with different hash than in the client.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_diff gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_diff " <> mshow (_srvSubDiff ss) <> "\n# " <> pfx <> ".srvSubDiff\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_more_total Service subscriptions for " <> name <> " services with more queues than in the client total.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_more_total gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_more_total " <> mshow (_srvSubMoreTotal ss) <> "\n# " <> pfx <> ".srvSubMoreTotal\n\
+      \\n\
+      \# HELP simplex_smp_" <> pfx <> "_services_sub_fewer_total Service subscriptions for " <> name <> " services with fewer queues than in the client total.\n\
+      \# TYPE simplex_smp_" <> pfx <> "_services_sub_fewer_total gauge\n\
+      \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
     info =
       "# Info\n\
@@ -483,6 +518,10 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_subscribtion_services_total gauge\n\
       \simplex_smp_subscribtion_services_total " <> mshow (subServicesCount smpSubs) <> "\n# smp.subServicesCount\n\
       \\n\
+      \# HELP simplex_smp_subscribtion_service_subs_total Total queues subscribed via services\n\
+      \# TYPE simplex_smp_subscribtion_service_subs_total gauge\n\
+      \simplex_smp_subscribtion_service_subs_total " <> mshow (subServiceSubsCount smpSubs) <> "\n# smp.subServiceSubsCount\n\
+      \\n\
       \# HELP simplex_smp_subscription_ntf_total Total notification subscripbtions (from ntf server)\n\
       \# TYPE simplex_smp_subscription_ntf_total gauge\n\
       \simplex_smp_subscription_ntf_total " <> mshow (subsCount ntfSubs) <> "\n# ntf.subsCount\n\
@@ -494,6 +533,10 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_subscribtion_nts_services_total Subscribed NTF services, first counting method\n\
       \# TYPE simplex_smp_subscribtion_nts_services_total gauge\n\
       \simplex_smp_subscribtion_nts_services_total " <> mshow (subServicesCount ntfSubs) <> "\n# ntf.subServicesCount\n\
+      \\n\
+      \# HELP simplex_smp_subscription_ntf_service_subs_total Total queues subscribed via NTF services\n\
+      \# TYPE simplex_smp_subscription_ntf_service_subs_total gauge\n\
+      \simplex_smp_subscription_ntf_service_subs_total " <> mshow (subServiceSubsCount ntfSubs) <> "\n# ntf.subServiceSubsCount\n\
       \\n\
       \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory/journal storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_count gauge\n\
