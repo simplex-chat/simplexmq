@@ -338,7 +338,7 @@ data AgentClient = AgentClient
   { acThread :: TVar (Maybe (Weak ThreadId)),
     active :: TVar Bool,
     subQ :: TBQueue ATransmission,
-    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
+    processServerMsg :: ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     useClientServices :: TMap UserId Bool,
@@ -505,15 +505,14 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Env -> IO AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices processServerMsg agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
   acThread <- newTVarIO Nothing
   active <- newTVarIO True
   subQ <- newTBQueueIO qSize
-  msgQ <- newTBQueueIO qSize
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
   useClientServices <- newTVarIO useServices
@@ -553,7 +552,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
       { acThread,
         active,
         subQ,
-        msgQ,
+        processServerMsg,
         smpServers,
         smpClients,
         useClientServices,
@@ -733,7 +732,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
+smpConnectClient c@AgentClient {smpClients, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAllErrors` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
@@ -746,7 +745,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       env <- ask
       smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
-        ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+        ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just $ processServerMsg c) ts $ smpClientDisconnected c tSess env v' prs
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
@@ -2835,8 +2834,8 @@ data ClientInfo
   deriving (Show)
 
 getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
-getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
-  msgQInfo <- atomically $ getTBQueueInfo msgQ
+getAgentQueuesInfo AgentClient {subQ, smpClients} = do
+  let msgQInfo = TBQueueInfo {qLength = 0, qFull = False}
   subQInfo <- atomically $ getTBQueueInfo subQ
   smpClientsMap <- readTVarIO smpClients
   let smpClientsMap' = M.mapKeys (decodeLatin1 . strEncode) smpClientsMap

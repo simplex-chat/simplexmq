@@ -145,6 +145,7 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM (retry)
+import Data.IORef
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -270,19 +271,25 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
       notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
-      c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs notices =<< ask
+      env <- ask
+      cRef <- liftIO $ newIORef (error "agent client not initialized")
+      let processMsg t = do
+            c <- readIORef cRef
+            agentOperationBracket c AORcvNetwork waitUntilActive (processSMPTransmissions c t) `runReaderT` env
+              `catchOwn` \e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ "subscriber error: " <> show e)
+      c@AgentClient {acThread} <- liftIO $ newAgentClient clientId initServers currentTs notices processMsg env
+      liftIO $ writeIORef cRef c
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
     checkServers protocol srvs =
       forM_ (M.assocs srvs) $ \(userId, srvs') -> checkUserServers ("getSMPAgentClient " <> protocol <> " " <> tshow userId) srvs'
     runAgentThreads c
-      | backgroundMode = run c "subscriber" $ subscriber c
+      | backgroundMode = forever $ liftIO $ threadDelay maxBound
       | otherwise = do
           restoreServersStats c
           raceAny_
-            [ run c "subscriber" $ subscriber c,
-              run c "runNtfSupervisor" $ runNtfSupervisor c,
+            [ run c "runNtfSupervisor" $ runNtfSupervisor c,
               run c "cleanupManager" $ cleanupManager c,
               run c "logServersStats" $ logServersStats c
             ]
@@ -2982,14 +2989,6 @@ getNextSMPServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServerWithAuth
 getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
 
-subscriber :: AgentClient -> AM' ()
-subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
-  t <- atomically $ readTBQueue msgQ
-  agentOperationBracket c AORcvNetwork waitUntilActive $
-    processSMPTransmissions c t
-  where
-    run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
-    notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do

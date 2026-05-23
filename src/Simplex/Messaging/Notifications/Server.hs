@@ -54,7 +54,7 @@ import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -68,7 +68,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessag
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceSub (..), SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
+import Simplex.Messaging.Protocol (BrokerMsg, EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceSub (..), SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
@@ -77,7 +77,7 @@ import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), 
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
-import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), SMPVersion, THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
 import Simplex.Messaging.Util
@@ -101,7 +101,11 @@ runNtfServer cfg = do
   runNtfServerBlocking started cfg
 
 runNtfServerBlocking :: TMVar Bool -> NtfServerConfig -> IO ()
-runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg
+runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg processMsg
+  where
+    processMsg envRef t = do
+      env <- readIORef envRef
+      receiveSMPMessage env t
 
 type M a = ReaderT NtfEnv IO a
 
@@ -525,97 +529,91 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       void $ updateSubStatus st srvId' nId NSPending
       subscribeQueuesNtfs ca smpServer' [sub]
 
+receiveSMPMessage :: NtfEnv -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()
+receiveSMPMessage env ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) =
+  (`runReaderT` env) $ do
+    st <- asks store
+    ps <- asks pushServer
+    stats <- asks serverStats
+    let ca = smpAgent $ subscriber env
+    forM_ ts $ \(ntfId, t) -> case t of
+      STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+      STResponse {} -> pure () -- it was already reported as timeout error
+      STEvent msgOrErr -> do
+        let smpQueue = SMPQueueNtf srv ntfId
+        case msgOrErr of
+          Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
+            ntfTs <- liftIO getSystemTime
+            liftIO $ updatePeriodStats (activeSubs stats) ntfId
+            let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
+                srvHost = safeDecodeUtf8 $ strEncode h
+                isOwn = isOwnServer ca srv
+            liftIO (addTokenLastNtf st newNtf) >>= \case
+              Right (tkn, lastNtfs) -> do
+                pushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
+                liftIO $ incNtfStat_ stats ntfReceived
+                when isOwn $ liftIO $ incServerStat srvHost (ntfReceivedOwn stats)
+              Left AUTH -> liftIO $ do
+                incNtfStat_ stats ntfReceivedAuth
+                when isOwn $ incServerStat srvHost (ntfReceivedAuthOwn stats)
+              Left _ -> pure ()
+          Right SMP.END ->
+            whenM (atomically $ activeClientSession' ca sessionId srv) $
+              void $ liftIO $ updateSrvSubStatus st smpQueue NSEnd
+          Right SMP.DELD ->
+            void $ liftIO $ updateSrvSubStatus st smpQueue NSDeleted
+          Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
+          Right _ -> logError "SMP server unexpected response"
+          Left e -> logError $ "SMP client error: " <> tshow e
+
 ntfSubscriber :: NtfSubscriber -> M ()
-ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
-  race_ receiveSMP receiveAgent
+ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {agentQ}} = do
+  st <- asks store
+  batchSize <- asks $ subsBatchSize . config
+  liftIO $ forever $
+    atomically (readTBQueue agentQ) >>= \case
+      CAConnected srv serviceId -> do
+        let asService = if isJust serviceId then "as service " else ""
+        logInfo $ "SMP server reconnected " <> asService <> showServer' srv
+      CADisconnected srv nIds -> do
+        updated <- batchUpdateSrvSubStatus st srv Nothing nIds NSInactive
+        logSubStatus srv "disconnected" (L.length nIds) updated
+      CASubscribed srv serviceId nIds -> do
+        updated <- batchUpdateSrvSubStatus st srv serviceId nIds NSActive
+        let asService = if isJust serviceId then " as service" else ""
+        logSubStatus srv ("subscribed" <> asService) (L.length nIds) updated
+      CASubError srv errs -> do
+        forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> queueSubErrorStatus err) $ L.toList errs) $ \subStatuses -> do
+          updated <- batchUpdateSrvSubErrors st srv subStatuses
+          logSubErrors srv subStatuses updated
+          -- TODO [certs rcv] resubscribe queues with statuses NSErr and NSService
+      CAServiceDisconnected srv serviceSub ->
+        logNote $ "SMP server service disconnected " <> showService srv serviceSub
+      CAServiceSubscribed srv serviceSub@(ServiceSub _ n idsHash) (ServiceSub _ n' idsHash')
+        | n /= n' -> logWarn $ msg <> ", confirmed subs: " <> tshow n'
+        | idsHash /= idsHash' -> logWarn $ msg <> ", different IDs hash"
+        | otherwise -> logNote msg
+        where
+          msg = "SMP server service subscribed " <> showService srv serviceSub
+      CAServiceSubError srv serviceSub e ->
+        -- Errors that require re-subscribing queues directly are reported as CAServiceUnavailable.
+        -- See smpSubscribeService in Simplex.Messaging.Client.Agent
+        logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
+      CAServiceUnavailable srv serviceSub -> do
+        logError $ "SMP server service unavailable: " <> showService srv serviceSub
+        removeServiceAndAssociations st srv >>= \case
+          Right (srvId, updated) -> do
+            logSubStatus srv "removed service association" updated updated
+            void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
+          Left e -> logError $ "SMP server update and resubscription error " <> tshow e
   where
-    receiveSMP = do
-      st <- asks store
-      ps <- asks pushServer
-      stats <- asks serverStats
-      forever $ do
-        ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) <- atomically $ readTBQueue msgQ
-        forM_ ts $ \(ntfId, t) -> case t of
-          STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
-          STResponse {} -> pure () -- it was already reported as timeout error
-          STEvent msgOrErr -> do
-            let smpQueue = SMPQueueNtf srv ntfId
-            case msgOrErr of
-              Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
-                ntfTs <- liftIO getSystemTime
-                liftIO $ updatePeriodStats (activeSubs stats) ntfId
-                let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                    srvHost = safeDecodeUtf8 $ strEncode h
-                    isOwn = isOwnServer ca srv
-                liftIO (addTokenLastNtf st newNtf) >>= \case
-                  Right (tkn, lastNtfs) -> do
-                    pushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
-                    liftIO $ incNtfStat_ stats ntfReceived
-                    when isOwn $ liftIO $ incServerStat srvHost (ntfReceivedOwn stats)
-                  Left AUTH -> liftIO $ do
-                    incNtfStat_ stats ntfReceivedAuth
-                    when isOwn $ incServerStat srvHost (ntfReceivedAuthOwn stats)
-                  Left _ -> pure ()
-              Right SMP.END ->
-                whenM (atomically $ activeClientSession' ca sessionId srv) $
-                  void $ liftIO $ updateSrvSubStatus st smpQueue NSEnd
-              Right SMP.DELD ->
-                void $ liftIO $ updateSrvSubStatus st smpQueue NSDeleted
-              Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
-              Right _ -> logError "SMP server unexpected response"
-              Left e -> logError $ "SMP client error: " <> tshow e
-
-    receiveAgent = do
-      st <- asks store
-      batchSize <- asks $ subsBatchSize . config
-      liftIO $ forever $
-        atomically (readTBQueue agentQ) >>= \case
-          CAConnected srv serviceId -> do
-            let asService = if isJust serviceId then "as service " else ""
-            logInfo $ "SMP server reconnected " <> asService <> showServer' srv
-          CADisconnected srv nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv Nothing nIds NSInactive
-            logSubStatus srv "disconnected" (L.length nIds) updated
-          CASubscribed srv serviceId nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv serviceId nIds NSActive
-            let asService = if isJust serviceId then " as service" else ""
-            logSubStatus srv ("subscribed" <> asService) (L.length nIds) updated
-          CASubError srv errs -> do
-            forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> queueSubErrorStatus err) $ L.toList errs) $ \subStatuses -> do
-              updated <- batchUpdateSrvSubErrors st srv subStatuses
-              logSubErrors srv subStatuses updated
-              -- TODO [certs rcv] resubscribe queues with statuses NSErr and NSService
-          CAServiceDisconnected srv serviceSub ->
-            logNote $ "SMP server service disconnected " <> showService srv serviceSub
-          CAServiceSubscribed srv serviceSub@(ServiceSub _ n idsHash) (ServiceSub _ n' idsHash')
-            | n /= n' -> logWarn $ msg <> ", confirmed subs: " <> tshow n'
-            | idsHash /= idsHash' -> logWarn $ msg <> ", different IDs hash"
-            | otherwise -> logNote msg
-            where
-              msg = "SMP server service subscribed " <> showService srv serviceSub
-          CAServiceSubError srv serviceSub e ->
-            -- Errors that require re-subscribing queues directly are reported as CAServiceUnavailable.
-            -- See smpSubscribeService in Simplex.Messaging.Client.Agent
-            logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
-          CAServiceUnavailable srv serviceSub -> do
-            logError $ "SMP server service unavailable: " <> showService srv serviceSub
-            removeServiceAndAssociations st srv >>= \case
-              Right (srvId, updated) -> do
-                logSubStatus srv "removed service association" updated updated
-                void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
-              Left e -> logError $ "SMP server update and resubscription error " <> tshow e
-      where
-        showService srv (ServiceSub serviceId n _) = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
-
+    showService srv (ServiceSub serviceId n _) = showServer' srv <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
     logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int -> IO ()
-    logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
+    logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss ->
       logError $ "SMP server subscription errors " <> showServer' srv <> ": " <> tshow (L.head ss) <> " (" <> tshow (length ss) <> " errors, " <> tshow updated <> " subs updated)"
-
     queueSubErrorStatus :: SMPClientError -> Maybe NtfSubStatus
     queueSubErrorStatus = \case
       PCEProtocolError AUTH -> Just NSAuth
-      -- TODO [certs rcv] we could allow making individual subscriptions within service session to handle SERVICE error.
-      -- This would require full stack changes in SMP server, SMP client and SMP service agent.
       PCEProtocolError SERVICE -> Just NSService
       PCEProtocolError e -> updateErr "SMP error " e
       PCEResponseError e -> updateErr "ResponseError " e
@@ -623,12 +621,11 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
       PCETransportError e -> updateErr "TransportError " e
       PCECryptoError e -> updateErr "CryptoError " e
       PCEIncompatibleHost -> Just $ NSErr "IncompatibleHost"
-      PCEServiceUnavailable -> Just NSService -- this error should not happen on individual subscriptions
+      PCEServiceUnavailable -> Just NSService
       PCEResponseTimeout -> Nothing
       PCENetworkError _ -> Nothing
       PCEIOError _ -> Nothing
       where
-        -- Note on moving to PostgreSQL: the idea of logging errors without e is removed here
         updateErr :: Show e => ByteString -> e -> Maybe NtfSubStatus
         updateErr errType e = Just $ NSErr $ errType <> bshow e
 
