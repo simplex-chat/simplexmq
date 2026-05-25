@@ -126,7 +126,6 @@ module Simplex.Messaging.Agent.Protocol
     SimplexNameInfo (..),
     SimplexNamespace (..),
     SimplexNameType (..),
-    isNameLetter,
     ConnShortLink (..),
     AConnShortLink (..),
     CreatedConnLink (..),
@@ -188,7 +187,8 @@ module Simplex.Messaging.Agent.Protocol
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative (many, optional, (<|>))
+import Control.Monad (guard)
 import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
@@ -197,10 +197,10 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.Attoparsec.Text as AT
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Control.Monad (unless, when)
 import Data.Char (isAlpha, isDigit, toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
@@ -1540,44 +1540,31 @@ data SimplexNamespace = NSSimplex | NSTesting | NSWeb
 data SimplexNameType = NTPublicGroup | NTContact
   deriving (Eq, Show)
 
-isNameLetter :: Char -> Bool
-isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
-
 instance StrEncoding AConnectTarget where
   strEncode = \case
     ACTLink lnk -> strEncode lnk
-    ACTName ni -> "simplex:/name" <> encodeUtf8 (encodeNameFragment ni)
+    ACTName SimplexNameInfo {nameType, namespace, domain, subDomain} ->
+      "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (reverse subDomain <> [domain] <> tld))
+      where
+        pfx = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
+        tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
   strP = ACTName <$> nameP <|> ACTLink <$> strP
     where
-      nameP = nameUriP <|> namePrefixP
-      nameUriP = "simplex:/name" *> nameBodyP
-      namePrefixP = nameBodyP
+      nameP = "simplex:/name" *> nameBodyP <|> nameBodyP
       nameBodyP = do
         nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
-        mkNameInfo nt <$?> nameLabelP `A.sepBy1` A.char '.'
+        parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
+      parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
       nameLabelP = do
-        c <- A.peekChar'
-        unless (isNameLetter c) $ fail "expected letter"
-        lbl <- A.takeWhile1 $ \ch -> isNameLetter ch || isDigit ch || ch == '-'
-        let lbl' = safeDecodeUtf8 lbl
-        when (T.last lbl' == '-') $ fail "trailing hyphen"
-        when (T.isInfixOf "--" lbl') $ fail "consecutive hyphens"
-        pure lbl'
-
-encodeNameFragment :: SimplexNameInfo -> Text
-encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
-  prefix <> T.intercalate "." (reverse subDomain <> [domain] <> tld)
-  where
-    prefix = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
-    tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
-
-mkNameInfo :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
-mkNameInfo nt labels = case reverse labels of
-  [] -> Left "empty name"
-  [name] -> Right $ SimplexNameInfo nt NSSimplex name []
-  "simplex" : name : sub -> Right $ SimplexNameInfo nt NSSimplex name sub
-  "testing" : name : sub -> Right $ SimplexNameInfo nt NSTesting name sub
-  _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
+        guard . isNameLetter =<< AT.peekChar'
+        T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
+      isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
+      mkNameInfo nt labels = case reverse labels of
+        [] -> Left "empty name"
+        [name] -> Right $ SimplexNameInfo nt NSSimplex name []
+        "simplex" : name : sub -> Right $ SimplexNameInfo nt NSSimplex name sub
+        "testing" : name : sub -> Right $ SimplexNameInfo nt NSTesting name sub
+        _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
