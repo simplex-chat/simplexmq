@@ -614,6 +614,8 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {agentQ}} = do
     queueSubErrorStatus :: SMPClientError -> Maybe NtfSubStatus
     queueSubErrorStatus = \case
       PCEProtocolError AUTH -> Just NSAuth
+      -- TODO [certs rcv] we could allow making individual subscriptions within service session to handle SERVICE error.
+      -- This would require full stack changes in SMP server, SMP client and SMP service agent.
       PCEProtocolError SERVICE -> Just NSService
       PCEProtocolError e -> updateErr "SMP error " e
       PCEResponseError e -> updateErr "ResponseError " e
@@ -621,11 +623,12 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {agentQ}} = do
       PCETransportError e -> updateErr "TransportError " e
       PCECryptoError e -> updateErr "CryptoError " e
       PCEIncompatibleHost -> Just $ NSErr "IncompatibleHost"
-      PCEServiceUnavailable -> Just NSService
+      PCEServiceUnavailable -> Just NSService -- this error should not happen on individual subscriptions
       PCEResponseTimeout -> Nothing
       PCENetworkError _ -> Nothing
       PCEIOError _ -> Nothing
       where
+        -- Note on moving to PostgreSQL: the idea of logging errors without e is removed here
         updateErr :: Show e => ByteString -> e -> Maybe NtfSubStatus
         updateErr errType e = Just $ NSErr $ errType <> bshow e
 
