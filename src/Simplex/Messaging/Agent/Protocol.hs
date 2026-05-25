@@ -1530,7 +1530,7 @@ data SimplexNameInfo = SimplexNameInfo
   { nameType :: SimplexNameType,
     namespace :: SimplexNamespace,
     domain :: Text,
-    subDomain :: [Text]
+    subDomain :: [Text] -- parent to child: ["b", "a"] for a.b.domain.simplex
   }
   deriving (Eq, Show)
 
@@ -1554,7 +1554,7 @@ instance StrEncoding AConnectTarget where
       namePrefixP = nameBodyP
       nameBodyP = do
         nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
-        classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.'
+        mkNameInfo nt <$?> nameLabelP `A.sepBy1` A.char '.'
       nameLabelP = do
         c <- A.peekChar'
         unless (isNameLetter c) $ fail "expected letter"
@@ -1566,25 +1566,18 @@ instance StrEncoding AConnectTarget where
 
 encodeNameFragment :: SimplexNameInfo -> Text
 encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
-  prefix <> T.intercalate "." (subDomain <> [domain] <> tld)
+  prefix <> T.intercalate "." (reverse subDomain <> [domain] <> tld)
   where
     prefix = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
     tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
 
-classifyLabels :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
-classifyLabels nt labels = case reverse labels of
+mkNameInfo :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
+mkNameInfo nt labels = case reverse labels of
   [] -> Left "empty name"
   [name] -> Right $ SimplexNameInfo nt NSSimplex name []
-  (tld : rest) -> case tld of
-    "simplex" -> case rest of
-      [name] -> Right $ SimplexNameInfo nt NSSimplex name []
-      (name : sub) -> Right $ SimplexNameInfo nt NSSimplex name (reverse sub)
-      [] -> Left "missing name before TLD"
-    "testing" -> case rest of
-      [name] -> Right $ SimplexNameInfo nt NSTesting name []
-      (name : sub) -> Right $ SimplexNameInfo nt NSTesting name (reverse sub)
-      [] -> Left "missing name before TLD"
-    _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
+  "simplex" : name : sub -> Right $ SimplexNameInfo nt NSSimplex name sub
+  "testing" : name : sub -> Right $ SimplexNameInfo nt NSTesting name sub
+  _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
