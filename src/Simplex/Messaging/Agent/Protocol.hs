@@ -127,7 +127,8 @@ module Simplex.Messaging.Agent.Protocol
     SimplexNamespace (..),
     SimplexNameType (..),
     parseNameFragment,
-    parseName,
+    parseNameText,
+    classifyLabels,
     encodeNameFragment,
     AConnShortLink (..),
     CreatedConnLink (..),
@@ -201,6 +202,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Control.Monad (unless, when)
 import Data.Char (isAlpha, isAscii, isDigit, isSpace, toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
@@ -1605,7 +1607,11 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
     CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' lnkId k
     CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
-    CSLName nameInfo -> "simplex:/name#" <> encodeUtf8 (encodeNameFragment nameInfo)
+    CSLName SimplexNameInfo {nameType, namespace, domain, subDomain} ->
+      "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (subDomain <> [domain] <> tld))
+      where
+        pfx = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
+        tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
     where
       slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
         B.concat [authority, "/", B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
@@ -1628,11 +1634,9 @@ instance StrEncoding AConnShortLink where
   {-# INLINE strEncode #-}
   strP = nameUriP <|> namePrefixP <|> serverLinkP
     where
-      nameUriP = do
-        _ <- "simplex:/name#"
-        nt <- A.char ':' $> NTContact <|> pure NTPublicGroup
-        ACSL SCMContact . CSLName <$> (classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.')
-      namePrefixP = do
+      nameUriP = "simplex:/name" *> nameBodyP
+      namePrefixP = nameBodyP
+      nameBodyP = do
         nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
         ACSL SCMContact . CSLName <$> (classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.')
       nameLabelP = do
@@ -1780,12 +1784,13 @@ encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
       NTContact -> ":"
     nsTLD = \case
       NSSimplex -> "simplex"
-      NSTesting -> "testnet"
+      NSTesting -> "testing"
       NSWeb -> ""
 
 classifyLabels :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
 classifyLabels _ [] = Left "empty name"
 classifyLabels nt labels = case reverse labels of
+  [] -> Left "empty name"
   ["simplex"] -> Left "missing name before TLD"
   [name] -> Right $ SimplexNameInfo nt NSSimplex name []
   (tld : rest) -> case tld of
@@ -1793,7 +1798,7 @@ classifyLabels nt labels = case reverse labels of
       [name] -> Right $ SimplexNameInfo nt NSSimplex name []
       (name : sub) -> Right $ SimplexNameInfo nt NSSimplex name (reverse sub)
       [] -> Left "missing name before TLD"
-    "testnet" -> case rest of
+    "testing" -> case rest of
       [name] -> Right $ SimplexNameInfo nt NSTesting name []
       (name : sub) -> Right $ SimplexNameInfo nt NSTesting name (reverse sub)
       [] -> Left "missing name before TLD"
