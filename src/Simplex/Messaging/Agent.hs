@@ -1007,6 +1007,7 @@ setConnShortLinkAsync' c corrId connId userLinkData clientData =
     enqueueCommand c corrId connId (Just srv) $ AClientCommand $ LSET userLinkData clientData
 
 getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AM ConnId
+getConnShortLinkAsync' c _userId _corrId _connId_ (CSLName _) = throwE $ AGENT $ A_LINK "name resolution not supported"
 getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) = do
   connId <- case connId_ of
     Just existingConnId -> do
@@ -1121,6 +1122,7 @@ getConnShortLink' c nm userId = \case
     let (linkId, k) = SL.contactShortLinkKdf linkKey
     ld <- getQueueLink c nm userId srv linkId
     decryptData srv linkKey k ld
+  CSLName _ -> throwE $ AGENT $ A_LINK "name resolution not supported"
   where
     decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (FixedLinkData c, ConnLinkData c)
     decryptData srv linkKey k (sndId, d) = do

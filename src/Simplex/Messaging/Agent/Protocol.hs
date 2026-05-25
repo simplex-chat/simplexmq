@@ -123,6 +123,11 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionLink (..),
     AConnectionLink (..),
     ConnShortLink (..),
+    SimplexNameInfo (..),
+    SimplexNamespace (..),
+    SimplexNameType (..),
+    parseNameFragment,
+    encodeNameFragment,
     AConnShortLink (..),
     CreatedConnLink (..),
     ACreatedConnLink (..),
@@ -195,7 +200,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (toLower, toUpper)
+import Data.Char (isSpace, toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -1471,6 +1476,21 @@ data ShortLinkScheme = SLSSimplex | SLSServer deriving (Eq, Show)
 data ConnShortLink (m :: ConnectionMode) where
   CSLInvitation :: ShortLinkScheme -> SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
   CSLContact :: ShortLinkScheme -> ContactConnType -> SMPServer -> LinkKey -> ConnShortLink 'CMContact
+  CSLName :: SimplexNameInfo -> ConnShortLink 'CMContact
+
+data SimplexNameInfo = SimplexNameInfo
+  { nameType :: SimplexNameType,
+    namespace :: SimplexNamespace,
+    domain :: Text,
+    subDomain :: [Text]
+  }
+  deriving (Eq, Show)
+
+data SimplexNamespace = NSSimplex | NSTesting | NSWeb
+  deriving (Eq, Show)
+
+data SimplexNameType = NTPublicGroup | NTContact
+  deriving (Eq, Show)
 
 deriving instance Eq (ConnShortLink m)
 
@@ -1480,6 +1500,7 @@ simplexShortLink :: ConnShortLink m -> ConnShortLink m
 simplexShortLink = \case
   CSLInvitation _ srv lnkId k -> CSLInvitation SLSSimplex srv lnkId k
   CSLContact _ ct srv k -> CSLContact SLSSimplex ct srv k
+  l@(CSLName _) -> l
 
 newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
   deriving (Eq, Show)
@@ -1583,6 +1604,7 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
     CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' lnkId k
     CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
+    CSLName nameInfo -> "simplex:/name#" <> encodeUtf8 (encodeNameFragment nameInfo)
     where
       slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
         B.concat [authority, "/", B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
@@ -1603,20 +1625,27 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
 instance StrEncoding AConnShortLink where
   strEncode (ACSL _ l) = strEncode l
   {-# INLINE strEncode #-}
-  strP = do
-    (sch, h_) <- authorityP <* A.char '/'
-    ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
-    case ct_ of
-      Nothing -> do
-        lnkId <- strP <* A.char '/'
-        k <- strP
-        srv <- serverQueryP h_
-        pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
-      Just ct -> do
-        k <- strP
-        srv <- serverQueryP h_
-        pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
+  strP = nameP <|> serverLinkP
     where
+      nameP = do
+        _ <- "simplex:/name#"
+        frag <- A.takeWhile1 (not . A.isSpace)
+        case parseNameFragment (safeDecodeUtf8 frag) of
+          Just ni -> pure $ ACSL SCMContact $ CSLName ni
+          Nothing -> fail "invalid name"
+      serverLinkP = do
+        (sch, h_) <- authorityP <* A.char '/'
+        ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
+        case ct_ of
+          Nothing -> do
+            lnkId <- strP <* A.char '/'
+            k <- strP
+            srv <- serverQueryP h_
+            pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
+          Just ct -> do
+            k <- strP
+            srv <- serverQueryP h_
+            pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
       authorityP =
         "simplex:" $> (SLSSimplex, Nothing)
           <|> "https://" *> ((SLSServer,) . Just <$> strP)
@@ -1639,6 +1668,7 @@ instance ConnectionModeI m => Encoding (ConnShortLink m) where
   smpEncode = \case
     CSLInvitation _ srv lnkId (LinkKey k) -> smpEncode (CMInvitation, srv, lnkId, k)
     CSLContact _ ct srv (LinkKey k) -> smpEncode (CMContact, ctTypeChar ct, srv, k)
+    CSLName ni -> smpEncode (CMContact, 'N', encodeUtf8 $ encodeNameFragment ni)
   smpP = (\(ACSL _ l) -> checkConnMode l) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1651,9 +1681,17 @@ instance Encoding AConnShortLink where
         (srv, lnkId, k) <- smpP
         pure $ ACSL SCMInvitation $ CSLInvitation SLSServer srv lnkId (LinkKey k)
       CMContact -> do
-        ct <- ctTypeP =<< A.anyChar
-        (srv, k) <- smpP
-        pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
+        c <- A.anyChar
+        if c == 'N'
+          then do
+            frag <- smpP @ByteString
+            case parseNameFragment (safeDecodeUtf8 frag) of
+              Just ni -> pure $ ACSL SCMContact $ CSLName ni
+              Nothing -> fail "invalid name in binary encoding"
+          else do
+            ct <- ctTypeP c
+            (srv, k) <- smpP
+            pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
 
 ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case
@@ -1677,6 +1715,7 @@ shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 shortenShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
+  l@(CSLName _) -> l
   where
     shortServer srv@(SMPServer (h :| _) _ _) =
       if isPresetServer srv presetSrvs then SMPServerOnlyHost h else srv
@@ -1700,6 +1739,7 @@ restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 restoreShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (fullServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (fullServer srv) linkKey
+  l@(CSLName _) -> l
   where
     fullServer = \case
       s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
@@ -1718,6 +1758,41 @@ sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUr
 sameShortLinkContact :: ConnShortLink 'CMContact -> ConnShortLink 'CMContact -> Bool
 sameShortLinkContact (CSLContact _ ct srv k) (CSLContact _ ct' srv' k') =
   ct == ct' && sameSrvAddr srv srv' && k == k'
+sameShortLinkContact (CSLName ni) (CSLName ni') = ni == ni'
+sameShortLinkContact _ _ = False
+
+encodeNameFragment :: SimplexNameInfo -> Text
+encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
+  prefix <> T.intercalate "." (subDomain <> [domain] <> [nsTLD namespace])
+  where
+    prefix = case nameType of
+      NTPublicGroup -> ""
+      NTContact -> ":"
+    nsTLD = \case
+      NSSimplex -> "simplex"
+      NSTesting -> "testnet"
+      NSWeb -> ""
+
+parseNameFragment :: Text -> Maybe SimplexNameInfo
+parseNameFragment t = case T.uncons t of
+  Nothing -> Nothing
+  Just (':', rest) -> parseName NTContact rest
+  Just _ -> parseName NTPublicGroup t
+  where
+    parseName nt s = case reverse $ T.splitOn "." s of
+      [] -> Nothing
+      ["simplex"] -> Nothing
+      [name] -> Just $ SimplexNameInfo nt NSSimplex name []
+      (tld : labels) -> case tld of
+        "simplex" -> case labels of
+          [name] -> Just $ SimplexNameInfo nt NSSimplex name []
+          (name : sub) -> Just $ SimplexNameInfo nt NSSimplex name (reverse sub)
+          [] -> Nothing
+        "testnet" -> case labels of
+          [name] -> Just $ SimplexNameInfo nt NSTesting name []
+          (name : sub) -> Just $ SimplexNameInfo nt NSTesting name (reverse sub)
+          [] -> Nothing
+        _ -> Just $ SimplexNameInfo nt NSWeb s []
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
