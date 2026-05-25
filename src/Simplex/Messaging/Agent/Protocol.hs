@@ -127,6 +127,7 @@ module Simplex.Messaging.Agent.Protocol
     SimplexNamespace (..),
     SimplexNameType (..),
     parseNameFragment,
+    parseName,
     encodeNameFragment,
     AConnShortLink (..),
     CreatedConnLink (..),
@@ -1625,12 +1626,20 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
 instance StrEncoding AConnShortLink where
   strEncode (ACSL _ l) = strEncode l
   {-# INLINE strEncode #-}
-  strP = nameP <|> serverLinkP
+  strP = nameUriP <|> namePrefixP <|> serverLinkP
     where
-      nameP = do
+      nameUriP = do
         _ <- "simplex:/name#"
         frag <- A.takeWhile1 (not . A.isSpace)
         case parseNameFragment (safeDecodeUtf8 frag) of
+          Just ni -> pure $ ACSL SCMContact $ CSLName ni
+          Nothing -> fail "invalid name uri"
+      namePrefixP = do
+        pfx <- A.char '#' <|> A.char ':'
+        name <- A.takeWhile1 (\c -> not (A.isSpace c) && c /= '#')
+        let nt = if pfx == ':' then NTContact else NTPublicGroup
+            frag = safeDecodeUtf8 name
+        case parseName nt frag of
           Just ni -> pure $ ACSL SCMContact $ CSLName ni
           Nothing -> fail "invalid name"
       serverLinkP = do
@@ -1778,21 +1787,22 @@ parseNameFragment t = case T.uncons t of
   Nothing -> Nothing
   Just (':', rest) -> parseName NTContact rest
   Just _ -> parseName NTPublicGroup t
-  where
-    parseName nt s = case reverse $ T.splitOn "." s of
-      [] -> Nothing
-      ["simplex"] -> Nothing
+
+parseName :: SimplexNameType -> Text -> Maybe SimplexNameInfo
+parseName nt s = case reverse $ T.splitOn "." s of
+  [] -> Nothing
+  ["simplex"] -> Nothing
+  [name] -> Just $ SimplexNameInfo nt NSSimplex name []
+  (tld : labels) -> case tld of
+    "simplex" -> case labels of
       [name] -> Just $ SimplexNameInfo nt NSSimplex name []
-      (tld : labels) -> case tld of
-        "simplex" -> case labels of
-          [name] -> Just $ SimplexNameInfo nt NSSimplex name []
-          (name : sub) -> Just $ SimplexNameInfo nt NSSimplex name (reverse sub)
-          [] -> Nothing
-        "testnet" -> case labels of
-          [name] -> Just $ SimplexNameInfo nt NSTesting name []
-          (name : sub) -> Just $ SimplexNameInfo nt NSTesting name (reverse sub)
-          [] -> Nothing
-        _ -> Just $ SimplexNameInfo nt NSWeb s []
+      (name : sub) -> Just $ SimplexNameInfo nt NSSimplex name (reverse sub)
+      [] -> Nothing
+    "testnet" -> case labels of
+      [name] -> Just $ SimplexNameInfo nt NSTesting name []
+      (name : sub) -> Just $ SimplexNameInfo nt NSTesting name (reverse sub)
+      [] -> Nothing
+    _ -> Just $ SimplexNameInfo nt NSWeb s []
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
