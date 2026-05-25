@@ -338,7 +338,7 @@ data AgentClient = AgentClient
   { acThread :: TVar (Maybe (Weak ThreadId)),
     active :: TVar Bool,
     subQ :: TBQueue ATransmission,
-    processServerMsg :: ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
+    processServerMsg :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     useClientServices :: TMap UserId Bool,
@@ -505,7 +505,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Env -> IO AgentClient
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> (AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices processServerMsg agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
@@ -732,7 +732,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
+smpConnectClient c@AgentClient {processServerMsg, smpClients, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAllErrors` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where

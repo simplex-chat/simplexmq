@@ -138,7 +138,7 @@ data SMPClientAgent p = SMPClientAgent
     dbService :: Maybe DBService,
     active :: TVar Bool,
     startedAt :: UTCTime,
-    processMsg :: ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
+    processMsg :: SMPClientAgent p -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
@@ -158,7 +158,7 @@ data SMPClientAgent p = SMPClientAgent
 
 type OwnServer = Bool
 
-newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Maybe DBService -> TVar ChaChaDRG -> IO (SMPClientAgent p)
+newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> (SMPClientAgent p -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Maybe DBService -> TVar ChaChaDRG -> IO (SMPClientAgent p)
 newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {agentQSize} processMsg dbService randomDrg = do
   active <- newTVarIO True
   startedAt <- getCurrentTime
@@ -256,7 +256,7 @@ isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
 
 -- | Run an SMP client for SMPClientVar
 connectClient :: SMPClientAgent p -> SMPServer -> SMPClientVar -> IO (Either SMPClientError SMPClient)
-connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, processMsg, randomDrg, startedAt} srv v = case dbService of
+connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, processMsg, randomDrg, startedAt} srv v =  case dbService of
   Just dbs -> runExceptT $ do
     creds <- ExceptT $ getCredentials dbs srv
     smp <- ExceptT $ getClient cfg {serviceCredentials = Just creds}
@@ -266,7 +266,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, p
   Nothing -> getClient cfg
   where
     cfg = smpCfg agentCfg
-    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] (Just processMsg) startedAt clientDisconnected
+    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] (Just $ processMsg ca) startedAt clientDisconnected
 
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do

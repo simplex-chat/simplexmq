@@ -145,7 +145,6 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent.STM (retry)
-import Data.IORef
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -272,13 +271,10 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
       currentTs <- liftIO getCurrentTime
       notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
       env <- ask
-      cRef <- liftIO $ newIORef (error "agent client not initialized")
-      let processMsg t = do
-            c <- readIORef cRef
+      let processMsg c t =
             agentOperationBracket c AORcvNetwork waitUntilActive (processSMPTransmissions c t) `runReaderT` env
               `catchOwn` \e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ "subscriber error: " <> show e)
       c@AgentClient {acThread} <- liftIO $ newAgentClient clientId initServers currentTs notices processMsg env
-      liftIO $ writeIORef cRef c
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c

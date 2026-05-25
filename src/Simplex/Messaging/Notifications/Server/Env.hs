@@ -28,7 +28,6 @@ module Simplex.Messaging.Notifications.Server.Env
   ) where
 
 import Control.Concurrent (ThreadId)
-import Data.IORef
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -120,20 +119,18 @@ data NtfEnv = NtfEnv
     serverStats :: NtfServerStats
   }
 
-newNtfServerEnv :: NtfServerConfig -> (IORef NtfEnv -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> IO NtfEnv
+newNtfServerEnv :: NtfServerConfig -> (NtfPostgresStore -> NtfPushServer -> NtfServerStats -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> IO NtfEnv
 newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds} mkProcessMsg = do
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   XV.Fingerprint fp <- loadFingerprint ntfCredentials
-  let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
-  envRef <- newIORef $ error "NtfEnv not initialized"
-  subscriber <- newNtfSubscriber smpAgentCfg (mkProcessMsg envRef) dbService random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
-  let env = NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
-  writeIORef envRef env
-  pure env
+  let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
+      processMsg = mkProcessMsg store pushServer serverStats
+  subscriber <- newNtfSubscriber smpAgentCfg processMsg dbService random
+  pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where
     mkDbService g st = DBService {getCredentials, updateServiceId}
       where
@@ -162,7 +159,7 @@ data NtfSubscriber = NtfSubscriber
 
 type SMPSubscriberVar = SessionVar SMPSubscriber
 
-newNtfSubscriber :: SMPClientAgentConfig -> (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Maybe DBService -> TVar ChaChaDRG -> IO NtfSubscriber
+newNtfSubscriber :: SMPClientAgentConfig -> (SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Maybe DBService -> TVar ChaChaDRG -> IO NtfSubscriber
 newNtfSubscriber smpAgentCfg processMsg dbService random = do
   smpSubscribers <- TM.emptyIO
   subscriberSeq <- newTVarIO 0
