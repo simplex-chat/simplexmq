@@ -1647,7 +1647,7 @@ instance StrEncoding AConnShortLink where
         when (T.last lbl' == '-') $ fail "trailing hyphen"
         when (T.isInfixOf "--" lbl') $ fail "consecutive hyphens"
         pure lbl'
-      isNameLetter c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (not (isAscii c) && isAlpha c && not (isLatinExtended c))
+      isNameLetter c = isAlpha c && not (isLatinExtended c)
       isLatinExtended c = c >= '\x00c0' && c <= '\x024f'
       serverLinkP = do
         (sch, h_) <- authorityP <* A.char '/'
@@ -1823,8 +1823,7 @@ parseNameText nt s = do
       | T.isInfixOf "--" lbl = Left "consecutive hyphens"
       | not (T.all (\c -> isNameLetter c || isDigit c || c == '-') lbl) = Left "invalid character"
       | otherwise = Right ()
-    isNameLetter c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isNonLatinLetter c
-    isNonLatinLetter c = not (isAscii c) && isAlpha c && not (isLatinExtended c)
+    isNameLetter c = isAlpha c && not (isLatinExtended c)
     isLatinExtended c = c >= '\x00c0' && c <= '\x024f'
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
