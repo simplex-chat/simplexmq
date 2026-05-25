@@ -201,7 +201,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isSpace, toLower, toUpper)
+import Data.Char (isAlpha, isAscii, isDigit, isSpace, toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -1630,18 +1630,21 @@ instance StrEncoding AConnShortLink where
     where
       nameUriP = do
         _ <- "simplex:/name#"
-        frag <- A.takeWhile1 (not . A.isSpace)
-        case parseNameFragment (safeDecodeUtf8 frag) of
-          Just ni -> pure $ ACSL SCMContact $ CSLName ni
-          Nothing -> fail "invalid name uri"
+        nt <- A.char ':' $> NTContact <|> pure NTPublicGroup
+        ACSL SCMContact . CSLName <$> (classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.')
       namePrefixP = do
-        pfx <- A.char '#' <|> A.char ':'
-        name <- A.takeWhile1 (\c -> not (A.isSpace c) && c /= '#')
-        let nt = if pfx == ':' then NTContact else NTPublicGroup
-            frag = safeDecodeUtf8 name
-        case parseName nt frag of
-          Just ni -> pure $ ACSL SCMContact $ CSLName ni
-          Nothing -> fail "invalid name"
+        nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
+        ACSL SCMContact . CSLName <$> (classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.')
+      nameLabelP = do
+        c <- A.peekChar'
+        unless (isNameLetter c) $ fail "expected letter"
+        lbl <- A.takeWhile1 $ \ch -> isNameLetter ch || isDigit ch || ch == '-'
+        let lbl' = safeDecodeUtf8 lbl
+        when (T.last lbl' == '-') $ fail "trailing hyphen"
+        when (T.isInfixOf "--" lbl') $ fail "consecutive hyphens"
+        pure lbl'
+      isNameLetter c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (not (isAscii c) && isAlpha c && not (isLatinExtended c))
+      isLatinExtended c = c >= '\x00c0' && c <= '\x024f'
       serverLinkP = do
         (sch, h_) <- authorityP <* A.char '/'
         ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
@@ -1693,10 +1696,8 @@ instance Encoding AConnShortLink where
         c <- A.anyChar
         if c == 'N'
           then do
-            frag <- smpP @ByteString
-            case parseNameFragment (safeDecodeUtf8 frag) of
-              Just ni -> pure $ ACSL SCMContact $ CSLName ni
-              Nothing -> fail "invalid name in binary encoding"
+            ni <- parseNameFragment . safeDecodeUtf8 <$?> smpP @ByteString
+            pure $ ACSL SCMContact $ CSLName ni
           else do
             ct <- ctTypeP c
             (srv, k) <- smpP
@@ -1782,27 +1783,44 @@ encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
       NSTesting -> "testnet"
       NSWeb -> ""
 
-parseNameFragment :: Text -> Maybe SimplexNameInfo
-parseNameFragment t = case T.uncons t of
-  Nothing -> Nothing
-  Just (':', rest) -> parseName NTContact rest
-  Just _ -> parseName NTPublicGroup t
+classifyLabels :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
+classifyLabels _ [] = Left "empty name"
+classifyLabels nt labels = case reverse labels of
+  ["simplex"] -> Left "missing name before TLD"
+  [name] -> Right $ SimplexNameInfo nt NSSimplex name []
+  (tld : rest) -> case tld of
+    "simplex" -> case rest of
+      [name] -> Right $ SimplexNameInfo nt NSSimplex name []
+      (name : sub) -> Right $ SimplexNameInfo nt NSSimplex name (reverse sub)
+      [] -> Left "missing name before TLD"
+    "testnet" -> case rest of
+      [name] -> Right $ SimplexNameInfo nt NSTesting name []
+      (name : sub) -> Right $ SimplexNameInfo nt NSTesting name (reverse sub)
+      [] -> Left "missing name before TLD"
+    _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
 
-parseName :: SimplexNameType -> Text -> Maybe SimplexNameInfo
-parseName nt s = case reverse $ T.splitOn "." s of
-  [] -> Nothing
-  ["simplex"] -> Nothing
-  [name] -> Just $ SimplexNameInfo nt NSSimplex name []
-  (tld : labels) -> case tld of
-    "simplex" -> case labels of
-      [name] -> Just $ SimplexNameInfo nt NSSimplex name []
-      (name : sub) -> Just $ SimplexNameInfo nt NSSimplex name (reverse sub)
-      [] -> Nothing
-    "testnet" -> case labels of
-      [name] -> Just $ SimplexNameInfo nt NSTesting name []
-      (name : sub) -> Just $ SimplexNameInfo nt NSTesting name (reverse sub)
-      [] -> Nothing
-    _ -> Just $ SimplexNameInfo nt NSWeb s []
+parseNameFragment :: Text -> Either String SimplexNameInfo
+parseNameFragment t = case T.uncons t of
+  Nothing -> Left "empty name"
+  Just (':', rest) -> parseNameText NTContact rest
+  Just _ -> parseNameText NTPublicGroup t
+
+parseNameText :: SimplexNameType -> Text -> Either String SimplexNameInfo
+parseNameText nt s = do
+  let labels = T.splitOn "." s
+  mapM_ parseLabel labels
+  classifyLabels nt labels
+  where
+    parseLabel lbl
+      | T.null lbl = Left "empty label"
+      | not (isNameLetter $ T.head lbl) = Left "expected letter"
+      | T.last lbl == '-' = Left "trailing hyphen"
+      | T.isInfixOf "--" lbl = Left "consecutive hyphens"
+      | not (T.all (\c -> isNameLetter c || isDigit c || c == '-') lbl) = Left "invalid character"
+      | otherwise = Right ()
+    isNameLetter c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isNonLatinLetter c
+    isNonLatinLetter c = not (isAscii c) && isAlpha c && not (isLatinExtended c)
+    isLatinExtended c = c >= '\x00c0' && c <= '\x024f'
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
