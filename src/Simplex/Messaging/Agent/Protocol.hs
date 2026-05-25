@@ -122,14 +122,12 @@ module Simplex.Messaging.Agent.Protocol
     OwnerId,
     ConnectionLink (..),
     AConnectionLink (..),
-    ConnShortLink (..),
+    AConnectTarget (..),
     SimplexNameInfo (..),
     SimplexNamespace (..),
     SimplexNameType (..),
-    parseNameFragment,
-    parseNameText,
-    classifyLabels,
-    encodeNameFragment,
+    isNameLetter,
+    ConnShortLink (..),
     AConnShortLink (..),
     CreatedConnLink (..),
     ACreatedConnLink (..),
@@ -203,7 +201,7 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Control.Monad (unless, when)
-import Data.Char (isAlpha, isAscii, isDigit, isSpace, toLower, toUpper)
+import Data.Char (isAlpha, isDigit, toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -1479,21 +1477,6 @@ data ShortLinkScheme = SLSSimplex | SLSServer deriving (Eq, Show)
 data ConnShortLink (m :: ConnectionMode) where
   CSLInvitation :: ShortLinkScheme -> SMPServer -> SMP.LinkId -> LinkKey -> ConnShortLink 'CMInvitation
   CSLContact :: ShortLinkScheme -> ContactConnType -> SMPServer -> LinkKey -> ConnShortLink 'CMContact
-  CSLName :: SimplexNameInfo -> ConnShortLink 'CMContact
-
-data SimplexNameInfo = SimplexNameInfo
-  { nameType :: SimplexNameType,
-    namespace :: SimplexNamespace,
-    domain :: Text,
-    subDomain :: [Text]
-  }
-  deriving (Eq, Show)
-
-data SimplexNamespace = NSSimplex | NSTesting | NSWeb
-  deriving (Eq, Show)
-
-data SimplexNameType = NTPublicGroup | NTContact
-  deriving (Eq, Show)
 
 deriving instance Eq (ConnShortLink m)
 
@@ -1503,7 +1486,6 @@ simplexShortLink :: ConnShortLink m -> ConnShortLink m
 simplexShortLink = \case
   CSLInvitation _ srv lnkId k -> CSLInvitation SLSSimplex srv lnkId k
   CSLContact _ ct srv k -> CSLContact SLSSimplex ct srv k
-  l@(CSLName _) -> l
 
 newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
   deriving (Eq, Show)
@@ -1537,6 +1519,72 @@ instance ConnectionModeI c => ToField (ConnShortLink c) where toField = toField 
 instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fromField = blobFieldDecoder strDecode
 
 data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay deriving (Eq, Show)
+
+-- | A connection target: either a resolved link or an unresolved name.
+-- Contexts that support name resolution accept AConnectTarget.
+-- Contexts that only handle resolved links use AConnectionLink directly.
+data AConnectTarget = ACTLink AConnectionLink | ACTName SimplexNameInfo
+  deriving (Eq, Show)
+
+data SimplexNameInfo = SimplexNameInfo
+  { nameType :: SimplexNameType,
+    namespace :: SimplexNamespace,
+    domain :: Text,
+    subDomain :: [Text]
+  }
+  deriving (Eq, Show)
+
+data SimplexNamespace = NSSimplex | NSTesting | NSWeb
+  deriving (Eq, Show)
+
+data SimplexNameType = NTPublicGroup | NTContact
+  deriving (Eq, Show)
+
+isNameLetter :: Char -> Bool
+isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
+
+instance StrEncoding AConnectTarget where
+  strEncode = \case
+    ACTLink lnk -> strEncode lnk
+    ACTName ni -> "simplex:/name" <> encodeUtf8 (encodeNameFragment ni)
+  strP = ACTName <$> nameP <|> ACTLink <$> strP
+    where
+      nameP = nameUriP <|> namePrefixP
+      nameUriP = "simplex:/name" *> nameBodyP
+      namePrefixP = nameBodyP
+      nameBodyP = do
+        nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
+        classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.'
+      nameLabelP = do
+        c <- A.peekChar'
+        unless (isNameLetter c) $ fail "expected letter"
+        lbl <- A.takeWhile1 $ \ch -> isNameLetter ch || isDigit ch || ch == '-'
+        let lbl' = safeDecodeUtf8 lbl
+        when (T.last lbl' == '-') $ fail "trailing hyphen"
+        when (T.isInfixOf "--" lbl') $ fail "consecutive hyphens"
+        pure lbl'
+
+encodeNameFragment :: SimplexNameInfo -> Text
+encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
+  prefix <> T.intercalate "." (subDomain <> [domain] <> tld)
+  where
+    prefix = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
+    tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
+
+classifyLabels :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
+classifyLabels nt labels = case reverse labels of
+  [] -> Left "empty name"
+  [name] -> Right $ SimplexNameInfo nt NSSimplex name []
+  (tld : rest) -> case tld of
+    "simplex" -> case rest of
+      [name] -> Right $ SimplexNameInfo nt NSSimplex name []
+      (name : sub) -> Right $ SimplexNameInfo nt NSSimplex name (reverse sub)
+      [] -> Left "missing name before TLD"
+    "testing" -> case rest of
+      [name] -> Right $ SimplexNameInfo nt NSTesting name []
+      (name : sub) -> Right $ SimplexNameInfo nt NSTesting name (reverse sub)
+      [] -> Left "missing name before TLD"
+    _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
@@ -1607,11 +1655,6 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
     CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' lnkId k
     CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
-    CSLName SimplexNameInfo {nameType, namespace, domain, subDomain} ->
-      "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (subDomain <> [domain] <> tld))
-      where
-        pfx = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
-        tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
     where
       slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
         B.concat [authority, "/", B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
@@ -1632,36 +1675,20 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
 instance StrEncoding AConnShortLink where
   strEncode (ACSL _ l) = strEncode l
   {-# INLINE strEncode #-}
-  strP = nameUriP <|> namePrefixP <|> serverLinkP
+  strP = do
+    (sch, h_) <- authorityP <* A.char '/'
+    ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
+    case ct_ of
+      Nothing -> do
+        lnkId <- strP <* A.char '/'
+        k <- strP
+        srv <- serverQueryP h_
+        pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
+      Just ct -> do
+        k <- strP
+        srv <- serverQueryP h_
+        pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
     where
-      nameUriP = "simplex:/name" *> nameBodyP
-      namePrefixP = nameBodyP
-      nameBodyP = do
-        nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
-        ACSL SCMContact . CSLName <$> (classifyLabels nt <$?> nameLabelP `A.sepBy1` A.char '.')
-      nameLabelP = do
-        c <- A.peekChar'
-        unless (isNameLetter c) $ fail "expected letter"
-        lbl <- A.takeWhile1 $ \ch -> isNameLetter ch || isDigit ch || ch == '-'
-        let lbl' = safeDecodeUtf8 lbl
-        when (T.last lbl' == '-') $ fail "trailing hyphen"
-        when (T.isInfixOf "--" lbl') $ fail "consecutive hyphens"
-        pure lbl'
-      isNameLetter c = isAlpha c && not (isLatinExtended c)
-      isLatinExtended c = c >= '\x00c0' && c <= '\x024f'
-      serverLinkP = do
-        (sch, h_) <- authorityP <* A.char '/'
-        ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
-        case ct_ of
-          Nothing -> do
-            lnkId <- strP <* A.char '/'
-            k <- strP
-            srv <- serverQueryP h_
-            pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
-          Just ct -> do
-            k <- strP
-            srv <- serverQueryP h_
-            pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
       authorityP =
         "simplex:" $> (SLSSimplex, Nothing)
           <|> "https://" *> ((SLSServer,) . Just <$> strP)
@@ -1684,7 +1711,6 @@ instance ConnectionModeI m => Encoding (ConnShortLink m) where
   smpEncode = \case
     CSLInvitation _ srv lnkId (LinkKey k) -> smpEncode (CMInvitation, srv, lnkId, k)
     CSLContact _ ct srv (LinkKey k) -> smpEncode (CMContact, ctTypeChar ct, srv, k)
-    CSLName ni -> smpEncode (CMContact, 'N', encodeUtf8 $ encodeNameFragment ni)
   smpP = (\(ACSL _ l) -> checkConnMode l) <$?> smpP
   {-# INLINE smpP #-}
 
@@ -1697,15 +1723,9 @@ instance Encoding AConnShortLink where
         (srv, lnkId, k) <- smpP
         pure $ ACSL SCMInvitation $ CSLInvitation SLSServer srv lnkId (LinkKey k)
       CMContact -> do
-        c <- A.anyChar
-        if c == 'N'
-          then do
-            ni <- parseNameFragment . safeDecodeUtf8 <$?> smpP @ByteString
-            pure $ ACSL SCMContact $ CSLName ni
-          else do
-            ct <- ctTypeP c
-            (srv, k) <- smpP
-            pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
+        ct <- ctTypeP =<< A.anyChar
+        (srv, k) <- smpP
+        pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
 
 ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case
@@ -1729,7 +1749,6 @@ shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 shortenShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (shortServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (shortServer srv) linkKey
-  l@(CSLName _) -> l
   where
     shortServer srv@(SMPServer (h :| _) _ _) =
       if isPresetServer srv presetSrvs then SMPServerOnlyHost h else srv
@@ -1753,7 +1772,6 @@ restoreShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 restoreShortLink presetSrvs = \case
   CSLInvitation sch srv lnkId linkKey -> CSLInvitation sch (fullServer srv) lnkId linkKey
   CSLContact sch ct srv linkKey -> CSLContact sch ct (fullServer srv) linkKey
-  l@(CSLName _) -> l
   where
     fullServer = \case
       s@(SMPServerOnlyHost _) -> fromMaybe s $ findPresetServer s presetSrvs
@@ -1772,59 +1790,6 @@ sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUr
 sameShortLinkContact :: ConnShortLink 'CMContact -> ConnShortLink 'CMContact -> Bool
 sameShortLinkContact (CSLContact _ ct srv k) (CSLContact _ ct' srv' k') =
   ct == ct' && sameSrvAddr srv srv' && k == k'
-sameShortLinkContact (CSLName ni) (CSLName ni') = ni == ni'
-sameShortLinkContact _ _ = False
-
-encodeNameFragment :: SimplexNameInfo -> Text
-encodeNameFragment SimplexNameInfo {nameType, namespace, domain, subDomain} =
-  prefix <> T.intercalate "." (subDomain <> [domain] <> [nsTLD namespace])
-  where
-    prefix = case nameType of
-      NTPublicGroup -> ""
-      NTContact -> ":"
-    nsTLD = \case
-      NSSimplex -> "simplex"
-      NSTesting -> "testing"
-      NSWeb -> ""
-
-classifyLabels :: SimplexNameType -> [Text] -> Either String SimplexNameInfo
-classifyLabels _ [] = Left "empty name"
-classifyLabels nt labels = case reverse labels of
-  [] -> Left "empty name"
-  ["simplex"] -> Left "missing name before TLD"
-  [name] -> Right $ SimplexNameInfo nt NSSimplex name []
-  (tld : rest) -> case tld of
-    "simplex" -> case rest of
-      [name] -> Right $ SimplexNameInfo nt NSSimplex name []
-      (name : sub) -> Right $ SimplexNameInfo nt NSSimplex name (reverse sub)
-      [] -> Left "missing name before TLD"
-    "testing" -> case rest of
-      [name] -> Right $ SimplexNameInfo nt NSTesting name []
-      (name : sub) -> Right $ SimplexNameInfo nt NSTesting name (reverse sub)
-      [] -> Left "missing name before TLD"
-    _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
-
-parseNameFragment :: Text -> Either String SimplexNameInfo
-parseNameFragment t = case T.uncons t of
-  Nothing -> Left "empty name"
-  Just (':', rest) -> parseNameText NTContact rest
-  Just _ -> parseNameText NTPublicGroup t
-
-parseNameText :: SimplexNameType -> Text -> Either String SimplexNameInfo
-parseNameText nt s = do
-  let labels = T.splitOn "." s
-  mapM_ parseLabel labels
-  classifyLabels nt labels
-  where
-    parseLabel lbl
-      | T.null lbl = Left "empty label"
-      | not (isNameLetter $ T.head lbl) = Left "expected letter"
-      | T.last lbl == '-' = Left "trailing hyphen"
-      | T.isInfixOf "--" lbl = Left "consecutive hyphens"
-      | not (T.all (\c -> isNameLetter c || isDigit c || c == '-') lbl) = Left "invalid character"
-      | otherwise = Right ()
-    isNameLetter c = isAlpha c && not (isLatinExtended c)
-    isLatinExtended c = c >= '\x00c0' && c <= '\x024f'
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
