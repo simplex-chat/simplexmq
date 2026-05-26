@@ -1546,13 +1546,13 @@ instance StrEncoding AConnectTarget where
     ACTName SimplexNameInfo {nameType, namespace, domain, subDomain} ->
       "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (reverse subDomain <> [domain] <> tld))
       where
-        pfx = case nameType of NTPublicGroup -> "#"; NTContact -> ":"
+        pfx = case nameType of NTPublicGroup -> "#"; NTContact -> "@"
         tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
   strP = ACTName <$> nameP <|> ACTLink <$> strP
     where
       nameP = "simplex:/name" *> nameBodyP <|> nameBodyP
       nameBodyP = do
-        nt <- A.char '#' $> NTPublicGroup <|> A.char ':' $> NTContact
+        nt <- A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
         parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
       parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
       nameLabelP = do
@@ -1561,7 +1561,9 @@ instance StrEncoding AConnectTarget where
       isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
       mkNameInfo nt labels = case reverse labels of
         [] -> Left "empty name"
-        [name] -> Right $ SimplexNameInfo nt NSSimplex name []
+        [name]
+          | nt == NTPublicGroup -> Right $ SimplexNameInfo nt NSSimplex name []
+          | otherwise -> Left "contact name requires TLD"
         "simplex" : name : sub -> Right $ SimplexNameInfo nt NSSimplex name sub
         "testing" : name : sub -> Right $ SimplexNameInfo nt NSTesting name sub
         _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
