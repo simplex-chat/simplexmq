@@ -187,7 +187,7 @@ module Simplex.Messaging.Agent.Protocol
   )
 where
 
-import Control.Applicative (many, optional, (<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Monad (guard)
 import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
