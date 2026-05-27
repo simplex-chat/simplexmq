@@ -122,7 +122,6 @@ module Simplex.Messaging.Agent.Protocol
     OwnerId,
     ConnectionLink (..),
     AConnectionLink (..),
-    AConnectTarget (..),
     SimplexNameInfo (..),
     SimplexNamespace (..),
     SimplexNameType (..),
@@ -1520,12 +1519,6 @@ instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fr
 
 data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay deriving (Eq, Show)
 
--- | A connection target: either a resolved link or an unresolved name.
--- Contexts that support name resolution accept AConnectTarget.
--- Contexts that only handle resolved links use AConnectionLink directly.
-data AConnectTarget = ACTLink AConnectionLink | ACTName SimplexNameInfo
-  deriving (Eq, Show)
-
 data SimplexNameInfo = SimplexNameInfo
   { nameType :: SimplexNameType,
     namespace :: SimplexNamespace,
@@ -1540,17 +1533,14 @@ data SimplexNamespace = NSSimplex | NSTesting | NSWeb
 data SimplexNameType = NTPublicGroup | NTContact
   deriving (Eq, Show)
 
-instance StrEncoding AConnectTarget where
-  strEncode = \case
-    ACTLink lnk -> strEncode lnk
-    ACTName SimplexNameInfo {nameType, namespace, domain, subDomain} ->
-      "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (reverse subDomain <> [domain] <> tld))
-      where
-        pfx = case nameType of NTPublicGroup -> "#"; NTContact -> "@"
-        tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
-  strP = ACTName <$> nameP <|> ACTLink <$> strP
+instance StrEncoding SimplexNameInfo where
+  strEncode SimplexNameInfo {nameType, namespace, domain, subDomain} =
+    "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (reverse subDomain <> [domain] <> tld))
     where
-      nameP = "simplex:/name" *> nameBodyP <|> nameBodyP
+      pfx = case nameType of NTPublicGroup -> "#"; NTContact -> "@"
+      tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
+  strP = optional "simplex:/name" *> nameBodyP
+    where
       nameBodyP = do
         nt <- A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
         parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
@@ -2255,3 +2245,9 @@ instance FromJSON ACreatedConnLink where
 instance ToJSON ACreatedConnLink where
   toEncoding (ACCL _ ccLink) = toEncoding ccLink
   toJSON (ACCL _ ccLink) = toJSON ccLink
+
+$(J.deriveJSON (enumJSON $ dropPrefix "NS") ''SimplexNamespace)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "NT") ''SimplexNameType)
+
+$(J.deriveJSON defaultJSON ''SimplexNameInfo)
