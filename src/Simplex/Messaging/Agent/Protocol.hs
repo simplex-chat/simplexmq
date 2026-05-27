@@ -189,7 +189,7 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad (guard)
+import Control.Monad
 import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
@@ -1529,7 +1529,7 @@ data SimplexNameInfo = SimplexNameInfo
   }
   deriving (Eq, Show)
 
-data SimplexTLD = TLDSimplex | TLDTesting | TLDWeb {tld :: Text}
+data SimplexTLD = TLDSimplex | TLDTesting | TLDWeb
   deriving (Eq, Show)
 
 data SimplexNameType = NTPublicGroup | NTContact
@@ -1548,28 +1548,27 @@ instance StrEncoding SimplexNameInfo where
       nameP nt = parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
       parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
       nameLabelP = do
-        guard . isNameLetter =<< AT.peekChar'
-        T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
+        ws <- AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
+        when (all (T.all isDigit) ws) $ fail "name must contain letters"
+        pure $ T.intercalate "-" ws
       isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
       mkNameInfo nt labels = case reverse labels of
         [] -> Left "empty name"
         [name]
           | nt == NTPublicGroup -> Right $ SimplexNameInfo nt TLDSimplex name []
           | otherwise -> Left "contact name requires TLD"
-        tld : name : sub -> Right $ SimplexNameInfo nt ns name sub
-          where
-            ns = case tld of
-              "simplex" -> TLDSimplex
-              "testing" -> TLDTesting
-              _ -> TLDWeb tld
+        tld : name : sub -> Right $ case tld of
+          "simplex" -> SimplexNameInfo nt TLDSimplex name sub
+          "testing" -> SimplexNameInfo nt TLDTesting name sub
+          _ -> SimplexNameInfo nt TLDWeb (T.intercalate "." labels) []
 
 fullDomainName :: SimplexNameInfo -> Text
-fullDomainName SimplexNameInfo {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain <> [domain, tld'])
+fullDomainName SimplexNameInfo {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
   where
     tld' = case nameTLD of
-      TLDSimplex -> "simplex"
-      TLDTesting -> "testing"
-      TLDWeb tld -> tld
+      TLDSimplex -> ["simplex"]
+      TLDTesting -> ["testing"]
+      TLDWeb -> []
       
 shortNameInfoStr :: SimplexNameInfo -> Text
 shortNameInfoStr = \case
