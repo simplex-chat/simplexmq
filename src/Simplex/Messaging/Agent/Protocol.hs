@@ -123,7 +123,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionLink (..),
     AConnectionLink (..),
     SimplexNameInfo (..),
-    SimplexNamespace (..),
+    SimplexTLD (..),
     SimplexNameType (..),
     ConnShortLink (..),
     AConnShortLink (..),
@@ -144,6 +144,8 @@ module Simplex.Messaging.Agent.Protocol
     connReqUriP',
     simplexConnReqUri,
     simplexShortLink,
+    fullDomainName,
+    shortNameInfoStr,
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -1521,29 +1523,29 @@ data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay deriving (E
 
 data SimplexNameInfo = SimplexNameInfo
   { nameType :: SimplexNameType,
-    namespace :: SimplexNamespace,
+    nameTLD :: SimplexTLD,
     domain :: Text,
     subDomain :: [Text] -- parent to child: ["b", "a"] for a.b.domain.simplex
   }
   deriving (Eq, Show)
 
-data SimplexNamespace = NSSimplex | NSTesting | NSWeb
+data SimplexTLD = TLDSimplex | TLDTesting | TLDWeb {tld :: Text}
   deriving (Eq, Show)
 
 data SimplexNameType = NTPublicGroup | NTContact
   deriving (Eq, Show)
 
+instance StrEncoding SimplexNameType where
+  strEncode = \case
+    NTPublicGroup -> "#"
+    NTContact -> "@"
+  strP = A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
+
 instance StrEncoding SimplexNameInfo where
-  strEncode SimplexNameInfo {nameType, namespace, domain, subDomain} =
-    "simplex:/name" <> encodeUtf8 (pfx <> T.intercalate "." (reverse subDomain <> [domain] <> tld))
+  strEncode info = "simplex:/name" <> strEncode (nameType info) <> encodeUtf8 (fullDomainName info)
+  strP = optional "simplex:/name" *> (strP >>= nameP) <|> nameP NTPublicGroup
     where
-      pfx = case nameType of NTPublicGroup -> "#"; NTContact -> "@"
-      tld = case namespace of NSSimplex -> ["simplex"]; NSTesting -> ["testing"]; NSWeb -> []
-  strP = optional "simplex:/name" *> nameBodyP
-    where
-      nameBodyP = do
-        nt <- A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
-        parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
+      nameP nt = parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
       parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
       nameLabelP = do
         guard . isNameLetter =<< AT.peekChar'
@@ -1552,11 +1554,31 @@ instance StrEncoding SimplexNameInfo where
       mkNameInfo nt labels = case reverse labels of
         [] -> Left "empty name"
         [name]
-          | nt == NTPublicGroup -> Right $ SimplexNameInfo nt NSSimplex name []
+          | nt == NTPublicGroup -> Right $ SimplexNameInfo nt TLDSimplex name []
           | otherwise -> Left "contact name requires TLD"
-        "simplex" : name : sub -> Right $ SimplexNameInfo nt NSSimplex name sub
-        "testing" : name : sub -> Right $ SimplexNameInfo nt NSTesting name sub
-        _ -> Right $ SimplexNameInfo nt NSWeb (T.intercalate "." labels) []
+        tld : name : sub -> Right $ SimplexNameInfo nt ns name sub
+          where
+            ns = case tld of
+              "simplex" -> TLDSimplex
+              "testing" -> TLDTesting
+              _ -> TLDWeb tld
+
+fullDomainName :: SimplexNameInfo -> Text
+fullDomainName SimplexNameInfo {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain <> [domain, tld'])
+  where
+    tld' = case nameTLD of
+      TLDSimplex -> "simplex"
+      TLDTesting -> "testing"
+      TLDWeb tld -> tld
+      
+shortNameInfoStr :: SimplexNameInfo -> Text
+shortNameInfoStr = \case
+  SimplexNameInfo {nameType = NTPublicGroup, nameTLD = TLDSimplex, domain, subDomain = []} -> "#" <> domain
+  info -> pfx <> fullDomainName info
+    where
+      pfx = case nameType info of
+        NTPublicGroup -> "#"
+        NTContact -> "@"  
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
@@ -2246,7 +2268,7 @@ instance ToJSON ACreatedConnLink where
   toEncoding (ACCL _ ccLink) = toEncoding ccLink
   toJSON (ACCL _ ccLink) = toJSON ccLink
 
-$(J.deriveJSON (enumJSON $ dropPrefix "NS") ''SimplexNamespace)
+$(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "NT") ''SimplexNameType)
 
