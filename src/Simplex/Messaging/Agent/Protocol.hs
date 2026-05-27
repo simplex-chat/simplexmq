@@ -189,7 +189,6 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad
 import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
@@ -1547,10 +1546,7 @@ instance StrEncoding SimplexNameInfo where
     where
       nameP nt = parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
       parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
-      nameLabelP = do
-        ws <- AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
-        when (all (T.all isDigit) ws) $ fail "name must contain letters"
-        pure $ T.intercalate "-" ws
+      nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
       isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
       mkNameInfo nt labels = case reverse labels of
         [] -> Left "empty name"
