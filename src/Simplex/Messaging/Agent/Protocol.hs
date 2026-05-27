@@ -122,6 +122,9 @@ module Simplex.Messaging.Agent.Protocol
     OwnerId,
     ConnectionLink (..),
     AConnectionLink (..),
+    SimplexNameInfo (..),
+    SimplexTLD (..),
+    SimplexNameType (..),
     ConnShortLink (..),
     AConnShortLink (..),
     CreatedConnLink (..),
@@ -141,6 +144,8 @@ module Simplex.Messaging.Agent.Protocol
     connReqUriP',
     simplexConnReqUri,
     simplexShortLink,
+    fullDomainName,
+    shortNameInfoStr,
     AgentErrorType (..),
     CommandErrorType (..),
     ConnectionErrorType (..),
@@ -184,6 +189,7 @@ module Simplex.Messaging.Agent.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Monad
 import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
@@ -192,10 +198,11 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.Attoparsec.Text as AT
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (toLower, toUpper)
+import Data.Char (isAlpha, isDigit, toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -1514,6 +1521,64 @@ instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fr
 
 data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay deriving (Eq, Show)
 
+data SimplexNameInfo = SimplexNameInfo
+  { nameType :: SimplexNameType,
+    nameTLD :: SimplexTLD,
+    domain :: Text,
+    subDomain :: [Text] -- parent to child: ["b", "a"] for a.b.domain.simplex
+  }
+  deriving (Eq, Show)
+
+data SimplexTLD = TLDSimplex | TLDTesting | TLDWeb
+  deriving (Eq, Show)
+
+data SimplexNameType = NTPublicGroup | NTContact
+  deriving (Eq, Show)
+
+instance StrEncoding SimplexNameType where
+  strEncode = \case
+    NTPublicGroup -> "#"
+    NTContact -> "@"
+  strP = A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
+
+instance StrEncoding SimplexNameInfo where
+  strEncode info = "simplex:/name" <> strEncode (nameType info) <> encodeUtf8 (fullDomainName info)
+  strP = optional "simplex:/name" *> (strP >>= nameP) <|> nameP NTPublicGroup
+    where
+      nameP nt = parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
+      parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
+      nameLabelP = do
+        ws <- AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
+        when (all (T.all isDigit) ws) $ fail "name must contain letters"
+        pure $ T.intercalate "-" ws
+      isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
+      mkNameInfo nt labels = case reverse labels of
+        [] -> Left "empty name"
+        [name]
+          | nt == NTPublicGroup -> Right $ SimplexNameInfo nt TLDSimplex name []
+          | otherwise -> Left "contact name requires TLD"
+        tld : name : sub -> Right $ case tld of
+          "simplex" -> SimplexNameInfo nt TLDSimplex name sub
+          "testing" -> SimplexNameInfo nt TLDTesting name sub
+          _ -> SimplexNameInfo nt TLDWeb (T.intercalate "." labels) []
+
+fullDomainName :: SimplexNameInfo -> Text
+fullDomainName SimplexNameInfo {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
+  where
+    tld' = case nameTLD of
+      TLDSimplex -> ["simplex"]
+      TLDTesting -> ["testing"]
+      TLDWeb -> []
+      
+shortNameInfoStr :: SimplexNameInfo -> Text
+shortNameInfoStr = \case
+  SimplexNameInfo {nameType = NTPublicGroup, nameTLD = TLDSimplex, domain, subDomain = []} -> "#" <> domain
+  info -> pfx <> fullDomainName info
+    where
+      pfx = case nameType info of
+        NTPublicGroup -> "#"
+        NTContact -> "@"  
+
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
 instance Eq AConnShortLink where
@@ -2201,3 +2266,9 @@ instance FromJSON ACreatedConnLink where
 instance ToJSON ACreatedConnLink where
   toEncoding (ACCL _ ccLink) = toEncoding ccLink
   toJSON (ACCL _ ccLink) = toJSON ccLink
+
+$(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
+
+$(J.deriveJSON (enumJSON $ dropPrefix "NT") ''SimplexNameType)
+
+$(J.deriveJSON defaultJSON ''SimplexNameInfo)
