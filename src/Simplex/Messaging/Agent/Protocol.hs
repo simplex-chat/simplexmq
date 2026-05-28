@@ -191,6 +191,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Exception (BlockedIndefinitelyOnMVar (..), BlockedIndefinitelyOnSTM (..), fromException)
+import Control.Monad (unless)
 import Data.Aeson (FromJSON (..), ToJSON (..), Value (..), (.:), (.:?))
 import qualified Data.Aeson as J'
 import qualified Data.Aeson.Encoding as JE
@@ -1557,10 +1558,9 @@ instance StrEncoding SimplexNameDomain where
       mkDomain labels = case reverse labels of
         [] -> Left "empty name"
         [name] -> Right $ SimplexNameDomain TLDSimplex name []
-        tld : name : sub -> Right $ case tld of
-          "simplex" -> SimplexNameDomain TLDSimplex name sub
-          "testing" -> SimplexNameDomain TLDTesting name sub
-          _ -> SimplexNameDomain TLDWeb (T.intercalate "." labels) []
+        "simplex" : name : sub -> Right $ SimplexNameDomain TLDSimplex name sub
+        "testing" : name : sub -> Right $ SimplexNameDomain TLDTesting name sub
+        _ -> Right $ SimplexNameDomain TLDWeb (T.intercalate "." labels) []
 
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
@@ -1569,9 +1569,8 @@ instance StrEncoding SimplexNameInfo where
     where
       infoP NTContact = do
         bs <- lookAhead $ A.takeWhile1 (not . A.isSpace)
-        if B.elem '.' bs
-          then SimplexNameInfo NTContact <$> strP
-          else fail "contact name requires TLD"
+        unless (B.elem '.' bs) $ fail "contact name requires TLD"
+        SimplexNameInfo NTContact <$> strP
       infoP nt = SimplexNameInfo nt <$> strP
 
 fullDomainName :: SimplexNameDomain -> Text
