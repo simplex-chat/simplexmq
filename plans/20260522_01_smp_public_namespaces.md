@@ -1,5 +1,30 @@
 # Server: SMP support for public namespaces
 
+> **⚠ Implementation diverged from this plan.** Six audit rounds reshaped the
+> original design. **The shipped code differs in several load-bearing ways:**
+>
+> - **Wire format**: `NameRecord` is now JSON (aeson), not the custom binary
+>   ABNF this plan documents. See `protocol/simplex-messaging.md` §Resolver
+>   commands and `src/Simplex/Messaging/Protocol.hs` ToJSON/FromJSON instances.
+> - **No cache**: the TTL + FIFO + byte-cap cache, in-flight coalescing,
+>   `psqueues` dep, and `cache_*` INI keys are all gone. Every RSLV becomes
+>   one `eth_call` bounded by `rpcMaxConcurrency` + `rpcTimeoutMs`. See
+>   `src/Simplex/Messaging/Server/Names.hs`.
+> - **No `allow_dangerous_colocation` flag**: the proxy co-location guard
+>   was demoted to a startup `logWarn` (the flag was always-on because
+>   `[PROXY]` has no enable toggle).
+> - **Module shape**: `Names/Resolver.hs` was merged into `Names.hs`; only
+>   `Names/Eth/RPC.hs` and `Names/Eth/SNRC.hs` remain as separate modules.
+> - **Test list**: of the 15 specs listed below, ~7 shipped; the rest were
+>   either superseded by the cache removal (CacheSpec) or deferred
+>   (ForwardedRslvSpec, MockRpcSpec, StartupGuardSpec, UrlValidationSpec,
+>   EipChecksumSpec).
+>
+> Sources of truth: `CHANGELOG.md` (release notes),
+> `protocol/simplex-messaging.md` §Resolver commands (wire format),
+> `src/Simplex/Messaging/Server/Names*.hs` (implementation). This file is
+> retained as historical context; do not treat it as a specification.
+
 Implementation plan for Part 2 of [RFC 2026-05-21-public-namespaces](https://github.com/simplex-chat/simplex-chat/blob/ep/namespace/docs/rfcs/2026-05-21-public-namespaces.md). Adds a forwarded-only `RSLV <lookup_key>` SMP command that returns `NAME <NameRecord>` read from the SNRC contract via a Reth+Nimbus JSON-RPC endpoint. Smp-server becomes name-capable by `[NAMES] enable: on`.
 
 Out of scope: `Simplex.Messaging.Client` API, agent-side resolution flow, `ServerRoles.names` in the agent, default-router list, reverse resolution, multicoin/text records, state proofs.
