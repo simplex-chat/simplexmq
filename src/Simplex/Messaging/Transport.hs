@@ -141,7 +141,9 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, tshow)
+import Control.Logger.Simple (logInfo)
+import Data.Maybe (isJust)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -795,7 +797,9 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVRange getService = do
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleSMP c 'TClient)
 smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ = do
+  liftIO . logInfo $ "smpClientHandshake: awaiting server hello"
   SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey} <- getHandshake th
+  liftIO . logInfo $ "smpClientHandshake: server hello received, serverVersionRange=" <> tshow smpVersionRange
   when (sessionId /= sessId) $ throwE TEBadSession
   -- Below logic downgrades version range in case the "client" is SMP proxy server and it is
   -- connected to the destination server of the version 11 or older.
@@ -829,8 +833,20 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
             _ -> Nothing
           clientService = mkClientService v =<< serviceKeys
           hs = SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService}
+      liftIO . logInfo $ "smpClientHandshake: sending client hello, negotiatedVersion=" <> tshow v <> ", clientService=" <> tshow (isJust clientService)
       sendHandshake th hs
-      service <- mapM getClientService serviceKeys
+      -- Only wait for SMPServerHandshakeResponse if we actually sent the
+      -- clientService portion in our hello. `serviceKeys` may be Just while
+      -- `clientService` is Nothing when mkClientService gates the role
+      -- against rcvServiceSMPVersion (≥19) while serviceCertsSMPVersion is
+      -- 16 — that window (v ∈ [16,18]) caused the smp15 hang.
+      service <- case clientService of
+        Just _ -> forM serviceKeys $ \sks -> do
+          liftIO . logInfo $ "smpClientHandshake: awaiting service handshake response"
+          r <- getClientService sks
+          liftIO . logInfo $ "smpClientHandshake: service handshake complete"
+          pure r
+        Nothing -> pure Nothing
       liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck_ proxyServer service
     Nothing -> throwE TEVersion
   where
