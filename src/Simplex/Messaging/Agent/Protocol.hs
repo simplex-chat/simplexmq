@@ -198,6 +198,7 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Attoparsec.Combinator (lookAhead)
 import qualified Data.Attoparsec.Text as AT
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
@@ -1546,24 +1547,32 @@ instance StrEncoding SimplexNameType where
     NTContact -> "@"
   strP = A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
 
-instance StrEncoding SimplexNameInfo where
-  strEncode SimplexNameInfo {nameType, nameDomain} =
-    "simplex:/name" <> strEncode nameType <> encodeUtf8 (fullDomainName nameDomain)
-  strP = optional "simplex:/name" *> (strP >>= nameP) <|> nameP NTPublicGroup
+instance StrEncoding SimplexNameDomain where
+  strEncode = encodeUtf8 . fullDomainName
+  strP = parseDomain . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
     where
-      nameP nt = parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
-      parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
+      parseDomain s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
       nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
       isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
-      mkNameInfo nt labels = case reverse labels of
+      mkDomain labels = case reverse labels of
         [] -> Left "empty name"
-        [name]
-          | nt == NTPublicGroup -> Right $ SimplexNameInfo nt (SimplexNameDomain TLDSimplex name [])
-          | otherwise -> Left "contact name requires TLD"
-        tld : name : sub -> Right $ SimplexNameInfo nt $ case tld of
+        [name] -> Right $ SimplexNameDomain TLDSimplex name []
+        tld : name : sub -> Right $ case tld of
           "simplex" -> SimplexNameDomain TLDSimplex name sub
           "testing" -> SimplexNameDomain TLDTesting name sub
           _ -> SimplexNameDomain TLDWeb (T.intercalate "." labels) []
+
+instance StrEncoding SimplexNameInfo where
+  strEncode SimplexNameInfo {nameType, nameDomain} =
+    "simplex:/name" <> strEncode nameType <> strEncode nameDomain
+  strP = optional "simplex:/name" *> ((strP >>= infoP) <|> infoP NTPublicGroup)
+    where
+      infoP NTContact = do
+        bs <- lookAhead $ A.takeWhile1 (not . A.isSpace)
+        if B.elem '.' bs
+          then SimplexNameInfo NTContact <$> strP
+          else fail "contact name requires TLD"
+      infoP nt = SimplexNameInfo nt <$> strP
 
 fullDomainName :: SimplexNameDomain -> Text
 fullDomainName SimplexNameDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
