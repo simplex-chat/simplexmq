@@ -236,6 +236,7 @@ import Simplex.Messaging.Crypto.Ratchet
   )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.SimplexName (SimplexNameInfo (..), SimplexNameType (..), SimplexTLD (..), fullDomainName, shortNameInfoStr)
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
@@ -1530,61 +1531,6 @@ instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fr
 
 data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay deriving (Eq, Show)
 
-data SimplexNameInfo = SimplexNameInfo
-  { nameType :: SimplexNameType,
-    nameTLD :: SimplexTLD,
-    domain :: Text,
-    subDomain :: [Text] -- parent to child: ["b", "a"] for a.b.domain.simplex
-  }
-  deriving (Eq, Show)
-
-data SimplexTLD = TLDSimplex | TLDTesting | TLDWeb
-  deriving (Eq, Show)
-
-data SimplexNameType = NTPublicGroup | NTContact
-  deriving (Eq, Show)
-
-instance StrEncoding SimplexNameType where
-  strEncode = \case
-    NTPublicGroup -> "#"
-    NTContact -> "@"
-  strP = A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
-
-instance StrEncoding SimplexNameInfo where
-  strEncode info = "simplex:/name" <> strEncode (nameType info) <> encodeUtf8 (fullDomainName info)
-  strP = optional "simplex:/name" *> (strP >>= nameP) <|> nameP NTPublicGroup
-    where
-      nameP nt = parseName nt . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
-      parseName nt s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkNameInfo nt
-      nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
-      isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
-      mkNameInfo nt labels = case reverse labels of
-        [] -> Left "empty name"
-        [name]
-          | nt == NTPublicGroup -> Right $ SimplexNameInfo nt TLDSimplex name []
-          | otherwise -> Left "contact name requires TLD"
-        tld : name : sub -> Right $ case tld of
-          "simplex" -> SimplexNameInfo nt TLDSimplex name sub
-          "testing" -> SimplexNameInfo nt TLDTesting name sub
-          _ -> SimplexNameInfo nt TLDWeb (T.intercalate "." labels) []
-
-fullDomainName :: SimplexNameInfo -> Text
-fullDomainName SimplexNameInfo {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
-  where
-    tld' = case nameTLD of
-      TLDSimplex -> ["simplex"]
-      TLDTesting -> ["testing"]
-      TLDWeb -> []
-      
-shortNameInfoStr :: SimplexNameInfo -> Text
-shortNameInfoStr = \case
-  SimplexNameInfo {nameType = NTPublicGroup, nameTLD = TLDSimplex, domain, subDomain = []} -> "#" <> domain
-  info -> pfx <> fullDomainName info
-    where
-      pfx = case nameType info of
-        NTPublicGroup -> "#"
-        NTContact -> "@"  
-
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
 instance Eq AConnShortLink where
@@ -2263,8 +2209,3 @@ instance ToJSON ACreatedConnLink where
   toEncoding (ACCL _ ccLink) = toEncoding ccLink
   toJSON (ACCL _ ccLink) = toJSON ccLink
 
-$(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
-
-$(J.deriveJSON (enumJSON $ dropPrefix "NT") ''SimplexNameType)
-
-$(J.deriveJSON defaultJSON ''SimplexNameInfo)

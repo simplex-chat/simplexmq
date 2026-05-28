@@ -141,6 +141,7 @@ library
       Simplex.Messaging.Server.QueueStore.Postgres.Config
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
+      Simplex.Messaging.SimplexName
       Simplex.Messaging.Session
       Simplex.Messaging.SystemTime
       Simplex.Messaging.TMap
