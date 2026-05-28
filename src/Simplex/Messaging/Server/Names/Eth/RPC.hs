@@ -58,7 +58,12 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
-  deriving (Show)
+
+-- | Redacts the bearer token / basic-auth password so an accidental
+-- `show` / `tshow` on NamesConfig never lands secrets in logs.
+instance Show RpcAuth where
+  show (AuthBearer _) = "AuthBearer <redacted>"
+  show (AuthBasic u _) = "AuthBasic " <> show u <> " <redacted>"
 
 data EthRpcEnv = EthRpcEnv
   { manager :: Manager,
