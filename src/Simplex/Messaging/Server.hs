@@ -108,7 +108,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (ResolveError (..), closeNamesEnv, resolveName)
+import Simplex.Messaging.Server.Names (ResolveError (..), closeNamesEnv, resolveName, verifyRslv)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -661,8 +661,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
-        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled} =
-          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvBadName, _rslvEthErrs, _rslvDisabled} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvBadName, _rslvEthErrs, _rslvDisabled]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -1496,15 +1496,17 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> response . (corrId,NoEntity,) <$> processForwardedCommand encBlock
-      Cmd SResolver (RSLV (LookupKey key)) -> do
+      Cmd SResolver (RSLV req) -> do
         st <- asks (rslvStats . serverStats)
         incStat (rslvReqs st)
         (selector, msg) <- asks namesEnv >>= \case
           Nothing -> pure (rslvDisabled, ERR AUTH)
-          Just nenv -> liftIO (resolveName nenv key) <&> \case
-            Right rec -> (rslvSucc, NAME rec)
-            Left NotFound -> (rslvNotFound, ERR AUTH)
-            Left _ -> (rslvEthErrs, ERR AUTH)
+          Just nenv -> case verifyRslv nenv req of
+            Nothing -> pure (rslvBadName, ERR AUTH)
+            Just (addr, d) -> liftIO (resolveName nenv addr d) <&> \case
+              Right rec -> (rslvSucc, NAME rec)
+              Left NotFound -> (rslvNotFound, ERR AUTH)
+              Left _ -> (rslvEthErrs, ERR AUTH)
         incStat (selector st) $> response (corrId, NoEntity, msg)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr

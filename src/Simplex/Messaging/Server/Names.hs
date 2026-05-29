@@ -5,13 +5,15 @@
 {-# LANGUAGE StrictData #-}
 
 -- | Public-namespace resolver. Each RSLV becomes one eth_call to the
--- configured Ethereum endpoint, bounded by rpcMaxConcurrency and
--- rpcTimeoutMs. Zero-owner / expired records map to NotFound.
+-- Ethereum endpoint with the contract address selected by the requested
+-- TLD, bounded by rpcMaxConcurrency and rpcTimeoutMs. Zero-owner / expired
+-- records map to NotFound.
 --
 -- Transport details live in Names.Eth.RPC (HTTP + JSON-RPC + auth);
 -- Keccak-256 namehash and SNRC ABI decoder live in Names.Eth.SNRC.
 module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
+    TldRegistries (..),
     RpcAuth (..),
     NamesEnv (..),
     EthCall,
@@ -19,12 +21,15 @@ module Simplex.Messaging.Server.Names
     newNamesEnv,
     newNamesEnvWith,
     closeNamesEnv,
+    lookupTldAddress,
     pingEndpoint,
     resolveName,
+    verifyRslv,
   )
 where
 
-import Control.Monad (when, unless)
+import Control.Applicative ((<|>))
+import Control.Monad (guard, unless, when)
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.ByteString.Char8 (ByteString)
@@ -32,15 +37,31 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), unNameOwner)
+import Simplex.Messaging.Encoding.String (strDecode)
+import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), RslvRequest (..), unNameOwner)
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
 import Simplex.Messaging.Server.Names.Eth.SNRC (decodeAddress, decodeGetRecord, encodeGetRecord, isZeroOwner, namehash)
+import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..), fullDomainName)
 import System.Timeout (timeout)
+
+-- | TLD-keyed SNRC contract whitelist. Each RSLV carries the contract
+-- address the client wants queried; the server only accepts it if it
+-- matches the address configured for that TLD (or `tldAll` as catch-all).
+-- This lets one names router host multiple TLDs (each backed by its own
+-- SNRC contract) and reject clients pointing at a contract the operator
+-- doesn't run.
+data TldRegistries = TldRegistries
+  { tldSimplex :: Maybe NameOwner,
+    tldTesting :: Maybe NameOwner,
+    tldAll :: Maybe NameOwner
+  }
+  deriving (Show)
 
 data NamesConfig = NamesConfig
   { ethereumEndpoint :: Text,
-    snrcAddress :: NameOwner,
+    tldRegistries :: TldRegistries,
     rpcAuth :: Maybe RpcAuth,
     rpcTimeoutMs :: Int,
     rpcMaxResponseBytes :: Int,
@@ -83,22 +104,50 @@ newNamesEnvWith config ethCall rpcEnv = do
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {rpcEnv} = mapM_ closeEthRpcEnv rpcEnv
 
+-- | Look up the expected SNRC contract address for a TLD. TLD-specific
+-- entry takes precedence; `tldAll` is the catch-all. `TLDWeb` has no
+-- TLD-specific entry — it always resolves through `tldAll` if set.
+lookupTldAddress :: TldRegistries -> SimplexTLD -> Maybe NameOwner
+lookupTldAddress TldRegistries {tldSimplex, tldTesting, tldAll} = \case
+  TLDSimplex -> tldSimplex <|> tldAll
+  TLDTesting -> tldTesting <|> tldAll
+  TLDWeb -> tldAll
+
+-- | Parse the client-supplied domain, look up the TLD's expected contract,
+-- and verify the client-supplied contract matches. Returns the verified
+-- (address, parsed-domain) pair, or `Nothing` if any check fails — the
+-- handler maps this to `ERR AUTH` and increments `rslvBadName`.
+verifyRslv :: NamesEnv -> RslvRequest -> Maybe (NameOwner, SimplexNameDomain)
+verifyRslv NamesEnv {config} RslvRequest {name, contract} = case strDecode (encodeUtf8 name) of
+  Left _ -> Nothing
+  Right d -> do
+    expected <- lookupTldAddress (tldRegistries config) (nameTLD d)
+    guard (expected == contract)
+    pure (expected, d)
+
 -- | Reach the configured endpoint with a harmless probe call to confirm
--- network reachability. Returns Left only on transport-level failures;
--- JSON-RPC errors (misconfigured snrc_address etc.) are treated as
+-- network reachability. Uses any configured contract address (the parser
+-- guarantees at least one is set). Returns Left only on transport-level
+-- failures; JSON-RPC errors (misconfigured address etc.) are treated as
 -- "endpoint reachable" — that distinction surfaces later via rslvEthErrs.
 pingEndpoint :: NamesEnv -> IO (Either EthRpcError ())
-pingEndpoint NamesEnv {ethCall, config} =
-  ethCall (unNameOwner (snrcAddress config)) (encodeGetRecord (namehash "")) >>= \case
-    Left e@(HttpFailure _) -> pure (Left e)
-    Left e@(HttpStatusErr _) -> pure (Left e)
-    _ -> pure (Right ())
+pingEndpoint NamesEnv {ethCall, config} = case anyAddress (tldRegistries config) of
+  Nothing -> pure (Right ())
+  Just addr ->
+    ethCall (unNameOwner addr) (encodeGetRecord (namehash "")) >>= \case
+      Left e@(HttpFailure _) -> pure (Left e)
+      Left e@(HttpStatusErr _) -> pure (Left e)
+      _ -> pure (Right ())
+  where
+    anyAddress TldRegistries {tldSimplex, tldTesting, tldAll} =
+      tldSimplex <|> tldTesting <|> tldAll
 
--- | Resolve a lookup key with an rpcTimeoutMs ceiling. Synchronous
--- exceptions are caught and logged; async exceptions propagate.
-resolveName :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
-resolveName env key = do
-  r <- E.try (timeout (rpcTimeoutMs (config env) * 1000) (fetch env key))
+-- | Resolve a verified (contract, domain) pair with an rpcTimeoutMs
+-- ceiling. Synchronous exceptions are caught and logged; async exceptions
+-- propagate.
+resolveName :: NamesEnv -> NameOwner -> SimplexNameDomain -> IO (Either ResolveError NameRecord)
+resolveName env contract d = do
+  r <- E.try (timeout (rpcTimeoutMs (config env) * 1000) (fetch env contract d))
   case r of
     Right result -> pure (fromMaybe (Left TimedOut) result)
     Left e
@@ -107,9 +156,9 @@ resolveName env key = do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
           pure (Left EthHttpErr)
 
-fetch :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
-fetch env@NamesEnv {ethCall, config} key =
-  ethCall (unNameOwner (snrcAddress config)) (encodeGetRecord (namehash key)) >>= \case
+fetch :: NamesEnv -> NameOwner -> SimplexNameDomain -> IO (Either ResolveError NameRecord)
+fetch env@NamesEnv {ethCall} contract d =
+  ethCall (unNameOwner contract) (encodeGetRecord (namehash (encodeUtf8 (fullDomainName d)))) >>= \case
     Left e -> pure (Left (mapEthRpcError e))
     Right ret -> case decodeGetRecord ret of
       Right Nothing -> notFoundWithPlaceholderWarn ret
@@ -133,9 +182,10 @@ fetch env@NamesEnv {ethCall, config} key =
     -- names); any positive expiry in the past is treated as NotFound.
     checkExpiry rec = do
       nowSec <- floor <$> getPOSIXTime
-      pure $ if nrExpiry rec /= 0 && nrExpiry rec < nowSec
-        then Left NotFound
-        else Right rec
+      pure $
+        if nrExpiry rec /= 0 && nrExpiry rec < nowSec
+          then Left NotFound
+          else Right rec
 
 warnPlaceholderOnce :: NamesEnv -> IO ()
 warnPlaceholderOnce NamesEnv {placeholderWarned} = do

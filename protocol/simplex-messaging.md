@@ -1450,20 +1450,38 @@ below.
 
 #### Resolve name command
 
+The `RSLV` command carries a JSON-encoded request as the payload:
+
 ```abnf
-rslv = %s"RSLV" SP lookupKey
-lookupKey = length *OCTET  ; 1-byte length prefix, up to 64 bytes
+rslv = %s"RSLV" SP json-bytes   ; json-bytes consumes the remainder of the transmission
 ```
 
-Name-syntax validation (lowercase, namespace prefixes such as `#testnet:`,
-length policy) is a client-side concern. The names router treats the lookup
-key as opaque bytes.
+`json-bytes` MUST be a UTF-8 JSON object with the following schema:
+
+| Field | JSON type | Constraints |
+|---|---|---|
+| `name` | string | the canonical fully-qualified name (TLD always explicit, e.g. `"privacy.simplex"`, `"test.testing"`, `"example.com"`); UTF-8 bytes only |
+| `contract` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes — the SNRC contract address the client expects the server to query) |
+
+**Server-side validation.** The names router parses `name` as a fully-qualified
+domain (TLD required — bare labels are rejected), extracts the TLD, and looks
+up the expected SNRC contract address in its INI whitelist
+(`registry_tld_simplex`, `registry_tld_testing`, `registry_tld_all`).
+`registry_tld_all` is the catch-all used when no TLD-specific entry matches
+the requested TLD (and the only entry that can resolve web domains). If no
+whitelist entry matches the TLD, or if the client-supplied `contract` differs
+from the configured address, the server replies with `ERR AUTH` without
+contacting the chain. This lets one names router safely host multiple TLDs
+(each backed by its own SNRC contract) and reject clients pointing at a
+contract the operator doesn't run.
 
 The names router responds with either a `NAME` response carrying the resolved
 record, or `ERR AUTH` collapsing every failure mode (name not found, malformed
-key, names role disabled, RPC unreachable, decode error, timeout). The wire
-code does not distinguish between these — stats counters MAY be exposed
-out-of-band for operator observability.
+name, TLD not in whitelist, contract mismatch, names role disabled, RPC
+unreachable, decode error, timeout). The wire code does not distinguish
+between these — stats counters MAY be exposed out-of-band for operator
+observability (`bad_name` is incremented for validation/whitelist failures,
+distinct from `not_found` for valid lookups with no on-chain record).
 
 #### Name record response
 

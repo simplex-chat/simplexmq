@@ -11,18 +11,25 @@ import qualified Data.ByteArray as BA
 import Data.Either (isLeft, isRight)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Text as T
-import Simplex.Messaging.Encoding (smpEncode, smpP)
-import Simplex.Messaging.Parsers (parseAll)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
-  ( LookupKey (..),
-    NameOwner,
+  ( NameOwner,
     NameRecord (..),
+    RslvRequest (..),
     mkNameLink,
     mkNameOwner,
     unNameLink,
     unNameOwner,
+  )
+import Simplex.Messaging.Server.Names
+  ( NamesConfig (..),
+    ResolveError (..),
+    TldRegistries (..),
+    lookupTldAddress,
+    newNamesEnvWith,
+    resolveName,
+    verifyRslv,
   )
 import Simplex.Messaging.Server.Names.Eth.SNRC
   ( AbiError (..),
@@ -36,12 +43,7 @@ import Simplex.Messaging.Server.Names.Eth.SNRC
     namehash,
     snrcSelector,
   )
-import Simplex.Messaging.Server.Names
-  ( NamesConfig (..),
-    ResolveError (..),
-    newNamesEnvWith,
-    resolveName,
-  )
+import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
 import Test.Hspec
 
 -- Reference vectors:
@@ -83,10 +85,11 @@ sampleRecord = case (mkNameOwner twentyOnes, mkNameLink "simplex:/contact/abc#xy
 smpNamesTests :: Spec
 smpNamesTests = do
   describe "NameRecord encoding (Protocol)" nameRecordEncodingSpec
-  describe "LookupKey + smart constructors" lookupKeyAndCtorsSpec
+  describe "Smart constructors (NameOwner, NameLink)" smartCtorsSpec
   describe "Keccak-256 and namehash" namehashSpec
   describe "ABI primitive bounds" abiBoundsSpec
   describe "decodeGetRecord (zero-owner sentinel)" zeroOwnerSpec
+  describe "TLD whitelist + RSLV verification" tldWhitelistSpec
   describe "Resolver" resolverSpec
 
 nameRecordEncodingSpec :: Spec
@@ -127,14 +130,8 @@ nameRecordEncodingSpec = do
             }
     LB.length (J.encode wide) < 16224 `shouldBe` True
 
-lookupKeyAndCtorsSpec :: Spec
-lookupKeyAndCtorsSpec = do
-  it "LookupKey parser caps at 64 bytes" $ do
-    let okBytes = smpEncode (LookupKey (B.replicate 64 'a'))
-        bigBytes = smpEncode (LookupKey (B.replicate 65 'a'))
-    parseAll (smpP @LookupKey) okBytes `shouldSatisfy` isRight
-    parseAll (smpP @LookupKey) bigBytes `shouldSatisfy` isLeft
-
+smartCtorsSpec :: Spec
+smartCtorsSpec = do
   it "mkNameOwner accepts exactly 20 bytes" $ do
     mkNameOwner twentyOnes `shouldSatisfy` isRight
     mkNameOwner (B.replicate 19 '\x01') `shouldSatisfy` isLeft
@@ -239,23 +236,94 @@ zeroOwnerSpec = do
     let tiny = B.replicate 31 '\NUL'
     decodeGetRecord tiny `shouldBe` Left AbiTruncated
 
+tldWhitelistSpec :: Spec
+tldWhitelistSpec = do
+  let addr1 = either error id (mkNameOwner twentyOnes)
+      addr2 = either error id (mkNameOwner (B.replicate 20 '\x02'))
+      addr3 = either error id (mkNameOwner (B.replicate 20 '\x03'))
+
+  describe "lookupTldAddress" $ do
+    it "TLD-specific entry takes precedence over _all" $ do
+      let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Just addr3}
+      lookupTldAddress regs TLDSimplex `shouldBe` Just addr1
+      lookupTldAddress regs TLDTesting `shouldBe` Just addr2
+
+    it "TLD without specific entry falls back to _all" $ do
+      let regs = TldRegistries {tldSimplex = Nothing, tldTesting = Nothing, tldAll = Just addr3}
+      lookupTldAddress regs TLDSimplex `shouldBe` Just addr3
+      lookupTldAddress regs TLDTesting `shouldBe` Just addr3
+
+    it "TLDWeb resolves only through _all" $ do
+      let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Just addr3}
+      lookupTldAddress regs TLDWeb `shouldBe` Just addr3
+
+    it "TLDWeb without _all returns Nothing even if other TLDs are set" $ do
+      let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Nothing}
+      lookupTldAddress regs TLDWeb `shouldBe` Nothing
+
+  describe "verifyRslv" $ do
+    let cfgWith regs =
+          NamesConfig
+            { ethereumEndpoint = "http://stub",
+              tldRegistries = regs,
+              rpcAuth = Nothing,
+              rpcTimeoutMs = 1000,
+              rpcMaxResponseBytes = 65536,
+              rpcMaxConcurrency = 4
+            }
+        mkEnv regs = newNamesEnvWith (cfgWith regs) (\_ _ -> pure (Right "")) Nothing
+
+    it "accepts a valid name with matching TLD-specific contract" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      let req = RslvRequest {name = "privacy.simplex", contract = addr1}
+      case verifyRslv env req of
+        Just (a, d) -> do
+          a `shouldBe` addr1
+          nameTLD d `shouldBe` TLDSimplex
+          domain d `shouldBe` "privacy"
+        Nothing -> expectationFailure "expected Just"
+
+    it "rejects mismatched contract address" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      let req = RslvRequest {name = "privacy.simplex", contract = addr2}
+      verifyRslv env req `shouldBe` Nothing
+
+    it "rejects TLD with no whitelist entry" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      let req = RslvRequest {name = "test.testing", contract = addr1}
+      verifyRslv env req `shouldBe` Nothing
+
+    it "accepts via _all fallback" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Nothing, tldTesting = Nothing, tldAll = Just addr3}
+      let req = RslvRequest {name = "test.testing", contract = addr3}
+      case verifyRslv env req of
+        Just (a, _) -> a `shouldBe` addr3
+        Nothing -> expectationFailure "expected Just"
+
+    it "rejects bare (no-TLD) name (SimplexNameDomain.strP requires TLD)" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      let req = RslvRequest {name = "privacy", contract = addr1}
+      verifyRslv env req `shouldBe` Nothing
+
 resolverSpec :: Spec
 resolverSpec = do
   let mkEnv ethCall = do
         let cfg =
               NamesConfig
                 { ethereumEndpoint = "http://stub",
-                  snrcAddress = either error id (mkNameOwner twentyOnes),
+                  tldRegistries = TldRegistries {tldSimplex = Just (either error id (mkNameOwner twentyOnes)), tldTesting = Nothing, tldAll = Nothing},
                   rpcAuth = Nothing,
                   rpcTimeoutMs = 1000,
                   rpcMaxResponseBytes = 65536,
                   rpcMaxConcurrency = 4
                 }
         newNamesEnvWith cfg ethCall Nothing
+      aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+      aliceAddr = either error id (mkNameOwner twentyOnes)
 
   it "maps stub zero-owner response to NotFound" $ do
     env <- mkEnv $ \_ _ -> pure (Right (B.replicate (32 * 8) '\NUL'))
-    r <- resolveName env "alice"
+    r <- resolveName env aliceAddr aliceDomain
     r `shouldBe` Left NotFound
 
   it "every lookup hits the endpoint (no cache)" $ do
@@ -263,7 +331,7 @@ resolverSpec = do
     env <- mkEnv $ \_ _ -> do
       atomicModifyIORef' callCount (\v -> (v + 1, ()))
       pure (Right (B.replicate (32 * 8) '\NUL'))
-    _ <- resolveName env "alice"
-    _ <- resolveName env "alice"
+    _ <- resolveName env aliceAddr aliceDomain
+    _ <- resolveName env aliceAddr aliceDomain
     n <- readIORef callCount
     n `shouldBe` 2

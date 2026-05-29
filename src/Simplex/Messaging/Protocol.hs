@@ -163,7 +163,7 @@ module Simplex.Messaging.Protocol
     EncTransmission (..),
     FwdResponse (..),
     FwdTransmission (..),
-    LookupKey (..),
+    RslvRequest (..),
     NameRecord (..),
     NameOwner,
     mkNameOwner,
@@ -566,16 +566,17 @@ type LinkId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
--- | Name lookup key — opaque bytes; namespace/casing per RFC enforced client-side.
-newtype LookupKey = LookupKey ByteString
+-- | Name resolution request. The client sends the canonical SimplexNameDomain
+-- (TLD always explicit) plus the SNRC contract address it expects the server
+-- to query. The server parses the domain (validating syntax) and checks the
+-- supplied contract against its INI whitelist before reading the chain — so a
+-- single names router can safely host multiple TLDs (each backed by its own
+-- SNRC contract) and reject clients that ask for the wrong one.
+data RslvRequest = RslvRequest
+  { name :: Text,
+    contract :: NameOwner
+  }
   deriving (Eq, Show)
-
-instance Encoding LookupKey where
-  smpEncode (LookupKey s) = smpEncode s
-  smpP = do
-    n <- lenP
-    when (n > 64) $ fail "LookupKey too long"
-    LookupKey <$> A.take n
 
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
@@ -625,7 +626,7 @@ data Command (p :: Party) where
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Name resolution: forwarded-only via PFWD. Server reads SNRC contract via Ethereum JSON-RPC.
-  RSLV :: LookupKey -> Command Resolver
+  RSLV :: RslvRequest -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -758,6 +759,16 @@ instance J.FromJSON NameOwner where
     case BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) of
       Left e -> fail e
       Right bs -> either fail pure (mkNameOwner bs)
+
+instance J.ToJSON RslvRequest where
+  toJSON RslvRequest {name, contract} = J.object ["name" J..= name, "contract" J..= contract]
+  toEncoding RslvRequest {name, contract} = J.pairs ("name" J..= name <> "contract" J..= contract)
+
+instance J.FromJSON RslvRequest where
+  parseJSON = J.withObject "RslvRequest" $ \o -> do
+    name <- o J..: "name"
+    contract <- o J..: "contract"
+    pure RslvRequest {name, contract}
 
 -- | A name-record link (channel or contact). Bare constructor not exported;
 -- use `mkNameLink` to enforce the ≤1024-byte UTF-8 invariant.
@@ -1920,7 +1931,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
-    RSLV key -> e (RSLV_, ' ', key)
+    RSLV req
+      | v >= namesSMPVersion -> e (RSLV_, ' ', Tail (LB.toStrict (J.encode req)))
+      | otherwise -> e (ERR_, ' ', AUTH) -- pre-v20: shouldn't reach here, degrade to AUTH
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2030,7 +2043,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
     CT SResolver RSLV_
-      | v >= namesSMPVersion -> Cmd SResolver . RSLV <$> _smpP
+      | v >= namesSMPVersion -> do
+          Tail bs <- _smpP
+          either fail (pure . Cmd SResolver . RSLV) (J.eitherDecodeStrict bs)
       | otherwise -> fail "RSLV requires namesSMPVersion"
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg

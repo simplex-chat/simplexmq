@@ -78,7 +78,7 @@ import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCf
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Simplex.Messaging.Protocol (mkNameOwner, NameOwner)
-import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
+import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..), TldRegistries (..))
 import Simplex.Messaging.Server.Names.Eth.RPC (fromHex)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
@@ -807,10 +807,11 @@ readNamesConfig ini
   | otherwise =
       let rpcAuth_ = either (error . ("[NAMES] rpc_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "rpc_auth" ini)
           endpoint = requiredText "ethereum_endpoint"
+          registries = readTldRegistries
        in Just
             NamesConfig
               { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
-                snrcAddress = either (error . ("[NAMES] snrc_address: " <>)) id $ parseEthAddr (requiredText "snrc_address"),
+                tldRegistries = registries,
                 rpcAuth = rpcAuth_,
                 rpcTimeoutMs = readIniDefault 3000 "NAMES" "rpc_timeout_ms" ini,
                 rpcMaxResponseBytes = readIniDefault 262144 "NAMES" "rpc_max_response_bytes" ini,
@@ -821,6 +822,18 @@ readNamesConfig ini
     requiredText key =
       either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
         lookupValue "NAMES" key ini
+    readTldRegistries =
+      let regs = TldRegistries
+            { tldSimplex = optionalAddr "registry_tld_simplex",
+              tldTesting = optionalAddr "registry_tld_testing",
+              tldAll = optionalAddr "registry_tld_all"
+            }
+       in case (tldSimplex regs, tldTesting regs, tldAll regs) of
+            (Nothing, Nothing, Nothing) ->
+              error "[NAMES] at least one of registry_tld_simplex, registry_tld_testing, registry_tld_all is required"
+            _ -> regs
+    optionalAddr key =
+      either (error . (("[NAMES] " <> T.unpack key <> ": ") <>)) Just . parseEthAddr =<< eitherToMaybe (lookupValue "NAMES" key ini)
 
 -- | Validate the ethereum_endpoint URL:
 --   * scheme must be http: or https:
