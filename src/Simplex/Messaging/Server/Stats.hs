@@ -39,9 +39,18 @@ module Simplex.Messaging.Server.Stats
     setServiceStats,
     emptyTimeBuckets,
     updateTimeBuckets,
+    incStat,
+    NameResolverStats (..),
+    NameResolverStatsData (..),
+    newNameResolverStats,
+    newNameResolverStatsData,
+    getNameResolverStatsData,
+    getResetNameResolverStatsData,
+    setNameResolverStats,
   ) where
 
 import Control.Applicative (optional, (<|>))
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -123,7 +132,8 @@ data ServerStats = ServerStats
     rcvServicesSubDuplicate :: IORef Int,
     qCount :: IORef Int,
     msgCount :: IORef Int,
-    ntfCount :: IORef Int
+    ntfCount :: IORef Int,
+    rslvStats :: NameResolverStats
   }
 
 data ServerStatsData = ServerStatsData
@@ -184,7 +194,8 @@ data ServerStatsData = ServerStatsData
     _rcvServicesSubDuplicate :: Int,
     _qCount :: Int,
     _msgCount :: Int,
-    _ntfCount :: Int
+    _ntfCount :: Int,
+    _rslvStats :: NameResolverStatsData
   }
   deriving (Show)
 
@@ -248,6 +259,7 @@ newServerStats ts = do
   qCount <- newIORef 0
   msgCount <- newIORef 0
   ntfCount <- newIORef 0
+  rslvStats <- newNameResolverStats
   pure
     ServerStats
       { fromTime,
@@ -307,7 +319,8 @@ newServerStats ts = do
         rcvServicesSubDuplicate,
         qCount,
         msgCount,
-        ntfCount
+        ntfCount,
+        rslvStats
       }
 
 getServerStatsData :: ServerStats -> IO ServerStatsData
@@ -370,6 +383,7 @@ getServerStatsData s = do
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
   _ntfCount <- readIORef $ ntfCount s
+  _rslvStats <- getNameResolverStatsData $ rslvStats s
   pure
     ServerStatsData
       { _fromTime,
@@ -429,7 +443,8 @@ getServerStatsData s = do
         _rcvServicesSubDuplicate,
         _qCount,
         _msgCount,
-        _ntfCount
+        _ntfCount,
+        _rslvStats
       }
 
 -- this function is not thread safe, it is used on server start only
@@ -493,6 +508,7 @@ setServerStats s d = do
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
+  setNameResolverStats (rslvStats s) $! _rslvStats d
 
 instance StrEncoding ServerStatsData where
   strEncode d =
@@ -557,7 +573,9 @@ instance StrEncoding ServerStatsData where
         "rcvServices:",
         strEncode (_rcvServices d),
         "ntfServices:",
-        strEncode (_ntfServices d)
+        strEncode (_ntfServices d),
+        "rslvStats:",
+        strEncode (_rslvStats d)
       ]
   strP = do
     _fromTime <- "fromTime=" *> strP <* A.endOfLine
@@ -628,6 +646,10 @@ instance StrEncoding ServerStatsData where
     _pMsgFwdsRecv <- opt "pMsgFwdsRecv="
     _rcvServices <- serviceStatsP "rcvServices:"
     _ntfServices <- serviceStatsP "ntfServices:"
+    _rslvStats <-
+      optional ("rslvStats:" <* A.endOfLine) >>= \case
+        Just _ -> strP <* optional A.endOfLine
+        _ -> pure newNameResolverStatsData
     pure
       ServerStatsData
         { _fromTime,
@@ -687,7 +709,8 @@ instance StrEncoding ServerStatsData where
           _rcvServicesSubDuplicate = 0,
           _qCount,
           _msgCount = 0,
-          _ntfCount = 0
+          _ntfCount = 0,
+          _rslvStats
         }
     where
       opt s = A.string s *> strP <* A.endOfLine <|> pure 0
@@ -786,6 +809,10 @@ updatePeriodStats ps (EntityId pId) = do
     ph = hash pId
     updatePeriod ref = unlessM (IS.member ph <$> readIORef ref) $ atomicModifyIORef'_ ref $ IS.insert ph
 
+incStat :: MonadIO m => IORef Int -> m ()
+incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
+{-# INLINE incStat #-}
+
 data ProxyStats = ProxyStats
   { pRequests :: IORef Int,
     pSuccesses :: IORef Int, -- includes destination server error responses that will be forwarded to the client
@@ -861,6 +888,109 @@ instance StrEncoding ProxyStatsData where
     _pErrorsCompat <- "errorsCompat=" *> strP <* A.endOfLine
     _pErrorsOther <- "errorsOther=" *> strP
     pure ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther}
+
+data NameResolverStats = NameResolverStats
+  { rslvReqs :: IORef Int,
+    rslvSucc :: IORef Int,
+    rslvNotFound :: IORef Int,
+    rslvEthErrs :: IORef Int,
+    rslvCacheHits :: IORef Int,
+    rslvCacheMiss :: IORef Int,
+    rslvDisabled :: IORef Int
+  }
+
+newNameResolverStats :: IO NameResolverStats
+newNameResolverStats = do
+  rslvReqs <- newIORef 0
+  rslvSucc <- newIORef 0
+  rslvNotFound <- newIORef 0
+  rslvEthErrs <- newIORef 0
+  rslvCacheHits <- newIORef 0
+  rslvCacheMiss <- newIORef 0
+  rslvDisabled <- newIORef 0
+  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvEthErrs, rslvCacheHits, rslvCacheMiss, rslvDisabled}
+
+data NameResolverStatsData = NameResolverStatsData
+  { _rslvReqs :: Int,
+    _rslvSucc :: Int,
+    _rslvNotFound :: Int,
+    _rslvEthErrs :: Int,
+    _rslvCacheHits :: Int,
+    _rslvCacheMiss :: Int,
+    _rslvDisabled :: Int
+  }
+  deriving (Show)
+
+newNameResolverStatsData :: NameResolverStatsData
+newNameResolverStatsData =
+  NameResolverStatsData
+    { _rslvReqs = 0,
+      _rslvSucc = 0,
+      _rslvNotFound = 0,
+      _rslvEthErrs = 0,
+      _rslvCacheHits = 0,
+      _rslvCacheMiss = 0,
+      _rslvDisabled = 0
+    }
+
+getNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
+getNameResolverStatsData s = do
+  _rslvReqs <- readIORef $ rslvReqs s
+  _rslvSucc <- readIORef $ rslvSucc s
+  _rslvNotFound <- readIORef $ rslvNotFound s
+  _rslvEthErrs <- readIORef $ rslvEthErrs s
+  _rslvCacheHits <- readIORef $ rslvCacheHits s
+  _rslvCacheMiss <- readIORef $ rslvCacheMiss s
+  _rslvDisabled <- readIORef $ rslvDisabled s
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled}
+
+getResetNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
+getResetNameResolverStatsData s = do
+  _rslvReqs <- atomicSwapIORef (rslvReqs s) 0
+  _rslvSucc <- atomicSwapIORef (rslvSucc s) 0
+  _rslvNotFound <- atomicSwapIORef (rslvNotFound s) 0
+  _rslvEthErrs <- atomicSwapIORef (rslvEthErrs s) 0
+  _rslvCacheHits <- atomicSwapIORef (rslvCacheHits s) 0
+  _rslvCacheMiss <- atomicSwapIORef (rslvCacheMiss s) 0
+  _rslvDisabled <- atomicSwapIORef (rslvDisabled s) 0
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled}
+
+-- not thread safe; used on server start only
+setNameResolverStats :: NameResolverStats -> NameResolverStatsData -> IO ()
+setNameResolverStats s d = do
+  writeIORef (rslvReqs s) $! _rslvReqs d
+  writeIORef (rslvSucc s) $! _rslvSucc d
+  writeIORef (rslvNotFound s) $! _rslvNotFound d
+  writeIORef (rslvEthErrs s) $! _rslvEthErrs d
+  writeIORef (rslvCacheHits s) $! _rslvCacheHits d
+  writeIORef (rslvCacheMiss s) $! _rslvCacheMiss d
+  writeIORef (rslvDisabled s) $! _rslvDisabled d
+
+instance StrEncoding NameResolverStatsData where
+  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled} =
+    "reqs="
+      <> strEncode _rslvReqs
+      <> "\nsucc="
+      <> strEncode _rslvSucc
+      <> "\nnotFound="
+      <> strEncode _rslvNotFound
+      <> "\nethErrs="
+      <> strEncode _rslvEthErrs
+      <> "\ncacheHits="
+      <> strEncode _rslvCacheHits
+      <> "\ncacheMiss="
+      <> strEncode _rslvCacheMiss
+      <> "\ndisabled="
+      <> strEncode _rslvDisabled
+  strP = do
+    _rslvReqs <- "reqs=" *> strP <* A.endOfLine
+    _rslvSucc <- "succ=" *> strP <* A.endOfLine
+    _rslvNotFound <- "notFound=" *> strP <* A.endOfLine
+    _rslvEthErrs <- "ethErrs=" *> strP <* A.endOfLine
+    _rslvCacheHits <- "cacheHits=" *> strP <* A.endOfLine
+    _rslvCacheMiss <- "cacheMiss=" *> strP <* A.endOfLine
+    _rslvDisabled <- "disabled=" *> strP
+    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled}
 
 data ServiceStats = ServiceStats
   { srvAssocNew :: IORef Int,

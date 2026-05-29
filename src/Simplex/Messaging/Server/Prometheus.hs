@@ -59,7 +59,7 @@ data RTSubscriberMetrics = RTSubscriberMetrics
 {-# FOURMOLU_DISABLE\n#-}
 prometheusMetrics :: ServerMetrics -> RealTimeMetrics -> UTCTime -> Text
 prometheusMetrics sm rtm ts =
-  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> info
+  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> names <> info
   where
     ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions} = sm
     RealTimeMetrics
@@ -128,7 +128,8 @@ prometheusMetrics sm rtm ts =
         _rcvServicesSubDuplicate,
         _qCount,
         _msgCount,
-        _ntfCount
+        _ntfCount,
+        _rslvStats
       } = statsData
     time =
       "# Recorded at: " <> T.pack (iso8601Show ts) <> "\n\
@@ -459,6 +460,39 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_" <> pfx <> "_services_sub_fewer_total gauge\n\
       \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
+    names =
+      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled} = _rslvStats
+       in "# Names\n\
+          \# -----\n\
+          \\n\
+          \# HELP simplex_smp_names_reqs Total RSLV requests forwarded to this server.\n\
+          \# TYPE simplex_smp_names_reqs counter\n\
+          \simplex_smp_names_reqs " <> mshow _rslvReqs <> "\n# rslvReqs\n\
+          \\n\
+          \# HELP simplex_smp_names_success NameRecord successfully resolved and returned.\n\
+          \# TYPE simplex_smp_names_success counter\n\
+          \simplex_smp_names_success " <> mshow _rslvSucc <> "\n# rslvSucc\n\
+          \\n\
+          \# HELP simplex_smp_names_not_found Lookup key has no corresponding NameRecord on chain (zero-owner sentinel).\n\
+          \# TYPE simplex_smp_names_not_found counter\n\
+          \simplex_smp_names_not_found " <> mshow _rslvNotFound <> "\n# rslvNotFound\n\
+          \\n\
+          \# HELP simplex_smp_names_eth_errs Ethereum endpoint or ABI errors.\n\
+          \# TYPE simplex_smp_names_eth_errs counter\n\
+          \simplex_smp_names_eth_errs " <> mshow _rslvEthErrs <> "\n# rslvEthErrs\n\
+          \\n\
+          \# HELP simplex_smp_names_cache_hits Resolution served from cache.\n\
+          \# TYPE simplex_smp_names_cache_hits counter\n\
+          \simplex_smp_names_cache_hits " <> mshow _rslvCacheHits <> "\n# rslvCacheHits\n\
+          \\n\
+          \# HELP simplex_smp_names_cache_miss Resolution required an eth_call.\n\
+          \# TYPE simplex_smp_names_cache_miss counter\n\
+          \simplex_smp_names_cache_miss " <> mshow _rslvCacheMiss <> "\n# rslvCacheMiss\n\
+          \\n\
+          \# HELP simplex_smp_names_disabled RSLV requests rejected because the names role is disabled.\n\
+          \# TYPE simplex_smp_names_disabled counter\n\
+          \simplex_smp_names_disabled " <> mshow _rslvDisabled <> "\n# rslvDisabled\n\
+          \\n"
     info =
       "# Info\n\
       \# ----\n\

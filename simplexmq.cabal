@@ -261,6 +261,10 @@ library
           Simplex.Messaging.Server.MsgStore.Journal.SharedLock
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
+          Simplex.Messaging.Server.Names
+          Simplex.Messaging.Server.Names.Eth.RPC
+          Simplex.Messaging.Server.Names.Eth.SNRC
+          Simplex.Messaging.Server.Names.Resolver
           Simplex.Messaging.Server.NtfStore
           Simplex.Messaging.Server.Prometheus
           Simplex.Messaging.Server.QueueStore
@@ -355,9 +359,13 @@ library
     build-depends:
         case-insensitive ==1.2.*
       , hashable ==1.4.*
+      , http-client >=0.7 && <0.8
+      , http-client-tls >=0.3 && <0.4
       , ini ==0.4.1
+      , network-uri >=2.6 && <2.7
       , optparse-applicative >=0.15 && <0.17
       , process ==1.6.*
+      , psqueues >=0.2.7 && <0.3
       , temporary ==1.3.*
       , wai >=3.2 && <3.3
       , wai-app-static >=3.1 && <3.2
@@ -508,6 +516,7 @@ test-suite simplexmq-test
       ServerTests
       SMPAgentClient
       SMPClient
+      SMPNamesTests
       SMPProxyTests
       Util
       XFTPAgent

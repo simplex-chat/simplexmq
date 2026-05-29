@@ -163,6 +163,18 @@ module Simplex.Messaging.Protocol
     EncTransmission (..),
     FwdResponse (..),
     FwdTransmission (..),
+    LookupKey (..),
+    unLookupKey,
+    NameRecord (..),
+    NameOwner,
+    mkNameOwner,
+    unNameOwner,
+    NameLink,
+    mkNameLink,
+    unNameLink,
+    nameRecBytes,
+    parseNameRec,
+    smpListPUpTo,
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
@@ -225,6 +237,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Exception (Exception, SomeException, displayException, fromException)
+import Control.Monad (when)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
@@ -250,7 +263,7 @@ import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, decodeUtf8', encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
 import Data.Word (Word8, Word16)
@@ -343,6 +356,7 @@ data Party
   | LinkClient
   | ProxiedClient
   | ProxyService
+  | Resolver
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
@@ -357,6 +371,7 @@ data SParty :: Party -> Type where
   SSenderLink :: SParty LinkClient
   SProxiedClient :: SParty ProxiedClient
   SProxyService :: SParty ProxyService
+  SResolver :: SParty Resolver
 
 instance TestEquality SParty where
   testEquality SCreator SCreator = Just Refl
@@ -369,6 +384,7 @@ instance TestEquality SParty where
   testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
   testEquality SProxyService SProxyService = Just Refl
+  testEquality SResolver SResolver = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
@@ -394,6 +410,8 @@ instance PartyI LinkClient where sParty = SSenderLink
 instance PartyI ProxiedClient where sParty = SProxiedClient
 
 instance PartyI ProxyService where sParty = SProxyService
+
+instance PartyI Resolver where sParty = SResolver
 
 -- command parties that can read queues
 type family QueueParty (p :: Party) :: Constraint where
@@ -473,6 +491,7 @@ partyClientRole = \case
   SSenderLink -> Just SRMessaging
   SProxiedClient -> Just SRMessaging
   SProxyService -> Just SRProxy
+  SResolver -> Nothing
 {-# INLINE partyClientRole #-}
 
 partyServiceRole :: ServiceParty p => SParty p -> SMPServiceRole
@@ -550,6 +569,21 @@ type LinkId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
+-- | Name lookup key — opaque bytes; namespace/casing per RFC enforced client-side.
+newtype LookupKey = LookupKey ByteString
+  deriving (Eq, Show)
+
+unLookupKey :: LookupKey -> ByteString
+unLookupKey (LookupKey s) = s
+{-# INLINE unLookupKey #-}
+
+instance Encoding LookupKey where
+  smpEncode (LookupKey s) = smpEncode s
+  smpP = do
+    n <- lenP
+    when (n > 64) $ fail "LookupKey too long"
+    LookupKey <$> A.take n
+
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
@@ -597,6 +631,8 @@ data Command (p :: Party) where
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
+  -- Name resolution: forwarded-only via PFWD. Server reads SNRC contract via Ethereum JSON-RPC.
+  RSLV :: LookupKey -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -705,6 +741,96 @@ instance Encoding FwdTransmission where
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
 
+-- | 20-byte Ethereum address (NameRecord owner). Bare constructor not exported;
+-- use `mkNameOwner` to enforce the 20-byte invariant.
+newtype NameOwner = NameOwner ByteString
+  deriving (Eq, Show)
+
+mkNameOwner :: ByteString -> Either String NameOwner
+mkNameOwner bs
+  | B.length bs == 20 = Right (NameOwner bs)
+  | otherwise = Left "NameOwner must be 20 bytes"
+
+unNameOwner :: NameOwner -> ByteString
+unNameOwner (NameOwner bs) = bs
+{-# INLINE unNameOwner #-}
+
+instance Encoding NameOwner where
+  smpEncode (NameOwner bs) = bs
+  {-# INLINE smpEncode #-}
+  smpP = NameOwner <$> A.take 20
+
+-- | A name-record link (channel or contact). Bare constructor not exported;
+-- use `mkNameLink` to enforce the ≤1024-byte UTF-8 invariant.
+newtype NameLink = NameLink Text
+  deriving (Eq, Show)
+
+mkNameLink :: Text -> Either String NameLink
+mkNameLink t
+  | B.length (encodeUtf8 t) <= 1024 = Right (NameLink t)
+  | otherwise = Left "NameLink too long"
+
+unNameLink :: NameLink -> Text
+unNameLink (NameLink t) = t
+{-# INLINE unNameLink #-}
+
+instance Encoding NameLink where
+  smpEncode (NameLink t) =
+    let bs = encodeUtf8 t
+     in smpEncode @Word16 (fromIntegral $ B.length bs) <> bs
+  smpP = do
+    n <- fromIntegral <$> smpP @Word16
+    when (n > 1024) $ fail "NameLink too long"
+    bs <- A.take n
+    either (fail . show) (pure . NameLink) (decodeUtf8' bs)
+
+-- | Resolved name record returned by the names role.
+--   Field additions are gated by future SMP version bumps (matching IDS QIK precedent).
+data NameRecord = NameRecord
+  { nrDisplayName :: Text, -- ≤255 bytes UTF-8 (enforced by Encoding ByteString length prefix)
+    nrOwner :: NameOwner,
+    nrChannelLinks :: [NameLink],
+    nrContactLinks :: [NameLink],
+    nrAdminAddress :: Maybe Text,
+    nrAdminEmail :: Maybe Text,
+    nrExpiry :: Int64, -- Unix seconds, ≥ 0
+    nrIsTest :: Bool
+  }
+  deriving (Eq, Show)
+
+-- | Bounded list parser — caps element count before allocating.
+smpListPUpTo :: Encoding a => Int -> Parser [a]
+smpListPUpTo cap = do
+  n <- lenP
+  when (n > cap) $ fail "list too long"
+  A.count n smpP
+
+-- | Encode NameRecord on the wire. Version-branched in the same shape as IDS QIK.
+nameRecBytes :: VersionSMP -> NameRecord -> ByteString
+nameRecBytes _v NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
+  smpEncode nrDisplayName
+    <> smpEncode nrOwner
+    <> smpEncodeList nrChannelLinks
+    <> smpEncodeList nrContactLinks
+    <> smpEncode nrAdminAddress
+    <> smpEncode nrAdminEmail
+    <> smpEncode nrExpiry
+    <> smpEncode nrIsTest
+
+-- | Parse NameRecord. Combined channel+contact list cap is 8.
+parseNameRec :: VersionSMP -> Parser NameRecord
+parseNameRec _v = do
+  nrDisplayName <- smpP
+  nrOwner <- smpP
+  nrChannelLinks <- smpListPUpTo 8
+  nrContactLinks <- smpListPUpTo (8 - length nrChannelLinks)
+  nrAdminAddress <- smpP
+  nrAdminEmail <- smpP
+  nrExpiry <- smpP
+  when (nrExpiry < 0) $ fail "expiry must be non-negative"
+  nrIsTest <- smpP
+  pure NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest}
+
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
@@ -732,6 +858,8 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
+  -- Name resolution response. Returned only for forwarded RSLV.
+  NAME :: NameRecord -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -942,6 +1070,7 @@ data CommandTag (p :: Party) where
   RFWD_ :: CommandTag ProxyService
   NSUB_ :: CommandTag Notifier
   NSUBS_ :: CommandTag NotifierService
+  RSLV_ :: CommandTag Resolver
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -968,6 +1097,7 @@ data BrokerMsgTag
   | OK_
   | ERR_
   | PONG_
+  | NAME_
   deriving (Show)
 
 class ProtocolMsgTag t where
@@ -1004,6 +1134,7 @@ instance PartyI p => Encoding (CommandTag p) where
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
     NSUBS_ -> "NSUBS"
+    RSLV_ -> "RSLV"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
@@ -1032,6 +1163,7 @@ instance ProtocolMsgTag CmdTag where
     "RFWD" -> Just $ CT SProxyService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
     "NSUBS" -> Just $ CT SNotifierService NSUBS_
+    "RSLV" -> Just $ CT SResolver RSLV_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1061,6 +1193,7 @@ instance Encoding BrokerMsgTag where
     OK_ -> "OK"
     ERR_ -> "ERR"
     PONG_ -> "PONG"
+    NAME_ -> "NAME"
   smpP = messageTagP
 
 instance ProtocolMsgTag BrokerMsgTag where
@@ -1083,6 +1216,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "OK" -> Just OK_
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
+    "NAME" -> Just NAME_
     _ -> Nothing
 
 -- | SMP message body format
@@ -1792,6 +1926,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
+    RSLV key -> e (RSLV_, ' ', key)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1816,6 +1951,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY {} -> noAuthCmd
     PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
+    RSLV _ -> noAuthCmd
     SUB -> serviceCmd
     NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
@@ -1899,6 +2035,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
+    CT SResolver RSLV_
+      | v >= namesSMPVersion -> Cmd SResolver . RSLV <$> _smpP
+      | otherwise -> fail "RSLV requires namesSMPVersion"
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1945,6 +2084,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
+    NAME rec
+      | v >= namesSMPVersion -> e (NAME_, ' ') <> nameRecBytes v rec
+      | otherwise -> e (ERR_, ' ', AUTH) -- pre-v20: shouldn't reach here, degrade to AUTH
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1992,6 +2134,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
+    NAME_
+      | v >= namesSMPVersion -> NAME <$> (A.space *> parseNameRec v)
+      | otherwise -> fail "NAME requires namesSMPVersion"
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2014,6 +2159,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
+    NAME _ -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY

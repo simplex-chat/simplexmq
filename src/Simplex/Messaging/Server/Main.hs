@@ -39,6 +39,7 @@ module Simplex.Messaging.Server.Main
     strParse,
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Exception (finally)
 import Control.Logger.Simple
@@ -76,6 +77,8 @@ import Simplex.Messaging.Server.Main.Init
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Protocol (mkNameOwner, NameOwner)
+import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -605,6 +608,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
+              namesConfig = readNamesConfig ini,
               information = serverPublicInfo ini,
               startOptions
             }
@@ -795,6 +799,64 @@ validCountryValue :: String -> String -> Either String Text
 validCountryValue field s
   | length s == 2 && all (\c -> isAscii c && isAlpha c) s = Right $ T.pack $ map toUpper s
   | otherwise = Left $ "Use ISO3166 2-letter code for " <> field
+
+readNamesConfig :: Ini -> Maybe NamesConfig
+readNamesConfig ini
+  | not enabled = Nothing
+  | otherwise =
+      Just
+        NamesConfig
+          { ethereumEndpoint = requiredText "ethereum_endpoint",
+            snrcAddress = either (error . ("[NAMES] snrc_address: " <>)) id $ parseEthAddr (requiredText "snrc_address"),
+            rpcAuth = either (error . ("[NAMES] rpc_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "rpc_auth" ini),
+            cacheSeconds = readIniDefault 300 "NAMES" "cache_seconds" ini,
+            cacheMaxEntries = readIniDefault 100000 "NAMES" "cache_max_entries" ini,
+            cacheMaxBytes = readIniDefault 67108864 "NAMES" "cache_max_bytes" ini,
+            rpcTimeoutMs = readIniDefault 3000 "NAMES" "rpc_timeout_ms" ini,
+            rpcMaxResponseBytes = readIniDefault 262144 "NAMES" "rpc_max_response_bytes" ini,
+            rpcMaxConcurrency = readIniDefault 8 "NAMES" "rpc_max_concurrency" ini,
+            dangerousColocation = fromMaybe False (iniOnOff "NAMES" "allow_dangerous_colocation" ini)
+          }
+  where
+    enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
+    requiredText key =
+      either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
+        lookupValue "NAMES" key ini
+
+-- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
+-- Step 4 minimal validation; EIP-55 checksum check lands in step 5.
+parseEthAddr :: Text -> Either String NameOwner
+parseEthAddr t =
+  let s = case T.stripPrefix "0x" t <|> T.stripPrefix "0X" t of
+        Just rest -> rest
+        Nothing -> t
+   in if T.length s == 40 && T.all isHex s
+        then mkNameOwner (hexDecode (encodeUtf8 s))
+        else Left "expected 0x-prefixed 40 hex characters"
+  where
+    isHex c = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
+-- | Decode a hex string of even length. Precondition: input is already
+-- validated as even-length and all-hex (validated by caller).
+hexDecode :: ByteString -> ByteString
+hexDecode = B.pack . go
+  where
+    go s
+      | B.null s = []
+      | otherwise = toEnum (16 * digit (B.head s) + digit (B.index s 1)) : go (B.drop 2 s)
+    digit c
+      | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
+      | c >= 'a' && c <= 'f' = 10 + fromEnum c - fromEnum 'a'
+      | otherwise = 10 + fromEnum c - fromEnum 'A'
+
+parseRpcAuth :: Text -> Either String RpcAuth
+parseRpcAuth t = case T.words t of
+  ["bearer", tok] -> Right $ AuthBearer tok
+  ["basic", up] -> case T.breakOn ":" up of
+    (u, rest)
+      | not (T.null u) && ":" `T.isPrefixOf` rest -> Right $ AuthBasic u (T.drop 1 rest)
+    _ -> Left "basic auth expects user:password"
+  _ -> Left "expected `bearer <token>` or `basic <user>:<pass>`"
 
 printSourceCode :: Maybe Text -> IO ()
 printSourceCode = \case

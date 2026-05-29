@@ -1,4 +1,4 @@
-Version 19, 2025-01-24
+Version 20, 2026-05-25
 
 # Simplex Messaging Protocol (SMP)
 
@@ -67,6 +67,9 @@ Version 19, 2025-01-24
     - [Queue deleted notification](#queue-deleted-notification)
     - [Error responses](#error-responses)
     - [OK response](#ok-response)
+  - [Resolver commands](#resolver-commands)
+    - [Resolve name command](#resolve-name-command)
+    - [Name record response](#name-record-response)
 - [Transport connection with the SMP router](#transport-connection-with-the-SMP-router)
   - [General transport protocol considerations](#general-transport-protocol-considerations)
   - [TLS transport encryption](#tls-transport-encryption)
@@ -83,7 +86,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 19. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 20. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -103,6 +106,7 @@ This document describes SMP protocol version 19. Versions 1-5 are discontinued. 
 - v17: create notification credentials with NEW command
 - v18: support client notices in BLOCKED error
 - v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
+- v20: public namespaces resolver (RSLV command, NAME response) — forwarded-only via PFWD
 
 ## Introduction
 
@@ -423,6 +427,8 @@ Simplex messaging router implementations MUST NOT create, store or send to any o
 - Snapshots of the database they use to store queues and messages (instead simplex messaging clients must manage redundancy by using more than one simplex messaging router). In-memory persistence is recommended.
 
 - Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging routers (the routers cannot compromise forward secrecy of any application layer protocol, such as double ratchet).
+
+Routers with the names role make outbound JSON-RPC calls to an Ethereum endpoint to read `NameRecord` data; the lookup key reaches that endpoint. Operators MUST run the endpoint themselves (loopback Reth + Nimbus, or a self-hosted central deployment) — sharing one endpoint across multiple operators collapses the two-server privacy property because the endpoint operator would see every lookup key across all of them. The names role and the SMP-proxy role MUST NOT be enabled on the same router by default; a slow `RSLV` cache miss can serialise other forwarded commands on the same proxy-relay session.
 
 ## Message delivery notifications
 
@@ -1421,6 +1427,68 @@ When the command is successfully executed by the router, it should respond with 
 ```abnf
 ok = %s"OK"
 ```
+
+### Resolver commands
+
+Resolver commands implement public-namespace name resolution on the names-role
+router. A names router translates an opaque lookup key (such as `alice` or
+`alice.simplex.eth`) into a `NameRecord` carrying the channel and contact links
+the named party publishes.
+
+**Forwarded-only.** RSLV is only valid when delivered inside a `PFWD` block via
+the SMP proxy. A direct `RSLV` from a transport client is rejected with
+`ERR CMD PROHIBITED`. This preserves the two-server privacy property of the
+resolver design: the names router sees the lookup key but never the client IP,
+session, or identity; the proxy router sees the client connection but cannot
+read the encrypted lookup key inside the forwarded transmission.
+
+**Backing store.** This protocol does not prescribe where the names router
+reads `NameRecord` from. The reference implementation queries the SNRC contract
+on Ethereum via a JSON-RPC endpoint; alternative backings (different chains,
+DHT, etc.) are valid as long as they return a `NameRecord` matching the encoding
+below.
+
+#### Resolve name command
+
+```abnf
+rslv = %s"RSLV" SP lookupKey
+lookupKey = length *OCTET  ; 1-byte length prefix, up to 64 bytes
+```
+
+Name-syntax validation (lowercase, namespace prefixes such as `#testnet:`,
+length policy) is a client-side concern. The names router treats the lookup
+key as opaque bytes.
+
+The names router responds with either a `NAME` response carrying the resolved
+record, or `ERR AUTH` collapsing every failure mode (name not found, malformed
+key, names role disabled, RPC unreachable, decode error, timeout). The wire
+code does not distinguish between these — stats counters MAY be exposed
+out-of-band for operator observability.
+
+#### Name record response
+
+```abnf
+name = %s"NAME" SP nameRecord
+
+nameRecord = displayName owner channelLinks contactLinks adminAddr adminEmail expiry isTest
+displayName = length *OCTET                  ; 1-byte length prefix, up to 255 bytes UTF-8
+owner       = 20OCTET                        ; raw 20-byte Ethereum-style address
+channelLinks = count *nameLink               ; count is a 1-byte unsigned integer
+contactLinks = count *nameLink               ; combined count of channelLinks + contactLinks ≤ 8
+nameLink    = length16 *OCTET                ; 2-byte big-endian length, up to 1024 bytes UTF-8
+adminAddr   = optionalText                   ; "0" absent or "1" + 1-byte length + UTF-8 up to 255 bytes
+adminEmail  = optionalText                   ; same encoding as adminAddr
+expiry      = 8OCTET                         ; Int64 big-endian, Unix seconds, MUST be ≥ 0
+isTest      = "T" / "F"
+```
+
+The encoding is canonical: every primitive has exactly one valid byte form, so
+two names routers reading the same backing state produce byte-identical
+responses.
+
+**Wire-size budget.** A maximal `nameRecord` (8 links × 1024 bytes + maximal
+admin / display strings) fits comfortably within the SMP proxied transmission
+budget of 16224 bytes.
 
 ## Transport connection with the SMP router
 

@@ -115,6 +115,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
+import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, closeNamesEnv, newNamesEnv)
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -197,6 +198,8 @@ data ServerConfig s = ServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
+    -- | public-namespace resolver config; Nothing disables the names role
+    namesConfig :: Maybe NamesConfig,
     -- | server public information
     information :: Maybe ServerPublicInfo,
     startOptions :: StartOptions
@@ -272,7 +275,8 @@ data Env s = Env
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
-    proxyAgent :: ProxyAgent -- senders served on this proxy
+    proxyAgent :: ProxyAgent, -- senders served on this proxy
+    namesEnv :: Maybe NamesEnv -- public-namespace resolver, present when [NAMES] enable: on
   }
 
 msgStore :: Env s -> s
@@ -558,7 +562,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
+newEnv config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of
@@ -603,6 +607,15 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
+  namesEnv <- case namesConfig of
+    Nothing -> pure Nothing
+    Just nc
+      | allowSMPProxy && not (dangerousColocation nc) -> do
+          logError "[NAMES] enable: on with [PROXY] is refused — RSLV cache misses can serialise other forwarded commands. Set allow_dangerous_colocation = on to override."
+          exitFailure
+      | otherwise -> do
+          let rs = rslvStats serverStats
+          Just <$> newNamesEnv nc (rslvCacheHits rs) (rslvCacheMiss rs)
   pure
     Env
       { serverActive,
@@ -618,7 +631,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         serverStats,
         sockets,
         clientSeq,
-        proxyAgent
+        proxyAgent,
+        namesEnv
       }
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()

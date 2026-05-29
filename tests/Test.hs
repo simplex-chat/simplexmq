@@ -22,6 +22,7 @@ import FileDescriptionTests (fileDescriptionTests)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import RemoteControl (remoteControlTests)
+import SMPNamesTests (smpNamesTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
@@ -97,6 +98,7 @@ main = do
 #endif
           describe "TSessionSubs tests" tSessionSubsTests
           describe "Util tests" utilTests
+          describe "Names resolver tests" smpNamesTests
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $

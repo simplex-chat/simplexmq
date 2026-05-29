@@ -108,6 +108,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
+import Simplex.Messaging.Server.Names (ResolveError (..), closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -245,7 +246,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       saveServerStats
 
     closeServer :: M s ()
-    closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
+    closeServer = do
+      asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
+      asks namesEnv >>= liftIO . mapM_ closeNamesEnv
 
     serverThread ::
       forall sub. String ->
@@ -513,7 +516,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices}
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices, rslvStats}
         <- asks serverStats
       st <- asks msgStore
       EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
@@ -576,6 +579,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           qCount' <- readIORef qCount
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
+          rslvStats' <- getResetNameResolverStatsData rslvStats
           T.hPutStrLn h $
             T.intercalate
               ","
@@ -649,6 +653,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                      ]
                        <> showServiceStats rcvServices'
                        <> showServiceStats ntfServices'
+                       <> showNameResolverStats rslvStats'
               )
         liftIO $ threadDelay' interval
       where
@@ -656,6 +661,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -1149,8 +1156,8 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
             updateBatchStats stats cmd -- even if nothing is verified
             let queueId (_, _, (_, qId, _)) = qId
             qs <- getQueueRecs ms p $ map queueId ts'
-            zipWithM (\t -> verified stats t . verifyLoadedQueue service thAuth t) ts' qs
-          _ -> mapM (\t -> verified stats t =<< verifyTransmission ms service thAuth t) ts'
+            zipWithM (\t -> verified stats t . verifyLoadedQueue False service thAuth t) ts' qs
+          _ -> mapM (\t -> verified stats t =<< verifyTransmission False ms service thAuth t) ts'
         mapM_ (atomically . writeTBQueue rcvQ) $ L.nonEmpty cmds
         pure $ errs ++ errs'
       [] -> pure errs
@@ -1230,19 +1237,19 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- - the queue or party key do not exist.
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
-verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> IO (VerificationResult s)
-verifyTransmission ms service thAuth t@(_, _, (_, queueId, Cmd p _)) = case queueParty p of
-  Just Dict -> verifyLoadedQueue service thAuth t <$> getQueueRec ms p queueId
-  Nothing -> pure $ verifyQueueTransmission service thAuth t Nothing
+verifyTransmission :: forall s. MsgStoreClass s => Bool -> s -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> IO (VerificationResult s)
+verifyTransmission forwarded ms service thAuth t@(_, _, (_, queueId, Cmd p _)) = case queueParty p of
+  Just Dict -> verifyLoadedQueue forwarded service thAuth t <$> getQueueRec ms p queueId
+  Nothing -> pure $ verifyQueueTransmission forwarded service thAuth t Nothing
 
-verifyLoadedQueue :: Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
-verifyLoadedQueue service thAuth t@(tAuth, authorized, (corrId, _, _)) = \case
-  Right q -> verifyQueueTransmission service thAuth t (Just q)
+verifyLoadedQueue :: Bool -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
+verifyLoadedQueue forwarded service thAuth t@(tAuth, authorized, (corrId, _, _)) = \case
+  Right q -> verifyQueueTransmission forwarded service thAuth t (Just q)
   Left AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
   Left e -> VRFailed e
 
-verifyQueueTransmission :: forall s. Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Maybe (StoreQueue s, QueueRec) -> VerificationResult s
-verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, command@(Cmd p cmd))) q_
+verifyQueueTransmission :: forall s. Bool -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Maybe (StoreQueue s, QueueRec) -> VerificationResult s
+verifyQueueTransmission forwarded service thAuth (tAuth, authorized, (corrId, entId, command@(Cmd p cmd))) q_
   | not checkRole = VRFailed $ CMD PROHIBITED
   | not verifyServiceSig = VRFailed SERVICE
   | otherwise = vc p cmd
@@ -1262,6 +1269,9 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, comma
     vc SNotifierService NSUBS {} = verifyServiceCmd
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
+    vc SResolver (RSLV _)
+      | forwarded = VRVerified Nothing
+      | otherwise = VRFailed $ CMD PROHIBITED
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True
@@ -1486,6 +1496,16 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> response . (corrId,NoEntity,) <$> processForwardedCommand encBlock
+      Cmd SResolver (RSLV (LookupKey key)) -> do
+        st <- asks (rslvStats . serverStats)
+        incStat (rslvReqs st)
+        asks namesEnv >>= \case
+          Nothing -> incStat (rslvDisabled st) $> response (corrId, NoEntity, ERR AUTH)
+          Just nenv ->
+            liftIO (resolveName nenv key) >>= \case
+              Right rec -> incStat (rslvSucc st) $> response (corrId, NoEntity, NAME rec)
+              Left NotFound -> incStat (rslvNotFound st) $> response (corrId, NoEntity, ERR AUTH)
+              Left _ -> incStat (rslvEthErrs st) $> response (corrId, NoEntity, ERR AUTH)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2126,7 +2146,7 @@ client
             rejectOrVerify clntThAuth = \case
               Left (corrId', entId', e) -> pure $ Left (corrId', entId', ERR e)
               Right t'@(_, _, t''@(corrId', entId', cmd'))
-                | allowed -> liftIO $ verified <$> verifyTransmission ms Nothing clntThAuth t'
+                | allowed -> liftIO $ verified <$> verifyTransmission True ms Nothing clntThAuth t'
                 | otherwise -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
                 where
                   allowed = case cmd' of
@@ -2134,6 +2154,7 @@ client
                     Cmd SSender (SKEY _) -> True
                     Cmd SSenderLink (LKEY _) -> True
                     Cmd SSenderLink LGET -> True
+                    Cmd SResolver (RSLV _) -> True
                     _ -> False
                   verified = \case
                     VRVerified q -> Right (q, t'')
@@ -2216,10 +2237,6 @@ updateDeletedStats q = do
   incStat $ delSel stats
   incStat $ qDeletedAll stats
   liftIO $ atomicModifyIORef'_ (qCount stats) (subtract 1)
-
-incStat :: MonadIO m => IORef Int -> m ()
-incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
-{-# INLINE incStat #-}
 
 randomId' :: Int -> M s ByteString
 randomId' n = atomically . C.randomBytes n =<< asks random
