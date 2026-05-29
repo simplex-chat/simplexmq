@@ -123,6 +123,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionLink (..),
     AConnectionLink (..),
     SimplexNameInfo (..),
+    SimplexNameDomain (..),
     SimplexTLD (..),
     SimplexNameType (..),
     ConnShortLink (..),
@@ -236,7 +237,7 @@ import Simplex.Messaging.Crypto.Ratchet
   )
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.SimplexName (SimplexNameInfo (..), SimplexNameType (..), SimplexTLD (..), fullDomainName, shortNameInfoStr)
+import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexNameInfo (..), SimplexNameType (..), SimplexTLD (..), fullDomainName, shortNameInfoStr)
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol
   ( AProtocolType,
