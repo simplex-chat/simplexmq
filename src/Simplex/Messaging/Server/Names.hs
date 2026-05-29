@@ -10,9 +10,10 @@ module Simplex.Messaging.Server.Names
     ResolveError (..),
     newNamesEnv,
     closeNamesEnv,
+    pingEndpoint,
     resolveName,
   )
 where
 
 import Simplex.Messaging.Server.Names.Eth.RPC (RpcAuth (..))
-import Simplex.Messaging.Server.Names.Resolver (NamesConfig (..), NamesEnv, ResolveError (..), closeNamesEnv, newNamesEnv, resolveName)
+import Simplex.Messaging.Server.Names.Resolver (NamesConfig (..), NamesEnv, ResolveError (..), closeNamesEnv, newNamesEnv, pingEndpoint, resolveName)

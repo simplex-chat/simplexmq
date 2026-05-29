@@ -164,7 +164,6 @@ module Simplex.Messaging.Protocol
     FwdResponse (..),
     FwdTransmission (..),
     LookupKey (..),
-    unLookupKey,
     NameRecord (..),
     NameOwner,
     mkNameOwner,
@@ -572,10 +571,6 @@ type QueueId = EntityId
 -- | Name lookup key — opaque bytes; namespace/casing per RFC enforced client-side.
 newtype LookupKey = LookupKey ByteString
   deriving (Eq, Show)
-
-unLookupKey :: LookupKey -> ByteString
-unLookupKey (LookupKey s) = s
-{-# INLINE unLookupKey #-}
 
 instance Encoding LookupKey where
   smpEncode (LookupKey s) = smpEncode s

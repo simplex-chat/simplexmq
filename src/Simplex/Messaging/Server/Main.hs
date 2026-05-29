@@ -39,7 +39,6 @@ module Simplex.Messaging.Server.Main
     strParse,
   ) where
 
-import Control.Applicative ((<|>))
 import Control.Concurrent.STM
 import Control.Exception (finally)
 import Control.Logger.Simple
@@ -77,8 +76,10 @@ import Simplex.Messaging.Server.Main.Init
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
+import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Simplex.Messaging.Protocol (mkNameOwner, NameOwner)
 import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
+import Simplex.Messaging.Server.Names.Eth.RPC (fromHex)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -804,55 +805,73 @@ readNamesConfig :: Ini -> Maybe NamesConfig
 readNamesConfig ini
   | not enabled = Nothing
   | otherwise =
-      Just
-        NamesConfig
-          { ethereumEndpoint = requiredText "ethereum_endpoint",
-            snrcAddress = either (error . ("[NAMES] snrc_address: " <>)) id $ parseEthAddr (requiredText "snrc_address"),
-            rpcAuth = either (error . ("[NAMES] rpc_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "rpc_auth" ini),
-            cacheSeconds = readIniDefault 300 "NAMES" "cache_seconds" ini,
-            cacheMaxEntries = readIniDefault 100000 "NAMES" "cache_max_entries" ini,
-            cacheMaxBytes = readIniDefault 67108864 "NAMES" "cache_max_bytes" ini,
-            rpcTimeoutMs = readIniDefault 3000 "NAMES" "rpc_timeout_ms" ini,
-            rpcMaxResponseBytes = readIniDefault 262144 "NAMES" "rpc_max_response_bytes" ini,
-            rpcMaxConcurrency = readIniDefault 8 "NAMES" "rpc_max_concurrency" ini,
-            dangerousColocation = fromMaybe False (iniOnOff "NAMES" "allow_dangerous_colocation" ini)
-          }
+      let rpcAuth_ = either (error . ("[NAMES] rpc_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "rpc_auth" ini)
+          endpoint = requiredText "ethereum_endpoint"
+       in Just
+            NamesConfig
+              { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
+                snrcAddress = either (error . ("[NAMES] snrc_address: " <>)) id $ parseEthAddr (requiredText "snrc_address"),
+                rpcAuth = rpcAuth_,
+                cacheSeconds = readIniDefault 300 "NAMES" "cache_seconds" ini,
+                cacheMaxEntries = readIniDefault 100000 "NAMES" "cache_max_entries" ini,
+                cacheMaxBytes = readIniDefault 67108864 "NAMES" "cache_max_bytes" ini,
+                rpcTimeoutMs = readIniDefault 3000 "NAMES" "rpc_timeout_ms" ini,
+                rpcMaxResponseBytes = readIniDefault 262144 "NAMES" "rpc_max_response_bytes" ini,
+                rpcMaxConcurrency = readIniDefault 8 "NAMES" "rpc_max_concurrency" ini
+              }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
     requiredText key =
       either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
         lookupValue "NAMES" key ini
 
+-- | Validate the ethereum_endpoint URL:
+--   * scheme must be http: or https:
+--   * authority (host) must be present and non-empty
+--   * port MUST be explicit (rejects http://host without :8545 to avoid
+--     accidentally hitting :80 when Reth listens on :8545)
+--   * userinfo (user:pass@) MUST NOT be present (credentials belong in
+--     rpc_auth so they don't leak via Host header or logs)
+--   * query and fragment MUST NOT be present
+--   * https requires rpc_auth on non-loopback hosts (operator misconfig
+--     guard — a public HTTPS endpoint without auth is almost always wrong)
+validateUrl :: Text -> Maybe RpcAuth -> Either String Text
+validateUrl url auth_ = do
+  uri <- maybe (Left "not an absolute URI") Right $ parseAbsoluteURI (T.unpack url)
+  let scheme = uriScheme uri
+  unless (scheme == "http:" || scheme == "https:") $
+    Left ("scheme " <> show scheme <> " not supported (use http or https)")
+  ua <- maybe (Left "missing authority (host)") Right (uriAuthority uri)
+  when (null (uriRegName ua)) $ Left "empty host"
+  unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use rpc_auth instead"
+  when (null (uriPort ua)) $ Left "explicit port required (e.g. http://host:8545)"
+  unless (null (uriQuery uri)) $ Left "query string not allowed"
+  unless (null (uriFragment uri)) $ Left "fragment not allowed"
+  let path = uriPath uri
+  unless (path == "" || path == "/") $
+    Left "URL path not allowed; API keys embedded in the path leak to logs — use rpc_auth instead"
+  when (scheme == "https:" && not (isLoopback (uriRegName ua)) && isNothing auth_) $
+    Left "https endpoint on a non-loopback host requires rpc_auth"
+  Right url
+  where
+    isLoopback h = h == "127.0.0.1" || h == "localhost" || h == "[::1]"
+
 -- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
--- Step 4 minimal validation; EIP-55 checksum check lands in step 5.
+-- EIP-55 mixed-case checksum verification is a follow-up.
 parseEthAddr :: Text -> Either String NameOwner
-parseEthAddr t =
-  let s = case T.stripPrefix "0x" t <|> T.stripPrefix "0X" t of
-        Just rest -> rest
-        Nothing -> t
-   in if T.length s == 40 && T.all isHex s
-        then mkNameOwner (hexDecode (encodeUtf8 s))
-        else Left "expected 0x-prefixed 40 hex characters"
-  where
-    isHex c = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+parseEthAddr t = do
+  bs <- fromHex (encodeUtf8 t)
+  if B.length bs == 20
+    then mkNameOwner bs
+    else Left "expected a 20-byte address (40 hex characters, optionally 0x-prefixed)"
 
--- | Decode a hex string of even length. Precondition: input is already
--- validated as even-length and all-hex (validated by caller).
-hexDecode :: ByteString -> ByteString
-hexDecode = B.pack . go
-  where
-    go s
-      | B.null s = []
-      | otherwise = toEnum (16 * digit (B.head s) + digit (B.index s 1)) : go (B.drop 2 s)
-    digit c
-      | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
-      | c >= 'a' && c <= 'f' = 10 + fromEnum c - fromEnum 'a'
-      | otherwise = 10 + fromEnum c - fromEnum 'A'
-
+-- | Parse an rpc_auth INI value. Scheme keyword is case-insensitive so
+-- "Bearer <token>" / "BEARER <token>" (Caddy / RFC 7235 convention) work
+-- as well as the lowercase form.
 parseRpcAuth :: Text -> Either String RpcAuth
 parseRpcAuth t = case T.words t of
-  ["bearer", tok] -> Right $ AuthBearer tok
-  ["basic", up] -> case T.breakOn ":" up of
+  [scheme, tok] | T.toLower scheme == "bearer" -> Right $ AuthBearer tok
+  [scheme, up] | T.toLower scheme == "basic" -> case T.breakOn ":" up of
     (u, rest)
       | not (T.null u) && ":" `T.isPrefixOf` rest -> Right $ AuthBasic u (T.drop 1 rest)
     _ -> Left "basic auth expects user:password"

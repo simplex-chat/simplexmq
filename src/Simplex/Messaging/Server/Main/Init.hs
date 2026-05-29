@@ -158,7 +158,8 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \[NAMES]\n\
         \# Public-namespace resolution (SNRC on Ethereum).\n\
         \# Requires an Ethereum JSON-RPC endpoint (Reth+Nimbus). See deployment guide.\n\
-        \# Cannot be combined with [PROXY] enable: on by default - see allow_dangerous_colocation.\n\
+        \# Co-locating with the proxy role logs a warning at startup - slow RSLV cache misses\n\
+        \# can serialise other forwarded commands. For high-volume deployments, run on a separate host.\n\
         \# Restart required to change settings.\n\
         \enable: off\n\
         \# Same-host:\n\
@@ -166,14 +167,14 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Central Reth via Caddy:\n\
         \# ethereum_endpoint: https://eth.simplex.chat:443\n\
         \# rpc_auth: basic <username>:<password>\n\
-        \# snrc_address: 0x0000000000000000000000000000000000000000\n\
+        \# snrc_address: 0x<paste-your-contract-address>\n\
+        \# (cache_max_entries and cache_max_bytes both cap the cache; whichever fills first triggers FIFO eviction)\n\
         \# cache_seconds: 300\n\
         \# cache_max_entries: 100000\n\
         \# cache_max_bytes: 67108864\n\
         \# rpc_timeout_ms: 3000\n\
         \# rpc_max_response_bytes: 262144\n\
-        \# rpc_max_concurrency: 8\n\
-        \# allow_dangerous_colocation: off\n\n\
+        \# rpc_max_concurrency: 8\n\n\
         \[INACTIVE_CLIENTS]\n\
         \# TTL and interval to check inactive clients\n\
         \disconnect = on\n"

@@ -115,7 +115,9 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
-import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, closeNamesEnv, newNamesEnv)
+import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, newNamesEnv, pingEndpoint)
+import Simplex.Messaging.Server.Names.Eth.RPC (scrubUrl)
+import Simplex.Messaging.Util (tshow)
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -609,13 +611,19 @@ newEnv config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serv
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
   namesEnv <- case namesConfig of
     Nothing -> pure Nothing
-    Just nc
-      | allowSMPProxy && not (dangerousColocation nc) -> do
-          logError "[NAMES] enable: on with [PROXY] is refused — RSLV cache misses can serialise other forwarded commands. Set allow_dangerous_colocation = on to override."
-          exitFailure
-      | otherwise -> do
-          let rs = rslvStats serverStats
-          Just <$> newNamesEnv nc (rslvCacheHits rs) (rslvCacheMiss rs)
+    Just nc -> do
+      logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (ethereumEndpoint nc)
+      when allowSMPProxy $
+        logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV cache misses can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
+      let rs = rslvStats serverStats
+      env <- newNamesEnv nc (rslvCacheHits rs) (rslvCacheMiss rs)
+      -- Probe the endpoint at startup. Don't exitFailure: a flapping
+      -- network or an Ethereum host coming up minutes after smp-server
+      -- should not block the server. Log so operators can spot it.
+      pingEndpoint env >>= \case
+        Right _ -> logInfo "[NAMES] endpoint probe ok"
+        Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR AUTH until reachable): " <> tshow e
+      pure (Just env)
   pure
     Env
       { serverActive,

@@ -4,7 +4,9 @@
 
 module SMPNamesTests (smpNamesTests) where
 
-import Control.Concurrent.Async (replicateConcurrently)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, replicateConcurrently, wait)
+import Control.Concurrent.STM (atomically, newEmptyTMVarIO, putTMVar, readTMVar)
 import qualified Crypto.Hash as Crypton
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -189,6 +191,17 @@ abiBoundsSpec = do
     let buf = B.replicate 23 '\NUL' <> B.singleton '\x01' <> B.replicate 8 '\NUL'
     decodeWord256Int64 0 buf `shouldBe` Left AbiNonZeroHighBytes
 
+  it "decodeWord256Int64 rejects sign bit set in low 8 bytes (silent negative)" $ do
+    -- 0x8000000000000000 would decode to Int64.minBound without the check;
+    -- downstream length math would then see a negative len and silently
+    -- return empty bytes from B.take instead of failing.
+    let buf = B.replicate 24 '\NUL' <> "\x80\x00\x00\x00\x00\x00\x00\x00"
+    decodeWord256Int64 0 buf `shouldBe` Left AbiNonZeroHighBytes
+
+  it "decodeWord256Int64 succeeds for the max representable positive value" $ do
+    let buf = B.replicate 24 '\NUL' <> "\x7F\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
+    decodeWord256Int64 0 buf `shouldBe` Right maxBound
+
   it "decodeWord256Int64 succeeds for low 8 bytes set" $ do
     let buf = B.replicate 24 '\NUL' <> "\x00\x00\x00\x00\x00\x00\x12\x34"
     decodeWord256Int64 0 buf `shouldBe` Right 0x1234
@@ -239,8 +252,7 @@ resolverCacheSpec = do
                   cacheMaxBytes = 1024 * 1024,
                   rpcTimeoutMs = 1000,
                   rpcMaxResponseBytes = 65536,
-                  rpcMaxConcurrency = 4,
-                  dangerousColocation = False
+                  rpcMaxConcurrency = 4
                 }
         env <- newNamesEnvWith cfg ethCall Nothing hitsRef missRef
         pure (env, hitsRef, missRef)
@@ -252,15 +264,40 @@ resolverCacheSpec = do
     misses <- readIORef missRef
     misses `shouldBe` 1
 
-  it "concurrent identical lookups don't crash and all return NotFound" $ do
+  it "subsequent NotFound lookups hit the cache (no second RPC)" $ do
+    callCount <- newIORef (0 :: Int)
+    (env, hitsRef, missRef) <- mkEnv $ \_ _ -> do
+      atomicModifyIORef' callCount (\v -> (v + 1, ()))
+      pure (Right (B.replicate (32 * 8) '\NUL'))
+    -- First lookup: miss, eth_call fires, NotFound cached.
+    _ <- resolveName env "alice"
+    -- Second lookup: should hit cache, not call ethCall.
+    r2 <- resolveName env "alice"
+    r2 `shouldBe` Left NotFound
+    callCount' <- readIORef callCount
+    callCount' `shouldBe` 1
+    missCount <- readIORef missRef
+    hitCount <- readIORef hitsRef
+    missCount `shouldBe` 1
+    hitCount `shouldBe` 1
+
+  it "concurrent identical lookups coalesce — only the leader makes the RPC" $ do
+    -- Block the stub on a TMVar so the leader's eth_call doesn't return
+    -- before the 7 waiters race to attach to the inflight TMap. Without
+    -- coalescing, every caller would invoke ethCall and callCount would
+    -- be 8; with coalescing, only the leader fires.
+    gate <- newEmptyTMVarIO
     callCount <- newIORef (0 :: Int)
     (env, _, _) <- mkEnv $ \_ _ -> do
       atomicModifyIORef' callCount (\v -> (v + 1, ()))
+      atomically (readTMVar gate)
       pure (Right (B.replicate (32 * 8) '\NUL'))
-    rs <- replicateConcurrently 8 (resolveName env "alice")
+    -- Run the 8 callers in a background task so we can release the gate
+    -- only after they've all had a chance to register on the inflight map.
+    callers <- async $ replicateConcurrently 8 (resolveName env "alice")
+    threadDelay 50000 -- 50 ms — ample time for the 7 waiters to attach
+    atomically (putTMVar gate ())
+    rs <- wait callers
     all (== Left NotFound) rs `shouldBe` True
-    -- NotFound is currently not cached, so each leader makes an RPC.
-    -- Once decodeGetRecord returns Just rec (post-SNRC), coalescing
-    -- means concurrent callers share one RPC and call count == 1.
     n <- readIORef callCount
-    n `shouldSatisfy` (>= 1)
+    n `shouldBe` 1

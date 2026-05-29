@@ -20,6 +20,7 @@ module Simplex.Messaging.Server.Names.Eth.RPC
     newEthRpcEnv,
     closeEthRpcEnv,
     ethCallReal,
+    fromHex,
     scrubUrl,
   )
 where

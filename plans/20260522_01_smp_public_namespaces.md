@@ -177,7 +177,7 @@ In-flight `resolveName` calls during shutdown receive `ConnectionClosed` → `Et
 
 **`incStat` relocation.** Defined at `Server.hs:2220`, currently unexported. Move to `Server/Stats.hs` (one-line transplant + export) so `Resolver.hs` can use it.
 
-**Co-located proxy refused.** `newEnv` aborts startup if both `allowSMPProxy = True` and `namesConfig = Just _`, unless `allow_dangerous_colocation = on`. RSLV is the first slow forwarded command; on a proxy host it can serialise other forwarded commands on the same proxy-relay session up to `rpcTimeoutMs` per cache miss. `forkForwardedCmd` async dispatch is the longer-term fix, tracked as a follow-up.
+**Co-located proxy warning.** `newEnv` logs a startup warning whenever `allowSMPProxy = True` and `namesConfig = Just _`. RSLV is the first slow forwarded command; on a proxy host it can serialise other forwarded commands on the same proxy-relay session up to `rpcTimeoutMs` per cache miss. The warning is not a hard refusal because `[PROXY]` has no `enable: on/off` toggle — proxy is always on for every smp-server. `forkForwardedCmd` async dispatch is the longer-term fix, tracked as a follow-up; once the proxy role is gateable per-server, the warning can be tightened back to a refusal.
 
 ## Resolver subtree
 
@@ -256,7 +256,6 @@ data NamesConfig = NamesConfig
   , rpcTimeoutMs         :: Int           -- 3000
   , rpcMaxResponseBytes  :: Int           -- 262144 (256 KB)
   , rpcMaxConcurrency    :: Int           -- 8
-  , dangerousColocation  :: Bool          -- override the §"Server changes" startup guard
   }
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text

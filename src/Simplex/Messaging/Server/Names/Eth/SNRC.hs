@@ -33,6 +33,7 @@ module Simplex.Messaging.Server.Names.Eth.SNRC
     decodeWord256Int64,
     decodeAddress,
     decodeString,
+    decodeUtf8Text,
     decodeStringArray,
   )
 where
@@ -42,6 +43,8 @@ import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
+import Data.Text (Text)
+import Data.Text.Encoding (decodeUtf8')
 import Simplex.Messaging.Protocol (NameOwner, NameRecord, mkNameOwner, unNameOwner)
 
 -- | ABI-decode failure modes (caller collapses to ResolveError EthDecodeErr).
@@ -88,11 +91,16 @@ padLeft32 bs
   where
     n = B.length bs
 
--- | Read a uint256 at byte offset, fail if it doesn't fit in Int64.
+-- | Read a uint256 at byte offset, fail if it doesn't fit in *signed* Int64.
+-- Rejects both (a) any non-zero byte in the high 24 bytes and (b) the high
+-- bit of the low 8 bytes being set — the latter is essential because Int64
+-- would otherwise sign-flip a uint64 value into a negative integer, silently
+-- corrupting downstream length math.
 decodeWord256Int64 :: Int -> ByteString -> Either AbiError Int64
 decodeWord256Int64 off buf
   | off + 32 > B.length buf = Left AbiTruncated
-  | B.any (/= toEnum 0) (B.take 24 (B.drop off buf)) = Left AbiNonZeroHighBytes
+  | B.any (/= '\NUL') (B.take 24 (B.drop off buf)) = Left AbiNonZeroHighBytes
+  | B.index buf (off + 24) >= '\x80' = Left AbiNonZeroHighBytes
   | otherwise = Right $ B.foldl shiftIn 0 (B.take 8 (B.drop (off + 24) buf))
   where
     shiftIn :: Int64 -> Char -> Int64
@@ -109,6 +117,8 @@ decodeAddress off buf
       Left e -> Left (AbiInvariantViolated e)
 
 -- | Decode a Solidity `string` whose data starts at byte offset `off`.
+-- Returns raw bytes; UTF-8 validity is the caller's choice (use
+-- `decodeUtf8Text` if a Text is required).
 decodeString :: Int -> Int -> Int -> ByteString -> Either AbiError ByteString
 decodeString headEnd off cap buf
   | off < headEnd = Left AbiBackwardOffset
@@ -122,6 +132,13 @@ decodeString headEnd off cap buf
           if off + 32 + len > B.length buf
             then Left AbiTruncated
             else Right $ B.take len (B.drop (off + 32) buf)
+
+-- | Decode a Solidity `string` as Text, failing with AbiBadUtf8 on
+-- invalid UTF-8. This is what NameRecord decoder composition will use.
+decodeUtf8Text :: Int -> Int -> Int -> ByteString -> Either AbiError Text
+decodeUtf8Text headEnd off cap buf = do
+  raw <- decodeString headEnd off cap buf
+  either (const (Left AbiBadUtf8)) Right (decodeUtf8' raw)
 
 -- | Decode a Solidity `string[]` at byte offset `off`. Each element capped
 -- at `byteCap` bytes, total element count capped at `cntCap`. Depth must be
