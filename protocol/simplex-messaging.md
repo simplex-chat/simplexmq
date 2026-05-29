@@ -1467,28 +1467,37 @@ out-of-band for operator observability.
 
 #### Name record response
 
-```abnf
-name = %s"NAME" SP nameRecord
+The `NAME` response carries a JSON-encoded record as the payload:
 
-nameRecord = displayName owner channelLinks contactLinks adminAddr adminEmail expiry isTest
-displayName = length *OCTET                  ; 1-byte length prefix, up to 255 bytes UTF-8
-owner       = 20OCTET                        ; raw 20-byte Ethereum-style address
-channelLinks = count *nameLink               ; count is a 1-byte unsigned integer
-contactLinks = count *nameLink               ; combined count of channelLinks + contactLinks ≤ 8
-nameLink    = length16 *OCTET                ; 2-byte big-endian length, up to 1024 bytes UTF-8
-adminAddr   = optionalText                   ; "0" absent or "1" + 1-byte length + UTF-8 up to 255 bytes
-adminEmail  = optionalText                   ; same encoding as adminAddr
-expiry      = 8OCTET                         ; Int64 big-endian, Unix seconds, MUST be ≥ 0
-isTest      = "T" / "F"
+```abnf
+name = %s"NAME" SP json-bytes   ; json-bytes consumes the remainder of the transmission
 ```
 
-The encoding is canonical: every primitive has exactly one valid byte form, so
-two names routers reading the same backing state produce byte-identical
-responses.
+`json-bytes` MUST be a UTF-8 JSON object with the following schema:
 
-**Wire-size budget.** A maximal `nameRecord` (8 links × 1024 bytes + maximal
-admin / display strings) fits comfortably within the SMP proxied transmission
-budget of 16224 bytes.
+| Field | JSON type | Constraints |
+|---|---|---|
+| `displayName` | string | ≤ 255 bytes UTF-8 |
+| `owner` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes) |
+| `channelLinks` | array of strings | each ≤ 1024 bytes UTF-8; combined count of `channelLinks + contactLinks` ≤ 8 |
+| `contactLinks` | array of strings | each ≤ 1024 bytes UTF-8; combined count cap shared with `channelLinks` |
+| `adminAddress` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
+| `adminEmail` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
+| `expiry` | integer | Int64 Unix seconds, MUST be ≥ 0; `0` means "never expires" |
+| `isTest` | boolean | true on testnet deployments |
+
+Receivers MUST tolerate extra unknown fields (forward-compatibility for future
+field additions). Adding a required field is a breaking change requiring an
+SMP version bump.
+
+**Canonical encoding.** Two names routers reading the same backing state and
+producing the same `NameRecord` MUST emit byte-identical JSON: emit object
+keys in the order listed above, integers without decimal points, no
+insignificant whitespace.
+
+**Wire-size budget.** A maximal `nameRecord` (8 × 1024-byte links plus
+maximal admin / display strings) JSON-encodes to roughly 9 KB, well under the
+SMP proxied transmission budget of 16224 bytes.
 
 ## Transport connection with the SMP router
 

@@ -35,6 +35,7 @@ module Simplex.Messaging.Server.Names.Eth.SNRC
     decodeString,
     decodeUtf8Text,
     decodeStringArray,
+    isZeroOwner,
   )
 where
 

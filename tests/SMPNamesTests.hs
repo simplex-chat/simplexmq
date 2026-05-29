@@ -17,6 +17,7 @@ import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
   ( LookupKey (..),
+    NameOwner,
     NameRecord (..),
     mkNameLink,
     mkNameOwner,
@@ -41,8 +42,6 @@ import Simplex.Messaging.Server.Names
     newNamesEnvWith,
     resolveName,
   )
-import Simplex.Messaging.Transport (VersionSMP)
-import Simplex.Messaging.Version.Internal (Version (..))
 import Test.Hspec
 
 -- Reference vectors:
@@ -62,9 +61,6 @@ sha3_256Abc = "\x3a\x98\x5d\xa7\x4f\xe2\x25\xb2\x04\x5c\x17\x2d\x6b\xd3\x90\xbd\
 
 namehashEth :: ByteString
 namehashEth = "\x93\xcd\xeb\x70\x8b\x75\x45\xdc\x66\x8e\xb9\x28\x01\x76\x16\x9d\x1c\x33\xcf\xd8\xed\x6f\x04\x69\x0a\x0b\xcc\x88\xa9\x3f\xc4\xae"
-
-v20 :: VersionSMP
-v20 = Version 20
 
 twentyOnes :: ByteString
 twentyOnes = B.replicate 20 '\x01'
@@ -108,6 +104,16 @@ nameRecordEncodingSpec = do
         overflow = sampleRecord {nrChannelLinks = nineLinks, nrContactLinks = []}
         bytes = LB.toStrict (J.encode overflow)
     (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
+
+  it "rejects nrDisplayName > 255 bytes UTF-8" $ do
+    let oversize = sampleRecord {nrDisplayName = T.replicate 256 "x"}
+        bytes = LB.toStrict (J.encode oversize)
+    (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
+
+  it "FromJSON NameOwner accepts both 0x and 0X prefixes" $ do
+    let json p = "\"" <> p <> "0101010101010101010101010101010101010101\""
+    (J.eitherDecodeStrict (json "0x") :: Either String NameOwner) `shouldSatisfy` isRight
+    (J.eitherDecodeStrict (json "0X") :: Either String NameOwner) `shouldSatisfy` isRight
 
   it "encodes within the proxied transmission budget" $ do
     let huge = either error id (mkNameLink (T.replicate 1024 "x"))

@@ -841,7 +841,12 @@ validateUrl url auth_ = do
   ua <- maybe (Left "missing authority (host)") Right (uriAuthority uri)
   when (null (uriRegName ua)) $ Left "empty host"
   unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use rpc_auth instead"
-  when (null (uriPort ua)) $ Left "explicit port required (e.g. http://host:8545)"
+  case uriPort ua of
+    "" -> Left "explicit port required (e.g. http://host:8545)"
+    ':' : portStr -> case readMaybe portStr of
+      Just n | n >= 1 && n <= 65535 -> Right ()
+      _ -> Left $ "port " <> portStr <> " out of range (must be 1..65535)"
+    other -> Left $ "unexpected port syntax: " <> other
   unless (null (uriQuery uri)) $ Left "query string not allowed"
   unless (null (uriFragment uri)) $ Left "fragment not allowed"
   let path = uriPath uri

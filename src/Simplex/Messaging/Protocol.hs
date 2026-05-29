@@ -256,7 +256,7 @@ import Data.Kind
 import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -750,11 +750,11 @@ unNameOwner (NameOwner bs) = bs
 
 instance J.ToJSON NameOwner where
   toJSON (NameOwner bs) = J.String $ "0x" <> decodeLatin1 (BAE.convertToBase BAE.Base16 bs)
-  toEncoding (NameOwner bs) = J.toEncoding $ "0x" <> decodeLatin1 (BAE.convertToBase BAE.Base16 bs)
 
 instance J.FromJSON NameOwner where
   parseJSON = J.withText "NameOwner" $ \t -> do
-    let hex = maybe t id (T.stripPrefix "0x" t)
+    -- Accept "0x" and "0X" prefixes (matches Server/Main.hs:parseEthAddr via fromHex).
+    let hex = fromMaybe t (T.stripPrefix "0x" t <|> T.stripPrefix "0X" t)
     case BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) of
       Left e -> fail e
       Right bs -> either fail pure (mkNameOwner bs)
@@ -775,7 +775,6 @@ unNameLink (NameLink t) = t
 
 instance J.ToJSON NameLink where
   toJSON (NameLink t) = J.toJSON t
-  toEncoding (NameLink t) = J.toEncoding t
 
 instance J.FromJSON NameLink where
   parseJSON = J.withText "NameLink" (either fail pure . mkNameLink)
@@ -809,18 +808,22 @@ instance J.ToJSON NameRecord where
 
 instance J.FromJSON NameRecord where
   parseJSON = J.withObject "NameRecord" $ \o -> do
-    nrDisplayName <- o J..: "displayName"
+    nrDisplayName <- o J..: "displayName" >>= capUtf8 "displayName" 255
     nrOwner <- o J..: "owner"
     nrChannelLinks <- o J..: "channelLinks"
     nrContactLinks <- o J..: "contactLinks"
     when (length nrChannelLinks + length nrContactLinks > 8) $
       fail "combined channelLinks + contactLinks > 8"
-    nrAdminAddress <- o J..:? "adminAddress"
-    nrAdminEmail <- o J..:? "adminEmail"
+    nrAdminAddress <- o J..:? "adminAddress" >>= traverse (capUtf8 "adminAddress" 255)
+    nrAdminEmail <- o J..:? "adminEmail" >>= traverse (capUtf8 "adminEmail" 255)
     nrExpiry <- o J..: "expiry"
     when (nrExpiry < 0) $ fail "expiry must be non-negative"
     nrIsTest <- o J..: "isTest"
     pure NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest}
+    where
+      capUtf8 fld lim t
+        | B.length (encodeUtf8 t) <= lim = pure t
+        | otherwise = fail $ fld <> " exceeds " <> show lim <> " bytes UTF-8"
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)

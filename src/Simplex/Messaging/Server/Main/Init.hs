@@ -158,8 +158,9 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \[NAMES]\n\
         \# Public-namespace resolution (SNRC on Ethereum).\n\
         \# Requires an Ethereum JSON-RPC endpoint (Reth+Nimbus). See deployment guide.\n\
-        \# Co-locating with the proxy role logs a warning at startup - slow RSLV cache misses\n\
-        \# can serialise other forwarded commands. For high-volume deployments, run on a separate host.\n\
+        \# Co-locating with the proxy role logs a startup advisory: slow RSLV calls can\n\
+        \# serialise other forwarded commands on the same proxy-relay session.\n\
+        \# For high-volume deployments, run [NAMES] on a separate host.\n\
         \# Restart required to change settings.\n\
         \enable: off\n\
         \# Same-host:\n\

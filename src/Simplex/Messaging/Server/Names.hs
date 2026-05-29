@@ -24,16 +24,18 @@ module Simplex.Messaging.Server.Names
   )
 where
 
+import Control.Monad (when, unless)
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.ByteString.Char8 (ByteString)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), unNameOwner)
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
-import Simplex.Messaging.Server.Names.Eth.SNRC (decodeGetRecord, encodeGetRecord, namehash)
+import Simplex.Messaging.Server.Names.Eth.SNRC (decodeAddress, decodeGetRecord, encodeGetRecord, isZeroOwner, namehash)
 import System.Timeout (timeout)
 
 data NamesConfig = NamesConfig
@@ -61,7 +63,10 @@ type EthCall = ByteString -> ByteString -> IO (Either EthRpcError ByteString)
 data NamesEnv = NamesEnv
   { config :: NamesConfig,
     ethCall :: EthCall,
-    rpcEnv :: Maybe EthRpcEnv -- Nothing for test stubs
+    rpcEnv :: Maybe EthRpcEnv, -- Nothing for test stubs
+    -- One-shot guard so the placeholder-decoder warning logs once per process,
+    -- not once per RSLV.
+    placeholderWarned :: IORef Bool
   }
 
 newNamesEnv :: NamesConfig -> IO NamesEnv
@@ -71,7 +76,9 @@ newNamesEnv cfg = do
 
 -- | Allocate resolver with an injected ethCall (test seam).
 newNamesEnvWith :: NamesConfig -> EthCall -> Maybe EthRpcEnv -> IO NamesEnv
-newNamesEnvWith config ethCall rpcEnv = pure NamesEnv {config, ethCall, rpcEnv}
+newNamesEnvWith config ethCall rpcEnv = do
+  placeholderWarned <- newIORef False
+  pure NamesEnv {config, ethCall, rpcEnv, placeholderWarned}
 
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {rpcEnv} = mapM_ closeEthRpcEnv rpcEnv
@@ -101,14 +108,25 @@ resolveName env key = do
           pure (Left EthHttpErr)
 
 fetch :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
-fetch NamesEnv {ethCall, config} key =
+fetch env@NamesEnv {ethCall, config} key =
   ethCall (unNameOwner (snrcAddress config)) (encodeGetRecord (namehash key)) >>= \case
     Left e -> pure (Left (mapEthRpcError e))
     Right ret -> case decodeGetRecord ret of
-      Right Nothing -> pure (Left NotFound)
+      Right Nothing -> notFoundWithPlaceholderWarn ret
       Right (Just rec) -> checkExpiry rec
       Left _ -> pure (Left EthDecodeErr)
   where
+    -- decodeGetRecord is currently a placeholder: it returns Right Nothing
+    -- for BOTH "zero-owner sentinel" (real NotFound) and "non-zero owner
+    -- with real data but no ABI decoder yet". Inspect the owner slot
+    -- directly to distinguish, and surface the latter once per process so
+    -- an operator who enables [NAMES] against a working SNRC contract sees
+    -- the resolver is functionally stubbed.
+    notFoundWithPlaceholderWarn ret = do
+      case decodeAddress 32 ret of
+        Right owner -> unless (isZeroOwner owner) (warnPlaceholderOnce env)
+        Left _ -> pure ()
+      pure (Left NotFound)
     -- Defense in depth: the SNRC contract should already return the
     -- zero-owner sentinel for expired records, but a buggy / pre-upgrade
     -- contract might not. nrExpiry == 0 means "never expires" (reserved
@@ -118,6 +136,14 @@ fetch NamesEnv {ethCall, config} key =
       pure $ if nrExpiry rec /= 0 && nrExpiry rec < nowSec
         then Left NotFound
         else Right rec
+
+warnPlaceholderOnce :: NamesEnv -> IO ()
+warnPlaceholderOnce NamesEnv {placeholderWarned} = do
+  first <- atomicModifyIORef' placeholderWarned (\w -> (True, not w))
+  when first $
+    logError
+      "[NAMES] decodeGetRecord placeholder hit — SNRC ABI codec not finalised; \
+      \every non-zero-owner record returns NotFound until the decoder ships"
 
 -- | Collapse the JSON-RPC transport-layer error space into the resolver's
 -- public error space.
