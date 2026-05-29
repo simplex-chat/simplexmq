@@ -125,10 +125,10 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   XV.Fingerprint fp <- loadFingerprint ntfCredentials
+  let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
-  let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
-      processMsg = mkProcessMsg store pushServer serverStats
+  let processMsg = mkProcessMsg store pushServer serverStats
   subscriber <- newNtfSubscriber smpAgentCfg processMsg dbService random
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where

@@ -271,9 +271,7 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
       currentTs <- liftIO getCurrentTime
       notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
       env <- ask
-      let processMsg c t =
-            agentOperationBracket c AORcvNetwork waitUntilActive (processSMPTransmissions c t) `runReaderT` env
-              `catchOwn` \e -> atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ "subscriber error: " <> show e)
+      let processMsg c t = subscriber c t `runReaderT` env
       c@AgentClient {acThread} <- liftIO $ newAgentClient clientId initServers currentTs notices processMsg env
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
@@ -2984,6 +2982,14 @@ getSMPServer c userId = getNextSMPServer c userId []
 getNextSMPServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServerWithAuth
 getNextSMPServer c userId = getNextServer c userId storageSrvs
 {-# INLINE getNextSMPServer #-}
+
+subscriber :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
+subscriber c@AgentClient {subQ} t = run $
+  agentOperationBracket c AORcvNetwork waitUntilActive $
+    processSMPTransmissions c t
+  where
+    run a = a `catchOwn` \e -> notify $ CRITICAL True $ "subscriber error: " <> show e
+    notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
 
 cleanupManager :: AgentClient -> AM' ()
