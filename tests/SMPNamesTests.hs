@@ -4,9 +4,6 @@
 
 module SMPNamesTests (smpNamesTests) where
 
-import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, replicateConcurrently, wait)
-import Control.Concurrent.STM (atomically, newEmptyTMVarIO, putTMVar, readTMVar)
 import qualified Crypto.Hash as Crypton
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -16,13 +13,13 @@ import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import qualified Data.Text as T
 import Simplex.Messaging.Encoding (smpEncode, smpP)
 import Simplex.Messaging.Parsers (parseAll)
+import qualified Data.Aeson as J
+import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
   ( LookupKey (..),
     NameRecord (..),
     mkNameLink,
     mkNameOwner,
-    nameRecBytes,
-    parseNameRec,
     unNameLink,
     unNameOwner,
   )
@@ -38,7 +35,7 @@ import Simplex.Messaging.Server.Names.Eth.SNRC
     namehash,
     snrcSelector,
   )
-import Simplex.Messaging.Server.Names.Resolver
+import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     ResolveError (..),
     newNamesEnvWith,
@@ -94,24 +91,23 @@ smpNamesTests = do
   describe "Keccak-256 and namehash" namehashSpec
   describe "ABI primitive bounds" abiBoundsSpec
   describe "decodeGetRecord (zero-owner sentinel)" zeroOwnerSpec
-  describe "Resolver cache + coalescing" resolverCacheSpec
+  describe "Resolver" resolverSpec
 
 nameRecordEncodingSpec :: Spec
 nameRecordEncodingSpec = do
-  it "round-trips nameRecBytes / parseNameRec" $ do
-    let bytes = nameRecBytes v20 sampleRecord
-    parseAll (parseNameRec v20) bytes `shouldBe` Right sampleRecord
+  it "round-trips JSON encode / decode" $
+    J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)) `shouldBe` Right sampleRecord
 
   it "rejects negative expiry" $ do
-    let badBytes = nameRecBytes v20 sampleRecord {nrExpiry = -1}
-    parseAll (parseNameRec v20) badBytes `shouldSatisfy` isLeft
+    let badBytes = LB.toStrict (J.encode sampleRecord {nrExpiry = -1})
+    (J.eitherDecodeStrict badBytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
   it "enforces combined channel+contact list cap of 8" $ do
     let mkLink i = either error id (mkNameLink ("simplex:/contact/" <> T.pack (show (i :: Int))))
         nineLinks = map mkLink [0 .. 8]
         overflow = sampleRecord {nrChannelLinks = nineLinks, nrContactLinks = []}
-        bytes = nameRecBytes v20 overflow
-    parseAll (parseNameRec v20) bytes `shouldSatisfy` isLeft
+        bytes = LB.toStrict (J.encode overflow)
+    (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
   it "encodes within the proxied transmission budget" $ do
     let huge = either error id (mkNameLink (T.replicate 1024 "x"))
@@ -123,7 +119,7 @@ nameRecordEncodingSpec = do
               nrAdminAddress = Just (T.replicate 255 "a"),
               nrAdminEmail = Just (T.replicate 255 "e")
             }
-    B.length (nameRecBytes v20 wide) < 16224 `shouldBe` True
+    LB.length (J.encode wide) < 16224 `shouldBe` True
 
 lookupKeyAndCtorsSpec :: Spec
 lookupKeyAndCtorsSpec = do
@@ -237,67 +233,31 @@ zeroOwnerSpec = do
     let tiny = B.replicate 31 '\NUL'
     decodeGetRecord tiny `shouldBe` Left AbiTruncated
 
-resolverCacheSpec :: Spec
-resolverCacheSpec = do
+resolverSpec :: Spec
+resolverSpec = do
   let mkEnv ethCall = do
-        hitsRef <- newIORef 0
-        missRef <- newIORef 0
         let cfg =
               NamesConfig
                 { ethereumEndpoint = "http://stub",
                   snrcAddress = either error id (mkNameOwner twentyOnes),
                   rpcAuth = Nothing,
-                  cacheSeconds = 300,
-                  cacheMaxEntries = 100,
-                  cacheMaxBytes = 1024 * 1024,
                   rpcTimeoutMs = 1000,
                   rpcMaxResponseBytes = 65536,
                   rpcMaxConcurrency = 4
                 }
-        env <- newNamesEnvWith cfg ethCall Nothing hitsRef missRef
-        pure (env, hitsRef, missRef)
+        newNamesEnvWith cfg ethCall Nothing
 
-  it "maps stub zero-owner response to NotFound and counts as cache miss" $ do
-    (env, _, missRef) <- mkEnv $ \_ _ -> pure (Right (B.replicate (32 * 8) '\NUL'))
+  it "maps stub zero-owner response to NotFound" $ do
+    env <- mkEnv $ \_ _ -> pure (Right (B.replicate (32 * 8) '\NUL'))
     r <- resolveName env "alice"
     r `shouldBe` Left NotFound
-    misses <- readIORef missRef
-    misses `shouldBe` 1
 
-  it "subsequent NotFound lookups hit the cache (no second RPC)" $ do
+  it "every lookup hits the endpoint (no cache)" $ do
     callCount <- newIORef (0 :: Int)
-    (env, hitsRef, missRef) <- mkEnv $ \_ _ -> do
+    env <- mkEnv $ \_ _ -> do
       atomicModifyIORef' callCount (\v -> (v + 1, ()))
       pure (Right (B.replicate (32 * 8) '\NUL'))
-    -- First lookup: miss, eth_call fires, NotFound cached.
     _ <- resolveName env "alice"
-    -- Second lookup: should hit cache, not call ethCall.
-    r2 <- resolveName env "alice"
-    r2 `shouldBe` Left NotFound
-    callCount' <- readIORef callCount
-    callCount' `shouldBe` 1
-    missCount <- readIORef missRef
-    hitCount <- readIORef hitsRef
-    missCount `shouldBe` 1
-    hitCount `shouldBe` 1
-
-  it "concurrent identical lookups coalesce — only the leader makes the RPC" $ do
-    -- Block the stub on a TMVar so the leader's eth_call doesn't return
-    -- before the 7 waiters race to attach to the inflight TMap. Without
-    -- coalescing, every caller would invoke ethCall and callCount would
-    -- be 8; with coalescing, only the leader fires.
-    gate <- newEmptyTMVarIO
-    callCount <- newIORef (0 :: Int)
-    (env, _, _) <- mkEnv $ \_ _ -> do
-      atomicModifyIORef' callCount (\v -> (v + 1, ()))
-      atomically (readTMVar gate)
-      pure (Right (B.replicate (32 * 8) '\NUL'))
-    -- Run the 8 callers in a background task so we can release the gate
-    -- only after they've all had a chance to register on the inflight map.
-    callers <- async $ replicateConcurrently 8 (resolveName env "alice")
-    threadDelay 50000 -- 50 ms — ample time for the 7 waiters to attach
-    atomically (putTMVar gate ())
-    rs <- wait callers
-    all (== Left NotFound) rs `shouldBe` True
+    _ <- resolveName env "alice"
     n <- readIORef callCount
-    n `shouldBe` 1
+    n `shouldBe` 2

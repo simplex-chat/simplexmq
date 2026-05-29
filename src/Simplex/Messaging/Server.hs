@@ -661,8 +661,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
-        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled} =
-          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =

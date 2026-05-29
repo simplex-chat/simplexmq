@@ -461,7 +461,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
     names =
-      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled} = _rslvStats
+      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled} = _rslvStats
        in "# Names\n\
           \# -----\n\
           \\n\
@@ -480,14 +480,6 @@ prometheusMetrics sm rtm ts =
           \# HELP simplex_smp_names_eth_errs Ethereum endpoint or ABI errors.\n\
           \# TYPE simplex_smp_names_eth_errs counter\n\
           \simplex_smp_names_eth_errs " <> mshow _rslvEthErrs <> "\n# rslvEthErrs\n\
-          \\n\
-          \# HELP simplex_smp_names_cache_hits Resolution served from cache.\n\
-          \# TYPE simplex_smp_names_cache_hits counter\n\
-          \simplex_smp_names_cache_hits " <> mshow _rslvCacheHits <> "\n# rslvCacheHits\n\
-          \\n\
-          \# HELP simplex_smp_names_cache_miss Resolution required an eth_call.\n\
-          \# TYPE simplex_smp_names_cache_miss counter\n\
-          \simplex_smp_names_cache_miss " <> mshow _rslvCacheMiss <> "\n# rslvCacheMiss\n\
           \\n\
           \# HELP simplex_smp_names_disabled RSLV requests rejected because the names role is disabled.\n\
           \# TYPE simplex_smp_names_disabled counter\n\

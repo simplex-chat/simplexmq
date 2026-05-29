@@ -168,10 +168,6 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# ethereum_endpoint: https://eth.simplex.chat:443\n\
         \# rpc_auth: basic <username>:<password>\n\
         \# snrc_address: 0x<paste-your-contract-address>\n\
-        \# (cache_max_entries and cache_max_bytes both cap the cache; whichever fills first triggers FIFO eviction)\n\
-        \# cache_seconds: 300\n\
-        \# cache_max_entries: 100000\n\
-        \# cache_max_bytes: 67108864\n\
         \# rpc_timeout_ms: 3000\n\
         \# rpc_max_response_bytes: 262144\n\
         \# rpc_max_concurrency: 8\n\n\

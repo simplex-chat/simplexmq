@@ -264,7 +264,6 @@ library
           Simplex.Messaging.Server.Names
           Simplex.Messaging.Server.Names.Eth.RPC
           Simplex.Messaging.Server.Names.Eth.SNRC
-          Simplex.Messaging.Server.Names.Resolver
           Simplex.Messaging.Server.NtfStore
           Simplex.Messaging.Server.Prometheus
           Simplex.Messaging.Server.QueueStore
@@ -365,7 +364,6 @@ library
       , network-uri >=2.6 && <2.7
       , optparse-applicative >=0.15 && <0.17
       , process ==1.6.*
-      , psqueues >=0.2.7 && <0.3
       , temporary ==1.3.*
       , wai >=3.2 && <3.3
       , wai-app-static >=3.1 && <3.2

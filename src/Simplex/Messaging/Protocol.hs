@@ -171,9 +171,6 @@ module Simplex.Messaging.Protocol
     NameLink,
     mkNameLink,
     unNameLink,
-    nameRecBytes,
-    parseNameRec,
-    smpListPUpTo,
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
@@ -249,6 +246,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
@@ -750,10 +748,16 @@ unNameOwner :: NameOwner -> ByteString
 unNameOwner (NameOwner bs) = bs
 {-# INLINE unNameOwner #-}
 
-instance Encoding NameOwner where
-  smpEncode (NameOwner bs) = bs
-  {-# INLINE smpEncode #-}
-  smpP = NameOwner <$> A.take 20
+instance J.ToJSON NameOwner where
+  toJSON (NameOwner bs) = J.String $ "0x" <> decodeLatin1 (BAE.convertToBase BAE.Base16 bs)
+  toEncoding (NameOwner bs) = J.toEncoding $ "0x" <> decodeLatin1 (BAE.convertToBase BAE.Base16 bs)
+
+instance J.FromJSON NameOwner where
+  parseJSON = J.withText "NameOwner" $ \t -> do
+    let hex = maybe t id (T.stripPrefix "0x" t)
+    case BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) of
+      Left e -> fail e
+      Right bs -> either fail pure (mkNameOwner bs)
 
 -- | A name-record link (channel or contact). Bare constructor not exported;
 -- use `mkNameLink` to enforce the ≤1024-byte UTF-8 invariant.
@@ -769,20 +773,17 @@ unNameLink :: NameLink -> Text
 unNameLink (NameLink t) = t
 {-# INLINE unNameLink #-}
 
-instance Encoding NameLink where
-  smpEncode (NameLink t) =
-    let bs = encodeUtf8 t
-     in smpEncode @Word16 (fromIntegral $ B.length bs) <> bs
-  smpP = do
-    n <- fromIntegral <$> smpP @Word16
-    when (n > 1024) $ fail "NameLink too long"
-    bs <- A.take n
-    either (fail . show) (pure . NameLink) (decodeUtf8' bs)
+instance J.ToJSON NameLink where
+  toJSON (NameLink t) = J.toJSON t
+  toEncoding (NameLink t) = J.toEncoding t
+
+instance J.FromJSON NameLink where
+  parseJSON = J.withText "NameLink" (either fail pure . mkNameLink)
 
 -- | Resolved name record returned by the names role.
---   Field additions are gated by future SMP version bumps (matching IDS QIK precedent).
+--   Wire format is JSON — change requires an SMP version bump.
 data NameRecord = NameRecord
-  { nrDisplayName :: Text, -- ≤255 bytes UTF-8 (enforced by Encoding ByteString length prefix)
+  { nrDisplayName :: Text,
     nrOwner :: NameOwner,
     nrChannelLinks :: [NameLink],
     nrContactLinks :: [NameLink],
@@ -793,38 +794,33 @@ data NameRecord = NameRecord
   }
   deriving (Eq, Show)
 
--- | Bounded list parser — caps element count before allocating.
-smpListPUpTo :: Encoding a => Int -> Parser [a]
-smpListPUpTo cap = do
-  n <- lenP
-  when (n > cap) $ fail "list too long"
-  A.count n smpP
+instance J.ToJSON NameRecord where
+  toJSON NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
+    J.object
+      [ "displayName" J..= nrDisplayName,
+        "owner" J..= nrOwner,
+        "channelLinks" J..= nrChannelLinks,
+        "contactLinks" J..= nrContactLinks,
+        "adminAddress" J..= nrAdminAddress,
+        "adminEmail" J..= nrAdminEmail,
+        "expiry" J..= nrExpiry,
+        "isTest" J..= nrIsTest
+      ]
 
--- | Encode NameRecord on the wire. Version-branched in the same shape as IDS QIK.
-nameRecBytes :: VersionSMP -> NameRecord -> ByteString
-nameRecBytes _v NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
-  smpEncode nrDisplayName
-    <> smpEncode nrOwner
-    <> smpEncodeList nrChannelLinks
-    <> smpEncodeList nrContactLinks
-    <> smpEncode nrAdminAddress
-    <> smpEncode nrAdminEmail
-    <> smpEncode nrExpiry
-    <> smpEncode nrIsTest
-
--- | Parse NameRecord. Combined channel+contact list cap is 8.
-parseNameRec :: VersionSMP -> Parser NameRecord
-parseNameRec _v = do
-  nrDisplayName <- smpP
-  nrOwner <- smpP
-  nrChannelLinks <- smpListPUpTo 8
-  nrContactLinks <- smpListPUpTo (8 - length nrChannelLinks)
-  nrAdminAddress <- smpP
-  nrAdminEmail <- smpP
-  nrExpiry <- smpP
-  when (nrExpiry < 0) $ fail "expiry must be non-negative"
-  nrIsTest <- smpP
-  pure NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest}
+instance J.FromJSON NameRecord where
+  parseJSON = J.withObject "NameRecord" $ \o -> do
+    nrDisplayName <- o J..: "displayName"
+    nrOwner <- o J..: "owner"
+    nrChannelLinks <- o J..: "channelLinks"
+    nrContactLinks <- o J..: "contactLinks"
+    when (length nrChannelLinks + length nrContactLinks > 8) $
+      fail "combined channelLinks + contactLinks > 8"
+    nrAdminAddress <- o J..:? "adminAddress"
+    nrAdminEmail <- o J..:? "adminEmail"
+    nrExpiry <- o J..: "expiry"
+    when (nrExpiry < 0) $ fail "expiry must be non-negative"
+    nrIsTest <- o J..: "isTest"
+    pure NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest}
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
@@ -2080,7 +2076,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           _ -> err
     PONG -> e PONG_
     NAME rec
-      | v >= namesSMPVersion -> e (NAME_, ' ') <> nameRecBytes v rec
+      | v >= namesSMPVersion -> e (NAME_, ' ', Tail (LB.toStrict (J.encode rec)))
       | otherwise -> e (ERR_, ' ', AUTH) -- pre-v20: shouldn't reach here, degrade to AUTH
     where
       e :: Encoding a => a -> ByteString
@@ -2130,7 +2126,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
     NAME_
-      | v >= namesSMPVersion -> NAME <$> (A.space *> parseNameRec v)
+      | v >= namesSMPVersion -> do
+          Tail bs <- _smpP
+          either fail (pure . NAME) (J.eitherDecodeStrict bs)
       | otherwise -> fail "NAME requires namesSMPVersion"
     where
       serviceRespP resp

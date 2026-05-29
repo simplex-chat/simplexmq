@@ -614,9 +614,8 @@ newEnv config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serv
     Just nc -> do
       logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (ethereumEndpoint nc)
       when allowSMPProxy $
-        logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV cache misses can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
-      let rs = rslvStats serverStats
-      env <- newNamesEnv nc (rslvCacheHits rs) (rslvCacheMiss rs)
+        logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV calls can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
+      env <- newNamesEnv nc
       -- Probe the endpoint at startup. Don't exitFailure: a flapping
       -- network or an Ethereum host coming up minutes after smp-server
       -- should not block the server. Log so operators can spot it.

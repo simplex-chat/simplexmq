@@ -812,9 +812,6 @@ readNamesConfig ini
               { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
                 snrcAddress = either (error . ("[NAMES] snrc_address: " <>)) id $ parseEthAddr (requiredText "snrc_address"),
                 rpcAuth = rpcAuth_,
-                cacheSeconds = readIniDefault 300 "NAMES" "cache_seconds" ini,
-                cacheMaxEntries = readIniDefault 100000 "NAMES" "cache_max_entries" ini,
-                cacheMaxBytes = readIniDefault 67108864 "NAMES" "cache_max_bytes" ini,
                 rpcTimeoutMs = readIniDefault 3000 "NAMES" "rpc_timeout_ms" ini,
                 rpcMaxResponseBytes = readIniDefault 262144 "NAMES" "rpc_max_response_bytes" ini,
                 rpcMaxConcurrency = readIniDefault 8 "NAMES" "rpc_max_concurrency" ini

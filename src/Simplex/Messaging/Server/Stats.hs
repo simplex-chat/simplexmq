@@ -894,8 +894,6 @@ data NameResolverStats = NameResolverStats
     rslvSucc :: IORef Int,
     rslvNotFound :: IORef Int,
     rslvEthErrs :: IORef Int,
-    rslvCacheHits :: IORef Int,
-    rslvCacheMiss :: IORef Int,
     rslvDisabled :: IORef Int
   }
 
@@ -905,18 +903,14 @@ newNameResolverStats = do
   rslvSucc <- newIORef 0
   rslvNotFound <- newIORef 0
   rslvEthErrs <- newIORef 0
-  rslvCacheHits <- newIORef 0
-  rslvCacheMiss <- newIORef 0
   rslvDisabled <- newIORef 0
-  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvEthErrs, rslvCacheHits, rslvCacheMiss, rslvDisabled}
+  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvEthErrs, rslvDisabled}
 
 data NameResolverStatsData = NameResolverStatsData
   { _rslvReqs :: Int,
     _rslvSucc :: Int,
     _rslvNotFound :: Int,
     _rslvEthErrs :: Int,
-    _rslvCacheHits :: Int,
-    _rslvCacheMiss :: Int,
     _rslvDisabled :: Int
   }
   deriving (Show)
@@ -928,8 +922,6 @@ newNameResolverStatsData =
       _rslvSucc = 0,
       _rslvNotFound = 0,
       _rslvEthErrs = 0,
-      _rslvCacheHits = 0,
-      _rslvCacheMiss = 0,
       _rslvDisabled = 0
     }
 
@@ -939,10 +931,8 @@ getNameResolverStatsData s = do
   _rslvSucc <- readIORef $ rslvSucc s
   _rslvNotFound <- readIORef $ rslvNotFound s
   _rslvEthErrs <- readIORef $ rslvEthErrs s
-  _rslvCacheHits <- readIORef $ rslvCacheHits s
-  _rslvCacheMiss <- readIORef $ rslvCacheMiss s
   _rslvDisabled <- readIORef $ rslvDisabled s
-  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled}
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled}
 
 getResetNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
 getResetNameResolverStatsData s = do
@@ -950,10 +940,8 @@ getResetNameResolverStatsData s = do
   _rslvSucc <- atomicSwapIORef (rslvSucc s) 0
   _rslvNotFound <- atomicSwapIORef (rslvNotFound s) 0
   _rslvEthErrs <- atomicSwapIORef (rslvEthErrs s) 0
-  _rslvCacheHits <- atomicSwapIORef (rslvCacheHits s) 0
-  _rslvCacheMiss <- atomicSwapIORef (rslvCacheMiss s) 0
   _rslvDisabled <- atomicSwapIORef (rslvDisabled s) 0
-  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled}
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled}
 
 -- not thread safe; used on server start only
 setNameResolverStats :: NameResolverStats -> NameResolverStatsData -> IO ()
@@ -962,12 +950,10 @@ setNameResolverStats s d = do
   writeIORef (rslvSucc s) $! _rslvSucc d
   writeIORef (rslvNotFound s) $! _rslvNotFound d
   writeIORef (rslvEthErrs s) $! _rslvEthErrs d
-  writeIORef (rslvCacheHits s) $! _rslvCacheHits d
-  writeIORef (rslvCacheMiss s) $! _rslvCacheMiss d
   writeIORef (rslvDisabled s) $! _rslvDisabled d
 
 instance StrEncoding NameResolverStatsData where
-  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled} =
+  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled} =
     "reqs="
       <> strEncode _rslvReqs
       <> "\nsucc="
@@ -976,10 +962,6 @@ instance StrEncoding NameResolverStatsData where
       <> strEncode _rslvNotFound
       <> "\nethErrs="
       <> strEncode _rslvEthErrs
-      <> "\ncacheHits="
-      <> strEncode _rslvCacheHits
-      <> "\ncacheMiss="
-      <> strEncode _rslvCacheMiss
       <> "\ndisabled="
       <> strEncode _rslvDisabled
   strP = do
@@ -987,10 +969,8 @@ instance StrEncoding NameResolverStatsData where
     _rslvSucc <- "succ=" *> strP <* A.endOfLine
     _rslvNotFound <- "notFound=" *> strP <* A.endOfLine
     _rslvEthErrs <- "ethErrs=" *> strP <* A.endOfLine
-    _rslvCacheHits <- "cacheHits=" *> strP <* A.endOfLine
-    _rslvCacheMiss <- "cacheMiss=" *> strP <* A.endOfLine
     _rslvDisabled <- "disabled=" *> strP
-    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvCacheHits, _rslvCacheMiss, _rslvDisabled}
+    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled}
 
 data ServiceStats = ServiceStats
   { srvAssocNew :: IORef Int,

@@ -1,19 +1,130 @@
--- | SMP public-namespace resolver façade.
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
+
+-- | Public-namespace resolver. Each RSLV becomes one eth_call to the
+-- configured Ethereum endpoint, bounded by rpcMaxConcurrency and
+-- rpcTimeoutMs. Zero-owner / expired records map to NotFound.
 --
--- Re-exports the resolver's public surface from Names.Resolver and the
--- HTTP auth type from Names.Eth.RPC. Implementation lives in Resolver.hs;
--- Eth.RPC / Eth.SNRC are transport / codec internals.
+-- Transport details live in Names.Eth.RPC (HTTP + JSON-RPC + auth);
+-- Keccak-256 namehash and SNRC ABI decoder live in Names.Eth.SNRC.
 module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
-    NamesEnv,
+    NamesEnv (..),
+    EthCall,
     ResolveError (..),
     newNamesEnv,
+    newNamesEnvWith,
     closeNamesEnv,
     pingEndpoint,
     resolveName,
   )
 where
 
-import Simplex.Messaging.Server.Names.Eth.RPC (RpcAuth (..))
-import Simplex.Messaging.Server.Names.Resolver (NamesConfig (..), NamesEnv, ResolveError (..), closeNamesEnv, newNamesEnv, pingEndpoint, resolveName)
+import qualified Control.Exception as E
+import Control.Logger.Simple (logError)
+import Data.ByteString.Char8 (ByteString)
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), unNameOwner)
+import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
+import Simplex.Messaging.Server.Names.Eth.SNRC (decodeGetRecord, encodeGetRecord, namehash)
+import System.Timeout (timeout)
+
+data NamesConfig = NamesConfig
+  { ethereumEndpoint :: Text,
+    snrcAddress :: NameOwner,
+    rpcAuth :: Maybe RpcAuth,
+    rpcTimeoutMs :: Int,
+    rpcMaxResponseBytes :: Int,
+    rpcMaxConcurrency :: Int
+  }
+  deriving (Show)
+
+data ResolveError
+  = NotFound
+  | EthHttpErr
+  | EthRpcErr {rpcCode :: Int, rpcMessage :: Text}
+  | EthDecodeErr
+  | TimedOut
+  deriving (Eq, Show)
+
+-- | Test seam: a function from (to, data) -> raw return bytes or error.
+-- Production wires this to ethCallReal; tests substitute a stub.
+type EthCall = ByteString -> ByteString -> IO (Either EthRpcError ByteString)
+
+data NamesEnv = NamesEnv
+  { config :: NamesConfig,
+    ethCall :: EthCall,
+    rpcEnv :: Maybe EthRpcEnv -- Nothing for test stubs
+  }
+
+newNamesEnv :: NamesConfig -> IO NamesEnv
+newNamesEnv cfg = do
+  rpc <- newEthRpcEnv (ethereumEndpoint cfg) (rpcAuth cfg) (rpcMaxResponseBytes cfg) (rpcMaxConcurrency cfg)
+  newNamesEnvWith cfg (ethCallReal rpc) (Just rpc)
+
+-- | Allocate resolver with an injected ethCall (test seam).
+newNamesEnvWith :: NamesConfig -> EthCall -> Maybe EthRpcEnv -> IO NamesEnv
+newNamesEnvWith config ethCall rpcEnv = pure NamesEnv {config, ethCall, rpcEnv}
+
+closeNamesEnv :: NamesEnv -> IO ()
+closeNamesEnv NamesEnv {rpcEnv} = mapM_ closeEthRpcEnv rpcEnv
+
+-- | Reach the configured endpoint with a harmless probe call to confirm
+-- network reachability. Returns Left only on transport-level failures;
+-- JSON-RPC errors (misconfigured snrc_address etc.) are treated as
+-- "endpoint reachable" — that distinction surfaces later via rslvEthErrs.
+pingEndpoint :: NamesEnv -> IO (Either EthRpcError ())
+pingEndpoint NamesEnv {ethCall, config} =
+  ethCall (unNameOwner (snrcAddress config)) (encodeGetRecord (namehash "")) >>= \case
+    Left e@(HttpFailure _) -> pure (Left e)
+    Left e@(HttpStatusErr _) -> pure (Left e)
+    _ -> pure (Right ())
+
+-- | Resolve a lookup key with an rpcTimeoutMs ceiling. Synchronous
+-- exceptions are caught and logged; async exceptions propagate.
+resolveName :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
+resolveName env key = do
+  r <- E.try (timeout (rpcTimeoutMs (config env) * 1000) (fetch env key))
+  case r of
+    Right result -> pure (fromMaybe (Left TimedOut) result)
+    Left e
+      | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
+      | otherwise -> do
+          logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
+          pure (Left EthHttpErr)
+
+fetch :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
+fetch NamesEnv {ethCall, config} key =
+  ethCall (unNameOwner (snrcAddress config)) (encodeGetRecord (namehash key)) >>= \case
+    Left e -> pure (Left (mapEthRpcError e))
+    Right ret -> case decodeGetRecord ret of
+      Right Nothing -> pure (Left NotFound)
+      Right (Just rec) -> checkExpiry rec
+      Left _ -> pure (Left EthDecodeErr)
+  where
+    -- Defense in depth: the SNRC contract should already return the
+    -- zero-owner sentinel for expired records, but a buggy / pre-upgrade
+    -- contract might not. nrExpiry == 0 means "never expires" (reserved
+    -- names); any positive expiry in the past is treated as NotFound.
+    checkExpiry rec = do
+      nowSec <- floor <$> getPOSIXTime
+      pure $ if nrExpiry rec /= 0 && nrExpiry rec < nowSec
+        then Left NotFound
+        else Right rec
+
+-- | Collapse the JSON-RPC transport-layer error space into the resolver's
+-- public error space.
+mapEthRpcError :: EthRpcError -> ResolveError
+mapEthRpcError = \case
+  HttpFailure _ -> EthHttpErr
+  HttpStatusErr _ -> EthHttpErr
+  BodyTooLarge -> EthDecodeErr
+  InvalidJson _ -> EthDecodeErr
+  JsonRpcErr c m -> EthRpcErr {rpcCode = c, rpcMessage = m}
