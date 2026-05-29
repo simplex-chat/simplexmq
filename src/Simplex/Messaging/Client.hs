@@ -128,7 +128,6 @@ where
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (ThreadId, forkFinally, forkIO, killThread, mkWeakThreadId)
-import Control.Concurrent.MVar
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception (Exception, Handler (..), IOException, SomeAsyncException, SomeException)
@@ -200,8 +199,7 @@ data PClient v err msg = PClient
     sentCommands :: TMap CorrId (Request err msg),
     sndQ :: TBQueue (Maybe (Request err msg), ByteString),
     rcvQ :: TBQueue (NonEmpty (Transmission (Either err msg))),
-    processServerMsg :: Maybe (ServerTransmissionBatch v err msg -> IO ()),
-    processLock :: MVar ()
+    msgQ :: Maybe (TBQueue (ServerTransmissionBatch v err msg))
   }
 
 smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
@@ -215,7 +213,6 @@ smpClientStub g sessionId thVersion thAuth = do
   timeoutErrorCount <- newTVarIO 0
   sndQ <- newTBQueueIO 100
   rcvQ <- newTBQueueIO 100
-  processLock <- newMVar ()
   let NetworkConfig {tcpConnectTimeout, tcpTimeout} = defaultNetworkConfig
   return
     ProtocolClient
@@ -247,8 +244,7 @@ smpClientStub g sessionId thVersion thAuth = do
               sentCommands,
               sndQ,
               rcvQ,
-              processServerMsg = Nothing,
-              processLock
+              msgQ = Nothing
             }
       }
 
@@ -587,7 +583,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       sentCommands <- TM.emptyIO
       sndQ <- newTBQueueIO qSize
       rcvQ <- newTBQueueIO qSize
-      processLock <- newMVar ()
+      msgQ <- mapM (const $ newTBQueueIO qSize) processServerMsg
       return
         PClient
           { connected,
@@ -602,8 +598,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             sentCommands,
             sndQ,
             rcvQ,
-            processServerMsg,
-            processLock
+            msgQ
           }
 
     runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
@@ -647,7 +642,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
-          raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
+          raceAny_ ([send c' th, process c', receive c' th] <> readMsgs c' <> [monitor c' | smpPingInterval > 0])
             `E.finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
@@ -686,16 +681,19 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         recoverWindow = 15 * 60 -- seconds
         maxCnt = smpPingCount networkConfig
 
+    readMsgs :: ProtocolClient v err msg -> [IO ()]
+    readMsgs c = case (processServerMsg, msgQ $ client_ c) of
+      (Just cb, Just q) -> [forever $ atomically (readTBQueue q) >>= cb]
+      _ -> []
+
     process :: ProtocolClient v err msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= processMsgs c
 
     processMsgs :: ProtocolClient v err msg -> NonEmpty (Transmission (Either err msg)) -> IO ()
     processMsgs c ts = do
       ts' <- catMaybes <$> mapM (processMsg c) (L.toList ts)
-      forM_ processServerMsg $ \process ->
-        forM_ (L.nonEmpty ts') $ \ts'' ->
-          withMVar (processLock $ client_ c) $ \_ ->
-            process $ serverTransmission c ts''
+      forM_ (msgQ $ client_ c) $ \q ->
+        mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
     processMsg :: ProtocolClient v err msg -> Transmission (Either err msg) -> IO (Maybe (EntityId, ServerTransmission err msg))
     processMsg ProtocolClient {client_ = PClient {sentCommands}} (corrId, entId, respOrErr)
@@ -880,10 +878,7 @@ processSUBResponse_ c rId = \case
   r' -> pure . Left $ unexpectedResponse r'
 
 writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
-writeSMPMessage c rId msg =
-  forM_ (processServerMsg $ client_ c) $ \process ->
-    withMVar (processLock $ client_ c) $ \_ ->
-      process $ serverTransmission c [(rId, STEvent (Right msg))]
+writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c [(rId, STEvent (Right msg))]) (msgQ $ client_ c)
 
 serverTransmission :: ProtocolClient v err msg -> NonEmpty (RecipientId, ServerTransmission err msg) -> ServerTransmissionBatch v err msg
 serverTransmission ProtocolClient {thParams, client_ = PClient {transportSession}} ts = (transportSession, thParams, ts)
