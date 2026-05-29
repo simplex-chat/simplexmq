@@ -195,7 +195,7 @@ coalesce env@NamesEnv {inflight} key now = do
                 E.throwIO e
             | otherwise -> do
                 logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
-                pure (Left (mapSyncEthExn e))
+                pure (Left EthHttpErr)
       atomically $ do
         putTMVar mv r
         modifyTVar' inflight (PSQ.delete key)
@@ -205,9 +205,6 @@ coalesce env@NamesEnv {inflight} key now = do
         Left _ -> pure () -- transient errors (HTTP, decode, timeout) are not cached
       pure r
 
-mapSyncEthExn :: E.SomeException -> ResolveError
-mapSyncEthExn _ = EthHttpErr
-
 fetchOnceTimed :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
 fetchOnceTimed env key =
   timeout (rpcTimeoutMs (config env) * 1000) (fetchOnce env key) >>= \case
@@ -215,28 +212,33 @@ fetchOnceTimed env key =
     Nothing -> pure (Left TimedOut)
 
 fetchOnce :: NamesEnv -> ByteString -> IO (Either ResolveError NameRecord)
-fetchOnce NamesEnv {ethCall, config} key = do
-  let node = namehash key
-      callData = encodeGetRecord node
-      to = unNameOwner (snrcAddress config)
-  ethCall to callData >>= \case
-    Left (HttpFailure _) -> pure (Left EthHttpErr)
-    Left (HttpStatusErr _) -> pure (Left EthHttpErr)
-    Left BodyTooLarge -> pure (Left EthDecodeErr)
-    Left (InvalidJson _) -> pure (Left EthDecodeErr)
-    Left (JsonRpcErr c m) -> pure (Left EthRpcErr {rpcCode = c, rpcMessage = m})
+fetchOnce NamesEnv {ethCall, config} key =
+  ethCall (unNameOwner (snrcAddress config)) (encodeGetRecord (namehash key)) >>= \case
+    Left e -> pure (Left (mapEthRpcError e))
     Right ret -> case decodeGetRecord ret of
       Right Nothing -> pure (Left NotFound)
-      Right (Just rec) -> do
-        nowSec <- floor <$> getPOSIXTime
-        -- Defense in depth: the SNRC contract should already return the
-        -- zero-owner sentinel for expired records, but a buggy / pre-upgrade
-        -- contract might not. nrExpiry == 0 means "never expires" (reserved
-        -- names); any positive expiry in the past is treated as NotFound.
-        if nrExpiry rec /= 0 && nrExpiry rec < nowSec
-          then pure (Left NotFound)
-          else pure (Right rec)
+      Right (Just rec) -> checkExpiry rec
       Left _ -> pure (Left EthDecodeErr)
+  where
+    -- Defense in depth: the SNRC contract should already return the
+    -- zero-owner sentinel for expired records, but a buggy / pre-upgrade
+    -- contract might not. nrExpiry == 0 means "never expires" (reserved
+    -- names); any positive expiry in the past is treated as NotFound.
+    checkExpiry rec = do
+      nowSec <- floor <$> getPOSIXTime
+      pure $ if nrExpiry rec /= 0 && nrExpiry rec < nowSec
+        then Left NotFound
+        else Right rec
+
+-- | Collapse the JSON-RPC transport-layer error space into the resolver's
+-- public error space. Reused by fetchOnce and pingEndpoint.
+mapEthRpcError :: EthRpcError -> ResolveError
+mapEthRpcError = \case
+  HttpFailure _ -> EthHttpErr
+  HttpStatusErr _ -> EthHttpErr
+  BodyTooLarge -> EthDecodeErr
+  InvalidJson _ -> EthDecodeErr
+  JsonRpcErr c m -> EthRpcErr {rpcCode = c, rpcMessage = m}
 
 cacheInsert :: NamesEnv -> ByteString -> Word64 -> Maybe NameRecord -> Word64 -> IO ()
 cacheInsert NamesEnv {config, cache} key now result ttl = atomically $ do

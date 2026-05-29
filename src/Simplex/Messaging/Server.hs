@@ -65,7 +65,7 @@ import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
 import Data.Foldable (foldrM)
-import Data.Functor (($>))
+import Data.Functor (($>), (<&>))
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
@@ -1499,13 +1499,13 @@ client
       Cmd SResolver (RSLV (LookupKey key)) -> do
         st <- asks (rslvStats . serverStats)
         incStat (rslvReqs st)
-        asks namesEnv >>= \case
-          Nothing -> incStat (rslvDisabled st) $> response (corrId, NoEntity, ERR AUTH)
-          Just nenv ->
-            liftIO (resolveName nenv key) >>= \case
-              Right rec -> incStat (rslvSucc st) $> response (corrId, NoEntity, NAME rec)
-              Left NotFound -> incStat (rslvNotFound st) $> response (corrId, NoEntity, ERR AUTH)
-              Left _ -> incStat (rslvEthErrs st) $> response (corrId, NoEntity, ERR AUTH)
+        (selector, msg) <- asks namesEnv >>= \case
+          Nothing -> pure (rslvDisabled, ERR AUTH)
+          Just nenv -> liftIO (resolveName nenv key) <&> \case
+            Right rec -> (rslvSucc, NAME rec)
+            Left NotFound -> (rslvNotFound, ERR AUTH)
+            Left _ -> (rslvEthErrs, ERR AUTH)
+        incStat (selector st) $> response (corrId, NoEntity, msg)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
