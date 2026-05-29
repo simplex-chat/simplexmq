@@ -273,21 +273,20 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
       env <- ask
       let processMsg c t = subscriber c t `runReaderT` env
       c@AgentClient {acThread} <- liftIO $ newAgentClient clientId initServers currentTs notices processMsg env
-      t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
-      atomically . writeTVar acThread . Just =<< mkWeakThreadId t
+      unless backgroundMode $ do
+        t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
+        atomically . writeTVar acThread . Just =<< mkWeakThreadId t
       pure c
     checkServers protocol srvs =
       forM_ (M.assocs srvs) $ \(userId, srvs') -> checkUserServers ("getSMPAgentClient " <> protocol <> " " <> tshow userId) srvs'
-    runAgentThreads c
-      | backgroundMode = forever $ liftIO $ threadDelay maxBound
-      | otherwise = do
-          restoreServersStats c
-          raceAny_
-            [ run c "runNtfSupervisor" $ runNtfSupervisor c,
-              run c "cleanupManager" $ cleanupManager c,
-              run c "logServersStats" $ logServersStats c
-            ]
-            `E.finally` saveServersStats c
+    runAgentThreads c = do
+      restoreServersStats c
+      raceAny_
+        [ run c "runNtfSupervisor" $ runNtfSupervisor c,
+          run c "cleanupManager" $ cleanupManager c,
+          run c "logServersStats" $ logServersStats c
+        ]
+        `E.finally` saveServersStats c
     run AgentClient {subQ, acThread} name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
