@@ -17,7 +17,8 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests
-  ( agentCfgVPrevPQ,
+  ( AgentClient (..),
+    agentCfgVPrevPQ,
     createConnection,
     exchangeGreetings,
     get,
@@ -61,7 +62,7 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
 import SMPClient
-import Simplex.Messaging.Agent hiding (checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
+import Simplex.Messaging.Agent hiding (AgentClient, checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -335,7 +336,7 @@ testNtfTokenServerRestartReverify t apns = do
 testNtfTokenServerRestartReverifyTimeout :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReverifyTimeout t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
-  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
+  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {client = A.AgentClient {agentEnv = Env {store}}} -> do
     (nonce, verification) <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
@@ -394,7 +395,7 @@ testNtfTokenServerRestartReregister t apns = do
 testNtfTokenServerRestartReregisterTimeout :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReregisterTimeout t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
-  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
+  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {client = A.AgentClient {agentEnv = Env {store}}} -> do
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
@@ -543,7 +544,7 @@ testRunNTFServerTests t srv =
       testProtocolServer a NRMInteractive 1 $ ProtoServerWithAuth srv Nothing
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
-testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do
+testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {client = A.AgentClient {agentEnv = Env {config = aliceCfg, store}}} bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe

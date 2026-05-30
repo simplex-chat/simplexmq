@@ -1719,7 +1719,7 @@ testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
 #if defined(dbServerPostgres)
       updateDbStore :: PostgresQueueStore s -> IO ()
       updateDbStore st = do
-        let AgentClient {agentEnv = Env {store}} = a
+        let AgentClient {client = A.AgentClient {agentEnv = Env {store}}} = a
         Right (SomeConn _ (ContactConnection _ RcvQueue {rcvId})) <- withTransaction store (`getConn` contactId)
         Right 1 <- runExceptT $ withDB' "test" st $ \db -> PSQL.execute db "UPDATE msg_queues SET queue_mode = ? WHERE recipient_id = ?" (Nothing :: Maybe QueueMode, rcvId)
         pure ()
