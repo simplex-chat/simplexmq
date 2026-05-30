@@ -46,6 +46,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (Str (..), strEncode)
 import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), noMsgFlags, pattern SMPServer, pattern NoEntity, encodeProtocol, Cmd (..), SParty (..), Command (..), NewQueueReq (..), QueueReqData (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..), PubHeader (..), PrivHeader (..), ClientMessage (..), ClientMsgEnvelope (..), pattern VersionSMPC)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
+import Simplex.Messaging.Server.QueueStore.QueueInfo (QueueMode (..))
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
 import Data.Time.Clock (getCurrentTime)
@@ -1235,6 +1237,52 @@ smpWebTests_ = do
           <> "if (e.type !== 'envelope') throw new Error('expected envelope');"
           <> jsOut ("e.encAgentMessage")
         tsResult `shouldBe` "decrypt me"
+
+  describe "agent/queueInfo" $ do
+    let impAgentProtoEnc = "import { encodeSMPQueueInfo, decodeSMPQueueInfo, encodeSMPQueueUri, decodeSMPQueueUri, encodeConnReqUriData, decodeConnReqUriData, encodeConnectionRequestUri, decodeConnectionRequestUri } from './dist/agent/protocol.js';"
+
+    describe "SMPQueueInfo" $ do
+      it "encoding matches Haskell" $ do
+        g <- C.newRandom
+        (dhPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let srv = SMPServer ("smp.example.com" :| []) "5223" (C.KeyHash $ B.pack [1..32])
+            senderId = EntityId $ B.pack [10..33]
+            qAddr = AP.SMPQueueAddress {AP.smpServer = srv, AP.senderId = senderId, AP.dhPublicKey = dhPub, AP.queueMode = Just QMMessaging}
+            qi = AP.SMPQueueInfo (VersionSMPC 4) qAddr
+            hsBytes = smpEncode qi
+        tsBytes <- callNode $ impEnc <> impAgentProtoEnc
+          <> "const qi = {clientVersion: 4, queueAddress: {smpServer: {hosts: ['smp.example.com'], port: '5223', keyHash: " <> jsUint8 (B.pack [1..32]) <> "}, senderId: " <> jsUint8 (B.pack [10..33]) <> ", dhPublicKey: " <> jsUint8 (C.encodePubKey dhPub) <> ", queueMode: 'M'}};"
+          <> jsOut ("encodeSMPQueueInfo(qi)")
+        tsBytes `shouldBe` hsBytes
+
+      it "TypeScript decodes Haskell-encoded" $ do
+        g <- C.newRandom
+        (dhPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let srv = SMPServer ("relay.test.com" :| ["relay2.test.com"]) "" (C.KeyHash $ B.pack [50..81])
+            senderId = EntityId $ B.pack [1..24]
+            qAddr = AP.SMPQueueAddress {AP.smpServer = srv, AP.senderId = senderId, AP.dhPublicKey = dhPub, AP.queueMode = Just QMContact}
+            qi = AP.SMPQueueInfo (VersionSMPC 4) qAddr
+            hsBytes = smpEncode qi
+        tsResult <- callNode $ impEnc <> impAgentProtoEnc
+          <> "const qi = decodeSMPQueueInfo(new Decoder(" <> jsUint8 hsBytes <> "));"
+          <> jsOut ("new Uint8Array([qi.clientVersion >> 8, qi.clientVersion & 0xff, qi.queueAddress.smpServer.hosts.length, qi.queueAddress.queueMode ? qi.queueAddress.queueMode.charCodeAt(0) : 0])")
+        tsResult `shouldBe` B.pack [0, 4, 2, 0x43]  -- version=4, 2 hosts, queueMode='C'
+
+    describe "ConnectionRequestUri" $ do
+      it "contact encoding matches Haskell" $ do
+        g <- C.newRandom
+        (dhPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let srv = SMPServer ("smp1.example.com" :| []) "" (C.KeyHash $ B.pack [1..32])
+            senderId = EntityId $ B.pack [1..24]
+            qAddr = AP.SMPQueueAddress {AP.smpServer = srv, AP.senderId = senderId, AP.dhPublicKey = dhPub, AP.queueMode = Just QMContact}
+            qUri = AP.SMPQueueUri (mkVersionRange (VersionSMPC 4) (VersionSMPC 4)) qAddr
+            crData = AP.ConnReqUriData {AP.crScheme = SSSimplex, AP.crAgentVRange = mkVersionRange (AP.VersionSMPA 2) (AP.VersionSMPA 7), AP.crSmpQueues = qUri :| [], AP.crClientData = Nothing}
+            cr = AP.CRContactUri crData :: AP.ConnectionRequestUri 'AP.CMContact
+            hsBytes = smpEncode cr
+        tsBytes <- callNode $ impEnc <> impAgentProtoEnc
+          <> "const cr = {mode: 'contact', crData: {crAgentVRange: {min: 2, max: 7}, crSmpQueues: [{clientVRange: {min: 4, max: 4}, queueAddress: {smpServer: {hosts: ['smp1.example.com'], port: '', keyHash: " <> jsUint8 (B.pack [1..32]) <> "}, senderId: " <> jsUint8 (B.pack [1..24]) <> ", dhPublicKey: " <> jsUint8 (C.encodePubKey dhPub) <> ", queueMode: 'C'}}], crClientData: null}};"
+          <> jsOut ("encodeConnectionRequestUri(cr)")
+        tsBytes `shouldBe` hsBytes
 
   describe "protocol/e2e" $ do
     describe "PubHeader" $ do
