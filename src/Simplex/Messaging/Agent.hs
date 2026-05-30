@@ -1325,7 +1325,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
             getSndRatchet db connId v >>= \case
               Right r -> pure $ Right $ snd r
               Left e -> do
-                notifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
+                nonBlockingNotifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
                 runExceptT $ createRatchet_ db g maxSupported pqSupport e2eRcvParams
           pure (cData, sq, e2eSndParams, Nothing)
         _ -> do
@@ -1419,7 +1419,7 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
             getRatchetX3dhKeys db connId >>= \case
               Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eVR) keys
               Left e -> do
-                notifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no rcv ratchet " <> show e))
+                nonBlockingNotifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no rcv ratchet " <> show e))
                 let pqEnc = CR.initialPQEncryption False pqInitKeys
                 (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
                 createRatchetX3dhKeys db connId pk1 pk2 pKem
@@ -1431,7 +1431,7 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
 delInvSL :: AgentClient -> ConnId -> SMPServerWithAuth -> SMP.LinkId -> AM ()
 delInvSL c connId srv lnkId =
   withStore' c (\db -> deleteInvShortLink db (protoServer srv) lnkId) `catchE` \e ->
-    liftIO $ notifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "error deleting short link " <> show e))
+    liftIO $ nonBlockingNotifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "error deleting short link " <> show e))
 
 joinConnSrvAsync :: AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
 joinConnSrvAsync c userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSupport subMode srv = do
@@ -1864,7 +1864,7 @@ runCommandProcessing :: AgentClient -> ConnId -> Maybe SMPServer -> Worker -> AM
 runCommandProcessing c connId server_ Worker {doWork} = do
   ri <- asks $ messageRetryInterval . config -- different retry interval?
   forever $ do
-    atomically $ endAgentOperation c AOSndNetwork
+    endAgentOp c AOSndNetwork
     lift $ waitForWork doWork
     liftIO $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
@@ -2165,14 +2165,14 @@ runSmpQueueMsgDelivery :: AgentClient -> SndQueue -> (Worker, TMVar ()) -> AM ()
 runSmpQueueMsgDelivery c sq@SndQueue {userId, connId, server, queueMode} (Worker {doWork}, qLock) = do
   AgentConfig {messageRetryInterval = ri, messageTimeout, helloTimeout, quotaExceededTimeout} <- asks config
   forever $ do
-    atomically $ endAgentOperation c AOSndNetwork
+    endAgentOp c AOSndNetwork
     lift $ waitForWork doWork
     liftIO $ throwWhenInactive c
     liftIO $ throwWhenNoDelivery c sq
     atomically $ beginAgentOperation c AOSndNetwork
     withWork c doWork (\db -> getPendingQueueMsg db connId sq) $
       \(rq_, PendingMsgData {msgId, msgType, msgBody, pqEncryption, msgFlags, msgRetryState, internalTs, internalSndId, prevMsgHash, pendingMsgPrepData_}) -> do
-        atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
+        endAgentOp c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
         withRetryLock2 ri' qLock $ \riState loop -> do
@@ -2342,10 +2342,15 @@ runSmpQueueMsgDelivery c sq@SndQueue {userId, connId, server, queueMode} (Worker
 retrySndOp :: AgentClient -> AM () -> AM ()
 retrySndOp c loop = do
   -- end... is in a separate atomically because if begin... blocks, SUSPENDED won't be sent
-  atomically $ endAgentOperation c AOSndNetwork
+  endAgentOp c AOSndNetwork
   liftIO $ throwWhenInactive c
   atomically $ beginAgentOperation c AOSndNetwork
   loop
+
+endAgentOp :: MonadIO m => AgentClient -> AgentOperation -> m ()
+endAgentOp c op = do
+  suspended <- atomically $ endAgentOperation c op
+  when suspended $ liftIO $ notifyEvent c ("", "", AEvt SAENone SUSPENDED)
 
 -- | Like 'withConnLock', but writes the returned 'ATransmission' to 'subQ'
 -- after releasing the lock, preventing deadlock with agentSubscriber.
@@ -2940,7 +2945,6 @@ suspendAgent :: AgentClient -> Int -> IO ()
 suspendAgent c 0 = do
   atomically $ writeTVar (agentState c) ASSuspended
   mapM_ suspend agentOperations
-  notifyEvent c ("", "", AEvt SAENone SUSPENDED)
   where
     suspend opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = True}
 suspendAgent c@AgentClient {agentState = as} maxDelay = do

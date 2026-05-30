@@ -167,6 +167,7 @@ module Simplex.Messaging.Agent.Client
     notifySub,
     notifySub',
     notifyEvent,
+    nonBlockingNotifyEvent,
     connWorkerLoop,
     userServers,
     pickServer,
@@ -1070,11 +1071,17 @@ withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId
 {-# INLINE withConnLock' #-}
 
 notifyEvent :: AgentClient -> ATransmission -> IO ()
-notifyEvent c t@(_, connId, _)
-  | B.null connId = atomically $ writeTBQueue (generalQ c) t
+notifyEvent = notifyEvent_ $ atomically .: writeTBQueue
+
+nonBlockingNotifyEvent :: AgentClient -> ATransmission -> IO ()
+nonBlockingNotifyEvent = notifyEvent_ nonBlockingWriteTBQueue
+
+notifyEvent_ :: (TBQueue ATransmission -> ATransmission -> IO ()) -> AgentClient -> ATransmission -> IO ()
+notifyEvent_ write c t@(_, connId, _)
+  | B.null connId = write (generalQ c) t
   | otherwise = do
       q <- getOrCreateConnWorker c connId
-      atomically $ writeTBQueue q t
+      write q t
 
 getOrCreateConnWorker :: AgentClient -> ConnId -> IO (TBQueue ATransmission)
 getOrCreateConnWorker c@AgentClient {connWorkers, connWorkerSeq} connId = do
