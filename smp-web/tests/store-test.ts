@@ -598,10 +598,10 @@ async function testSendMessages(store: AgentStore) {
   await store.createSndMsgDelivery(connId, sndQueue, internalId)
 
   // getPendingQueueMsg
-  const pending = await store.getPendingQueueMsg(connId, sndQueue)
-  assert(pending !== null, "getPendingQueueMsg finds pending message")
-  assertEq(pending!.msgType, "SEND", "getPendingQueueMsg msgType matches")
-  assertEq(pending!.internalId, internalId, "getPendingQueueMsg internalId matches")
+  const pendingResult = await store.getPendingQueueMsg(connId, sndQueue)
+  assert(pendingResult !== null, "getPendingQueueMsg finds pending message")
+  assertEq(pendingResult!.msg.msgType, "SEND", "getPendingQueueMsg msgType matches")
+  assertEq(pendingResult!.msg.internalId, internalId, "getPendingQueueMsg internalId matches")
 
   // updatePendingMsgRIState
   await store.updatePendingMsgRIState(connId, internalId, 30, 5)

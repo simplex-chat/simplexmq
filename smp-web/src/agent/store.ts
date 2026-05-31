@@ -12,6 +12,12 @@ export type InternalRcvId = number
 export type InternalSndId = number
 
 export type QueueStatus = "new" | "confirmed" | "secured" | "active" | "disabled" | "deleted"
+
+// Matches Haskell SkippedMsgDiff (Crypto/Ratchet.hs:584-587)
+export type SkippedMsgDiff =
+  | {type: "noChange"}
+  | {type: "remove", headerKey: Uint8Array, msgN: number}
+  | {type: "add", keys: Map<Uint8Array, Map<number, any>>}  // Map<HeaderKey, Map<MsgN, MessageKey>>
 export type ConnectionMode = "INV" | "CON"  // SCMInvitation | SCMContact
 export type RatchetSyncState = "ok" | "allowed" | "required" | "started" | "agreed"
 
@@ -133,6 +139,7 @@ export interface RcvMsg {
   msgMeta: MsgMeta
   msgType: string
   msgBody: Uint8Array
+  internalHash: Uint8Array
   userAck: boolean
   msgReceipt: {agentMsgId: number, msgRcptStatus: string} | null
 }
@@ -141,15 +148,19 @@ export interface PendingQueueMsg {
   connId: ConnId
   sndQueueId: number
   internalId: number
+  internalTs: string
+  internalSndId: number
   msgType: string
   msgFlags: number
   msgBody: Uint8Array
   internalHash: Uint8Array
   prevMsgHash: Uint8Array
   pqEncryption: boolean
+  retryIntSlow: number | null
+  retryIntFast: number | null
   msgEncryptKey: Uint8Array | null
   paddedMsgLen: number | null
-  sndMessageBodyId: number | null
+  sndMsgBody: Uint8Array | null  // agent_msg from snd_message_bodies (joined)
 }
 
 export interface AsyncCommand {
@@ -198,14 +209,14 @@ export interface AgentStore {
 
   // -- Queues (AgentStore.hs:500-700)
   addConnRcvQueue(connId: ConnId, rcvQueue: RcvQueue, subMode: string): Promise<RcvQueue>
-  addConnSndQueue(connId: ConnId, sndQueue: SndQueue): Promise<void>
+  addConnSndQueue(connId: ConnId, sndQueue: SndQueue): Promise<SndQueue>
   setRcvQueueStatus(rcvQueue: RcvQueue, status: QueueStatus): Promise<void>
   setSndQueueStatus(sndQueue: SndQueue, status: QueueStatus): Promise<void>
   setRcvQueueConfirmedE2E(rcvQueue: RcvQueue, dhSecret: Uint8Array, smpClientVersion: number): Promise<void>
   setRcvQueuePrimary(connId: ConnId, rcvQueue: RcvQueue): Promise<void>
   deleteConnRcvQueue(rcvQueue: RcvQueue): Promise<void>
   deleteConnRecord(connId: ConnId): Promise<void>
-  upgradeRcvConnToDuplex(connId: ConnId, sndQueue: SndQueue): Promise<void>
+  upgradeRcvConnToDuplex(connId: ConnId, sndQueue: SndQueue): Promise<SndQueue>
   upgradeSndConnToDuplex(connId: ConnId, rcvQueue: RcvQueue, subMode: string): Promise<RcvQueue>
   getPrimaryRcvQueue(connId: ConnId): Promise<RcvQueue | null>
   getRcvQueue(connId: ConnId, host: string, port: string, rcvId: Uint8Array): Promise<RcvQueue | null>
@@ -242,7 +253,7 @@ export interface AgentStore {
   createSndMsg(connId: ConnId, sndMsgData: SndMsgData): Promise<void>
   updateSndMsgHash(connId: ConnId, internalSndId: number, hash: Uint8Array): Promise<void>
   createSndMsgDelivery(connId: ConnId, sndQueue: SndQueue, internalId: number): Promise<void>
-  getPendingQueueMsg(connId: ConnId, sndQueue: SndQueue): Promise<PendingQueueMsg | null>
+  getPendingQueueMsg(connId: ConnId, sndQueue: SndQueue): Promise<{rcvQueue: RcvQueue | null, msg: PendingQueueMsg} | null>
   updatePendingMsgRIState(connId: ConnId, msgId: number, retryIntSlow: number | null, retryIntFast: number | null): Promise<void>
   setMsgUserAck(connId: ConnId, internalId: number): Promise<{rcvQueue: RcvQueue, brokerId: Uint8Array}>
   getRcvMsg(connId: ConnId, internalId: number): Promise<RcvMsg | null>
@@ -263,7 +274,7 @@ export interface AgentStore {
   getRatchet(connId: ConnId): Promise<Uint8Array | null>
   getRatchetForUpdate(connId: ConnId): Promise<Uint8Array | null>  // same as getRatchet in IndexedDB (single-threaded)
   getSkippedMsgKeys(connId: ConnId): Promise<Map<string, Map<number, {mk: Uint8Array, iv: Uint8Array}>>>
-  updateRatchet(connId: ConnId, ratchetState: Uint8Array, skippedMsgDiff: unknown): Promise<void>
+  updateRatchet(connId: ConnId, ratchetState: Uint8Array, skippedMsgDiff: SkippedMsgDiff): Promise<void>
 
   // -- Commands (AgentStore.hs:1400-1480)
   createCommand(corrId: Uint8Array, connId: ConnId, host: string | null, port: string | null, command: AsyncCommand): Promise<number>

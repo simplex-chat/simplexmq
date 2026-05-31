@@ -465,6 +465,7 @@ function createStore(db: IDBDatabase): AgentStore {
           replace_snd_queue_id: null, smp_client_version: sndQueue.smpClientVersion,
           server_key_hash: sndQueue.serverKeyHash, snd_public_key: sndQueue.sndPublicKey,
         }))
+        return {...sndQueue, connId, dbQueueId: qId}
       })
     },
 
@@ -1064,7 +1065,7 @@ function createStore(db: IDBDatabase): AgentStore {
     //                 LEFT JOIN snd_message_bodies sb ON sb.snd_message_body_id = s.snd_message_body_id
     //                 WHERE m.conn_id = ? AND m.internal_id = ?
     async getPendingQueueMsg(connId, sndQueue) {
-      return withTx(["snd_message_deliveries", "messages", "snd_messages", "snd_message_bodies"], "readonly", async (tx) => {
+      return withTx(["snd_message_deliveries", "messages", "snd_messages", "snd_message_bodies", "rcv_queues"], "readonly", async (tx) => {
         // getMsgId: find first non-failed delivery for this queue
         const allDel = await allByIndex(tx.objectStore("snd_message_deliveries"), {conn_id: connId, snd_queue_id: sndQueue.dbQueueId})
         const pending = allDel.filter((d: any) => !d.failed).sort((a: any, b: any) => a.internal_id - b.internal_id)
@@ -1085,13 +1086,24 @@ function createStore(db: IDBDatabase): AgentStore {
           if (body) sndMsgBody = body.agent_msg
         }
 
+        // getRcvQueuesByConnId_ to get primary rcv queue (head of sorted list)
+        const rcvQueues = (await allByIndex(tx.objectStore("rcv_queues"), {conn_id: connId}))
+          .filter((q: any) => !q.deleted)
+          .sort((a: any, b: any) => (b.rcv_primary || 0) - (a.rcv_primary || 0))
+        const rcvQueue = rcvQueues[0] ?? null
+
         return {
-          connId, sndQueueId: sndQueue.dbQueueId, internalId: msgId,
-          msgType: msg.msg_type, msgFlags: msg.msg_flags, msgBody: msg.msg_body,
-          internalHash: sm.internal_hash, prevMsgHash: sm.previous_msg_hash,
-          pqEncryption: msg.pq_encryption,
-          msgEncryptKey: sm.msg_encrypt_key, paddedMsgLen: sm.padded_msg_len,
-          sndMessageBodyId: sm.snd_message_body_id,
+          rcvQueue,
+          msg: {
+            connId, sndQueueId: sndQueue.dbQueueId, internalId: msgId,
+            internalTs: msg.internal_ts, internalSndId: msg.internal_snd_id,
+            msgType: msg.msg_type, msgFlags: msg.msg_flags, msgBody: msg.msg_body,
+            internalHash: sm.internal_hash, prevMsgHash: sm.previous_msg_hash,
+            pqEncryption: msg.pq_encryption,
+            retryIntSlow: sm.retry_int_slow, retryIntFast: sm.retry_int_fast,
+            msgEncryptKey: sm.msg_encrypt_key, paddedMsgLen: sm.padded_msg_len,
+            sndMsgBody,
+          },
         }
       })
     },
@@ -1165,8 +1177,11 @@ function createStore(db: IDBDatabase): AgentStore {
           },
           msgType: msg.msg_type,
           msgBody: msg.msg_body,
+          internalHash: rm.internal_hash,
           userAck: rm.user_ack === 1,
-          msgReceipt: sndRcpt?.rcpt_status ?? null,
+          msgReceipt: sndRcpt && sndRcpt.rcpt_internal_id != null && sndRcpt.rcpt_status != null
+            ? {agentMsgId: sndRcpt.rcpt_internal_id, msgRcptStatus: sndRcpt.rcpt_status}
+            : null,
         }
       })
     },
@@ -1203,8 +1218,11 @@ function createStore(db: IDBDatabase): AgentStore {
           },
           msgType: msg.msg_type,
           msgBody: msg.msg_body,
+          internalHash: rm.internal_hash,
           userAck: rm.user_ack === 1,
-          msgReceipt: sndRcpt?.rcpt_status ?? null,
+          msgReceipt: sndRcpt && sndRcpt.rcpt_internal_id != null && sndRcpt.rcpt_status != null
+            ? {agentMsgId: sndRcpt.rcpt_internal_id, msgRcptStatus: sndRcpt.rcpt_status}
+            : null,
         }
       })
     },
