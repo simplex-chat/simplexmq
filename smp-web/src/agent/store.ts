@@ -134,7 +134,7 @@ export interface RcvMsg {
   msgType: string
   msgBody: Uint8Array
   userAck: boolean
-  msgReceipt: Uint8Array | null
+  msgReceipt: {agentMsgId: number, msgRcptStatus: string} | null
 }
 
 export interface PendingQueueMsg {
@@ -173,7 +173,7 @@ export interface AgentStore {
   createUserRecord(): Promise<UserId>
   getUserIds(): Promise<UserId[]>
   deleteUserRecord(userId: UserId): Promise<void>
-  setUserDeleted(userId: UserId): Promise<void>
+  setUserDeleted(userId: UserId): Promise<ConnId[]>
 
   // -- Servers (AgentStore.hs:233-240)
   createServer(host: string, port: string, keyHash: Uint8Array): Promise<void>
@@ -213,8 +213,8 @@ export interface AgentStore {
   setConnectionNtfs(connId: ConnId, enable: boolean): Promise<void>
 
   // -- Subscriptions (AgentStore.hs:700-800)
-  getSubscriptionServers(onlyNeeded: boolean): Promise<Array<{userId: UserId, host: string, port: string}>>
-  getUserServerRcvQueueSubs(userId: UserId, host: string, port: string, onlyNeeded: boolean, batchSize: number, cursor: number | null): Promise<{queues: RcvQueue[], nextCursor: number | null}>
+  getSubscriptionServers(onlyNeeded: boolean): Promise<Array<{userId: UserId, host: string, port: string, keyHash: Uint8Array}>>
+  getUserServerRcvQueueSubs(userId: UserId, host: string, port: string, keyHash: Uint8Array, onlyNeeded: boolean, batchSize: number, cursor: number | null): Promise<{queues: RcvQueue[], nextCursor: number | null}>
   unsetQueuesToSubscribe(): Promise<void>
   getConnectionsForDelivery(): Promise<ConnId[]>
   getAllSndQueuesForDelivery(): Promise<SndQueue[]>
@@ -251,10 +251,10 @@ export interface AgentStore {
   checkRcvMsgHashExists(connId: ConnId, hash: Uint8Array): Promise<boolean>
   getRcvMsgBrokerTs(connId: ConnId, brokerId: Uint8Array): Promise<string | null>
   deleteMsg(connId: ConnId, internalId: number): Promise<void>
-  deleteDeliveredSndMsg(connId: ConnId, internalSndId: number): Promise<void>
+  deleteDeliveredSndMsg(connId: ConnId, internalId: number): Promise<void>
   deleteSndMsgDelivery(connId: ConnId, sndQueue: SndQueue, msgId: number, keepForReceipt: boolean): Promise<void>
-  getSndMsgViaRcpt(connId: ConnId, sndMsgId: number): Promise<{internalId: number, msgType: string, internalHash: Uint8Array, msgReceipt: Uint8Array | null} | null>
-  updateSndMsgRcpt(connId: ConnId, sndMsgId: number, receipt: Uint8Array): Promise<void>
+  getSndMsgViaRcpt(connId: ConnId, sndMsgId: number): Promise<{internalId: number, msgType: string, internalHash: Uint8Array, msgReceipt: {agentMsgId: number, msgRcptStatus: string} | null} | null>
+  updateSndMsgRcpt(connId: ConnId, sndMsgId: number, receipt: {agentMsgId: number, msgRcptStatus: string}): Promise<void>
 
   // -- Ratchet (AgentStore.hs:1300-1400)
   createRatchetX3dhKeys(connId: ConnId, privKey1: Uint8Array, privKey2: Uint8Array, pqKem: Uint8Array | null): Promise<void>
@@ -269,7 +269,7 @@ export interface AgentStore {
   createCommand(corrId: Uint8Array, connId: ConnId, host: string | null, port: string | null, command: AsyncCommand): Promise<number>
   getPendingCommandServers(connIds: ConnId[]): Promise<Array<{connId: ConnId, host: string, port: string}>>
   getAllPendingCommandConns(): Promise<Array<{connId: ConnId, host: string, port: string}>>
-  getPendingServerCommand(host: string, port: string): Promise<AsyncCommand | null>
+  getPendingServerCommand(connId: ConnId, host: string | null, port: string | null): Promise<AsyncCommand | null>
   updateCommandServer(commandId: number, host: string, port: string): Promise<void>
   deleteCommand(commandId: number): Promise<void>
 

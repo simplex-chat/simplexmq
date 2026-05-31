@@ -303,7 +303,8 @@ async function testSubscriptions(store: AgentStore) {
     lastInternalMsgId: 0, lastInternalRcvMsgId: 0, lastInternalSndMsgId: 0,
     lastExternalSndMsgId: 0, lastRcvMsgHash: new Uint8Array(0), lastSndMsgHash: new Uint8Array(0),
   }, "INV")
-  await store.createServer("sub.example.com", "5223", randomBytes(32))
+  const subKeyHash = randomBytes(32)
+  await store.createServer("sub.example.com", "5223", subKeyHash)
   const rcvQ = await store.addConnRcvQueue(connId, {
     host: "sub.example.com", port: "5223", rcvId: randomBytes(24),
     connId, rcvPrivateKey: randomBytes(32), rcvDhSecret: randomBytes(32),
@@ -311,7 +312,7 @@ async function testSubscriptions(store: AgentStore) {
     sndId: randomBytes(24), sndKey: null, status: "new" as const,
     smpClientVersion: 7, dbQueueId: 0, primary: true,
     replaceRcvQueueId: null, queueMode: null,
-    serverKeyHash: randomBytes(32), lastBrokerTs: null,
+    serverKeyHash: subKeyHash, lastBrokerTs: null,
   }, "SMOnlyCreate")
 
   // getSubscriptionServers — onlyNeeded=true should find our to_subscribe=1 queue
@@ -323,7 +324,7 @@ async function testSubscriptions(store: AgentStore) {
   assert(allSrvs.some(s => s.host === "sub.example.com"), "getSubscriptionServers(false) finds all")
 
   // getUserServerRcvQueueSubs
-  const {queues} = await store.getUserServerRcvQueueSubs(userId, "sub.example.com", "5223", true, 10, null)
+  const {queues} = await store.getUserServerRcvQueueSubs(userId, "sub.example.com", "5223", subKeyHash, true, 10, null)
   assert(queues.length >= 1, "getUserServerRcvQueueSubs finds queues")
 
   // unsetQueuesToSubscribe
@@ -612,8 +613,7 @@ async function testSendMessages(store: AgentStore) {
   assertEq(sndMsg!.internalHash, internalHash, "getSndMsgViaRcpt hash matches")
 
   // updateSndMsgRcpt
-  const receipt = randomBytes(8)
-  await store.updateSndMsgRcpt(connId, internalSndId, receipt)
+  await store.updateSndMsgRcpt(connId, internalSndId, {agentMsgId: internalId, msgRcptStatus: "ok"})
 
   // deleteSndMsgDelivery — deletes delivery, then msg if no more deliveries
   await store.deleteSndMsgDelivery(connId, sndQueue, internalId, false)
@@ -747,19 +747,19 @@ async function testCommands(store: AgentStore) {
   assert(allConns.some(c => hex(c.connId) === hex(connId)), "getAllPendingCommandConns finds conn")
 
   // getPendingServerCommand
-  const pendingCmd = await store.getPendingServerCommand("cmd.example.com", "5223")
+  const pendingCmd = await store.getPendingServerCommand(connId, "cmd.example.com", "5223")
   assert(pendingCmd !== null, "getPendingServerCommand finds command")
 
   // updateCommandServer
   await store.updateCommandServer(cmdId, "cmd2.example.com", "5224")
-  const updated = await store.getPendingServerCommand("cmd2.example.com", "5224")
+  const updated = await store.getPendingServerCommand(connId, "cmd2.example.com", "5224")
   assert(updated !== null, "updateCommandServer changes server")
-  const oldHost = await store.getPendingServerCommand("cmd.example.com", "5223")
+  const oldHost = await store.getPendingServerCommand(connId, "cmd.example.com", "5223")
   assert(oldHost === null, "updateCommandServer — old host returns nothing")
 
   // deleteCommand
   await store.deleteCommand(cmdId)
-  const deleted = await store.getPendingServerCommand("cmd2.example.com", "5224")
+  const deleted = await store.getPendingServerCommand(connId, "cmd2.example.com", "5224")
   assert(deleted === null, "deleteCommand removes command")
 }
 

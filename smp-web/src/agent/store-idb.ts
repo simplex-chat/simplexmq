@@ -49,8 +49,8 @@ function createSchema(db: IDBDatabase): void {
   db.createObjectStore("users", {keyPath: "user_id", autoIncrement: true})
 
   // servers — agent_schema.sql:6-11
-  // CREATE TABLE servers(host TEXT, port TEXT, key_hash BLOB, PRIMARY KEY(host, port))
-  db.createObjectStore("servers", {keyPath: ["host", "port"]})
+  // Deviation from Haskell: keyHash is part of the primary key (Haskell uses (host,port) as workaround to avoid migration)
+  db.createObjectStore("servers", {keyPath: ["host", "port", "key_hash"]})
 
   // connections — agent_schema.sql:12-31
   const conns = db.createObjectStore("connections", {keyPath: "conn_id"})
@@ -196,6 +196,8 @@ function createStore(db: IDBDatabase): AgentStore {
           user.deleted = 1
           await idbReq(store.put(user))
         }
+        const allConns = await idbReq(tx.objectStore("connections").getAll())
+        return allConns.filter((c: any) => c.user_id === userId).map((c: any) => c.conn_id)
       })
     },
 
@@ -208,7 +210,7 @@ function createStore(db: IDBDatabase): AgentStore {
     async createServer(host, port, keyHash) {
       return withTx("servers", "readwrite", async (tx) => {
         const store = tx.objectStore("servers")
-        const existing = await idbReq(store.get([host, port]))
+        const existing = await idbReq(store.get([host, port, keyHash]))
         if (!existing) await idbReq(store.add({host, port, key_hash: keyHash}))
       })
     },
@@ -393,7 +395,7 @@ function createStore(db: IDBDatabase): AgentStore {
     async getDeletedConnIds() {
       return withTx("connections", "readonly", async (tx) => {
         const all = await idbReq(tx.objectStore("connections").getAll())
-        return all.filter((c: any) => c.deleted === 1 && !c.deleted_at_wait_delivery).map((c: any) => c.conn_id)
+        return all.filter((c: any) => c.deleted === 1).map((c: any) => c.conn_id)
       })
     },
 
@@ -406,10 +408,12 @@ function createStore(db: IDBDatabase): AgentStore {
       })
     },
 
-    // getConnIds — SELECT conn_id FROM connections
+    // getConnIds (AgentStore.hs:2245-2246)
+    // SQL: SELECT conn_id FROM connections WHERE deleted = 0
     async getConnIds() {
       return withTx("connections", "readonly", async (tx) => {
-        return idbReq(tx.objectStore("connections").getAllKeys())
+        const all = await idbReq(tx.objectStore("connections").getAll())
+        return all.filter((c: any) => c.deleted === 0).map((c: any) => c.conn_id)
       })
     },
 
@@ -419,11 +423,12 @@ function createStore(db: IDBDatabase): AgentStore {
       return withTx(["rcv_queues", "servers"], "readwrite", async (tx) => {
         // createServer (INSERT OR IGNORE)
         const srvStore = tx.objectStore("servers")
-        if (!(await idbReq(srvStore.get([rcvQueue.host, rcvQueue.port])))) await idbReq(srvStore.add({host: rcvQueue.host, port: rcvQueue.port, key_hash: rcvQueue.serverKeyHash}))
-        // Determine rcv_queue_id: SELECT MAX(rcv_queue_id) FROM rcv_queues WHERE conn_id = ?
+        if (!(await idbReq(srvStore.get([rcvQueue.host, rcvQueue.port, rcvQueue.serverKeyHash])))) await idbReq(srvStore.add({host: rcvQueue.host, port: rcvQueue.port, key_hash: rcvQueue.serverKeyHash}))
+        // Haskell: first check if queue with same (conn_id, host, port, snd_id) exists and reuse its rcv_queue_id
+        // SELECT rcv_queue_id FROM rcv_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?
         const existing = await allByIndex(tx.objectStore("rcv_queues"), {conn_id: connId})
-        const maxId = existing.reduce((m: number, q: any) => Math.max(m, q.rcv_queue_id || 0), 0)
-        const qId = maxId + 1
+        const curr = existing.find((q: any) => q.host === rcvQueue.host && q.port === rcvQueue.port && eqBytes(q.snd_id, rcvQueue.sndId))
+        const qId = curr ? curr.rcv_queue_id : (existing.reduce((m: number, q: any) => Math.max(m, q.rcv_queue_id || 0), 0) + 1)
         const toSubscribe = subMode === "SMOnlyCreate" ? 1 : 0
         await idbReq(tx.objectStore("rcv_queues").add({
           host: rcvQueue.host, port: rcvQueue.port, rcv_id: rcvQueue.rcvId,
@@ -444,10 +449,12 @@ function createStore(db: IDBDatabase): AgentStore {
     async addConnSndQueue(connId, sndQueue) {
       return withTx(["snd_queues", "servers"], "readwrite", async (tx) => {
         const srvStore2 = tx.objectStore("servers")
-        if (!(await idbReq(srvStore2.get([sndQueue.host, sndQueue.port])))) await idbReq(srvStore2.add({host: sndQueue.host, port: sndQueue.port, key_hash: sndQueue.serverKeyHash}))
+        if (!(await idbReq(srvStore2.get([sndQueue.host, sndQueue.port, sndQueue.serverKeyHash])))) await idbReq(srvStore2.add({host: sndQueue.host, port: sndQueue.port, key_hash: sndQueue.serverKeyHash}))
+        // Haskell: first check if queue with same (conn_id, host, port, snd_id) exists and reuse its snd_queue_id
+        // SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?
         const existing = await allByIndex(tx.objectStore("snd_queues"), {conn_id: connId})
-        const maxId = existing.reduce((m: number, q: any) => Math.max(m, q.snd_queue_id || 0), 0)
-        const qId = maxId + 1
+        const curr = existing.find((q: any) => q.host === sndQueue.host && q.port === sndQueue.port && eqBytes(q.snd_id, sndQueue.sndId))
+        const qId = curr ? curr.snd_queue_id : (existing.reduce((m: number, q: any) => Math.max(m, q.snd_queue_id || 0), 0) + 1)
         // ON CONFLICT DO UPDATE → use put (upsert)
         await idbReq(tx.objectStore("snd_queues").put({
           host: sndQueue.host, port: sndQueue.port, snd_id: sndQueue.sndId,
@@ -589,22 +596,21 @@ function createStore(db: IDBDatabase): AgentStore {
     //      JOIN connections c ON q.conn_id = c.conn_id
     //      WHERE [q.to_subscribe = 1 AND] c.deleted = 0 AND q.deleted = 0
     async getSubscriptionServers(onlyNeeded) {
-      return withTx(["rcv_queues", "connections", "servers"], "readonly", async (tx) => {
+      return withTx(["rcv_queues", "connections"], "readonly", async (tx) => {
         const allQ = await idbReq(tx.objectStore("rcv_queues").getAll())
         const connStore = tx.objectStore("connections")
-        const srvStore = tx.objectStore("servers")
         const seen = new Set<string>()
-        const result: Array<{userId: number, host: string, port: string}> = []
+        const result: Array<{userId: number, host: string, port: string, keyHash: Uint8Array}> = []
         for (const q of allQ) {
           if (q.deleted) continue
           if (onlyNeeded && !q.to_subscribe) continue
+          if (!q.server_key_hash) continue
           const conn = await idbReq(connStore.get(q.conn_id))
           if (!conn || conn.deleted !== 0) continue
-          const keyHash = q.server_key_hash ?? (await idbReq(srvStore.get([q.host, q.port])))?.key_hash
-          const key = `${conn.user_id}:${q.host}:${q.port}:${keyHash ? toHex(keyHash) : ""}`
+          const key = `${conn.user_id}:${q.host}:${q.port}:${toHex(q.server_key_hash)}`
           if (!seen.has(key)) {
             seen.add(key)
-            result.push({userId: conn.user_id, host: q.host, port: q.port})
+            result.push({userId: conn.user_id, host: q.host, port: q.port, keyHash: q.server_key_hash})
           }
         }
         return result
@@ -615,16 +621,16 @@ function createStore(db: IDBDatabase): AgentStore {
     // SQL: rcvQueueSubQuery WHERE [q.to_subscribe = 1 AND] c.deleted = 0 AND q.deleted = 0
     //      AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?
     //      ORDER BY q.rcv_id LIMIT ?
-    async getUserServerRcvQueueSubs(userId, host, port, onlyNeeded, batchSize, cursor) {
-      return withTx(["rcv_queues", "connections", "servers"], "readonly", async (tx) => {
+    async getUserServerRcvQueueSubs(userId, host, port, keyHash, onlyNeeded, batchSize, cursor) {
+      return withTx(["rcv_queues", "connections"], "readonly", async (tx) => {
         const allQ = await idbReq(tx.objectStore("rcv_queues").getAll())
         const connStore = tx.objectStore("connections")
-        const srvStore = tx.objectStore("servers")
         // Filter matching queues
         const matching: any[] = []
         for (const q of allQ) {
           if (q.deleted) continue
           if (q.host !== host || q.port !== port) continue
+          if (!q.server_key_hash || !eqBytes(q.server_key_hash, keyHash)) continue
           if (onlyNeeded && !q.to_subscribe) continue
           if (cursor !== null && compareUint8Array(q.rcv_id, cursor as any) <= 0) continue
           const conn = await idbReq(connStore.get(q.conn_id))
@@ -1145,8 +1151,8 @@ function createStore(db: IDBDatabase): AgentStore {
         // JOIN messages
         const msg = await idbReq(tx.objectStore("messages").get([connId, internalId]))
         if (!msg) return null
-        // LEFT JOIN snd_messages ON rcpt_internal_id = r.internal_id
-        const sndAll = await allByIndex(tx.objectStore("snd_messages"), {conn_id: connId, internal_id: internalId})
+        // LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
+        const sndAll = await allByIndex(tx.objectStore("snd_messages"), {conn_id: connId})
         const sndRcpt = sndAll.find((s: any) => s.rcpt_internal_id === internalId)
         return {
           internalId: rm.internal_id,
@@ -1183,6 +1189,9 @@ function createStore(db: IDBDatabase): AgentStore {
         // JOIN messages
         const msg = await idbReq(tx.objectStore("messages").get([connId, rm.internal_id]))
         if (!msg) return null
+        // LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
+        const sndAll = await allByIndex(tx.objectStore("snd_messages"), {conn_id: connId})
+        const sndRcpt = sndAll.find((s: any) => s.rcpt_internal_id === rm.internal_id)
         return {
           internalId: rm.internal_id,
           msgMeta: {
@@ -1195,7 +1204,7 @@ function createStore(db: IDBDatabase): AgentStore {
           msgType: msg.msg_type,
           msgBody: msg.msg_body,
           userAck: rm.user_ack === 1,
-          msgReceipt: null,
+          msgReceipt: sndRcpt?.rcpt_status ?? null,
         }
       })
     },
@@ -1327,7 +1336,9 @@ function createStore(db: IDBDatabase): AgentStore {
           internalId: sm.internal_id,
           msgType: msg.msg_type,
           internalHash: sm.internal_hash,
-          msgReceipt: sm.rcpt_status ?? null,
+          msgReceipt: sm.rcpt_internal_id != null && sm.rcpt_status != null
+            ? {agentMsgId: sm.rcpt_internal_id, msgRcptStatus: sm.rcpt_status}
+            : null,
         }
       })
     },
@@ -1339,8 +1350,8 @@ function createStore(db: IDBDatabase): AgentStore {
         const store = tx.objectStore("snd_messages")
         const sm = await idbReq(store.get([connId, sndMsgId]))
         if (sm) {
-          sm.rcpt_internal_id = receipt
-          sm.rcpt_status = receipt
+          sm.rcpt_internal_id = receipt.agentMsgId
+          sm.rcpt_status = receipt.msgRcptStatus
           await idbReq(store.put(sm))
         }
       })
@@ -1536,17 +1547,24 @@ function createStore(db: IDBDatabase): AgentStore {
     },
 
     // getPendingServerCommand (AgentStore.hs:1439-1480)
-    // getCmdId SQL: SELECT command_id FROM commands
-    //              WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
-    //              ORDER BY created_at ASC, command_id ASC LIMIT 1
+    // When host/port are null:
+    //   SQL: SELECT command_id FROM commands WHERE conn_id = ? AND host IS NULL AND port IS NULL AND failed = 0
+    //        ORDER BY created_at ASC, command_id ASC LIMIT 1
+    // When host/port are provided:
+    //   SQL: SELECT command_id FROM commands WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
+    //        ORDER BY created_at ASC, command_id ASC LIMIT 1
     // getCommand SQL: SELECT c.corr_id, cs.user_id, c.command FROM commands c
     //                 JOIN connections cs USING (conn_id) WHERE c.command_id = ?
-    async getPendingServerCommand(host, port) {
+    async getPendingServerCommand(connId, host, port) {
       return withTx(["commands", "connections"], "readonly", async (tx) => {
-        const allCmds = await allByIndex(tx.objectStore("commands"), {host, port})
-        // Filter non-failed, sort by created_at then command_id
+        const allCmds = await allByIndex(tx.objectStore("commands"), {conn_id: connId})
+        // Filter by host/port and non-failed
         const pending = allCmds
-          .filter((c: any) => !c.failed)
+          .filter((c: any) => {
+            if (c.failed) return false
+            if (host === null && port === null) return c.host == null && c.port == null
+            return c.host === host && c.port === port
+          })
           .sort((a: any, b: any) => {
             const tsCompare = (a.created_at || "").localeCompare(b.created_at || "")
             return tsCompare !== 0 ? tsCompare : (a.command_id - b.command_id)
