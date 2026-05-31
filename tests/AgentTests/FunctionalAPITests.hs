@@ -4333,8 +4333,9 @@ getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO 
 getSMPAgentClient' clientId cfg' initServers dbPath = do
   Right st <- liftIO $ createStore dbPath
   subQ <- newTBQueueIO 1024
-  Right client <- runExceptT $ getSMPAgentClient_ clientId cfg' initServers st False (atomically . writeTBQueue subQ)
+  Right client <- runExceptT $ getSMPAgentClient_ clientId cfg' initServers st (atomically . writeTBQueue subQ)
   when (dbNew st) $ insertUser st
+  startSMPAgentClient client False
   pure AgentClient {client, subQ}
 
 #if defined(dbPostgres)

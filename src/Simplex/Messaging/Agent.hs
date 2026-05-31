@@ -40,6 +40,7 @@ module Simplex.Messaging.Agent
     vrValue,
     getSMPAgentClient,
     getSMPAgentClient_,
+    startSMPAgentClient,
     disconnectAgentClient,
     disposeAgentClient,
     resumeAgentClient,
@@ -256,42 +257,45 @@ import UnliftIO.STM
 type AE a = ExceptT AgentErrorType IO a
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> Bool -> (ATransmission -> IO ()) -> AE AgentClient
+getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> (ATransmission -> IO ()) -> AE AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> Bool -> (ATransmission -> IO ()) -> AE AgentClient
-getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netCfg, useServices, presetServers} store backgroundMode processEvent = do
+getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> (ATransmission -> IO ()) -> AE AgentClient
+getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netCfg, useServices, presetServers} store processEvent = do
   -- This error should be prevented in the app
   when (any id useServices && sessionMode netCfg == TSMEntity) $ throwE $ CMD PROHIBITED "newAgentClient"
-  liftIO $ newSMPAgentEnv cfg store >>= runReaderT runAgent
+  liftIO $ newSMPAgentEnv cfg store >>= runReaderT createAgent
   where
-    runAgent = do
+    createAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
       notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
       env <- ask
       let processMsg c t = subscriber c t `runReaderT` env
-      c@AgentClient {acThread, generalQ} <- liftIO $ newAgentClient clientId initServers currentTs notices processEvent processMsg env
-      void $ liftIO $ forkIO $ connWorkerLoop c generalQ
-      unless backgroundMode $ do
-        t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
-        atomically . writeTVar acThread . Just =<< mkWeakThreadId t
-      pure c
+      liftIO $ newAgentClient clientId initServers currentTs notices processEvent processMsg env
     checkServers protocol srvs =
       forM_ (M.assocs srvs) $ \(userId, srvs') -> checkUserServers ("getSMPAgentClient " <> protocol <> " " <> tshow userId) srvs'
-    runAgentThreads c = do
+
+startSMPAgentClient :: AgentClient -> Bool -> IO ()
+startSMPAgentClient c@AgentClient {acThread, generalQ, agentEnv} backgroundMode = do
+  void $ forkIO $ connWorkerLoop c generalQ
+  unless backgroundMode $ do
+    t <- runAgentThreads `forkFinally` const (disconnectAgentClient c)
+    atomically . writeTVar acThread . Just =<< mkWeakThreadId t
+  where
+    runAgentThreads = flip runReaderT agentEnv $ do
       restoreServersStats c
       raceAny_
-        [ run c "runNtfSupervisor" $ runNtfSupervisor c,
-          run c "cleanupManager" $ cleanupManager c,
-          run c "logServersStats" $ logServersStats c
+        [ run "runNtfSupervisor" $ runNtfSupervisor c,
+          run "cleanupManager" $ cleanupManager c,
+          run "logServersStats" $ logServersStats c
         ]
         `E.finally` saveServersStats c
-    run c'@AgentClient {acThread} name a =
+    run name a =
       a `E.catchAny` \e -> whenM (isJust <$> readTVarIO acThread) $ do
         logError $ "Agent thread " <> name <> " crashed: " <> tshow e
-        liftIO $ notifyEvent c' ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
+        liftIO $ notifyEvent c ("", "", AEvt SAEConn $ ERR $ CRITICAL True $ show e)
 
 logServersStats :: AgentClient -> AM' ()
 logServersStats c = do
