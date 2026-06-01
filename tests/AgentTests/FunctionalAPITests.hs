@@ -1426,7 +1426,7 @@ testInvitationShortLinkAsync viaProxy a b = do
   linkUserData connData' `shouldBe` userData
   runRight $ do
     aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
-    A.joinConnectionAsync b "123" aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    A.joinConnectionAsync b "123" False aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
     get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
     ("", _, CONF confId _ "bob's connInfo") <- get a
     allowConnection a bId confId "alice's connInfo"
@@ -2691,7 +2691,7 @@ testAsyncCommands sqSecured alice bob baseId =
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    joinConnectionAsync bob "2" aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
       aliceId' `shouldBe` aliceId
@@ -2782,7 +2782,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     liftIO $ qInfo' `shouldBe` qInfo
     liftIO $ userCtData' `shouldBe` userCtData
     -- join connection async using connId from getConnShortLinkAsync
-    joinConnectionAsync bob "2" newId True qInfo' "bob's connInfo" PQSupportOn SMSubscribe
+    joinConnectionAsync bob "2" True newId True qInfo' "bob's connInfo" PQSupportOn SMSubscribe
     let aliceId = newId
     ("2", aliceId', JOINED False) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
@@ -2818,7 +2818,8 @@ testAcceptContactAsync sqSecured alice bob baseId =
     (aliceId, sqSecuredJoin) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- acceptContactAsync alice 1 "1" True invId "alice's connInfo" PQSupportOn SMSubscribe
+    bobId <- prepareConnectionToAccept alice 1 True invId PQSupportOn
+    acceptContactAsync alice "1" bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
     get alice =##> \case ("1", c, JOINED sqSecured') -> c == bobId && sqSecured' == sqSecured; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
@@ -3094,7 +3095,7 @@ testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
@@ -3141,7 +3142,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)

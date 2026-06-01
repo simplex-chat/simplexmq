@@ -379,9 +379,9 @@ getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Enqueue JOIN command for a prepared connection.
-joinConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
-joinConnectionAsync c aCorrId connId enableNtfs cReqUri cInfo pqSup subMode =
-  withAgentEnv c $ joinConnAsync c aCorrId connId enableNtfs cReqUri cInfo pqSup subMode
+joinConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
+joinConnectionAsync c aCorrId updateConn connId enableNtfs cReqUri cInfo pqSup subMode =
+  withAgentEnv c $ joinConnAsync c aCorrId updateConn connId enableNtfs cReqUri cInfo pqSup subMode
 {-# INLINE joinConnectionAsync #-}
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
@@ -389,9 +389,10 @@ allowConnectionAsync :: AgentClient -> ACorrId -> ConnId -> ConfirmationId -> Co
 allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 {-# INLINE allowConnectionAsync #-}
 
--- | Accept contact after REQ notification (ACPT command) asynchronously, synchronous response is new connection id
-acceptContactAsync :: AgentClient -> UserId -> ACorrId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
-acceptContactAsync c userId aCorrId enableNtfs = withAgentEnv c .:: acceptContactAsync' c userId aCorrId enableNtfs
+-- | Accept contact after REQ notification (ACPT command) asynchronously, for a prepared connection.
+acceptContactAsync :: AgentClient -> ACorrId -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
+acceptContactAsync c aCorrId connId enableNtfs invId ownConnInfo pqSupport subMode =
+  withAgentEnv c $ acceptContactAsync' c aCorrId connId enableNtfs invId ownConnInfo pqSupport subMode
 {-# INLINE acceptContactAsync #-}
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
@@ -856,17 +857,19 @@ newConnNoQueues c userId enableNtfs cMode pqSupport = do
   let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
   withStore c $ \db -> createNewConn db g cData cMode
 
-joinConnAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
-joinConnAsync c corrId connId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode =
+joinConnAsync :: ConnectionModeI c => AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
+      when updateConn $ withStore' c $ \db -> updateNewConnJoin db connId connAgentVersion pqSupport enableNtfs
       enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
     Nothing -> throwE $ AGENT A_VERSION
-joinConnAsync c corrId connId enableNtfs cReqUri@(CRContactUri _) cInfo pqSup subMode =
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@(CRContactUri _) cInfo pqSup subMode =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (_, Compatible connAgentVersion) -> do
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion Nothing
+      when updateConn $ withStore' c $ \db -> updateNewConnJoin db connId connAgentVersion pqSupport enableNtfs
       enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
     Nothing -> throwE $ AGENT A_VERSION
 
@@ -883,15 +886,13 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 -- and also it can't be triggered by user concurrently several times in a row. It could be improved similarly to
 -- `acceptContact` by creating a new map for invitation locks and taking lock here, and removing `unacceptInvitation`
 -- while marking invitation as accepted inside "lock level transaction" after successful `joinConnAsync`.
-acceptContactAsync' :: AgentClient -> UserId -> ACorrId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ConnId
-acceptContactAsync' c userId corrId enableNtfs invId ownConnInfo pqSupport subMode = do
+acceptContactAsync' :: AgentClient -> ACorrId -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
+acceptContactAsync' c corrId connId enableNtfs invId ownConnInfo pqSupport subMode = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
-  connId <- newConnToJoin c userId "" enableNtfs connReq pqSupport
   withStore' c $ \db -> acceptInvitation db invId ownConnInfo
-  joinConnAsync c corrId connId enableNtfs connReq ownConnInfo pqSupport subMode `catchAllErrors` \err -> do
+  joinConnAsync c corrId False connId enableNtfs connReq ownConnInfo pqSupport subMode `catchAllErrors` \err -> do
     withStore' c (`unacceptInvitation` invId)
     throwE err
-  pure connId
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
