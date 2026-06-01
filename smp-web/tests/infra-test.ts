@@ -443,6 +443,77 @@ async function testOperationState() {
   throwWhenInactive(c)  // should not throw
 }
 
+// -- agentCbEncrypt / ClientMsgEnvelope round-trip tests
+
+import {agentCbEncrypt, agentCbDecrypt, agentCbEncryptOnce} from "../dist/agent/smp-ops.js"
+import {decodeClientMsgEnvelope, decodeClientMessage, type ClientMsgEnvelope} from "../dist/protocol.js"
+import {Decoder} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
+import {generateX25519KeyPair, dh} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
+
+async function testAgentCbEncrypt() {
+  console.log("  agentCbEncrypt...")
+
+  // Generate a DH secret (simulating queue E2E setup)
+  const {publicKey: rcvPub, privateKey: rcvPriv} = generateX25519KeyPair()
+  const {publicKey: sndPub, privateKey: sndPriv} = generateX25519KeyPair()
+  const dhSecret = dh(rcvPub, sndPriv)
+  const dhSecretRcv = dh(sndPub, rcvPriv)
+  // Both sides should compute the same secret
+  assertEq(hex(dhSecret), hex(dhSecretRcv), "DH secrets match")
+
+  const plaintext = new Uint8Array([1, 2, 3, 4, 5])
+  const smpVersion = 18
+
+  // Encrypt: agentCbEncrypt wraps plaintext in ClientMsgEnvelope
+  const envelope = agentCbEncrypt(dhSecret, smpVersion, null, plaintext)
+  assert(envelope.length > 0, "agentCbEncrypt produces output")
+
+  // Decode the ClientMsgEnvelope
+  const d = new Decoder(envelope)
+  const env = decodeClientMsgEnvelope(d)
+  assertEq(env.cmHeader.phVersion, smpVersion, "envelope version matches")
+  assertEq(env.cmHeader.phE2ePubDhKey, null, "no pub key for message (not confirmation)")
+  assertEq(env.cmNonce.length, 24, "nonce is 24 bytes")
+  assert(env.cmEncBody.length > 0, "encrypted body is non-empty")
+
+  // Decrypt with receiver's DH secret
+  const decrypted = cbDecrypt(dhSecretRcv, env.cmNonce, env.cmEncBody)
+  assert(decrypted !== null, "cbDecrypt succeeds")
+  // The decrypted content is the padded plaintext (with padding)
+  // First bytes should match our plaintext
+  let match = true
+  for (let i = 0; i < plaintext.length; i++) {
+    if (decrypted![i] !== plaintext[i]) { match = false; break }
+  }
+  assert(match, "decrypted content starts with plaintext")
+
+  // Encrypt with e2ePubKey (confirmation mode — has DH pub key in header)
+  const envConf = agentCbEncrypt(dhSecret, smpVersion, sndPub, plaintext)
+  const d2 = new Decoder(envConf)
+  const env2 = decodeClientMsgEnvelope(d2)
+  assertEq(env2.cmHeader.phVersion, smpVersion, "confirmation envelope version")
+  assert(env2.cmHeader.phE2ePubDhKey !== null, "confirmation has pub key")
+  assertEq(env2.cmHeader.phE2ePubDhKey!.length, 32, "pub key is 32 bytes")
+
+  // agentCbDecrypt
+  const decrypted2 = agentCbDecrypt(dhSecretRcv, env2.cmNonce, env2.cmEncBody)
+  for (let i = 0; i < plaintext.length; i++) {
+    if (decrypted2[i] !== plaintext[i]) { match = false; break }
+  }
+  assert(match, "agentCbDecrypt matches plaintext")
+
+  // agentCbEncryptOnce — ephemeral DH
+  const envOnce = agentCbEncryptOnce(smpVersion, rcvPub, plaintext)
+  const d3 = new Decoder(envOnce)
+  const env3 = decodeClientMsgEnvelope(d3)
+  assert(env3.cmHeader.phE2ePubDhKey !== null, "encryptOnce has ephemeral pub key")
+  // Receiver can decrypt using their private key + sender's ephemeral pub key
+  const ephDhSecret = dh(env3.cmHeader.phE2ePubDhKey!, rcvPriv)
+  const decrypted3 = cbDecrypt(ephDhSecret, env3.cmNonce, env3.cmEncBody)
+  assert(decrypted3 !== null, "encryptOnce: receiver can decrypt")
+}
+
 // -- Run all
 
 async function main() {
@@ -458,6 +529,7 @@ async function main() {
   await testLocking()
   await testServerSelection()
   await testOperationState()
+  await testAgentCbEncrypt()
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed > 0) process.exit(1)
 }

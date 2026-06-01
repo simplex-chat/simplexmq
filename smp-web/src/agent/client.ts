@@ -132,7 +132,7 @@ export type ATransmission = [string, Uint8Array, any]  // (corrId, connId, event
 export interface AgentClient {
   active: boolean
   subQ: ABQueue<ATransmission>
-  // msgQ is per-client, stored in smpClients
+  msgQ: ABQueue<any>  // ServerMsg from SMP clients, processed by subscriber loop
   config: AgentConfig
   store: AgentStore
   smpServers: Map<number, UserServers>  // userId → servers
@@ -159,6 +159,7 @@ export function newAgentClient(config: AgentConfig, store: AgentStore, smpServer
   return {
     active: true,
     subQ: new ABQueue<ATransmission>(config.tbqSize),
+    msgQ: new ABQueue<any>(config.tbqSize),
     config,
     store,
     smpServers,

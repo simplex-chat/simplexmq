@@ -55,19 +55,32 @@ Each step produces a testable artifact.
 - Store wrappers (withStore, withStore', storeError)
 - **Test**: TS tests — create agent client, test worker lifecycle, test server selection
 
-### Step 3: SMP session management + queue operations (cross-language via agent-repl)
-- getSMPServerClient, smpConnectClient, smpClientDisconnected
-- getSMPProxyClient, withProxySession
-- withClient_, withClient, withSMPClient
-- sendOrProxySMPMessage, sendOrProxySMPCommand
-- newRcvQueue, newRcvQueue_
-- agentCbEncrypt, agentCbEncryptOnce, agentCbDecrypt
-- sendConfirmation, sendInvitation, sendAgentMessage
+### Step 3a: SMP session management + direct queue operations
+- getSMPServerClient, smpConnectClient, waitForSMPClient
+- agentCbEncrypt, agentCbEncryptOnce, agentCbDecrypt (using existing ClientMsgEnvelope from protocol.ts)
+- sendAgentMessage, sendConfirmation, sendInvitation
 - secureQueue, secureSndQueue, sendAck
 - decryptSMPMessage
-- subscribeQueues, subscribeQueues_, subscribeSessQueues_, processSubResults
-- addNewQueueSubscription, resubscribeSMPSession
-- **Test via agent-repl**: Haskell creates queue → TS subscribes, TS creates queue → Haskell sends → TS receives+decrypts, TS sends → Haskell receives
+- newRcvQueue
+- subscribeQueues, subscribeServerQueues
+- addNewQueueSubscription
+- **Test**: TS-only round-trip test for agentCbEncrypt (encode → decode → decrypt), then agent-repl cross-language tests (TS creates queue → Haskell sends → TS receives, TS sends → Haskell receives)
+
+### Step 3b: Disconnect handling + resubscription
+- smpClientDisconnected (full: remove proxied relays, notify DOWN, trigger resubscribe)
+- resubscribeSMPSession, resubscribeSessQueues
+- processSubResults (partition into failed/subscribed)
+- subscribeSessQueues_ (batch SUB + process results)
+- **Test**: agent-repl: establish connection → kill WebSocket → verify subs move to pending → reconnect → verify resubscribed
+
+### Step 3c: Proxy operations
+- getSMPProxyClient (get/create proxied relay session)
+- withProxySession (bracket for proxied operations)
+- sendOrProxySMPMessage (decide direct vs proxy, delegate)
+- sendOrProxySMPCommand (decide direct vs proxy for SKEY etc)
+- ipAddressProtected, shouldUseProxy logic
+- withClient_, withClient, withSMPClient, withLogClient_
+- **Test**: agent-repl: TS sends via proxy → Haskell receives
 
 ### Step 4: Agent message flow (cross-language end-to-end)
 - agentRatchetEncrypt, agentRatchetEncryptHeader, agentRatchetDecrypt
