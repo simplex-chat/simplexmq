@@ -41,7 +41,7 @@ Routers are the network infrastructure — they accept, buffer, and deliver pack
 
 Initialize: `smp-server init -n <fqdn>` (or `--ip <ip>`). This generates TLS certificates. The CA certificate fingerprint becomes part of the server address: `smp://<fingerprint>@<hostname>[:5223]`.
 
-The server uses in-memory persistence with an optional append-only store log for queue persistence across restarts. Enable with `smp-server init -l` or in `smp-server.ini`. The log is compacted on every restart.
+By default, the server uses in-memory persistence with an optional append-only store log for queue persistence across restarts. Enable with `smp-server init -l` or in `smp-server.ini`. The log is compacted on every restart.
 
 When store log is enabled, undelivered messages are saved on exit (SIGINT only, not SIGTERM) and restored on start. Control this independently with the `restore_messages` setting.
 
