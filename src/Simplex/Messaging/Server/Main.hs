@@ -46,7 +46,7 @@ import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlpha, isAscii, toLower, toUpper)
+import Data.Char (isAlpha, isAscii, isDigit, isHexDigit, toLower, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
@@ -869,6 +869,8 @@ validateUrl url auth_ = do
   ua <- maybe (Left "missing authority (host)") Right (uriAuthority uri)
   let host = uriRegName ua
   when (null host) $ Left "empty host"
+  when (isBareIntegerHost host) $
+    Left "bare-integer host not allowed (use a hostname or dotted-quad / bracketed IP); rejects 169.254.169.254 decimal/hex aliases"
   when (isLinkLocal host) $ Left "link-local host not allowed (rejects cloud metadata services)"
   unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use rpc_auth instead"
   case uriPort ua of
@@ -889,14 +891,24 @@ validateUrl url auth_ = do
   Right url
   where
     isLoopback h = h == "127.0.0.1" || h == "localhost" || h == "[::1]"
-    -- IPv4 link-local 169.254.0.0/16 and the IPv6 link-local prefix fe80::/10
-    -- (matched as the textual prefix "[fe80:"). Also catches IPv4-mapped IPv6
-    -- forms like "[::ffff:169.254.169.254]" so the cloud-metadata IP can't be
-    -- reached via the IPv6 alias.
+    -- IPv4 link-local 169.254.0.0/16, the IPv6 link-local prefix fe80::/10, and
+    -- both IPv4-mapped IPv6 textual forms of the cloud-metadata IP
+    -- (169.254.169.254 in dotted-quad or hex `a9fe:a9fe`).
     isLinkLocal h =
       "169.254." `isPrefixOf` h
-        || "[fe80:" `isPrefixOf` map toLower h
-        || "[::ffff:169.254." `isPrefixOf` map toLower h
+        || "[fe80:" `isPrefixOf` lh
+        || "[::ffff:169.254." `isPrefixOf` lh
+        || "[::ffff:a9fe:a9fe" `isPrefixOf` lh
+      where
+        lh = map toLower h
+    -- Reject hostnames that are pure digits ("2852039166") or "0x"-prefixed
+    -- hex ("0xa9fea9fe"). These are never legitimate eth endpoints; glibc's
+    -- inet_aton accepts them as IPv4 aliases (the values above both resolve
+    -- to 169.254.169.254). Forces the operator to use a hostname or
+    -- dotted-quad / bracketed IP that the text-prefix checks can recognise.
+    isBareIntegerHost h = case h of
+      '0' : 'x' : rest -> not (null rest) && all isHexDigit rest
+      _ -> not (null h) && all isDigit h
 
 -- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
 -- EIP-55 mixed-case checksum verification is a follow-up.

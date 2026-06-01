@@ -44,7 +44,6 @@ import Network.HTTP.Client
     Request,
     RequestBody (..),
     brReadSome,
-    closeManager,
     method,
     parseRequest,
     requestBody,
@@ -106,8 +105,12 @@ newEthRpcEnv endpoint auth_ maxResponseBytes maxConcurrency = do
   sem <- newQSem maxConcurrency
   pure EthRpcEnv {manager, request, sem, maxResponseBytes}
 
+-- | http-client's `closeManager` is a deprecated no-op since 0.5; the manager
+-- is released by the GC finalizer attached to its internal state. We retain
+-- the close-env entry point as a hook for any future deterministic cleanup
+-- (e.g. draining the QSem) but do nothing here.
 closeEthRpcEnv :: EthRpcEnv -> IO ()
-closeEthRpcEnv EthRpcEnv {manager} = closeManager manager
+closeEthRpcEnv _ = pure ()
 
 -- | Make a single eth_call. `to` is the contract address (20 raw bytes);
 -- `dat` is the ABI-encoded call data. Returns the contract return bytes.
