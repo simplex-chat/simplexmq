@@ -828,10 +828,11 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
           serverKey <- getServerVerifyKey c
           (,certKey) <$> (C.x509ToPublic' =<< C.verifyX509 serverKey exact)
       let v = maxVersion vr
+          serviceVersion ServiceCredentials {serviceRole} = if serviceRole == SRMessaging then rcvServiceSMPVersion else serviceCertsSMPVersion
           serviceKeys = case serviceKeys_ of
-            Just sks | v >= serviceCertsSMPVersion && certificateSent c -> Just sks
+            Just sks | v >= serviceVersion (fst sks) && certificateSent c -> Just sks
             _ -> Nothing
-          clientService = mkClientService v =<< serviceKeys
+          clientService = mkClientService <$> serviceKeys
           hs = SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService}
       sendHandshake th hs
       service <- mapM getClientService serviceKeys
@@ -839,12 +840,10 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) vRange proxyServer serviceKeys_ 
     Nothing -> throwE TEVersion
   where
     th@THandle {params = THandleParams {sessionId}} = smpTHandle c
-    mkClientService :: VersionSMP -> (ServiceCredentials, C.KeyPairEd25519) -> Maybe SMPClientHandshakeService
-    mkClientService v (ServiceCredentials {serviceRole, serviceCreds, serviceSignKey}, (k, _))
-      | serviceRole == SRMessaging && v < rcvServiceSMPVersion = Nothing
-      | otherwise =
-          let sk = C.signX509 serviceSignKey $ C.publicToX509 k
-           in Just SMPClientHandshakeService {serviceRole, serviceCertKey = CertChainPubKey (fst serviceCreds) sk}
+    mkClientService :: (ServiceCredentials, C.KeyPairEd25519) -> SMPClientHandshakeService
+    mkClientService (ServiceCredentials {serviceRole, serviceCreds, serviceSignKey}, (k, _)) =
+      let sk = C.signX509 serviceSignKey $ C.publicToX509 k
+       in SMPClientHandshakeService {serviceRole, serviceCertKey = CertChainPubKey (fst serviceCreds) sk}
     getClientService :: (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO THClientService
     getClientService (ServiceCredentials {serviceRole, serviceCertHash}, (_, pk)) =
       getHandshake th >>= \case
