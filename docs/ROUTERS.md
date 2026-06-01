@@ -169,19 +169,6 @@ Configuration options:
 
 After deployment (up to 5 minutes), get the server address from Linode tags or SSH: `smp://<fingerprint>@<fqdn>`.
 
-### DigitalOcean 1-click
-
-[SimpleX Server 1-click app](https://marketplace.digitalocean.com/apps/simplex-server) from DigitalOcean marketplace.
-
-After deployment, get the fingerprint from the Droplet console (`/etc/opt/simplex/fingerprint`). Server address: `smp://<fingerprint>@<ip_address>`.
-
-To use FQDN instead of IP:
-
-```sh
-smp-server delete
-smp-server init [-l] -n <fqdn>
-```
-
 ## Monitoring
 
 SMP and XFTP routers expose Prometheus metrics via a control port. The control port also supports commands for runtime inspection (queue counts, client counts, statistics). See module specs linked from each router section in [`spec/routers.md`](../spec/routers.md) (Control, Prometheus, Stats).
