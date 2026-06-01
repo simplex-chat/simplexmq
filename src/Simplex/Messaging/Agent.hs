@@ -359,7 +359,7 @@ setUserService c = withAgentEnv c .: setUserService' c
 
 -- | Create SMP agent connection without queue (to be used with createConnectionAsync).
 prepareConnectionToCreate :: AgentClient -> UserId -> Bool -> SConnectionMode c -> PQSupport -> AE ConnId
-prepareConnectionToCreate c userId enableNtfs cMode pqSup = withAgentEnv c $ newConnNoQueues c userId enableNtfs cMode pqSup
+prepareConnectionToCreate c userId enableNtfs = withAgentEnv c .: newConnNoQueues c userId enableNtfs
 {-# INLINE prepareConnectionToCreate #-}
 
 -- | Enqueue NEW command for a prepared connection.
