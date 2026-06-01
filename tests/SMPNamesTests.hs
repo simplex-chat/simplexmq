@@ -10,6 +10,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteArray as BA
 import Data.Either (isLeft, isRight)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.List (sort)
 import qualified Data.Text as T
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
@@ -96,6 +97,14 @@ nameRecordEncodingSpec :: Spec
 nameRecordEncodingSpec = do
   it "round-trips JSON encode / decode" $
     J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)) `shouldBe` Right sampleRecord
+
+  it "emits keys in spec-documented order (displayName, owner, channelLinks, contactLinks, adminAddress, adminEmail, expiry, isTest)" $ do
+    -- Default toEncoding routes through Value/KeyMap and re-emits keys
+    -- alphabetically; spec requires byte-identical canonical encoding.
+    let bytes = LB.toStrict (J.encode sampleRecord)
+        offset k = B.length (fst (B.breakSubstring k bytes))
+        offsets = map offset ["displayName", "owner", "channelLinks", "contactLinks", "adminAddress", "adminEmail", "expiry", "isTest"]
+    offsets `shouldBe` sort offsets
 
   it "rejects negative expiry" $ do
     let badBytes = LB.toStrict (J.encode sampleRecord {nrExpiry = -1})

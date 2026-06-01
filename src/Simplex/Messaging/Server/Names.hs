@@ -201,6 +201,6 @@ mapEthRpcError :: EthRpcError -> ResolveError
 mapEthRpcError = \case
   HttpFailure _ -> EthHttpErr
   HttpStatusErr _ -> EthHttpErr
-  BodyTooLarge -> EthDecodeErr
+  BodyTooLarge -> EthHttpErr -- transport-side cap, not a decoder failure
   InvalidJson _ -> EthDecodeErr
   JsonRpcErr c m -> EthRpcErr {rpcCode = c, rpcMessage = m}

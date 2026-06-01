@@ -813,15 +813,22 @@ readNamesConfig ini
               { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
                 tldRegistries = registries,
                 rpcAuth = rpcAuth_,
-                rpcTimeoutMs = readIniDefault 3000 "NAMES" "rpc_timeout_ms" ini,
-                rpcMaxResponseBytes = readIniDefault 262144 "NAMES" "rpc_max_response_bytes" ini,
-                rpcMaxConcurrency = readIniDefault 8 "NAMES" "rpc_max_concurrency" ini
+                rpcTimeoutMs = positiveIniInt 3000 100 "rpc_timeout_ms",
+                rpcMaxResponseBytes = positiveIniInt 262144 1024 "rpc_max_response_bytes",
+                rpcMaxConcurrency = positiveIniInt 8 1 "rpc_max_concurrency"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
     requiredText key =
       either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
         lookupValue "NAMES" key ini
+    -- Reject zero / negative values that would deadlock waitQSem (concurrency = 0),
+    -- time-out every RSLV immediately (timeout = 0), or accept zero-length
+    -- responses (max_response_bytes = 0). The lower bounds also catch sub-sane
+    -- values an operator might choose by accident.
+    positiveIniInt def floor_ key = case readIniDefault def "NAMES" key ini of
+      n | n >= floor_ -> n
+        | otherwise -> error $ "[NAMES] " <> T.unpack key <> " must be at least " <> show floor_ <> " (got " <> show n <> ")"
     readTldRegistries =
       let regs = TldRegistries
             { tldSimplex = optionalAddr "registry_tld_simplex",
@@ -843,8 +850,12 @@ readNamesConfig ini
 --   * userinfo (user:pass@) MUST NOT be present (credentials belong in
 --     rpc_auth so they don't leak via Host header or logs)
 --   * query and fragment MUST NOT be present
---   * https requires rpc_auth on non-loopback hosts (operator misconfig
---     guard — a public HTTPS endpoint without auth is almost always wrong)
+--   * http is rejected on non-loopback hosts (plaintext to a third party
+--     leaks rpc_auth on every request)
+--   * https requires rpc_auth on non-loopback hosts (a public endpoint
+--     without auth is almost always misconfig)
+--   * link-local hosts (169.254.0.0/16, including the cloud metadata IP
+--     169.254.169.254) are rejected unconditionally
 validateUrl :: Text -> Maybe RpcAuth -> Either String Text
 validateUrl url auth_ = do
   uri <- maybe (Left "not an absolute URI") Right $ parseAbsoluteURI (T.unpack url)
@@ -852,12 +863,14 @@ validateUrl url auth_ = do
   unless (scheme == "http:" || scheme == "https:") $
     Left ("scheme " <> show scheme <> " not supported (use http or https)")
   ua <- maybe (Left "missing authority (host)") Right (uriAuthority uri)
-  when (null (uriRegName ua)) $ Left "empty host"
+  let host = uriRegName ua
+  when (null host) $ Left "empty host"
+  when (isLinkLocal host) $ Left "link-local host not allowed (rejects cloud metadata services)"
   unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use rpc_auth instead"
   case uriPort ua of
     "" -> Left "explicit port required (e.g. http://host:8545)"
     ':' : portStr -> case readMaybe portStr of
-      Just n | n >= 1 && n <= 65535 -> Right ()
+      Just n | (n :: Int) >= 1 && n <= 65535 -> Right ()
       _ -> Left $ "port " <> portStr <> " out of range (must be 1..65535)"
     other -> Left $ "unexpected port syntax: " <> other
   unless (null (uriQuery uri)) $ Left "query string not allowed"
@@ -865,11 +878,14 @@ validateUrl url auth_ = do
   let path = uriPath uri
   unless (path == "" || path == "/") $
     Left "URL path not allowed; API keys embedded in the path leak to logs — use rpc_auth instead"
-  when (scheme == "https:" && not (isLoopback (uriRegName ua)) && isNothing auth_) $
+  when (scheme == "http:" && not (isLoopback host)) $
+    Left "http endpoint on a non-loopback host not allowed (plaintext leaks rpc_auth); use https"
+  when (scheme == "https:" && not (isLoopback host) && isNothing auth_) $
     Left "https endpoint on a non-loopback host requires rpc_auth"
   Right url
   where
     isLoopback h = h == "127.0.0.1" || h == "localhost" || h == "[::1]"
+    isLinkLocal h = "169.254." `isPrefixOf` h || h == "[fe80::1]"
 
 -- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
 -- EIP-55 mixed-case checksum verification is a follow-up.

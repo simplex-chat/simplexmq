@@ -816,6 +816,19 @@ instance J.ToJSON NameRecord where
         "expiry" J..= nrExpiry,
         "isTest" J..= nrIsTest
       ]
+  -- explicit toEncoding to preserve the spec-documented key order; the default
+  -- routes through Value/KeyMap and re-emits keys alphabetically, breaking the
+  -- "two routers MUST emit byte-identical JSON" requirement.
+  toEncoding NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
+    J.pairs $
+      "displayName" J..= nrDisplayName
+        <> "owner" J..= nrOwner
+        <> "channelLinks" J..= nrChannelLinks
+        <> "contactLinks" J..= nrContactLinks
+        <> "adminAddress" J..= nrAdminAddress
+        <> "adminEmail" J..= nrAdminEmail
+        <> "expiry" J..= nrExpiry
+        <> "isTest" J..= nrIsTest
 
 instance J.FromJSON NameRecord where
   parseJSON = J.withObject "NameRecord" $ \o -> do

@@ -247,8 +247,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 
     closeServer :: M s ()
     closeServer = do
-      asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
-      asks namesEnv >>= liftIO . mapM_ closeNamesEnv
+      pa <- asks (smpAgent . proxyAgent)
+      ne <- asks namesEnv
+      -- finally: if the proxy-agent close throws, we still release the resolver's
+      -- HTTP connection manager.
+      liftIO $ closeSMPClientAgent pa `E.finally` mapM_ closeNamesEnv ne
 
     serverThread ::
       forall sub. String ->
