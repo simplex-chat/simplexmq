@@ -1465,15 +1465,13 @@ rslv = %s"RSLV" SP json-bytes   ; json-bytes consumes the remainder of the trans
 
 **Server-side validation.** The names router parses `name` as a fully-qualified
 domain (TLD required — bare labels are rejected), extracts the TLD, and looks
-up the expected SNRC contract address in its INI whitelist
-(`registry_tld_simplex`, `registry_tld_testing`, `registry_tld_all`).
-`registry_tld_all` is the catch-all used when no TLD-specific entry matches
-the requested TLD (and the only entry that can resolve web domains). If no
-whitelist entry matches the TLD, or if the client-supplied `contract` differs
-from the configured address, the server replies with `ERR AUTH` without
-contacting the chain. This lets one names router safely host multiple TLDs
-(each backed by its own SNRC contract) and reject clients pointing at a
-contract the operator doesn't run.
+up the expected SNRC contract address in a whitelist hardcoded in the server
+binary (TLD-specific addresses with an optional catch-all for unspecified
+TLDs and web domains). If no whitelist entry matches the TLD, or if the
+client-supplied `contract` differs from the configured address, the server
+replies with `ERR AUTH` without contacting the chain. This lets one names
+router safely host multiple TLDs (each backed by its own SNRC contract) and
+reject clients pointing at a contract the operator doesn't run.
 
 The names router responds with either a `NAME` response carrying the resolved
 record, or `ERR AUTH` collapsing every failure mode (name not found, malformed

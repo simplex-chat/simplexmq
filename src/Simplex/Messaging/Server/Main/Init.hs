@@ -168,14 +168,9 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Central Reth via Caddy:\n\
         \# ethereum_endpoint: https://eth.simplex.chat:443\n\
         \# rpc_auth: basic <username>:<password>\n\
-        \# Per-TLD SNRC contract whitelist. At least one entry must be set.\n\
-        \# Each RSLV carries the contract address the client wants queried;\n\
-        \# the server only accepts it if it matches the address configured for\n\
-        \# that TLD (or registry_tld_all as catch-all for any unspecified TLD,\n\
-        \# including web domains).\n\
-        \# registry_tld_simplex: 0x<paste-your-contract-address>\n\
-        \# registry_tld_testing: 0x<paste-your-contract-address>\n\
-        \# registry_tld_all: 0x<paste-your-contract-address>\n\
+        \# The SNRC contract addresses are hardcoded in the server binary; each\n\
+        \# RSLV's contract field is verified against the binary's whitelist for\n\
+        \# the requested TLD. Operators do NOT configure registries here.\n\
         \# rpc_timeout_ms: 3000\n\
         \# rpc_max_response_bytes: 262144\n\
         \# rpc_max_concurrency: 8\n\n\

@@ -754,7 +754,7 @@ instance J.ToJSON NameOwner where
 
 instance J.FromJSON NameOwner where
   parseJSON = J.withText "NameOwner" $ \t -> do
-    -- Accept "0x" and "0X" prefixes (matches Server/Main.hs:parseEthAddr via fromHex).
+    -- Accept "0x" and "0X" prefixes (matches the Server-side hex decoder).
     let hex = fromMaybe t (T.stripPrefix "0x" t <|> T.stripPrefix "0X" t)
     case BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) of
       Left e -> fail e

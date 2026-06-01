@@ -77,9 +77,8 @@ import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..)
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
-import Simplex.Messaging.Protocol (mkNameOwner, NameOwner)
+import Simplex.Messaging.Protocol (mkNameOwner)
 import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..), TldRegistries (..))
-import Simplex.Messaging.Server.Names.Eth.RPC (fromHex)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -807,11 +806,10 @@ readNamesConfig ini
   | otherwise =
       let rpcAuth_ = either (error . ("[NAMES] rpc_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "rpc_auth" ini)
           endpoint = requiredText "ethereum_endpoint"
-          registries = readTldRegistries
        in Just
             NamesConfig
               { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
-                tldRegistries = registries,
+                tldRegistries = hardcodedTldRegistries,
                 rpcAuth = rpcAuth_,
                 rpcTimeoutMs = boundedIniInt 3000 100 60000 "rpc_timeout_ms",
                 rpcMaxResponseBytes = boundedIniInt 262144 1024 16777216 "rpc_max_response_bytes",
@@ -833,18 +831,22 @@ readNamesConfig ini
       n | n >= floor_ && n <= ceiling_ -> n
         | otherwise ->
             error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
-    readTldRegistries =
-      let regs = TldRegistries
-            { tldSimplex = optionalAddr "registry_tld_simplex",
-              tldTesting = optionalAddr "registry_tld_testing",
-              tldAll = optionalAddr "registry_tld_all"
-            }
-       in case (tldSimplex regs, tldTesting regs, tldAll regs) of
-            (Nothing, Nothing, Nothing) ->
-              error "[NAMES] at least one of registry_tld_simplex, registry_tld_testing, registry_tld_all is required"
-            _ -> regs
-    optionalAddr key =
-      either (error . (("[NAMES] " <> T.unpack key <> ": ") <>)) Just . parseEthAddr =<< eitherToMaybe (lookupValue "NAMES" key ini)
+
+-- | Hardcoded SNRC contract whitelist. Placeholder addresses until the
+-- launch contracts are deployed; replaced in code rather than INI so
+-- operators can't accidentally point a names router at the wrong contract
+-- during the bootstrap phase. The TldRegistries shape + lookup precedence
+-- (TLD-specific then `tldAll` catch-all) is unchanged from the previous
+-- INI-driven form.
+hardcodedTldRegistries :: TldRegistries
+hardcodedTldRegistries =
+  TldRegistries
+    { tldSimplex = Just (placeholderAddr '\x11'),
+      tldTesting = Just (placeholderAddr '\x22'),
+      tldAll = Nothing
+    }
+  where
+    placeholderAddr c = either error id $ mkNameOwner (B.replicate 20 c)
 
 -- | Validate the ethereum_endpoint URL:
 --   * scheme must be http: or https:
@@ -912,15 +914,6 @@ validateUrl url auth_ = do
     isBareIntegerHost h = case map toLower h of
       '0' : 'x' : rest -> all isHexDigit rest
       lh -> not (null lh) && all isDigit lh
-
--- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
--- EIP-55 mixed-case checksum verification is a follow-up.
-parseEthAddr :: Text -> Either String NameOwner
-parseEthAddr t = do
-  bs <- fromHex (encodeUtf8 t)
-  if B.length bs == 20
-    then mkNameOwner bs
-    else Left "expected a 20-byte address (40 hex characters, optionally 0x-prefixed)"
 
 -- | Parse an rpc_auth INI value. Scheme keyword is case-insensitive so
 -- "Bearer <token>" / "BEARER <token>" (Caddy / RFC 7235 convention) work
