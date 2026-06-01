@@ -75,16 +75,18 @@ instance StrEncoding SimplexNameDomain where
   strP = parseDomain . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
     where
       parseDomain s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
-      -- TLD label compared lowercase: DNS labels are case-insensitive, and a
-      -- mixed-case `foo.SIMPLEX` would otherwise fall through to TLDWeb and
-      -- route through `registry_tld_all` instead of `registry_tld_simplex`.
-      mkDomain labels = case reverse labels of
+      -- All labels lowercased: DNS labels are case-insensitive, and namehash is
+      -- byte-defined — preserving original case would make `Alice.simplex` and
+      -- `alice.simplex` resolve to different on-chain records. A mixed-case TLD
+      -- would also fall through to TLDWeb and route through `registry_tld_all`
+      -- instead of `registry_tld_simplex`.
+      mkDomain labels = case reverse (map T.toLower labels) of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
-        tld : name : sub -> Right $ case T.toLower tld of
+        tld : name : sub -> Right $ case tld of
           "simplex" -> SimplexNameDomain TLDSimplex name sub
           "testing" -> SimplexNameDomain TLDTesting name sub
-          _ -> SimplexNameDomain TLDWeb (T.intercalate "." labels) []
+          _ -> SimplexNameDomain TLDWeb (T.intercalate "." (reverse (tld : name : sub))) []
 
 fullDomainName :: SimplexNameDomain -> Text
 fullDomainName SimplexNameDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')

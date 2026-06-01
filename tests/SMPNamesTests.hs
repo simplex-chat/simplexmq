@@ -292,6 +292,14 @@ tldWhitelistSpec = do
           domain d `shouldBe` "privacy"
         Nothing -> expectationFailure "expected Just"
 
+    it "normalizes case across all labels (Alice.SIMPLEX ≡ alice.simplex for namehash)" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      let lower = RslvRequest {name = "alice.simplex", contract = addr1}
+          mixed = RslvRequest {name = "Alice.SIMPLEX", contract = addr1}
+      case (verifyRslv env lower, verifyRslv env mixed) of
+        (Just (_, dL), Just (_, dM)) -> dL `shouldBe` dM
+        _ -> expectationFailure "both should parse"
+
     it "rejects mismatched contract address" $ do
       env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
       let req = RslvRequest {name = "privacy.simplex", contract = addr2}

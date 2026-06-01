@@ -46,7 +46,7 @@ import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlpha, isAscii, toUpper)
+import Data.Char (isAlpha, isAscii, toLower, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
@@ -813,9 +813,9 @@ readNamesConfig ini
               { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
                 tldRegistries = registries,
                 rpcAuth = rpcAuth_,
-                rpcTimeoutMs = positiveIniInt 3000 100 "rpc_timeout_ms",
-                rpcMaxResponseBytes = positiveIniInt 262144 1024 "rpc_max_response_bytes",
-                rpcMaxConcurrency = positiveIniInt 8 1 "rpc_max_concurrency"
+                rpcTimeoutMs = boundedIniInt 3000 100 60000 "rpc_timeout_ms",
+                rpcMaxResponseBytes = boundedIniInt 262144 1024 16777216 "rpc_max_response_bytes",
+                rpcMaxConcurrency = boundedIniInt 8 1 1024 "rpc_max_concurrency"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
@@ -825,10 +825,14 @@ readNamesConfig ini
     -- Reject zero / negative values that would deadlock waitQSem (concurrency = 0),
     -- time-out every RSLV immediately (timeout = 0), or accept zero-length
     -- responses (max_response_bytes = 0). The lower bounds also catch sub-sane
-    -- values an operator might choose by accident.
-    positiveIniInt def floor_ key = case readIniDefault def "NAMES" key ini of
-      n | n >= floor_ -> n
-        | otherwise -> error $ "[NAMES] " <> T.unpack key <> " must be at least " <> show floor_ <> " (got " <> show n <> ")"
+    -- values an operator might choose by accident. The upper bounds defend
+    -- against operator-misconfig footguns: 16 MiB response cap (worst-case
+    -- per-call memory), 60 s timeout (no operator wants RSLV to hang longer),
+    -- 1024 concurrent RPCs (any higher should run a separate names router).
+    boundedIniInt def floor_ ceiling_ key = case readIniDefault def "NAMES" key ini of
+      n | n >= floor_ && n <= ceiling_ -> n
+        | otherwise ->
+            error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
     readTldRegistries =
       let regs = TldRegistries
             { tldSimplex = optionalAddr "registry_tld_simplex",
@@ -885,7 +889,14 @@ validateUrl url auth_ = do
   Right url
   where
     isLoopback h = h == "127.0.0.1" || h == "localhost" || h == "[::1]"
-    isLinkLocal h = "169.254." `isPrefixOf` h || h == "[fe80::1]"
+    -- IPv4 link-local 169.254.0.0/16 and the IPv6 link-local prefix fe80::/10
+    -- (matched as the textual prefix "[fe80:"). Also catches IPv4-mapped IPv6
+    -- forms like "[::ffff:169.254.169.254]" so the cloud-metadata IP can't be
+    -- reached via the IPv6 alias.
+    isLinkLocal h =
+      "169.254." `isPrefixOf` h
+        || "[fe80:" `isPrefixOf` map toLower h
+        || "[::ffff:169.254." `isPrefixOf` map toLower h
 
 -- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
 -- EIP-55 mixed-case checksum verification is a follow-up.
