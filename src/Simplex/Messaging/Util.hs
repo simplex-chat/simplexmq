@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+-- spec: spec/modules/Simplex/Messaging/Util.md
 module Simplex.Messaging.Util
   ( AnyError (..),
     (<$?>),
@@ -294,6 +295,7 @@ allFinally :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m b ->
 allFinally action final = tryAllErrors action >>= \r -> final >> except r
 {-# INLINE allFinally #-}
 
+-- spec: spec/modules/Simplex/Messaging/Util.md#isOwnException
 isOwnException :: E.SomeException -> Bool
 isOwnException e = case E.fromException e of
   Just StackOverflow -> True
@@ -303,16 +305,20 @@ isOwnException e = case E.fromException e of
     _ -> False
 {-# INLINE isOwnException #-}
 
+-- spec: spec/modules/Simplex/Messaging/Util.md#isAsyncCancellation
 isAsyncCancellation :: E.SomeException -> Bool
 isAsyncCancellation e = case E.fromException e of
   Just (_ :: SomeAsyncException) -> not $ isOwnException e
   Nothing -> False
 {-# INLINE isAsyncCancellation #-}
 
+-- spec: spec/modules/Simplex/Messaging/Util.md#catchOwn
+-- Catches all exceptions EXCEPT async cancellations (name is misleading)
 catchOwn' :: IO a -> (E.SomeException -> IO a) -> IO a
 catchOwn' action handleInternal = action `E.catch` \e -> if isAsyncCancellation e then E.throwIO e else handleInternal e
 {-# INLINE catchOwn' #-}
 
+-- spec: spec/modules/Simplex/Messaging/Util.md#catchOwn
 catchOwn :: MonadUnliftIO m => m a -> (E.SomeException -> m a) -> m a
 catchOwn action handleInternal =
   withRunInIO $ \run ->

@@ -2,6 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/File.md
 module Simplex.Messaging.Crypto.File
   ( CryptoFile (..),
     CryptoFileArgs (..),
@@ -51,6 +52,7 @@ data CryptoFileArgs = CFArgs {fileKey :: C.SbKey, fileNonce :: C.CbNonce}
 
 data CryptoFileHandle = CFHandle Handle (Maybe (TVar LC.SbState))
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/File.md#readfile--writefile
 readFile :: CryptoFile -> ExceptT FTCryptoError IO LazyByteString
 readFile (CryptoFile path cfArgs) = do
   s <- liftIO $ LB.readFile path
@@ -91,6 +93,7 @@ hGet (CFHandle h sb_) n = B.hGet h n >>= maybe pure decrypt sb_
   where
     decrypt sb s = atomically $ stateTVar sb (`LC.sbDecryptChunk` s)
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/File.md#hgettag
 -- | Read and validate the auth tag.
 -- This function should be called after reading the whole file, it assumes you know the file size and read only the needed bytes.
 hGetTag :: CryptoFileHandle -> ExceptT FTCryptoError IO ()
@@ -113,6 +116,7 @@ plain = (`CryptoFile` Nothing)
 randomArgs :: TVar ChaChaDRG -> STM CryptoFileArgs
 randomArgs g = CFArgs <$> C.randomSbKey g <*> C.randomCbNonce g
 
+-- spec: spec/modules/Simplex/Messaging/Crypto/File.md#getfilecontentssize
 getFileContentsSize :: CryptoFile -> IO Integer
 getFileContentsSize (CryptoFile path cfArgs) = do
   size <- getFileSize path

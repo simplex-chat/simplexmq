@@ -2,6 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+-- spec: spec/modules/Simplex/Messaging/Session.md
 module Simplex.Messaging.Session
   ( SessionVar (..),
     getSessVar,
@@ -32,6 +33,8 @@ getSessVar sessSeq sessKey vs sessionVarTs = maybe (Left <$> newSessionVar) (pur
       TM.insert sessKey v vs
       pure v
 
+-- spec: spec/modules/Simplex/Messaging/Session.md#removeSessVar
+-- Compare-and-swap: only removes if sessionVarId matches, preventing stale removal
 removeSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
 removeSessVar v sessKey vs =
   TM.lookup sessKey vs >>= \case
