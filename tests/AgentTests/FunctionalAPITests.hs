@@ -410,13 +410,13 @@ prepareConnectionToAccept c = A.prepareConnectionToAccept (client c)
 allowConnectionAsync :: AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> AE ()
 allowConnectionAsync c = A.allowConnectionAsync (client c)
 
-joinConnectionAsync :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ConnId
+joinConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
 joinConnectionAsync c = A.joinConnectionAsync (client c)
 
 sendMessagesB :: AgentClient -> [Either AgentErrorType MsgReq] -> AE [Either AgentErrorType (AgentMsgId, PQEncryption)]
 sendMessagesB c = A.sendMessagesB (client c)
 
-createConnectionAsync :: ConnectionModeI c => AgentClient -> UserId -> ACorrId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AE ConnId
+createConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AE ()
 createConnectionAsync c = A.createConnectionAsync (client c)
 
 testProtocolServer :: SMP.ProtocolTypeI p => AgentClient -> NetworkRequestMode -> UserId -> SMP.ProtoServerWithAuth p -> IO (Maybe ProtocolTestFailure)
@@ -427,9 +427,6 @@ getConnectionRatchetAdHash c = A.getConnectionRatchetAdHash (client c)
 
 getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Either AgentErrorType (Maybe SMP.SMPMsgMeta)))
 getConnectionMessages c = A.getConnectionMessages (client c)
-
-prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c = A.prepareConnectionLink (client c)
 
 waitForUserNetwork :: AgentClient -> IO ()
 waitForUserNetwork = AC.waitForUserNetwork . client
@@ -1539,7 +1536,8 @@ testInvitationShortLinkAsync viaProxy a b = do
   connReq' `shouldBe` connReq
   linkUserData connData' `shouldBe` userData
   runRight $ do
-    aId <- A.joinConnectionAsync (client b) 1 "123" Nothing True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    aId <- A.prepareConnectionToJoin (client b) 1 True connReq PQSupportOn
+    A.joinConnectionAsync (client b) "123" False aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
     get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
     ("", _, CONF confId _ "bob's connInfo") <- get a
     allowConnection a bId confId "alice's connInfo"
@@ -2799,10 +2797,12 @@ receiveMsg c cId msgId msg = do
 testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 testAsyncCommands sqSecured alice bob baseId =
   runRight_ $ do
-    bobId <- createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
+    bobId <- prepareConnectionToCreate (client alice) 1 True SCMInvitation PQSupportOn
+    createConnectionAsync alice "1" bobId True SCMInvitation IKPQOn SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
-    aliceId <- joinConnectionAsync bob 1 "2" Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    aliceId <- prepareConnectionToJoin (client bob) 1 True qInfo PQSupportOn
+    joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
       aliceId' `shouldBe` aliceId
@@ -2893,8 +2893,8 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     liftIO $ qInfo' `shouldBe` qInfo
     liftIO $ userCtData' `shouldBe` userCtData
     -- join connection async using connId from getConnShortLinkAsync
-    aliceId <- joinConnectionAsync bob 1 "2" (Just newId) True qInfo' "bob's connInfo" PQSupportOn SMSubscribe
-    liftIO $ aliceId `shouldBe` newId
+    joinConnectionAsync bob "2" True newId True qInfo' "bob's connInfo" PQSupportOn SMSubscribe
+    let aliceId = newId
     ("2", aliceId', JOINED False) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
     -- complete connection
@@ -2910,7 +2910,10 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
 testAsyncCommandsRestore :: (ASrvTransport, AStoreType) -> IO ()
 testAsyncCommandsRestore ps = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
-  bobId <- runRight $ createConnectionAsync alice 1 "1" True SCMInvitation IKPQOn SMSubscribe
+  bobId <- runRight $ do
+    connId <- prepareConnectionToCreate (client alice) 1 True SCMInvitation PQSupportOn
+    createConnectionAsync alice "1" connId True SCMInvitation IKPQOn SMSubscribe
+    pure connId
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disposeAgentClient alice
   withAgent 2 agentCfg initAgentServers testDB $ \alice' ->
@@ -2926,7 +2929,8 @@ testAcceptContactAsync sqSecured alice bob baseId =
     (aliceId, sqSecuredJoin) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, REQ invId _ "bob's connInfo") <- get alice
-    bobId <- A.acceptContactAsync (client alice) 1 "1" True invId "alice's connInfo" PQSupportOn SMSubscribe
+    bobId <- prepareConnectionToAccept alice 1 True invId PQSupportOn
+    acceptContactAsync (client alice) "1" bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
     get alice =##> \case ("1", c, JOINED sqSecured') -> c == bobId && sqSecured' == sqSecured; _ -> False
     ("", _, CONF confId _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
@@ -3197,10 +3201,12 @@ testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
   withAgent 1 cfg' initAgentServers testDB $ \a ->
     withAgent 2 cfg' initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-        bId <- createConnectionAsync a 1 "1" True SCMInvitation IKPQOn SMSubscribe
+        bId <- prepareConnectionToCreate (client a) 1 True SCMInvitation PQSupportOn
+        createConnectionAsync a "1" bId True SCMInvitation IKPQOn SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
-        aId <- joinConnectionAsync b 1 "2" Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        aId <- prepareConnectionToJoin (client b) 1 True qInfo PQSupportOn
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
@@ -3242,10 +3248,12 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
     withAgent 2 agentCfg initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-        bId <- createConnectionAsync a 1 "1" True SCMInvitation IKPQOn SMSubscribe
+        bId <- prepareConnectionToCreate (client a) 1 True SCMInvitation PQSupportOn
+        createConnectionAsync a "1" bId True SCMInvitation IKPQOn SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
-        aId <- joinConnectionAsync b 1 "2" Nothing True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        aId <- prepareConnectionToJoin (client b) 1 True qInfo PQSupportOn
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
