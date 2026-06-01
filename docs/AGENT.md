@@ -13,8 +13,7 @@ The Agent turns simplex (unidirectional) SMP queues into duplex connections, imp
 - **Duplex connections**: each connection uses a pair of SMP queues - one for each direction. The queues can be on different routers chosen independently by each party. See the [duplex connection procedure](../protocol/agent-protocol.md) for the full handshake.
 - **Connection establishment**: one party creates a connection and generates an invitation (containing router address, queue ID, and public keys). The invitation is passed out-of-band (QR code, link, etc.). The other party joins by creating a reverse queue and completing the handshake.
 - **Connection links**: the Agent supports connection links (long and short) for sharing connection invitations via URLs. Short links use a separate SMP queue to store the full invitation, allowing compact QR codes.
-- **Queue rotation**: the Agent periodically rotates the underlying SMP queues, limiting the window for metadata correlation. Rotation is transparent to the application - the connection identity is stable while the underlying queues change.
-- **Redundant queues**: connections can use multiple queues for reliability. If one router becomes unreachable, messages flow through the remaining queues.
+- **Queue rotation**: the Agent has API to rotate the SMP queues, to reduce metadata correlation. The connection identity remain the same when the underlying queue changes.
 
 ## Encryption
 
