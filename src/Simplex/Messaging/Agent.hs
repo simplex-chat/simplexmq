@@ -357,9 +357,8 @@ setUserService :: AgentClient -> UserId -> Bool -> AE ()
 setUserService c = withAgentEnv c .: setUserService' c
 {-# INLINE setUserService #-}
 
--- | Create SMP agent connection (NEW command) asynchronously, synchronous response is new connection id
 -- | Create SMP agent connection without queue (to be used with createConnectionAsync).
-prepareConnectionToCreate :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> PQSupport -> AE ConnId
+prepareConnectionToCreate :: AgentClient -> UserId -> Bool -> SConnectionMode c -> PQSupport -> AE ConnId
 prepareConnectionToCreate c userId enableNtfs cMode pqSup = withAgentEnv c $ newConnNoQueues c userId enableNtfs cMode pqSup
 {-# INLINE prepareConnectionToCreate #-}
 
@@ -379,9 +378,8 @@ getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Enqueue JOIN command for a prepared connection.
-joinConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
-joinConnectionAsync c aCorrId updateConn connId enableNtfs cReqUri cInfo pqSup subMode =
-  withAgentEnv c $ joinConnAsync c aCorrId updateConn connId enableNtfs cReqUri cInfo pqSup subMode
+joinConnectionAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
+joinConnectionAsync c aCorrId updateConn connId enableNtfs = withAgentEnv c .:: joinConnAsync c aCorrId updateConn connId enableNtfs
 {-# INLINE joinConnectionAsync #-}
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
@@ -391,8 +389,7 @@ allowConnectionAsync c = withAgentEnv c .:: allowConnectionAsync' c
 
 -- | Accept contact after REQ notification (ACPT command) asynchronously, for a prepared connection.
 acceptContactAsync :: AgentClient -> ACorrId -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
-acceptContactAsync c aCorrId connId enableNtfs invId ownConnInfo pqSupport subMode =
-  withAgentEnv c $ acceptContactAsync' c aCorrId connId enableNtfs invId ownConnInfo pqSupport subMode
+acceptContactAsync c aCorrId connId enableNtfs = withAgentEnv c .:: acceptContactAsync' c aCorrId connId enableNtfs
 {-# INLINE acceptContactAsync #-}
 
 -- | Acknowledge message (ACK command) asynchronously, no synchronous response
@@ -857,14 +854,17 @@ newConnNoQueues c userId enableNtfs cMode pqSupport = do
   let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
   withStore c $ \db -> createNewConn db g cData cMode
 
-joinConnAsync :: ConnectionModeI c => AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
-joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode =
-  lift (compatibleInvitationUri cReqUri) >>= \case
-    Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
-      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
-      when updateConn $ withStore' c $ \db -> updateNewConnJoin db connId connAgentVersion pqSupport enableNtfs
-      enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
-    Nothing -> throwE $ AGENT A_VERSION
+-- TODO [short links] TBC, but probably we will need async join for contact addresses as the contact will be created after user confirming the connection,
+-- and join should retry, the same as 1-time invitation joins.
+joinConnAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
+  when updateConn $ throwE $ CMD PROHIBITED "joinConnAsync: updateConn not allowed for invitation URI"
+  withInvLock c (strEncode cReqUri) "joinConnAsync" $
+    lift (compatibleInvitationUri cReqUri) >>= \case
+      Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
+        let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
+        enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN enableNtfs (ACR sConnectionMode cReqUri) pqSupport subMode cInfo
+      Nothing -> throwE $ AGENT A_VERSION
 joinConnAsync c corrId updateConn connId enableNtfs cReqUri@(CRContactUri _) cInfo pqSup subMode =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (_, Compatible connAgentVersion) -> do
