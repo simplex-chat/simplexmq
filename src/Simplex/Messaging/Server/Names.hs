@@ -133,11 +133,17 @@ verifyRslv NamesEnv {config} RslvRequest {name, contract} = case strDecode (enco
 pingEndpoint :: NamesEnv -> IO (Either EthRpcError ())
 pingEndpoint NamesEnv {ethCall, config} = case anyAddress (tldRegistries config) of
   Nothing -> pure (Right ())
-  Just addr ->
-    ethCall (unNameOwner addr) (encodeGetRecord (namehash "")) >>= \case
-      Left e@(HttpFailure _) -> pure (Left e)
-      Left e@(HttpStatusErr _) -> pure (Left e)
-      _ -> pure (Right ())
+  Just addr -> do
+    -- Bound the probe by the same rpcTimeoutMs that resolveName uses, so a
+    -- slow-loris endpoint can't park startup until http-client's default
+    -- 30 s response timeout fires.
+    r <- timeout (rpcTimeoutMs config * 1000) $
+      ethCall (unNameOwner addr) (encodeGetRecord (namehash ""))
+    pure $ case r of
+      Nothing -> Left ProbeTimedOut
+      Just (Left e@(HttpFailure _)) -> Left e
+      Just (Left e@(HttpStatusErr _)) -> Left e
+      Just _ -> Right ()
   where
     anyAddress TldRegistries {tldSimplex, tldTesting, tldAll} =
       tldSimplex <|> tldTesting <|> tldAll
@@ -204,3 +210,4 @@ mapEthRpcError = \case
   BodyTooLarge -> EthHttpErr -- transport-side cap, not a decoder failure
   InvalidJson _ -> EthDecodeErr
   JsonRpcErr c m -> EthRpcErr {rpcCode = c, rpcMessage = m}
+  ProbeTimedOut -> EthHttpErr -- pingEndpoint-only; never raised by ethCallReal in the resolve path

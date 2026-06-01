@@ -77,6 +77,7 @@ data EthRpcError
   | BodyTooLarge
   | InvalidJson String
   | JsonRpcErr Int Text
+  | ProbeTimedOut -- startup-probe timeout; resolveName uses its own Timeout
   deriving (Show)
 
 -- | Build a Request from a (validated) ethereum_endpoint URL.

@@ -50,7 +50,7 @@ import Data.Char (isAlpha, isAscii, isDigit, isHexDigit, toLower, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.List (find, isPrefixOf)
+import Data.List (find, isInfixOf, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
@@ -891,24 +891,27 @@ validateUrl url auth_ = do
   Right url
   where
     isLoopback h = h == "127.0.0.1" || h == "localhost" || h == "[::1]"
-    -- IPv4 link-local 169.254.0.0/16, the IPv6 link-local prefix fe80::/10, and
-    -- both IPv4-mapped IPv6 textual forms of the cloud-metadata IP
-    -- (169.254.169.254 in dotted-quad or hex `a9fe:a9fe`).
+    -- IPv4 link-local 169.254.0.0/16, the IPv6 link-local prefix fe80::/10,
+    -- and IPv4-mapped IPv6 forms of the cloud-metadata IP 169.254.169.254
+    -- in every textual variant: dotted-quad, hex `a9fe:a9fe`, and the
+    -- zero-run-expanded `0:0:0:0:0:ffff:…` / `0000:0000:…` forms.
     isLinkLocal h =
       "169.254." `isPrefixOf` h
         || "[fe80:" `isPrefixOf` lh
-        || "[::ffff:169.254." `isPrefixOf` lh
-        || "[::ffff:a9fe:a9fe" `isPrefixOf` lh
+        || any (`isInfixOf` lh) v6MappedMetadata
       where
         lh = map toLower h
-    -- Reject hostnames that are pure digits ("2852039166") or "0x"-prefixed
-    -- hex ("0xa9fea9fe"). These are never legitimate eth endpoints; glibc's
-    -- inet_aton accepts them as IPv4 aliases (the values above both resolve
-    -- to 169.254.169.254). Forces the operator to use a hostname or
-    -- dotted-quad / bracketed IP that the text-prefix checks can recognise.
-    isBareIntegerHost h = case h of
-      '0' : 'x' : rest -> not (null rest) && all isHexDigit rest
-      _ -> not (null h) && all isDigit h
+        -- Substrings rather than prefixes so we catch every zero-run-expansion
+        -- (`[::ffff:…`, `[0:0:0:0:0:ffff:…`, `[0000:0000:0000:0000:0000:ffff:…`).
+        v6MappedMetadata = [":ffff:169.254.", ":ffff:a9fe:a9fe"] :: [String]
+    -- Reject hostnames that look like decimal or `0x`/`0X`-hex integers —
+    -- glibc's inet_aton accepts both as IPv4 aliases (`2852039166`,
+    -- `0xa9fea9fe`, `0XA9FEA9FE` all resolve to 169.254.169.254). The literal
+    -- prefix `0x` / `0X` with no digits after is also rejected: it isn't a
+    -- legitimate hostname and lets us avoid reasoning about libc's behaviour.
+    isBareIntegerHost h = case map toLower h of
+      '0' : 'x' : rest -> all isHexDigit rest
+      lh -> not (null lh) && all isDigit lh
 
 -- | Parse a 20-byte Ethereum address as text "0x[hex40]" or "[hex40]".
 -- EIP-55 mixed-case checksum verification is a follow-up.
