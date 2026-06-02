@@ -22,6 +22,7 @@ import qualified Data.X509.Validation as XV
 import qualified SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Crypto.BBS
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Transport.Client
 import Test.Hspec hiding (fit, it)
@@ -101,6 +102,14 @@ cryptoTests = do
     it "should validate certificates" testValidateX509
   describe "sntrup761" $
     it "should enc/dec key" testSNTRUP761
+  describe "BBS+" $ do
+    it "should sign and verify" testBBSSignVerify
+    it "should generate and verify proof" testBBSProofRoundtrip
+    it "should reject tampered proof" testBBSTamperedProof
+    it "should reject wrong disclosed message" testBBSWrongMessage
+    it "should reject wrong public key" testBBSWrongKey
+    it "should produce unlinkable proofs" testBBSUnlinkable
+    it "should produce proof of expected size" testBBSProofSize
 
 instance Eq C.APublicKey where
   C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
@@ -271,3 +280,86 @@ testSNTRUP761 = do
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk
   k' `shouldBe` k
+
+-- BBS+ tests
+
+bbsHeader :: BBSHeader
+bbsHeader = BBSHeader "SimpleX"
+
+bbsMessages :: [B.ByteString]
+bbsMessages = ["secret_master_key", "2026-07-31", "supporter"]
+
+bbsDisclosedIdxs :: [Int]
+bbsDisclosedIdxs = [1, 2]
+
+bbsDisclosedMsgs :: [B.ByteString]
+bbsDisclosedMsgs = ["2026-07-31", "supporter"]
+
+testBBSSignVerify :: IO ()
+testBBSSignVerify = do
+  (sk, pk) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let BBSSecretKey skBs = sk
+      BBSPublicKey pkBs = pk
+      BBSSignature sigBs = sig
+  B.length skBs `shouldBe` 32
+  B.length pkBs `shouldBe` 96
+  B.length sigBs `shouldBe` 80
+
+testBBSProofRoundtrip :: IO ()
+testBBSProofRoundtrip = do
+  (sk, pk) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let ph = BBSPresHeader "test-nonce-1"
+  Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  result <- bbsProofVerify pk proof bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
+  result `shouldBe` True
+
+testBBSTamperedProof :: IO ()
+testBBSTamperedProof = do
+  (sk, pk) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let ph = BBSPresHeader "test-nonce-2"
+  Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  let tampered = BBSProof $ B.take 10 proofBs <> "\xff" <> B.drop 11 proofBs
+  result <- bbsProofVerify pk tampered bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
+  result `shouldBe` False
+
+testBBSWrongMessage :: IO ()
+testBBSWrongMessage = do
+  (sk, pk) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let ph = BBSPresHeader "test-nonce-3"
+  Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  result <- bbsProofVerify pk proof bbsHeader ph bbsDisclosedIdxs 3 ["2026-07-31", "business"]
+  result `shouldBe` False
+
+testBBSWrongKey :: IO ()
+testBBSWrongKey = do
+  (sk, pk) <- bbsKeyGen
+  (_, pk2) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let ph = BBSPresHeader "test-nonce-4"
+  Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  result <- bbsProofVerify pk2 proof bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
+  result `shouldBe` False
+
+testBBSUnlinkable :: IO ()
+testBBSUnlinkable = do
+  (sk, pk) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let ph1 = BBSPresHeader "nonce-contact-1"
+      ph2 = BBSPresHeader "nonce-contact-2"
+  Right (BBSProof proof1) <- bbsProofGen pk sig bbsHeader ph1 bbsDisclosedIdxs bbsMessages
+  Right (BBSProof proof2) <- bbsProofGen pk sig bbsHeader ph2 bbsDisclosedIdxs bbsMessages
+  proof1 `shouldNotBe` proof2
+  bbsProofVerify pk (BBSProof proof1) bbsHeader ph1 bbsDisclosedIdxs 3 bbsDisclosedMsgs >>= (`shouldBe` True)
+  bbsProofVerify pk (BBSProof proof2) bbsHeader ph2 bbsDisclosedIdxs 3 bbsDisclosedMsgs >>= (`shouldBe` True)
+
+testBBSProofSize :: IO ()
+testBBSProofSize = do
+  (sk, pk) <- bbsKeyGen
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let ph = BBSPresHeader "test-nonce-size"
+  Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  B.length proofBs `shouldBe` 304 -- 272 + 32 * 1 undisclosed

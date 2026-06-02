@@ -122,6 +122,7 @@ library
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Crypto.BBS
       Simplex.Messaging.Crypto.SNTRUP761
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
@@ -298,9 +299,22 @@ library
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-home-modules -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2
   include-dirs:
       cbits
+      cbits/blst/bindings
+      cbits/blst/src
+      cbits/libbbs/include
+      cbits/libbbs/src
+  cc-options: -D__BLST_PORTABLE__
   c-sources:
       cbits/sha512.c
       cbits/sntrup761.c
+      cbits/blst/src/server.c
+      cbits/blst/build/assembly.S
+      cbits/libbbs/src/bbs.c
+      cbits/libbbs/src/bbs_ciphersuites.c
+      cbits/libbbs/src/bbs_util.c
+      cbits/libbbs/src/compat-string.c
+      cbits/libbbs/src/sha256.c
+      cbits/libbbs/src/shake256.c
   extra-libraries:
       crypto
   build-depends:
