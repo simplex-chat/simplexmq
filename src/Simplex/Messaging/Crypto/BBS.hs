@@ -12,6 +12,7 @@ module Simplex.Messaging.Crypto.BBS
     BBSPresHeader (..),
     bbsKeyGen,
     bbsSign,
+    bbsVerify,
     bbsProofGen,
     bbsProofVerify,
   ) where
@@ -81,6 +82,14 @@ foreign import ccall "bbs_sign"
     CSize -> Ptr (Ptr Word8) -> Ptr CSize ->
     IO CInt
 
+foreign import ccall "bbs_verify"
+  c_bbs_verify ::
+    Ptr BBS_Ciphersuite ->
+    Ptr Word8 -> Ptr Word8 ->
+    Ptr Word8 -> CSize ->
+    CSize -> Ptr (Ptr Word8) -> Ptr CSize ->
+    IO CInt
+
 foreign import ccall "bbs_proof_gen"
   c_bbs_proof_gen ::
     Ptr BBS_Ciphersuite ->
@@ -111,8 +120,12 @@ getCiphersuite = peek c_bbs_sha256_ciphersuite
 -- Helpers
 
 withBS :: ByteString -> (Ptr Word8 -> CSize -> IO a) -> IO a
-withBS bs f = let (fptr, off, len) = BI.toForeignPtr bs
-  in withForeignPtr fptr $ \ptr -> f (ptr `plusPtr` off) (fromIntegral len)
+withBS bs f =
+  let (fptr, off, len) = BI.toForeignPtr bs
+   in withForeignPtr fptr $ \ptr -> f (ptr `plusPtr` off) (fromIntegral len)
+
+packPtr :: Ptr Word8 -> Int -> IO ByteString
+packPtr ptr len = B.packCStringLen (castPtr ptr, len)
 
 withMessages :: [ByteString] -> (Ptr (Ptr Word8) -> Ptr CSize -> CSize -> IO a) -> IO a
 withMessages msgs f = do
@@ -142,14 +155,15 @@ withIndexes idxs f = do
 bbsKeyGen :: IO (BBSSecretKey, BBSPublicKey)
 bbsKeyGen = do
   cs <- getCiphersuite
-  sk <- BI.create bbsSkLen $ \_ -> pure ()
-  pk <- BI.create bbsPkLen $ \_ -> pure ()
-  withBS sk $ \skPtr _ ->
-    withBS pk $ \pkPtr _ -> do
+  allocaBytes bbsSkLen $ \skPtr ->
+    allocaBytes bbsPkLen $ \pkPtr -> do
       rc <- c_bbs_keygen_full cs skPtr pkPtr
-      if rc == 0
-        then pure (BBSSecretKey sk, BBSPublicKey pk)
-        else error "bbsKeyGen failed"
+      if rc /= 0
+        then error "bbsKeyGen failed"
+        else do
+          sk <- packPtr skPtr bbsSkLen
+          pk <- packPtr pkPtr bbsPkLen
+          pure (BBSSecretKey sk, BBSPublicKey pk)
 
 bbsSign ::
   BBSSecretKey ->
@@ -159,16 +173,30 @@ bbsSign ::
   IO (Either String BBSSignature)
 bbsSign (BBSSecretKey sk) (BBSPublicKey pk) (BBSHeader header) msgs = do
   cs <- getCiphersuite
-  sig <- BI.create bbsSigLen $ \_ -> pure ()
-  withBS sk $ \skPtr _ ->
-    withBS pk $ \pkPtr _ ->
-      withBS header $ \hdrPtr hdrLen ->
-        withBS sig $ \sigPtr _ ->
+  allocaBytes bbsSigLen $ \sigPtr ->
+    withBS sk $ \skPtr _ ->
+      withBS pk $ \pkPtr _ ->
+        withBS header $ \hdrPtr hdrLen ->
           withMessages msgs $ \msgsPtr lensPtr n -> do
             rc <- c_bbs_sign cs skPtr pkPtr sigPtr hdrPtr hdrLen n msgsPtr lensPtr
-            pure $ if rc == 0
-              then Right (BBSSignature sig)
-              else Left "bbsSign failed"
+            if rc /= 0
+              then pure $ Left "bbsSign failed"
+              else Right . BBSSignature <$> packPtr sigPtr bbsSigLen
+
+bbsVerify ::
+  BBSPublicKey ->
+  BBSSignature ->
+  BBSHeader ->
+  [ByteString] ->
+  IO Bool
+bbsVerify (BBSPublicKey pk) (BBSSignature sig) (BBSHeader header) msgs = do
+  cs <- getCiphersuite
+  withBS pk $ \pkPtr _ ->
+    withBS sig $ \sigPtr _ ->
+      withBS header $ \hdrPtr hdrLen ->
+        withMessages msgs $ \msgsPtr lensPtr n -> do
+          rc <- c_bbs_verify cs pkPtr sigPtr hdrPtr hdrLen n msgsPtr lensPtr
+          pure (rc == 0)
 
 bbsProofGen ::
   BBSPublicKey ->
@@ -182,18 +210,17 @@ bbsProofGen (BBSPublicKey pk) (BBSSignature sig) (BBSHeader header) (BBSPresHead
   cs <- getCiphersuite
   let numUndisclosed = length msgs - length disclosedIdxs
       proofSz = bbsProofLen numUndisclosed
-  proof <- BI.create proofSz $ \_ -> pure ()
-  withBS pk $ \pkPtr _ ->
-    withBS sig $ \sigPtr _ ->
-      withBS proof $ \proofPtr _ ->
+  allocaBytes proofSz $ \proofPtr ->
+    withBS pk $ \pkPtr _ ->
+      withBS sig $ \sigPtr _ ->
         withBS header $ \hdrPtr hdrLen ->
           withBS ph $ \phPtr phLen ->
             withIndexes disclosedIdxs $ \idxsPtr idxsLen ->
               withMessages msgs $ \msgsPtr lensPtr n -> do
                 rc <- c_bbs_proof_gen cs pkPtr sigPtr proofPtr hdrPtr hdrLen phPtr phLen idxsPtr idxsLen n msgsPtr lensPtr
-                pure $ if rc == 0
-                  then Right (BBSProof proof)
-                  else Left "bbsProofGen failed"
+                if rc /= 0
+                  then pure $ Left "bbsProofGen failed"
+                  else Right . BBSProof <$> packPtr proofPtr proofSz
 
 bbsProofVerify ::
   BBSPublicKey ->
@@ -214,4 +241,3 @@ bbsProofVerify (BBSPublicKey pk) (BBSProof proof) (BBSHeader header) (BBSPresHea
             withMessages disclosedMsgs $ \msgsPtr lensPtr _ -> do
               rc <- c_bbs_proof_verify cs pkPtr proofPtr proofLen hdrPtr hdrLen phPtr phLen idxsPtr idxsLen (fromIntegral numMessages) msgsPtr lensPtr
               pure (rc == 0)
-

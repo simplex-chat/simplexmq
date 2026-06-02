@@ -298,13 +298,15 @@ bbsDisclosedMsgs = ["2026-07-31", "supporter"]
 testBBSSignVerify :: IO ()
 testBBSSignVerify = do
   (sk, pk) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let BBSSecretKey skBs = sk
       BBSPublicKey pkBs = pk
-      BBSSignature sigBs = sig
   B.length skBs `shouldBe` 32
   B.length pkBs `shouldBe` 96
+  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  let BBSSignature sigBs = sig
   B.length sigBs `shouldBe` 80
+  bbsVerify pk sig bbsHeader bbsMessages >>= (`shouldBe` True)
+  bbsVerify pk sig bbsHeader ["wrong", "2026-07-31", "supporter"] >>= (`shouldBe` False)
 
 testBBSProofRoundtrip :: IO ()
 testBBSProofRoundtrip = do
