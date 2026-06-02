@@ -66,7 +66,11 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClie
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
+import qualified Data.IP as IP
+import Data.Bits (shiftR, (.&.))
+import Data.Word (Word32)
+import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
+import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), mkNameOwner, pattern SMPServer)
 import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, printMessageStats, runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
@@ -76,8 +80,6 @@ import Simplex.Messaging.Server.Main.Init
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
-import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
-import Simplex.Messaging.Protocol (mkNameOwner)
 import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..), TldRegistries (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
@@ -827,10 +829,15 @@ readNamesConfig ini
     -- against operator-misconfig footguns: 16 MiB response cap (worst-case
     -- per-call memory), 60 s timeout (no operator wants RSLV to hang longer),
     -- 1024 concurrent RPCs (any higher should run a separate names router).
-    boundedIniInt def floor_ ceiling_ key = case readIniDefault def "NAMES" key ini of
-      n | n >= floor_ && n <= ceiling_ -> n
-        | otherwise ->
-            error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
+    boundedIniInt def floor_ ceiling_ key = case lookupValue "NAMES" key ini of
+      Left _ -> def
+      Right raw -> case readMaybe (T.unpack (T.strip raw)) of
+        Nothing ->
+          error $ "[NAMES] " <> T.unpack key <> ": not an integer (got " <> show raw <> ")"
+        Just n
+          | n >= floor_ && n <= ceiling_ -> n
+          | otherwise ->
+              error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
 
 -- | Hardcoded SNRC contract whitelist. Placeholder addresses until the
 -- launch contracts are deployed; replaced in code rather than INI so
@@ -873,7 +880,10 @@ validateUrl url auth_ = do
   when (null host) $ Left "empty host"
   when (isBareIntegerHost host) $
     Left "bare-integer host not allowed (use a hostname or dotted-quad / bracketed IP); rejects 169.254.169.254 decimal/hex aliases"
-  when (isLinkLocal host) $ Left "link-local host not allowed (rejects cloud metadata services)"
+  when (isObfuscatedIpv4 host) $
+    Left "non-canonical IPv4 form not allowed (use dotted-quad decimal 0-255 with no leading zeros); rejects inet_aton hex/octal/compact aliases of 169.254.169.254"
+  when (isLinkLocal host || isForbiddenIpv6 host) $
+    Left "link-local host not allowed (rejects cloud metadata services and IPv6 aliases of 169.254.0.0/16)"
   unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use rpc_auth instead"
   case uriPort ua of
     "" -> Left "explicit port required (e.g. http://host:8545)"
@@ -886,26 +896,36 @@ validateUrl url auth_ = do
   let path = uriPath uri
   unless (path == "" || path == "/") $
     Left "URL path not allowed; API keys embedded in the path leak to logs — use rpc_auth instead"
-  when (scheme == "http:" && not (isLoopback host)) $
-    Left "http endpoint on a non-loopback host not allowed (plaintext leaks rpc_auth); use https"
-  when (scheme == "https:" && not (isLoopback host) && isNothing auth_) $
-    Left "https endpoint on a non-loopback host requires rpc_auth"
+  unless (isLoopback host) $ case scheme of
+    "http:" -> Left "http endpoint on a non-loopback host not allowed (plaintext leaks rpc_auth); use https"
+    "https:" | isNothing auth_ -> Left "https endpoint on a non-loopback host requires rpc_auth"
+    _ -> Right ()
   Right url
   where
-    isLoopback h = h == "127.0.0.1" || h == "localhost" || h == "[::1]"
-    -- IPv4 link-local 169.254.0.0/16, the IPv6 link-local prefix fe80::/10,
-    -- and IPv4-mapped IPv6 forms of the cloud-metadata IP 169.254.169.254
-    -- in every textual variant: dotted-quad, hex `a9fe:a9fe`, and the
-    -- zero-run-expanded `0:0:0:0:0:ffff:…` / `0000:0000:…` forms.
-    isLinkLocal h =
-      "169.254." `isPrefixOf` h
-        || "[fe80:" `isPrefixOf` lh
-        || any (`isInfixOf` lh) v6MappedMetadata
+    -- 127.0.0.0/8 and 0.0.0.0 both bind locally on Linux/BSD; treat them all
+    -- as loopback for the http/auth gate so a misconfigured 0.0.0.0:8545 (or
+    -- 127.0.0.5) doesn't get an Authorization header sent to a colocated
+    -- service or silently dropped onto the wire.
+    isLoopback = \case
+      "localhost" -> True
+      "[::1]" -> True
+      "0.0.0.0" -> True
+      h -> case parseDottedQuad h of
+        Just (127, _, _, _) -> True
+        _ -> False
+    parseDottedQuad s = case splitOnDot s of
+      [a, b, c, d] -> (,,,) <$> octet a <*> octet b <*> octet c <*> octet d
+      _ -> Nothing
       where
-        lh = map toLower h
-        -- Substrings rather than prefixes so we catch every zero-run-expansion
-        -- (`[::ffff:…`, `[0:0:0:0:0:ffff:…`, `[0000:0000:0000:0000:0000:ffff:…`).
-        v6MappedMetadata = [":ffff:169.254.", ":ffff:a9fe:a9fe"] :: [String]
+        octet o = case readMaybe o of
+          Just n | (n :: Int) >= 0 && n <= 255 -> Just n
+          _ -> Nothing
+    splitOnDot s = case break (== '.') s of
+      (chunk, []) -> [chunk]
+      (chunk, _ : rest) -> chunk : splitOnDot rest
+    -- IPv4 link-local 169.254.0.0/16 in dotted-quad form. IPv6 forms are
+    -- delegated to isForbiddenIpv6 which parses the address numerically.
+    isLinkLocal h = "169.254." `isPrefixOf` h
     -- Reject hostnames that look like decimal or `0x`/`0X`-hex integers —
     -- glibc's inet_aton accepts both as IPv4 aliases (`2852039166`,
     -- `0xa9fea9fe`, `0XA9FEA9FE` all resolve to 169.254.169.254). The literal
@@ -914,6 +934,54 @@ validateUrl url auth_ = do
     isBareIntegerHost h = case map toLower h of
       '0' : 'x' : rest -> all isHexDigit rest
       lh -> not (null lh) && all isDigit lh
+    -- Reject dotted hosts whose every component is numeric (decimal or `0x`-hex)
+    -- but which aren't strict canonical IPv4 (exactly 4 decimal octets 0..255 with
+    -- no leading zeros). inet_aton accepts hex octets (`0xA9.0xFE.0xA9.0xFE`),
+    -- octal octets (`0251.0376.0251.0376`, leading zero), mixed forms
+    -- (`169.0376.169.254`), and compact 2/3-segment forms (`169.16689638`,
+    -- `169.254.43518`) as aliases for 169.254.169.254. The literal-prefix check
+    -- in isLinkLocal misses all of these; this predicate closes the gap.
+    isObfuscatedIpv4 h
+      | '.' `notElem` h = False
+      | otherwise = allNumericParts && not strictCanonical
+      where
+        parts = splitOnDot h
+        allNumericParts = not (null parts) && all isNumericPart parts
+        isNumericPart p = case map toLower p of
+          '0' : 'x' : rest@(_ : _) -> all isHexDigit rest
+          lp@(_ : _) -> all isDigit lp
+          _ -> False
+        strictCanonical = length parts == 4 && all isStrictDecOctet parts
+        isStrictDecOctet "0" = True
+        isStrictDecOctet p@(c : _) =
+          c /= '0' && all isDigit p && maybe False (\n -> (n :: Int) <= 255) (readMaybe p)
+        isStrictDecOctet _ = False
+    -- Strip the [...] brackets that parseAbsoluteURI keeps on IPv6 hosts, parse
+    -- as numeric IPv6, and check 128-bit ranges:
+    --   * fe80::/10 (link-local)
+    --   * ::1 (loopback)
+    --   * IPv4-compatible (::/96), IPv4-mapped (::ffff/96), 6to4 (2002::/16),
+    --     NAT64 WKP (64:ff9b::/96) — when they alias an IPv4 in 169.254.0.0/16
+    -- This covers every textual form of those addresses (compressed, uncompressed,
+    -- mixed dotted-quad embed) because Data.IP normalises before we inspect bits.
+    isForbiddenIpv6 h = maybe False (isForbiddenIpv6Word . IP.fromIPv6w) $
+      stripBrackets h >>= readMaybe
+      where
+        stripBrackets ('[' : rest@(_ : _)) | last rest == ']' = Just (init rest)
+        stripBrackets _ = Nothing
+    -- Loopback (::1) is intentionally NOT in this list: loopback is gated
+    -- separately by isLoopback for the http/auth decision.
+    isForbiddenIpv6Word :: (Word32, Word32, Word32, Word32) -> Bool
+    isForbiddenIpv6Word (w1, w2, w3, w4) =
+      linkLocal || compatTo169 || mappedTo169 || sixToFour169 || nat64To169
+      where
+        linkLocal = (w1 `shiftR` 22) == 0x3fa -- fe80::/10
+        is169254v4 = (w4 `shiftR` 16) == 0xa9fe
+        high96Zero = w1 == 0 && w2 == 0
+        compatTo169 = high96Zero && w3 == 0 && is169254v4
+        mappedTo169 = high96Zero && w3 == 0xffff && is169254v4
+        sixToFour169 = (w1 `shiftR` 16) == 0x2002 && (w1 .&. 0xffff) == 0xa9fe
+        nat64To169 = w1 == 0x0064ff9b && w2 == 0 && w3 == 0 && is169254v4
 
 -- | Parse an rpc_auth INI value. Scheme keyword is case-insensitive so
 -- "Bearer <token>" / "BEARER <token>" (Caddy / RFC 7235 convention) work

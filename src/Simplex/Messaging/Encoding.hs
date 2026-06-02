@@ -15,7 +15,6 @@ module Simplex.Messaging.Encoding
     smpEncodeList,
     smpListP,
     lenEncode,
-    lenP,
   )
 where
 

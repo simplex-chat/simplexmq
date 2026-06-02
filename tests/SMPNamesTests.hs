@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -9,13 +10,16 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteArray as BA
 import Data.Either (isLeft, isRight)
+import Data.Foldable (for_)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
+import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
-  ( NameOwner,
+  ( NameLink,
+    NameOwner,
     NameRecord (..),
     RslvRequest (..),
     mkNameLink,
@@ -68,20 +72,43 @@ namehashEth = "\x93\xcd\xeb\x70\x8b\x75\x45\xdc\x66\x8e\xb9\x28\x01\x76\x16\x9d\
 twentyOnes :: ByteString
 twentyOnes = B.replicate 20 '\x01'
 
+-- | Test-only constructors that crash on the smart-ctor's Left. Used for
+-- fixtures where we know the input satisfies the invariant; production code
+-- always goes through `mkNameOwner` / `mkNameLink`.
+unsafeOwner :: ByteString -> NameOwner
+unsafeOwner = either error id . mkNameOwner
+
+unsafeLink :: Text -> NameLink
+unsafeLink = either error id . mkNameLink
+
+addr1, addr2, addr3 :: NameOwner
+addr1 = unsafeOwner twentyOnes
+addr2 = unsafeOwner (B.replicate 20 '\x02')
+addr3 = unsafeOwner (B.replicate 20 '\x03')
+
+testNamesConfig :: TldRegistries -> NamesConfig
+testNamesConfig regs =
+  NamesConfig
+    { ethereumEndpoint = "http://stub",
+      tldRegistries = regs,
+      rpcAuth = Nothing,
+      rpcTimeoutMs = 1000,
+      rpcMaxResponseBytes = 65536,
+      rpcMaxConcurrency = 4
+    }
+
 sampleRecord :: NameRecord
-sampleRecord = case (mkNameOwner twentyOnes, mkNameLink "simplex:/contact/abc#xyz") of
-  (Right o, Right l) ->
-    NameRecord
-      { nrDisplayName = "Alice",
-        nrOwner = o,
-        nrChannelLinks = [],
-        nrContactLinks = [l],
-        nrAdminAddress = Just "simplex:/admin/...",
-        nrAdminEmail = Just "admin@example.org",
-        nrExpiry = 1735689600,
-        nrIsTest = False
-      }
-  _ -> error "sampleRecord smart ctors failed"
+sampleRecord =
+  NameRecord
+    { nrDisplayName = "Alice",
+      nrOwner = unsafeOwner twentyOnes,
+      nrChannelLinks = [],
+      nrContactLinks = [unsafeLink "simplex:/contact/abc#xyz"],
+      nrAdminAddress = Just "simplex:/admin/...",
+      nrAdminEmail = Just "admin@example.org",
+      nrExpiry = 1735689600,
+      nrIsTest = False
+    }
 
 smpNamesTests :: Spec
 smpNamesTests = do
@@ -111,8 +138,7 @@ nameRecordEncodingSpec = do
     (J.eitherDecodeStrict badBytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
   it "enforces combined channel+contact list cap of 8" $ do
-    let mkLink i = either error id (mkNameLink ("simplex:/contact/" <> T.pack (show (i :: Int))))
-        nineLinks = map mkLink [0 .. 8]
+    let nineLinks = map (\i -> unsafeLink ("simplex:/contact/" <> T.pack (show (i :: Int)))) [0 .. 8]
         overflow = sampleRecord {nrChannelLinks = nineLinks, nrContactLinks = []}
         bytes = LB.toStrict (J.encode overflow)
     (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
@@ -128,7 +154,7 @@ nameRecordEncodingSpec = do
     (J.eitherDecodeStrict (json "0X") :: Either String NameOwner) `shouldSatisfy` isRight
 
   it "encodes within the proxied transmission budget" $ do
-    let huge = either error id (mkNameLink (T.replicate 1024 "x"))
+    let huge = unsafeLink (T.replicate 1024 "x")
         wide =
           sampleRecord
             { nrChannelLinks = replicate 4 huge,
@@ -247,10 +273,6 @@ zeroOwnerSpec = do
 
 tldWhitelistSpec :: Spec
 tldWhitelistSpec = do
-  let addr1 = either error id (mkNameOwner twentyOnes)
-      addr2 = either error id (mkNameOwner (B.replicate 20 '\x02'))
-      addr3 = either error id (mkNameOwner (B.replicate 20 '\x03'))
-
   describe "lookupTldAddress" $ do
     it "TLD-specific entry takes precedence over _all" $ do
       let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Just addr3}
@@ -271,16 +293,7 @@ tldWhitelistSpec = do
       lookupTldAddress regs TLDWeb `shouldBe` Nothing
 
   describe "verifyRslv" $ do
-    let cfgWith regs =
-          NamesConfig
-            { ethereumEndpoint = "http://stub",
-              tldRegistries = regs,
-              rpcAuth = Nothing,
-              rpcTimeoutMs = 1000,
-              rpcMaxResponseBytes = 65536,
-              rpcMaxConcurrency = 4
-            }
-        mkEnv regs = newNamesEnvWith (cfgWith regs) (\_ _ -> pure (Right "")) Nothing
+    let mkEnv regs = newNamesEnvWith (testNamesConfig regs) (\_ _ -> pure (Right "")) Nothing
 
     it "accepts a valid name with matching TLD-specific contract" $ do
       env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
@@ -322,33 +335,28 @@ tldWhitelistSpec = do
       let req = RslvRequest {name = "privacy", contract = addr1}
       verifyRslv env req `shouldBe` Nothing
 
+    it "rejects non-ASCII labels (Cyrillic а homograph would hash to different namehash than ASCII a)" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      -- Cyrillic а (U+0430), Greek α (U+03B1), full-width Ａ (U+FF21)
+      for_ ["\1072lice.simplex", "\945pple.simplex", "\65313pple.simplex"] $ \name ->
+        verifyRslv env RslvRequest {name, contract = addr1} `shouldBe` Nothing
+
 resolverSpec :: Spec
 resolverSpec = do
-  let mkEnv ethCall = do
-        let cfg =
-              NamesConfig
-                { ethereumEndpoint = "http://stub",
-                  tldRegistries = TldRegistries {tldSimplex = Just (either error id (mkNameOwner twentyOnes)), tldTesting = Nothing, tldAll = Nothing},
-                  rpcAuth = Nothing,
-                  rpcTimeoutMs = 1000,
-                  rpcMaxResponseBytes = 65536,
-                  rpcMaxConcurrency = 4
-                }
-        newNamesEnvWith cfg ethCall Nothing
+  let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      mkEnv ethCall = newNamesEnvWith (testNamesConfig regs) ethCall Nothing
       aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
-      aliceAddr = either error id (mkNameOwner twentyOnes)
+      zeroOwnerResponse = Right (B.replicate (32 * 8) '\NUL')
 
   it "maps stub zero-owner response to NotFound" $ do
-    env <- mkEnv $ \_ _ -> pure (Right (B.replicate (32 * 8) '\NUL'))
-    r <- resolveName env aliceAddr aliceDomain
-    r `shouldBe` Left NotFound
+    env <- mkEnv (\_ _ -> pure zeroOwnerResponse)
+    resolveName env addr1 aliceDomain `shouldReturn` Left NotFound
 
   it "every lookup hits the endpoint (no cache)" $ do
     callCount <- newIORef (0 :: Int)
     env <- mkEnv $ \_ _ -> do
       atomicModifyIORef' callCount (\v -> (v + 1, ()))
-      pure (Right (B.replicate (32 * 8) '\NUL'))
-    _ <- resolveName env aliceAddr aliceDomain
-    _ <- resolveName env aliceAddr aliceDomain
-    n <- readIORef callCount
-    n `shouldBe` 2
+      pure zeroOwnerResponse
+    _ <- resolveName env addr1 aliceDomain
+    _ <- resolveName env addr1 aliceDomain
+    readIORef callCount `shouldReturn` 2

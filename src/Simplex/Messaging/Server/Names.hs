@@ -29,7 +29,7 @@ module Simplex.Messaging.Server.Names
 where
 
 import Control.Applicative ((<|>))
-import Control.Monad (guard, unless, when)
+import Control.Monad (forM_, guard, unless, when)
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.ByteString.Char8 (ByteString)
@@ -40,6 +40,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Simplex.Messaging.Encoding.String (strDecode)
+import Simplex.Messaging.Util (eitherToMaybe)
 import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), RslvRequest (..), unNameOwner)
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
 import Simplex.Messaging.Server.Names.Eth.SNRC (decodeAddress, decodeGetRecord, encodeGetRecord, isZeroOwner, namehash)
@@ -127,9 +128,11 @@ verifyRslv NamesEnv {config} RslvRequest {name, contract} = case strDecode (enco
 
 -- | Reach the configured endpoint with a harmless probe call to confirm
 -- network reachability. Uses any configured contract address (the parser
--- guarantees at least one is set). Returns Left only on transport-level
--- failures; JSON-RPC errors (misconfigured address etc.) are treated as
--- "endpoint reachable" — that distinction surfaces later via rslvEthErrs.
+-- guarantees at least one is set). A JSON-RPC error (e.g. unknown contract
+-- on a healthy node) is treated as "endpoint reachable". HTTP transport
+-- failures, oversized responses, and non-JSON bodies (operator pointing at
+-- the wrong service) all surface as Left so startup fails loudly rather
+-- than every RSLV silently incrementing rslvEthErrs.
 pingEndpoint :: NamesEnv -> IO (Either EthRpcError ())
 pingEndpoint NamesEnv {ethCall, config} = case anyAddress (tldRegistries config) of
   Nothing -> pure (Right ())
@@ -141,9 +144,9 @@ pingEndpoint NamesEnv {ethCall, config} = case anyAddress (tldRegistries config)
       ethCall (unNameOwner addr) (encodeGetRecord (namehash ""))
     pure $ case r of
       Nothing -> Left ProbeTimedOut
-      Just (Left e@(HttpFailure _)) -> Left e
-      Just (Left e@(HttpStatusErr _)) -> Left e
-      Just _ -> Right ()
+      Just (Left JsonRpcErr {}) -> Right () -- node answered, just doesn't know this contract
+      Just (Left e) -> Left e
+      Just (Right _) -> Right ()
   where
     anyAddress TldRegistries {tldSimplex, tldTesting, tldAll} =
       tldSimplex <|> tldTesting <|> tldAll
@@ -178,9 +181,8 @@ fetch env@NamesEnv {ethCall} contract d =
     -- an operator who enables [NAMES] against a working SNRC contract sees
     -- the resolver is functionally stubbed.
     notFoundWithPlaceholderWarn ret = do
-      case decodeAddress 32 ret of
-        Right owner -> unless (isZeroOwner owner) (warnPlaceholderOnce env)
-        Left _ -> pure ()
+      forM_ (eitherToMaybe (decodeAddress 32 ret)) $ \owner ->
+        unless (isZeroOwner owner) (warnPlaceholderOnce env)
       pure (Left NotFound)
     -- Defense in depth: the SNRC contract should already return the
     -- zero-owner sentinel for expired records, but a buggy / pre-upgrade

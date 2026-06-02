@@ -249,8 +249,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     closeServer = do
       pa <- asks (smpAgent . proxyAgent)
       ne <- asks namesEnv
-      -- finally: if the proxy-agent close throws, we still release the resolver's
-      -- HTTP connection manager.
       liftIO $ closeSMPClientAgent pa `E.finally` mapM_ closeNamesEnv ne
 
     serverThread ::
@@ -664,8 +662,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
-        -- Column order matches `Stats.hs:strEncode NameResolverStatsData`:
-        -- new counters appended at the end so existing CSV readers don't shift.
         showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled, _rslvBadName} =
           map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled, _rslvBadName]
 

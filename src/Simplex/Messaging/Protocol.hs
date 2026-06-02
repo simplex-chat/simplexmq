@@ -260,7 +260,7 @@ import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1, decodeUtf8', encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
 import Data.Word (Word8, Word16)
@@ -566,12 +566,13 @@ type LinkId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
--- | Name resolution request. The client sends the canonical SimplexNameDomain
--- (TLD always explicit) plus the SNRC contract address it expects the server
--- to query. The server parses the domain (validating syntax) and checks the
--- supplied contract against its INI whitelist before reading the chain — so a
--- single names router can safely host multiple TLDs (each backed by its own
--- SNRC contract) and reject clients that ask for the wrong one.
+-- | Name resolution request. The client sends the name in canonical
+-- SimplexNameDomain form (TLD always explicit) as a Text plus the SNRC
+-- contract address it expects the server to query. The server parses the
+-- name into SimplexNameDomain (validating syntax) and checks the supplied
+-- contract against its hardcoded TLD whitelist before reading the chain —
+-- so a single names router can safely host multiple TLDs (each backed by
+-- its own SNRC contract) and reject clients that ask for the wrong one.
 data RslvRequest = RslvRequest
   { name :: Text,
     contract :: NameOwner
@@ -738,7 +739,12 @@ newtype EncFwdTransmission = EncFwdTransmission ByteString
 -- | 20-byte Ethereum address (NameRecord owner). Bare constructor not exported;
 -- use `mkNameOwner` to enforce the 20-byte invariant.
 newtype NameOwner = NameOwner ByteString
-  deriving (Eq, Show)
+  deriving (Eq)
+
+-- Render the 20 raw bytes as "0x"-prefixed lowercase hex so log lines /
+-- traceShow output match the on-the-wire JSON form instead of Latin-1 garbage.
+instance Show NameOwner where
+  show (NameOwner bs) = "NameOwner 0x" <> B.unpack (BAE.convertToBase BAE.Base16 bs)
 
 mkNameOwner :: ByteString -> Either String NameOwner
 mkNameOwner bs
@@ -756,9 +762,7 @@ instance J.FromJSON NameOwner where
   parseJSON = J.withText "NameOwner" $ \t -> do
     -- Accept "0x" and "0X" prefixes (matches the Server-side hex decoder).
     let hex = fromMaybe t (T.stripPrefix "0x" t <|> T.stripPrefix "0X" t)
-    case BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) of
-      Left e -> fail e
-      Right bs -> either fail pure (mkNameOwner bs)
+    either fail pure $ BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) >>= mkNameOwner
 
 instance J.ToJSON RslvRequest where
   toJSON RslvRequest {name, contract} = J.object ["name" J..= name, "contract" J..= contract]

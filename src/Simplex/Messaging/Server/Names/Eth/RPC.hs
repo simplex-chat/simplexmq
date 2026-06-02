@@ -1,7 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 
@@ -15,12 +14,11 @@
 --   * Authorization header attached only when configured.
 module Simplex.Messaging.Server.Names.Eth.RPC
   ( RpcAuth (..),
-    EthRpcEnv (..),
+    EthRpcEnv,
     EthRpcError (..),
     newEthRpcEnv,
     closeEthRpcEnv,
     ethCallReal,
-    fromHex,
     scrubUrl,
   )
 where
@@ -35,17 +33,20 @@ import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Network.HTTP.Client
   ( HttpException,
     Manager,
+    ManagerSettings (..),
     Request,
     RequestBody (..),
     brReadSome,
     method,
     parseRequest,
+    redirectCount,
     requestBody,
     requestHeaders,
     responseBody,
@@ -80,13 +81,18 @@ data EthRpcError
   | ProbeTimedOut -- startup-probe timeout; resolveName uses its own Timeout
   deriving (Show)
 
--- | Build a Request from a (validated) ethereum_endpoint URL.
+-- | Build a Request from a (validated) ethereum_endpoint URL. Redirects are
+-- disabled: an RPC endpoint that responds 3xx is a misconfiguration, and a
+-- compromised endpoint could otherwise redirect a credential-bearing POST
+-- to a private-IP target (SSRF amplification on top of the host validation
+-- performed at config load — DNS rebinding and chained redirects bypass it).
 buildRequest :: Text -> Maybe RpcAuth -> IO Request
 buildRequest endpoint auth_ = do
   req <- parseRequest (T.unpack endpoint)
   pure $
     req
       { method = "POST",
+        redirectCount = 0,
         requestHeaders =
           ("Content-Type", "application/json")
             : maybe [] (pure . authHeader) auth_
@@ -101,7 +107,9 @@ authHeader = \case
 
 newEthRpcEnv :: Text -> Maybe RpcAuth -> Int -> Int -> IO EthRpcEnv
 newEthRpcEnv endpoint auth_ maxResponseBytes maxConcurrency = do
-  manager <- HC.newManager tlsManagerSettings
+  -- managerConnCount defaults to 10; without raising it the configured
+  -- rpcMaxConcurrency is silently capped to 10 by http-client's pool.
+  manager <- HC.newManager tlsManagerSettings {managerConnCount = max 10 maxConcurrency}
   request <- buildRequest endpoint auth_
   sem <- newQSem maxConcurrency
   pure EthRpcEnv {manager, request, sem, maxResponseBytes}
@@ -163,50 +171,19 @@ parseResult bs = case J.eitherDecodeStrict bs of
           pure (Left (JsonRpcErr code msg))
         _ -> do
           result :: Text <- o J..: "result"
-          case fromHex (encodeUtf8 result) of
+          case decodeHexResult (encodeUtf8 result) of
             Right b -> pure (Right b)
             Left e -> pure (Left (InvalidJson e))
 
+-- | Encode raw bytes as "0x"-prefixed lowercase hex.
 toHex :: ByteString -> Text
-toHex bs = T.pack $ "0x" <> concatMap byte (B.unpack bs)
-  where
-    byte c =
-      let n = fromEnum c
-          (h, l) = quotRem n 16
-       in [hexChar h, hexChar l]
-    hexChar n
-      | n < 10 = toEnum (fromEnum '0' + n)
-      | otherwise = toEnum (fromEnum 'a' + n - 10)
+toHex bs = "0x" <> decodeLatin1 (BAE.convertToBase BAE.Base16 bs)
 
-fromHex :: ByteString -> Either String ByteString
-fromHex bs0 =
-  let bs = case B.stripPrefix "0x" bs0 of
-        Just rest -> rest
-        Nothing -> case B.stripPrefix "0X" bs0 of
-          Just rest -> rest
-          Nothing -> bs0
-   in if B.null bs
-        then Right B.empty
-        else
-          if odd (B.length bs) || not (B.all isHex bs)
-            then Left "invalid hex"
-            else Right (decodeHex bs)
-  where
-    isHex c = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-
-decodeHex :: ByteString -> ByteString
-decodeHex = B.pack . go
-  where
-    go s
-      | B.null s = []
-      | otherwise =
-          let hi = digit (B.head s)
-              lo = digit (B.index s 1)
-           in toEnum (16 * hi + lo) : go (B.drop 2 s)
-    digit c
-      | c >= '0' && c <= '9' = fromEnum c - fromEnum '0'
-      | c >= 'a' && c <= 'f' = 10 + fromEnum c - fromEnum 'a'
-      | otherwise = 10 + fromEnum c - fromEnum 'A'
+-- | Decode a "0x"/"0X"-prefixed hex string (the JSON-RPC result shape).
+decodeHexResult :: ByteString -> Either String ByteString
+decodeHexResult bs =
+  BAE.convertFromBase BAE.Base16 $
+    fromMaybe bs (B.stripPrefix "0x" bs <|> B.stripPrefix "0X" bs)
 
 -- | Strip userinfo from a URL so log lines never leak credentials.
 scrubUrl :: Text -> Text

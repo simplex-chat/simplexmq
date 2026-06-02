@@ -21,7 +21,7 @@ import Control.Applicative (optional, (<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.Attoparsec.Text as AT
-import Data.Char (isAlpha, isDigit)
+import Data.Char (isDigit)
 import Data.Functor (($>))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -58,7 +58,12 @@ instance StrEncoding SimplexNameType where
 nameLabelP :: AT.Parser Text
 nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
   where
-    isNameLetter c = isAlpha c && not (c >= '\x00c0' && c <= '\x024f')
+    -- ASCII letters only. SNRC contracts hash byte sequences via keccak; ENS
+    -- uses UTS-46 + Punycode for IDN, which we do not implement. Admitting
+    -- Cyrillic / Greek / etc. via Data.Char.isAlpha would (a) make namehash
+    -- diverge from any IDN-aware registrar and (b) allow homograph spoofing
+    -- (Cyrillic а vs ASCII a hash to different on-chain records).
+    isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
@@ -78,15 +83,14 @@ instance StrEncoding SimplexNameDomain where
       -- All labels lowercased: DNS labels are case-insensitive, and namehash is
       -- byte-defined — preserving original case would make `Alice.simplex` and
       -- `alice.simplex` resolve to different on-chain records. A mixed-case TLD
-      -- would also fall through to TLDWeb and route through `registry_tld_all`
-      -- instead of `registry_tld_simplex`.
+      -- would also fall through to TLDWeb and route through the `tldAll`
+      -- catch-all entry instead of the TLDSimplex registry.
       mkDomain labels = case reverse (map T.toLower labels) of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
-        tld : name : sub -> Right $ case tld of
-          "simplex" -> SimplexNameDomain TLDSimplex name sub
-          "testing" -> SimplexNameDomain TLDTesting name sub
-          _ -> SimplexNameDomain TLDWeb (T.intercalate "." (reverse (tld : name : sub))) []
+        "simplex" : name : sub -> Right (SimplexNameDomain TLDSimplex name sub)
+        "testing" : name : sub -> Right (SimplexNameDomain TLDTesting name sub)
+        _ -> Right (SimplexNameDomain TLDWeb (T.intercalate "." (map T.toLower labels)) [])
 
 fullDomainName :: SimplexNameDomain -> Text
 fullDomainName SimplexNameDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')

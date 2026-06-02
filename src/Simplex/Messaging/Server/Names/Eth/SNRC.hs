@@ -40,6 +40,7 @@ module Simplex.Messaging.Server.Names.Eth.SNRC
 where
 
 import Crypto.Hash (Digest, Keccak_256, hash)
+import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -113,9 +114,7 @@ decodeAddress :: Int -> ByteString -> Either AbiError NameOwner
 decodeAddress off buf
   | off + 32 > B.length buf = Left AbiTruncated
   | B.any (/= toEnum 0) (B.take 12 (B.drop off buf)) = Left (AbiInvariantViolated "address has non-zero high 12 bytes")
-  | otherwise = case mkNameOwner (B.take 20 (B.drop (off + 12) buf)) of
-      Right addr -> Right addr
-      Left e -> Left (AbiInvariantViolated e)
+  | otherwise = first AbiInvariantViolated $ mkNameOwner (B.take 20 (B.drop (off + 12) buf))
 
 -- | Decode a Solidity `string` whose data starts at byte offset `off`.
 -- Returns raw bytes; UTF-8 validity is the caller's choice (use
@@ -179,11 +178,10 @@ decodeStringArray depth headEnd off cntCap byteCap buf
 decodeGetRecord :: ByteString -> Either AbiError (Maybe NameRecord)
 decodeGetRecord buf
   | B.length buf < 32 * 8 = Left AbiTruncated
-  | otherwise = case decodeAddress 32 buf of
-      Left e -> Left e
-      Right owner
-        | isZeroOwner owner -> Right Nothing
-        | otherwise -> Right Nothing -- placeholder until SNRC ABI is finalised
+  -- Both arms return Nothing today: the zero-owner branch is the real ENS-style
+  -- NotFound sentinel; the non-zero branch is the SNRC-ABI placeholder. They
+  -- separate once the field-layout decoder lands.
+  | otherwise = Nothing <$ decodeAddress 32 buf
 
 isZeroOwner :: NameOwner -> Bool
 isZeroOwner = (== B.replicate 20 '\NUL') . unNameOwner
