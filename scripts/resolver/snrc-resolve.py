@@ -146,6 +146,11 @@ def addr_multicoin(resolver: str, node: bytes, coin_type: int):
         return None
     if not raw:
         return None
+    # An all-zero payload is the ENS convention for "unset" — many tools
+    # write 20 zero bytes for coinType=60 instead of clearing the slot.
+    # Treat it as null so the response doesn't surface a zero address.
+    if raw == b"\x00" * len(raw):
+        return None
     encoder = COIN_ENCODERS.get(coin_type)
     if encoder is None:
         return "0x" + raw.hex()
