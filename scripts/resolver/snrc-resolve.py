@@ -17,12 +17,17 @@ Usage:
   curl -s http://127.0.0.1:8000/health
 
 Environment:
-  SNRC_RPC       JSON-RPC endpoint (default: http://127.0.0.1:8545)
-  SNRC_REGISTRY  ENSRegistry address
-                 (default: SNRC .testing on Sepolia,
-                  0x2f97af21ca3eb3f5311f439c05234ca94163bc33)
-  SNRC_PORT      Listen port (default: 8000)
-  SNRC_BIND      Bind address (default: 0.0.0.0)
+  SNRC_RPC               JSON-RPC endpoint (default: http://127.0.0.1:8545)
+  SNRC_REGISTRY_TESTING  ENSRegistry for the .testing deployment
+                         (default: Sepolia,
+                          0x2f97af21ca3eb3f5311f439c05234ca94163bc33)
+  SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
+                         (default: empty — TLD not yet deployed)
+  SNRC_PORT              Listen port (default: 8000)
+  SNRC_BIND              Bind address (default: 0.0.0.0)
+
+Each TLD is a separate SNRC deployment with its own ENSRegistry; the
+resolver dispatches by the queried name's rightmost label.
 
 Same dependency surface as ens-lookup.py:
   pip install --break-system-packages 'eth-hash[pycryptodome]'
@@ -47,11 +52,19 @@ from urllib.request import Request, urlopen
 from eth_hash.auto import keccak
 
 RPC = os.environ.get("SNRC_RPC", "http://127.0.0.1:8545")
-ENS_REGISTRY = os.environ.get(
-    "SNRC_REGISTRY", "0x2f97af21ca3eb3f5311f439c05234ca94163bc33"
-)
 BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
+
+# Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
+# happens on the rightmost label of the queried name. Empty / unset means
+# "not deployed" — requests for that TLD return 400 with a clear error.
+REGISTRIES = {
+    "testing": os.environ.get(
+        "SNRC_REGISTRY_TESTING",
+        "0x2f97af21ca3eb3f5311f439c05234ca94163bc33",  # Sepolia .testing
+    ),
+    "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
+}
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
 COIN_ETH = 60
@@ -342,15 +355,25 @@ TEXT_KEYS = [
 
 
 def resolve(name: str):
+    tld = name.rsplit(".", 1)[-1]
+    registry = REGISTRIES.get(tld)
+    if not registry:
+        configured = [k for k, v in REGISTRIES.items() if v]
+        return 400, {
+            "name": name,
+            "error": f"TLD '{tld}' is not configured on this resolver",
+            "configured_tlds": configured,
+        }
+
     node = namehash(name)
     node_hex = node.hex()
 
-    resolver_raw = eth_call(ENS_REGISTRY, selector("resolver(bytes32)") + node_hex)
+    resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
         return 404, {"name": name, "error": "no resolver set for this name"}
 
-    owner_raw = eth_call(ENS_REGISTRY, selector("owner(bytes32)") + node_hex)
+    owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
     owner = decode_address(owner_raw)
 
     texts = {}
@@ -390,7 +413,10 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
-            self._respond(200, {"ok": True, "rpc": RPC, "registry": ENS_REGISTRY})
+            self._respond(
+                200,
+                {"ok": True, "rpc": RPC, "registries": REGISTRIES},
+            )
             return
 
         if len(parts) == 2 and parts[0] == "resolve":
@@ -433,10 +459,12 @@ def main():
     server = ThreadingHTTPServer((BIND, PORT), Handler)
     sys.stderr.write(
         f"snrc-resolve listening on {BIND}:{PORT}\n"
-        f"  RPC      = {RPC}\n"
-        f"  Registry = {ENS_REGISTRY}\n"
-        f"  GET /resolve/<name>   GET /health\n"
+        f"  RPC = {RPC}\n"
+        f"  Registries:\n"
     )
+    for tld, addr in REGISTRIES.items():
+        sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
+    sys.stderr.write("  GET /resolve/<name>   GET /health\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -110,16 +110,22 @@ DOT, Monero-base58 for XMR. Unrecognised payloads fall back to
 
 ```sh
 curl -s http://127.0.0.1:8000/health
-# → {"ok": true, "rpc": "...", "registry": "..."}
+# → {"ok": true, "rpc": "...", "registries": {"testing": "0x...", "simplex": ""}}
 ```
 
-### Switching to a different SNRC deployment
+### Pointing at multiple deployments
 
-`.simplex` (mainnet) and any future deployment use the same script with
-a different registry address:
+`.testing` and `.simplex` are independent SNRC deployments with separate
+ENSRegistry contracts. The resolver routes each request to the right
+registry by the queried name's rightmost label — one server, both TLDs:
 
 ```sh
 SNRC_RPC=https://ethereum-rpc.publicnode.com \
-SNRC_REGISTRY=0x...mainnet-ENSRegistry... \
+SNRC_REGISTRY_TESTING=0x...sepolia-ENSRegistry... \
+SNRC_REGISTRY_SIMPLEX=0x...mainnet-ENSRegistry... \
   ./scripts/resolver/snrc-resolve.py
 ```
+
+Queries for a TLD with no registry configured return HTTP 400 with the
+list of supported TLDs. `.simplex` is not deployed yet, so its env var
+defaults to empty.
