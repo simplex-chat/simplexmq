@@ -341,6 +341,11 @@ tldWhitelistSpec = do
       for_ ["\1072lice.simplex", "\945pple.simplex", "\65313pple.simplex"] $ \name ->
         verifyRslv env RslvRequest {name, contract = addr1} `shouldBe` Nothing
 
+    it "rejects oversized inputs (>253 bytes) — bounded parser allocation" $ do
+      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      let oversize = T.replicate 254 "a" <> ".simplex"
+      verifyRslv env RslvRequest {name = oversize, contract = addr1} `shouldBe` Nothing
+
 resolverSpec :: Spec
 resolverSpec = do
   let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}

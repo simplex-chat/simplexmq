@@ -21,6 +21,8 @@ import Control.Applicative (optional, (<|>))
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.Attoparsec.Text as AT
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.Char (isDigit)
 import Data.Functor (($>))
 import Data.Text (Text)
@@ -65,6 +67,18 @@ nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigi
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
+-- | DoS defense for the bare-name / bare-domain entry points. The outer
+-- parser would otherwise `takeWhile1 (not . isSpace)` unbounded, allowing
+-- a crafted multi-megabyte token to be decoded and re-parsed before any
+-- validation. Cap at 253 bytes (DNS full-domain limit) — generous against
+-- any realistic SimpleX name and forces the surrounding `parseOnly`
+-- (which requires consuming all input) to fail on oversized inputs.
+boundedNonSpace :: A.Parser ByteString
+boundedNonSpace = do
+  bs <- A.scan (0 :: Int) $ \i c ->
+    if i < 253 && not (A.isSpace c) then Just (i + 1) else Nothing
+  if B.null bs then fail "expected non-empty name token" else pure bs
+
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
     "simplex:/name" <> strEncode nameType <> strEncode nameDomain
@@ -72,12 +86,12 @@ instance StrEncoding SimplexNameInfo where
     where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP
-      bareName = parseBare . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
+      bareName = parseBare . safeDecodeUtf8 <$?> boundedNonSpace
       parseBare s = (\name -> SimplexNameDomain TLDSimplex name []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
 
 instance StrEncoding SimplexNameDomain where
   strEncode = encodeUtf8 . fullDomainName
-  strP = parseDomain . safeDecodeUtf8 <$?> A.takeWhile1 (not . A.isSpace)
+  strP = parseDomain . safeDecodeUtf8 <$?> boundedNonSpace
     where
       parseDomain s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
       -- All labels lowercased: DNS labels are case-insensitive, and namehash is
