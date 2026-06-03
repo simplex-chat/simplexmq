@@ -500,6 +500,7 @@ test-suite simplexmq-test
       AgentTests.ShortLinkTests
       CLITests
       CoreTests.BatchingTests
+      CoreTests.ConnectTargetTests
       CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests

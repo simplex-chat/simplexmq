@@ -122,6 +122,7 @@ module Simplex.Messaging.Agent.Protocol
     OwnerId,
     ConnectionLink (..),
     AConnectionLink (..),
+    ConnectTarget (..),
     SimplexNameInfo (..),
     SimplexNameDomain (..),
     SimplexTLD (..),
@@ -195,6 +196,7 @@ import qualified Data.Aeson.TH as J
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Attoparsec.Combinator (lookAhead)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -1595,6 +1597,24 @@ instance ToJSON AConnectionLink where
 
 instance FromJSON AConnectionLink where
   parseJSON = strParseJSON "AConnectionLink"
+
+data ConnectTarget = CTLink AConnectionLink | CTName SimplexNameInfo
+  deriving (Eq, Show)
+
+instance StrEncoding ConnectTarget where
+  strEncode = \case
+    CTLink l -> strEncode l
+    CTName n -> strEncode n
+  strP = CTName <$> (lookAhead nameStart *> strP) <|> CTLink <$> strP
+    where
+      nameStart = "@" <|> "#" <|> "simplex:/name"
+
+instance ToJSON ConnectTarget where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON ConnectTarget where
+  parseJSON = strParseJSON "ConnectTarget"
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
