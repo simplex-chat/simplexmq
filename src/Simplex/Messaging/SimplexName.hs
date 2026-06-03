@@ -27,10 +27,11 @@ import Data.Char (isDigit)
 import Data.Functor (($>))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
-import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
+import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, (<$?>))
 
 data SimplexNameInfo = SimplexNameInfo
   { nameType :: SimplexNameType,
@@ -122,6 +123,10 @@ shortNameInfoStr = \case
       pfx = case nameType info of
         NTPublicGroup -> "#"
         NTContact -> "@"
+
+instance ToField SimplexNameInfo where toField = toField . decodeLatin1 . strEncode
+
+instance FromField SimplexNameInfo where fromField = fromTextField_ $ eitherToMaybe . strDecode . encodeUtf8
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
 
