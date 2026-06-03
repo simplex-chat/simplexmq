@@ -5,6 +5,8 @@ module CoreTests.ConnectTargetTests where
 
 import AgentTests.ConnectionRequestTests (contactConnRequest, invConnRequest)
 import qualified Data.Aeson as J
+import Data.Either (isLeft)
+import Data.Text.Encoding (decodeUtf8)
 import Simplex.Messaging.Agent.Protocol (AConnectionLink (..), ConnectTarget (..), ConnectionLink (..), SConnectionMode (..))
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Test.Hspec hiding (fit, it)
@@ -29,11 +31,11 @@ connectTargetTests = describe "ConnectTarget" $ do
   describe "CTLink (connection link) round-trips" $ do
     it "parses simplex:/contact#… as CTLink and round-trips" $ do
       let s = strEncode (ACL SCMContact (CLFull contactConnRequest))
-      s `decodesSuccessfully` ()
+      decodesSuccessfully s
       s `encodesAs` s
     it "parses simplex:/invitation#… as CTLink" $ do
       let s = strEncode (ACL SCMInvitation (CLFull invConnRequest))
-      s `decodesSuccessfully` ()
+      decodesSuccessfully s
 
   describe "rejects ambiguous bare input at this layer" $ do
     it "rejects bare 'alice' — no @, no #, no simplex:/name prefix" $
@@ -48,12 +50,16 @@ connectTargetTests = describe "ConnectTarget" $ do
       case strDecode @ConnectTarget "@alice.simplex" of
         Right ct -> J.toJSON ct `shouldBe` J.String "simplex:/name@alice.simplex"
         Left e -> expectationFailure $ "strDecode failed: " <> e
+    it "encodes a CTLink as the canonical link JSON string" $ do
+      let s = strEncode (ACL SCMContact (CLFull contactConnRequest))
+      case strDecode @ConnectTarget s of
+        Right ct -> J.toJSON ct `shouldBe` J.String (decodeUtf8 s)
+        Left e -> expectationFailure $ "strDecode failed: " <> e
     it "parses JSON string back to ConnectTarget" $
       J.eitherDecode @ConnectTarget "\"@alice.simplex\""
         `shouldSatisfy` either (const False) (const True)
   where
     encodesAs input canonical =
       (strEncode <$> strDecode @ConnectTarget input) `shouldBe` Right canonical
-    decodesSuccessfully s () =
+    decodesSuccessfully s =
       strDecode @ConnectTarget s `shouldSatisfy` either (const False) (const True)
-    isLeft = either (const True) (const False)
