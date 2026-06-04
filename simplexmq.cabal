@@ -29,6 +29,14 @@ extra-source-files:
     cbits/blst/bindings/blst.h
     cbits/blst/bindings/blst_aux.h
     cbits/blst/build/assembly.S
+    cbits/blst/build/elf/*.s
+    cbits/blst/build/elf/*.S
+    cbits/blst/build/coff/*.s
+    cbits/blst/build/coff/*.S
+    cbits/blst/build/mach-o/*.s
+    cbits/blst/build/mach-o/*.S
+    cbits/blst/build/cheri/*.S
+    cbits/blst/build/win64/*.asm
     cbits/libbbs/include/*.h
     cbits/libbbs/src/*.h
     apps/common/Web/static/index.html
