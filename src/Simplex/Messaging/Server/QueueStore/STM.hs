@@ -176,10 +176,13 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         _ -> pure $ Left AUTH
         where
           addLink = do
-            let !q' = q {queueData = Just (lnkId, d)}
-            writeTVar qr $ Just q'
-            TM.insert lnkId rId $ links st
-            pure $ Right ()
+            TM.lookup lnkId (links st) >>= \case
+              Just rId' | rId' /= rId -> pure $ Left AUTH
+              _ -> do
+                let !q' = q {queueData = Just (lnkId, d)}
+                writeTVar qr $ Just q'
+                TM.insert lnkId rId $ links st
+                pure $ Right ()
 
   deleteQueueLinkData :: STMQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
