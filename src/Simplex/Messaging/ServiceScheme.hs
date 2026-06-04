@@ -32,7 +32,9 @@ instance StrEncoding SrvLoc where
   strEncode (SrvLoc host port) = B.pack $ host <> if null port then "" else ':' : port
   strP = SrvLoc <$> host <*> (port <|> pure "")
     where
-      host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+      host = bracketedHost <|> rawHost
+      bracketedHost = B.unpack <$> (A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']')
+      rawHost = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
       port = show <$> (A.char ':' *> (A.decimal :: A.Parser Int))
 
 simplexChat :: ServiceScheme

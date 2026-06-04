@@ -10,11 +10,14 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (w2c)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time.Clock.System (SystemTime (..), getSystemTime, utcToSystemTime)
 import Data.Time.ISO8601 (parseISO8601)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..), SrvLoc (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
@@ -67,7 +70,20 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         THDomainName "192.256.0.1" #==# "192.256.0.1"
         THDomainName "192.168.0.-1" #==# "192.168.0.-1"
         shouldNotParse @TransportHost "192.168.0.0.1" "endOfInput"
+  describe "Encoding service locations" $
+    it "should parse bracketed IPv6 host with port" $
+      strDecode @ServiceScheme "https://[2001:db8::1]:8443"
+        `shouldBe` Right (SSAppServer $ SrvLoc "2001:db8::1" "8443")
+  describe "Encoding protocol servers" $
+    it "should parse bracketed IPv6 server host with port" $
+      case strDecode @XFTPServer "xftp://1234-w==@[2001:db8::1]:443" of
+        Left err -> expectationFailure err
+        Right (ProtocolServer _ parsedHost parsedPort _) -> do
+          parsedHost `shouldBe` (ipv6Host :| [])
+          parsedPort `shouldBe` "443"
   where
+    ipv6Host :: TransportHost
+    ipv6Host = either error id $ strDecode "2001:db8::1"
     testSystemTime :: SystemTime -> Expectation
     testSystemTime t = do
       smpEncode t `shouldBe` smpEncode (systemSeconds t)
