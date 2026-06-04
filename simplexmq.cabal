@@ -1,4 +1,4 @@
-cabal-version: 1.12
+cabal-version: 3.0
 
 name:           simplexmq
 version:        6.5.2.0
@@ -16,7 +16,7 @@ homepage:       https://github.com/simplex-chat/simplexmq#readme
 author:         simplex.chat
 maintainer:     chat@simplex.chat
 copyright:      2020-2022 simplex.chat
-license:        AGPL-3
+license:        AGPL-3.0-only
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
@@ -24,21 +24,8 @@ extra-source-files:
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
-    cbits/blst/src/*.c
-    cbits/blst/src/*.h
-    cbits/blst/bindings/blst.h
-    cbits/blst/bindings/blst_aux.h
-    cbits/blst/build/assembly.S
-    cbits/blst/build/elf/*.s
-    cbits/blst/build/elf/*.S
-    cbits/blst/build/coff/*.s
-    cbits/blst/build/coff/*.S
-    cbits/blst/build/mach-o/*.s
-    cbits/blst/build/mach-o/*.S
-    cbits/blst/build/cheri/*.S
-    cbits/blst/build/win64/*.asm
-    cbits/libbbs/include/*.h
-    cbits/libbbs/src/*.h
+    cbits/blst/**
+    cbits/libbbs/**
     apps/common/Web/static/index.html
     apps/common/Web/static/link.html
     apps/common/Web/static/media/apk_icon.png
@@ -323,13 +310,14 @@ library
       cbits/sha512.c
       cbits/sntrup761.c
       cbits/blst/src/server.c
-      cbits/blst/build/assembly.S
       cbits/libbbs/src/bbs.c
       cbits/libbbs/src/bbs_ciphersuites.c
       cbits/libbbs/src/bbs_util.c
       cbits/libbbs/src/compat-string.c
       cbits/libbbs/src/sha256.c
       cbits/libbbs/src/shake256.c
+  asm-sources:
+      cbits/blst/build/assembly.S
   extra-libraries:
       crypto
   build-depends:
