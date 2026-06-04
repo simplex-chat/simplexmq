@@ -65,6 +65,7 @@ module Simplex.Messaging.Agent
     setConnShortLink,
     deleteConnShortLink,
     getConnShortLink,
+    resolveSimplexName,
     getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -216,6 +217,8 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
+    NameOwner,
+    NameRecord,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -233,6 +236,7 @@ import Simplex.Messaging.Protocol
     SubscriptionMode (..),
     UserProtocol,
     VersionSMPC,
+    mkNameOwner,
     senderCanSecure,
   )
 import qualified Simplex.Messaging.Protocol as SMP
@@ -439,6 +443,13 @@ deleteConnShortLink c = withAgentEnv c .:. deleteConnShortLink' c
 getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
+
+-- | Resolve a SimpleX name via the configured resolver SMP server (PFWD RSLV).
+-- The TLD->contract whitelist lives in the agent so chat clients only need to
+-- pass the resolver address and the parsed domain.
+resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AE NameRecord
+resolveSimplexName c = withAgentEnv c .:: resolveSimplexName' c
+{-# INLINE resolveSimplexName #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
@@ -1181,6 +1192,23 @@ getConnShortLink' c nm userId = \case
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
+
+-- | TLD -> SNRC contract whitelist. Must match the server-side
+-- `hardcodedTldRegistries` in `Server/Main.hs`: the resolver verifies the
+-- client-supplied contract against its own TLD config and replies AUTH on
+-- mismatch. TLDWeb is intentionally unmapped (no SimpleX contract).
+tldNameContract :: SimplexTLD -> Maybe NameOwner
+tldNameContract = \case
+  TLDSimplex -> mkOwnerStub '\x11'
+  TLDTesting -> mkOwnerStub '\x22'
+  TLDWeb -> Nothing
+  where
+    mkOwnerStub c = eitherToMaybe $ mkNameOwner (B.replicate 20 c)
+
+resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AM NameRecord
+resolveSimplexName' c nm userId resolverSrv domain = case tldNameContract (nameTLD domain) of
+  Nothing -> throwE $ INTERNAL "resolveSimplexName: no resolver contract for TLD"
+  Just contract -> resolveName c nm userId resolverSrv contract (fullDomainName domain)
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do
