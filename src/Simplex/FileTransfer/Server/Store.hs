@@ -175,8 +175,12 @@ instance FileStoreClass STMFileStore where
           pure $ Just (sId, path, size)
         else pure Nothing
 
-  getUsedStorage STMFileStore {files} =
-    M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0 <$> readTVarIO files
+  getUsedStorage STMFileStore {files} = do
+    fs <- readTVarIO files
+    sizes <- forM (M.elems fs) $ \FileRec {fileInfo = FileInfo {size}, filePath} -> do
+      path <- readTVarIO filePath
+      pure $ maybe 0 (const $ fromIntegral size) path
+    pure $ sum sizes
 
   getFileCount STMFileStore {files} = M.size <$> readTVarIO files
 
