@@ -1,14 +1,19 @@
 module XFTPCLI (xftpCLIFileTests, xftpCLI, senderFiles, recipientFiles, testBracket) where
 
-import Control.Exception (bracket_)
+import Control.Exception (bracket_, try)
 import qualified Data.ByteString as LB
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
-import Simplex.FileTransfer.Client.Main (prepareChunkSizes, xftpClientCLI)
+import Simplex.FileTransfer.Client.Main
+  ( prepareChunkSizes,
+    xftpClientCLI,
+    xftpClientDeprecationNotice,
+  )
 import Simplex.FileTransfer.Description (kb, mb)
 import System.Directory (createDirectoryIfMissing, getFileSize, listDirectory, removeDirectoryRecursive)
 import System.Environment (withArgs)
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
-import System.IO.Silently (capture_)
+import System.IO.Silently (capture, capture_)
 import Test.Hspec hiding (fit, it)
 import Util
 import Simplex.FileTransfer.Server.Env (AFStoreType)
@@ -16,6 +21,8 @@ import XFTPClient (cfgFS, cfgFS2, withXFTPServer, withXFTPServerConfigOn, testXF
 
 xftpCLIFileTests :: SpecWith AFStoreType
 xftpCLIFileTests = around_ testBracket $ do
+  it "shows experimental deprecation notice in help" $ \_ ->
+    testXFTPCLIHelpDeprecationNotice
   it "should send and receive file" $ withXFTPServer testXFTPCLISendReceive_
   it "should send and receive file with 2 servers" $ \fsType ->
     withXFTPServerConfigOn (cfgFS fsType) $ \_ -> withXFTPServerConfigOn (cfgFS2 fsType) $ \_ -> testXFTPCLISendReceive2servers_
@@ -39,6 +46,12 @@ recipientFiles = "tests/tmp/xftp-recipient-files"
 
 xftpCLI :: [String] -> IO [String]
 xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
+
+testXFTPCLIHelpDeprecationNotice :: IO ()
+testXFTPCLIHelpDeprecationNotice = do
+  (output, result) <- capture $ try $ withArgs ["--help"] xftpClientCLI
+  result `shouldBe` (Left ExitSuccess :: Either ExitCode ())
+  unwords (words output) `shouldSatisfy` (xftpClientDeprecationNotice `isInfixOf`)
 
 testXFTPCLISendReceive_ :: IO ()
 testXFTPCLISendReceive_ = do
