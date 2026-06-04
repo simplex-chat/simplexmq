@@ -52,6 +52,8 @@ import Util
 ntfServerTests :: (ASrvTransport, AStoreType) -> Spec
 ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
+  describe "Push provider policy" $ do
+    it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
@@ -71,6 +73,19 @@ ntfSyntaxTests (ATransport t) = do
       (Maybe TAuthorizations, ByteString, ByteString, NtfResponse) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
+
+testApnsTestProviderRejected :: ASrvTransport -> Expectation
+testApnsTestProviderRejected (ATransport t) = do
+  g <- C.newRandom
+  (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  let tkn = DeviceToken PPApnsTest "abcd"
+      cfg = ntfServerCfg {allowTestPushProvider = False, transports = [(ntfTestPort, ATransport t, False)]}
+  withNtfServerCfg cfg $ \_ ->
+    testNtfClient $ \nh -> do
+      RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
+        signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+      pure ()
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> Transmission (Either ErrorType NtfResponse)
 pattern RespNtf corrId queueId command <- (corrId, queueId, Right command)

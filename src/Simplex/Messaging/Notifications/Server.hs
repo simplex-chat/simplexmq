@@ -640,9 +640,19 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = DeviceToken pp _} ntf = do
-  q <- getOrCreatePushWorker s (srvHost_, pp) isOwn
-  atomically $ writeTBQueue q (tkn, ntf)
+pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
+  pushProviderAllowed token >>= \case
+    True -> do
+      q <- getOrCreatePushWorker s (srvHost_, pp) isOwn
+      atomically $ writeTBQueue q (tkn, ntf)
+    False -> liftIO $ logWarn "skipping disabled APNS test push provider"
+
+pushProviderAllowed :: DeviceToken -> M Bool
+pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
+pushProviderAllowed _ = pure True
+
+disabledPushProvider :: M NtfResponse
+disabledPushProvider = pure $ NRErr $ CMD SMP.PROHIBITED
 
 getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
 getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
@@ -835,28 +845,34 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
-        logDebug "TNEW - new token"
-        (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
-        let dhSecret = C.dh' dhPubKey srvDhPrivKey
-        tknId <- getId
-        regCode <- getRegCode
-        ts <- liftIO $ getSystemDate
-        let tkn = mkNtfTknRec tknId newTkn srvDhPrivKey dhSecret regCode ts
-        withNtfStore (`addNtfToken` tkn) $ \_ -> do
-          pushNotification ps Nothing False tkn $ PNVerification regCode
-          incNtfStatT token ntfVrfQueued
-          incNtfStatT token tknCreated
-          pure $ NRTknId tknId srvDhPubKey
+        pushProviderAllowed token >>= \case
+          False -> disabledPushProvider
+          True -> do
+            logDebug "TNEW - new token"
+            (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
+            let dhSecret = C.dh' dhPubKey srvDhPrivKey
+            tknId <- getId
+            regCode <- getRegCode
+            ts <- liftIO $ getSystemDate
+            let tkn = mkNtfTknRec tknId newTkn srvDhPrivKey dhSecret regCode ts
+            withNtfStore (`addNtfToken` tkn) $ \_ -> do
+              pushNotification ps Nothing False tkn $ PNVerification regCode
+              incNtfStatT token ntfVrfQueued
+              incNtfStatT token tknCreated
+              pure $ NRTknId tknId srvDhPubKey
       NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> do
-            logDebug "TNEW - registered token"
-            let dhSecret = C.dh' dhPubKey tknDhPrivKey
-            -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
-            if
-              | tknDhSecret /= dhSecret -> pure $ NRErr AUTH
-              | allowTokenVerification tknStatus -> sendVerification
-              | otherwise -> withNtfStore (\st -> updateTknStatus st tkn NTRegistered) $ \_ -> sendVerification
+            pushProviderAllowed token >>= \case
+              False -> disabledPushProvider
+              True -> do
+                logDebug "TNEW - registered token"
+                let dhSecret = C.dh' dhPubKey tknDhPrivKey
+                -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
+                if
+                  | tknDhSecret /= dhSecret -> pure $ NRErr AUTH
+                  | allowTokenVerification tknStatus -> sendVerification
+                  | otherwise -> withNtfStore (\st -> updateTknStatus st tkn NTRegistered) $ \_ -> sendVerification
             where
               sendVerification = do
                 pushNotification ps Nothing False tkn $ PNVerification tknRegCode
@@ -873,14 +889,17 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
             logDebug "TCHK"
             pure $ NRTkn tknStatus
           TRPL token' -> do
-            logDebug "TRPL - replace token"
-            regCode <- getRegCode
-            let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
-            withNtfStore (`replaceNtfToken` tkn') $ \_ -> do
-              pushNotification ps Nothing False tkn' $ PNVerification regCode
-              incNtfStatT token ntfVrfQueued
-              incNtfStatT token tknReplaced
-              pure NROk
+            pushProviderAllowed token' >>= \case
+              False -> disabledPushProvider
+              True -> do
+                logDebug "TRPL - replace token"
+                regCode <- getRegCode
+                let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
+                withNtfStore (`replaceNtfToken` tkn') $ \_ -> do
+                  pushNotification ps Nothing False tkn' $ PNVerification regCode
+                  incNtfStatT token ntfVrfQueued
+                  incNtfStatT token tknReplaced
+                  pure NROk
           TDEL -> do
             logDebug "TDEL"
             withNtfStore (`deleteNtfToken` tknId) $ \ss -> do
