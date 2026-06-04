@@ -59,13 +59,28 @@ export function getDescriptionServers(fd: {chunks: {replicas: {server: string}[]
   const servers: XFTPServer[] = []
   for (const chunk of fd.chunks) {
     for (const replica of chunk.replicas) {
-      if (!seen.has(replica.server)) {
-        seen.add(replica.server)
-        servers.push(parseXFTPServer(replica.server))
-      }
+      addServer(servers, seen, replica.server)
     }
   }
   return servers
+}
+
+// Extract unique XFTP servers that downloadFileRaw will actually contact.
+export function getDownloadServers(fd: {chunks: {replicas: {server: string}[]}[]}): XFTPServer[] {
+  const seen = new Set<string>()
+  const servers: XFTPServer[] = []
+  for (const chunk of fd.chunks) {
+    const replica = chunk.replicas[0]
+    if (replica) addServer(servers, seen, replica.server)
+  }
+  return servers
+}
+
+function addServer(servers: XFTPServer[], seen: Set<string>, address: string) {
+  if (!seen.has(address)) {
+    seen.add(address)
+    servers.push(parseXFTPServer(address))
+  }
 }
 
 // Build an HTTPS origin from an XFTP server address.

@@ -674,13 +674,25 @@ function getDescriptionServers(fd) {
   const servers = [];
   for (const chunk of fd.chunks) {
     for (const replica of chunk.replicas) {
-      if (!seen.has(replica.server)) {
-        seen.add(replica.server);
-        servers.push(parseXFTPServer(replica.server));
-      }
+      addServer(servers, seen, replica.server);
     }
   }
   return servers;
+}
+function getDownloadServers(fd) {
+  const seen = /* @__PURE__ */ new Set();
+  const servers = [];
+  for (const chunk of fd.chunks) {
+    const replica = chunk.replicas[0];
+    if (replica) addServer(servers, seen, replica.server);
+  }
+  return servers;
+}
+function addServer(servers, seen, address) {
+  if (!seen.has(address)) {
+    seen.add(address);
+    servers.push(parseXFTPServer(address));
+  }
 }
 function serverOrigin(server) {
   return server.port === "443" ? `https://${server.host}` : `https://${server.host}:${server.port}`;
@@ -11428,7 +11440,7 @@ function initDownload(app, hash) {
     app.innerHTML = `<div class="card"><p class="error">${t("invalidLink", "Invalid or corrupted link.")}</p></div>`;
     return;
   }
-  const wrongServer = !getDescriptionServers(fd).map((s) => s.host).includes(window.location.hostname);
+  const wrongServer = !getDownloadServers(fd).map((s) => s.host).includes(window.location.hostname);
   const size = fd.redirect ? fd.redirect.size : fd.size;
   app.innerHTML = `
     <div class="card">

@@ -14,7 +14,7 @@
 module XFTPWebTests (xftpWebTests) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (replicateM, when)
+import Control.Monad (forM_, replicateM, when)
 import Crypto.Error (throwCryptoError)
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -170,6 +170,7 @@ jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
 
 xftpWebTests :: IO () -> Spec
 xftpWebTests dbCleanup = do
+  xftpWebSourceHygieneTests
   distExists <- runIO $ doesDirectoryExist (xftpWebDir <> "/dist")
   if distExists
     then do
@@ -192,6 +193,19 @@ xftpWebTests dbCleanup = do
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
+
+xftpWebSourceHygieneTests :: Spec
+xftpWebSourceHygieneTests = describe "source hygiene" $
+  it "gates XFTP web downloads on first-replica servers" $ do
+    let expectations =
+          [ ("xftp-web/src/protocol/address.ts", "export function getDownloadServers"),
+            ("xftp-web/web/download.ts", "getDownloadServers(fd)"),
+            ("apps/xftp-server/static/xftp-web-bundle/index.js", "function getDownloadServers"),
+            ("apps/xftp-server/static/xftp-web-bundle/index.js", "getDownloadServers(fd)")
+          ]
+    forM_ expectations $ \(path, marker) -> do
+      contents <- B.readFile path
+      contents `shouldSatisfy` B.isInfixOf marker
 
 -- ── protocol/encoding ──────────────────────────────────────────────
 
@@ -2827,6 +2841,26 @@ tsAddressTests = describe "protocol/address" $ do
           <> "const s = Addr.parseXFTPServer('xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@host1.com:5000,host2.com');"
           <> jsOut "new TextEncoder().encode(s.host + ':' + s.port)"
     result `shouldBe` "host1.com:5000"
+
+  it "getDownloadServers returns only first replicas" $ do
+    result <-
+      callNode $
+        impAddr
+          <> "const kh = 'LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=';\
+             \const fd = {chunks: [\
+             \  {replicas: [\
+             \    {server: `xftp://${kh}@first.example:443`},\
+             \    {server: `xftp://${kh}@allowed.example:443`}\
+             \  ]},\
+             \  {replicas: [\
+             \    {server: `xftp://${kh}@second.example:443`},\
+             \    {server: `xftp://${kh}@allowed.example:443`}\
+             \  ]}\
+             \]};\
+             \const allHosts = Addr.getDescriptionServers(fd).map(s => s.host).join(',');\
+             \const downloadHosts = Addr.getDownloadServers(fd).map(s => s.host).join(',');"
+          <> jsOut "new TextEncoder().encode(allHosts + '|' + downloadHosts)"
+    result `shouldBe` "first.example,allowed.example,second.example|first.example,second.example"
 
 -- ── integration ───────────────────────────────────────────────────
 
