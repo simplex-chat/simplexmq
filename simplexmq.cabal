@@ -24,8 +24,13 @@ extra-source-files:
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
-    cbits/blst/**/*
-    cbits/libbbs/**/*
+    cbits/blst/**/*.c
+    cbits/blst/**/*.h
+    cbits/blst/**/*.s
+    cbits/blst/**/*.S
+    cbits/blst/**/*.asm
+    cbits/libbbs/**/*.c
+    cbits/libbbs/**/*.h
     apps/common/Web/static/index.html
     apps/common/Web/static/link.html
     apps/common/Web/static/media/apk_icon.png
