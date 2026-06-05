@@ -496,6 +496,7 @@ test-suite simplexmq-test
       AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
+      AgentTests.ResolveNameTests
       AgentTests.ServerChoice
       AgentTests.ShortLinkTests
       CLITests
