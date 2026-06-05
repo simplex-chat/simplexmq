@@ -76,6 +76,7 @@ module Simplex.Messaging.Server.Env.STM
     noPostgresExit,
     dbStoreCfg,
     storeLogFile',
+    newEnvWithNames,
   )
 where
 
@@ -563,7 +564,14 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} = do
+newEnv cfg = newEnvWithNames cfg Nothing
+
+-- | Test seam: build the server env, but if `namesOverride` is provided,
+-- use it as `namesEnv` and skip the production `newNamesEnv` / `pingEndpoint`
+-- path. This is the only injection point for stub `ethCall` implementations
+-- in functional-API tests.
+newEnvWithNames :: ServerConfig s -> Maybe NamesEnv -> IO (Env s)
+newEnvWithNames config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} namesOverride = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of
@@ -608,20 +616,22 @@ newEnv config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serv
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  namesEnv <- case namesConfig of
-    Nothing -> pure Nothing
-    Just nc -> do
-      logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (ethereumEndpoint nc)
-      when allowSMPProxy $
-        logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV calls can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
-      env <- newNamesEnv nc
-      -- Probe the endpoint at startup. Don't exitFailure: a flapping
-      -- network or an Ethereum host coming up minutes after smp-server
-      -- should not block the server. Log so operators can spot it.
-      pingEndpoint env >>= \case
-        Right _ -> logInfo "[NAMES] endpoint probe ok"
-        Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR AUTH until reachable): " <> tshow e
-      pure (Just env)
+  namesEnv <- case namesOverride of
+    Just env -> pure (Just env)
+    Nothing -> case namesConfig of
+      Nothing -> pure Nothing
+      Just nc -> do
+        logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (ethereumEndpoint nc)
+        when allowSMPProxy $
+          logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV calls can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
+        env <- newNamesEnv nc
+        -- Probe the endpoint at startup. Don't exitFailure: a flapping
+        -- network or an Ethereum host coming up minutes after smp-server
+        -- should not block the server. Log so operators can spot it.
+        pingEndpoint env >>= \case
+          Right _ -> logInfo "[NAMES] endpoint probe ok"
+          Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR AUTH until reachable): " <> tshow e
+        pure (Just env)
   pure
     Env
       { serverActive,

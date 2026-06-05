@@ -32,6 +32,7 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
+    runSMPServerBlockingWithNames,
     controlPortAuth,
     importMessages,
     exportMessages,
@@ -108,7 +109,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (ResolveError (..), closeNamesEnv, resolveName, verifyRslv)
+import Simplex.Messaging.Server.Names (NamesEnv, ResolveError (..), closeNamesEnv, resolveName, verifyRslv)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -161,6 +162,13 @@ runSMPServer cfg attachHTTP_ = do
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
+
+-- | Test seam: run the server with a pre-built `namesEnv` (typically a stub
+-- backed by `newNamesEnvWith`). Production code MUST use `runSMPServerBlocking`,
+-- which builds `namesEnv` from `namesConfig` and probes the real RPC endpoint.
+runSMPServerBlockingWithNames :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> Maybe NamesEnv -> IO ()
+runSMPServerBlockingWithNames started cfg attachHTTP_ namesOverride =
+  newEnvWithNames cfg namesOverride >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()

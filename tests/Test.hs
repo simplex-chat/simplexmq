@@ -22,6 +22,7 @@ import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
+import RSLVTests (rslvTests)
 import RemoteControl (remoteControlTests)
 import SMPNamesTests (smpNamesTests)
 import SMPProxyTests (smpProxyTests)
@@ -101,6 +102,7 @@ main = do
           describe "TSessionSubs tests" tSessionSubsTests
           describe "Util tests" utilTests
           describe "Names resolver tests" smpNamesTests
+          describe "RSLV functional API tests" rslvTests
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $

@@ -513,6 +513,7 @@ test-suite simplexmq-test
       CoreTests.VersionRangeTests
       FileDescriptionTests
       RemoteControl
+      RSLVTests
       ServerTests
       SMPAgentClient
       SMPClient
