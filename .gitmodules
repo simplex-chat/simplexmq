@@ -1,6 +1,6 @@
 [submodule "cbits/libbbs"]
 	path = cbits/libbbs
-	url = https://github.com/Fraunhofer-AISEC/libbbs.git
+	url = https://github.com/simplex-chat/libbbs.git
 [submodule "cbits/blst"]
 	path = cbits/blst
 	url = https://github.com/supranational/blst.git
