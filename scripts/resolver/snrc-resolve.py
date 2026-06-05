@@ -2,18 +2,22 @@
 """SimpleX Namespace (SNRC) resolver — REST API.
 
 Resolves names like `alice.testing` / `bob.simplex` against the SNRC
-deployment on Sepolia (or any compatible ENS-shaped registry) and
-returns a flat JSON document with:
+deployment on Ethereum mainnet (or any compatible ENS-shaped registry)
+and returns a flat JSON document with these fields:
 
   name, nickname, website, location,
-  simplex.contact, simplex.channel,
-  ETH, BTC, XMR, DOT,
+  simplexContact, simplexChannel,
+  eth, btc, xmr, dot,
   owner, resolver
+
+All keys are valid Haskell record-field identifiers (lowercase initial,
+no dots), so consumers can derive aeson FromJSON instances directly
+without a key-rewriting layer.
 
 Usage:
   ./snrc-resolve.py                    # serve on :8000
 
-  curl -s http://127.0.0.1:8000/resolve/secondtest.testing | jq .
+  curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
   curl -s http://127.0.0.1:8000/health
 
 Environment:
@@ -33,11 +37,11 @@ Same dependency surface as ens-lookup.py:
   pip install --break-system-packages 'eth-hash[pycryptodome]'
 
 Addresses are returned in each chain's canonical presentation:
-  ETH  EIP-55 mixed-case checksummed hex      (e.g. 0xEa65A0…1572)
-  BTC  bech32(m) for segwit/taproot, base58check for P2PKH/P2SH
+  eth  EIP-55 mixed-case checksummed hex      (e.g. 0xEa65A0…1572)
+  btc  bech32(m) for segwit/taproot, base58check for P2PKH/P2SH
        (e.g. bc1q…  /  1A1zP1…)
-  DOT  SS58 with Polkadot network prefix 0    (e.g. 15oF4u…)
-  XMR  Monero base58                          (e.g. 4Aux5y…)
+  dot  SS58 with Polkadot network prefix 0    (e.g. 15oF4u…)
+  xmr  Monero base58                          (e.g. 4Aux5y…)
 Unrecognised payloads fall back to `0x`-prefixed raw hex.
 """
 
@@ -389,17 +393,22 @@ def resolve(name: str):
     # falls back to `name`, then `description` (ENSIP-5 convention).
     nickname = texts.get("nickname") or texts.get("name") or texts.get("description") or ""
 
+    # Keys chosen to be valid Haskell record-field identifiers (lowercase
+    # initial, no dots) so consumers can derive aeson FromJSON instances
+    # without a key-rewriting layer. On-chain text-record names still
+    # use the ENSIP-5 dot convention (e.g. "simplex.contact") — only the
+    # resolver's JSON surface camelCases them.
     return 200, {
         "name": name,
         "nickname": nickname,
         "website": texts.get("url", ""),
         "location": texts.get("location", ""),
-        "simplex.contact": texts.get("simplex.contact", ""),
-        "simplex.channel": texts.get("simplex.channel", ""),
-        "ETH": addr_multicoin(resolver_addr, node, COIN_ETH),
-        "BTC": addr_multicoin(resolver_addr, node, COIN_BTC),
-        "XMR": addr_multicoin(resolver_addr, node, COIN_XMR),
-        "DOT": addr_multicoin(resolver_addr, node, COIN_DOT),
+        "simplexContact": texts.get("simplex.contact", ""),
+        "simplexChannel": texts.get("simplex.channel", ""),
+        "eth": addr_multicoin(resolver_addr, node, COIN_ETH),
+        "btc": addr_multicoin(resolver_addr, node, COIN_BTC),
+        "xmr": addr_multicoin(resolver_addr, node, COIN_XMR),
+        "dot": addr_multicoin(resolver_addr, node, COIN_DOT),
         "owner": owner,
         "resolver": resolver_addr,
     }

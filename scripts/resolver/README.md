@@ -108,21 +108,47 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
   "nickname": "Foo",
   "website": "https://foo.bar",
   "location": "",
-  "simplex.contact": "https://smp16.simplex.im/a#Q_F00BA7",
-  "simplex.channel": "",
-  "ETH": null,
-  "BTC": "bc1qpzht4wp64yg7z6sgl07vvrnepyux740juynfcn",
-  "XMR": "4ANzdVJFxLtCKcBgNGkFSEA41zJFgrTX93LWt9UR6xpg7YNCsdrSV817cw2xKT8NXeS5euBBqTApS2u8kRTxMhyiDGN3Qgt",
-  "DOT": "139GgyEsXDyGLhmhBTPmDmGCyTvTVuLad3YjHax2PWLK6p3s",
+  "simplexContact": "https://smp16.simplex.im/a#Q_F00BA7",
+  "simplexChannel": "",
+  "eth": null,
+  "btc": "bc1qpzht4wp64yg7z6sgl07vvrnepyux740juynfcn",
+  "xmr": "4ANzdVJFxLtCKcBgNGkFSEA41zJFgrTX93LWt9UR6xpg7YNCsdrSV817cw2xKT8NXeS5euBBqTApS2u8kRTxMhyiDGN3Qgt",
+  "dot": "139GgyEsXDyGLhmhBTPmDmGCyTvTVuLad3YjHax2PWLK6p3s",
   "owner": "0xd83bb610fbad567fb5d8755ec162881e46d1fbc9",
   "resolver": "0x80fa1903e70af03e79c73fb7feae2fb33aebae01"
 }
 ```
 
+All field names are lowercase-initial and contain no dots, so they map
+directly onto Haskell record fields and can be consumed via aeson's
+`Generic`-derived `FromJSON` without a key-rewriting layer. Equivalent
+Haskell record:
+
+```haskell
+data SnrcRecord = SnrcRecord
+  { name           :: Text
+  , nickname       :: Text
+  , website        :: Text
+  , location       :: Text
+  , simplexContact :: Text
+  , simplexChannel :: Text
+  , eth            :: Maybe Text
+  , btc            :: Maybe Text
+  , xmr            :: Maybe Text
+  , dot            :: Maybe Text
+  , owner          :: Text
+  , resolver       :: Text
+  } deriving (Generic, FromJSON)
+```
+
+(The on-chain text-record keys still use the ENSIP-5 dot convention —
+`simplex.contact` and `simplex.channel`. Only the resolver's JSON
+surface camelCases them.)
+
 Address encoding matches each chain's canonical user-facing form:
-EIP-55 mixed-case for ETH, bech32/bech32m for BTC segwit/taproot
+EIP-55 mixed-case for `eth`, bech32/bech32m for `btc` segwit/taproot
 (base58check for legacy P2PKH/P2SH), SS58 with Polkadot prefix 0 for
-DOT, Monero-base58 for XMR. Unrecognised payloads fall back to
+`dot`, Monero-base58 for `xmr`. Unrecognised payloads fall back to
 `0x`-prefixed hex.
 
 ### Health check
