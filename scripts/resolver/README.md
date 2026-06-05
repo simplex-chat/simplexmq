@@ -151,7 +151,9 @@ EIP-55 mixed-case for `eth`, bech32/bech32m for `btc` segwit/taproot
 `dot`, Monero-base58 for `xmr`. Unrecognised payloads fall back to
 `0x`-prefixed hex.
 
-### Health check
+#### Subnames
+
+Subnames work exactly the same. try `bar.foobar.testing`.
 
 ```sh
 curl -s http://127.0.0.1:8000/health
