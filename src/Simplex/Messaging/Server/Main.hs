@@ -70,7 +70,7 @@ import qualified Data.IP as IP
 import Data.Bits (shiftR, (.&.))
 import Data.Word (Word32)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
-import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), mkNameOwner, pattern SMPServer)
+import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, printMessageStats, runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
@@ -80,7 +80,7 @@ import Simplex.Messaging.Server.Main.Init
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..), TldRegistries (..))
+import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -811,7 +811,6 @@ readNamesConfig ini
        in Just
             NamesConfig
               { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
-                tldRegistries = hardcodedTldRegistries,
                 rpcAuth = rpcAuth_,
                 rpcTimeoutMs = boundedIniInt 3000 100 60000 "rpc_timeout_ms",
                 rpcMaxResponseBytes = boundedIniInt 262144 1024 16777216 "rpc_max_response_bytes",
@@ -838,22 +837,6 @@ readNamesConfig ini
           | n >= floor_ && n <= ceiling_ -> n
           | otherwise ->
               error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
-
--- | Hardcoded SNRC contract whitelist. Placeholder addresses until the
--- launch contracts are deployed; replaced in code rather than INI so
--- operators can't accidentally point a names router at the wrong contract
--- during the bootstrap phase. The TldRegistries shape + lookup precedence
--- (TLD-specific then `tldAll` catch-all) is unchanged from the previous
--- INI-driven form.
-hardcodedTldRegistries :: TldRegistries
-hardcodedTldRegistries =
-  TldRegistries
-    { tldSimplex = Just (placeholderAddr '\x11'),
-      tldTesting = Just (placeholderAddr '\x22'),
-      tldAll = Nothing
-    }
-  where
-    placeholderAddr c = either error id $ mkNameOwner (B.replicate 20 c)
 
 -- | Validate the ethereum_endpoint URL:
 --   * scheme must be http: or https:

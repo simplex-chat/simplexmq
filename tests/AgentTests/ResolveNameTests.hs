@@ -35,15 +35,11 @@ import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
 import Simplex.Messaging.Client (SMPProxyFallback (..), SMPProxyMode (..), pattern NRMInteractive)
-import Simplex.Messaging.Protocol
-  ( NameOwner,
-    mkNameOwner,
-    pattern SMPServer,
-  )
+import Simplex.Messaging.Protocol (pattern SMPServer)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, TldRegistries (..), newNamesEnvWith)
+import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, newNamesEnvWith)
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcError)
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
 import Simplex.Messaging.Transport
@@ -54,26 +50,16 @@ import Util (it)
 -- Fixtures (parallel to RSLVTests)
 -- ---------------------------------------------------------------------------
 
-unsafeOwner :: B.ByteString -> NameOwner
-unsafeOwner = either error id . mkNameOwner
-
--- Must match the TLDSimplex stub in `tldNameContract` (Agent.hs:1202): the
--- agent forwards this contract to the server, which checks it against
--- TldRegistries.tldSimplex.
-serverContract :: NameOwner
-serverContract = unsafeOwner (B.replicate 20 '\x11')
-
 -- 8 slots * 32 bytes, all zero — placeholder `decodeGetRecord` returns
 -- `Right Nothing` for the zero-owner sentinel, so the resolver maps to
 -- `ResolveError.NotFound` -> `ERR AUTH`.
 zeroOwnerAbi :: B.ByteString
 zeroOwnerAbi = B.replicate (32 * 8) '\NUL'
 
-stubNamesConfig :: TldRegistries -> NamesConfig
-stubNamesConfig regs =
+stubNamesConfig :: NamesConfig
+stubNamesConfig =
   NamesConfig
     { ethereumEndpoint = "http://stub",
-      tldRegistries = regs,
       rpcAuth = Nothing,
       rpcTimeoutMs = 1000,
       rpcMaxResponseBytes = 65536,
@@ -83,16 +69,11 @@ stubNamesConfig regs =
 stubEthCallNotFound :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
 stubEthCallNotFound _to _data = pure (Right zeroOwnerAbi)
 
--- | TLDSimplex registered with `serverContract`; TLDTesting / TLDWeb absent
--- so the resolver's `verifyRslv` rejects them with AUTH.
+-- | Names env using the static `tldContract` mapping: TLDSimplex and
+-- TLDTesting map to placeholder contracts; TLDWeb is unmapped and rejected
+-- by the resolver's `verifyRslv`.
 mkSimplexOnlyNamesEnv :: IO NamesEnv
-mkSimplexOnlyNamesEnv =
-  newNamesEnvWith
-    (stubNamesConfig regs)
-    stubEthCallNotFound
-    Nothing
-  where
-    regs = TldRegistries {tldSimplex = Just serverContract, tldTesting = Nothing, tldAll = Nothing}
+mkSimplexOnlyNamesEnv = newNamesEnvWith stubNamesConfig stubEthCallNotFound Nothing
 
 memCfg :: AServerConfig
 memCfg = cfgMS (ASType SQSMemory SMSMemory)
@@ -154,10 +135,10 @@ resolveNameTests = do
       it "AUTH propagates as SMP host AUTH (placeholder decoder -> NotFound)" testDirectAuth
     describe "proxy path (SPMAlways)" $
       it "AUTH from resolver propagates via proxy as SMP <proxyHost> AUTH" testProxyAuth
-    describe "TLD without server-side contract" $
-      it "AUTH (verifyRslv rejects unmapped TLD before any ethCall)" testUnknownTldOnServer
-    describe "TLD without agent-side contract" $
-      it "INTERNAL (TLDWeb has no tldNameContract entry)" testNoAgentContract
+    describe "TLDTesting path" $
+      it "AUTH (placeholder decoder -> NotFound) for TLDTesting too" testUnknownTldOnServer
+    describe "TLD without contract entry" $
+      it "INTERNAL (TLDWeb has no tldContract entry)" testNoAgentContract
     describe "success path" $
       it "returns NameRecord" $
         pendingWith
@@ -205,10 +186,11 @@ testProxyAuth = do
   where
     simplexDomain = SimplexNameDomain TLDSimplex "alice" []
 
--- | TLD has an agent-side contract (TLDTesting -> 0x22..) but the server's
--- `TldRegistries.tldTesting` is `Nothing`. The server's `verifyRslv` returns
--- Nothing before any ethCall and replies ERR AUTH; agent surfaces it as
--- `SMP host AUTH` exactly like a successful-route NotFound.
+-- | TLDTesting maps (on both agent and server, via the static
+-- `tldContract`) to its own placeholder contract. With the placeholder
+-- decoder the resolver collapses any non-zero buffer to NotFound, so the
+-- agent surfaces `SMP host AUTH`. Sanity-check that the non-default TLD
+-- routes through the same code path as TLDSimplex.
 testUnknownTldOnServer :: HasCallStack => IO ()
 testUnknownTldOnServer = do
   nenv <- mkSimplexOnlyNamesEnv
@@ -220,10 +202,10 @@ testUnknownTldOnServer = do
   where
     testingDomain = SimplexNameDomain TLDTesting "bob" []
 
--- | Pure agent-side test: `tldNameContract TLDWeb = Nothing` (Agent.hs:1204),
--- so `resolveSimplexName'` throws INTERNAL before any server contact. The
--- agent still needs initialisation, but no server bracket: the throw
--- happens before any network IO.
+-- | Pure agent-side test: `tldContract TLDWeb = Nothing`
+-- (SimplexName.Contracts), so `resolveSimplexName'` throws INTERNAL before
+-- any server contact. The agent still needs initialisation, but no server
+-- bracket: the throw happens before any network IO.
 testNoAgentContract :: HasCallStack => IO ()
 testNoAgentContract =
   withAgent 1 agentCfg agentServers testDB $ \c -> do

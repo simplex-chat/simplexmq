@@ -26,12 +26,11 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     ResolveError (..),
-    TldRegistries (..),
-    lookupTldAddress,
     newNamesEnvWith,
     resolveName,
     verifyRslv,
   )
+import Simplex.Messaging.SimplexName.Contracts (tldContract)
 import Simplex.Messaging.Server.Names.Eth.SNRC
   ( AbiError (..),
     decodeAddress,
@@ -74,16 +73,20 @@ twentyOnes = B.replicate 20 '\x01'
 unsafeOwner :: ByteString -> NameOwner
 unsafeOwner = either error id . mkNameOwner
 
-addr1, addr2, addr3 :: NameOwner
+addr1, addr2 :: NameOwner
 addr1 = unsafeOwner twentyOnes
 addr2 = unsafeOwner (B.replicate 20 '\x02')
-addr3 = unsafeOwner (B.replicate 20 '\x03')
 
-testNamesConfig :: TldRegistries -> NamesConfig
-testNamesConfig regs =
+-- Match the static `tldContract` mapping in SimplexName.Contracts so RSLV
+-- verifyRslv accepts these as the expected contract per TLD.
+simplexContract, testingContract :: NameOwner
+simplexContract = unsafeOwner (B.replicate 20 '\x11')
+testingContract = unsafeOwner (B.replicate 20 '\x22')
+
+testNamesConfig :: NamesConfig
+testNamesConfig =
   NamesConfig
     { ethereumEndpoint = "http://stub",
-      tldRegistries = regs,
       rpcAuth = Nothing,
       rpcTimeoutMs = 1000,
       rpcMaxResponseBytes = 65536,
@@ -283,83 +286,62 @@ zeroOwnerSpec = do
 
 tldWhitelistSpec :: Spec
 tldWhitelistSpec = do
-  describe "lookupTldAddress" $ do
-    it "TLD-specific entry takes precedence over _all" $ do
-      let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Just addr3}
-      lookupTldAddress regs TLDSimplex `shouldBe` Just addr1
-      lookupTldAddress regs TLDTesting `shouldBe` Just addr2
-
-    it "TLD without specific entry falls back to _all" $ do
-      let regs = TldRegistries {tldSimplex = Nothing, tldTesting = Nothing, tldAll = Just addr3}
-      lookupTldAddress regs TLDSimplex `shouldBe` Just addr3
-      lookupTldAddress regs TLDTesting `shouldBe` Just addr3
-
-    it "TLDWeb resolves only through _all" $ do
-      let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Just addr3}
-      lookupTldAddress regs TLDWeb `shouldBe` Just addr3
-
-    it "TLDWeb without _all returns Nothing even if other TLDs are set" $ do
-      let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Just addr2, tldAll = Nothing}
-      lookupTldAddress regs TLDWeb `shouldBe` Nothing
+  describe "tldContract" $ do
+    it "maps TLDSimplex and TLDTesting to distinct contracts; TLDWeb is unmapped" $ do
+      tldContract TLDSimplex `shouldBe` Just simplexContract
+      tldContract TLDTesting `shouldBe` Just testingContract
+      tldContract TLDWeb `shouldBe` Nothing
 
   describe "verifyRslv" $ do
-    let mkEnv regs = newNamesEnvWith (testNamesConfig regs) (\_ _ -> pure (Right "")) Nothing
+    let mkEnv = newNamesEnvWith testNamesConfig (\_ _ -> pure (Right "")) Nothing
 
     it "accepts a valid name with matching TLD-specific contract" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
-      let req = RslvRequest {name = "privacy.simplex", contract = addr1}
+      env <- mkEnv
+      let req = RslvRequest {name = "privacy.simplex", contract = simplexContract}
       case verifyRslv env req of
         Just (a, d) -> do
-          a `shouldBe` addr1
+          a `shouldBe` simplexContract
           nameTLD d `shouldBe` TLDSimplex
           domain d `shouldBe` "privacy"
         Nothing -> expectationFailure "expected Just"
 
     it "normalizes case across all labels (Alice.SIMPLEX ≡ alice.simplex for namehash)" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
-      let lower = RslvRequest {name = "alice.simplex", contract = addr1}
-          mixed = RslvRequest {name = "Alice.SIMPLEX", contract = addr1}
+      env <- mkEnv
+      let lower = RslvRequest {name = "alice.simplex", contract = simplexContract}
+          mixed = RslvRequest {name = "Alice.SIMPLEX", contract = simplexContract}
       case (verifyRslv env lower, verifyRslv env mixed) of
         (Just (_, dL), Just (_, dM)) -> dL `shouldBe` dM
         _ -> expectationFailure "both should parse"
 
     it "rejects mismatched contract address" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      env <- mkEnv
       let req = RslvRequest {name = "privacy.simplex", contract = addr2}
       verifyRslv env req `shouldBe` Nothing
 
-    it "rejects TLD with no whitelist entry" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
-      let req = RslvRequest {name = "test.testing", contract = addr1}
+    it "rejects TLD with no whitelist entry (TLDWeb is unmapped)" $ do
+      env <- mkEnv
+      let req = RslvRequest {name = "example.web", contract = simplexContract}
       verifyRslv env req `shouldBe` Nothing
 
-    it "accepts via _all fallback" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Nothing, tldTesting = Nothing, tldAll = Just addr3}
-      let req = RslvRequest {name = "test.testing", contract = addr3}
-      case verifyRslv env req of
-        Just (a, _) -> a `shouldBe` addr3
-        Nothing -> expectationFailure "expected Just"
-
     it "rejects bare (no-TLD) name (SimplexNameDomain.strP requires TLD)" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
-      let req = RslvRequest {name = "privacy", contract = addr1}
+      env <- mkEnv
+      let req = RslvRequest {name = "privacy", contract = simplexContract}
       verifyRslv env req `shouldBe` Nothing
 
     it "rejects non-ASCII labels (Cyrillic а homograph would hash to different namehash than ASCII a)" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      env <- mkEnv
       -- Cyrillic а (U+0430), Greek α (U+03B1), full-width Ａ (U+FF21)
       for_ ["\1072lice.simplex", "\945pple.simplex", "\65313pple.simplex"] $ \name ->
-        verifyRslv env RslvRequest {name, contract = addr1} `shouldBe` Nothing
+        verifyRslv env RslvRequest {name, contract = simplexContract} `shouldBe` Nothing
 
     it "rejects oversized inputs (>253 bytes) — bounded parser allocation" $ do
-      env <- mkEnv $ TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
+      env <- mkEnv
       let oversize = T.replicate 254 "a" <> ".simplex"
-      verifyRslv env RslvRequest {name = oversize, contract = addr1} `shouldBe` Nothing
+      verifyRslv env RslvRequest {name = oversize, contract = simplexContract} `shouldBe` Nothing
 
 resolverSpec :: Spec
 resolverSpec = do
-  let regs = TldRegistries {tldSimplex = Just addr1, tldTesting = Nothing, tldAll = Nothing}
-      mkEnv ethCall = newNamesEnvWith (testNamesConfig regs) ethCall Nothing
+  let mkEnv ethCall = newNamesEnvWith testNamesConfig ethCall Nothing
       aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
       zeroOwnerResponse = Right (B.replicate (32 * 8) '\NUL')
 

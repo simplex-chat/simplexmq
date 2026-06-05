@@ -142,6 +142,7 @@ library
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.SimplexName
+      Simplex.Messaging.SimplexName.Contracts
       Simplex.Messaging.Session
       Simplex.Messaging.SystemTime
       Simplex.Messaging.TMap

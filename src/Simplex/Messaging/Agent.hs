@@ -217,7 +217,6 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
-    NameOwner,
     NameRecord,
     NtfServer,
     ProtoServerWithAuth (..),
@@ -236,11 +235,11 @@ import Simplex.Messaging.Protocol
     SubscriptionMode (..),
     UserProtocol,
     VersionSMPC,
-    mkNameOwner,
     senderCanSecure,
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.SimplexName.Contracts (tldContract)
 import Simplex.Messaging.SystemTime
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, THClientService' (..), THandleAuth (..), THandleParams (..))
@@ -1193,20 +1192,8 @@ getConnShortLink' c nm userId = \case
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
--- | TLD -> SNRC contract whitelist. Must match the server-side
--- `hardcodedTldRegistries` in `Server/Main.hs`: the resolver verifies the
--- client-supplied contract against its own TLD config and replies AUTH on
--- mismatch. TLDWeb is intentionally unmapped (no SimpleX contract).
-tldNameContract :: SimplexTLD -> Maybe NameOwner
-tldNameContract = \case
-  TLDSimplex -> mkOwnerStub '\x11'
-  TLDTesting -> mkOwnerStub '\x22'
-  TLDWeb -> Nothing
-  where
-    mkOwnerStub c = eitherToMaybe $ mkNameOwner (B.replicate 20 c)
-
 resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AM NameRecord
-resolveSimplexName' c nm userId resolverSrv domain = case tldNameContract (nameTLD domain) of
+resolveSimplexName' c nm userId resolverSrv domain = case tldContract (nameTLD domain) of
   Nothing -> throwE $ INTERNAL "resolveSimplexName: no resolver contract for TLD"
   Just contract -> resolveName c nm userId resolverSrv contract (fullDomainName domain)
 

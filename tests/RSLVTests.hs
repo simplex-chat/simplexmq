@@ -54,7 +54,6 @@ import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     NamesEnv,
-    TldRegistries (..),
     newNamesEnvWith,
   )
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcError (..))
@@ -83,11 +82,10 @@ otherContract = unsafeOwner (B.replicate 20 '\x22')
 zeroOwnerAbi :: B.ByteString
 zeroOwnerAbi = B.replicate (32 * 8) '\NUL'
 
-stubNamesConfig :: TldRegistries -> NamesConfig
-stubNamesConfig regs =
+stubNamesConfig :: NamesConfig
+stubNamesConfig =
   NamesConfig
     { ethereumEndpoint = "http://stub",
-      tldRegistries = regs,
       rpcAuth = Nothing,
       rpcTimeoutMs = 1000,
       rpcMaxResponseBytes = 65536,
@@ -107,16 +105,12 @@ stubEthCallNotFound _to _data = pure (Right zeroOwnerAbi)
 stubEthCallHttpErr :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
 stubEthCallHttpErr _to _data = pure (Left BodyTooLarge)
 
--- | Names env: TLDSimplex is configured with `serverContract`; TLDTesting and
--- TLDWeb (via tldAll) are unset, so they should fail at `verifyRslv`.
+-- | Names env using the static TLD->contract mapping in
+-- `SimplexName.Contracts.tldContract`: TLDSimplex maps to `serverContract`,
+-- TLDTesting to a different placeholder, and TLDWeb is unmapped (rejected
+-- by `verifyRslv`).
 mkSimplexOnlyNamesEnv :: (B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)) -> IO NamesEnv
-mkSimplexOnlyNamesEnv eth =
-  newNamesEnvWith
-    (stubNamesConfig regs)
-    eth
-    Nothing
-  where
-    regs = TldRegistries {tldSimplex = Just serverContract, tldTesting = Nothing, tldAll = Nothing}
+mkSimplexOnlyNamesEnv eth = newNamesEnvWith stubNamesConfig eth Nothing
 
 memCfg :: AServerConfig
 memCfg = cfgMS (ASType SQSMemory SMSMemory)
@@ -214,8 +208,9 @@ testRslvUnknownTld = do
   nenv <- mkSimplexOnlyNamesEnv stubEthCallNotFound
   withResolverServer nenv $
     testSMPClient @TLS $ \h -> do
-      -- TLDTesting has no whitelist entry; verifyRslv -> Nothing -> AUTH.
-      (_, _, resp) <- sendRslv h "rs03" RslvRequest {name = "bob.testing", contract = serverContract}
+      -- TLDWeb has no entry in the static `tldContract` mapping;
+      -- verifyRslv -> Nothing -> AUTH.
+      (_, _, resp) <- sendRslv h "rs03" RslvRequest {name = "example.web", contract = serverContract}
       resp `shouldBe` Right (ERR AUTH)
 
 testRslvBackendNotFound :: IO ()

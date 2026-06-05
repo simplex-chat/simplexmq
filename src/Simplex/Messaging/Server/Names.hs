@@ -13,7 +13,6 @@
 -- Keccak-256 namehash and SNRC ABI decoder live in Names.Eth.SNRC.
 module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
-    TldRegistries (..),
     RpcAuth (..),
     NamesEnv (..),
     EthCall,
@@ -21,20 +20,18 @@ module Simplex.Messaging.Server.Names
     newNamesEnv,
     newNamesEnvWith,
     closeNamesEnv,
-    lookupTldAddress,
     pingEndpoint,
     resolveName,
     verifyRslv,
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Monad (forM_, guard, unless, when)
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.ByteString.Char8 (ByteString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -45,24 +42,11 @@ import Simplex.Messaging.Protocol (NameOwner, NameRecord, RslvRequest (..), unNa
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
 import Simplex.Messaging.Server.Names.Eth.SNRC (decodeAddress, decodeGetRecord, encodeGetRecord, isZeroOwner, namehash)
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..), fullDomainName)
+import Simplex.Messaging.SimplexName.Contracts (tldContract)
 import System.Timeout (timeout)
-
--- | TLD-keyed SNRC contract whitelist. Each RSLV carries the contract
--- address the client wants queried; the server only accepts it if it
--- matches the address configured for that TLD (or `tldAll` as catch-all).
--- This lets one names router host multiple TLDs (each backed by its own
--- SNRC contract) and reject clients pointing at a contract the operator
--- doesn't run.
-data TldRegistries = TldRegistries
-  { tldSimplex :: Maybe NameOwner,
-    tldTesting :: Maybe NameOwner,
-    tldAll :: Maybe NameOwner
-  }
-  deriving (Show)
 
 data NamesConfig = NamesConfig
   { ethereumEndpoint :: Text,
-    tldRegistries :: TldRegistries,
     rpcAuth :: Maybe RpcAuth,
     rpcTimeoutMs :: Int,
     rpcMaxResponseBytes :: Int,
@@ -105,38 +89,30 @@ newNamesEnvWith config ethCall rpcEnv = do
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {rpcEnv} = mapM_ closeEthRpcEnv rpcEnv
 
--- | Look up the expected SNRC contract address for a TLD. TLD-specific
--- entry takes precedence; `tldAll` is the catch-all. `TLDWeb` has no
--- TLD-specific entry — it always resolves through `tldAll` if set.
-lookupTldAddress :: TldRegistries -> SimplexTLD -> Maybe NameOwner
-lookupTldAddress TldRegistries {tldSimplex, tldTesting, tldAll} = \case
-  TLDSimplex -> tldSimplex <|> tldAll
-  TLDTesting -> tldTesting <|> tldAll
-  TLDWeb -> tldAll
-
 -- | Parse the client-supplied domain, look up the TLD's expected contract,
 -- and verify the client-supplied contract matches. Returns the verified
 -- (address, parsed-domain) pair, or `Nothing` if any check fails — the
 -- handler maps this to `ERR AUTH` and increments `rslvBadName`.
 verifyRslv :: NamesEnv -> RslvRequest -> Maybe (NameOwner, SimplexNameDomain)
-verifyRslv NamesEnv {config} RslvRequest {name, contract} = case strDecode (encodeUtf8 name) of
+verifyRslv _ RslvRequest {name, contract} = case strDecode (encodeUtf8 name) of
   Left _ -> Nothing
   Right d -> do
-    expected <- lookupTldAddress (tldRegistries config) (nameTLD d)
+    expected <- tldContract (nameTLD d)
     guard (expected == contract)
     pure (expected, d)
 
 -- | Reach the configured endpoint with a harmless probe call to confirm
--- network reachability. Uses any configured contract address (the parser
--- guarantees at least one is set). A JSON-RPC error (e.g. unknown contract
--- on a healthy node) is treated as "endpoint reachable". HTTP transport
--- failures, oversized responses, and non-JSON bodies (operator pointing at
--- the wrong service) all surface as Left so startup fails loudly rather
--- than every RSLV silently incrementing rslvEthErrs.
+-- network reachability. Uses any configured contract address (the static
+-- TLD->contract mapping guarantees at least one is set; TLDWeb has none by
+-- design). A JSON-RPC error (e.g. unknown contract on a healthy node) is
+-- treated as "endpoint reachable". HTTP transport failures, oversized
+-- responses, and non-JSON bodies (operator pointing at the wrong service)
+-- all surface as Left so startup fails loudly rather than every RSLV
+-- silently incrementing rslvEthErrs.
 pingEndpoint :: NamesEnv -> IO (Either EthRpcError ())
-pingEndpoint NamesEnv {ethCall, config} = case anyAddress (tldRegistries config) of
-  Nothing -> pure (Right ())
-  Just addr -> do
+pingEndpoint NamesEnv {ethCall, config} = case mapMaybe tldContract [TLDSimplex, TLDTesting] of
+  [] -> pure (Right ())
+  addr : _ -> do
     -- Bound the probe by the same rpcTimeoutMs that resolveName uses, so a
     -- slow-loris endpoint can't park startup until http-client's default
     -- 30 s response timeout fires.
@@ -147,9 +123,6 @@ pingEndpoint NamesEnv {ethCall, config} = case anyAddress (tldRegistries config)
       Just (Left JsonRpcErr {}) -> Right () -- node answered, just doesn't know this contract
       Just (Left e) -> Left e
       Just (Right _) -> Right ()
-  where
-    anyAddress TldRegistries {tldSimplex, tldTesting, tldAll} =
-      tldSimplex <|> tldTesting <|> tldAll
 
 -- | Resolve a verified (contract, domain) pair with an rpcTimeoutMs
 -- ceiling. Synchronous exceptions are caught and logged; async exceptions
