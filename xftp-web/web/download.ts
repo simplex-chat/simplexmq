@@ -6,7 +6,7 @@ import {
   newXFTPAgent, closeXFTPAgent,
   decodeDescriptionURI, downloadFileRaw
 } from '../src/agent.js'
-import {getDescriptionServers} from '../src/protocol/address.js'
+import {getDownloadServers} from '../src/protocol/address.js'
 import {XFTPPermanentError} from '../src/client.js'
 
 const DECRYPT_WEIGHT = 0.15
@@ -22,7 +22,7 @@ export function initDownload(app: HTMLElement, hash: string) {
     return
   }
 
-  const wrongServer = !getDescriptionServers(fd).map(s => s.host).includes(window.location.hostname)
+  const wrongServer = !getDownloadServers(fd).map(s => s.host).includes(window.location.hostname)
 
   const size = fd.redirect ? fd.redirect.size : fd.size
   app.innerHTML = `
