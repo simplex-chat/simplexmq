@@ -13,18 +13,14 @@ import Data.Either (isLeft, isRight)
 import Data.Foldable (for_)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
-  ( NameLink,
-    NameOwner,
+  ( NameOwner,
     NameRecord (..),
     RslvRequest (..),
-    mkNameLink,
     mkNameOwner,
-    unNameLink,
     unNameOwner,
   )
 import Simplex.Messaging.Server.Names
@@ -72,14 +68,11 @@ namehashEth = "\x93\xcd\xeb\x70\x8b\x75\x45\xdc\x66\x8e\xb9\x28\x01\x76\x16\x9d\
 twentyOnes :: ByteString
 twentyOnes = B.replicate 20 '\x01'
 
--- | Test-only constructors that crash on the smart-ctor's Left. Used for
+-- | Test-only constructor that crashes on the smart-ctor's Left. Used for
 -- fixtures where we know the input satisfies the invariant; production code
--- always goes through `mkNameOwner` / `mkNameLink`.
+-- always goes through `mkNameOwner`.
 unsafeOwner :: ByteString -> NameOwner
 unsafeOwner = either error id . mkNameOwner
-
-unsafeLink :: Text -> NameLink
-unsafeLink = either error id . mkNameLink
 
 addr1, addr2, addr3 :: NameOwner
 addr1 = unsafeOwner twentyOnes
@@ -100,20 +93,24 @@ testNamesConfig regs =
 sampleRecord :: NameRecord
 sampleRecord =
   NameRecord
-    { nrDisplayName = "Alice",
+    { nrName = "alice.simplex",
+      nrNickname = Just "Alice",
+      nrWebsite = Just "https://alice.example",
+      nrLocation = Just "Earth",
+      nrSimplexContact = Just "simplex:/contact/abc#xyz",
+      nrSimplexChannel = Nothing,
+      nrEth = Just "0x0000000000000000000000000000000000000001",
+      nrBtc = Nothing,
+      nrXmr = Nothing,
+      nrDot = Nothing,
       nrOwner = unsafeOwner twentyOnes,
-      nrChannelLinks = [],
-      nrContactLinks = [unsafeLink "simplex:/contact/abc#xyz"],
-      nrAdminAddress = Just "simplex:/admin/...",
-      nrAdminEmail = Just "admin@example.org",
-      nrExpiry = 1735689600,
-      nrIsTest = False
+      nrResolver = unsafeOwner (B.replicate 20 '\x02')
     }
 
 smpNamesTests :: Spec
 smpNamesTests = do
   describe "NameRecord encoding (Protocol)" nameRecordEncodingSpec
-  describe "Smart constructors (NameOwner, NameLink)" smartCtorsSpec
+  describe "Smart constructors (NameOwner)" smartCtorsSpec
   describe "Keccak-256 and namehash" namehashSpec
   describe "ABI primitive bounds" abiBoundsSpec
   describe "decodeGetRecord (zero-owner sentinel)" zeroOwnerSpec
@@ -125,26 +122,43 @@ nameRecordEncodingSpec = do
   it "round-trips JSON encode / decode" $
     J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)) `shouldBe` Right sampleRecord
 
-  it "emits keys in spec-documented order (displayName, owner, channelLinks, contactLinks, adminAddress, adminEmail, expiry, isTest)" $ do
+  it "emits keys in spec-documented order (Python resolver shape)" $ do
     -- Default toEncoding routes through Value/KeyMap and re-emits keys
     -- alphabetically; spec requires byte-identical canonical encoding.
     let bytes = LB.toStrict (J.encode sampleRecord)
         offset k = B.length (fst (B.breakSubstring k bytes))
-        offsets = map offset ["displayName", "owner", "channelLinks", "contactLinks", "adminAddress", "adminEmail", "expiry", "isTest"]
+        offsets =
+          map
+            offset
+            [ "name",
+              "nickname",
+              "website",
+              "location",
+              "simplex.contact",
+              "simplex.channel",
+              "ETH",
+              "BTC",
+              "XMR",
+              "DOT",
+              "owner",
+              "resolver"
+            ]
     offsets `shouldBe` sort offsets
 
-  it "rejects negative expiry" $ do
-    let badBytes = LB.toStrict (J.encode sampleRecord {nrExpiry = -1})
-    (J.eitherDecodeStrict badBytes :: Either String NameRecord) `shouldSatisfy` isLeft
+  it "tolerates absent optional keys (forward-compat with sparse Python output)" $ do
+    let minimal =
+          "{\"name\":\"a.simplex\","
+            <> "\"owner\":\"0x0101010101010101010101010101010101010101\","
+            <> "\"resolver\":\"0x0202020202020202020202020202020202020202\"}"
+    (J.eitherDecodeStrict minimal :: Either String NameRecord) `shouldSatisfy` isRight
 
-  it "enforces combined channel+contact list cap of 8" $ do
-    let nineLinks = map (\i -> unsafeLink ("simplex:/contact/" <> T.pack (show (i :: Int)))) [0 .. 8]
-        overflow = sampleRecord {nrChannelLinks = nineLinks, nrContactLinks = []}
-        bytes = LB.toStrict (J.encode overflow)
+  it "rejects nrName > 255 bytes UTF-8" $ do
+    let oversize = sampleRecord {nrName = T.replicate 256 "x"}
+        bytes = LB.toStrict (J.encode oversize)
     (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
-  it "rejects nrDisplayName > 255 bytes UTF-8" $ do
-    let oversize = sampleRecord {nrDisplayName = T.replicate 256 "x"}
+  it "rejects simplex.contact > 1024 bytes UTF-8" $ do
+    let oversize = sampleRecord {nrSimplexContact = Just (T.replicate 1025 "x")}
         bytes = LB.toStrict (J.encode oversize)
     (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
@@ -154,14 +168,18 @@ nameRecordEncodingSpec = do
     (J.eitherDecodeStrict (json "0X") :: Either String NameOwner) `shouldSatisfy` isRight
 
   it "encodes within the proxied transmission budget" $ do
-    let huge = unsafeLink (T.replicate 1024 "x")
-        wide =
+    let wide =
           sampleRecord
-            { nrChannelLinks = replicate 4 huge,
-              nrContactLinks = replicate 4 huge,
-              nrDisplayName = T.replicate 255 "n",
-              nrAdminAddress = Just (T.replicate 255 "a"),
-              nrAdminEmail = Just (T.replicate 255 "e")
+            { nrName = T.replicate 255 "n",
+              nrNickname = Just (T.replicate 255 "k"),
+              nrWebsite = Just (T.replicate 255 "w"),
+              nrLocation = Just (T.replicate 255 "l"),
+              nrSimplexContact = Just (T.replicate 1024 "x"),
+              nrSimplexChannel = Just (T.replicate 1024 "y"),
+              nrEth = Just (T.replicate 255 "e"),
+              nrBtc = Just (T.replicate 255 "b"),
+              nrXmr = Just (T.replicate 255 "m"),
+              nrDot = Just (T.replicate 255 "d")
             }
     LB.length (J.encode wide) < 16224 `shouldBe` True
 
@@ -172,18 +190,10 @@ smartCtorsSpec = do
     mkNameOwner (B.replicate 19 '\x01') `shouldSatisfy` isLeft
     mkNameOwner (B.replicate 21 '\x01') `shouldSatisfy` isLeft
 
-  it "mkNameLink rejects >1024 UTF-8 bytes" $ do
-    mkNameLink (T.replicate 1024 "x") `shouldSatisfy` isRight
-    mkNameLink (T.replicate 1025 "x") `shouldSatisfy` isLeft
-    -- multibyte UTF-8 counted in bytes, not chars: 600 × 3 = 1800 bytes
-    mkNameLink (T.replicate 600 "\x4e2d") `shouldSatisfy` isLeft
-
-  it "unNameLink / unNameOwner round-trip the smart ctors" $ do
-    case (mkNameOwner twentyOnes, mkNameLink "abc") of
-      (Right o, Right l) -> do
-        unNameOwner o `shouldBe` twentyOnes
-        unNameLink l `shouldBe` "abc"
-      _ -> expectationFailure "smart ctors failed"
+  it "unNameOwner round-trips mkNameOwner" $
+    case mkNameOwner twentyOnes of
+      Right o -> unNameOwner o `shouldBe` twentyOnes
+      Left e -> expectationFailure ("mkNameOwner failed: " <> e)
 
 namehashSpec :: Spec
 namehashSpec = do
@@ -265,11 +275,11 @@ zeroOwnerSpec = do
   it "decodeGetRecord returns Nothing for zero-owner buffer" $ do
     -- 8 slots × 32 bytes; owner at slot 1 (offset 32) is all-zero by construction
     let buf = B.replicate (32 * 8) '\NUL'
-    decodeGetRecord buf `shouldBe` Right Nothing
+    decodeGetRecord 0 buf `shouldBe` Right Nothing
 
   it "decodeGetRecord fails on truncated buffer" $ do
     let tiny = B.replicate 31 '\NUL'
-    decodeGetRecord tiny `shouldBe` Left AbiTruncated
+    decodeGetRecord 0 tiny `shouldBe` Left AbiTruncated
 
 tldWhitelistSpec :: Spec
 tldWhitelistSpec = do

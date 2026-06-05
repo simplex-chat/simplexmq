@@ -41,7 +41,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Simplex.Messaging.Encoding.String (strDecode)
 import Simplex.Messaging.Util (eitherToMaybe)
-import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), RslvRequest (..), unNameOwner)
+import Simplex.Messaging.Protocol (NameOwner, NameRecord, RslvRequest (..), unNameOwner)
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
 import Simplex.Messaging.Server.Names.Eth.SNRC (decodeAddress, decodeGetRecord, encodeGetRecord, isZeroOwner, namehash)
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..), fullDomainName)
@@ -166,12 +166,13 @@ resolveName env contract d = do
           pure (Left EthHttpErr)
 
 fetch :: NamesEnv -> NameOwner -> SimplexNameDomain -> IO (Either ResolveError NameRecord)
-fetch env@NamesEnv {ethCall} contract d =
+fetch env@NamesEnv {ethCall} contract d = do
+  nowSec <- floor <$> getPOSIXTime
   ethCall (unNameOwner contract) (encodeGetRecord (namehash (encodeUtf8 (fullDomainName d)))) >>= \case
     Left e -> pure (Left (mapEthRpcError e))
-    Right ret -> case decodeGetRecord ret of
+    Right ret -> case decodeGetRecord nowSec ret of
       Right Nothing -> notFoundWithPlaceholderWarn ret
-      Right (Just rec) -> checkExpiry rec
+      Right (Just rec) -> pure (Right rec)
       Left _ -> pure (Left EthDecodeErr)
   where
     -- decodeGetRecord is currently a placeholder: it returns Right Nothing
@@ -179,21 +180,13 @@ fetch env@NamesEnv {ethCall} contract d =
     -- with real data but no ABI decoder yet". Inspect the owner slot
     -- directly to distinguish, and surface the latter once per process so
     -- an operator who enables [NAMES] against a working SNRC contract sees
-    -- the resolver is functionally stubbed.
+    -- the resolver is functionally stubbed. Expired records are filtered
+    -- inside the decoder (using the `nowSec` argument) so the wire
+    -- NameRecord never carries an expiry field.
     notFoundWithPlaceholderWarn ret = do
       forM_ (eitherToMaybe (decodeAddress 32 ret)) $ \owner ->
         unless (isZeroOwner owner) (warnPlaceholderOnce env)
       pure (Left NotFound)
-    -- Defense in depth: the SNRC contract should already return the
-    -- zero-owner sentinel for expired records, but a buggy / pre-upgrade
-    -- contract might not. nrExpiry == 0 means "never expires" (reserved
-    -- names); any positive expiry in the past is treated as NotFound.
-    checkExpiry rec = do
-      nowSec <- floor <$> getPOSIXTime
-      pure $
-        if nrExpiry rec /= 0 && nrExpiry rec < nowSec
-          then Left NotFound
-          else Right rec
 
 warnPlaceholderOnce :: NamesEnv -> IO ()
 warnPlaceholderOnce NamesEnv {placeholderWarned} = do

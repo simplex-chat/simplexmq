@@ -1493,14 +1493,23 @@ name = %s"NAME" SP json-bytes   ; json-bytes consumes the remainder of the trans
 
 | Field | JSON type | Constraints |
 |---|---|---|
-| `displayName` | string | ≤ 255 bytes UTF-8 |
+| `name` | string | ≤ 255 bytes UTF-8 |
+| `nickname` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
+| `website` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `location` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `simplex.contact` | string or null | ≤ 1024 bytes UTF-8; same null / absent rules |
+| `simplex.channel` | string or null | ≤ 1024 bytes UTF-8; same null / absent rules |
+| `ETH` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `BTC` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `XMR` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `DOT` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
 | `owner` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes) |
-| `channelLinks` | array of strings | each ≤ 1024 bytes UTF-8; combined count of `channelLinks + contactLinks` ≤ 8 |
-| `contactLinks` | array of strings | each ≤ 1024 bytes UTF-8; combined count cap shared with `channelLinks` |
-| `adminAddress` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
-| `adminEmail` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
-| `expiry` | integer | Int64 Unix seconds, MUST be ≥ 0; `0` means "never expires" |
-| `isTest` | boolean | true on testnet deployments |
+| `resolver` | string | `"0x"` followed by 40 lowercase hex characters; the SNRC contract address that produced the record |
+
+The server MUST filter expired records before constructing the response
+(returning `ERR AUTH` to the client), so the wire format carries no expiry
+field. Testnet-vs-mainnet status is derived from the queried TLD rather than
+an in-record flag.
 
 Receivers MUST tolerate extra unknown fields (forward-compatibility for future
 field additions). Adding a required field is a breaking change requiring an
@@ -1511,8 +1520,8 @@ producing the same `NameRecord` MUST emit byte-identical JSON: emit object
 keys in the order listed above, integers without decimal points, no
 insignificant whitespace.
 
-**Wire-size budget.** A maximal `nameRecord` (8 × 1024-byte links plus
-maximal admin / display strings) JSON-encodes to roughly 9 KB, well under the
+**Wire-size budget.** A maximal `nameRecord` (two 1024-byte SimpleX links
+plus the other capped strings) JSON-encodes to roughly 4 KB, well under the
 SMP proxied transmission budget of 16224 bytes.
 
 ## Transport connection with the SMP router

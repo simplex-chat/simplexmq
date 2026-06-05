@@ -168,9 +168,6 @@ module Simplex.Messaging.Protocol
     NameOwner,
     mkNameOwner,
     unNameOwner,
-    NameLink,
-    mkNameLink,
-    unNameLink,
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
@@ -774,80 +771,79 @@ instance J.FromJSON RslvRequest where
     contract <- o J..: "contract"
     pure RslvRequest {name, contract}
 
--- | A name-record link (channel or contact). Bare constructor not exported;
--- use `mkNameLink` to enforce the ≤1024-byte UTF-8 invariant.
-newtype NameLink = NameLink Text
-  deriving (Eq, Show)
-
-mkNameLink :: Text -> Either String NameLink
-mkNameLink t
-  | B.length (encodeUtf8 t) <= 1024 = Right (NameLink t)
-  | otherwise = Left "NameLink too long"
-
-unNameLink :: NameLink -> Text
-unNameLink (NameLink t) = t
-{-# INLINE unNameLink #-}
-
-instance J.ToJSON NameLink where
-  toJSON (NameLink t) = J.toJSON t
-
-instance J.FromJSON NameLink where
-  parseJSON = J.withText "NameLink" (either fail pure . mkNameLink)
-
 -- | Resolved name record returned by the names role.
 --   Wire format is JSON — change requires an SMP version bump.
+--   JSON keys match the Python resolver (PR #1795 `snrc-resolve.py`) so the
+--   same server can be backed by either the direct-ETH-RPC resolver or the
+--   Python REST resolver without changing the wire format clients see.
 data NameRecord = NameRecord
-  { nrDisplayName :: Text,
+  { nrName :: Text,
+    nrNickname :: Maybe Text,
+    nrWebsite :: Maybe Text,
+    nrLocation :: Maybe Text,
+    nrSimplexContact :: Maybe Text,
+    nrSimplexChannel :: Maybe Text,
+    nrEth :: Maybe Text,
+    nrBtc :: Maybe Text,
+    nrXmr :: Maybe Text,
+    nrDot :: Maybe Text,
     nrOwner :: NameOwner,
-    nrChannelLinks :: [NameLink],
-    nrContactLinks :: [NameLink],
-    nrAdminAddress :: Maybe Text,
-    nrAdminEmail :: Maybe Text,
-    nrExpiry :: Int64, -- Unix seconds, ≥ 0
-    nrIsTest :: Bool
+    nrResolver :: NameOwner -- SNRC contract address that produced the record
   }
   deriving (Eq, Show)
 
+-- Hand-rolled JSON instances: dot-keys ("simplex.contact", "simplex.channel")
+-- and uppercase coin keys ("ETH", "BTC", "XMR", "DOT") fall outside Aeson TH's
+-- field-label conventions.
 instance J.ToJSON NameRecord where
-  toJSON NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
+  toJSON NameRecord {nrName, nrNickname, nrWebsite, nrLocation, nrSimplexContact, nrSimplexChannel, nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver} =
     J.object
-      [ "displayName" J..= nrDisplayName,
+      [ "name" J..= nrName,
+        "nickname" J..= nrNickname,
+        "website" J..= nrWebsite,
+        "location" J..= nrLocation,
+        "simplex.contact" J..= nrSimplexContact,
+        "simplex.channel" J..= nrSimplexChannel,
+        "ETH" J..= nrEth,
+        "BTC" J..= nrBtc,
+        "XMR" J..= nrXmr,
+        "DOT" J..= nrDot,
         "owner" J..= nrOwner,
-        "channelLinks" J..= nrChannelLinks,
-        "contactLinks" J..= nrContactLinks,
-        "adminAddress" J..= nrAdminAddress,
-        "adminEmail" J..= nrAdminEmail,
-        "expiry" J..= nrExpiry,
-        "isTest" J..= nrIsTest
+        "resolver" J..= nrResolver
       ]
   -- explicit toEncoding to preserve the spec-documented key order; the default
   -- routes through Value/KeyMap and re-emits keys alphabetically, breaking the
   -- "two routers MUST emit byte-identical JSON" requirement.
-  toEncoding NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
+  toEncoding NameRecord {nrName, nrNickname, nrWebsite, nrLocation, nrSimplexContact, nrSimplexChannel, nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver} =
     J.pairs $
-      "displayName" J..= nrDisplayName
+      "name" J..= nrName
+        <> "nickname" J..= nrNickname
+        <> "website" J..= nrWebsite
+        <> "location" J..= nrLocation
+        <> "simplex.contact" J..= nrSimplexContact
+        <> "simplex.channel" J..= nrSimplexChannel
+        <> "ETH" J..= nrEth
+        <> "BTC" J..= nrBtc
+        <> "XMR" J..= nrXmr
+        <> "DOT" J..= nrDot
         <> "owner" J..= nrOwner
-        <> "channelLinks" J..= nrChannelLinks
-        <> "contactLinks" J..= nrContactLinks
-        <> "adminAddress" J..= nrAdminAddress
-        <> "adminEmail" J..= nrAdminEmail
-        <> "expiry" J..= nrExpiry
-        <> "isTest" J..= nrIsTest
+        <> "resolver" J..= nrResolver
 
 instance J.FromJSON NameRecord where
   parseJSON = J.withObject "NameRecord" $ \o -> do
-    nrDisplayName <- o J..: "displayName" >>= capUtf8 "displayName" 255
+    nrName <- o J..: "name" >>= capUtf8 "name" 255
+    nrNickname <- o J..:? "nickname" >>= traverse (capUtf8 "nickname" 255)
+    nrWebsite <- o J..:? "website" >>= traverse (capUtf8 "website" 255)
+    nrLocation <- o J..:? "location" >>= traverse (capUtf8 "location" 255)
+    nrSimplexContact <- o J..:? "simplex.contact" >>= traverse (capUtf8 "simplex.contact" 1024)
+    nrSimplexChannel <- o J..:? "simplex.channel" >>= traverse (capUtf8 "simplex.channel" 1024)
+    nrEth <- o J..:? "ETH" >>= traverse (capUtf8 "ETH" 255)
+    nrBtc <- o J..:? "BTC" >>= traverse (capUtf8 "BTC" 255)
+    nrXmr <- o J..:? "XMR" >>= traverse (capUtf8 "XMR" 255)
+    nrDot <- o J..:? "DOT" >>= traverse (capUtf8 "DOT" 255)
     nrOwner <- o J..: "owner"
-    nrChannelLinks <- o J..: "channelLinks"
-    nrContactLinks <- o J..: "contactLinks"
-    when (length nrChannelLinks + length nrContactLinks > 8) $
-      fail "combined channelLinks + contactLinks > 8"
-    nrAdminAddress <- o J..:? "adminAddress" >>= traverse (capUtf8 "adminAddress" 255)
-    nrAdminEmail <- o J..:? "adminEmail" >>= traverse (capUtf8 "adminEmail" 255)
-    nrExpiry <- o J..: "expiry"
-    when (nrExpiry < 0) $ fail "expiry must be non-negative"
-    nrIsTest <- o J..: "isTest"
-    pure NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest}
+    nrResolver <- o J..: "resolver"
+    pure NameRecord {nrName, nrNickname, nrWebsite, nrLocation, nrSimplexContact, nrSimplexChannel, nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver}
     where
       capUtf8 fld lim t
         | B.length (encodeUtf8 t) <= lim = pure t

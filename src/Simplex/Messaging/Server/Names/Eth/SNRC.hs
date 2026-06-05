@@ -170,17 +170,24 @@ decodeStringArray depth headEnd off cntCap byteCap buf
 
 -- | Decode the ABI-encoded return value of getRecord(bytes32) into a NameRecord.
 -- Zero-owner (0x000...000) is reported as Right Nothing so the caller maps it
--- to NotFound (ENS-style sentinel).
+-- to NotFound (ENS-style sentinel). Records whose on-chain expiry is in the
+-- past are also reported as Right Nothing — clients trust the server's filter
+-- and the wire NameRecord carries no expiry field.
+--
+-- `nowSec` is the current Unix time the caller wants the expiry compared
+-- against. Pass `0` to disable the expiry check.
 --
 -- PLACEHOLDER: returns Right Nothing for any non-zero owner until the Part 1
 -- SNRC contract ABI is finalised. All ABI primitives above are production-ready;
--- only the field-layout-aware composition is pending.
-decodeGetRecord :: ByteString -> Either AbiError (Maybe NameRecord)
-decodeGetRecord buf
+-- only the field-layout-aware composition (and the expiry slot read) is
+-- pending.
+decodeGetRecord :: Int64 -> ByteString -> Either AbiError (Maybe NameRecord)
+decodeGetRecord _nowSec buf
   | B.length buf < 32 * 8 = Left AbiTruncated
   -- Both arms return Nothing today: the zero-owner branch is the real ENS-style
-  -- NotFound sentinel; the non-zero branch is the SNRC-ABI placeholder. They
-  -- separate once the field-layout decoder lands.
+  -- NotFound sentinel; the non-zero branch is the SNRC-ABI placeholder (which
+  -- will also apply the `_nowSec` expiry filter once the field layout lands).
+  -- They separate once the field-layout decoder ships.
   | otherwise = Nothing <$ decodeAddress 32 buf
 
 isZeroOwner :: NameOwner -> Bool
