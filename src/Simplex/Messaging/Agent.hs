@@ -201,7 +201,7 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
-import Simplex.Messaging.Client (NetworkRequestMode (..), ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
+import Simplex.Messaging.Client (NetworkRequestMode (..), ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -258,11 +258,11 @@ import UnliftIO.STM
 type AE a = ExceptT AgentErrorType IO a
 
 -- | Creates an SMP agent client instance
-getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> (ATransmission -> IO ()) -> AE AgentClient
+getSMPAgentClient :: AgentConfig -> InitialAgentServers -> DBStore -> (Bool -> ATransmission -> IO ()) -> AE AgentClient
 getSMPAgentClient = getSMPAgentClient_ 1
 {-# INLINE getSMPAgentClient #-}
 
-getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> (ATransmission -> IO ()) -> AE AgentClient
+getSMPAgentClient_ :: Int -> AgentConfig -> InitialAgentServers -> DBStore -> (Bool -> ATransmission -> IO ()) -> AE AgentClient
 getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netCfg, useServices, presetServers} store processEvent = do
   -- This error should be prevented in the app
   when (any id useServices && sessionMode netCfg == TSMEntity) $ throwE $ CMD PROHIBITED "newAgentClient"
@@ -279,8 +279,7 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
       forM_ (M.assocs srvs) $ \(userId, srvs') -> checkUserServers ("getSMPAgentClient " <> protocol <> " " <> tshow userId) srvs'
 
 startSMPAgentClient :: AgentClient -> Bool -> IO ()
-startSMPAgentClient c@AgentClient {acThread, generalQ, agentEnv} backgroundMode = do
-  void $ forkIO $ connWorkerLoop c generalQ
+startSMPAgentClient c@AgentClient {acThread, agentEnv} backgroundMode = do
   unless backgroundMode $ do
     t <- runAgentThreads `forkFinally` const (disconnectAgentClient c)
     atomically . writeTVar acThread . Just =<< mkWeakThreadId t

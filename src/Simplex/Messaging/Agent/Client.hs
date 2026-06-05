@@ -168,7 +168,6 @@ module Simplex.Messaging.Agent.Client
     notifySub',
     notifyEvent,
     nonBlockingNotifyEvent,
-    connWorkerLoop,
     userServers,
     pickServer,
     getNextServer,
@@ -338,20 +337,10 @@ type NtfTransportSession = TransportSession NtfResponse
 
 type XFTPTransportSession = TransportSession FileResponse
 
-data EventWorker = EventWorker
-  { eventQ :: TBQueue ATransmission,
-    workerThreadId :: Weak ThreadId
-  }
-
-type EventWorkerVar = SessionVar EventWorker
-
 data AgentClient = AgentClient
   { acThread :: TVar (Maybe (Weak ThreadId)),
     active :: TVar Bool,
-    processEvent :: ATransmission -> IO (),
-    generalQ :: TBQueue ATransmission,
-    connWorkers :: TMap ConnId EventWorkerVar,
-    connWorkerSeq :: TVar Int,
+    processEvent :: Bool -> ATransmission -> IO (),
     processServerMsg :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
@@ -517,16 +506,13 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> (ATransmission -> IO ()) -> (AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Env -> IO AgentClient
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> (Bool -> ATransmission -> IO ()) -> (AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Env -> IO AgentClient
 newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices processEvent processServerMsg agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
   acThread <- newTVarIO Nothing
   active <- newTVarIO True
-  generalQ <- newTBQueueIO qSize
-  connWorkers <- TM.emptyIO
-  connWorkerSeq <- newTVarIO 0
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
   useClientServices <- newTVarIO useServices
@@ -566,9 +552,6 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
       { acThread,
         active,
         processEvent,
-        generalQ,
-        connWorkers,
-        connWorkerSeq,
         processServerMsg,
         smpServers,
         smpClients,
@@ -1071,34 +1054,10 @@ withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId
 {-# INLINE withConnLock' #-}
 
 notifyEvent :: AgentClient -> ATransmission -> IO ()
-notifyEvent = notifyEvent_ $ atomically .: writeTBQueue
+notifyEvent AgentClient {processEvent} = processEvent True
 
 nonBlockingNotifyEvent :: AgentClient -> ATransmission -> IO ()
-nonBlockingNotifyEvent = notifyEvent_ nonBlockingWriteTBQueue
-
-notifyEvent_ :: (TBQueue ATransmission -> ATransmission -> IO ()) -> AgentClient -> ATransmission -> IO ()
-notifyEvent_ write c t@(_, connId, _)
-  | B.null connId = write (generalQ c) t
-  | otherwise = do
-      q <- getOrCreateConnWorker c connId
-      write q t
-
-getOrCreateConnWorker :: AgentClient -> ConnId -> IO (TBQueue ATransmission)
-getOrCreateConnWorker c@AgentClient {connWorkers, connWorkerSeq} connId = do
-  ts <- getCurrentTime
-  atomically (getSessVar connWorkerSeq connId connWorkers ts) >>= \case
-    Left v -> do
-      q <- newTBQueueIO 64
-      tId <- mkWeakThreadId =<< forkIO (connWorkerLoop c q)
-      atomically $ putTMVar (sessionVar v) EventWorker {eventQ = q, workerThreadId = tId}
-      pure q
-    Right v -> eventQ <$> atomically (readTMVar $ sessionVar v)
-
-connWorkerLoop :: AgentClient -> TBQueue ATransmission -> IO ()
-connWorkerLoop AgentClient {processEvent} q = forever $ do
-  t <- atomically $ readTBQueue q
-  processEvent t `E.catchAny` \e ->
-    logError $ "connWorkerLoop error: " <> tshow e
+nonBlockingNotifyEvent AgentClient {processEvent} = processEvent False
 
 withInvLock :: AgentClient -> ByteString -> Text -> AM a -> AM a
 withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
