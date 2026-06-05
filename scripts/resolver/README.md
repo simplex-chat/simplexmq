@@ -48,36 +48,55 @@ Then `docker compose down -v && docker compose up -d` (the `-v` wipes state so N
 ## SNRC resolver REST API (`snrc-resolve.py`)
 
 The companion script `snrc-resolve.py` exposes the SimpleX Namespace
-Registry (SNRC) over a small JSON HTTP API. Same dependency surface as
-`ens-lookup.py`:
+Registry (SNRC) over a small JSON HTTP API. It talks to the same local
+Reth + Nimbus stack described above (set `NETWORK=mainnet` in `.env`),
+reading the SNRC contracts directly on Ethereum mainnet.
+
+Install the only runtime dependency (same as `ens-lookup.py`):
 
 ```sh
 pip install --break-system-packages 'eth-hash[pycryptodome]'
 ```
 
-### Pointing at a Sepolia RPC
+### Deployed registries
 
-The SNRC `.testing` TLD currently lives on Sepolia (registry
-`0x2f97af21ca3eb3f5311f439c05234ca94163bc33`). Pick an RPC, then run the
-script:
+| TLD        | Network          | ENSRegistry address                          |
+|------------|------------------|----------------------------------------------|
+| `.testing` | Ethereum mainnet | `0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6` |
+| `.simplex` | — (not deployed) | —                                            |
+
+Each TLD is an independent ENS-shaped deployment with its own
+`ENSRegistry`. The resolver dispatches by the queried name's rightmost
+label, so a single instance can serve both TLDs concurrently once
+`.simplex` launches.
+
+### Running
+
+With Reth bound to `127.0.0.1:8545` (the default Quickstart layout
+above), no env vars are required — the script defaults to that RPC and
+to the mainnet `.testing` registry:
 
 ```sh
-# Option A — public RPC, no setup
-SNRC_RPC=https://ethereum-sepolia-rpc.publicnode.com \
-  ./scripts/resolver/snrc-resolve.py
-
-# Option B — local Reth synced to Sepolia (set NETWORK=sepolia in .env first,
-# then `docker compose up -d` and wait for sync). RPC defaults already match.
 ./scripts/resolver/snrc-resolve.py
 ```
 
-Listens on `0.0.0.0:8000`. Override with `SNRC_PORT` / `SNRC_BIND`.
+Output on startup:
+
+```
+snrc-resolve listening on 0.0.0.0:8000
+  RPC = http://127.0.0.1:8545
+  Registries:
+    .testing  = 0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6
+    .simplex  = (not configured)
+  GET /resolve/<name>   GET /health
+```
+
+Override the listen port or bind address with `SNRC_PORT` / `SNRC_BIND`.
 
 ### Resolving a name
 
-Use `foobar.testing` — a name registered on Sepolia with every field
-populated for end-to-end testing (text records + multicoin addresses
-across ETH/BTC/DOT/XMR):
+`foobar.testing` is registered on mainnet with every text and
+multicoin record populated (useful as a smoke-test target):
 
 ```sh
 curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
@@ -86,17 +105,17 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
 ```json
 {
   "name": "foobar.testing",
-  "nickname": "mynickname",
-  "website": "https://foobar.com",
-  "location": "alpha centauri",
-  "simplex.contact": "https://smp16.simplex.im/a#Q_f00bar",
-  "simplex.channel": "https://smp16.simplex.im/c#wsonsavos",
-  "ETH": "0xC14ccEc78342e3DAf136E6C36025b397C377614e",
+  "nickname": "Foo",
+  "website": "https://foo.bar",
+  "location": "",
+  "simplex.contact": "https://smp16.simplex.im/a#Q_F00BA7",
+  "simplex.channel": "",
+  "ETH": null,
   "BTC": "bc1qpzht4wp64yg7z6sgl07vvrnepyux740juynfcn",
-  "XMR": "46PS3HXYoH3VcGsneFCyHkfSygkp8p1hHHAMb3ePP8BuPdqSbsTcPiuH7xDmVudaq8W24EryzRYDS5Whz7ZQu8NqEpHtHQx",
-  "DOT": "16P39egDdQgZjAAhGP1pUs6ik23RgBXwohNh93GH6Qmk4W9q",
-  "owner": "0xc14ccec78342e3daf136e6c36025b397c377614e",
-  "resolver": "0xb35a2f76379437638426acb4d9a45546acbf4f5c"
+  "XMR": "4ANzdVJFxLtCKcBgNGkFSEA41zJFgrTX93LWt9UR6xpg7YNCsdrSV817cw2xKT8NXeS5euBBqTApS2u8kRTxMhyiDGN3Qgt",
+  "DOT": "139GgyEsXDyGLhmhBTPmDmGCyTvTVuLad3YjHax2PWLK6p3s",
+  "owner": "0xd83bb610fbad567fb5d8755ec162881e46d1fbc9",
+  "resolver": "0x80fa1903e70af03e79c73fb7feae2fb33aebae01"
 }
 ```
 
@@ -110,22 +129,26 @@ DOT, Monero-base58 for XMR. Unrecognised payloads fall back to
 
 ```sh
 curl -s http://127.0.0.1:8000/health
-# → {"ok": true, "rpc": "...", "registries": {"testing": "0x...", "simplex": ""}}
+# → {"ok": true, "rpc": "http://127.0.0.1:8545", "registries": {"testing": "0x…", "simplex": ""}}
 ```
 
 ### Pointing at multiple deployments
 
-`.testing` and `.simplex` are independent SNRC deployments with separate
-ENSRegistry contracts. The resolver routes each request to the right
-registry by the queried name's rightmost label — one server, both TLDs:
+Once `.simplex` deploys, point a single resolver instance at both
+registries — requests are dispatched by the rightmost label:
 
 ```sh
-SNRC_RPC=https://ethereum-rpc.publicnode.com \
-SNRC_REGISTRY_TESTING=0x...sepolia-ENSRegistry... \
-SNRC_REGISTRY_SIMPLEX=0x...mainnet-ENSRegistry... \
+SNRC_REGISTRY_SIMPLEX=0x...mainnet-simplex-ENSRegistry... \
   ./scripts/resolver/snrc-resolve.py
 ```
 
 Queries for a TLD with no registry configured return HTTP 400 with the
-list of supported TLDs. `.simplex` is not deployed yet, so its env var
-defaults to empty.
+list of supported TLDs.
+
+### Error responses
+
+| Status | When                                                                  |
+|--------|-----------------------------------------------------------------------|
+| 400    | TLD not configured (`/resolve/foo.simplex` while `.simplex` is empty) or path not a fully-qualified name |
+| 404    | Name has no resolver set on the registry (`ENSRegistry.resolver(node)` is zero) |
+| 502    | Upstream RPC error / unreachable (Reth not running or not synced)     |

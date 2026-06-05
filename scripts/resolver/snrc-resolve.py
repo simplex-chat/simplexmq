@@ -19,8 +19,8 @@ Usage:
 Environment:
   SNRC_RPC               JSON-RPC endpoint (default: http://127.0.0.1:8545)
   SNRC_REGISTRY_TESTING  ENSRegistry for the .testing deployment
-                         (default: Sepolia,
-                          0x2f97af21ca3eb3f5311f439c05234ca94163bc33)
+                         (default: mainnet,
+                          0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6)
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
                          (default: empty — TLD not yet deployed)
   SNRC_PORT              Listen port (default: 8000)
@@ -61,7 +61,7 @@ PORT = int(os.environ.get("SNRC_PORT", "8000"))
 REGISTRIES = {
     "testing": os.environ.get(
         "SNRC_REGISTRY_TESTING",
-        "0x2f97af21ca3eb3f5311f439c05234ca94163bc33",  # Sepolia .testing
+        "0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6",  # mainnet .testing
     ),
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
