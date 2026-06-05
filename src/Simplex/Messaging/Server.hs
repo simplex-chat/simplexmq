@@ -1157,8 +1157,8 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
             updateBatchStats stats cmd -- even if nothing is verified
             let queueId (_, _, (_, qId, _)) = qId
             qs <- getQueueRecs ms p $ map queueId ts'
-            zipWithM (\t -> verified stats t . verifyLoadedQueue False service thAuth t) ts' qs
-          _ -> mapM (\t -> verified stats t =<< verifyTransmission False ms service thAuth t) ts'
+            zipWithM (\t -> verified stats t . verifyLoadedQueue service thAuth t) ts' qs
+          _ -> mapM (\t -> verified stats t =<< verifyTransmission ms service thAuth t) ts'
         mapM_ (atomically . writeTBQueue rcvQ) $ L.nonEmpty cmds
         pure $ errs ++ errs'
       [] -> pure errs
@@ -1238,19 +1238,19 @@ data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFail
 -- - the queue or party key do not exist.
 -- In all cases, the time of the verification should depend only on the provided authorization type,
 -- a dummy key is used to run verification in the last two cases, and failure is returned irrespective of the result.
-verifyTransmission :: forall s. MsgStoreClass s => Bool -> s -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> IO (VerificationResult s)
-verifyTransmission forwarded ms service thAuth t@(_, _, (_, queueId, Cmd p _)) = case queueParty p of
-  Just Dict -> verifyLoadedQueue forwarded service thAuth t <$> getQueueRec ms p queueId
-  Nothing -> pure $ verifyQueueTransmission forwarded service thAuth t Nothing
+verifyTransmission :: forall s. MsgStoreClass s => s -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> IO (VerificationResult s)
+verifyTransmission ms service thAuth t@(_, _, (_, queueId, Cmd p _)) = case queueParty p of
+  Just Dict -> verifyLoadedQueue service thAuth t <$> getQueueRec ms p queueId
+  Nothing -> pure $ verifyQueueTransmission service thAuth t Nothing
 
-verifyLoadedQueue :: Bool -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
-verifyLoadedQueue forwarded service thAuth t@(tAuth, authorized, (corrId, _, _)) = \case
-  Right q -> verifyQueueTransmission forwarded service thAuth t (Just q)
+verifyLoadedQueue :: Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Either ErrorType (StoreQueue s, QueueRec) -> VerificationResult s
+verifyLoadedQueue service thAuth t@(tAuth, authorized, (corrId, _, _)) = \case
+  Right q -> verifyQueueTransmission service thAuth t (Just q)
   Left AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
   Left e -> VRFailed e
 
-verifyQueueTransmission :: forall s. Bool -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Maybe (StoreQueue s, QueueRec) -> VerificationResult s
-verifyQueueTransmission _forwarded service thAuth (tAuth, authorized, (corrId, entId, command@(Cmd p cmd))) q_
+verifyQueueTransmission :: forall s. Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Maybe (StoreQueue s, QueueRec) -> VerificationResult s
+verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, command@(Cmd p cmd))) q_
   | not checkRole = VRFailed $ CMD PROHIBITED
   | not verifyServiceSig = VRFailed SERVICE
   | otherwise = vc p cmd
@@ -2149,7 +2149,7 @@ client
             rejectOrVerify clntThAuth = \case
               Left (corrId', entId', e) -> pure $ Left (corrId', entId', ERR e)
               Right t'@(_, _, t''@(corrId', entId', cmd'))
-                | allowed -> liftIO $ verified <$> verifyTransmission True ms Nothing clntThAuth t'
+                | allowed -> liftIO $ verified <$> verifyTransmission ms Nothing clntThAuth t'
                 | otherwise -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
                 where
                   allowed = case cmd' of
