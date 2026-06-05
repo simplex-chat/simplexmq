@@ -20,6 +20,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word8)
 import qualified Data.Aeson as J
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
   ( NameOwner,
@@ -132,8 +133,11 @@ nameRecordEncodingSpec = do
     J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)) `shouldBe` Right sampleRecord
 
   it "emits keys in spec-documented order (Python resolver shape)" $ do
-    -- Default toEncoding routes through Value/KeyMap and re-emits keys
-    -- alphabetically; spec requires byte-identical canonical encoding.
+    -- The wire encoding (J.encode -> toEncoding) MUST keep keys in spec
+    -- declaration order so resolvers in different runtimes emit
+    -- byte-identical JSON. Routing the same record through
+    -- J.encode . J.toJSON re-emits keys alphabetically (Aeson canonicalises
+    -- via KeyMap); that path is NOT the wire format.
     let bytes = LB.toStrict (J.encode sampleRecord)
         offset k = B.length (fst (B.breakSubstring k bytes))
         offsets =
@@ -153,6 +157,20 @@ nameRecordEncodingSpec = do
               "resolver"
             ]
     offsets `shouldBe` sort offsets
+
+  it "toJSON and toEncoding agree on the field set (no divergence between paths)" $ do
+    -- The previous hand-rolled instance had a subtle divergence: toJSON
+    -- and toEncoding were two independent code paths and could drift on
+    -- which optional fields they emit. TH-deriving both from a single
+    -- Options value forecloses that. Order still differs (toJSON goes
+    -- through KeyMap, alphabetical), but the set of emitted keys MUST
+    -- match.
+    let objectKeys v = case v of
+          J.Object o -> sort (KM.keys o)
+          _ -> error "expected JSON object"
+        viaToJSON = objectKeys (J.toJSON sampleRecord)
+        viaEncode = either error objectKeys (J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)))
+    viaToJSON `shouldBe` viaEncode
 
   it "tolerates absent optional keys (forward-compat with sparse Python output)" $ do
     let minimal =

@@ -12,7 +12,7 @@ module Simplex.Messaging.SimplexName.Contracts
 where
 
 import qualified Data.ByteString.Char8 as B
-import Simplex.Messaging.Protocol (NameOwner, mkNameOwner)
+import Simplex.Messaging.Names.Owner (NameOwner, mkNameOwner)
 import Simplex.Messaging.SimplexName (SimplexTLD (..))
 
 -- | Map a TLD to its SNRC contract address. `Nothing` means the TLD has
