@@ -1250,7 +1250,7 @@ verifyLoadedQueue forwarded service thAuth t@(tAuth, authorized, (corrId, _, _))
   Left e -> VRFailed e
 
 verifyQueueTransmission :: forall s. Bool -> Maybe THPeerClientService -> Maybe (THandleAuth 'TServer) -> SignedTransmission Cmd -> Maybe (StoreQueue s, QueueRec) -> VerificationResult s
-verifyQueueTransmission forwarded service thAuth (tAuth, authorized, (corrId, entId, command@(Cmd p cmd))) q_
+verifyQueueTransmission _forwarded service thAuth (tAuth, authorized, (corrId, entId, command@(Cmd p cmd))) q_
   | not checkRole = VRFailed $ CMD PROHIBITED
   | not verifyServiceSig = VRFailed SERVICE
   | otherwise = vc p cmd
@@ -1270,9 +1270,9 @@ verifyQueueTransmission forwarded service thAuth (tAuth, authorized, (corrId, en
     vc SNotifierService NSUBS {} = verifyServiceCmd
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
-    vc SResolver (RSLV _)
-      | forwarded = VRVerified Nothing
-      | otherwise = VRFailed $ CMD PROHIBITED
+    -- RSLV is accepted both forwarded (via PFWD, preferred - hides client IP from resolver)
+    -- and direct (client->resolver, faster, exposes client IP). Mode is chosen by the client.
+    vc SResolver (RSLV _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True

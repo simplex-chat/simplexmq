@@ -74,6 +74,7 @@ module Simplex.Messaging.Client
     connectSMPProxiedRelay,
     proxySMPMessage,
     proxyResolveName,
+    directResolveName,
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
@@ -1047,16 +1048,25 @@ sendSMPMessage c nm spKey sId flags msg =
 proxySMPMessage :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
 proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm proxiedRelay spKey sId (SEND flags msg)
 
--- | Resolve a public-namespace name via PFWD. RSLV is forwarded-only on the
--- server, so this is the only client-side path. Mirrors `proxySMPMessage`'s
--- shape; routes through `proxySMPCommand` and pattern-matches the expected
--- NAME response.
+-- | Resolve a public-namespace name via PFWD. Preferred path - hides the
+-- client IP from the resolver. Mirrors `proxySMPMessage`'s shape; routes
+-- through `proxySMPCommand` and pattern-matches the expected NAME response.
 proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> NameOwner -> Text -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
 proxyResolveName c nm proxiedRelay contract name =
   proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV RslvRequest {name, contract}) >>= \case
     Right (NAME nr) -> pure $ Right nr
     Right r -> throwE $ unexpectedResponse r
     Left e -> pure $ Left e
+
+-- | Direct (non-PFWD) name resolution. Exposes the client IP to the resolver;
+-- callers that want anonymity should use `proxyResolveName` via the standard
+-- proxy fallback in the agent. RSLV requires no entity ID or authorization
+-- (see `noAuthCmd` in Protocol.hs).
+directResolveName :: SMPClient -> NetworkRequestMode -> NameOwner -> Text -> ExceptT SMPClientError IO NameRecord
+directResolveName c nm contract name =
+  sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV RslvRequest {name, contract})) >>= \case
+    NAME nr -> pure nr
+    r -> throwE $ unexpectedResponse r
 
 -- | Acknowledge message delivery (server deletes the message).
 --

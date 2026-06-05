@@ -488,7 +488,7 @@ partyClientRole = \case
   SSenderLink -> Just SRMessaging
   SProxiedClient -> Just SRMessaging
   SProxyService -> Just SRProxy
-  SResolver -> Nothing
+  SResolver -> Just SRMessaging
 {-# INLINE partyClientRole #-}
 
 partyServiceRole :: ServiceParty p => SParty p -> SMPServiceRole

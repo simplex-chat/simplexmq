@@ -1993,16 +1993,16 @@ getQueueLink c nm userId server lnkId =
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp nm proxySess lnkId
     getDirectly smp = getSMPQueueLink smp nm lnkId
 
--- | RSLV is proxy-only at the protocol level (SResolver has no direct client
--- role), so the direct fallback used by sendOrProxySMPCommand cannot succeed.
--- Surface a transport error if the network config (SPMNever, or no proxy
--- available for the destination) routes us to the direct path.
+-- | Resolve a public-namespace name. Prefers PFWD (hides client IP from the
+-- resolver) and falls back to a direct send when the proxy is unavailable
+-- (faster but exposes the client IP). Mode selection is delegated to
+-- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
 resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> NameOwner -> Text -> AM NameRecord
 resolveName c nm userId server contract name =
   snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
   where
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess contract name
-    resolveDirectly _ = throwE $ PCETransportError TENoServerAuth
+    resolveDirectly smp = directResolveName smp nm contract name
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =
