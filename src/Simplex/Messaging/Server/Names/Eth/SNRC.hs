@@ -46,8 +46,9 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8')
-import Simplex.Messaging.Protocol (NameOwner, NameRecord, mkNameOwner, unNameOwner)
+import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), mkNameOwner, unNameOwner)
 
 -- | ABI-decode failure modes (caller collapses to ResolveError EthDecodeErr).
 data AbiError
@@ -169,26 +170,89 @@ decodeStringArray depth headEnd off cntCap byteCap buf
           collectN (i + 1) n base hd (s : acc)
 
 -- | Decode the ABI-encoded return value of getRecord(bytes32) into a NameRecord.
+--
+-- Assumed Solidity signature:
+--
+--   function getRecord(bytes32 node) external view returns (
+--     string name, string nickname, string website, string location,
+--     string simplexContact, string simplexChannel,
+--     string ETH, string BTC, string XMR, string DOT,
+--     address owner, uint256 expiry
+--   )
+--
+-- Tuple layout: 12 head slots (32 bytes each) followed by length-prefixed
+-- string data in declaration order. Slots 0-9 are string tail offsets
+-- (from the start of the buffer, which equals the start of the tuple for
+-- a top-level eth_call return), slot 10 is the owner address, slot 11 is
+-- the uint256 expiry.
+--
 -- Zero-owner (0x000...000) is reported as Right Nothing so the caller maps it
 -- to NotFound (ENS-style sentinel). Records whose on-chain expiry is in the
 -- past are also reported as Right Nothing — clients trust the server's filter
 -- and the wire NameRecord carries no expiry field.
 --
 -- `nowSec` is the current Unix time the caller wants the expiry compared
--- against. Pass `0` to disable the expiry check.
+-- against. Pass `0` to disable the expiry check (test scenarios); on-chain
+-- `expiry = 0` means "never expires" (reserved names) and is always accepted.
 --
--- PLACEHOLDER: returns Right Nothing for any non-zero owner until the Part 1
--- SNRC contract ABI is finalised. All ABI primitives above are production-ready;
--- only the field-layout-aware composition (and the expiry slot read) is
--- pending.
-decodeGetRecord :: Int64 -> ByteString -> Either AbiError (Maybe NameRecord)
-decodeGetRecord _nowSec buf
-  | B.length buf < 32 * 8 = Left AbiTruncated
-  -- Both arms return Nothing today: the zero-owner branch is the real ENS-style
-  -- NotFound sentinel; the non-zero branch is the SNRC-ABI placeholder (which
-  -- will also apply the `_nowSec` expiry filter once the field layout lands).
-  -- They separate once the field-layout decoder ships.
-  | otherwise = Nothing <$ decodeAddress 32 buf
+-- `resolver` is the SNRC contract address that produced the record (i.e. the
+-- address the server's eth_call was sent to), populated into `nrResolver`
+-- since the ABI return doesn't carry it.
+decodeGetRecord :: NameOwner -> Int64 -> ByteString -> Either AbiError (Maybe NameRecord)
+decodeGetRecord resolver nowSec buf
+  | B.length buf < headEnd = Left AbiTruncated
+  | otherwise = do
+      nameOff <- decodeWord256Int64 (slot 0) buf
+      nicknameOff <- decodeWord256Int64 (slot 1) buf
+      websiteOff <- decodeWord256Int64 (slot 2) buf
+      locationOff <- decodeWord256Int64 (slot 3) buf
+      simplexContactOff <- decodeWord256Int64 (slot 4) buf
+      simplexChannelOff <- decodeWord256Int64 (slot 5) buf
+      ethOff <- decodeWord256Int64 (slot 6) buf
+      btcOff <- decodeWord256Int64 (slot 7) buf
+      xmrOff <- decodeWord256Int64 (slot 8) buf
+      dotOff <- decodeWord256Int64 (slot 9) buf
+      owner <- decodeAddress (slot 10) buf
+      expiry <- decodeWord256Int64 (slot 11) buf
+      if isZeroOwner owner || isExpired nowSec expiry
+        then pure Nothing
+        else do
+          nrName <- decodeStr 255 nameOff
+          nrNickname <- decodeOptStr 255 nicknameOff
+          nrWebsite <- decodeOptStr 255 websiteOff
+          nrLocation <- decodeOptStr 255 locationOff
+          nrSimplexContact <- decodeOptStr 1024 simplexContactOff
+          nrSimplexChannel <- decodeOptStr 1024 simplexChannelOff
+          nrEth <- decodeOptStr 255 ethOff
+          nrBtc <- decodeOptStr 255 btcOff
+          nrXmr <- decodeOptStr 255 xmrOff
+          nrDot <- decodeOptStr 255 dotOff
+          pure $
+            Just
+              NameRecord
+                { nrName,
+                  nrNickname,
+                  nrWebsite,
+                  nrLocation,
+                  nrSimplexContact,
+                  nrSimplexChannel,
+                  nrEth,
+                  nrBtc,
+                  nrXmr,
+                  nrDot,
+                  nrOwner = owner,
+                  nrResolver = resolver
+                }
+  where
+    headSlots = 12 :: Int
+    slotSize = 32 :: Int
+    headEnd = headSlots * slotSize
+    slot n = n * slotSize
+    -- on-chain expiry == 0 means "never expires"; nowSec == 0 disables the check.
+    isExpired now expiry = now /= 0 && expiry /= 0 && expiry < now
+    decodeStr cap off = decodeUtf8Text headEnd (fromIntegral off) cap buf
+    decodeOptStr cap off = nullToNothing <$> decodeStr cap off
+    nullToNothing t = if T.null t then Nothing else Just t
 
 isZeroOwner :: NameOwner -> Bool
 isZeroOwner = (== B.replicate 20 '\NUL') . unNameOwner

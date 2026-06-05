@@ -3,17 +3,22 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module SMPNamesTests (smpNamesTests) where
+module SMPNamesTests (smpNamesTests, encodeRecordAbi) where
 
 import qualified Crypto.Hash as Crypton
+import Data.Bits (shiftR, (.&.))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteArray as BA
 import Data.Either (isLeft, isRight)
 import Data.Foldable (for_)
+import Data.Int (Int64)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
+import Data.Word (Word8)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
 import Simplex.Messaging.Protocol
@@ -117,6 +122,7 @@ smpNamesTests = do
   describe "Keccak-256 and namehash" namehashSpec
   describe "ABI primitive bounds" abiBoundsSpec
   describe "decodeGetRecord (zero-owner sentinel)" zeroOwnerSpec
+  describe "decodeGetRecord (record + expiry)" decodeGetRecordSpec
   describe "TLD whitelist + RSLV verification" tldWhitelistSpec
   describe "Resolver" resolverSpec
 
@@ -276,13 +282,131 @@ abiBoundsSpec = do
 zeroOwnerSpec :: Spec
 zeroOwnerSpec = do
   it "decodeGetRecord returns Nothing for zero-owner buffer" $ do
-    -- 8 slots × 32 bytes; owner at slot 1 (offset 32) is all-zero by construction
-    let buf = B.replicate (32 * 8) '\NUL'
-    decodeGetRecord 0 buf `shouldBe` Right Nothing
+    -- 12 slots * 32 bytes; owner at slot 10 is all-zero by construction
+    let buf = B.replicate (32 * 12) '\NUL'
+    decodeGetRecord addr1 0 buf `shouldBe` Right Nothing
 
-  it "decodeGetRecord fails on truncated buffer" $ do
-    let tiny = B.replicate 31 '\NUL'
-    decodeGetRecord 0 tiny `shouldBe` Left AbiTruncated
+  it "decodeGetRecord fails on truncated buffer (< 12 head slots)" $ do
+    let tiny = B.replicate (32 * 11) '\NUL'
+    decodeGetRecord addr1 0 tiny `shouldBe` Left AbiTruncated
+
+decodeGetRecordSpec :: Spec
+decodeGetRecordSpec = do
+  it "decodes a full record with all optional fields populated" $ do
+    let buf = encodeRecordAbi sampleRecord 0
+    case decodeGetRecord (nrResolver sampleRecord) 0 buf of
+      Right (Just r) -> r `shouldBe` sampleRecord
+      other -> expectationFailure $ "expected Just sampleRecord, got: " <> show other
+
+  it "decodes a minimal record (empty optional strings -> Nothing)" $ do
+    -- Empty strings in the ABI should map to Nothing for optional fields.
+    let minimal =
+          sampleRecord
+            { nrNickname = Nothing,
+              nrWebsite = Nothing,
+              nrLocation = Nothing,
+              nrSimplexContact = Nothing,
+              nrSimplexChannel = Nothing,
+              nrEth = Nothing,
+              nrBtc = Nothing,
+              nrXmr = Nothing,
+              nrDot = Nothing
+            }
+        buf = encodeRecordAbi minimal 0
+    decodeGetRecord (nrResolver minimal) 0 buf `shouldBe` Right (Just minimal)
+
+  it "preserves resolver address passed in (not derived from buffer)" $ do
+    let buf = encodeRecordAbi sampleRecord 0
+    case decodeGetRecord addr2 0 buf of
+      Right (Just r) -> nrResolver r `shouldBe` addr2
+      other -> expectationFailure $ "expected Just .. with resolver=addr2, got: " <> show other
+
+  it "returns Nothing for expired record (expiry < nowSec, both non-zero)" $ do
+    let buf = encodeRecordAbi sampleRecord 1000
+    -- nowSec = 2000 > expiry = 1000 -> expired
+    decodeGetRecord testResolver 2000 buf `shouldBe` Right Nothing
+
+  it "returns Just for non-expired record (expiry > nowSec)" $ do
+    let buf = encodeRecordAbi sampleRecord 5000
+    case decodeGetRecord testResolver 2000 buf of
+      Right (Just r) -> r `shouldBe` sampleRecord {nrResolver = testResolver}
+      other -> expectationFailure $ "expected Just, got: " <> show other
+
+  it "returns Just for expiry == 0 (never expires) even when nowSec is large" $ do
+    let buf = encodeRecordAbi sampleRecord 0
+    case decodeGetRecord testResolver maxBound buf of
+      Right (Just r) -> r `shouldBe` sampleRecord {nrResolver = testResolver}
+      other -> expectationFailure $ "expected Just (expiry=0 is never-expires), got: " <> show other
+
+  it "returns Just when nowSec == 0 (expiry check disabled) even if expiry is in the past" $ do
+    let buf = encodeRecordAbi sampleRecord 1
+    case decodeGetRecord testResolver 0 buf of
+      Right (Just r) -> r `shouldBe` sampleRecord {nrResolver = testResolver}
+      other -> expectationFailure $ "expected Just (nowSec=0 disables check), got: " <> show other
+  where
+    testResolver = nrResolver sampleRecord
+
+-- | Build a valid ABI-encoded tuple of (string x10, address, uint256) for tests.
+-- HEAD: 12 slots of 32 bytes each. Slots 0-9 are tail offsets for the 10
+-- string fields in declaration order (name, nickname, website, location,
+-- simplex.contact, simplex.channel, ETH, BTC, XMR, DOT); slot 10 is the
+-- owner address; slot 11 is the uint256 expiry. TAIL: each string is
+-- length-prefixed (32-byte big-endian length) and padded to a 32-byte
+-- boundary. Missing optional fields (Nothing) encode as empty strings.
+encodeRecordAbi :: NameRecord -> Int64 -> ByteString
+encodeRecordAbi r expiry =
+  let headSize = 12 * 32
+      strs =
+        [ encodeUtf8 (nrName r),
+          encodeUtf8 (fromMaybe "" (nrNickname r)),
+          encodeUtf8 (fromMaybe "" (nrWebsite r)),
+          encodeUtf8 (fromMaybe "" (nrLocation r)),
+          encodeUtf8 (fromMaybe "" (nrSimplexContact r)),
+          encodeUtf8 (fromMaybe "" (nrSimplexChannel r)),
+          encodeUtf8 (fromMaybe "" (nrEth r)),
+          encodeUtf8 (fromMaybe "" (nrBtc r)),
+          encodeUtf8 (fromMaybe "" (nrXmr r)),
+          encodeUtf8 (fromMaybe "" (nrDot r))
+        ]
+      -- offsets of each string-tail body from start of buffer
+      offsets = scanl (\o s -> o + encodedStringSize s) headSize strs
+      stringOffsets = take 10 offsets
+      headBytes =
+        B.concat (map (encodeWord256 . fromIntegral) stringOffsets)
+          <> encodeAddressSlot (nrOwner r)
+          <> encodeWord256 (fromIntegral expiry)
+      tailBytes = B.concat (map encodeStringTail strs)
+   in headBytes <> tailBytes
+
+-- | Length-prefix + 32-byte padding for a single ABI string body.
+encodeStringTail :: ByteString -> ByteString
+encodeStringTail s =
+  let len = B.length s
+      pad = (32 - (len `mod` 32)) `mod` 32
+   in encodeWord256 (fromIntegral len) <> s <> B.replicate pad '\NUL'
+
+encodedStringSize :: ByteString -> Int
+encodedStringSize s =
+  let len = B.length s
+      pad = (32 - (len `mod` 32)) `mod` 32
+   in 32 + len + pad
+
+-- | 20-byte address padded to 32 bytes (12 zero bytes then 20 address bytes).
+encodeAddressSlot :: NameOwner -> ByteString
+encodeAddressSlot owner = B.replicate 12 '\NUL' <> unNameOwner owner
+
+-- | uint256 big-endian over a non-negative Int64; high 24 bytes are zero
+-- (the production decoder rejects buffers with any non-zero high bytes,
+-- which is exactly what we want for non-overflowing test values).
+encodeWord256 :: Int64 -> ByteString
+encodeWord256 n
+  | n < 0 = error "encodeWord256: negative value"
+  | otherwise = B.replicate 24 '\NUL' <> B.pack (map byteAt [56, 48, 40, 32, 24, 16, 8, 0])
+  where
+    byteAt :: Int -> Char
+    byteAt shift =
+      let b = fromIntegral (n `shiftR` shift) .&. 0xFF :: Word8
+       in toEnum (fromIntegral b)
 
 tldWhitelistSpec :: Spec
 tldWhitelistSpec = do
@@ -343,7 +467,7 @@ resolverSpec :: Spec
 resolverSpec = do
   let mkEnv ethCall = newNamesEnvWith testNamesConfig ethCall Nothing
       aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
-      zeroOwnerResponse = Right (B.replicate (32 * 8) '\NUL')
+      zeroOwnerResponse = Right (B.replicate (32 * 12) '\NUL')
 
   it "maps stub zero-owner response to NotFound" $ do
     env <- mkEnv (\_ _ -> pure zeroOwnerResponse)

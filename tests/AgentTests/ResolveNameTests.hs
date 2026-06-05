@@ -17,11 +17,6 @@
 -- `sendOrProxySMPCommand` so we cover the agent-side direct/proxy selection
 -- and the agent's error mapping (`SMP host AUTH`, `PROXY {.. proxyErr ..}`,
 -- `INTERNAL ..`).
---
--- The success path is intentionally `pendingWith`: until the SNRC ABI codec
--- ships, `decodeGetRecord` collapses every non-malformed buffer to
--- `Right Nothing` (NotFound), which the resolver maps to `ERR AUTH`. Re-enable
--- the success test when `Server/Names/Eth/SNRC.hs:177-178` returns real records.
 module AgentTests.ResolveNameTests (resolveNameTests) where
 
 import AgentTests.FunctionalAPITests (withAgent)
@@ -30,12 +25,13 @@ import qualified Data.ByteString.Char8 as B
 import Data.List (isInfixOf)
 import SMPAgentClient
 import SMPClient
+import SMPNamesTests (encodeRecordAbi)
 import Simplex.Messaging.Agent (resolveSimplexName)
 import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
 import Simplex.Messaging.Client (SMPProxyFallback (..), SMPProxyMode (..), pattern NRMInteractive)
-import Simplex.Messaging.Protocol (pattern SMPServer)
+import Simplex.Messaging.Protocol (NameRecord (..), mkNameOwner, pattern SMPServer)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
@@ -50,11 +46,11 @@ import Util (it)
 -- Fixtures (parallel to RSLVTests)
 -- ---------------------------------------------------------------------------
 
--- 8 slots * 32 bytes, all zero — placeholder `decodeGetRecord` returns
--- `Right Nothing` for the zero-owner sentinel, so the resolver maps to
--- `ResolveError.NotFound` -> `ERR AUTH`.
+-- 12 slots * 32 bytes, all zero. `decodeGetRecord` reads the owner from
+-- slot 10 and treats the zero address as the NotFound sentinel, so the
+-- resolver maps to `ResolveError.NotFound` -> server `ERR AUTH`.
 zeroOwnerAbi :: B.ByteString
-zeroOwnerAbi = B.replicate (32 * 8) '\NUL'
+zeroOwnerAbi = B.replicate (32 * 12) '\NUL'
 
 stubNamesConfig :: NamesConfig
 stubNamesConfig =
@@ -69,11 +65,41 @@ stubNamesConfig =
 stubEthCallNotFound :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
 stubEthCallNotFound _to _data = pure (Right zeroOwnerAbi)
 
+-- | A complete NameRecord used by the success-path test. The decoder fills
+-- `nrResolver` from the contract address the server's ethCall was sent to
+-- (i.e. the simplex TLD contract); the test asserts against that value.
+aliceRecord :: NameRecord
+aliceRecord =
+  NameRecord
+    { nrName = "alice.simplex",
+      nrNickname = Just "Alice",
+      nrWebsite = Just "https://alice.example",
+      nrLocation = Just "Earth",
+      nrSimplexContact = Just "simplex:/contact/abc#xyz",
+      nrSimplexChannel = Nothing,
+      nrEth = Just "0x0000000000000000000000000000000000000001",
+      nrBtc = Nothing,
+      nrXmr = Nothing,
+      nrDot = Nothing,
+      nrOwner = either error id (mkNameOwner (B.replicate 20 '\x33')),
+      -- Overwritten by the decoder; the placeholder here is never observed.
+      nrResolver = either error id (mkNameOwner (B.replicate 20 '\xFF'))
+    }
+
+-- | Stub returning a valid ABI buffer for the success path (expiry = 0 ->
+-- never expires).
+stubEthCallSuccess :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
+stubEthCallSuccess _to _data = pure (Right (encodeRecordAbi aliceRecord 0))
+
 -- | Names env using the static `tldContract` mapping: TLDSimplex and
 -- TLDTesting map to placeholder contracts; TLDWeb is unmapped and rejected
 -- by the resolver's `verifyRslv`.
 mkSimplexOnlyNamesEnv :: IO NamesEnv
 mkSimplexOnlyNamesEnv = newNamesEnvWith stubNamesConfig stubEthCallNotFound Nothing
+
+-- | Same as `mkSimplexOnlyNamesEnv` but the stub returns a real record.
+mkSuccessNamesEnv :: IO NamesEnv
+mkSuccessNamesEnv = newNamesEnvWith stubNamesConfig stubEthCallSuccess Nothing
 
 memCfg :: AServerConfig
 memCfg = cfgMS (ASType SQSMemory SMSMemory)
@@ -132,18 +158,15 @@ resolveNameTests :: Spec
 resolveNameTests = do
   describe "Agent resolveSimplexName" $ do
     describe "direct path (SPMNever)" $
-      it "AUTH propagates as SMP host AUTH (placeholder decoder -> NotFound)" testDirectAuth
+      it "AUTH propagates as SMP host AUTH (zero-owner stub -> NotFound)" testDirectAuth
     describe "proxy path (SPMAlways)" $
       it "AUTH from resolver propagates via proxy as SMP <proxyHost> AUTH" testProxyAuth
     describe "TLDTesting path" $
-      it "AUTH (placeholder decoder -> NotFound) for TLDTesting too" testUnknownTldOnServer
+      it "AUTH (zero-owner stub -> NotFound) for TLDTesting too" testUnknownTldOnServer
     describe "TLD without contract entry" $
       it "INTERNAL (TLDWeb has no tldContract entry)" testNoAgentContract
     describe "success path" $
-      it "returns NameRecord" $
-        pendingWith
-          "decodeGetRecord placeholder returns Right Nothing for all non-malformed inputs; \
-          \re-enable when SNRC ABI codec ships (Server/Names/Eth/SNRC.hs:177-178)"
+      it "returns NameRecord" testDirectSuccess
 
 -- ---------------------------------------------------------------------------
 -- Tests
@@ -217,3 +240,19 @@ testNoAgentContract =
     webDomain = SimplexNameDomain TLDWeb "example.com" []
     -- Non-empty userServers is required for agent init; never contacted.
     agentServers = initAgentServers {smp = userServers [testSMPServer]}
+
+-- | Success path: stub returns a valid ABI buffer, the agent receives a
+-- decoded NameRecord. The decoder populates `nrResolver` with the contract
+-- the server's ethCall was sent to (i.e. `tldContract TLDSimplex`), so the
+-- expected record's resolver is `'\x11'`-bytes (see Contracts.hs).
+testDirectSuccess :: HasCallStack => IO ()
+testDirectSuccess = do
+  nenv <- mkSuccessNamesEnv
+  withDirectResolver nenv $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+    case r of
+      Right nr -> nr `shouldBe` aliceRecord {nrResolver = simplexContract}
+      _ -> expectationFailure $ "expected Right NameRecord, got: " <> show r
+  where
+    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
+    simplexContract = either error id (mkNameOwner (B.replicate 20 '\x11'))

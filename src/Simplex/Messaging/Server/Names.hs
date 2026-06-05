@@ -26,21 +26,19 @@ module Simplex.Messaging.Server.Names
   )
 where
 
-import Control.Monad (forM_, guard, unless, when)
+import Control.Monad (guard)
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.ByteString.Char8 (ByteString)
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Simplex.Messaging.Encoding.String (strDecode)
-import Simplex.Messaging.Util (eitherToMaybe)
 import Simplex.Messaging.Protocol (NameOwner, NameRecord, RslvRequest (..), unNameOwner)
 import Simplex.Messaging.Server.Names.Eth.RPC (EthRpcEnv, EthRpcError (..), RpcAuth (..), closeEthRpcEnv, ethCallReal, newEthRpcEnv)
-import Simplex.Messaging.Server.Names.Eth.SNRC (decodeAddress, decodeGetRecord, encodeGetRecord, isZeroOwner, namehash)
+import Simplex.Messaging.Server.Names.Eth.SNRC (decodeGetRecord, encodeGetRecord, namehash)
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..), fullDomainName)
 import Simplex.Messaging.SimplexName.Contracts (tldContract)
 import System.Timeout (timeout)
@@ -69,10 +67,7 @@ type EthCall = ByteString -> ByteString -> IO (Either EthRpcError ByteString)
 data NamesEnv = NamesEnv
   { config :: NamesConfig,
     ethCall :: EthCall,
-    rpcEnv :: Maybe EthRpcEnv, -- Nothing for test stubs
-    -- One-shot guard so the placeholder-decoder warning logs once per process,
-    -- not once per RSLV.
-    placeholderWarned :: IORef Bool
+    rpcEnv :: Maybe EthRpcEnv -- Nothing for test stubs
   }
 
 newNamesEnv :: NamesConfig -> IO NamesEnv
@@ -82,9 +77,7 @@ newNamesEnv cfg = do
 
 -- | Allocate resolver with an injected ethCall (test seam).
 newNamesEnvWith :: NamesConfig -> EthCall -> Maybe EthRpcEnv -> IO NamesEnv
-newNamesEnvWith config ethCall rpcEnv = do
-  placeholderWarned <- newIORef False
-  pure NamesEnv {config, ethCall, rpcEnv, placeholderWarned}
+newNamesEnvWith config ethCall rpcEnv = pure NamesEnv {config, ethCall, rpcEnv}
 
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {rpcEnv} = mapM_ closeEthRpcEnv rpcEnv
@@ -139,35 +132,14 @@ resolveName env contract d = do
           pure (Left EthHttpErr)
 
 fetch :: NamesEnv -> NameOwner -> SimplexNameDomain -> IO (Either ResolveError NameRecord)
-fetch env@NamesEnv {ethCall} contract d = do
+fetch NamesEnv {ethCall} contract d = do
   nowSec <- floor <$> getPOSIXTime
   ethCall (unNameOwner contract) (encodeGetRecord (namehash (encodeUtf8 (fullDomainName d)))) >>= \case
     Left e -> pure (Left (mapEthRpcError e))
-    Right ret -> case decodeGetRecord nowSec ret of
-      Right Nothing -> notFoundWithPlaceholderWarn ret
+    Right ret -> case decodeGetRecord contract nowSec ret of
+      Right Nothing -> pure (Left NotFound)
       Right (Just rec) -> pure (Right rec)
       Left _ -> pure (Left EthDecodeErr)
-  where
-    -- decodeGetRecord is currently a placeholder: it returns Right Nothing
-    -- for BOTH "zero-owner sentinel" (real NotFound) and "non-zero owner
-    -- with real data but no ABI decoder yet". Inspect the owner slot
-    -- directly to distinguish, and surface the latter once per process so
-    -- an operator who enables [NAMES] against a working SNRC contract sees
-    -- the resolver is functionally stubbed. Expired records are filtered
-    -- inside the decoder (using the `nowSec` argument) so the wire
-    -- NameRecord never carries an expiry field.
-    notFoundWithPlaceholderWarn ret = do
-      forM_ (eitherToMaybe (decodeAddress 32 ret)) $ \owner ->
-        unless (isZeroOwner owner) (warnPlaceholderOnce env)
-      pure (Left NotFound)
-
-warnPlaceholderOnce :: NamesEnv -> IO ()
-warnPlaceholderOnce NamesEnv {placeholderWarned} = do
-  first <- atomicModifyIORef' placeholderWarned (\w -> (True, not w))
-  when first $
-    logError
-      "[NAMES] decodeGetRecord placeholder hit — SNRC ABI codec not finalised; \
-      \every non-zero-owner record returns NotFound until the decoder ships"
 
 -- | Collapse the JSON-RPC transport-layer error space into the resolver's
 -- public error space.

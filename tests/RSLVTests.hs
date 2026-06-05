@@ -11,16 +11,13 @@
 
 -- | Functional-API tests for the public-namespace resolver (RSLV).
 --
--- Mocks the resolver at the `ethCall` layer using `newNamesEnvWith`. The
--- production `decodeGetRecord` is currently a placeholder that returns
--- `Right Nothing` for any non-malformed buffer (see Server/Names/Eth/SNRC.hs);
--- consequently the success-path test ("returns NAME with NameRecord") is
--- marked `pendingWith` until the SNRC ABI codec ships. Until then we test:
+-- Mocks the resolver at the `ethCall` layer using `newNamesEnvWith`. Tests:
 --   * direct RSLV (post-`ecd89cf1`) is accepted (not `CMD PROHIBITED`)
 --   * `ERR AUTH` for contract / TLD config mismatches (verifyRslv layer)
---   * `ERR AUTH` for backend `NotFound` (placeholder decoder always hits this)
+--   * `ERR AUTH` for backend `NotFound` (zero-owner sentinel)
 --   * `ERR AUTH` for backend transport errors
 --   * `ERR AUTH` when the server has no `namesEnv` (rslvDisabled)
+--   * `NAME` returned when the ABI buffer decodes to a real record
 --   * the same paths via PFWD round-trip (proxy + resolver wiring works)
 module RSLVTests (rslvTests) where
 
@@ -31,6 +28,7 @@ import Data.Time.Clock (getCurrentTime)
 import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import SMPNamesTests (encodeRecordAbi)
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -38,6 +36,7 @@ import Simplex.Messaging.Protocol
     CorrId (..),
     ErrorType (..),
     NameOwner,
+    NameRecord (..),
     RslvRequest (..),
     SParty (..),
     Transmission,
@@ -77,10 +76,10 @@ serverContract = unsafeOwner (B.replicate 20 '\x11')
 otherContract :: NameOwner
 otherContract = unsafeOwner (B.replicate 20 '\x22')
 
--- 8 slots × 32 bytes, all zero — `decodeGetRecord` treats slot 1 (owner) as
--- the zero sentinel and returns `Right Nothing` → resolver maps to NotFound.
+-- 12 slots * 32 bytes, all zero — `decodeGetRecord` treats slot 10 (owner) as
+-- the zero sentinel and returns `Right Nothing` -> resolver maps to NotFound.
 zeroOwnerAbi :: B.ByteString
-zeroOwnerAbi = B.replicate (32 * 8) '\NUL'
+zeroOwnerAbi = B.replicate (32 * 12) '\NUL'
 
 stubNamesConfig :: NamesConfig
 stubNamesConfig =
@@ -92,8 +91,9 @@ stubNamesConfig =
       rpcMaxConcurrency = 4
     }
 
--- | Default stub: returns the all-zero ABI buffer. With the placeholder
--- decoder this collapses every lookup to `ResolveError.NotFound` → AUTH.
+-- | Default stub: returns the all-zero ABI buffer. The decoder treats the
+-- zero owner address as the NotFound sentinel -> resolver returns
+-- `ResolveError.NotFound` -> server `ERR AUTH`.
 stubEthCallNotFound :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
 stubEthCallNotFound _to _data = pure (Right zeroOwnerAbi)
 
@@ -104,6 +104,32 @@ stubEthCallNotFound _to _data = pure (Right zeroOwnerAbi)
 -- map to `EthHttpErr` via `mapEthRpcError`.
 stubEthCallHttpErr :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
 stubEthCallHttpErr _to _data = pure (Left BodyTooLarge)
+
+-- | Stub that returns a valid ABI buffer for the success-path test. The
+-- buffer encodes `aliceRecord` with no expiry (0 = never expires); the
+-- decoder fills in `nrResolver` from the caller's contract argument, so the
+-- test asserts on a record where `nrResolver = serverContract`.
+aliceRecord :: NameRecord
+aliceRecord =
+  NameRecord
+    { nrName = "alice.simplex",
+      nrNickname = Just "Alice",
+      nrWebsite = Just "https://alice.example",
+      nrLocation = Just "Earth",
+      nrSimplexContact = Just "simplex:/contact/abc#xyz",
+      nrSimplexChannel = Nothing,
+      nrEth = Just "0x0000000000000000000000000000000000000001",
+      nrBtc = Nothing,
+      nrXmr = Nothing,
+      nrDot = Nothing,
+      nrOwner = unsafeOwner (B.replicate 20 '\x33'),
+      -- Will be overwritten by the decoder using the contract address the
+      -- server's ethCall was sent to (i.e. `serverContract`).
+      nrResolver = unsafeOwner (B.replicate 20 '\xFF')
+    }
+
+stubEthCallSuccess :: B.ByteString -> B.ByteString -> IO (Either EthRpcError B.ByteString)
+stubEthCallSuccess _to _data = pure (Right (encodeRecordAbi aliceRecord 0))
 
 -- | Names env using the static TLD->contract mapping in
 -- `SimplexName.Contracts.tldContract`: TLDSimplex maps to `serverContract`,
@@ -169,16 +195,13 @@ rslvTests = do
     it "server accepts RSLV without PFWD (not CMD PROHIBITED)" testRslvDirectAccepted
     it "AUTH when contract address does not match TLD config" testRslvWrongContract
     it "AUTH when TLD has no contract configured" testRslvUnknownTld
-    it "AUTH when backend reports zero owner (NotFound via placeholder decoder)" testRslvBackendNotFound
+    it "AUTH when backend reports zero owner (NotFound via decoder)" testRslvBackendNotFound
     it "AUTH when backend transport fails (EthHttpErr)" testRslvBackendHttpErr
     it "AUTH when server has no names config (namesEnv = Nothing)" testRslvDisabled
   describe "RSLV forwarded (PFWD)" $ do
     it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError AUTH)" testRslvForwarded
   describe "RSLV success path (NAME response)" $ do
-    it "returns NAME with NameRecord" $
-      pendingWith
-        "decodeGetRecord placeholder returns Right Nothing for all non-malformed inputs; \
-        \re-enable when SNRC ABI codec ships (Server/Names/Eth/SNRC.hs:177-178)"
+    it "returns NAME with NameRecord" testRslvSuccess
 
 -- --- direct path -----------------------------------------------------------
 
@@ -188,9 +211,9 @@ testRslvDirectAccepted = do
   withResolverServer nenv $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs01" RslvRequest {name = "alice.simplex", contract = serverContract}
-      -- Placeholder decoder collapses zero-owner buffer to NotFound -> AUTH.
-      -- The point of this test is that the server accepted RSLV at all
-      -- (CMD PROHIBITED would mean the no-PFWD path was rejected).
+      -- Zero-owner stub buffer -> NotFound -> AUTH. The point of this test
+      -- is that the server accepted RSLV at all (CMD PROHIBITED would mean
+      -- the no-PFWD path was rejected).
       corrId `shouldBe` CorrId "rs01"
       resp `shouldBe` Right (ERR AUTH)
 
@@ -261,6 +284,19 @@ testRslvForwarded = do
     case r of
       Left (PCEProtocolError SMP.AUTH) -> pure ()
       _ -> expectationFailure $ "expected Left (PCEProtocolError AUTH), got: " <> show r
+
+-- --- success path ----------------------------------------------------------
+
+testRslvSuccess :: IO ()
+testRslvSuccess = do
+  nenv <- mkSimplexOnlyNamesEnv stubEthCallSuccess
+  withResolverServer nenv $
+    testSMPClient @TLS $ \h -> do
+      (corrId, _entId, resp) <- sendRslv h "rs07" RslvRequest {name = "alice.simplex", contract = serverContract}
+      corrId `shouldBe` CorrId "rs07"
+      case resp of
+        Right (NAME nr) -> nr `shouldBe` aliceRecord {nrResolver = serverContract}
+        _ -> expectationFailure $ "expected Right (NAME ..), got: " <> show resp
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure
