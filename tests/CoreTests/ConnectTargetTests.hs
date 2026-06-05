@@ -23,6 +23,8 @@ connectTargetTests = describe "ConnectTarget" $ do
       "#privacy.simplex" `encodesAs` "simplex:/name#privacy.simplex"
     it "#support.acme.simplex preserves subdomain" $
       "#support.acme.simplex" `encodesAs` "simplex:/name#support.acme.simplex"
+    it "#PRIVACY (bare uppercase) lowercases to match #privacy" $
+      strDecode @ConnectTarget "#PRIVACY" `shouldBe` strDecode @ConnectTarget "#privacy"
     it "simplex:/name@alice.simplex round-trips" $
       "simplex:/name@alice.simplex" `encodesAs` "simplex:/name@alice.simplex"
     it "simplex:/name#privacy.simplex round-trips" $

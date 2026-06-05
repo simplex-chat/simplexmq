@@ -88,7 +88,7 @@ instance StrEncoding SimplexNameInfo where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP
       bareName = parseBare . safeDecodeUtf8 <$?> boundedNonSpace
-      parseBare s = (\name -> SimplexNameDomain TLDSimplex name []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
+      parseBare s = (\name -> SimplexNameDomain TLDSimplex (T.toLower name) []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
 
 instance StrEncoding SimplexNameDomain where
   strEncode = encodeUtf8 . fullDomainName
