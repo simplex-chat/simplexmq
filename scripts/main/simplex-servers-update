@@ -237,10 +237,10 @@ checks() {
     exit 1
   fi
 
+  mkdir -p "$path_conf_info" "$path_tmp_bin"
+
   check_versions
   check_distro
-
-  mkdir -p $path_conf_info $path_tmp_bin
 
   return 0
 }
