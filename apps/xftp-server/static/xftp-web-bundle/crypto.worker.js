@@ -619,7 +619,6 @@ async function handleEncrypt(id, data, fileName) {
   const digest = sha512Streaming([encData], (done) => {
     self.postMessage({ id, type: "progress", done: source.length + done, total });
   }, encDataLen);
-  console.log(`[WORKER-DBG] encrypt: encData.len=${encData.length} digest=${_whex(digest, 64)} chunkSizes=[${chunkSizes.join(",")}]`);
   const dir = await getSessionDir();
   const fileHandle = await dir.getFileHandle("upload.bin", { create: true });
   const writeHandle = await fileHandle.createSyncAccessHandle();
@@ -643,9 +642,7 @@ function handleReadChunk(id, offset, size) {
 }
 async function handleDecryptAndStore(id, dhSecret, nonce, body, chunkDigest, chunkNo) {
   const bodyArr = new Uint8Array(body);
-  console.log(`[WORKER-DBG] store chunk=${chunkNo} body.len=${bodyArr.length} nonce=${_whex(nonce, 24)} dhSecret=${_whex(dhSecret)} digest=${_whex(chunkDigest, 32)} body[0..8]=${_whex(bodyArr)} body[-8..]=${_whex(bodyArr.slice(-8))}`);
   const decrypted = decryptReceivedChunk(dhSecret, nonce, bodyArr, chunkDigest);
-  console.log(`[WORKER-DBG] decrypted chunk=${chunkNo} len=${decrypted.length} [0..8]=${_whex(decrypted)} [-8..]=${_whex(decrypted.slice(-8))}`);
   if (useMemory) {
     memoryChunks.set(chunkNo, decrypted);
     self.postMessage({ id, type: "stored" });
@@ -660,7 +657,6 @@ async function handleDecryptAndStore(id, dhSecret, nonce, body, chunkDigest, chu
   currentDownloadOffset += decrypted.length;
   chunkMeta.set(chunkNo, { offset, size: decrypted.length });
   const written = downloadWriteHandle.write(decrypted, { at: offset });
-  console.log(`[WORKER-DBG] OPFS write chunk=${chunkNo} offset=${offset} size=${decrypted.length} written=${written}`);
   if (written !== decrypted.length) {
     console.warn(`[WORKER] OPFS write failed chunk=${chunkNo}: ${written}/${decrypted.length}, falling back to in-memory storage`);
     for (const [cn, meta] of chunkMeta.entries()) {
@@ -684,23 +680,16 @@ async function handleDecryptAndStore(id, dhSecret, nonce, body, chunkDigest, chu
     return;
   }
   downloadWriteHandle.flush();
-  const verifyBuf = new Uint8Array(Math.min(8, decrypted.length));
-  downloadWriteHandle.read(verifyBuf, { at: offset });
-  const verifyEnd = new Uint8Array(Math.min(8, decrypted.length));
-  downloadWriteHandle.read(verifyEnd, { at: offset + decrypted.length - verifyEnd.length });
-  console.log(`[WORKER-DBG] OPFS verify chunk=${chunkNo} readBack[0..8]=${_whex(verifyBuf)} readBack[-8..]=${_whex(verifyEnd)} expected[0..8]=${_whex(decrypted)} expected[-8..]=${_whex(decrypted.slice(-8))}`);
   self.postMessage({ id, type: "stored" });
 }
 async function handleVerifyAndDecrypt(id, size, digest, key, nonce) {
-  console.log(`[WORKER-DBG] verify: expectedSize=${size} expectedDigest=${_whex(digest, 64)} useMemory=${useMemory} chunkMeta.size=${chunkMeta.size} memoryChunks.size=${memoryChunks.size}`);
   const chunks = [];
   let totalSize = 0;
   const total = size * 3;
   let done = 0;
   if (useMemory) {
     const sorted = [...memoryChunks.entries()].sort((a, b) => a[0] - b[0]);
-    for (const [chunkNo, data] of sorted) {
-      console.log(`[WORKER-DBG] verify memory chunk=${chunkNo} size=${data.length}`);
+    for (const [, data] of sorted) {
       chunks.push(data);
       totalSize += data.length;
       done += data.length;
@@ -715,12 +704,10 @@ async function handleVerifyAndDecrypt(id, size, digest, key, nonce) {
     const dir = await getSessionDir();
     const fileHandle = await dir.getFileHandle("download.bin");
     const readHandle = await fileHandle.createSyncAccessHandle();
-    console.log(`[WORKER-DBG] verify: OPFS file size=${readHandle.getSize()}`);
     const sortedEntries = [...chunkMeta.entries()].sort((a, b) => a[0] - b[0]);
-    for (const [chunkNo, meta] of sortedEntries) {
+    for (const [, meta] of sortedEntries) {
       const buf = new Uint8Array(meta.size);
-      const bytesRead = readHandle.read(buf, { at: meta.offset });
-      console.log(`[WORKER-DBG] verify read chunk=${chunkNo} offset=${meta.offset} size=${meta.size} bytesRead=${bytesRead} [0..8]=${_whex(buf)} [-8..]=${_whex(buf.slice(-8))}`);
+      readHandle.read(buf, { at: meta.offset });
       chunks.push(buf);
       totalSize += meta.size;
       done += meta.size;
@@ -745,20 +732,9 @@ async function handleVerifyAndDecrypt(id, size, digest, key, nonce) {
   }
   const actualDigest = r.crypto_hash_sha512_final(state);
   if (!digestEqual(actualDigest, digest)) {
-    console.error(`[WORKER-DBG] DIGEST MISMATCH: expected=${_whex(digest, 64)} actual=${_whex(actualDigest, 64)} chunks=${chunks.length} totalSize=${totalSize}`);
-    const state2 = r.crypto_hash_sha512_init();
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      for (let off = 0; off < chunk.length; off += hashSEG) {
-        r.crypto_hash_sha512_update(state2, chunk.subarray(off, Math.min(off + hashSEG, chunk.length)));
-      }
-      const chunkDigest = sha512Streaming([chunk]);
-      console.error(`[WORKER-DBG] chunk[${i}] size=${chunk.length} sha512=${_whex(chunkDigest, 32)}… [0..8]=${_whex(chunk)} [-8..]=${_whex(chunk.slice(-8))}`);
-    }
     self.postMessage({ id, type: "error", message: "File digest mismatch" });
     return;
   }
-  console.log(`[WORKER-DBG] verify: digest OK`);
   const result = decryptChunks(BigInt(size), chunks, key, nonce, (d) => {
     self.postMessage({ id, type: "progress", done: size * 2 + d, total });
   });
