@@ -297,7 +297,7 @@ bbsDisclosedMsgs = ["2026-07-31", "supporter"]
 
 testBBSSignVerify :: IO ()
 testBBSSignVerify = do
-  (sk, pk) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
   let BBSSecretKey skBs = sk
       BBSPublicKey pkBs = pk
   B.length skBs `shouldBe` 32
@@ -310,7 +310,7 @@ testBBSSignVerify = do
 
 testBBSProofRoundtrip :: IO ()
 testBBSProofRoundtrip = do
-  (sk, pk) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
   Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-1"
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
@@ -319,7 +319,7 @@ testBBSProofRoundtrip = do
 
 testBBSTamperedProof :: IO ()
 testBBSTamperedProof = do
-  (sk, pk) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
   Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-2"
   Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
@@ -329,7 +329,7 @@ testBBSTamperedProof = do
 
 testBBSWrongMessage :: IO ()
 testBBSWrongMessage = do
-  (sk, pk) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
   Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-3"
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
@@ -338,8 +338,8 @@ testBBSWrongMessage = do
 
 testBBSWrongKey :: IO ()
 testBBSWrongKey = do
-  (sk, pk) <- bbsKeyGen
-  (_, pk2) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
+  Right (_, pk2) <- bbsKeyGen
   Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-4"
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
@@ -348,7 +348,7 @@ testBBSWrongKey = do
 
 testBBSUnlinkable :: IO ()
 testBBSUnlinkable = do
-  (sk, pk) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
   Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let ph1 = BBSPresHeader "nonce-contact-1"
       ph2 = BBSPresHeader "nonce-contact-2"
@@ -360,7 +360,7 @@ testBBSUnlinkable = do
 
 testBBSProofSize :: IO ()
 testBBSProofSize = do
-  (sk, pk) <- bbsKeyGen
+  Right (sk, pk) <- bbsKeyGen
   Right sig <- bbsSign sk pk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-size"
   Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages

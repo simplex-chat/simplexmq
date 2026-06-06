@@ -152,18 +152,18 @@ withIndexes idxs f = do
 
 -- Public API
 
-bbsKeyGen :: IO (BBSSecretKey, BBSPublicKey)
+bbsKeyGen :: IO (Either String (BBSSecretKey, BBSPublicKey))
 bbsKeyGen = do
   cs <- getCiphersuite
   allocaBytes bbsSkLen $ \skPtr ->
     allocaBytes bbsPkLen $ \pkPtr -> do
       rc <- c_bbs_keygen_full cs skPtr pkPtr
       if rc /= 0
-        then error "bbsKeyGen failed"
+        then pure $ Left "bbsKeyGen failed"
         else do
           sk <- packPtr skPtr bbsSkLen
           pk <- packPtr pkPtr bbsPkLen
-          pure (BBSSecretKey sk, BBSPublicKey pk)
+          pure $ Right (BBSSecretKey sk, BBSPublicKey pk)
 
 bbsSign ::
   BBSSecretKey ->
