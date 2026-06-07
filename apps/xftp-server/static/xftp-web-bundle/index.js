@@ -334,11 +334,6 @@ class WorkerBackend {
     const nonceCopy = new Uint8Array(nonce);
     const digestCopy = new Uint8Array(digest);
     const buf = this.toTransferable(body);
-    const hex = (b, n = 8) => {
-      const u = b instanceof ArrayBuffer ? new Uint8Array(b) : b;
-      return Array.from(u.slice(0, n)).map((x) => x.toString(16).padStart(2, "0")).join("");
-    };
-    console.log(`[BACKEND-DBG] chunk=${chunkNo} body.len=${body.length} body.byteOff=${body.byteOffset} buf.byteLen=${buf.byteLength} nonce=${hex(nonceCopy, 24)} dhSecret=${hex(dhSecretCopy)} digest=${hex(digestCopy, 32)} buf[0..8]=${hex(buf)} body[-8..]=${hex(body.slice(-8))}`);
     await this.send(
       { type: "decryptAndStoreChunk", dhSecret: dhSecretCopy, nonce: nonceCopy, body: buf, chunkDigest: digestCopy, chunkNo },
       [buf]
@@ -10913,14 +10908,12 @@ async function sendXFTPCommandOnce(client, privateKey, entityId, cmdBytes, chunk
   const block = encodeAuthTransmission(client.sessionId, corrId, entityId, cmdBytes, privateKey);
   const reqBody = chunkData ? concatBytes$1(block, chunkData) : block;
   const fullResp = await client.transport.post(reqBody);
-  console.log(`[XFTP-DBG] sendOnce: fullResp.length=${fullResp.length} entityId=${_hex(entityId)} cmdTag=${cmdBytes[0]}`);
   if (fullResp.length < XFTP_BLOCK_SIZE) {
     console.error("[XFTP] Response too short: %d bytes (expected >= %d)", fullResp.length, XFTP_BLOCK_SIZE);
     throw new Error("Server response too short");
   }
   const respBlock = fullResp.subarray(0, XFTP_BLOCK_SIZE);
   const body = fullResp.subarray(XFTP_BLOCK_SIZE);
-  console.log(`[XFTP-DBG] sendOnce: body.length=${body.length} body.byteOffset=${body.byteOffset} body.buffer.byteLength=${body.buffer.byteLength}`);
   const raw = blockUnpad(respBlock);
   if (raw.length < 20) {
     const text = new TextDecoder().decode(raw);
@@ -10939,18 +10932,13 @@ async function sendXFTPCommandOnce(client, privateKey, entityId, cmdBytes, chunk
   }
   return { response, body };
 }
-function _hex(b, n = 8) {
-  return Array.from(b.slice(0, n)).map((x) => x.toString(16).padStart(2, "0")).join("");
-}
 async function sendXFTPCommand(agent, server, privateKey, entityId, cmdBytes, chunkData, maxRetries = 3) {
   let clientP = getXFTPServerClient(agent, server);
   let client = await clientP;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      if (attempt > 1) console.log(`[XFTP-DBG] sendCmd: retry attempt=${attempt}/${maxRetries}`);
       return await sendXFTPCommandOnce(client, privateKey, entityId, cmdBytes, chunkData);
     } catch (e) {
-      console.log(`[XFTP-DBG] sendCmd: attempt=${attempt} failed: ${e instanceof Error ? e.message : String(e)} retriable=${isRetriable(e)}`);
       if (!isRetriable(e)) {
         throw categorizeError(e);
       }
@@ -10979,7 +10967,6 @@ async function downloadXFTPChunkRaw(agent, server, rpKey, fId) {
   const { response, body } = await sendXFTPCommand(agent, server, rpKey, fId, cmd);
   if (response.type !== "FRFile") throw new Error("unexpected response: " + response.type);
   const dhSecret = dh(response.rcvDhKey, privateKey);
-  console.log(`[XFTP-DBG] dlChunkRaw: body.length=${body.length} nonce=${_hex(response.nonce, 24)} dhSecret=${_hex(dhSecret)} body[0..8]=${_hex(body)} body[-8..]=${_hex(body.slice(-8))}`);
   return { dhSecret, nonce: response.nonce, body };
 }
 async function downloadXFTPChunk(agent, server, rpKey, fId, digest) {
@@ -11012,7 +10999,6 @@ function encryptFileForUpload(source, fileName) {
   const encSize = BigInt(chunkSizes.reduce((a, b) => a + b, 0));
   const encData = encryptFile(source, fileHdr, key, nonce, fileSize, encSize);
   const digest = sha512Streaming([encData]);
-  console.log(`[AGENT-DBG] encrypt: encData.len=${encData.length} digest=${_dbgHex(digest, 64)} chunkSizes=[${chunkSizes.join(",")}]`);
   return { encData, digest, key, nonce, chunkSizes };
 }
 const DEFAULT_REDIRECT_THRESHOLD = 400;
@@ -11169,9 +11155,7 @@ async function downloadFileRaw(agent, fd, onRawChunk, options) {
   if (err) throw new Error("downloadFileRaw: " + err);
   const { onProgress} = options ?? {};
   if (fd.redirect !== null) {
-    console.log(`[AGENT-DBG] resolving redirect: outer size=${fd.size} chunks=${fd.chunks.length}`);
     fd = await resolveRedirect(agent, fd);
-    console.log(`[AGENT-DBG] resolved: size=${fd.size} chunks=${fd.chunks.length} digest=${Array.from(fd.digest.slice(0, 16)).map((x) => x.toString(16).padStart(2, "0")).join("")}…`);
   }
   const resolvedFd = fd;
   let downloaded = 0;
@@ -11189,7 +11173,6 @@ async function downloadFileRaw(agent, fd, onRawChunk, options) {
       const seed = decodePrivKeyEd25519(replica.replicaKey);
       const kp = ed25519KeyPairFromSeed(seed);
       const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId);
-      console.log(`[AGENT-DBG] chunk=${chunk.chunkNo} body.len=${raw.body.length} expectedChunkSize=${chunk.chunkSize} digest=${_dbgHex(chunk.digest, 32)} body.byteOffset=${raw.body.byteOffset} body.buffer.byteLength=${raw.body.buffer.byteLength}`);
       await onRawChunk({
         chunkNo: chunk.chunkNo,
         dhSecret: raw.dhSecret,

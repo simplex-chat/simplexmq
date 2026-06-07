@@ -311,14 +311,12 @@ async function sendXFTPCommandOnce(
   const block = encodeAuthTransmission(client.sessionId, corrId, entityId, cmdBytes, privateKey)
   const reqBody = chunkData ? concatBytes(block, chunkData) : block
   const fullResp = await client.transport.post(reqBody)
-  console.log(`[XFTP-DBG] sendOnce: fullResp.length=${fullResp.length} entityId=${_hex(entityId)} cmdTag=${cmdBytes[0]}`)
   if (fullResp.length < XFTP_BLOCK_SIZE) {
     console.error('[XFTP] Response too short: %d bytes (expected >= %d)', fullResp.length, XFTP_BLOCK_SIZE)
     throw new Error("Server response too short")
   }
   const respBlock = fullResp.subarray(0, XFTP_BLOCK_SIZE)
   const body = fullResp.subarray(XFTP_BLOCK_SIZE)
-  console.log(`[XFTP-DBG] sendOnce: body.length=${body.length} body.byteOffset=${body.byteOffset} body.buffer.byteLength=${body.buffer.byteLength}`)
   // Detect padded error strings (HANDSHAKE, SESSION) before decodeTransmission
   const raw = blockUnpad(respBlock)
   if (raw.length < 20) {
@@ -339,10 +337,6 @@ async function sendXFTPCommandOnce(
   return {response, body}
 }
 
-function _hex(b: Uint8Array, n = 8): string {
-  return Array.from(b.slice(0, n)).map(x => x.toString(16).padStart(2, '0')).join('')
-}
-
 // -- Send command (with retry + reconnect)
 
 export async function sendXFTPCommand(
@@ -358,10 +352,8 @@ export async function sendXFTPCommand(
   let client = await clientP
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      if (attempt > 1) console.log(`[XFTP-DBG] sendCmd: retry attempt=${attempt}/${maxRetries}`)
       return await sendXFTPCommandOnce(client, privateKey, entityId, cmdBytes, chunkData)
     } catch (e) {
-      console.log(`[XFTP-DBG] sendCmd: attempt=${attempt} failed: ${e instanceof Error ? e.message : String(e)} retriable=${isRetriable(e)}`)
       if (!isRetriable(e)) {
         throw categorizeError(e)
       }
@@ -416,7 +408,6 @@ export async function downloadXFTPChunkRaw(
   const {response, body} = await sendXFTPCommand(agent, server, rpKey, fId, cmd)
   if (response.type !== "FRFile") throw new Error("unexpected response: " + response.type)
   const dhSecret = dh(response.rcvDhKey, privateKey)
-  console.log(`[XFTP-DBG] dlChunkRaw: body.length=${body.length} nonce=${_hex(response.nonce, 24)} dhSecret=${_hex(dhSecret)} body[0..8]=${_hex(body)} body[-8..]=${_hex(body.slice(-8))}`)
   return {dhSecret, nonce: response.nonce, body}
 }
 
@@ -444,4 +435,3 @@ export async function pingXFTP(agent: XFTPClientAgent, server: XFTPServer): Prom
   const response = decodeResponse(command)
   if (response.type !== "FRPong") throw new Error("unexpected response: " + response.type)
 }
-
