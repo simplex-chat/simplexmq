@@ -70,7 +70,7 @@ import qualified Data.IP as IP
 import Data.Bits (shiftR, (.&.))
 import Data.Word (Word32)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
-import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), mkNameOwner, pattern SMPServer)
+import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, printMessageStats, runSMPServer)
 import Simplex.Messaging.Server.CLI
 import Simplex.Messaging.Server.Env.STM
@@ -80,7 +80,7 @@ import Simplex.Messaging.Server.Main.Init
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
-import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..), TldRegistries (..))
+import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -806,29 +806,25 @@ readNamesConfig :: Ini -> Maybe NamesConfig
 readNamesConfig ini
   | not enabled = Nothing
   | otherwise =
-      let rpcAuth_ = either (error . ("[NAMES] rpc_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "rpc_auth" ini)
-          endpoint = requiredText "ethereum_endpoint"
+      let resolverAuth_ = either (error . ("[NAMES] resolver_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "resolver_auth" ini)
+          endpoint = requiredText "resolver_endpoint"
        in Just
             NamesConfig
-              { ethereumEndpoint = either (error . ("[NAMES] ethereum_endpoint: " <>)) id (validateUrl endpoint rpcAuth_),
-                tldRegistries = hardcodedTldRegistries,
-                rpcAuth = rpcAuth_,
-                rpcTimeoutMs = boundedIniInt 3000 100 60000 "rpc_timeout_ms",
-                rpcMaxResponseBytes = boundedIniInt 262144 1024 16777216 "rpc_max_response_bytes",
-                rpcMaxConcurrency = boundedIniInt 8 1 1024 "rpc_max_concurrency"
+              { resolverEndpoint = either (error . ("[NAMES] resolver_endpoint: " <>)) id (validateUrl endpoint resolverAuth_),
+                resolverAuth = resolverAuth_,
+                resolverTimeoutMs = boundedIniInt 3000 100 60000 "resolver_timeout_ms",
+                resolverMaxResponseBytes = boundedIniInt 65536 1024 16777216 "resolver_max_response_bytes"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
     requiredText key =
       either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
         lookupValue "NAMES" key ini
-    -- Reject zero / negative values that would deadlock waitQSem (concurrency = 0),
-    -- time-out every RSLV immediately (timeout = 0), or accept zero-length
-    -- responses (max_response_bytes = 0). The lower bounds also catch sub-sane
-    -- values an operator might choose by accident. The upper bounds defend
-    -- against operator-misconfig footguns: 16 MiB response cap (worst-case
-    -- per-call memory), 60 s timeout (no operator wants RSLV to hang longer),
-    -- 1024 concurrent RPCs (any higher should run a separate names router).
+    -- Lower bound rejects values that would time-out every RSLV immediately
+    -- (timeout = 0) or accept zero-length responses (max_response_bytes = 0).
+    -- The upper bounds defend against operator-misconfig footguns: 16 MiB
+    -- response cap (worst-case per-call memory), 60 s timeout (no operator
+    -- wants RSLV to hang longer).
     boundedIniInt def floor_ ceiling_ key = case lookupValue "NAMES" key ini of
       Left _ -> def
       Right raw -> case readMaybe (T.unpack (T.strip raw)) of
@@ -839,33 +835,17 @@ readNamesConfig ini
           | otherwise ->
               error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
 
--- | Hardcoded SNRC contract whitelist. Placeholder addresses until the
--- launch contracts are deployed; replaced in code rather than INI so
--- operators can't accidentally point a names router at the wrong contract
--- during the bootstrap phase. The TldRegistries shape + lookup precedence
--- (TLD-specific then `tldAll` catch-all) is unchanged from the previous
--- INI-driven form.
-hardcodedTldRegistries :: TldRegistries
-hardcodedTldRegistries =
-  TldRegistries
-    { tldSimplex = Just (placeholderAddr '\x11'),
-      tldTesting = Just (placeholderAddr '\x22'),
-      tldAll = Nothing
-    }
-  where
-    placeholderAddr c = either error id $ mkNameOwner (B.replicate 20 c)
-
--- | Validate the ethereum_endpoint URL:
+-- | Validate the resolver_endpoint URL:
 --   * scheme must be http: or https:
 --   * authority (host) must be present and non-empty
---   * port MUST be explicit (rejects http://host without :8545 to avoid
---     accidentally hitting :80 when Reth listens on :8545)
+--   * port MUST be explicit (rejects http://host without :8000 to avoid
+--     accidentally hitting :80 when the resolver listens on :8000)
 --   * userinfo (user:pass@) MUST NOT be present (credentials belong in
---     rpc_auth so they don't leak via Host header or logs)
+--     resolver_auth so they don't leak via Host header or logs)
 --   * query and fragment MUST NOT be present
 --   * http is rejected on non-loopback hosts (plaintext to a third party
---     leaks rpc_auth on every request)
---   * https requires rpc_auth on non-loopback hosts (a public endpoint
+--     leaks resolver_auth on every request)
+--   * https requires resolver_auth on non-loopback hosts (a public endpoint
 --     without auth is almost always misconfig)
 --   * link-local hosts (169.254.0.0/16, including the cloud metadata IP
 --     169.254.169.254) are rejected unconditionally
@@ -884,9 +864,9 @@ validateUrl url auth_ = do
     Left "non-canonical IPv4 form not allowed (use dotted-quad decimal 0-255 with no leading zeros); rejects inet_aton hex/octal/compact aliases of 169.254.169.254"
   when (isLinkLocal host || isForbiddenIpv6 host) $
     Left "link-local host not allowed (rejects cloud metadata services and IPv6 aliases of 169.254.0.0/16)"
-  unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use rpc_auth instead"
+  unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use resolver_auth instead"
   case uriPort ua of
-    "" -> Left "explicit port required (e.g. http://host:8545)"
+    "" -> Left "explicit port required (e.g. http://host:8000)"
     ':' : portStr -> case readMaybe portStr of
       Just n | (n :: Int) >= 1 && n <= 65535 -> Right ()
       _ -> Left $ "port " <> portStr <> " out of range (must be 1..65535)"
@@ -895,10 +875,10 @@ validateUrl url auth_ = do
   unless (null (uriFragment uri)) $ Left "fragment not allowed"
   let path = uriPath uri
   unless (path == "" || path == "/") $
-    Left "URL path not allowed; API keys embedded in the path leak to logs — use rpc_auth instead"
+    Left "URL path not allowed; API keys embedded in the path leak to logs — use resolver_auth instead"
   unless (isLoopback host) $ case scheme of
-    "http:" -> Left "http endpoint on a non-loopback host not allowed (plaintext leaks rpc_auth); use https"
-    "https:" | isNothing auth_ -> Left "https endpoint on a non-loopback host requires rpc_auth"
+    "http:" -> Left "http endpoint on a non-loopback host not allowed (plaintext leaks resolver_auth); use https"
+    "https:" | isNothing auth_ -> Left "https endpoint on a non-loopback host requires resolver_auth"
     _ -> Right ()
   Right url
   where

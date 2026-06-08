@@ -168,9 +168,6 @@ module Simplex.Messaging.Protocol
     NameOwner,
     mkNameOwner,
     unNameOwner,
-    NameLink,
-    mkNameLink,
-    unNameLink,
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
@@ -246,7 +243,6 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteArray.Encoding as BAE
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
@@ -256,7 +252,7 @@ import Data.Kind
 import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -273,6 +269,8 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Names.Owner (NameOwner, mkNameOwner, unNameOwner)
+import Simplex.Messaging.Names.Record (NameRecord (..))
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -488,7 +486,7 @@ partyClientRole = \case
   SSenderLink -> Just SRMessaging
   SProxiedClient -> Just SRMessaging
   SProxyService -> Just SRProxy
-  SResolver -> Nothing
+  SResolver -> Just SRMessaging
 {-# INLINE partyClientRole #-}
 
 partyServiceRole :: ServiceParty p => SParty p -> SMPServiceRole
@@ -736,34 +734,6 @@ instance Encoding FwdTransmission where
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
 
--- | 20-byte Ethereum address (NameRecord owner). Bare constructor not exported;
--- use `mkNameOwner` to enforce the 20-byte invariant.
-newtype NameOwner = NameOwner ByteString
-  deriving (Eq)
-
--- Render the 20 raw bytes as "0x"-prefixed lowercase hex so log lines /
--- traceShow output match the on-the-wire JSON form instead of Latin-1 garbage.
-instance Show NameOwner where
-  show (NameOwner bs) = "NameOwner 0x" <> B.unpack (BAE.convertToBase BAE.Base16 bs)
-
-mkNameOwner :: ByteString -> Either String NameOwner
-mkNameOwner bs
-  | B.length bs == 20 = Right (NameOwner bs)
-  | otherwise = Left "NameOwner must be 20 bytes"
-
-unNameOwner :: NameOwner -> ByteString
-unNameOwner (NameOwner bs) = bs
-{-# INLINE unNameOwner #-}
-
-instance J.ToJSON NameOwner where
-  toJSON (NameOwner bs) = J.String $ "0x" <> decodeLatin1 (BAE.convertToBase BAE.Base16 bs)
-
-instance J.FromJSON NameOwner where
-  parseJSON = J.withText "NameOwner" $ \t -> do
-    -- Accept "0x" and "0X" prefixes (matches the Server-side hex decoder).
-    let hex = fromMaybe t (T.stripPrefix "0x" t <|> T.stripPrefix "0X" t)
-    either fail pure $ BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) >>= mkNameOwner
-
 instance J.ToJSON RslvRequest where
   toJSON RslvRequest {name, contract} = J.object ["name" J..= name, "contract" J..= contract]
   toEncoding RslvRequest {name, contract} = J.pairs ("name" J..= name <> "contract" J..= contract)
@@ -773,85 +743,6 @@ instance J.FromJSON RslvRequest where
     name <- o J..: "name"
     contract <- o J..: "contract"
     pure RslvRequest {name, contract}
-
--- | A name-record link (channel or contact). Bare constructor not exported;
--- use `mkNameLink` to enforce the ≤1024-byte UTF-8 invariant.
-newtype NameLink = NameLink Text
-  deriving (Eq, Show)
-
-mkNameLink :: Text -> Either String NameLink
-mkNameLink t
-  | B.length (encodeUtf8 t) <= 1024 = Right (NameLink t)
-  | otherwise = Left "NameLink too long"
-
-unNameLink :: NameLink -> Text
-unNameLink (NameLink t) = t
-{-# INLINE unNameLink #-}
-
-instance J.ToJSON NameLink where
-  toJSON (NameLink t) = J.toJSON t
-
-instance J.FromJSON NameLink where
-  parseJSON = J.withText "NameLink" (either fail pure . mkNameLink)
-
--- | Resolved name record returned by the names role.
---   Wire format is JSON — change requires an SMP version bump.
-data NameRecord = NameRecord
-  { nrDisplayName :: Text,
-    nrOwner :: NameOwner,
-    nrChannelLinks :: [NameLink],
-    nrContactLinks :: [NameLink],
-    nrAdminAddress :: Maybe Text,
-    nrAdminEmail :: Maybe Text,
-    nrExpiry :: Int64, -- Unix seconds, ≥ 0
-    nrIsTest :: Bool
-  }
-  deriving (Eq, Show)
-
-instance J.ToJSON NameRecord where
-  toJSON NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
-    J.object
-      [ "displayName" J..= nrDisplayName,
-        "owner" J..= nrOwner,
-        "channelLinks" J..= nrChannelLinks,
-        "contactLinks" J..= nrContactLinks,
-        "adminAddress" J..= nrAdminAddress,
-        "adminEmail" J..= nrAdminEmail,
-        "expiry" J..= nrExpiry,
-        "isTest" J..= nrIsTest
-      ]
-  -- explicit toEncoding to preserve the spec-documented key order; the default
-  -- routes through Value/KeyMap and re-emits keys alphabetically, breaking the
-  -- "two routers MUST emit byte-identical JSON" requirement.
-  toEncoding NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest} =
-    J.pairs $
-      "displayName" J..= nrDisplayName
-        <> "owner" J..= nrOwner
-        <> "channelLinks" J..= nrChannelLinks
-        <> "contactLinks" J..= nrContactLinks
-        <> "adminAddress" J..= nrAdminAddress
-        <> "adminEmail" J..= nrAdminEmail
-        <> "expiry" J..= nrExpiry
-        <> "isTest" J..= nrIsTest
-
-instance J.FromJSON NameRecord where
-  parseJSON = J.withObject "NameRecord" $ \o -> do
-    nrDisplayName <- o J..: "displayName" >>= capUtf8 "displayName" 255
-    nrOwner <- o J..: "owner"
-    nrChannelLinks <- o J..: "channelLinks"
-    nrContactLinks <- o J..: "contactLinks"
-    when (length nrChannelLinks + length nrContactLinks > 8) $
-      fail "combined channelLinks + contactLinks > 8"
-    nrAdminAddress <- o J..:? "adminAddress" >>= traverse (capUtf8 "adminAddress" 255)
-    nrAdminEmail <- o J..:? "adminEmail" >>= traverse (capUtf8 "adminEmail" 255)
-    nrExpiry <- o J..: "expiry"
-    when (nrExpiry < 0) $ fail "expiry must be non-negative"
-    nrIsTest <- o J..: "isTest"
-    pure NameRecord {nrDisplayName, nrOwner, nrChannelLinks, nrContactLinks, nrAdminAddress, nrAdminEmail, nrExpiry, nrIsTest}
-    where
-      capUtf8 fld lim t
-        | B.length (encodeUtf8 t) <= lim = pure t
-        | otherwise = fail $ fld <> " exceeds " <> show lim <> " bytes UTF-8"
 
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)

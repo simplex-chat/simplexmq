@@ -27,7 +27,8 @@ import Data.Char (isDigit)
 import Data.Functor (($>))
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Simplex.Messaging.Agent.Store.DB (ToField (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
@@ -87,7 +88,7 @@ instance StrEncoding SimplexNameInfo where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP
       bareName = parseBare . safeDecodeUtf8 <$?> boundedNonSpace
-      parseBare s = (\name -> SimplexNameDomain TLDSimplex name []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
+      parseBare s = (\name -> SimplexNameDomain TLDSimplex (T.toLower name) []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
 
 instance StrEncoding SimplexNameDomain where
   strEncode = encodeUtf8 . fullDomainName
@@ -122,6 +123,13 @@ shortNameInfoStr = \case
       pfx = case nameType info of
         NTPublicGroup -> "#"
         NTContact -> "@"
+
+-- | Stored as TEXT. The matching `FromField` instance is intentionally not
+-- defined: existing consumers want soft-decode semantics (parse failure
+-- degrades to `Nothing` rather than failing the row), which doesn't
+-- compose with `fromTextField_`. Add a `FromField` instance here only
+-- when a consumer wants the row-fail behaviour and document the divide.
+instance ToField SimplexNameInfo where toField = toField . decodeLatin1 . strEncode
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
 

@@ -68,6 +68,7 @@ module Simplex.Messaging.Agent.Client
     deleteQueueLink,
     secureGetQueueLink,
     getQueueLink,
+    resolveName,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
     enableQueuesNtfs,
@@ -267,6 +268,8 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
+    NameOwner,
+    NameRecord,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -1989,6 +1992,17 @@ getQueueLink c nm userId server lnkId =
   where
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp nm proxySess lnkId
     getDirectly smp = getSMPQueueLink smp nm lnkId
+
+-- | Resolve a public-namespace name. Prefers PFWD (hides client IP from the
+-- resolver) and falls back to a direct send when the proxy is unavailable
+-- (faster but exposes the client IP). Mode selection is delegated to
+-- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
+resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> NameOwner -> Text -> AM NameRecord
+resolveName c nm userId server contract name =
+  snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
+  where
+    resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess contract name
+    resolveDirectly smp = directResolveName smp nm contract name
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =

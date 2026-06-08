@@ -130,6 +130,8 @@ library
       Simplex.Messaging.Crypto.ShortLink
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
+      Simplex.Messaging.Names.Owner
+      Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Transport
@@ -263,8 +265,7 @@ library
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
           Simplex.Messaging.Server.Names
-          Simplex.Messaging.Server.Names.Eth.RPC
-          Simplex.Messaging.Server.Names.Eth.SNRC
+          Simplex.Messaging.Server.Names.HttpResolver
           Simplex.Messaging.Server.NtfStore
           Simplex.Messaging.Server.Prometheus
           Simplex.Messaging.Server.QueueStore
@@ -496,10 +497,12 @@ test-suite simplexmq-test
       AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
+      AgentTests.ResolveNameTests
       AgentTests.ServerChoice
       AgentTests.ShortLinkTests
       CLITests
       CoreTests.BatchingTests
+      CoreTests.ConnectTargetTests
       CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
@@ -512,6 +515,7 @@ test-suite simplexmq-test
       CoreTests.VersionRangeTests
       FileDescriptionTests
       RemoteControl
+      RSLVTests
       ServerTests
       SMPAgentClient
       SMPClient
