@@ -237,6 +237,14 @@ spawnJsClient = do
   hSetBuffering hOut LineBuffering
   pure (hIn, hOut, ph)
 
+spawnJsAgent :: IO (Handle, Handle, ProcessHandle)
+spawnJsAgent = do
+  let cp = (proc "node" ["dist-test/agent-repl.js"]) {cwd = Just "smp-web", std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
+  (Just hIn, Just hOut, _, ph) <- createProcess cp
+  hSetBuffering hIn LineBuffering
+  hSetBuffering hOut LineBuffering
+  pure (hIn, hOut, ph)
+
 destroyJsRatchet :: TestPeer -> IO ()
 destroyJsRatchet (TestPeerJS _ _ ph) = terminateProcess ph
 destroyJsRatchet _ = pure ()
@@ -1882,4 +1890,56 @@ smpWebTests_ = do
           closeProtocolClient pc
           _ <- jsCmd rcvIn rcvOut "CLOSE"
           terminateProcess rcvPh
+
+  describe "agent-repl" $ do
+    it "agentCbEncrypt cross-language: TS encrypts, Haskell decrypts" $ do
+      g <- C.newRandom
+      -- Generate shared DH secret
+      (rcvPub, _rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (_sndPub, sndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' rcvPub sndPriv
+          C.DhSecretX25519 dhSecretRaw = dhSecret
+          dhSecretBytes = BA.convert dhSecretRaw :: B.ByteString
+          plaintext = "hello from typescript"
+          versionInt = 18 :: Int
+      -- TS: encrypt
+      (hIn, hOut, ph) <- spawnJsAgent
+      tsResp <- jsCmd hIn hOut $ "CB_ENCRYPT " <> bsToHex dhSecretBytes <> " " <> show versionInt <> " " <> bsToHex plaintext
+      let tsParts = words tsResp
+      head tsParts `shouldBe` "ok:"
+      let envelopeHex = tsParts !! 1
+          envelopeBytes = hexToBS envelopeHex
+      -- Haskell: decode ClientMsgEnvelope and decrypt
+      ClientMsgEnvelope {cmHeader = PubHeader ver _, cmNonce = nonce, cmEncBody = encBody} <- either fail pure $ smpDecode envelopeBytes
+      show ver `shouldBe` "Version 18"
+      decrypted <- either (fail . show) pure $ C.cbDecrypt dhSecret nonce encBody
+      -- The plaintext is padded — first bytes should match
+      B.take (B.length plaintext) decrypted `shouldBe` plaintext
+      _ <- jsCmd hIn hOut "CLOSE"
+      terminateProcess ph
+
+    it "agentCbEncrypt cross-language: Haskell encrypts, TS decrypts" $ do
+      g <- C.newRandom
+      -- Generate shared DH secret
+      (rcvPub, _rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (_sndPub, sndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' rcvPub sndPriv
+          C.DhSecretX25519 dhSecretRaw = dhSecret
+          dhSecretBytes = BA.convert dhSecretRaw :: B.ByteString
+          plaintext = "hello from haskell"
+      -- Haskell: encrypt
+      cbNonce <- atomically $ C.randomCbNonce g
+      encBody <- either (fail . show) pure $ C.cbEncrypt dhSecret cbNonce plaintext 16000
+      let C.CbNonce nonceBytes = cbNonce
+      -- TS: decrypt
+      (hIn, hOut, ph) <- spawnJsAgent
+      tsResp <- jsCmd hIn hOut $ "CB_DECRYPT " <> bsToHex dhSecretBytes <> " " <> bsToHex nonceBytes <> " " <> bsToHex encBody
+      let tsParts = words tsResp
+      head tsParts `shouldBe` "ok:"
+      let decryptedHex = tsParts !! 1
+          decrypted = hexToBS decryptedHex
+      -- Decrypted is padded — first bytes should match
+      B.take (B.length plaintext) decrypted `shouldBe` plaintext
+      _ <- jsCmd hIn hOut "CLOSE"
+      terminateProcess ph
 
