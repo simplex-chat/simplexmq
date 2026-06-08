@@ -117,7 +117,7 @@ import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, newNamesEnv, pingEndpoint)
-import Simplex.Messaging.Server.Names.Eth.RPC (scrubUrl)
+import Simplex.Messaging.Server.Names.HttpResolver (scrubUrl)
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -621,7 +621,7 @@ newEnvWithNames config@ServerConfig {allowSMPProxy, smpCredentials, httpCredenti
     Nothing -> case namesConfig of
       Nothing -> pure Nothing
       Just nc -> do
-        logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (ethereumEndpoint nc)
+        logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (resolverEndpoint nc)
         when allowSMPProxy $
           logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV calls can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
         env <- newNamesEnv nc

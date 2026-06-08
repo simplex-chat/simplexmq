@@ -109,7 +109,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (NamesEnv, ResolveError (..), closeNamesEnv, resolveName, verifyRslv)
+import Simplex.Messaging.Server.Names (NamesEnv, ResolveError (..), closeNamesEnv, parseName, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1510,9 +1510,9 @@ client
         incStat (rslvReqs st)
         (selector, msg) <- asks namesEnv >>= \case
           Nothing -> pure (rslvDisabled, ERR AUTH)
-          Just nenv -> case verifyRslv nenv req of
+          Just nenv -> case parseName req of
             Nothing -> pure (rslvBadName, ERR AUTH)
-            Just (addr, d) -> liftIO (resolveName nenv addr d) <&> \case
+            Just d -> liftIO (resolveName nenv d) <&> \case
               Right rec -> (rslvSucc, NAME rec)
               Left NotFound -> (rslvNotFound, ERR AUTH)
               Left _ -> (rslvEthErrs, ERR AUTH)

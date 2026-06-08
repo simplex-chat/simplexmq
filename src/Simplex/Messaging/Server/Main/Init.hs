@@ -156,24 +156,21 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
     <> "\n\n\
         \[NAMES]\n\
-        \# Public-namespace resolution (SNRC on Ethereum).\n\
-        \# Requires an Ethereum JSON-RPC endpoint (Reth+Nimbus). See deployment guide.\n\
+        \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
+        \# Operator runs the resolver alongside smp-server (default port 8000)\n\
+        \# with its own Ethereum JSON-RPC endpoint configured in resolver.toml.\n\
         \# Co-locating with the proxy role logs a startup advisory: slow RSLV calls can\n\
         \# serialise other forwarded commands on the same proxy-relay session.\n\
         \# For high-volume deployments, run [NAMES] on a separate host.\n\
         \# Restart required to change settings.\n\
         \enable: off\n\
         \# Same-host:\n\
-        \# ethereum_endpoint: http://127.0.0.1:8545\n\
-        \# Central Reth via Caddy:\n\
-        \# ethereum_endpoint: https://eth.simplex.chat:443\n\
-        \# rpc_auth: basic <username>:<password>\n\
-        \# The SNRC contract addresses are hardcoded in the server binary; each\n\
-        \# RSLV's contract field is verified against the binary's whitelist for\n\
-        \# the requested TLD. Operators do NOT configure registries here.\n\
-        \# rpc_timeout_ms: 3000\n\
-        \# rpc_max_response_bytes: 262144\n\
-        \# rpc_max_concurrency: 8\n\n\
+        \# resolver_endpoint: http://127.0.0.1:8000\n\
+        \# Resolver behind TLS reverse proxy:\n\
+        \# resolver_endpoint: https://names.simplex.chat:443\n\
+        \# resolver_auth: basic <username>:<password>\n\
+        \# resolver_timeout_ms: 3000\n\
+        \# resolver_max_response_bytes: 65536\n\n\
         \[INACTIVE_CLIENTS]\n\
         \# TTL and interval to check inactive clients\n\
         \disconnect = on\n"

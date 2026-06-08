@@ -144,7 +144,6 @@ library
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
       Simplex.Messaging.SimplexName
-      Simplex.Messaging.SimplexName.Contracts
       Simplex.Messaging.Session
       Simplex.Messaging.SystemTime
       Simplex.Messaging.TMap
@@ -266,8 +265,7 @@ library
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
           Simplex.Messaging.Server.Names
-          Simplex.Messaging.Server.Names.Eth.RPC
-          Simplex.Messaging.Server.Names.Eth.SNRC
+          Simplex.Messaging.Server.Names.HttpResolver
           Simplex.Messaging.Server.NtfStore
           Simplex.Messaging.Server.Prometheus
           Simplex.Messaging.Server.QueueStore

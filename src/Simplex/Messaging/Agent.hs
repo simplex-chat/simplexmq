@@ -239,7 +239,6 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import Simplex.Messaging.SimplexName.Contracts (tldContract)
 import Simplex.Messaging.SystemTime
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPVersion, THClientService' (..), THandleAuth (..), THandleParams (..))
@@ -1193,9 +1192,14 @@ deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
 resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AM NameRecord
-resolveSimplexName' c nm userId resolverSrv domain = case tldContract (nameTLD domain) of
-  Nothing -> throwE $ INTERNAL "resolveSimplexName: no resolver contract for TLD"
-  Just contract -> resolveName c nm userId resolverSrv contract (fullDomainName domain)
+resolveSimplexName' c nm userId resolverSrv domain =
+  resolveName c nm userId resolverSrv placeholderContract (fullDomainName domain)
+  where
+    -- The wire format still carries a 20-byte `contract` field on RslvRequest
+    -- (no SMP version bump), but the server-side resolver ignores it: the
+    -- backing Python REST resolver is the source of truth for which on-chain
+    -- registry maps to each TLD. The agent sends the all-zero placeholder.
+    placeholderContract = either error id (SMP.mkNameOwner (B.replicate 20 '\NUL'))
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

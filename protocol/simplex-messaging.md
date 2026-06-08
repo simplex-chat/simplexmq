@@ -428,7 +428,7 @@ Simplex messaging router implementations MUST NOT create, store or send to any o
 
 - Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging routers (the routers cannot compromise forward secrecy of any application layer protocol, such as double ratchet).
 
-Routers with the names role make outbound JSON-RPC calls to an Ethereum endpoint to read `NameRecord` data; the lookup key reaches that endpoint. Operators MUST run the endpoint themselves (loopback Reth + Nimbus, or a self-hosted central deployment) — sharing one endpoint across multiple operators collapses the two-server privacy property because the endpoint operator would see every lookup key across all of them. The names role and the SMP-proxy role MUST NOT be enabled on the same router by default; a slow `RSLV` cache miss can serialise other forwarded commands on the same proxy-relay session.
+Routers with the names role make outbound HTTP calls to a backing resolver service (the reference implementation is `scripts/resolver/snrc-resolve.py`, which in turn makes JSON-RPC calls to an Ethereum endpoint) to read `NameRecord` data; the lookup key reaches that resolver and its upstream RPC endpoint. Operators MUST run both the resolver process and its upstream RPC endpoint themselves (loopback Reth + Nimbus, or a self-hosted central deployment) — sharing them across multiple operators collapses the two-server privacy property because the resolver / RPC operator would see every lookup key across all of them. The names role and the SMP-proxy role MUST NOT be enabled on the same router by default; a slow `RSLV` cache miss can serialise other forwarded commands on the same proxy-relay session.
 
 ## Message delivery notifications
 
@@ -1443,10 +1443,13 @@ session, or identity; the proxy router sees the client connection but cannot
 read the encrypted lookup key inside the forwarded transmission.
 
 **Backing store.** This protocol does not prescribe where the names router
-reads `NameRecord` from. The reference implementation queries the SNRC contract
-on Ethereum via a JSON-RPC endpoint; alternative backings (different chains,
-DHT, etc.) are valid as long as they return a `NameRecord` matching the encoding
-below.
+reads `NameRecord` from. The reference implementation forwards each RSLV to a
+companion REST resolver process (`scripts/resolver/snrc-resolve.py`) that
+queries the SNRC contract on Ethereum; alternative backings (different chains,
+DHT, etc.) are valid as long as they expose the documented HTTP shape (`GET
+/resolve/<name>` returning a `NameRecord` on 200, 404 / 400 for unknown names
+or TLDs, 502 for upstream RPC failures) or substitute a different transport
+while still returning a `NameRecord` matching the encoding below.
 
 #### Resolve name command
 
@@ -1461,25 +1464,23 @@ rslv = %s"RSLV" SP json-bytes   ; json-bytes consumes the remainder of the trans
 | Field | JSON type | Constraints |
 |---|---|---|
 | `name` | string | the canonical fully-qualified name (TLD always explicit, e.g. `"privacy.simplex"`, `"test.testing"`, `"example.com"`); UTF-8 bytes only |
-| `contract` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes — the SNRC contract address the client expects the server to query) |
+| `contract` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes); currently ignored by the server, reserved for future eth-backed implementations that may use it to constrain which on-chain registry the client expects the server to query |
 
 **Server-side validation.** The names router parses `name` as a fully-qualified
-domain (TLD required — bare labels are rejected), extracts the TLD, and looks
-up the expected SNRC contract address in a whitelist hardcoded in the server
-binary (TLD-specific addresses with an optional catch-all for unspecified
-TLDs and web domains). If no whitelist entry matches the TLD, or if the
-client-supplied `contract` differs from the configured address, the server
-replies with `ERR AUTH` without contacting the chain. This lets one names
-router safely host multiple TLDs (each backed by its own SNRC contract) and
-reject clients pointing at a contract the operator doesn't run.
+domain (TLD required — bare labels are rejected) and forwards it to the
+configured backing resolver. The `contract` field is parsed for forward
+compatibility but ignored by the reference implementation: the backing
+resolver is the source of truth for which on-chain registry maps to each TLD.
+Any failure (malformed name, resolver 404 / 400 / 5xx, transport failure,
+timeout, decode error, names role disabled) collapses to `ERR AUTH`.
 
 The names router responds with either a `NAME` response carrying the resolved
 record, or `ERR AUTH` collapsing every failure mode (name not found, malformed
-name, TLD not in whitelist, contract mismatch, names role disabled, RPC
-unreachable, decode error, timeout). The wire code does not distinguish
-between these — stats counters MAY be exposed out-of-band for operator
-observability (`bad_name` is incremented for validation/whitelist failures,
-distinct from `not_found` for valid lookups with no on-chain record).
+name, names role disabled, resolver unreachable, decode error, timeout). The
+wire code does not distinguish between these — stats counters MAY be exposed
+out-of-band for operator observability (`bad_name` is incremented for
+validation failures, distinct from `not_found` for valid lookups with no
+backing record).
 
 #### Name record response
 
@@ -1494,22 +1495,29 @@ name = %s"NAME" SP json-bytes   ; json-bytes consumes the remainder of the trans
 | Field | JSON type | Constraints |
 |---|---|---|
 | `name` | string | ≤ 255 bytes UTF-8 |
-| `nickname` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
-| `website` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
-| `location` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
-| `simplex.contact` | string or null | ≤ 1024 bytes UTF-8; same null / absent rules |
-| `simplex.channel` | string or null | ≤ 1024 bytes UTF-8; same null / absent rules |
-| `ETH` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
-| `BTC` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
-| `XMR` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
-| `DOT` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `nickname` | string | ≤ 255 bytes UTF-8; senders MUST emit the empty string `""` when unset |
+| `website` | string | ≤ 255 bytes UTF-8; same empty-string-when-unset rule |
+| `location` | string | ≤ 255 bytes UTF-8; same empty-string-when-unset rule |
+| `simplexContact` | string | ≤ 1024 bytes UTF-8; same empty-string-when-unset rule |
+| `simplexChannel` | string | ≤ 1024 bytes UTF-8; same empty-string-when-unset rule |
+| `eth` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
+| `btc` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `xmr` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `dot` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
 | `owner` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes) |
-| `resolver` | string | `"0x"` followed by 40 lowercase hex characters; the SNRC contract address that produced the record |
+| `resolver` | string | `"0x"` followed by 40 lowercase hex characters; the resolver contract address that produced the record |
 
-The server MUST filter expired records before constructing the response
-(returning `ERR AUTH` to the client), so the wire format carries no expiry
-field. Testnet-vs-mainnet status is derived from the queried TLD rather than
-an in-record flag.
+Text fields (`nickname`, `website`, `location`, `simplexContact`,
+`simplexChannel`) use the empty string `""` as the "unset" sentinel: a
+backing resolver with no value for the field MUST emit an empty string, not
+JSON `null` and not an absent key. Coin fields (`eth`, `btc`, `xmr`, `dot`)
+use JSON `null` as the "unset" sentinel and MAY also be absent from the
+object entirely.
+
+The server MUST filter records its backing resolver indicates are expired
+or otherwise unavailable (returning `ERR AUTH` to the client), so the wire
+format carries no expiry field. Testnet-vs-mainnet status is derived from
+the queried TLD rather than an in-record flag.
 
 Receivers MUST tolerate extra unknown fields (forward-compatibility for future
 field additions). Adding a required field is a breaking change requiring an
