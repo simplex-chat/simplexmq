@@ -101,6 +101,7 @@ serverTests = do
   describe "Short links" $ do
     testInvQueueLinkData
     testContactQueueLinkData
+    testDuplicateQueueLinkData
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
@@ -1418,6 +1419,52 @@ testContactQueueLinkData =
 
       Resp "12" lnkId3 (ERR AUTH) <- sendRecv s ("", "12", lnkId, LGET)
       lnkId3 `shouldBe` lnkId
+
+testDuplicateQueueLinkData :: SpecWith (ASrvTransport, AStoreType)
+testDuplicateQueueLinkData =
+  it "rejects attaching an existing short link to another queue" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      (victimPub, victimKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (victimDhPub, _victimDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      C.CbNonce corrId <- atomically $ C.randomCbNonce g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let victimSId = EntityId $ B.take 24 $ C.sha3_384 corrId
+          victimLD = (EncDataBytes "fixed data", EncDataBytes "victim user data")
+          victimQRD = QRContact $ Just (lnkId, (victimSId, victimLD))
+          victimReq = NEW (NewQueueReq victimPub victimDhPub Nothing SMSubscribe (Just victimQRD) Nothing)
+      Resp
+        _
+        NoEntity
+        (IDS QIK {sndId = victimSId', queueMode = Just QMContact, linkId = Just lnkId'}) <-
+        signSendRecv r victimKey (corrId, NoEntity, victimReq)
+      lnkId' `shouldBe` lnkId
+      victimSId' `shouldBe` victimSId
+
+      Resp "1" lnkId1 (LNK victimSId1 victimLD1) <- sendRecv s ("", "1", lnkId, LGET)
+      lnkId1 `shouldBe` lnkId
+      victimSId1 `shouldBe` victimSId
+      victimLD1 `shouldBe` victimLD
+
+      (attackerPub, attackerKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (attackerDhPub, _attackerDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      let attackerReq =
+            NEW (NewQueueReq attackerPub attackerDhPub Nothing SMSubscribe (Just $ QRContact Nothing) Nothing)
+      Resp
+        "2"
+        NoEntity
+        (IDS QIK {rcvId = attackerRId, queueMode = Just QMContact, linkId = Nothing}) <-
+        signSendRecv r attackerKey ("2", NoEntity, attackerReq)
+
+      let attackerLD = (EncDataBytes "fixed data", EncDataBytes "attacker user data")
+      Resp "3" attackerRId' (ERR _) <-
+        signSendRecv r attackerKey ("3", attackerRId, LSET lnkId attackerLD)
+      attackerRId' `shouldBe` attackerRId
+
+      Resp "4" lnkId2 (LNK victimSId2 victimLD2) <- sendRecv s ("", "4", lnkId, LGET)
+      lnkId2 `shouldBe` lnkId
+      victimSId2 `shouldBe` victimSId
+      victimLD2 `shouldBe` victimLD
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
