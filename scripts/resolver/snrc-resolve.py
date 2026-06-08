@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "eth-hash[pycryptodome]>=0.7",
+# ]
+# ///
 """SimpleX Namespace (SNRC) resolver — REST API.
 
 Resolves names like `alice.testing` / `bob.simplex` against the SNRC
@@ -33,8 +39,9 @@ Environment:
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.
 
-Same dependency surface as ens-lookup.py:
-  pip install --break-system-packages 'eth-hash[pycryptodome]'
+Dependencies are declared inline (PEP 723) at the top of this file. Run with:
+  uv run snrc-resolve.py          # uv resolves & caches deps; one-line setup
+  python snrc-resolve.py          # if eth-hash[pycryptodome] is already installed
 
 Addresses are returned in each chain's canonical presentation:
   eth  EIP-55 mixed-case checksummed hex      (e.g. 0xEa65A0…1572)
@@ -62,11 +69,13 @@ PORT = int(os.environ.get("SNRC_PORT", "8000"))
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
 # happens on the rightmost label of the queried name. Empty / unset means
 # "not deployed" — requests for that TLD return 400 with a clear error.
+# `... or "..."` makes the script's defaults the single source of truth:
+# unset AND empty-string both fall through to the literal. docker-compose
+# can therefore pass `SNRC_REGISTRY_TESTING=${SNRC_REGISTRY_TESTING:-}`
+# without duplicating the registry address.
 REGISTRIES = {
-    "testing": os.environ.get(
-        "SNRC_REGISTRY_TESTING",
-        "0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6",  # mainnet .testing
-    ),
+    "testing": os.environ.get("SNRC_REGISTRY_TESTING", "")
+    or "0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
 

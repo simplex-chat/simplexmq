@@ -52,10 +52,21 @@ Registry (SNRC) over a small JSON HTTP API. It talks to the same local
 Reth + Nimbus stack described above (set `NETWORK=mainnet` in `.env`),
 reading the SNRC contracts directly on Ethereum mainnet.
 
-Install the only runtime dependency (same as `ens-lookup.py`):
+Dependencies are declared inline (PEP 723) at the top of `snrc-resolve.py`
+and in a sibling `pyproject.toml`. The simplest local run uses
+[`uv`](https://docs.astral.sh/uv/):
 
 ```sh
-pip install --break-system-packages 'eth-hash[pycryptodome]'
+uv run scripts/resolver/snrc-resolve.py
+```
+
+`uv` resolves and caches `eth-hash[pycryptodome]` on first run. No
+virtualenv juggling, no `--break-system-packages`. If you'd rather
+manage Python deps yourself:
+
+```sh
+pip install 'eth-hash[pycryptodome]>=0.7'
+python scripts/resolver/snrc-resolve.py
 ```
 
 ### Deployed registries
@@ -92,6 +103,38 @@ snrc-resolve listening on 0.0.0.0:8000
 ```
 
 Override the listen port or bind address with `SNRC_PORT` / `SNRC_BIND`.
+
+### Running in Docker
+
+The compose file ships a `resolver` service alongside reth and nimbus.
+`docker compose up -d` builds the image from `Dockerfile` (multi-stage,
+non-root, `uv`-based) and exposes the API on `127.0.0.1:8000`:
+
+```sh
+docker compose up -d resolver
+docker compose logs -f resolver
+curl -s http://127.0.0.1:8000/health
+```
+
+The container points `SNRC_RPC` at `http://reth:8545` (the compose-internal
+DNS name) so the resolver and reth share the bridge network without
+exposing reth's RPC to the host beyond loopback.
+
+To change the host-side port, edit the LEFT side of the port mapping in
+`docker-compose.yml`:
+
+```yaml
+resolver:
+  ports:
+    - "127.0.0.1:8000:8000"   # host:container
+```
+
+The registry address defaults to mainnet `.testing` — to override (Holesky,
+a private deployment, or future `.simplex`), uncomment and set the values
+in `docker-compose.yml` under the resolver service's `environment:` block.
+
+The image declares a `HEALTHCHECK` against `/health`; `docker compose ps`
+will mark the service `(healthy)` once reth is queryable.
 
 ### Resolving a name
 
