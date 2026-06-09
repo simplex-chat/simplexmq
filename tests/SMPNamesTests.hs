@@ -13,10 +13,12 @@ import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
 import qualified Data.Text as T
 import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), RslvRequest (..), mkNameOwner, unNameOwner)
+import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     ResolveError (..),
     ResolverCallKind (..),
+    RpcAuth (..),
     newNamesEnvWith,
     parseName,
     pingEndpoint,
@@ -75,6 +77,7 @@ smpNamesTests = do
   describe "RSLV request parsing" parseNameSpec
   describe "HTTP resolver" resolverSpec
   describe "Resolver health probe" healthSpec
+  describe "resolver_endpoint validation" validateUrlSpec
 
 nameRecordEncodingSpec :: Spec
 nameRecordEncodingSpec = do
@@ -282,3 +285,29 @@ healthSpec = do
       pure (Right (J.object []))
     _ <- pingEndpoint env
     readIORef seenKind `shouldReturn` Just ResolverHealth
+
+validateUrlSpec :: Spec
+validateUrlSpec = do
+  let auth = Just (AuthBasic "user" "pass")
+  it "accepts https with explicit port and auth (root path)" $
+    validateUrl "https://gw.example.com:443" auth `shouldSatisfy` isRight
+  it "accepts a path prefix (reverse-proxy sub-path)" $
+    validateUrl "https://gw.example.com:443/snrc" auth `shouldSatisfy` isRight
+  it "accepts a path prefix with trailing slash" $
+    validateUrl "https://gw.example.com:443/snrc/" auth `shouldSatisfy` isRight
+  it "rejects a query string" $
+    validateUrl "https://gw.example.com:443/snrc?x=1" auth `shouldSatisfy` isLeft
+  it "rejects a fragment" $
+    validateUrl "https://gw.example.com:443/snrc#f" auth `shouldSatisfy` isLeft
+  it "rejects userinfo (credentials belong in resolver_auth)" $
+    validateUrl "https://user:pass@gw.example.com:443" auth `shouldSatisfy` isLeft
+  it "rejects a missing port" $
+    validateUrl "https://gw.example.com/snrc" auth `shouldSatisfy` isLeft
+  it "accepts https on a non-loopback host without auth (public resolver)" $
+    validateUrl "https://gw.example.com:443/snrc" Nothing `shouldSatisfy` isRight
+  it "accepts http without auth on a non-loopback host (e.g. host.docker.internal)" $
+    validateUrl "http://host.docker.internal:9999" Nothing `shouldSatisfy` isRight
+  it "rejects http WITH auth on a non-loopback host (cleartext credential leak)" $
+    validateUrl "http://gw.example.com:9999" auth `shouldSatisfy` isLeft
+  it "allows loopback http without auth (with a path prefix)" $
+    validateUrl "http://localhost:8000/snrc" Nothing `shouldSatisfy` isRight

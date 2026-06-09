@@ -34,6 +34,7 @@ module Simplex.Messaging.Server.Main
     simplexmqSource,
     serverPublicInfo,
     validCountryValue,
+    validateUrl,
     printSourceCode,
     cliCommandP,
     strParse,
@@ -842,11 +843,17 @@ readNamesConfig ini
 --     accidentally hitting :80 when the resolver listens on :8000)
 --   * userinfo (user:pass@) MUST NOT be present (credentials belong in
 --     resolver_auth so they don't leak via Host header or logs)
---   * query and fragment MUST NOT be present
---   * http is rejected on non-loopback hosts (plaintext to a third party
---     leaks resolver_auth on every request)
---   * https requires resolver_auth on non-loopback hosts (a public endpoint
---     without auth is almost always misconfig)
+--   * query and fragment MUST NOT be present (a base URL with a query/fragment
+--     does not compose with the appended /resolve/<name> and /health paths)
+--   * a path prefix IS allowed (e.g. https://gw.example.com:443/snrc for a
+--     resolver behind a reverse-proxy sub-path); /resolve/<name> and /health
+--     are appended to it. Do not embed secrets in the path — it appears in
+--     logs; put credentials in resolver_auth.
+--   * on a non-loopback host, only http WITH resolver_auth is rejected (the
+--     Authorization header would travel in cleartext). http without auth is
+--     allowed (no secret to leak; resolver data is public — also lets dev
+--     setups reach a host resolver via host.docker.internal). https is always
+--     allowed, with or without auth.
 --   * link-local hosts (169.254.0.0/16, including the cloud metadata IP
 --     169.254.169.254) are rejected unconditionally
 validateUrl :: Text -> Maybe RpcAuth -> Either String Text
@@ -871,15 +878,23 @@ validateUrl url auth_ = do
       Just n | (n :: Int) >= 1 && n <= 65535 -> Right ()
       _ -> Left $ "port " <> portStr <> " out of range (must be 1..65535)"
     other -> Left $ "unexpected port syntax: " <> other
-  unless (null (uriQuery uri)) $ Left "query string not allowed"
-  unless (null (uriFragment uri)) $ Left "fragment not allowed"
-  let path = uriPath uri
-  unless (path == "" || path == "/") $
-    Left "URL path not allowed; API keys embedded in the path leak to logs — use resolver_auth instead"
-  unless (isLoopback host) $ case scheme of
-    "http:" -> Left "http endpoint on a non-loopback host not allowed (plaintext leaks resolver_auth); use https"
-    "https:" | isNothing auth_ -> Left "https endpoint on a non-loopback host requires resolver_auth"
-    _ -> Right ()
+  unless (null (uriQuery uri)) $ Left "query string not allowed (it does not compose with the appended /resolve/<name> path)"
+  unless (null (uriFragment uri)) $ Left "fragment not allowed (fragments are never sent to the server)"
+  -- A path prefix is allowed and used as the base for /resolve/<name> and
+  -- /health (resolver behind a reverse-proxy sub-path). The join in
+  -- HttpResolver.newResolverEnv strips a single trailing slash, so both
+  -- ".../snrc" and ".../snrc/" behave identically. Secrets do not belong in
+  -- the path (it is logged) — use resolver_auth.
+  -- The only transport-security risk on a non-loopback host is leaking the
+  -- Authorization header in cleartext, so we reject ONLY http+auth. http
+  -- without auth is allowed (nothing secret to leak — the resolver serves
+  -- public name data; this also covers reaching a host resolver via
+  -- host.docker.internal in dev). https is always fine, with or without auth.
+  -- NOTE: http without auth has no transport integrity — a network attacker
+  -- could forge NameRecord responses. Only point at a plaintext resolver on a
+  -- trusted/local network.
+  when (not (isLoopback host) && scheme == "http:" && isJust auth_) $
+    Left "http with resolver_auth on a non-loopback host not allowed (the Authorization header would be sent in cleartext); use https, or drop resolver_auth for a no-auth resolver"
   Right url
   where
     -- 127.0.0.0/8 and 0.0.0.0 both bind locally on Linux/BSD; treat them all
