@@ -14,7 +14,7 @@
 module XFTPWebTests (xftpWebTests) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (replicateM, when)
+import Control.Monad (forM_, replicateM, when)
 import Crypto.Error (throwCryptoError)
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -170,6 +170,7 @@ jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
 
 xftpWebTests :: IO () -> Spec
 xftpWebTests dbCleanup = do
+  xftpWebSourceHygieneTests
   distExists <- runIO $ doesDirectoryExist (xftpWebDir <> "/dist")
   if distExists
     then do
@@ -192,6 +193,22 @@ xftpWebTests dbCleanup = do
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
+
+xftpWebSourceHygieneTests :: Spec
+xftpWebSourceHygieneTests = describe "source hygiene" $
+  it "does not commit XFTP web debug logs that expose secrets or plaintext" $ do
+    let files =
+          [ "xftp-web/src/client.ts",
+            "xftp-web/src/agent.ts",
+            "xftp-web/web/crypto-backend.ts",
+            "xftp-web/web/crypto.worker.ts",
+            "apps/xftp-server/static/xftp-web-bundle/index.js",
+            "apps/xftp-server/static/xftp-web-bundle/crypto.worker.js"
+          ]
+        markers = ["XFTP-DBG", "AGENT-DBG", "BACKEND-DBG", "WORKER-DBG"]
+    forM_ files $ \path -> do
+      contents <- B.readFile path
+      mapM_ (\marker -> contents `shouldNotSatisfy` B.isInfixOf marker) markers
 
 -- ── protocol/encoding ──────────────────────────────────────────────
 
