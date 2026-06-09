@@ -186,10 +186,15 @@ nGet c = withFrozenCallStack $ get' @'AENone c
 
 get' :: forall e m. (MonadIO m, AEntityI e, HasCallStack) => AgentClient -> m (AEntityTransmission e)
 get' c = withFrozenCallStack $ do
-  (corrId, connId, AEvt e cmd) <- pGet c
+  t@(corrId, connId, AEvt e cmd) <- pGet c
   case testEquality e (sAEntity @e) of
     Just Refl -> pure (corrId, connId, cmd)
-    _ -> error $ "unexpected command " <> show cmd
+    _ | skipEvent t -> get' c
+      | otherwise -> error $ "unexpected command " <> show cmd
+  where
+    skipEvent (_, _, AEvt _ A.DOWN {}) = True
+    skipEvent (_, _, AEvt _ A.UP {}) = True
+    skipEvent _ = False
 
 pGet :: forall m. MonadIO m => AgentClient -> m ATransmission
 pGet c = pGet' c True
@@ -286,13 +291,33 @@ inAnyOrder :: (Show a, MonadUnliftIO m, HasCallStack) => m a -> [a -> Bool] -> m
 inAnyOrder _ [] = pure ()
 inAnyOrder g rs = withFrozenCallStack $ do
   r <- 5000000 `timeout` g >>= maybe (error "inAnyOrder timeout") pure
-  let rest = filter (not . expected r) rs
-  if length rest < length rs
-    then inAnyOrder g rest
-    else error $ "unexpected event: " <> show r
+  case removeFirstMatch r rs of
+    Just rest -> inAnyOrder g rest
+    Nothing -> error $ "unexpected event: " <> show r
+
+removeFirstMatch :: a -> [a -> Bool] -> Maybe [a -> Bool]
+removeFirstMatch _ [] = Nothing
+removeFirstMatch r (p : ps)
+  | p r = Just ps
+  | otherwise = (p :) <$> removeFirstMatch r ps
+
+-- | Read at least 1 expected event, then try to read more within a short timeout.
+-- Returns the number of events consumed.
+getAvailableInAnyOrder :: HasCallStack => AgentClient -> [ATransmission -> Bool] -> IO Int
+getAvailableInAnyOrder c ts = withFrozenCallStack $ do
+  r <- 5000000 `timeout` pGet c >>= maybe (error "getAvailableInAnyOrder timeout") pure
+  case removeFirstMatch r ts of
+    Just rest -> (1 +) <$> tryMore rest
+    Nothing -> error $ "unexpected event: " <> show r
   where
-    expected :: a -> (a -> Bool) -> Bool
-    expected r rp = rp r
+    tryMore [] = pure 0
+    tryMore rs = do
+      r_ <- 1000000 `timeout` pGet c
+      case r_ of
+        Nothing -> pure 0
+        Just r -> case removeFirstMatch r rs of
+          Just rest -> (1 +) <$> tryMore rest
+          Nothing -> error $ "unexpected event in getAvailableInAnyOrder: " <> show r
 
 createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
 createConnection c userId enableNtfs cMode clientData subMode = do
@@ -2090,10 +2115,12 @@ testMsgDeliveryQuotaExceeded ps =
     ackMessage b aId 4 Nothing
     get b =##> \case ("", c, Msg "message 4") -> aId == c; _ -> False
     ackMessage b aId 5 Nothing
-    get a =##> \case ("", c, QCONT) -> bId == c; _ -> False
+    liftIO . getInAnyOrder a $
+      [ \case ("", c, AEvt SAEConn QCONT) -> bId == c; _ -> False,
+        \case ("", c, AEvt SAEConn (A.SENT 6 Nothing)) -> bId == c; _ -> False
+      ]
     get b =##> \case ("", c, Msg "over quota") -> aId == c; _ -> False
     ackMessage b aId 7 Nothing -- msg 8 was QCONT
-    get a =##> \case ("", c, SENT 6) -> bId == c; _ -> False
     liftIO $ concurrently_ (noMessages a "no more events") (noMessages b "no more events")
 
 testExpireMessage :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
@@ -3352,15 +3379,22 @@ testFullSwitch a bId b aId msgId = do
   exchangeGreetingsMsgId msgId a bId b aId
 
 switchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
-switchComplete a bId b aId = do
-  phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-  phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-  phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
-  phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
-  phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
-  phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
-  phaseSnd b aId SPCompleted [Nothing]
-  phaseRcv a bId SPCompleted [Nothing]
+switchComplete a bId b aId = liftIO $
+  concurrently_
+    ( getInAnyOrder a
+        [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+          switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing],
+          switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+          switchPhaseRcvP bId SPCompleted [Nothing]
+        ]
+    )
+    ( getInAnyOrder b
+        [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+          switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
+          switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+          switchPhaseSndP aId SPCompleted [Nothing]
+        ]
+    )
 
 phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
 phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
@@ -3400,17 +3434,35 @@ testSwitchAsync servers = do
   withA' $ \a -> do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
-    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-  withB' $ \b -> do
-    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
-  withA' $ \a -> do
-    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
-    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
-  withB' $ \b -> do
-    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
-    phaseSnd b aId SPCompleted [Nothing]
-  withA' $ \a -> phaseRcv a bId SPCompleted [Nothing]
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
+  withB' $ \b ->
+    liftIO . void . getAvailableInAnyOrder b $
+      [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+        switchPhaseSndP aId SPCompleted [Nothing]
+      ]
+  withA' $ \a ->
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+        switchPhaseRcvP bId SPCompleted [Nothing]
+      ]
+  withB' $ \b ->
+    liftIO . void . getAvailableInAnyOrder b $
+      [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+        switchPhaseSndP aId SPCompleted [Nothing]
+      ]
+  withA' $ \a ->
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+        switchPhaseRcvP bId SPCompleted [Nothing]
+      ]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
@@ -3459,38 +3511,52 @@ testAbortSwitchStarted servers = do
   withA' $ \a -> do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
-    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
     -- repeat switch is prohibited
     Left A.CMD {cmdErr = PROHIBITED} <- liftIO . runExceptT $ switchConnectionAsync a "" bId
     -- abort current switch
     stats' <- abortConnectionSwitch a bId
     liftIO $ rcvSwchStatuses' stats' `shouldMatchList` [Nothing]
-  withB' $ \b -> do
-    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
+  withB' $ \b ->
+    liftIO . void . getAvailableInAnyOrder b $
+      [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing]
+      ]
   withA' $ \a -> do
-    get a ##> ("", bId, ERR (AGENT {agentErr = A_QUEUE {queueErr = "QKEY: queue address not found in connection"}}))
+    liftIO . void . getAvailableInAnyOrder a $
+      [ errQueueNotFoundP bId,
+        switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
     -- repeat switch
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
-    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
-
-    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
-
-    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
-    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
-
-    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
-    phaseSnd b aId SPCompleted [Nothing]
-
-    phaseRcv a bId SPCompleted [Nothing]
-
+    liftIO $
+      concurrently_
+        ( getInAnyOrder a
+            [ switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing],
+              switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+              switchPhaseRcvP bId SPCompleted [Nothing]
+            ]
+        )
+        ( getInAnyOrder b
+            [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+              switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
+              switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+              switchPhaseSndP aId SPCompleted [Nothing]
+            ]
+        )
     exchangeGreetingsMsgId 10 a bId b aId
-
     testFullSwitch a bId b aId 16
   where
     withA :: (AgentClient -> IO a) -> IO a
@@ -3509,39 +3575,45 @@ testAbortSwitchStartedReinitiate servers = do
   withA' $ \a -> do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
-    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
     -- abort current switch
     stats' <- abortConnectionSwitch a bId
     liftIO $ rcvSwchStatuses' stats' `shouldMatchList` [Nothing]
     -- repeat switch
     stats'' <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats'' `shouldMatchList` [Just RSSwitchStarted]
-    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-  withB' $ \b -> do
-    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-    liftIO . getInAnyOrder b $
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
+  withB' $ \b ->
+    liftIO . void . getAvailableInAnyOrder b $
       [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
         switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing]
       ]
-    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
-
-    liftIO . getInAnyOrder a $
-      [ errQueueNotFoundP bId,
-        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
-      ]
-
-    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
-
-    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
-    phaseSnd b aId SPCompleted [Nothing]
-
-    phaseRcv a bId SPCompleted [Nothing]
-
+    liftIO $
+      concurrently_
+        ( getInAnyOrder a
+            [ errQueueNotFoundP bId,
+              switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing],
+              switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+              switchPhaseRcvP bId SPCompleted [Nothing]
+            ]
+        )
+        ( getInAnyOrder b
+            [ switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+              switchPhaseSndP aId SPCompleted [Nothing]
+            ]
+        )
     exchangeGreetingsMsgId 10 a bId b aId
-
     testFullSwitch a bId b aId 16
   where
     withA :: (AgentClient -> IO a) -> IO a
@@ -3576,24 +3648,42 @@ testCannotAbortSwitchSecured servers = do
   withA' $ \a -> do
     stats <- switchConnectionAsync a "" bId
     liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
-    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
-  withB' $ \b -> do
-    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
-    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPStarted [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing]
+      ]
+  withB' $ \b ->
+    liftIO . void . getAvailableInAnyOrder b $
+      [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
+        switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+        switchPhaseSndP aId SPCompleted [Nothing]
+      ]
   withA' $ \a -> do
-    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
-    phaseRcv a bId SPSecured [Just RSSendingQUSE, Nothing]
+    liftIO . void . getAvailableInAnyOrder a $
+      [ switchPhaseRcvP bId SPConfirmed [Just RSSendingQADD, Nothing],
+        switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+        switchPhaseRcvP bId SPCompleted [Nothing]
+      ]
     Left A.CMD {cmdErr = PROHIBITED} <- liftIO . runExceptT $ abortConnectionSwitch a bId
     pure ()
   withA $ \a -> withB $ \b -> runRight_ $ do
     subscribeConnection a bId
     subscribeConnection b aId
-
-    phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
-    phaseSnd b aId SPCompleted [Nothing]
-
-    phaseRcv a bId SPCompleted [Nothing]
-
+    liftIO $
+      concurrently_
+        ( void . getAvailableInAnyOrder a $
+            [ switchPhaseRcvP bId SPSecured [Just RSSendingQUSE, Nothing],
+              switchPhaseRcvP bId SPCompleted [Nothing]
+            ]
+        )
+        ( void . getAvailableInAnyOrder b $
+            [ switchPhaseSndP aId SPStarted [Just SSSendingQKEY, Nothing],
+              switchPhaseSndP aId SPConfirmed [Just SSSendingQKEY, Nothing],
+              switchPhaseSndP aId SPSecured [Just SSSendingQTEST, Nothing],
+              switchPhaseSndP aId SPCompleted [Nothing]
+            ]
+        )
     exchangeGreetingsMsgId 8 a bId b aId
 
     testFullSwitch a bId b aId 14
@@ -4524,8 +4614,10 @@ testServerQueueInfo = do
     ackMessage bob aliceId msgId4 Nothing
     liftIO $ threadDelay 200000
     Just _ <- checkMsgQ bob aliceId 1 -- the one that did not fit now accepted
-    get alice ##> ("", bobId, QCONT)
-    get alice ##> ("", bobId, SENT msgId5)
+    liftIO . getInAnyOrder alice $
+      [ \case ("", c, AEvt SAEConn QCONT) -> c == bobId; _ -> False,
+        \case ("", c, AEvt SAEConn (A.SENT mid Nothing)) -> c == bobId && mid == msgId5; _ -> False
+      ]
     liftIO $ threadDelay 200000
     Just _srvMsgId <- checkQ bob aliceId True (Just QNoSub) 1 (Just MTMessage)
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello: quota exceeded") -> c == aliceId && mId == msgId5 + 1; _ -> False
