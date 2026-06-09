@@ -12,9 +12,14 @@ deployment on Ethereum mainnet (or any compatible ENS-shaped registry)
 and returns a flat JSON document with these fields:
 
   name, nickname, website, location,
-  simplexContact, simplexChannel,
+  simplexContact, simplexChannel,    -- list[str], primary first
   eth, btc, xmr, dot,
   owner, resolver
+
+`simplexContact` and `simplexChannel` are arrays so a name can advertise
+multiple SMP servers for redundancy. Clients SHOULD try the URLs in the
+order returned. The on-chain text record stores them as a single
+comma-separated string; this resolver splits and trims into a list.
 
 All keys are valid Haskell record-field identifiers (lowercase initial,
 no dots), so consumers can derive aeson FromJSON instances directly
@@ -367,6 +372,18 @@ TEXT_KEYS = [
 ]
 
 
+def split_csv(value: str) -> list:
+    """Split a comma-separated text record into an ordered list of entries.
+
+    Trims whitespace around each element and drops empties so trailing
+    commas, doubled commas, and all-whitespace inputs all yield clean
+    output. Single-value records yield a 1-element list; empty inputs
+    yield `[]`. Used for `simplex.contact` / `simplex.channel`, which
+    store one-or-more SMP-server URLs as a single comma-joined string.
+    """
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def resolve(name: str):
     tld = name.rsplit(".", 1)[-1]
     registry = REGISTRIES.get(tld)
@@ -412,8 +429,8 @@ def resolve(name: str):
         "nickname": nickname,
         "website": texts.get("url", ""),
         "location": texts.get("location", ""),
-        "simplexContact": texts.get("simplex.contact", ""),
-        "simplexChannel": texts.get("simplex.channel", ""),
+        "simplexContact": split_csv(texts.get("simplex.contact", "")),
+        "simplexChannel": split_csv(texts.get("simplex.channel", "")),
         "eth": addr_multicoin(resolver_addr, node, COIN_ETH),
         "btc": addr_multicoin(resolver_addr, node, COIN_BTC),
         "xmr": addr_multicoin(resolver_addr, node, COIN_XMR),

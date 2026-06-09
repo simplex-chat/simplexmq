@@ -151,8 +151,11 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
   "nickname": "Foo",
   "website": "https://foo.bar",
   "location": "",
-  "simplexContact": "https://smp16.simplex.im/a#Q_F00BA7",
-  "simplexChannel": "",
+  "simplexContact": [
+    "https://smp16.simplex.im/a#Q_F00BA7",
+    "https://smp11.simplex.im/a#Q_F00BA8"
+  ],
+  "simplexChannel": [],
   "eth": null,
   "btc": "bc1qpzht4wp64yg7z6sgl07vvrnepyux740juynfcn",
   "xmr": "4ANzdVJFxLtCKcBgNGkFSEA41zJFgrTX93LWt9UR6xpg7YNCsdrSV817cw2xKT8NXeS5euBBqTApS2u8kRTxMhyiDGN3Qgt",
@@ -161,6 +164,13 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
   "resolver": "0x80fa1903e70af03e79c73fb7feae2fb33aebae01"
 }
 ```
+
+`simplexContact` and `simplexChannel` are arrays so a name can advertise
+multiple SMP servers for redundancy. Clients SHOULD try the URLs in
+order; the first entry is the primary and the rest are fallbacks. The
+on-chain text record stores them as a single comma-separated string
+(`"url1,url2,url3"`); this resolver splits, trims whitespace, and drops
+empty entries before returning.
 
 All field names are lowercase-initial and contain no dots, so they map
 directly onto Haskell record fields and can be consumed via aeson's
@@ -173,8 +183,8 @@ data SnrcRecord = SnrcRecord
   , nickname       :: Text
   , website        :: Text
   , location       :: Text
-  , simplexContact :: Text
-  , simplexChannel :: Text
+  , simplexContact :: [Text]
+  , simplexChannel :: [Text]
   , eth            :: Maybe Text
   , btc            :: Maybe Text
   , xmr            :: Maybe Text
