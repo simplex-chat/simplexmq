@@ -502,9 +502,9 @@ workerInternalError c connId internalErrStr = do
 
 -- TODO change error
 notifyInternalError :: MonadIO m => AgentClient -> ConnId -> String -> m ()
-notifyInternalError AgentClient {subQ} connId internalErrStr = do
+notifyInternalError c connId internalErrStr = do
   logError $ T.pack internalErrStr
-  liftIO $ nonBlockingWriteTBQueue subQ ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
+  liftIO $ notifyEvent c ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
 
 notifyInternalError' :: MonadIO m => AgentClient -> String -> m ()
 notifyInternalError' c = notifyInternalError c ""

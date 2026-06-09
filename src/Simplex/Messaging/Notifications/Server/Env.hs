@@ -45,7 +45,7 @@ import qualified Data.X509.Validation as XV
 import Network.Socket
 import qualified Network.TLS as TLS
 import Numeric.Natural
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmissionBatch)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
@@ -54,14 +54,14 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), ServiceId, Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, BrokerMsg, CorrId, ErrorType, Party (..), SMPServer, SParty (..), ServiceId, Transmission)
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceCredentials (..), THandleParams, TransportPeer (..))
+import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), SMPVersion, ServiceCredentials (..), THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (liftEitherWith, tshow)
@@ -119,16 +119,17 @@ data NtfEnv = NtfEnv
     serverStats :: NtfServerStats
   }
 
-newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds} = do
+newNtfServerEnv :: NtfServerConfig -> (NtfPostgresStore -> NtfPushServer -> NtfServerStats -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> IO NtfEnv
+newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds} mkProcessMsg = do
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
   XV.Fingerprint fp <- loadFingerprint ntfCredentials
   let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
-  subscriber <- newNtfSubscriber smpAgentCfg dbService random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
+  let processMsg = mkProcessMsg store pushServer serverStats
+  subscriber <- newNtfSubscriber smpAgentCfg processMsg dbService random
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where
     mkDbService g st = DBService {getCredentials, updateServiceId}
@@ -158,11 +159,11 @@ data NtfSubscriber = NtfSubscriber
 
 type SMPSubscriberVar = SessionVar SMPSubscriber
 
-newNtfSubscriber :: SMPClientAgentConfig -> Maybe DBService -> TVar ChaChaDRG -> IO NtfSubscriber
-newNtfSubscriber smpAgentCfg dbService random = do
+newNtfSubscriber :: SMPClientAgentConfig -> (SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Maybe DBService -> TVar ChaChaDRG -> IO NtfSubscriber
+newNtfSubscriber smpAgentCfg processMsg dbService random = do
   smpSubscribers <- TM.emptyIO
   subscriberSeq <- newTVarIO 0
-  smpAgent <- newSMPClientAgent SNotifierService smpAgentCfg dbService random
+  smpAgent <- newSMPClientAgent SNotifierService smpAgentCfg processMsg dbService random
   pure NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent}
 
 data SMPSubscriber = SMPSubscriber

@@ -27,7 +27,7 @@ import Data.Time.Clock (getCurrentTime)
 import SMPAgentClient
 import SMPClient
 import ServerTests (decryptMsgV3, sendRecv)
-import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
+import Simplex.Messaging.Agent hiding (AgentClient, createConnection, joinConnection, sendMessage, allowConnection, ackMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
@@ -172,7 +172,7 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
   msgQ <- newTBQueueIO 1024
-  rc' <- getProtocolClient g NRMInteractive (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] (Just msgQ) ts (\_ -> pure ())
+  rc' <- getProtocolClient g NRMInteractive (2, relayServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion} [] (Just $ atomically . writeTBQueue msgQ) ts (\_ -> pure ())
   rc <- either (fail . show) pure rc'
   -- prepare receiving queue
   (rPub, rPriv) <- atomically $ C.generateAuthKeyPair alg g
@@ -224,9 +224,9 @@ agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty 
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 baseId =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
-      (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
-      aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      (bobId, CCLink qInfo Nothing) <- A.createConnection (client alice) NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      aliceId <- A.prepareConnectionToJoin (client bob) 1 True qInfo PQSupportOn
+      sqSecured <- A.joinConnection (client bob) NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -237,18 +237,18 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
       get bob ##> ("", aliceId, A.CON pqEnc)
       -- message IDs 1 to 3 (or 1 to 4 in v1) get assigned to control messages, so first MSG is assigned ID 4
       let aProxySrv = if aViaProxy then Just $ L.head aSrvs else Nothing
-      1 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg1
+      1 <- msgId <$> A.sendMessage (client alice) bobId pqEnc noMsgFlags msg1
       get alice ##> ("", bobId, A.SENT (baseId + 1) aProxySrv)
-      2 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg2
+      2 <- msgId <$> A.sendMessage (client alice) bobId pqEnc noMsgFlags msg2
       get alice ##> ("", bobId, A.SENT (baseId + 2) aProxySrv)
       get bob =##> \case ("", c, Msg' _ pq msg1') -> c == aliceId && pq == pqEnc && msg1 == msg1'; _ -> False
       ackMessage bob aliceId (baseId + 1) Nothing
       get bob =##> \case ("", c, Msg' _ pq msg2') -> c == aliceId && pq == pqEnc && msg2 == msg2'; _ -> False
       ackMessage bob aliceId (baseId + 2) Nothing
       let bProxySrv = if bViaProxy then Just $ L.head bSrvs else Nothing
-      3 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg1
+      3 <- msgId <$> A.sendMessage (client bob) aliceId pqEnc noMsgFlags msg1
       get bob ##> ("", aliceId, A.SENT (baseId + 3) bProxySrv)
-      4 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
+      4 <- msgId <$> A.sendMessage (client bob) aliceId pqEnc noMsgFlags msg2
       get bob ##> ("", aliceId, A.SENT (baseId + 4) bProxySrv)
       get alice =##> \case ("", c, Msg' _ pq msg1') -> c == bobId && pq == pqEnc && msg1 == msg1'; _ -> False
       ackMessage alice bobId (baseId + 3) Nothing
@@ -280,9 +280,9 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- agent connections have to be set up in advance
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
-      (bobId, CCLink qInfo Nothing) <- runExceptT' $ A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
-      aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      sqSecured <- runExceptT' $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      (bobId, CCLink qInfo Nothing) <- runExceptT' $ A.createConnection (client alice) NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      aliceId <- runExceptT' $ A.prepareConnectionToJoin (client bob) 1 True qInfo PQSupportOn
+      sqSecured <- runExceptT' $ A.joinConnection (client bob) NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
@@ -297,7 +297,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
       pure (alice, bobId, bob, aliceId)
     -- stream messages in opposite directions, while getting deliveries and sending ACKs
     run (alice, bobId, bob, aliceId) = do
-      aSender <- async $ forM_ msgs $ runExceptT' . A.sendMessage alice bobId pqEnc noMsgFlags
+      aSender <- async $ forM_ msgs $ runExceptT' . A.sendMessage (client alice) bobId pqEnc noMsgFlags
       bRecipient <-
         async $
           forever $
@@ -305,7 +305,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
               ("", _, A.SENT _ _) -> pure ()
               ("", _, Msg' mId' _ _) -> runExceptT' $ ackMessage alice bobId mId' Nothing
               huh -> fail (show huh)
-      bSender <- async $ forM_ msgs $ runExceptT' . A.sendMessage bob aliceId pqEnc noMsgFlags
+      bSender <- async $ forM_ msgs $ runExceptT' . A.sendMessage (client bob) aliceId pqEnc noMsgFlags
       aRecipient <-
         async $
           forever $
@@ -331,9 +331,9 @@ agentViaProxyVersionError =
   withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
       withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
-        (_bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
-        aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-        A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        (_bobId, CCLink qInfo Nothing) <- A.createConnection (client alice) NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+        aliceId <- A.prepareConnectionToJoin (client bob) 1 True qInfo PQSupportOn
+        A.joinConnection (client bob) NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
     servers srvs = (initAgentServersProxy_ SPMUnknown SPFProhibit) {smp = userServers srvs}
@@ -351,9 +351,9 @@ agentViaProxyRetryOffline = do
       let pqEnc = CR.PQEncOn
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
-          (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
-          aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-          sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+          (bobId, CCLink qInfo Nothing) <- A.createConnection (client alice) NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+          aliceId <- A.prepareConnectionToJoin (client bob) 1 True qInfo PQSupportOn
+          sqSecured <- A.joinConnection (client bob) NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -361,18 +361,18 @@ agentViaProxyRetryOffline = do
           get alice ##> ("", bobId, A.CON pqEnc)
           get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
           get bob ##> ("", aliceId, A.CON pqEnc)
-          1 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg1
+          1 <- msgId <$> A.sendMessage (client alice) bobId pqEnc noMsgFlags msg1
           get alice ##> ("", bobId, A.SENT (baseId + 1) aProxySrv)
           get bob =##> \case ("", c, Msg' _ pq msg1') -> c == aliceId && pq == pqEnc && msg1 == msg1'; _ -> False
           ackMessage bob aliceId (baseId + 1) Nothing
-          2 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
+          2 <- msgId <$> A.sendMessage (client bob) aliceId pqEnc noMsgFlags msg2
           get bob ##> ("", aliceId, A.SENT (baseId + 2) bProxySrv)
           get alice =##> \case ("", c, Msg' _ pq msg2') -> c == bobId && pq == pqEnc && msg2 == msg2'; _ -> False
           ackMessage alice bobId (baseId + 2) Nothing
           pure (aliceId, bobId)
         runRight_ $ do
           -- destination relay down
-          3 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg1
+          3 <- msgId <$> A.sendMessage (client alice) bobId pqEnc noMsgFlags msg1
           bob `down` aliceId
         withServer2 $ \_ -> runRight_ $ do
           bob `up` aliceId
@@ -381,7 +381,7 @@ agentViaProxyRetryOffline = do
           ackMessage bob aliceId (baseId + 3) Nothing
         runRight_ $ do
           -- proxy relay down
-          4 <- msgId <$> A.sendMessage bob aliceId pqEnc noMsgFlags msg2
+          4 <- msgId <$> A.sendMessage (client bob) aliceId pqEnc noMsgFlags msg2
           bob `down` aliceId
         withServer2 $ \_ -> do
           getInAnyOrder
