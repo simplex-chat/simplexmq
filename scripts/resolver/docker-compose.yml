@@ -24,6 +24,22 @@ services:
       '
     restart: "no"
 
+  # One-shot: clones the PRIVATE parent repo (brenzi/simplex-namespace-contract)
+  # into the shared `src` volume and inits ONLY the ens-subgraph submodule (the
+  # subgraph's source). Idempotent: re-runs just refresh the submodule.
+  # Requires GITHUB_TOKEN in .env with read access to the parent repo AND the
+  # simplex-chat/ens-subgraph submodule. The token is injected at runtime via
+  # env, never baked into an image layer or echoed.
+  src-clone:
+    image: alpine/git:latest
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?GITHUB_TOKEN required — read access to brenzi/simplex-namespace-contract + simplex-chat/ens-subgraph}
+    volumes:
+      - src:/src
+      - ./init/clone-src.sh:/clone-src.sh:ro
+    entrypoint: ["sh", "/clone-src.sh"]
+    restart: "no"
+
   # One-shot: fetches a recent finalised checkpoint into the Nimbus data dir
   # using the trustedNodeSync subcommand. Skipped if the data dir is already
   # initialised, so subsequent compose-ups are no-ops.
@@ -49,11 +65,13 @@ services:
           --backfill=false
     restart: "no"
 
-  # One-shot: downloads a pre-synced snapshot from snapshots.reth.rs into the
-  # Reth data dir. Turns a multi-day from-scratch sync into a ~hour download.
+  # One-shot: downloads a pre-synced FULL snapshot into the Reth data dir.
+  # Full (not minimal) so the node keeps logs + receipts back to the subgraph
+  # start block (25,250,870) — the subgraph indexes from eth_getLogs/receipts.
   # Skipped if the data dir is already initialised — re-runs are no-ops.
-  # Privacy note: snapshots.reth.rs sees this download (operator existence).
+  # Privacy note: the snapshot host sees this download (operator existence).
   # Subsequent eth_call traffic stays local.
+  # (`reth download` + `--full`/`--resumable` confirmed present in the pinned image.)
   reth-snapshot-init:
     image: ghcr.io/paradigmxyz/reth:latest
     depends_on:
@@ -69,8 +87,8 @@ services:
           echo "Reth data already initialised — skipping snapshot download";
           exit 0;
         fi;
-        echo "Downloading Reth ${NETWORK} --minimal snapshot...";
-        reth download --datadir /data --chain ${NETWORK} --minimal && \
+        echo "Downloading Reth ${NETWORK} --full snapshot...";
+        reth download --datadir /data --chain ${NETWORK} --full --resumable && \
         touch /data/.snapshot-done && \
         echo "Snapshot download complete"
     restart: "no"
@@ -84,23 +102,25 @@ services:
       - reth-data:/data
       - jwt:/jwt:ro
     ports:
-      # JSON-RPC for smp-server. Bound to loopback — put Caddy in front for remote access.
+      # JSON-RPC for the smp-server (graph-node reaches reth internally on the
+      # compose network). Bound to loopback — put Caddy in front for remote access.
       - "127.0.0.1:8545:8545"
       # p2p (Ethereum network). Open these on your firewall for sync.
       - "30303:30303/tcp"
       - "30303:30303/udp"
+    # --full (not --minimal): retains logs + receipts so the subgraph can
+    # index from block 25,250,870. (`node --full` confirmed in the pinned image.)
     command: >
       node
       --datadir /data
       --chain ${NETWORK}
-      --minimal
+      --full
       --authrpc.jwtsecret /jwt/jwt.hex
       --authrpc.addr 0.0.0.0 --authrpc.port 8551
       --http
       --http.addr 0.0.0.0 --http.port 8545
       --http.api eth,net
       --rpc.gascap 50000000
-      --rpc.max-response-size 5
       --port 30303
       --discovery.port 30303
     restart: unless-stopped
@@ -128,12 +148,12 @@ services:
     restart: unless-stopped
 
   # SNRC REST resolver. Talks to reth on the compose-internal network,
-  # exposes /resolve and /health on 127.0.0.1:8000 by default. The
-  # smp-server points its [NAMES] resolver_endpoint at this URL.
-  # To change the host port, edit the LEFT side of the port mapping below.
+  # exposes /resolve and /health on host 127.0.0.1:8088 (container :8000).
+  # Host 8000 is taken by graph-node's GraphQL, hence the 8088 remap.
+  # Point the smp-server's [NAMES] resolver_endpoint at http://127.0.0.1:8088.
   resolver:
     build:
-      context: .
+      context: ./service
       dockerfile: Dockerfile
     depends_on:
       # reth's `service_started` is sufficient — the resolver tolerates
@@ -152,10 +172,116 @@ services:
       # SNRC_REGISTRY_TESTING: 0x...
       # SNRC_REGISTRY_SIMPLEX: 0x...
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8088:8000"
     restart: unless-stopped
+
+  # ----- Subgraph indexer stack (graph-node + IPFS + Postgres) -----
+  # Based on simplex-namespace-contract/scripts/subgraph/docker-compose.yml,
+  # adapted so `ethereum:` points at the in-stack reth instead of a host RPC.
+  # Images track :latest. The rainbow-table seed in subgraph-deploy.sh is
+  # required for graph-node >= 0.30 (incl. latest), which throws on an empty
+  # ens_names table instead of returning null.
+
+  graph-node:
+    image: graphprotocol/graph-node:latest
+    ports:
+      - '127.0.0.1:8000:8000'  # GraphQL HTTP (subgraph queries; host-published)
+      - '127.0.0.1:8001:8001'  # GraphQL WS
+      - '127.0.0.1:8020:8020'  # JSON-RPC admin (graph create/deploy)
+      - '127.0.0.1:8030:8030'  # Subgraph indexing-status
+      - '127.0.0.1:8040:8040'  # Prometheus metrics
+    depends_on:
+      ipfs:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      reth:
+        condition: service_started
+    environment:
+      postgres_host: postgres
+      postgres_user: graph-node
+      postgres_pass: ${POSTGRES_PASSWORD:-let-me-in}
+      postgres_db: graph-node
+      ipfs: 'ipfs:5001'
+      # Network name MUST be `mainnet` to match the `network: mainnet`
+      # entries in subgraph.yaml. The provider is the in-stack reth node.
+      ethereum: 'mainnet:http://reth:8545'
+      GRAPH_LOG: info
+      ETHEREUM_REORG_THRESHOLD: 50
+    restart: unless-stopped
+
+  ipfs:
+    image: ipfs/kubo:latest
+    ports:
+      - '127.0.0.1:5001:5001'
+    volumes:
+      - ipfs-data:/data/ipfs
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18
+    command: ["postgres", "-cshared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_USER: graph-node
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-let-me-in}
+      POSTGRES_DB: graph-node
+      # The Graph requires the C locale + collation for deterministic index
+      # ordering; mismatched locales produce wrong query results.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graph-node -d graph-node"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot: seeds the ENS rainbow table BEFORE the subgraph deploys, so
+  # graph-node can heal label hashes as it indexes (labels indexed before the
+  # seed are NOT retroactively healed). graph-node creates public.ens_names via
+  # a startup migration; the script waits for it. Stock postgres image for psql;
+  # re-runnable (INSERTs are ON CONFLICT DO NOTHING).
+  rainbow-seed:
+    image: postgres:18
+    depends_on:
+      graph-node:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: graph-node
+      PGDATABASE: graph-node
+      PGPASSWORD: ${POSTGRES_PASSWORD:-let-me-in}
+    volumes:
+      - ./init/rainbow-seed.sh:/rainbow-seed.sh:ro
+    entrypoint: ["bash", "/rainbow-seed.sh"]
+    restart: "no"
+
+  # One-shot: builds + deploys the SNRC subgraph to graph-node (codegen/create/
+  # deploy). Automates docs/subgraph-local.md step 3. Runs after rainbow-seed so
+  # the rainbow table is populated before indexing starts. Stock node image +
+  # mounted script; re-runnable (create "already exists" is ignored).
+  subgraph-deploy:
+    image: node:22-bookworm
+    depends_on:
+      graph-node:
+        condition: service_started
+      src-clone:
+        condition: service_completed_successfully
+      rainbow-seed:
+        condition: service_completed_successfully
+    volumes:
+      - src:/src
+      - ./init/subgraph-deploy.sh:/subgraph-deploy.sh:ro
+    entrypoint: ["bash", "/subgraph-deploy.sh"]
+    restart: "no"
 
 volumes:
   reth-data:
   nimbus-data:
   jwt:
+  src:
+  postgres-data:
+  ipfs-data:

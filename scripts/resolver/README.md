@@ -1,235 +1,195 @@
-# Ethereum stack for SMP names role
+# Self-hosted SNRC stack
 
-Reth (execution) + Nimbus (consensus) on Holesky testnet by default.
+One `docker compose up` runs the self-hosted SimpleX Namespace (SNRC) backend
+against **Ethereum mainnet** (where the `.testing` contracts live):
 
-## Quickstart
+| # | Component | What it does |
+|---|---|---|
+| 1 | **reth (full) + nimbus** | self-hosted Ethereum node (full, so it keeps the logs/receipts the subgraph needs) |
+| 2 | **resolver** | the REST resolver the smp-server's `[NAMES]` role queries (`snrc-resolve.py`) |
+| 3 | **subgraph** | graph-node + IPFS + Postgres — auto-built, auto-deployed, rainbow table seeded; exposes a GraphQL endpoint |
+
+The subgraph is cloned at runtime from the **private** repo
+`brenzi/simplex-namespace-contract` (submodule `ens-subgraph`) using a GitHub
+token — nothing is pre-vendored.
+
+> If you only need SimpleX name resolution, the resolver (component 2) is
+> enough. The subgraph (component 3) is for rich GraphQL queries — "list names
+> owned by address X", human labels — consumed by a name-manager UI or your own
+> queries. It shares the one reth node, so running the whole stack is simplest.
+
+## Requirements
+
+- **Docker** + Compose v2.
+- **GitHub token** with **read** access to `brenzi/simplex-namespace-contract`
+  and its `simplex-chat/ens-subgraph` submodule (only that submodule is cloned).
+  Fine-grained PAT with read contents, or a classic PAT with `repo` scope.
+- **≥ 1.2 TB NVMe SSD** for `reth --full` (TLC, not QLC — QLC stalls during
+  sync) + **32 GB RAM**, fast multi-core CPU.
+- **~1 day** for the initial reth sync. The resolver and subgraph return errors
+  / stay behind until reth has caught up — that's expected.
+- Firewall: open p2p ports `30303` (tcp/udp) and `9000` (tcp/udp).
+
+## 1. Configure
+
+Edit `.env` — only three values are required:
 
 ```sh
-cd scripts/docker/reth-nimbus
-docker compose up -d
-docker compose logs -f reth nimbus
+GITHUB_TOKEN=ghp_...                                          # required
+NETWORK=mainnet                                               # default
+TRUSTED_NODE_URL=https://mainnet-checkpoint-sync.attestant.io # default
 ```
 
-Sync takes a few hours on Holesky, ~1 day on mainnet. When synced:
+Everything else (Postgres password, NAT) has a working default baked into
+`docker-compose.yml`; uncomment the hints in `.env` only to override.
 
+## 2. Run
+
+```sh
+cd scripts/resolver
+docker compose up -d
+docker compose logs -f reth subgraph-deploy
+```
+
+`depends_on` handles ordering automatically (clone source → start node → seed
+rainbow table → deploy subgraph). Seeding before deploy matters: graph-node
+heals ENS label hashes at index time, so the rainbow table must be populated
+before indexing starts. The subgraph finishes indexing only once reth is synced.
+
+## 3. Wait for the node to sync
+
+```sh
+docker compose logs --tail=20 reth
+```
+
+This is the long pole (~1 day on mainnet). Until reth is synced the resolver
+returns `502` and the subgraph stays behind chain head.
+
+## Verify
+
+Run these once the stack is up (the node-dependent ones pass after sync):
+
+**1. reth is reachable and reporting a block:**
 ```sh
 curl -s -X POST http://127.0.0.1:8545 \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' | jq
 ```
 
-Point smp-server: `[NAMES] ethereum_endpoint: http://127.0.0.1:8545`.
-
-## How the trust bootstrap works
-
-- **Reth** holds Ethereum state and runs the EVM. It does not decide which fork is canonical.
-- **Nimbus** follows the beacon chain and tells Reth which payloads to execute.
-- Nimbus needs **one trusted starting point** to break the chicken-and-egg of peer-claims. `--trusted-node-url` fetches that checkpoint once from a public beacon API; from that point on every block is verified locally against the validator set.
-- The default `TRUSTED_NODE_URL` is publicnode.com (no API key, no rate limits). Replace with any beacon API you trust — only consulted once on first sync.
-
-## Switching to mainnet
-
-Edit `.env`:
-
-```
-NETWORK=mainnet
-TRUSTED_NODE_URL=https://ethereum-beacon-api.publicnode.com
+**2. resolver is healthy:**
+```sh
+curl -s http://127.0.0.1:8088/health | jq
+# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": ""}}
 ```
 
-Then `docker compose down -v && docker compose up -d` (the `-v` wipes state so Nimbus re-bootstraps against the new network). Reth on mainnet needs ~260 GB pruned NVMe.
+**3. resolver resolves a live name** (`foobar.testing` is a populated test name):
+```sh
+curl -s http://127.0.0.1:8088/resolve/foobar.testing | jq
+# → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
+```
 
-## Notes
+**4. subgraph has caught up:**
+```sh
+curl -s -X POST http://127.0.0.1:8030/graphql \
+  -H 'content-type: application/json' \
+  -d '{"query":"{ indexingStatusForCurrentVersion(subgraphName:\"graphprotocol/ens\"){ synced chains{ latestBlock{number} chainHeadBlock{number} } } }"}' | jq
+# synced: true  ⇒ caught up to chain head
+```
 
-- Reth's RPC is bound to `127.0.0.1:8545` only. For remote access (multiple smp-server hosts → one Reth), put Caddy + Let's Encrypt + Basic auth in front — see `plans/20260522_01_smp_public_namespaces.md` §"Operator deployment".
-- Ports 30303/9000 are p2p — open on your firewall for sync.
-- `jwt.hex` is generated on first run by the `jwt-init` service and shared between Reth and Nimbus via the `jwt` volume.
-- To wipe state and re-sync: `docker compose down -v`.
+**5. subgraph returns indexed names:**
+```sh
+curl -s -X POST http://127.0.0.1:8000/subgraphs/name/graphprotocol/ens \
+  -H 'content-type: application/json' \
+  -d '{"query":"{ registrations(first:5){ labelName expiryDate } }"}' | jq
+```
 
-## SNRC resolver REST API (`snrc-resolve.py`)
+**Wire your smp-server:** in its `[NAMES]` section set
+`resolver_endpoint: http://127.0.0.1:8088` (no auth needed for loopback).
 
-The companion script `snrc-resolve.py` exposes the SimpleX Namespace
-Registry (SNRC) over a small JSON HTTP API. It talks to the same local
-Reth + Nimbus stack described above (set `NETWORK=mainnet` in `.env`),
-reading the SNRC contracts directly on Ethereum mainnet.
+## Ports (all loopback unless noted)
 
-Dependencies are declared inline (PEP 723) at the top of `snrc-resolve.py`
-and in a sibling `pyproject.toml`. The simplest local run uses
-[`uv`](https://docs.astral.sh/uv/):
+| Service | Host | Purpose |
+|---|---|---|
+| reth JSON-RPC | `127.0.0.1:8545` | smp-server RPC |
+| reth p2p | `:30303` tcp/udp | Ethereum sync (open on firewall) |
+| nimbus p2p | `:9000` tcp/udp | beacon sync (open on firewall) |
+| nimbus REST | `127.0.0.1:5052` | beacon API |
+| **resolver** | `127.0.0.1:8088` | SNRC REST (`/resolve`, `/health`) |
+| graph-node GraphQL | `127.0.0.1:8000` | subgraph queries |
+| graph-node status | `127.0.0.1:8030` | indexing status |
+| graph-node admin/WS/metrics | `127.0.0.1:8020/8001/8040` | internal |
+| IPFS | `127.0.0.1:5001` | subgraph manifest store |
+
+> The resolver is on **8088**, not 8000 — host 8000 belongs to graph-node's
+> GraphQL.
+
+## Caveats
+
+- **reth keeps the subgraph's data.** The compose uses `reth download --full
+  --resumable` (snapshot) and `reth node --full` — both confirmed present in
+  the pinned image (`reth --help` lists `download`, `node --help` lists
+  `--full`). `--full` retains logs/receipts back past block **25,250,870**
+  (where the subgraph indexes from), so don't add receipt/log pruning.
+- **All images track `:latest`** (reth, nimbus, graph-node, ipfs, postgres:18) —
+  you get upstream fixes on each `docker compose pull`; re-run the verify checks
+  after pulling. The rainbow-table seed (`init/rainbow-seed.sh`) is required for
+  graph-node ≥ 0.30 (incl. latest), so latest is covered.
+- **Change `POSTGRES_PASSWORD`** (default `let-me-in`) for non-local use. All
+  ports bind to loopback; expose only what you put behind a TLS reverse proxy.
+
+## Teardown
 
 ```sh
-uv run scripts/resolver/snrc-resolve.py
+docker compose down       # stop, keep all state
+docker compose down -v    # also wipe volumes → full re-sync + re-seed
 ```
 
-`uv` resolves and caches `eth-hash[pycryptodome]` on first run. No
-virtualenv juggling, no `--break-system-packages`. If you'd rather
-manage Python deps yourself:
+`down -v` wipes the chain data (1.2 TB re-sync) and the Postgres volume (the
+rainbow-table seed is lost; `rainbow-seed` re-seeds it idempotently on the
+next `up`).
+
+---
+
+## Resolver API reference
+
+The resolver (`snrc-resolve.py`, container `:8000` → host `:8088`) is also
+runnable standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 
 ```sh
-pip install 'eth-hash[pycryptodome]>=0.7'
-python scripts/resolver/snrc-resolve.py
+uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
 ```
 
-### Deployed registries
+### Response shape
 
-| TLD        | Network          | ENSRegistry address                          |
-|------------|------------------|----------------------------------------------|
-| `.testing` | Ethereum mainnet | `0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6` |
-| `.simplex` | — (not deployed) | —                                            |
-
-Each TLD is an independent ENS-shaped deployment with its own
-`ENSRegistry`. The resolver dispatches by the queried name's rightmost
-label, so a single instance can serve both TLDs concurrently once
-`.simplex` launches.
-
-### Running
-
-With Reth bound to `127.0.0.1:8545` (the default Quickstart layout
-above), no env vars are required — the script defaults to that RPC and
-to the mainnet `.testing` registry:
-
-```sh
-./scripts/resolver/snrc-resolve.py
-```
-
-Output on startup:
-
-```
-snrc-resolve listening on 0.0.0.0:8000
-  RPC = http://127.0.0.1:8545
-  Registries:
-    .testing  = 0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6
-    .simplex  = (not configured)
-  GET /resolve/<name>   GET /health
-```
-
-Override the listen port or bind address with `SNRC_PORT` / `SNRC_BIND`.
-
-### Running in Docker
-
-The compose file ships a `resolver` service alongside reth and nimbus.
-`docker compose up -d` builds the image from `Dockerfile` (multi-stage,
-non-root, `uv`-based) and exposes the API on `127.0.0.1:8000`:
-
-```sh
-docker compose up -d resolver
-docker compose logs -f resolver
-curl -s http://127.0.0.1:8000/health
-```
-
-The container points `SNRC_RPC` at `http://reth:8545` (the compose-internal
-DNS name) so the resolver and reth share the bridge network without
-exposing reth's RPC to the host beyond loopback.
-
-To change the host-side port, edit the LEFT side of the port mapping in
-`docker-compose.yml`:
-
-```yaml
-resolver:
-  ports:
-    - "127.0.0.1:8000:8000"   # host:container
-```
-
-The registry address defaults to mainnet `.testing` — to override (Holesky,
-a private deployment, or future `.simplex`), uncomment and set the values
-in `docker-compose.yml` under the resolver service's `environment:` block.
-
-The image declares a `HEALTHCHECK` against `/health`; `docker compose ps`
-will mark the service `(healthy)` once reth is queryable.
-
-### Resolving a name
-
-`foobar.testing` is registered on mainnet with every text and
-multicoin record populated (useful as a smoke-test target):
-
-```sh
-curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
-```
-
-```json
+```jsonc
 {
   "name": "foobar.testing",
-  "nickname": "Foo",
-  "website": "https://foo.bar",
-  "location": "",
-  "simplexContact": [
-    "https://smp16.simplex.im/a#Q_F00BA7",
-    "https://smp11.simplex.im/a#Q_F00BA8"
-  ],
+  "nickname": "Foo", "website": "https://foo.bar", "location": "",
+  "simplexContact": ["https://smp16.simplex.im/a#…", "https://smp11…"],  // primary first, fallbacks after
   "simplexChannel": [],
-  "eth": null,
-  "btc": "bc1qpzht4wp64yg7z6sgl07vvrnepyux740juynfcn",
-  "xmr": "4ANzdVJFxLtCKcBgNGkFSEA41zJFgrTX93LWt9UR6xpg7YNCsdrSV817cw2xKT8NXeS5euBBqTApS2u8kRTxMhyiDGN3Qgt",
-  "dot": "139GgyEsXDyGLhmhBTPmDmGCyTvTVuLad3YjHax2PWLK6p3s",
-  "owner": "0xd83bb610fbad567fb5d8755ec162881e46d1fbc9",
-  "resolver": "0x80fa1903e70af03e79c73fb7feae2fb33aebae01"
+  "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
+  "owner": "0xd83b…", "resolver": "0x80fa…"
 }
 ```
 
-`simplexContact` and `simplexChannel` are arrays so a name can advertise
-multiple SMP servers for redundancy. Clients SHOULD try the URLs in
-order; the first entry is the primary and the rest are fallbacks. The
-on-chain text record stores them as a single comma-separated string
-(`"url1,url2,url3"`); this resolver splits, trims whitespace, and drops
-empty entries before returning.
+`simplexContact`/`simplexChannel` are arrays (a name can advertise multiple SMP
+servers; clients try them in order). On-chain they're a single comma-separated
+text record; the resolver splits/trims/drops-empties. Address encodings are
+canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
+identically (`bar.foobar.testing`).
 
-All field names are lowercase-initial and contain no dots, so they map
-directly onto Haskell record fields and can be consumed via aeson's
-`Generic`-derived `FromJSON` without a key-rewriting layer. Equivalent
-Haskell record:
+### Status codes
 
-```haskell
-data SnrcRecord = SnrcRecord
-  { name           :: Text
-  , nickname       :: Text
-  , website        :: Text
-  , location       :: Text
-  , simplexContact :: [Text]
-  , simplexChannel :: [Text]
-  , eth            :: Maybe Text
-  , btc            :: Maybe Text
-  , xmr            :: Maybe Text
-  , dot            :: Maybe Text
-  , owner          :: Text
-  , resolver       :: Text
-  } deriving (Generic, FromJSON)
-```
+| Status | Meaning |
+|---|---|
+| 200 | resolved |
+| 400 | TLD not configured, or not a fully-qualified name |
+| 404 | name has no resolver set on the registry |
+| 502 | upstream RPC error / reth not synced |
 
-(The on-chain text-record keys still use the ENSIP-5 dot convention —
-`simplex.contact` and `simplex.channel`. Only the resolver's JSON
-surface camelCases them.)
+### Configuring registries
 
-Address encoding matches each chain's canonical user-facing form:
-EIP-55 mixed-case for `eth`, bech32/bech32m for `btc` segwit/taproot
-(base58check for legacy P2PKH/P2SH), SS58 with Polkadot prefix 0 for
-`dot`, Monero-base58 for `xmr`. Unrecognised payloads fall back to
-`0x`-prefixed hex.
-
-#### Subnames
-
-Subnames work exactly the same. try `bar.foobar.testing`.
-
-```sh
-curl -s http://127.0.0.1:8000/health
-# → {"ok": true, "rpc": "http://127.0.0.1:8545", "registries": {"testing": "0x…", "simplex": ""}}
-```
-
-### Pointing at multiple deployments
-
-Once `.simplex` deploys, point a single resolver instance at both
-registries — requests are dispatched by the rightmost label:
-
-```sh
-SNRC_REGISTRY_SIMPLEX=0x...mainnet-simplex-ENSRegistry... \
-  ./scripts/resolver/snrc-resolve.py
-```
-
-Queries for a TLD with no registry configured return HTTP 400 with the
-list of supported TLDs.
-
-### Error responses
-
-| Status | When                                                                  |
-|--------|-----------------------------------------------------------------------|
-| 400    | TLD not configured (`/resolve/foo.simplex` while `.simplex` is empty) or path not a fully-qualified name |
-| 404    | Name has no resolver set on the registry (`ENSRegistry.resolver(node)` is zero) |
-| 502    | Upstream RPC error / unreachable (Reth not running or not synced)     |
+Defaults to mainnet `.testing` (`0x03f438…`); `.simplex` is unset until
+deployed. Override per TLD via env on the `resolver` service in
+`docker-compose.yml` (`SNRC_REGISTRY_TESTING` / `SNRC_REGISTRY_SIMPLEX`), or as
+env vars for the standalone script.
