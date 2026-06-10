@@ -58,6 +58,11 @@ smpProxyTests = do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
+  describe "relay reconnection" $ do
+    it "recovers when unresponsive relay restarts (control, no disconnect)" $ \_ ->
+      testProxyRecoversWithoutDisconnect
+    it "reconnects to relay after sender disconnects mid-connection" $ \_ ->
+      testProxyReconnectAfterRelayRestart
   describe "proxy requests" $ do
     describe "bad relay URIs" $ do
       xit "host not resolved" todo
@@ -446,6 +451,61 @@ testProxyAuth msType = do
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
     proxyCfgAuth = updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth = Just "correct"}
+
+-- Connect a sender client to the proxy and request a relay session to testSMPServer2 (PRXY).
+-- On success the reply is PKEY; otherwise it is the proxy error for the relay connection.
+requestRelaySession :: IO (Either SMP.ErrorType SMP.BrokerMsg)
+requestRelaySession =
+  testSMPClient_ "localhost" testPort proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) ->
+    (\(_, _, reply) -> reply) <$> sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
+
+-- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
+-- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,
+-- let any stored connection error expire, then require the proxy to establish the session (PKEY).
+requireProxyReconnect :: IO ()
+requireProxyReconnect =
+  withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2 $ \_ -> do
+    testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+      (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
+      reply `shouldBe` Right SMP.PONG
+    threadDelay 1500000 -- > persistErrorInterval (1s), so the stored connection error has expired
+    requestRelaySession >>= \case
+      Right SMP.PKEY {} -> pure ()
+      reply -> expectationFailure $ "proxy failed to reach the healthy relay; expected PKEY, got: " <> show reply
+
+-- Control: same stalling relay and proxy config as the bug test, but the sender stays connected.
+-- The connect fails by timing out (storing a Left error that self-heals via persistErrorInterval),
+-- so once a healthy relay is running the proxy reconnects. This proves the stalling relay alone
+-- does not cause the permanent failure - only the mid-connection disconnect does.
+testProxyRecoversWithoutDisconnect :: IO ()
+testProxyRecoversWithoutDisconnect =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ -> do
+    withStallingServerOn testPort2 $
+      requestRelaySession >>= \case
+        Right (SMP.ERR (SMP.PROXY (SMP.BROKER _))) -> pure ()
+        reply -> expectationFailure $ "expected a proxy broker error from the unresponsive relay, got: " <> show reply
+    requireProxyReconnect
+
+-- Reproduces the production bug: an SMP proxy permanently fails to reconnect to a destination
+-- relay after the relay restarts (logs: repeated PCEResponseTimeout).
+--
+-- A PRXY request makes the proxy worker (forked via forkClient, registered in the sender's
+-- endThreads) insert an empty SessionVar into smpClients and then block in connectClient. If the
+-- sender disconnects while that connect is in flight, clientDisconnected kills the worker;
+-- clientHandlers re-throws the async exception, so the SessionVar is never filled. Nothing removes
+-- an empty SessionVar, so every later request waits the connection timeout on it - PROXY (BROKER
+-- TIMEOUT) - forever, even once the relay is healthy again.
+--
+-- The stalling relay (accepts TCP, never completes TLS) holds the connect open long enough to
+-- interleave the disconnect. Phase 2 (requireProxyReconnect) is identical to the control above;
+-- the only difference is this disconnect.
+testProxyReconnectAfterRelayRestart :: IO ()
+testProxyReconnectAfterRelayRestart =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ -> do
+    -- disconnect the sender 1s into the 4s connect to the stalling relay, killing the in-flight worker
+    withStallingServerOn testPort2 $
+      race_ (threadDelay 1000000) requestRelaySession
+    requireProxyReconnect
 
 todo :: AStoreType -> IO ()
 todo _ = fail "TODO"
