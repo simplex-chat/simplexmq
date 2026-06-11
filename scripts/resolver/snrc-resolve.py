@@ -19,7 +19,7 @@ and returns a flat JSON document with these fields:
 `simplexContact` and `simplexChannel` are arrays so a name can advertise
 multiple SMP servers for redundancy. Clients SHOULD try the URLs in the
 order returned. The on-chain text record stores them as a single
-comma-separated string; this resolver splits and trims into a list.
+`LINK_SEPARATOR` (`;`)-joined string; this resolver splits and trims into a list.
 
 All keys are valid Haskell record-field identifiers (lowercase initial,
 no dots), so consumers can derive aeson FromJSON instances directly
@@ -372,16 +372,22 @@ TEXT_KEYS = [
 ]
 
 
-def split_csv(value: str) -> list:
-    """Split a comma-separated text record into an ordered list of entries.
+# Separator that joins the SMP-server URL list inside a simplex.contact /
+# simplex.channel text record. MUST match SIMPLEX_LINK_SEPARATOR in the dApp
+# (ens-app-v3 src/constants/simplex.ts) — the two sides decode the same record.
+LINK_SEPARATOR = ";"
+
+
+def split_links(value: str) -> list:
+    """Split a separator-joined text record into an ordered list of entries.
 
     Trims whitespace around each element and drops empties so trailing
-    commas, doubled commas, and all-whitespace inputs all yield clean
+    separators, doubled separators, and all-whitespace inputs all yield clean
     output. Single-value records yield a 1-element list; empty inputs
     yield `[]`. Used for `simplex.contact` / `simplex.channel`, which
-    store one-or-more SMP-server URLs as a single comma-joined string.
+    store one-or-more SMP-server URLs as a single `LINK_SEPARATOR`-joined string.
     """
-    return [item.strip() for item in value.split(",") if item.strip()]
+    return [item.strip() for item in value.split(LINK_SEPARATOR) if item.strip()]
 
 
 def resolve(name: str):
@@ -429,8 +435,8 @@ def resolve(name: str):
         "nickname": nickname,
         "website": texts.get("url", ""),
         "location": texts.get("location", ""),
-        "simplexContact": split_csv(texts.get("simplex.contact", "")),
-        "simplexChannel": split_csv(texts.get("simplex.channel", "")),
+        "simplexContact": split_links(texts.get("simplex.contact", "")),
+        "simplexChannel": split_links(texts.get("simplex.channel", "")),
         "eth": addr_multicoin(resolver_addr, node, COIN_ETH),
         "btc": addr_multicoin(resolver_addr, node, COIN_BTC),
         "xmr": addr_multicoin(resolver_addr, node, COIN_XMR),
