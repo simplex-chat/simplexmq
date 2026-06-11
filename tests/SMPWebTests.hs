@@ -46,6 +46,8 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (Str (..), strEncode)
 import Simplex.Messaging.Protocol (EntityId (..), SMPServer, SubscriptionMode (..), MsgFlags (..), noMsgFlags, pattern SMPServer, pattern NoEntity, encodeProtocol, Cmd (..), SParty (..), Command (..), NewQueueReq (..), QueueReqData (..), BrokerMsg (..), RcvMessage (..), EncRcvMsgBody (..), QueueIdsKeys (..), PubHeader (..), PrivHeader (..), ClientMessage (..), ClientMsgEnvelope (..), pattern VersionSMPC)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
+import Simplex.Messaging.Server.QueueStore.QueueInfo (QueueMode (..))
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Web (attachStaticAndWS)
 import Data.Time.Clock (getCurrentTime)
@@ -230,6 +232,14 @@ spawnJsRatchet = do
 spawnJsClient :: IO (Handle, Handle, ProcessHandle)
 spawnJsClient = do
   let cp = (proc "node" ["dist-test/client-repl.js"]) {cwd = Just "smp-web", std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
+  (Just hIn, Just hOut, _, ph) <- createProcess cp
+  hSetBuffering hIn LineBuffering
+  hSetBuffering hOut LineBuffering
+  pure (hIn, hOut, ph)
+
+spawnJsAgent :: IO (Handle, Handle, ProcessHandle)
+spawnJsAgent = do
+  let cp = (proc "node" ["dist-test/agent-repl.js"]) {cwd = Just "smp-web", std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit}
   (Just hIn, Just hOut, _, ph) <- createProcess cp
   hSetBuffering hIn LineBuffering
   hSetBuffering hOut LineBuffering
@@ -1236,6 +1246,52 @@ smpWebTests_ = do
           <> jsOut ("e.encAgentMessage")
         tsResult `shouldBe` "decrypt me"
 
+  describe "agent/queueInfo" $ do
+    let impAgentProtoEnc = "import { encodeSMPQueueInfo, decodeSMPQueueInfo, encodeSMPQueueUri, decodeSMPQueueUri, encodeConnReqUriData, decodeConnReqUriData, encodeConnectionRequestUri, decodeConnectionRequestUri } from './dist/agent/protocol.js';"
+
+    describe "SMPQueueInfo" $ do
+      it "encoding matches Haskell" $ do
+        g <- C.newRandom
+        (dhPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let srv = SMPServer ("smp.example.com" :| []) "5223" (C.KeyHash $ B.pack [1..32])
+            senderId = EntityId $ B.pack [10..33]
+            qAddr = AP.SMPQueueAddress {AP.smpServer = srv, AP.senderId = senderId, AP.dhPublicKey = dhPub, AP.queueMode = Just QMMessaging}
+            qi = AP.SMPQueueInfo (VersionSMPC 4) qAddr
+            hsBytes = smpEncode qi
+        tsBytes <- callNode $ impEnc <> impAgentProtoEnc
+          <> "const qi = {clientVersion: 4, queueAddress: {smpServer: {hosts: ['smp.example.com'], port: '5223', keyHash: " <> jsUint8 (B.pack [1..32]) <> "}, senderId: " <> jsUint8 (B.pack [10..33]) <> ", dhPublicKey: " <> jsUint8 (C.encodePubKey dhPub) <> ", queueMode: 'M'}};"
+          <> jsOut ("encodeSMPQueueInfo(qi)")
+        tsBytes `shouldBe` hsBytes
+
+      it "TypeScript decodes Haskell-encoded" $ do
+        g <- C.newRandom
+        (dhPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let srv = SMPServer ("relay.test.com" :| ["relay2.test.com"]) "" (C.KeyHash $ B.pack [50..81])
+            senderId = EntityId $ B.pack [1..24]
+            qAddr = AP.SMPQueueAddress {AP.smpServer = srv, AP.senderId = senderId, AP.dhPublicKey = dhPub, AP.queueMode = Just QMContact}
+            qi = AP.SMPQueueInfo (VersionSMPC 4) qAddr
+            hsBytes = smpEncode qi
+        tsResult <- callNode $ impEnc <> impAgentProtoEnc
+          <> "const qi = decodeSMPQueueInfo(new Decoder(" <> jsUint8 hsBytes <> "));"
+          <> jsOut ("new Uint8Array([qi.clientVersion >> 8, qi.clientVersion & 0xff, qi.queueAddress.smpServer.hosts.length, qi.queueAddress.queueMode ? qi.queueAddress.queueMode.charCodeAt(0) : 0])")
+        tsResult `shouldBe` B.pack [0, 4, 2, 0x43]  -- version=4, 2 hosts, queueMode='C'
+
+    describe "ConnectionRequestUri" $ do
+      it "contact encoding matches Haskell" $ do
+        g <- C.newRandom
+        (dhPub, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+        let srv = SMPServer ("smp1.example.com" :| []) "" (C.KeyHash $ B.pack [1..32])
+            senderId = EntityId $ B.pack [1..24]
+            qAddr = AP.SMPQueueAddress {AP.smpServer = srv, AP.senderId = senderId, AP.dhPublicKey = dhPub, AP.queueMode = Just QMContact}
+            qUri = AP.SMPQueueUri (mkVersionRange (VersionSMPC 4) (VersionSMPC 4)) qAddr
+            crData = AP.ConnReqUriData {AP.crScheme = SSSimplex, AP.crAgentVRange = mkVersionRange (AP.VersionSMPA 2) (AP.VersionSMPA 7), AP.crSmpQueues = qUri :| [], AP.crClientData = Nothing}
+            cr = AP.CRContactUri crData :: AP.ConnectionRequestUri 'AP.CMContact
+            hsBytes = smpEncode cr
+        tsBytes <- callNode $ impEnc <> impAgentProtoEnc
+          <> "const cr = {mode: 'contact', crData: {crAgentVRange: {min: 2, max: 7}, crSmpQueues: [{clientVRange: {min: 4, max: 4}, queueAddress: {smpServer: {hosts: ['smp1.example.com'], port: '', keyHash: " <> jsUint8 (B.pack [1..32]) <> "}, senderId: " <> jsUint8 (B.pack [1..24]) <> ", dhPublicKey: " <> jsUint8 (C.encodePubKey dhPub) <> ", queueMode: 'C'}}], crClientData: null}};"
+          <> jsOut ("encodeConnectionRequestUri(cr)")
+        tsBytes `shouldBe` hsBytes
+
   describe "protocol/e2e" $ do
     describe "PubHeader" $ do
       it "encoding without key matches Haskell" $ do
@@ -1834,4 +1890,84 @@ smpWebTests_ = do
           closeProtocolClient pc
           _ <- jsCmd rcvIn rcvOut "CLOSE"
           terminateProcess rcvPh
+
+  describe "agent-repl" $ do
+    it "agentCbEncrypt cross-language: TS encrypts, Haskell decrypts" $ do
+      g <- C.newRandom
+      -- Generate shared DH secret
+      (rcvPub, _rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (_sndPub, sndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' rcvPub sndPriv
+          C.DhSecretX25519 dhSecretRaw = dhSecret
+          dhSecretBytes = BA.convert dhSecretRaw :: B.ByteString
+          plaintext = "hello from typescript"
+          versionInt = 18 :: Int
+      -- TS: encrypt
+      (hIn, hOut, ph) <- spawnJsAgent
+      tsResp <- jsCmd hIn hOut $ "CB_ENCRYPT " <> bsToHex dhSecretBytes <> " " <> show versionInt <> " " <> bsToHex plaintext
+      let tsParts = words tsResp
+      head tsParts `shouldBe` "ok:"
+      let envelopeHex = tsParts !! 1
+          envelopeBytes = hexToBS envelopeHex
+      -- Haskell: decode ClientMsgEnvelope and decrypt
+      ClientMsgEnvelope {cmHeader = PubHeader ver _, cmNonce = nonce, cmEncBody = encBody} <- either fail pure $ smpDecode envelopeBytes
+      show ver `shouldBe` "Version 18"
+      decrypted <- either (fail . show) pure $ C.cbDecrypt dhSecret nonce encBody
+      -- The plaintext is padded — first bytes should match
+      B.take (B.length plaintext) decrypted `shouldBe` plaintext
+      _ <- jsCmd hIn hOut "CLOSE"
+      terminateProcess ph
+
+    it "agentCbEncrypt cross-language: confirmation envelope with DER-encoded pubkey parses in Haskell" $ do
+      g <- C.newRandom
+      (rcvPub, _rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (_sndPub, sndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      -- e2ePubKey carried in the PubHeader (confirmation mode)
+      (e2ePub, _e2ePriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' rcvPub sndPriv
+          C.DhSecretX25519 dhSecretRaw = dhSecret
+          dhSecretBytes = BA.convert dhSecretRaw :: B.ByteString
+          e2ePubRaw = C.pubKeyBytes e2ePub  -- raw 32-byte X25519 key
+          plaintext = "confirmation body"
+          versionInt = 4 :: Int
+      (hIn, hOut, ph) <- spawnJsAgent
+      -- TS: encrypt with e2ePubKey (raw) → should DER-encode it in the PubHeader
+      tsResp <- jsCmd hIn hOut $ "CB_ENCRYPT " <> bsToHex dhSecretBytes <> " " <> show versionInt <> " " <> bsToHex plaintext <> " " <> bsToHex e2ePubRaw
+      let tsParts = words tsResp
+      head tsParts `shouldBe` "ok:"
+      let envelopeBytes = hexToBS (tsParts !! 1)
+      -- Haskell: decode full envelope. PubHeader's Maybe PublicKeyX25519 requires DER —
+      -- if TS sent a raw 32-byte key this smpDecode would fail.
+      ClientMsgEnvelope {cmHeader = PubHeader _ phKey, cmNonce = nonce, cmEncBody = encBody} <- either fail pure $ smpDecode envelopeBytes
+      -- The decoded pubkey must equal the original
+      phKey `shouldBe` Just e2ePub
+      decrypted <- either (fail . show) pure $ C.cbDecrypt dhSecret nonce encBody
+      B.take (B.length plaintext) decrypted `shouldBe` plaintext
+      _ <- jsCmd hIn hOut "CLOSE"
+      terminateProcess ph
+
+    it "agentCbEncrypt cross-language: Haskell encrypts, TS decrypts" $ do
+      g <- C.newRandom
+      -- Generate shared DH secret
+      (rcvPub, _rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (_sndPub, sndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' rcvPub sndPriv
+          C.DhSecretX25519 dhSecretRaw = dhSecret
+          dhSecretBytes = BA.convert dhSecretRaw :: B.ByteString
+          plaintext = "hello from haskell"
+      -- Haskell: encrypt
+      cbNonce <- atomically $ C.randomCbNonce g
+      encBody <- either (fail . show) pure $ C.cbEncrypt dhSecret cbNonce plaintext 16000
+      let C.CbNonce nonceBytes = cbNonce
+      -- TS: decrypt
+      (hIn, hOut, ph) <- spawnJsAgent
+      tsResp <- jsCmd hIn hOut $ "CB_DECRYPT " <> bsToHex dhSecretBytes <> " " <> bsToHex nonceBytes <> " " <> bsToHex encBody
+      let tsParts = words tsResp
+      head tsParts `shouldBe` "ok:"
+      let decryptedHex = tsParts !! 1
+          decrypted = hexToBS decryptedHex
+      -- Decrypted is padded — first bytes should match
+      B.take (B.length plaintext) decrypted `shouldBe` plaintext
+      _ <- jsCmd hIn hOut "CLOSE"
+      terminateProcess ph
 

@@ -3,8 +3,15 @@
 
 import {base64urlDecode} from "@simplex-chat/xftp-web/dist/protocol/description.js"
 import {
-  Decoder, decodeBytes, decodeLarge, decodeWord16, decodeBool,
+  Decoder, concatBytes,
+  encodeBytes, decodeBytes,
+  encodeLarge, decodeLarge,
+  encodeWord16, decodeWord16,
+  encodeBool, decodeBool,
+  encodeMaybe, decodeMaybe,
+  encodeNonEmpty, decodeNonEmpty,
 } from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
+import {encodeProtocolServer} from "../protocol.js"
 
 // -- Short link types (Agent/Protocol.hs:1462-1470)
 
@@ -162,6 +169,196 @@ export function decodeFixedLinkData(d: Decoder): FixedLinkData {
   const rootKey = decodeBytes(d)
   const rest = d.takeAll()
   return {agentVRange: {min, max}, rootKey, rest}
+}
+
+// -- SMPQueueAddress (Agent/Protocol.hs:1350-1356)
+
+export interface SMPQueueAddress {
+  smpServer: {hosts: string[], port: string, keyHash: Uint8Array}  // ProtocolServer
+  senderId: Uint8Array     // EntityId (ByteString)
+  dhPublicKey: Uint8Array  // PublicKeyX25519 (DER-encoded ByteString)
+  queueMode: string | null // Maybe QueueMode: 'M' = Messaging, 'C' = Contact
+}
+
+// -- SMPQueueInfo (Agent/Protocol.hs:1310-1327)
+// Version-dependent encoding
+
+// SMP client version constants (Protocol.hs:281-294)
+const initialSMPClientVersion = 1
+const sndAuthKeySMPClientVersion = 3
+const shortLinksSMPClientVersion = 4
+
+export interface SMPQueueInfo {
+  clientVersion: number    // VersionSMPC (Word16)
+  queueAddress: SMPQueueAddress
+}
+
+// smpEncode (Agent/Protocol.hs:1313-1321)
+export function encodeSMPQueueInfo(q: SMPQueueInfo): Uint8Array {
+  const {clientVersion, queueAddress: {smpServer, senderId, dhPublicKey, queueMode}} = q
+  const addrEnc = concatBytes(
+    encodeWord16(clientVersion),
+    encodeProtocolServer(smpServer.hosts, smpServer.port, smpServer.keyHash),
+    encodeBytes(senderId),
+    encodeBytes(dhPublicKey),
+  )
+  if (clientVersion >= shortLinksSMPClientVersion) {
+    // encode queueMode directly (Maybe QueueMode as char or empty)
+    const qmBytes = queueMode ? new Uint8Array([queueMode.charCodeAt(0)]) : new Uint8Array(0)
+    return concatBytes(addrEnc, qmBytes)
+  }
+  if (clientVersion >= sndAuthKeySMPClientVersion && senderCanSecure(queueMode)) {
+    return concatBytes(addrEnc, encodeBool(true))
+  }
+  if (clientVersion > initialSMPClientVersion) {
+    return addrEnc
+  }
+  // v1 legacy — not supported by web widget
+  throw new Error("encodeSMPQueueInfo: legacy v1 not supported")
+}
+
+// smpP (Agent/Protocol.hs:1322-1327)
+export function decodeSMPQueueInfo(d: Decoder): SMPQueueInfo {
+  const clientVersion = decodeWord16(d)
+  // v1 legacy server encoding not supported
+  if (clientVersion <= initialSMPClientVersion) throw new Error("decodeSMPQueueInfo: legacy v1 not supported")
+  const smpServer = decodeProtocolServerTyped(d)
+  const senderId = decodeBytes(d)
+  const dhPublicKey = decodeBytes(d)
+  const queueMode = decodeQueueMode(d)
+  return {clientVersion, queueAddress: {smpServer, senderId, dhPublicKey, queueMode}}
+}
+
+// -- SMPQueueUri (Agent/Protocol.hs:1347-1431)
+
+export interface SMPQueueUri {
+  clientVRange: {min: number, max: number}  // VersionRangeSMPC
+  queueAddress: SMPQueueAddress
+}
+
+// smpEncode (Agent/Protocol.hs:1417-1427)
+export function encodeSMPQueueUri(q: SMPQueueUri): Uint8Array {
+  const {clientVRange: {min: minV, max: maxV}, queueAddress: {smpServer, senderId, dhPublicKey, queueMode}} = q
+  const addrEnc = concatBytes(
+    encodeWord16(minV), encodeWord16(maxV),
+    encodeProtocolServer(smpServer.hosts, smpServer.port, smpServer.keyHash),
+    encodeBytes(senderId),
+    encodeBytes(dhPublicKey),
+  )
+  if (minV >= shortLinksSMPClientVersion) {
+    const qmBytes = queueMode ? new Uint8Array([queueMode.charCodeAt(0)]) : new Uint8Array(0)
+    return concatBytes(addrEnc, qmBytes)
+  }
+  if (minV >= sndAuthKeySMPClientVersion || (maxV >= sndAuthKeySMPClientVersion && senderCanSecure(queueMode))) {
+    return concatBytes(addrEnc, encodeBool(senderCanSecure(queueMode)))
+  }
+  return addrEnc
+}
+
+// smpP (Agent/Protocol.hs:1428-1431)
+export function decodeSMPQueueUri(d: Decoder): SMPQueueUri {
+  const min = decodeWord16(d)
+  const max = decodeWord16(d)
+  const smpServer = decodeProtocolServerTyped(d)
+  const senderId = decodeBytes(d)
+  const dhPublicKey = decodeBytes(d)
+  const queueMode = decodeQueueMode(d)
+  return {clientVRange: {min, max}, queueAddress: {smpServer, senderId, dhPublicKey, queueMode}}
+}
+
+// -- ConnReqUriData (Agent/Protocol.hs:1728-1734, 1145-1158)
+
+export interface ConnReqUriData {
+  crAgentVRange: {min: number, max: number}  // VersionRangeSMPA
+  crSmpQueues: SMPQueueUri[]                 // NonEmpty SMPQueueUri
+  crClientData: string | null                // Maybe CRClientData (Text)
+}
+
+// smpEncode (Agent/Protocol.hs:1145-1147)
+export function encodeConnReqUriData(d: ConnReqUriData): Uint8Array {
+  const vr = concatBytes(encodeWord16(d.crAgentVRange.min), encodeWord16(d.crAgentVRange.max))
+  const queues = encodeNonEmpty(encodeSMPQueueUri, d.crSmpQueues)
+  const clientData = d.crClientData !== null
+    ? concatBytes(new Uint8Array([0x31]), encodeLarge(new TextEncoder().encode(d.crClientData)))
+    : new Uint8Array([0x30])
+  return concatBytes(vr, queues, clientData)
+}
+
+// smpP (Agent/Protocol.hs:1148-1158)
+export function decodeConnReqUriData(d: Decoder): ConnReqUriData {
+  const min = decodeWord16(d)
+  const max = decodeWord16(d)
+  const crSmpQueues = decodeNonEmpty(decodeSMPQueueUri, d)
+  // Patch queueMode: if Nothing, set to QMContact (Agent/Protocol.hs:1156-1158)
+  for (const q of crSmpQueues) {
+    if (q.queueAddress.queueMode === null) q.queueAddress.queueMode = "C"
+  }
+  const clientData = decodeMaybe((dd) => {
+    const large = decodeLarge(dd)
+    return new TextDecoder().decode(large)
+  }, d)
+  return {crAgentVRange: {min, max}, crSmpQueues, crClientData: clientData}
+}
+
+// -- ConnectionRequestUri (Agent/Protocol.hs:1130-1143, 1436-1441)
+
+export type ConnectionRequestUri =
+  | {mode: "invitation", crData: ConnReqUriData, e2eParams: Uint8Array}  // raw smpEncoded E2ERatchetParams
+  | {mode: "contact", crData: ConnReqUriData}
+
+// smpEncode (Agent/Protocol.hs:1130-1133)
+export function encodeConnectionRequestUri(cr: ConnectionRequestUri): Uint8Array {
+  switch (cr.mode) {
+    case "invitation":
+      return concatBytes(new Uint8Array([0x49]), encodeConnReqUriData(cr.crData), cr.e2eParams) // 'I' + crData + e2eParams
+    case "contact":
+      return concatBytes(new Uint8Array([0x43]), encodeConnReqUriData(cr.crData)) // 'C' + crData
+  }
+}
+
+// smpP (Agent/Protocol.hs:1140-1143)
+export function decodeConnectionRequestUri(d: Decoder): ConnectionRequestUri {
+  const mode = d.anyByte()
+  if (mode === 0x49) { // 'I' Invitation
+    const crData = decodeConnReqUriData(d)
+    const e2eParams = d.takeAll() // E2ERatchetParams consumes rest
+    return {mode: "invitation", crData, e2eParams}
+  }
+  if (mode === 0x43) { // 'C' Contact
+    const crData = decodeConnReqUriData(d)
+    return {mode: "contact", crData}
+  }
+  throw new Error("decodeConnectionRequestUri: unknown mode 0x" + mode.toString(16))
+}
+
+// -- Helpers
+
+function senderCanSecure(queueMode: string | null): boolean {
+  return queueMode === "M"
+}
+
+// queueModeP (Agent/Protocol.hs:1433-1434)
+// Just <$> smpP <|> optional ((\case True -> QMMessaging; _ -> QMContact) <$> smpP)
+function decodeQueueMode(d: Decoder): string | null {
+  if (d.remaining() === 0) return null
+  const b = d.anyByte()
+  if (b === 0x4D) return "M" // QMMessaging
+  if (b === 0x43) return "C" // QMContact
+  // Could be a Bool (sndSecure) for older versions — True='T'(0x54) → QMMessaging, False='F'(0x46) → QMContact
+  if (b === 0x54) return "M" // True → QMMessaging
+  if (b === 0x46) return null // False → no queueMode (not secured)
+  return null
+}
+
+// Decode ProtocolServer into typed format with string hosts
+function decodeProtocolServerTyped(d: Decoder): {hosts: string[], port: string, keyHash: Uint8Array} {
+  const hostCount = d.anyByte()
+  if (hostCount === 0) throw new Error("empty server host list")
+  const hosts: string[] = []
+  for (let i = 0; i < hostCount; i++) hosts.push(new TextDecoder().decode(decodeBytes(d)))
+  const port = new TextDecoder().decode(decodeBytes(d))
+  const keyHash = decodeBytes(d)
+  return {hosts, port, keyHash}
 }
 
 // -- Profile extraction
