@@ -1471,16 +1471,25 @@ domain (TLD required — bare labels are rejected) and forwards it to the
 configured backing resolver. The `contract` field is parsed for forward
 compatibility but ignored by the reference implementation: the backing
 resolver is the source of truth for which on-chain registry maps to each TLD.
-Any failure (malformed name, resolver 404 / 400 / 5xx, transport failure,
-timeout, decode error, names role disabled) collapses to `ERR AUTH`.
 
 The names router responds with either a `NAME` response carrying the resolved
-record, or `ERR AUTH` collapsing every failure mode (name not found, malformed
-name, names role disabled, resolver unreachable, decode error, timeout). The
-wire code does not distinguish between these — stats counters MAY be exposed
-out-of-band for operator observability (`bad_name` is incremented for
-validation failures, distinct from `not_found` for valid lookups with no
-backing record).
+record, or one of three error responses that a client iterating across several
+configured servers can act on distinctly:
+
+| Response | Condition | Client action |
+|---|---|---|
+| `NAME` | record resolved | use it |
+| `ERR AUTH` | name not registered, or malformed name | authoritative "no such name" — stop |
+| `ERR CMD PROHIBITED` | this router has no resolver (names role not enabled) | skip this server, try the next |
+| `ERR INTERNAL` | backing resolver failure (404/400/5xx upstream, transport failure, timeout, decode error) | transient — retry or surface, do not treat as "not found" |
+
+A client SHOULD NOT broadcast a `name` to further servers after a name-capable
+router has answered (`AUTH` or `INTERNAL`), since that router has already seen
+the lookup key; `CMD PROHIBITED` discloses nothing about the name beyond the
+fact that this router cannot resolve, so iterating past it is safe. Stats
+counters MAY be exposed out-of-band for operator observability (`bad_name` is
+incremented for validation failures, distinct from `not_found` for valid
+lookups with no backing record).
 
 #### Name record response
 

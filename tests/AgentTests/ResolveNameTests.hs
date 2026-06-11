@@ -69,11 +69,21 @@ stubResolverSuccess = \case
   ResolverFetch _ -> pure (Right sampleRecordJSON)
   ResolverHealth -> pure (Right (J.object []))
 
+-- | 502 stub: the backing resolver fails (upstream RPC error). Server maps to
+-- ERR INTERNAL; agent surfaces as SMP host INTERNAL (transient, not "not found").
+stubResolverError :: ResolverCall
+stubResolverError = \case
+  ResolverFetch _ -> pure (Left (HttpStatusErr 502))
+  ResolverHealth -> pure (Right (J.object []))
+
 mkNotFoundNamesEnv :: IO NamesEnv
 mkNotFoundNamesEnv = newNamesEnvWith stubNamesConfig stubResolverNotFound Nothing
 
 mkSuccessNamesEnv :: IO NamesEnv
 mkSuccessNamesEnv = newNamesEnvWith stubNamesConfig stubResolverSuccess Nothing
+
+mkErrorNamesEnv :: IO NamesEnv
+mkErrorNamesEnv = newNamesEnvWith stubNamesConfig stubResolverError Nothing
 
 memCfg :: AServerConfig
 memCfg = cfgMS (ASType SQSMemory SMSMemory)
@@ -105,6 +115,14 @@ withProxyAndResolver nenv k =
   where
     proxyServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = userServers [testSMPServer, testSMPServer2]}
 
+-- | A direct SMP server with NO names role configured (namesEnv = Nothing).
+withNoResolver :: (AgentClient -> IO a) -> IO a
+withNoResolver k =
+  withSmpServerConfigOn (transport @TLS) memCfg testPort $ \_ ->
+    withAgent 1 agentCfg directServers testDB k
+  where
+    directServers = (initAgentServersProxy_ SPMNever SPFProhibit) {smp = userServers [testSMPServer]}
+
 directResolverSrv :: SMP.SMPServer
 directResolverSrv = SMPServer testHost testPort testKeyHash
 
@@ -126,6 +144,10 @@ resolveNameTests = do
       it "AUTH (resolver 404 -> NotFound) for TLDTesting too" testTestingTldAuth
     describe "TLDWeb path" $
       it "AUTH (resolver 404 -> NotFound) for TLDWeb too" testWebTldAuth
+    describe "no resolver configured" $
+      it "answers CMD PROHIBITED so the client skips this server" testNoResolverProhibited
+    describe "backing resolver failure" $
+      it "surfaces as SMP host INTERNAL (transient, not not-found)" testBackendErrorInternal
     describe "success path" $
       it "returns NameRecord" testDirectSuccess
 
@@ -188,6 +210,33 @@ testWebTldAuth = do
       _ -> expectationFailure $ "expected Left (SMP _ AUTH), got: " <> show r
   where
     webDomain = SimplexNameDomain TLDWeb "example.com" []
+
+-- | A router with no resolver configured (namesEnv = Nothing) answers
+-- CMD PROHIBITED, so a client iterating its servers skips it and tries the
+-- next rather than treating the response as an authoritative "not found".
+testNoResolverProhibited :: HasCallStack => IO ()
+testNoResolverProhibited =
+  withNoResolver $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+    case r of
+      Left (SMP _ (SMP.CMD SMP.PROHIBITED)) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (CMD PROHIBITED)), got: " <> show r
+  where
+    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
+
+-- | A backing-resolver failure (502 upstream) surfaces as SMP host INTERNAL -
+-- a transient error the client surfaces / retries, distinct from AUTH which
+-- would (incorrectly) read as "name not registered".
+testBackendErrorInternal :: HasCallStack => IO ()
+testBackendErrorInternal = do
+  nenv <- mkErrorNamesEnv
+  withDirectResolver nenv $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+    case r of
+      Left (SMP _ SMP.INTERNAL) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ INTERNAL), got: " <> show r
+  where
+    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
 
 -- | Success path: stub returns a real NameRecord. The agent surfaces it
 -- verbatim.

@@ -1508,14 +1508,18 @@ client
       Cmd SResolver (RSLV req) -> do
         st <- asks (rslvStats . serverStats)
         incStat (rslvReqs st)
+        -- Distinct error responses let a client iterating its servers act correctly:
+        --   CMD PROHIBITED - this router has no resolver (names role off): skip, try next
+        --   INTERNAL       - resolver / backing-store failure: transient, retry or surface
+        --   AUTH           - name not registered, or malformed name: authoritative "no such name"
         (selector, msg) <- asks namesEnv >>= \case
-          Nothing -> pure (rslvDisabled, ERR AUTH)
+          Nothing -> pure (rslvDisabled, ERR $ CMD PROHIBITED)
           Just nenv -> case parseName req of
             Nothing -> pure (rslvBadName, ERR AUTH)
             Just d -> liftIO (resolveName nenv d) <&> \case
               Right rec -> (rslvSucc, NAME rec)
               Left NotFound -> (rslvNotFound, ERR AUTH)
-              Left _ -> (rslvEthErrs, ERR AUTH)
+              Left _ -> (rslvEthErrs, ERR INTERNAL)
         incStat (selector st) $> response (corrId, NoEntity, msg)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
