@@ -47,8 +47,8 @@ sampleRecord =
       nrNickname = "Alice",
       nrWebsite = "https://alice.example",
       nrLocation = "Earth",
-      nrSimplexContact = "simplex:/contact/abc#xyz",
-      nrSimplexChannel = "",
+      nrSimplexContact = ["simplex:/contact/abc#xyz"],
+      nrSimplexChannel = [],
       nrEth = Just "0x0000000000000000000000000000000000000001",
       nrBtc = Nothing,
       nrXmr = Nothing,
@@ -111,9 +111,9 @@ nameRecordEncodingSpec = do
     B.isInfixOf "\"xmr\":null" bytes `shouldBe` True
     B.isInfixOf "\"dot\":null" bytes `shouldBe` True
 
-  it "emits unset text fields as empty strings (not null)" $ do
+  it "emits unset link fields as empty arrays (not null)" $ do
     let bytes = LB.toStrict (J.encode sampleRecord)
-    B.isInfixOf "\"simplexChannel\":\"\"" bytes `shouldBe` True
+    B.isInfixOf "\"simplexChannel\":[]" bytes `shouldBe` True
     B.isInfixOf "\"simplexChannel\":null" bytes `shouldBe` False
 
   it "rejects nrName > 255 bytes UTF-8" $ do
@@ -121,8 +121,13 @@ nameRecordEncodingSpec = do
         bytes = LB.toStrict (J.encode oversize)
     (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
-  it "rejects simplexContact > 1024 bytes UTF-8" $ do
-    let oversize = sampleRecord {nrSimplexContact = T.replicate 1025 "x"}
+  it "rejects simplexContact entries > 1024 bytes UTF-8 combined" $ do
+    let oversize = sampleRecord {nrSimplexContact = [T.replicate 1025 "x"]}
+        bytes = LB.toStrict (J.encode oversize)
+    (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
+
+  it "rejects simplexContact with more than 5 entries" $ do
+    let oversize = sampleRecord {nrSimplexContact = replicate 6 "simplex:/contact/x#y"}
         bytes = LB.toStrict (J.encode oversize)
     (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
 
@@ -145,8 +150,8 @@ nameRecordEncodingSpec = do
               nrNickname = T.replicate 255 "k",
               nrWebsite = T.replicate 255 "w",
               nrLocation = T.replicate 255 "l",
-              nrSimplexContact = T.replicate 1024 "x",
-              nrSimplexChannel = T.replicate 1024 "y",
+              nrSimplexContact = [T.replicate 1024 "x"],
+              nrSimplexChannel = [T.replicate 1024 "y"],
               nrEth = Just (T.replicate 255 "e"),
               nrBtc = Just (T.replicate 255 "b"),
               nrXmr = Just (T.replicate 255 "m"),

@@ -18,17 +18,19 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix)
 
 -- | Resolved name record returned by the names role.
 --   Wire format is JSON — change requires an SMP version bump.
---   JSON keys match the Python REST resolver (PR #1795 `snrc-resolve.py`).
+--   JSON keys match the Python REST resolver (`snrc-resolve.py`).
 --   Text fields use the empty string as the "unset" sentinel; coin fields
---   use JSON `null`. `owner` and `resolver` carry 20-byte addresses encoded
---   as `0x`-prefixed lowercase hex (see Names.Owner).
+--   use JSON `null`. simplexContact / simplexChannel are arrays of links
+--   (primary first, empty array when unset) so a name can advertise fallback
+--   SMP servers. `owner` and `resolver` carry 20-byte addresses encoded as
+--   `0x`-prefixed lowercase hex (see Names.Owner).
 data NameRecord = NameRecord
   { nrName :: Text,
     nrNickname :: Text,
     nrWebsite :: Text,
     nrLocation :: Text,
-    nrSimplexContact :: Text,
-    nrSimplexChannel :: Text,
+    nrSimplexContact :: [Text],
+    nrSimplexChannel :: [Text],
     nrEth :: Maybe Text,
     nrBtc :: Maybe Text,
     nrXmr :: Maybe Text,
@@ -47,6 +49,17 @@ $( JQ.deriveToJSON
     ''NameRecord
  )
 
+-- Each link field holds up to maxLinks entries totalling at most maxLinkBytes
+-- UTF-8 bytes -- the same byte budget as the former single-string field, so the
+-- proxied NameRecord size is unchanged. Entries are ordered primary-first.
+-- maxLinks matches the dApp's authoring cap (ens-app-v3 MultiUrlField
+-- MULTI_URL_FIELD_CAP = 5); records with more entries are non-conforming.
+maxLinks :: Int
+maxLinks = 5
+
+maxLinkBytes :: Int
+maxLinkBytes = 1024
+
 -- FromJSON is hand-rolled to enforce per-field UTF-8 byte-length caps that
 -- TH derivation cannot express.
 instance J.FromJSON NameRecord where
@@ -55,8 +68,8 @@ instance J.FromJSON NameRecord where
     nrNickname <- o J..: "nickname" >>= capUtf8 "nickname" 255
     nrWebsite <- o J..: "website" >>= capUtf8 "website" 255
     nrLocation <- o J..: "location" >>= capUtf8 "location" 255
-    nrSimplexContact <- o J..: "simplexContact" >>= capUtf8 "simplexContact" 1024
-    nrSimplexChannel <- o J..: "simplexChannel" >>= capUtf8 "simplexChannel" 1024
+    nrSimplexContact <- o J..: "simplexContact" >>= capLinks "simplexContact"
+    nrSimplexChannel <- o J..: "simplexChannel" >>= capLinks "simplexChannel"
     nrEth <- o J..:? "eth" >>= traverse (capUtf8 "eth" 255)
     nrBtc <- o J..:? "btc" >>= traverse (capUtf8 "btc" 255)
     nrXmr <- o J..:? "xmr" >>= traverse (capUtf8 "xmr" 255)
@@ -68,3 +81,9 @@ instance J.FromJSON NameRecord where
       capUtf8 fld lim t
         | B.length (encodeUtf8 t) <= lim = pure t
         | otherwise = fail $ fld <> " exceeds " <> show lim <> " bytes UTF-8"
+      capLinks fld links
+        | length links > maxLinks =
+            fail $ fld <> " exceeds " <> show maxLinks <> " entries"
+        | sum (map (B.length . encodeUtf8) links) > maxLinkBytes =
+            fail $ fld <> " entries exceed " <> show maxLinkBytes <> " bytes UTF-8"
+        | otherwise = pure links
