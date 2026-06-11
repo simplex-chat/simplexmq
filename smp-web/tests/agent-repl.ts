@@ -71,7 +71,7 @@ async function parseLine(line: string): Promise<string> {
         if (!agentClient || !store) return "error: not initialized"
         const connId = fromHex(parts[1])
         await store.createNewConn({
-          connId, connMode: "INV", userId, smpAgentVersion: 8,
+          connId, connMode: "INV", userId, smpAgentVersion: 7,
           enableNtfs: true, duplexHandshake: true, deleted: false,
           ratchetSyncState: "ok", pqSupport: false,
           lastInternalMsgId: 0, lastInternalRcvMsgId: 0, lastInternalSndMsgId: 0,
@@ -121,10 +121,13 @@ async function parseLine(line: string): Promise<string> {
       }
 
       case "CB_ENCRYPT": {
+        // CB_ENCRYPT <dhSecretHex> <version> <bodyHex> [e2ePubKeyHex]
+        // If e2ePubKeyHex is given (raw 32 bytes), it goes in the PubHeader (confirmation mode).
         const dhSecret = fromHex(parts[1])
         const version = parseInt(parts[2], 10)
         const body = fromHex(parts[3])
-        const envelope = agentCbEncrypt(dhSecret, version, null, body)
+        const e2ePubKey = parts[4] ? fromHex(parts[4]) : null
+        const envelope = agentCbEncrypt(dhSecret, version, e2ePubKey, body)
         return "ok: " + toHex(envelope)
       }
 

@@ -14,7 +14,7 @@ import {AgentError, type AgentClient, type AgentErrorType} from "./client.js"
 import {ABQueue} from "./queue.js"
 import type {RcvQueueSub} from "./subscriptions.js"
 import {cbEncrypt, cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
-import {generateX25519KeyPair, generateEd25519KeyPair, dh, encodePubKeyX25519} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
+import {generateX25519KeyPair, generateEd25519KeyPair, dh, encodePubKeyX25519, encodePubKeyEd25519} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
 import {concatBytes, encodeBytes} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 
 // -- Transport session key (simplified: one session per server, no TSMEntity)
@@ -53,7 +53,7 @@ export async function getSMPServerClient(
   if (!c.active) throw new AgentError({tag: "INACTIVE"})
   const key = tSessKey(userId, server)
   const clients = c.smpClients as Map<string, SessionVar<SMPConnectedClient>>
-  const {isNew, v} = getSessVar({val: c.workerSeq}, key, clients)
+  const {isNew, v} = getSessVar(c.workerSeq, key, clients)
   if (isNew) {
     return smpConnectClient(c, userId, server, keyHash, wsUrl, key, v)
   }
@@ -138,6 +138,9 @@ function smpClientDisconnected(
 
 // -- agentCbEncrypt (Client.hs:2074-2082)
 // Per-queue E2E encrypt with stored DH secret.
+// e2ePubKey is the RAW 32-byte X25519 public key (or null for messages).
+// Haskell smpEncode of PubHeader's `Maybe C.PublicKeyX25519` DER-encodes the key
+// (Crypto.hs:568-570), so we DER-encode it before placing it in the header.
 // Returns encoded ClientMsgEnvelope.
 export function agentCbEncrypt(
   e2eDhSecret: Uint8Array,
@@ -151,7 +154,7 @@ export function agentCbEncrypt(
   const paddedLen = e2ePubKey !== null ? 15904 : 16000
   const cmEncBody = cbEncrypt(e2eDhSecret, cmNonce, msg, paddedLen)
   const env: ClientMsgEnvelope = {
-    cmHeader: {phVersion: smpClientVersion, phE2ePubDhKey: e2ePubKey},
+    cmHeader: {phVersion: smpClientVersion, phE2ePubDhKey: e2ePubKey !== null ? encodePubKeyX25519(e2ePubKey) : null},
     cmNonce,
     cmEncBody,
   }
@@ -205,9 +208,11 @@ export async function sendConfirmation(
 ): Promise<void> {
   if (!sq.e2e_pub_key) throw new AgentError({tag: "INTERNAL", msg: "sendConfirmation: no e2e pub key"})
   const senderCanSecure_ = sq.queue_mode === "M"
+  // PHConfirmation carries C.toPublic sndPrivateKey, DER-encoded by smpEncode (Crypto.hs:568-570).
+  // (Only used for non-messaging queues; messaging queues use PHEmpty.)
   const privHeader: PrivHeader = senderCanSecure_
     ? {type: "PHEmpty"}
-    : {type: "PHConfirmation", key: toPublicEd25519(sq.snd_private_key)}
+    : {type: "PHConfirmation", key: encodePubKeyEd25519(toPublicEd25519(sq.snd_private_key))}
   const spKey: AuthKey | null = senderCanSecure_ ? {type: "ed25519", key: sq.snd_private_key} : null
   const clientMsg: ClientMessage = {privHeader, body: agentConfirmation}
   const msg = agentCbEncrypt(sq.e2e_dh_secret, sq.smp_client_version, sq.e2e_pub_key, encodeClientMessage(clientMsg))
@@ -333,7 +338,9 @@ export async function newRcvQueue(
     snd_id: ids.sndId,
     snd_key: null,
     status: "new",
-    smp_client_version: smp.smpVersion,
+    // Haskell newRcvQueue_: smpClientVersion = maxVersion vRange (= maxVersion smpClientVRange).
+    // This is VersionSMPC (used in the per-queue PubHeader), NOT the SMP transport version.
+    smp_client_version: c.config.smpClientVRange[1],
     rcv_queue_id: 0,
     rcv_primary: 1,
     replace_rcv_queue_id: null,

@@ -449,7 +449,7 @@ import {agentCbEncrypt, agentCbDecrypt, agentCbEncryptOnce} from "../dist/agent/
 import {decodeClientMsgEnvelope, decodeClientMessage, type ClientMsgEnvelope} from "../dist/protocol.js"
 import {Decoder} from "@simplex-chat/xftp-web/dist/protocol/encoding.js"
 import {cbDecrypt} from "@simplex-chat/xftp-web/dist/crypto/secretbox.js"
-import {generateX25519KeyPair, dh} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
+import {generateX25519KeyPair, dh, decodePubKeyX25519} from "@simplex-chat/xftp-web/dist/crypto/keys.js"
 
 async function testAgentCbEncrypt() {
   console.log("  agentCbEncrypt...")
@@ -494,7 +494,9 @@ async function testAgentCbEncrypt() {
   const env2 = decodeClientMsgEnvelope(d2)
   assertEq(env2.cmHeader.phVersion, smpVersion, "confirmation envelope version")
   assert(env2.cmHeader.phE2ePubDhKey !== null, "confirmation has pub key")
-  assertEq(env2.cmHeader.phE2ePubDhKey!.length, 32, "pub key is 32 bytes")
+  // DER-encoded X25519 pubkey is 44 bytes (12-byte prefix + 32 raw)
+  assertEq(env2.cmHeader.phE2ePubDhKey!.length, 44, "pub key is DER-encoded (44 bytes)")
+  assertEq(hex(decodePubKeyX25519(env2.cmHeader.phE2ePubDhKey!)), hex(sndPub), "DER decodes to raw sndPub")
 
   // agentCbDecrypt
   const decrypted2 = agentCbDecrypt(dhSecretRcv, env2.cmNonce, env2.cmEncBody)
@@ -508,8 +510,8 @@ async function testAgentCbEncrypt() {
   const d3 = new Decoder(envOnce)
   const env3 = decodeClientMsgEnvelope(d3)
   assert(env3.cmHeader.phE2ePubDhKey !== null, "encryptOnce has ephemeral pub key")
-  // Receiver can decrypt using their private key + sender's ephemeral pub key
-  const ephDhSecret = dh(env3.cmHeader.phE2ePubDhKey!, rcvPriv)
+  // Receiver can decrypt using their private key + sender's ephemeral pub key (DER-decoded)
+  const ephDhSecret = dh(decodePubKeyX25519(env3.cmHeader.phE2ePubDhKey!), rcvPriv)
   const decrypted3 = cbDecrypt(ephDhSecret, env3.cmNonce, env3.cmEncBody)
   assert(decrypted3 !== null, "encryptOnce: receiver can decrypt")
 }

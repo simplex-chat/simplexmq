@@ -71,9 +71,13 @@ export interface AgentConfig {
 export const defaultAgentConfig: AgentConfig = {
   tbqSize: 128,
   connIdBytes: 12,
-  smpAgentVRange: [1, 8],
-  smpClientVRange: [7, 18],
-  e2eEncryptVRange: [1, 2],
+  // supportedSMPAgentVRange = [minSupportedSMPAgentVersion=2, currentSMPAgentVersion=7] (Agent/Protocol.hs:315-322)
+  smpAgentVRange: [2, 7],
+  // supportedSMPClientVRange = [initialSMPClientVersion=1, currentSMPClientVersion=4] (Protocol.hs:282-297)
+  // NOTE: this is VersionSMPC (SMP client protocol), NOT the SMP transport version (≤18)
+  smpClientVRange: [1, 4],
+  // supportedE2EEncryptVRange = [kdfX3DHE2EEncryptVersion=2, currentE2EEncryptVersion=3] (Ratchet.hs:146-155)
+  e2eEncryptVRange: [2, 3],
   messageRetryInterval: {
     riFast: {initialInterval: 2_000_000, increaseAfter: 10_000_000, maxInterval: 120_000_000},
     riSlow: {initialInterval: 300_000_000, increaseAfter: 60_000_000, maxInterval: 6 * 3600_000_000},
@@ -141,7 +145,9 @@ export interface AgentClient {
   userNetworkInfo: {networkType: string, online: boolean}
   subscrConns: Set<string>  // hex connIds being subscribed
   currentSubs: TSessionSubs
-  workerSeq: number
+  // Monotonic counter shared by newWorker (workerId) and getSessVar (sessionVarId).
+  // Mutable ref so getSessVar (session.ts) can increment the same counter — Haskell uses one TVar.
+  workerSeq: {val: number}
   smpDeliveryWorkers: Map<string, {worker: Worker, retryLock: TMVar<void>}>
   asyncCmdWorkers: Map<string, Worker>
   rcvNetworkOp: AgentOpState
@@ -168,7 +174,7 @@ export function newAgentClient(config: AgentConfig, store: AgentStore, smpServer
     userNetworkInfo: {networkType: "UNOther", online: true},
     subscrConns: new Set(),
     currentSubs: new TSessionSubs(),
-    workerSeq: 0,
+    workerSeq: {val: 0},
     smpDeliveryWorkers: new Map(),
     asyncCmdWorkers: new Map(),
     rcvNetworkOp: {opSuspended: false, opsInProgress: 0},
@@ -186,7 +192,7 @@ export function newAgentClient(config: AgentConfig, store: AgentStore, smpServer
 
 // newWorker (Client.hs:439-445)
 export function newWorker(c: AgentClient): Worker {
-  const workerId = c.workerSeq++
+  const workerId = c.workerSeq.val++
   return {
     workerId,
     doWork: TMVar.new<void>(undefined),  // starts with "has work"
@@ -295,7 +301,10 @@ async function runWork(
     // checkRestarts: restart
     worker.restarts = rc
     hasWorkToDo_(worker.doWork)
-    worker.action.tryTake()
+    // Haskell: `void $ tryPutTMVar action Nothing` — a no-op here because `action` is
+    // full (=1) for the whole restart chain (recursion stays inside the fired work()).
+    // We must NOT empty it: doing so would let a concurrent getAgentWorker start a
+    // second worker. tryPut on a full TMVar is a no-op, matching Haskell exactly.
     worker.action.tryPut(null)
     c.subQ.enqueue(["", new Uint8Array(0), {tag: "ERR", err: {tag: "INTERNAL", msg}}])
     // when restart runWork — restart the worker
@@ -345,6 +354,10 @@ function agentOpState(c: AgentClient, op: AgentOperation): AgentOpState {
 }
 
 // beginAgentOperation (Client.hs:2223-2230)
+// DEVIATION: Haskell blocks (STM `retry`) while opSuspended, resuming when the agent
+// returns to foreground. Single-threaded JS can't synchronously block; the widget never
+// suspends (no suspendAgent), so opSuspended stays false and this path is unreachable.
+// We throw rather than silently proceed, to surface any unexpected suspend during dev.
 export function beginAgentOperation(c: AgentClient, op: AgentOperation): void {
   const s = agentOpState(c, op)
   if (s.opSuspended) throw new AgentError({tag: "INACTIVE"})

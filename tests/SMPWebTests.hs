@@ -1918,6 +1918,34 @@ smpWebTests_ = do
       _ <- jsCmd hIn hOut "CLOSE"
       terminateProcess ph
 
+    it "agentCbEncrypt cross-language: confirmation envelope with DER-encoded pubkey parses in Haskell" $ do
+      g <- C.newRandom
+      (rcvPub, _rcvPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      (_sndPub, sndPriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      -- e2ePubKey carried in the PubHeader (confirmation mode)
+      (e2ePub, _e2ePriv) <- atomically $ C.generateKeyPair @'C.X25519 g
+      let dhSecret = C.dh' rcvPub sndPriv
+          C.DhSecretX25519 dhSecretRaw = dhSecret
+          dhSecretBytes = BA.convert dhSecretRaw :: B.ByteString
+          e2ePubRaw = C.pubKeyBytes e2ePub  -- raw 32-byte X25519 key
+          plaintext = "confirmation body"
+          versionInt = 4 :: Int
+      (hIn, hOut, ph) <- spawnJsAgent
+      -- TS: encrypt with e2ePubKey (raw) → should DER-encode it in the PubHeader
+      tsResp <- jsCmd hIn hOut $ "CB_ENCRYPT " <> bsToHex dhSecretBytes <> " " <> show versionInt <> " " <> bsToHex plaintext <> " " <> bsToHex e2ePubRaw
+      let tsParts = words tsResp
+      head tsParts `shouldBe` "ok:"
+      let envelopeBytes = hexToBS (tsParts !! 1)
+      -- Haskell: decode full envelope. PubHeader's Maybe PublicKeyX25519 requires DER —
+      -- if TS sent a raw 32-byte key this smpDecode would fail.
+      ClientMsgEnvelope {cmHeader = PubHeader _ phKey, cmNonce = nonce, cmEncBody = encBody} <- either fail pure $ smpDecode envelopeBytes
+      -- The decoded pubkey must equal the original
+      phKey `shouldBe` Just e2ePub
+      decrypted <- either (fail . show) pure $ C.cbDecrypt dhSecret nonce encBody
+      B.take (B.length plaintext) decrypted `shouldBe` plaintext
+      _ <- jsCmd hIn hOut "CLOSE"
+      terminateProcess ph
+
     it "agentCbEncrypt cross-language: Haskell encrypts, TS decrypts" $ do
       g <- C.newRandom
       -- Generate shared DH secret
