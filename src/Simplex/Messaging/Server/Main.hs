@@ -612,6 +612,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               namesConfig = readNamesConfig ini,
+              namesResolverCall_ = Nothing, -- production builds the resolver from namesConfig
               information = serverPublicInfo ini,
               startOptions
             }
@@ -814,7 +815,12 @@ readNamesConfig ini
               { resolverEndpoint = either (error . ("[NAMES] resolver_endpoint: " <>)) id (validateUrl endpoint resolverAuth_),
                 resolverAuth = resolverAuth_,
                 resolverTimeoutMs = boundedIniInt 3000 100 60000 "resolver_timeout_ms",
-                resolverMaxResponseBytes = boundedIniInt 65536 1024 16777216 "resolver_max_response_bytes"
+                -- ceiling = SMP transport budget: the NAME response is one SMP
+                -- transmission (proxied: padded to paddedProxiedTLength = 16226),
+                -- and the smpEncoded NameRecord is <= its JSON body, so capping
+                -- the body here guarantees the response always frames. An
+                -- over-cap body fails as BodyTooLarge -> ERR (NAME (RESOLVER ..)).
+                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
@@ -823,9 +829,9 @@ readNamesConfig ini
         lookupValue "NAMES" key ini
     -- Lower bound rejects values that would time-out every RSLV immediately
     -- (timeout = 0) or accept zero-length responses (max_response_bytes = 0).
-    -- The upper bounds defend against operator-misconfig footguns: 16 MiB
-    -- response cap (worst-case per-call memory), 60 s timeout (no operator
-    -- wants RSLV to hang longer).
+    -- The upper bounds defend against operator-misconfig footguns: the response
+    -- cap is the SMP transport budget (see resolverMaxResponseBytes above), and
+    -- 60 s is the max RSLV timeout no operator wants exceeded.
     boundedIniInt def floor_ ceiling_ key = case lookupValue "NAMES" key ini of
       Left _ -> def
       Right raw -> case readMaybe (T.unpack (T.strip raw)) of

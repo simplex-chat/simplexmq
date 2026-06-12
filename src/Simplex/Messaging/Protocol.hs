@@ -80,6 +80,7 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
+    NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
     BlockingInfo (..),
@@ -163,11 +164,7 @@ module Simplex.Messaging.Protocol
     EncTransmission (..),
     FwdResponse (..),
     FwdTransmission (..),
-    RslvRequest (..),
     NameRecord (..),
-    NameOwner,
-    mkNameOwner,
-    unNameOwner,
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
@@ -230,7 +227,6 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Exception (Exception, SomeException, displayException, fromException)
-import Control.Monad (when)
 import Control.Monad.Except
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
@@ -269,12 +265,12 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Names.Owner (NameOwner, mkNameOwner, unNameOwner)
 import Simplex.Messaging.Names.Record (NameRecord (..))
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
+import Simplex.Messaging.SimplexName (SimplexNameDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -564,19 +560,6 @@ type LinkId = QueueId
 -- | SMP queue ID on the server.
 type QueueId = EntityId
 
--- | Name resolution request. The client sends the name in canonical
--- SimplexNameDomain form (TLD always explicit) as a Text plus the SNRC
--- contract address it expects the server to query. The server parses the
--- name into SimplexNameDomain (validating syntax) and checks the supplied
--- contract against its hardcoded TLD whitelist before reading the chain —
--- so a single names router can safely host multiple TLDs (each backed by
--- its own SNRC contract) and reject clients that ask for the wrong one.
-data RslvRequest = RslvRequest
-  { name :: Text,
-    contract :: NameOwner
-  }
-  deriving (Eq, Show)
-
 -- | Parameterized type for SMP protocol commands from all clients.
 data Command (p :: Party) where
   -- SMP recipient commands
@@ -624,8 +607,10 @@ data Command (p :: Party) where
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
-  -- Name resolution: forwarded-only via PFWD. Server reads SNRC contract via Ethereum JSON-RPC.
-  RSLV :: RslvRequest -> Command Resolver
+  -- Name resolution. Preferably forwarded via PFWD (hides the client IP from
+  -- the resolver), but direct RSLV is also accepted. The validated name is the
+  -- only argument; the server resolves it via its configured resolver.
+  RSLV :: SimplexNameDomain -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -734,16 +719,6 @@ instance Encoding FwdTransmission where
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
 
-instance J.ToJSON RslvRequest where
-  toJSON RslvRequest {name, contract} = J.object ["name" J..= name, "contract" J..= contract]
-  toEncoding RslvRequest {name, contract} = J.pairs ("name" J..= name <> "contract" J..= contract)
-
-instance J.FromJSON RslvRequest where
-  parseJSON = J.withObject "RslvRequest" $ \o -> do
-    name <- o J..: "name"
-    contract <- o J..: "contract"
-    pure RslvRequest {name, contract}
-
 data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
@@ -771,8 +746,9 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  -- Name resolution response. Returned only for forwarded RSLV.
-  NAME :: NameRecord -> BrokerMsg
+  -- Name resolution response (success), for direct or forwarded RSLV.
+  -- Named RNAME so the error family can use ErrorType.NAME.
+  RNAME :: NameRecord -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -1010,7 +986,7 @@ data BrokerMsgTag
   | OK_
   | ERR_
   | PONG_
-  | NAME_
+  | RNAME_
   deriving (Show)
 
 class ProtocolMsgTag t where
@@ -1106,7 +1082,7 @@ instance Encoding BrokerMsgTag where
     OK_ -> "OK"
     ERR_ -> "ERR"
     PONG_ -> "PONG"
-    NAME_ -> "NAME"
+    RNAME_ -> "RNAME"
   smpP = messageTagP
 
 instance ProtocolMsgTag BrokerMsgTag where
@@ -1129,7 +1105,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "OK" -> Just OK_
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
-    "NAME" -> Just NAME_
+    "RNAME" -> Just RNAME_
     _ -> Nothing
 
 -- | SMP message body format
@@ -1612,8 +1588,25 @@ data ErrorType
     EXPIRED
   | -- | internal server error
     INTERNAL
+  | -- | name resolution error (Resolver role) - see NameErrorType
+    NAME {nameErr :: NameErrorType}
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
+  deriving (Eq, Show)
+
+-- | Name resolution errors (the NAME family of ErrorType / AgentErrorType).
+-- One vocabulary shared server-side and agent-side so name failures flow
+-- through the single error type to chat (as ChatErrorAgent) with diagnostics,
+-- mirroring ProxyError.
+data NameErrorType
+  = -- | the names role / resolver is not configured on this server
+    NO_RESOLVER
+  | -- | the name is not registered (resolver returned not-found)
+    NO_NAME
+  | -- | no name-resolving servers configured (agent-originated only)
+    NO_SERVERS
+  | -- | backing resolver/RPC failure - carries the diagnostic detail
+    RESOLVER {resolverErr :: Text}
   deriving (Eq, Show)
 
 instance StrEncoding ErrorType where
@@ -1632,6 +1625,7 @@ instance StrEncoding ErrorType where
     LARGE_MSG -> "LARGE_MSG"
     EXPIRED -> "EXPIRED"
     INTERNAL -> "INTERNAL"
+    NAME e -> "NAME " <> strEncode e
     DUPLICATE_ -> "DUPLICATE_"
   strP =
     A.choice
@@ -1639,6 +1633,7 @@ instance StrEncoding ErrorType where
         "SESSION" $> SESSION,
         "CMD " *> (CMD <$> parseRead1),
         "PROXY " *> (PROXY <$> strP),
+        "NAME " *> (NAME <$> strP),
         "AUTH" $> AUTH,
         "BLOCKED " *> strP,
         "SERVICE" $> SERVICE,
@@ -1839,9 +1834,8 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
-    RSLV req
-      | v >= namesSMPVersion -> e (RSLV_, ' ', Tail (LB.toStrict (J.encode req)))
-      | otherwise -> e (ERR_, ' ', AUTH) -- pre-v20: shouldn't reach here, degrade to AUTH
+    -- Version gating is the client's job (Client.hs), not the encoder's.
+    RSLV d -> e (RSLV_, ' ', Tail (strEncode d))
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1950,11 +1944,11 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
-    CT SResolver RSLV_
-      | v >= namesSMPVersion -> do
-          Tail bs <- _smpP
-          either fail (pure . Cmd SResolver . RSLV) (J.eitherDecodeStrict bs)
-      | otherwise -> fail "RSLV requires namesSMPVersion"
+    -- Name is validated at parse (invalid syntax fails here -> CMD error),
+    -- so the handler only ever sees a valid SimplexNameDomain.
+    CT SResolver RSLV_ -> do
+      Tail bs <- _smpP
+      either fail (pure . Cmd SResolver . RSLV) (strDecode bs)
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -2001,9 +1995,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    NAME rec
-      | v >= namesSMPVersion -> e (NAME_, ' ', Tail (LB.toStrict (J.encode rec)))
-      | otherwise -> e (ERR_, ' ', AUTH) -- pre-v20: shouldn't reach here, degrade to AUTH
+    -- Field-ordered Encoding NameRecord (no JSON on the wire); a response that
+    -- arrived is already on a supported version, so no version gate.
+    RNAME rec -> e (RNAME_, ' ', rec)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2051,11 +2045,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
-    NAME_
-      | v >= namesSMPVersion -> do
-          Tail bs <- _smpP
-          either fail (pure . NAME) (J.eitherDecodeStrict bs)
-      | otherwise -> fail "NAME requires namesSMPVersion"
+    RNAME_ -> RNAME <$> _smpP
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2078,7 +2068,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
-    NAME _ -> noEntityMsg
+    RNAME _ -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY
@@ -2121,6 +2111,7 @@ instance Encoding ErrorType where
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
     INTERNAL -> "INTERNAL"
+    NAME err -> "NAME " <> smpEncode err
     DUPLICATE_ -> "DUPLICATE_"
 
   smpP =
@@ -2139,8 +2130,27 @@ instance Encoding ErrorType where
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
       "INTERNAL" -> pure INTERNAL
+      "NAME" -> NAME <$> _smpP
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad ErrorType"
+
+instance Encoding NameErrorType where
+  smpEncode = \case
+    NO_RESOLVER -> "NO_RESOLVER"
+    NO_NAME -> "NO_NAME"
+    NO_SERVERS -> "NO_SERVERS"
+    RESOLVER e -> "RESOLVER " <> encodeUtf8 e
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "NO_RESOLVER" -> pure NO_RESOLVER
+      "NO_NAME" -> pure NO_NAME
+      "NO_SERVERS" -> pure NO_SERVERS
+      "RESOLVER" -> RESOLVER . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+      _ -> fail "bad NameErrorType"
+
+instance StrEncoding NameErrorType where
+  strEncode = smpEncode
+  strP = smpP
 
 instance Encoding CommandError where
   smpEncode e = case e of
@@ -2441,4 +2451,4 @@ $(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 $(J.deriveJSON defaultJSON ''BlockingInfo)
 
 -- run deriveJSON in one TH splice to allow mutual instance
-$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])

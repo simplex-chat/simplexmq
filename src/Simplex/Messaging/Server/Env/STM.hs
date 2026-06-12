@@ -76,7 +76,6 @@ module Simplex.Messaging.Server.Env.STM
     noPostgresExit,
     dbStoreCfg,
     storeLogFile',
-    newEnvWithNames,
   )
 where
 
@@ -116,7 +115,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
-import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, newNamesEnv, pingEndpoint)
+import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, ResolverCall, newNamesEnv, newNamesEnvWith, pingEndpoint)
 import Simplex.Messaging.Server.Names.HttpResolver (scrubUrl)
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
@@ -202,6 +201,9 @@ data ServerConfig s = ServerConfig
     serverClientConcurrency :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
+    -- | test seam: inject a stub resolver call instead of the production HTTP
+    -- resolver + startup probe. Nothing in production (built from namesConfig).
+    namesResolverCall_ :: Maybe ResolverCall,
     -- | server public information
     information :: Maybe ServerPublicInfo,
     startOptions :: StartOptions
@@ -564,14 +566,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv cfg = newEnvWithNames cfg Nothing
-
--- | Test seam: build the server env, but if `namesOverride` is provided,
--- use it as `namesEnv` and skip the production `newNamesEnv` / `pingEndpoint`
--- path. This is the only injection point for stub `ethCall` implementations
--- in functional-API tests.
-newEnvWithNames :: ServerConfig s -> Maybe NamesEnv -> IO (Env s)
-newEnvWithNames config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} namesOverride = do
+newEnv config@ServerConfig {allowSMPProxy, smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig, namesResolverCall_} = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of
@@ -616,11 +611,12 @@ newEnvWithNames config@ServerConfig {allowSMPProxy, smpCredentials, httpCredenti
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
-  namesEnv <- case namesOverride of
-    Just env -> pure (Just env)
-    Nothing -> case namesConfig of
-      Nothing -> pure Nothing
-      Just nc -> do
+  namesEnv <- case namesConfig of
+    Nothing -> pure Nothing
+    Just nc -> case namesResolverCall_ of
+      -- test seam: stub resolver, no real HTTP env or startup probe
+      Just call -> Just <$> newNamesEnvWith nc call Nothing
+      Nothing -> do
         logInfo $ "[NAMES] resolver enabled, endpoint=" <> scrubUrl (resolverEndpoint nc)
         when allowSMPProxy $
           logWarn "[NAMES] enable: on on a proxy-role host: slow RSLV calls can serialise other forwarded commands on the same proxy-relay session. For high-volume deployments, run [NAMES] on a separate host."
@@ -630,7 +626,7 @@ newEnvWithNames config@ServerConfig {allowSMPProxy, smpCredentials, httpCredenti
         -- should not block the server. Log so operators can spot it.
         pingEndpoint env >>= \case
           Right _ -> logInfo "[NAMES] endpoint probe ok"
-          Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR AUTH until reachable): " <> tshow e
+          Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR (NAME ...) until reachable): " <> tshow e
         pure (Just env)
   pure
     Env

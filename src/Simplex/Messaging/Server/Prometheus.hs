@@ -461,7 +461,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
     names =
-      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvBadName, _rslvEthErrs, _rslvDisabled} = _rslvStats
+      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} = _rslvStats
        in "# Names\n\
           \# -----\n\
           \\n\
@@ -473,19 +473,15 @@ prometheusMetrics sm rtm ts =
           \# TYPE simplex_smp_names_success counter\n\
           \simplex_smp_names_success " <> mshow _rslvSucc <> "\n# rslvSucc\n\
           \\n\
-          \# HELP simplex_smp_names_not_found Lookup key has no corresponding NameRecord on chain (zero-owner sentinel).\n\
+          \# HELP simplex_smp_names_not_found Name not registered (resolver returned 404 / 400).\n\
           \# TYPE simplex_smp_names_not_found counter\n\
           \simplex_smp_names_not_found " <> mshow _rslvNotFound <> "\n# rslvNotFound\n\
           \\n\
-          \# HELP simplex_smp_names_bad_name Client sent malformed domain, TLD outside whitelist, or wrong contract address.\n\
-          \# TYPE simplex_smp_names_bad_name counter\n\
-          \simplex_smp_names_bad_name " <> mshow _rslvBadName <> "\n# rslvBadName\n\
+          \# HELP simplex_smp_names_resolver_errs Resolver backend errors (HTTP 5xx, transport, decode, or timeout).\n\
+          \# TYPE simplex_smp_names_resolver_errs counter\n\
+          \simplex_smp_names_resolver_errs " <> mshow _rslvResolverErrs <> "\n# rslvResolverErrs\n\
           \\n\
-          \# HELP simplex_smp_names_eth_errs Ethereum endpoint or ABI errors.\n\
-          \# TYPE simplex_smp_names_eth_errs counter\n\
-          \simplex_smp_names_eth_errs " <> mshow _rslvEthErrs <> "\n# rslvEthErrs\n\
-          \\n\
-          \# HELP simplex_smp_names_disabled RSLV requests rejected because the names role is disabled.\n\
+          \# HELP simplex_smp_names_disabled RSLV requests rejected because no resolver is configured (names role off).\n\
           \# TYPE simplex_smp_names_disabled counter\n\
           \simplex_smp_names_disabled " <> mshow _rslvDisabled <> "\n# rslvDisabled\n\
           \\n"

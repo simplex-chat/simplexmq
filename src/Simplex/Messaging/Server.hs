@@ -32,7 +32,6 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
-    runSMPServerBlockingWithNames,
     controlPortAuth,
     importMessages,
     exportMessages,
@@ -109,7 +108,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (NamesEnv, ResolveError (..), closeNamesEnv, parseName, resolveName)
+import Simplex.Messaging.Server.Names (closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -162,13 +161,6 @@ runSMPServer cfg attachHTTP_ = do
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
-
--- | Test seam: run the server with a pre-built `namesEnv` (typically a stub
--- backed by `newNamesEnvWith`). Production code MUST use `runSMPServerBlocking`,
--- which builds `namesEnv` from `namesConfig` and probes the real RPC endpoint.
-runSMPServerBlockingWithNames :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> Maybe NamesEnv -> IO ()
-runSMPServerBlockingWithNames started cfg attachHTTP_ namesOverride =
-  newEnvWithNames cfg namesOverride >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
@@ -670,8 +662,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
-        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled, _rslvBadName} =
-          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvEthErrs, _rslvDisabled, _rslvBadName]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -1505,21 +1497,18 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> response . (corrId,NoEntity,) <$> processForwardedCommand encBlock
-      Cmd SResolver (RSLV req) -> do
+      Cmd SResolver (RSLV d) -> do
         st <- asks (rslvStats . serverStats)
         incStat (rslvReqs st)
-        -- Distinct error responses let a client iterating its servers act correctly:
-        --   CMD PROHIBITED - this router has no resolver (names role off): skip, try next
-        --   INTERNAL       - resolver / backing-store failure: transient, retry or surface
-        --   AUTH           - name not registered, or malformed name: authoritative "no such name"
+        -- The name is validated at command parse (invalid syntax never reaches
+        -- here), so the handler only maps the resolver outcome to a declared
+        -- error that reaches the client as ERR (NAME ...).
         (selector, msg) <- asks namesEnv >>= \case
-          Nothing -> pure (rslvDisabled, ERR $ CMD PROHIBITED)
-          Just nenv -> case parseName req of
-            Nothing -> pure (rslvBadName, ERR AUTH)
-            Just d -> liftIO (resolveName nenv d) <&> \case
-              Right rec -> (rslvSucc, NAME rec)
-              Left NotFound -> (rslvNotFound, ERR AUTH)
-              Left _ -> (rslvEthErrs, ERR INTERNAL)
+          Nothing -> pure (rslvDisabled, ERR $ NAME NO_RESOLVER)
+          Just nenv -> liftIO (resolveName nenv d) <&> \case
+            Right rec -> (rslvSucc, RNAME rec)
+            Left e@NO_NAME -> (rslvNotFound, ERR $ NAME e)
+            Left e -> (rslvResolverErrs, ERR $ NAME e)
         incStat (selector st) $> response (corrId, NoEntity, msg)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr

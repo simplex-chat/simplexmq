@@ -30,8 +30,7 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClie
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (runSMPServerBlocking, runSMPServerBlockingWithNames)
-import Simplex.Messaging.Server.Names (NamesEnv)
+import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -280,6 +279,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       namesConfig = Nothing,
+      namesResolverCall_ = Nothing,
       information = Nothing,
       startOptions = defaultStartOptions
     }
@@ -362,16 +362,6 @@ withSmpServerConfigOn :: HasCallStack => ASrvTransport -> AServerConfig -> Servi
 withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
-    (threadDelay 10000)
-
--- | Variant of `withSmpServerConfigOn` for RSLV functional tests: passes a
--- pre-built `NamesEnv` (typically with a stub `ethCall`) so the server does
--- not contact the real Ethereum RPC. Skips the production `pingEndpoint`
--- probe.
-withSmpServerConfigOnWithNames :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> NamesEnv -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerConfigOnWithNames t (ASrvCfg _ _ cfg') port' nenv =
-  serverBracket
-    (\started -> runSMPServerBlockingWithNames started cfg' {transports = [(port', t, False)]} Nothing (Just nenv))
     (threadDelay 10000)
 
 withSmpServerThreadOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a

@@ -7,10 +7,11 @@
 -- | Public-namespace resolver. Each RSLV becomes one HTTP GET to the
 -- configured names resolver service (the Python REST resolver in PR #1795
 -- by default), bounded by resolverTimeoutMs and the maximum response size.
--- The resolver_endpoint URL is operator-supplied; the contract field on the
--- RSLV wire format is parsed for forward-compatibility but ignored — the
--- Python service is the source of truth for which on-chain registries are
--- queried per TLD.
+-- The resolver_endpoint URL is operator-supplied; the resolver service is the
+-- source of truth for which on-chain registries are queried per TLD.
+--
+-- Resolver outcomes map to the protocol's `NameErrorType` so failures reach the
+-- client (as `ERR (NAME ...)` -> ChatErrorAgent) instead of being swallowed.
 --
 -- HTTP details (URL building, redirects disabled, body cap, auth header)
 -- live in Names.HttpResolver.
@@ -20,13 +21,11 @@ module Simplex.Messaging.Server.Names
     NamesEnv (..),
     ResolverCall,
     ResolverCallKind (..),
-    ResolveError (..),
     newNamesEnv,
     newNamesEnvWith,
     closeNamesEnv,
     pingEndpoint,
     resolveName,
-    parseName,
   )
 where
 
@@ -36,9 +35,7 @@ import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
-import Simplex.Messaging.Encoding.String (strDecode)
-import Simplex.Messaging.Protocol (NameRecord, RslvRequest (..))
+import Simplex.Messaging.Protocol (NameErrorType (..), NameRecord)
 import Simplex.Messaging.Server.Names.HttpResolver
   ( ResolverEnv,
     ResolverError (..),
@@ -58,13 +55,6 @@ data NamesConfig = NamesConfig
     resolverMaxResponseBytes :: Int
   }
   deriving (Show)
-
-data ResolveError
-  = NotFound -- name not registered, unknown TLD, or malformed name (404 / 400)
-  | ResolverError -- upstream RPC failure (502) or transport error
-  | ResolverDecodeErr -- response was not a valid NameRecord JSON
-  | TimedOut
-  deriving (Eq, Show)
 
 -- | Test seam: a function from URL path -> JSON value or error. Production
 -- wires this to resolveHttp / healthHttp on a real `ResolverEnv`; tests
@@ -104,14 +94,6 @@ newNamesEnvWith config resolverCall resolverEnv = pure NamesEnv {config, resolve
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {resolverEnv} = mapM_ closeResolverEnv resolverEnv
 
--- | Parse the client-supplied name. The wire-format `contract` field is
--- parsed by the protocol layer but ignored here: the resolver service
--- selects which registry to query based on the TLD. Returns the parsed
--- domain, or `Nothing` if the name is not a valid SimplexNameDomain (the
--- handler maps `Nothing` to `ERR AUTH` and increments `rslvBadName`).
-parseName :: RslvRequest -> Maybe SimplexNameDomain
-parseName RslvRequest {name} = either (const Nothing) Just $ strDecode (encodeUtf8 name)
-
 -- | Reach the configured resolver with `GET /health` to confirm reachability
 -- at server startup. A non-2xx response or transport failure surfaces as
 -- Left so misconfigured deployments fail loudly. Bounded by
@@ -128,35 +110,35 @@ pingEndpoint NamesEnv {resolverCall, config} = do
 -- | Resolve a parsed domain via the configured HTTP resolver, with an
 -- `resolverTimeoutMs` ceiling. Synchronous exceptions are caught and
 -- logged; async exceptions propagate.
-resolveName :: NamesEnv -> SimplexNameDomain -> IO (Either ResolveError NameRecord)
+resolveName :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
 resolveName env d = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env d))
   case r of
-    Right result -> pure (maybe (Left TimedOut) id result)
+    Right result -> pure (maybe (Left (RESOLVER "timeout")) id result)
     Left e
       | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
       | otherwise -> do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
-          pure (Left ResolverError)
+          pure (Left (RESOLVER "resolver error"))
 
-fetch :: NamesEnv -> SimplexNameDomain -> IO (Either ResolveError NameRecord)
+fetch :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
 fetch NamesEnv {resolverCall} d =
   resolverCall (ResolverFetch (fullDomainName d)) >>= \case
     Left e -> pure (Left (mapResolverError e))
     Right v -> case JT.parseEither J.parseJSON v of
       Right nr -> pure (Right nr)
-      Left _ -> pure (Left ResolverDecodeErr)
+      Left _ -> pure (Left (RESOLVER "invalid response"))
 
--- | Collapse the HTTP-layer error space into the resolver's public error
--- space. 404 / 400 both map to NotFound (name not registered, unknown TLD,
--- or malformed name — indistinguishable from the client's point of view).
--- Everything else collapses to ResolverError; the response body is not
--- inspected because adversarial endpoints could embed arbitrary content.
-mapResolverError :: ResolverError -> ResolveError
+-- | Map the HTTP-layer error space into the protocol NameErrorType. 404 / 400
+-- both map to NO_NAME (name not registered, unknown TLD, or malformed name —
+-- indistinguishable from the client's point of view). Everything else is a
+-- backend failure surfaced as RESOLVER with a SAFE server-generated diagnostic
+-- (kind only - the adversarial response body is never echoed).
+mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case
-  HttpStatusErr 404 -> NotFound
-  HttpStatusErr 400 -> NotFound
-  HttpStatusErr _ -> ResolverError
-  HttpFailure _ -> ResolverError
-  BodyTooLarge -> ResolverError
-  InvalidJson _ -> ResolverDecodeErr
+  HttpStatusErr 404 -> NO_NAME
+  HttpStatusErr 400 -> NO_NAME
+  HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
+  HttpFailure _ -> RESOLVER "transport failure"
+  BodyTooLarge -> RESOLVER "response too large"
+  InvalidJson _ -> RESOLVER "invalid response"

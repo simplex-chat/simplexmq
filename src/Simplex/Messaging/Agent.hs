@@ -442,11 +442,11 @@ getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
 
--- | Resolve a SimpleX name via the configured resolver SMP server (PFWD RSLV).
--- The TLD->contract whitelist lives in the agent so chat clients only need to
--- pass the resolver address and the parsed domain.
-resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AE NameRecord
-resolveSimplexName c = withAgentEnv c .:: resolveSimplexName' c
+-- | Resolve a SimpleX name (PFWD RSLV). The agent owns server selection: it
+-- picks a names-capable server (ServerRoles.names) from the user's nameSrvs, so
+-- chat clients just pass the parsed domain.
+resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexNameDomain -> AE NameRecord
+resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
@@ -1191,15 +1191,10 @@ getConnShortLink' c nm userId = \case
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
-resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AM NameRecord
-resolveSimplexName' c nm userId resolverSrv domain =
-  resolveName c nm userId resolverSrv placeholderContract (fullDomainName domain)
-  where
-    -- The wire format still carries a 20-byte `contract` field on RslvRequest
-    -- (no SMP version bump), but the server-side resolver ignores it: the
-    -- backing Python REST resolver is the source of truth for which on-chain
-    -- registry maps to each TLD. The agent sends the all-zero placeholder.
-    placeholderContract = either error id (SMP.mkNameOwner (B.replicate 20 '\NUL'))
+resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexNameDomain -> AM NameRecord
+resolveSimplexName' c nm userId domain = do
+  resolverSrv <- getNextNameServer c userId
+  resolveName c nm userId resolverSrv domain
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

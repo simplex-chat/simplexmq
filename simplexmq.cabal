@@ -130,7 +130,7 @@ library
       Simplex.Messaging.Crypto.ShortLink
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
-      Simplex.Messaging.Names.Owner
+      Simplex.Messaging.Names.EthAddress
       Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol

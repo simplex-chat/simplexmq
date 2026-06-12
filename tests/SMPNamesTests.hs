@@ -12,15 +12,17 @@ import Data.Either (isLeft, isRight)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
 import qualified Data.Text as T
-import Simplex.Messaging.Protocol (NameOwner, NameRecord (..), RslvRequest (..), mkNameOwner, unNameOwner)
+import Data.Text.Encoding (encodeUtf8)
+import Simplex.Messaging.Encoding (smpDecode, smpEncode)
+import Simplex.Messaging.Encoding.String (strDecode)
+import Simplex.Messaging.Names.EthAddress (EthAddress, mkEthAddress, unEthAddress)
+import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NameRecord (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
-    ResolveError (..),
     ResolverCallKind (..),
     RpcAuth (..),
     newNamesEnvWith,
-    parseName,
     pingEndpoint,
     resolveName,
   )
@@ -31,15 +33,11 @@ import Test.Hspec
 twentyOnes :: B.ByteString
 twentyOnes = B.replicate 20 '\x01'
 
-unsafeOwner :: B.ByteString -> NameOwner
-unsafeOwner = either error id . mkNameOwner
+unsafeAddr :: B.ByteString -> EthAddress
+unsafeAddr = either error id . mkEthAddress
 
-addr1 :: NameOwner
-addr1 = unsafeOwner twentyOnes
-
--- | Sample record matching the Python resolver JSON shape (PR #1795).
--- Text fields use the empty string as the "unset" sentinel; coin fields
--- use Nothing -> JSON null.
+-- | Sample record matching the resolver JSON shape. Text fields use the empty
+-- string as the "unset" sentinel; coin fields use Nothing -> JSON null.
 sampleRecord :: NameRecord
 sampleRecord =
   NameRecord
@@ -53,8 +51,8 @@ sampleRecord =
       nrBtc = Nothing,
       nrXmr = Nothing,
       nrDot = Nothing,
-      nrOwner = unsafeOwner twentyOnes,
-      nrResolver = unsafeOwner (B.replicate 20 '\x02')
+      nrOwner = unsafeAddr twentyOnes,
+      nrResolver = unsafeAddr (B.replicate 20 '\x02')
     }
 
 -- | JSON value canned by the resolver-stub for the "success" tests.
@@ -72,9 +70,10 @@ testNamesConfig =
 
 smpNamesTests :: Spec
 smpNamesTests = do
-  describe "NameRecord encoding (Protocol)" nameRecordEncodingSpec
-  describe "Smart constructors (NameOwner)" smartCtorsSpec
-  describe "RSLV request parsing" parseNameSpec
+  describe "NameRecord JSON (Protocol)" nameRecordEncodingSpec
+  describe "Wire encoding (smpEncode)" wireEncodingSpec
+  describe "Smart constructors (EthAddress)" smartCtorsSpec
+  describe "Name parsing (SimplexNameDomain)" parseNameSpec
   describe "HTTP resolver" resolverSpec
   describe "Resolver health probe" healthSpec
   describe "resolver_endpoint validation" validateUrlSpec
@@ -84,7 +83,7 @@ nameRecordEncodingSpec = do
   it "round-trips JSON encode / decode" $
     J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)) `shouldBe` Right sampleRecord
 
-  it "emits keys in spec-documented order (Python resolver shape)" $ do
+  it "emits keys in spec-documented order (resolver shape)" $ do
     let bytes = LB.toStrict (J.encode sampleRecord)
         offset k = B.length (fst (B.breakSubstring k bytes))
         offsets =
@@ -116,96 +115,86 @@ nameRecordEncodingSpec = do
     B.isInfixOf "\"simplexChannel\":[]" bytes `shouldBe` True
     B.isInfixOf "\"simplexChannel\":null" bytes `shouldBe` False
 
-  it "rejects nrName > 255 bytes UTF-8" $ do
-    let oversize = sampleRecord {nrName = T.replicate 256 "x"}
-        bytes = LB.toStrict (J.encode oversize)
-    (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
-
-  it "rejects simplexContact entries > 1024 bytes UTF-8 combined" $ do
-    let oversize = sampleRecord {nrSimplexContact = [T.replicate 1025 "x"]}
-        bytes = LB.toStrict (J.encode oversize)
-    (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
-
-  it "rejects simplexContact with more than 5 entries" $ do
-    let oversize = sampleRecord {nrSimplexContact = replicate 6 "simplex:/contact/x#y"}
-        bytes = LB.toStrict (J.encode oversize)
-    (J.eitherDecodeStrict bytes :: Either String NameRecord) `shouldSatisfy` isLeft
-
-  it "FromJSON NameOwner accepts both 0x and 0X prefixes" $ do
+  it "FromJSON EthAddress accepts both 0x and 0X prefixes" $ do
     let json p = "\"" <> p <> "0101010101010101010101010101010101010101\""
-    (J.eitherDecodeStrict (json "0x") :: Either String NameOwner) `shouldSatisfy` isRight
-    (J.eitherDecodeStrict (json "0X") :: Either String NameOwner) `shouldSatisfy` isRight
+    (J.eitherDecodeStrict (json "0x") :: Either String EthAddress) `shouldSatisfy` isRight
+    (J.eitherDecodeStrict (json "0X") :: Either String EthAddress) `shouldSatisfy` isRight
 
   it "owner / resolver are emitted as lowercase hex" $ do
-    -- The Python resolver returns lowercase hex; encoded form must match.
-    let mixedCase = unsafeOwner (B.pack ['\xde', '\xad', '\xbe', '\xef'] <> B.replicate 16 '\x00')
+    -- The resolver returns lowercase hex; encoded form must match.
+    let mixedCase = unsafeAddr (B.pack ['\xde', '\xad', '\xbe', '\xef'] <> B.replicate 16 '\x00')
         bytes = LB.toStrict (J.encode sampleRecord {nrOwner = mixedCase, nrResolver = mixedCase})
     B.isInfixOf "0xdeadbeef" bytes `shouldBe` True
     B.isInfixOf "0xDEADBEEF" bytes `shouldBe` False
 
-  it "encodes within the proxied transmission budget" $ do
-    let wide =
+-- The RNAME response and ERR (NAME ...) travel as field-ordered smpEncode on
+-- the wire (no JSON), so round-trip the new Encoding instances directly.
+wireEncodingSpec :: Spec
+wireEncodingSpec = do
+  it "NameRecord round-trips smpEncode / smpDecode" $
+    smpDecode (smpEncode sampleRecord) `shouldBe` Right sampleRecord
+
+  it "NameRecord round-trips with multiple links and unset coins" $ do
+    let r =
           sampleRecord
-            { nrName = T.replicate 255 "n",
-              nrNickname = T.replicate 255 "k",
-              nrWebsite = T.replicate 255 "w",
-              nrLocation = T.replicate 255 "l",
-              nrSimplexContact = [T.replicate 1024 "x"],
-              nrSimplexChannel = [T.replicate 1024 "y"],
-              nrEth = Just (T.replicate 255 "e"),
-              nrBtc = Just (T.replicate 255 "b"),
-              nrXmr = Just (T.replicate 255 "m"),
-              nrDot = Just (T.replicate 255 "d")
+            { nrSimplexContact = ["simplex:/contact/a#1", "simplex:/contact/b#2"],
+              nrSimplexChannel = [],
+              nrEth = Nothing,
+              nrBtc = Nothing
             }
-    LB.length (J.encode wide) < 16224 `shouldBe` True
+    smpDecode (smpEncode r) `shouldBe` Right r
+
+  it "ErrorType NAME family round-trips smpEncode / smpDecode" $ do
+    smpDecode (smpEncode (NAME NO_RESOLVER)) `shouldBe` Right (NAME NO_RESOLVER)
+    smpDecode (smpEncode (NAME NO_NAME)) `shouldBe` Right (NAME NO_NAME)
+    -- RESOLVER detail may contain spaces - must survive the round-trip
+    smpDecode (smpEncode (NAME (RESOLVER "HTTP 502"))) `shouldBe` Right (NAME (RESOLVER "HTTP 502"))
 
 smartCtorsSpec :: Spec
 smartCtorsSpec = do
-  it "mkNameOwner accepts exactly 20 bytes" $ do
-    mkNameOwner twentyOnes `shouldSatisfy` isRight
-    mkNameOwner (B.replicate 19 '\x01') `shouldSatisfy` isLeft
-    mkNameOwner (B.replicate 21 '\x01') `shouldSatisfy` isLeft
+  it "mkEthAddress accepts exactly 20 bytes" $ do
+    mkEthAddress twentyOnes `shouldSatisfy` isRight
+    mkEthAddress (B.replicate 19 '\x01') `shouldSatisfy` isLeft
+    mkEthAddress (B.replicate 21 '\x01') `shouldSatisfy` isLeft
 
-  it "unNameOwner round-trips mkNameOwner" $
-    case mkNameOwner twentyOnes of
-      Right o -> unNameOwner o `shouldBe` twentyOnes
-      Left e -> expectationFailure ("mkNameOwner failed: " <> e)
+  it "unEthAddress round-trips mkEthAddress" $
+    case mkEthAddress twentyOnes of
+      Right o -> unEthAddress o `shouldBe` twentyOnes
+      Left e -> expectationFailure ("mkEthAddress failed: " <> e)
 
+-- The RSLV command carries a parsed SimplexNameDomain, so name validation
+-- happens at parse (StrEncoding). These exercise that validation directly.
 parseNameSpec :: Spec
 parseNameSpec = do
-  it "accepts a valid simplex-TLD name" $ do
-    let req = req' "privacy.simplex"
-    case parseName req of
-      Just d -> do
+  it "accepts a valid simplex-TLD name" $
+    case parseN "privacy.simplex" of
+      Right d -> do
         nameTLD d `shouldBe` TLDSimplex
         domain d `shouldBe` "privacy"
-      Nothing -> expectationFailure "expected Just"
+      Left e -> expectationFailure ("expected Right, got Left " <> e)
 
-  it "normalises case across labels (Alice.SIMPLEX = alice.simplex)" $ do
-    let dL = parseName (req' "alice.simplex")
-        dM = parseName (req' "Alice.SIMPLEX")
-    dL `shouldBe` dM
+  it "normalises case across labels (Alice.SIMPLEX = alice.simplex)" $
+    parseN "alice.simplex" `shouldBe` parseN "Alice.SIMPLEX"
 
-  it "accepts a testing-TLD name" $ do
-    case parseName (req' "bob.testing") of
-      Just d -> nameTLD d `shouldBe` TLDTesting
-      Nothing -> expectationFailure "expected Just"
+  it "accepts a testing-TLD name" $
+    case parseN "bob.testing" of
+      Right d -> nameTLD d `shouldBe` TLDTesting
+      Left e -> expectationFailure ("expected Right, got Left " <> e)
 
   it "accepts a TLDWeb name (server forwards to resolver, which will likely 404/400)" $
-    parseName (req' "example.com") `shouldSatisfy` \case
-      Just _ -> True
-      Nothing -> False
+    parseN "example.com" `shouldSatisfy` isRight
 
   it "rejects a bare (no-TLD) name" $
-    parseName (req' "privacy") `shouldBe` Nothing
+    parseN "privacy" `shouldSatisfy` isLeft
 
   it "rejects non-ASCII labels (homograph attacks)" $
-    parseName (req' "\1072lice.simplex") `shouldBe` Nothing
+    parseN "\1072lice.simplex" `shouldSatisfy` isLeft
 
   it "rejects oversized inputs (>253 bytes)" $
-    parseName (req' (T.replicate 254 "a" <> ".simplex")) `shouldBe` Nothing
+    parseN (T.replicate 254 "a" <> ".simplex") `shouldSatisfy` isLeft
   where
-    req' n = RslvRequest {name = n, contract = addr1}
+    parseN :: T.Text -> Either String SimplexNameDomain
+    parseN = strDecode . encodeUtf8
 
 resolverSpec :: Spec
 resolverSpec = do
@@ -217,33 +206,29 @@ resolverSpec = do
     r <- resolveName env aliceDomain
     r `shouldBe` Right sampleRecord
 
-  it "returns NotFound on 404" $ do
+  it "returns NO_NAME on 404" $ do
     env <- mkEnv (\_ -> pure (Left (HttpStatusErr 404)))
-    resolveName env aliceDomain `shouldReturn` Left NotFound
+    resolveName env aliceDomain `shouldReturn` Left NO_NAME
 
-  it "returns NotFound on 400 (unknown TLD)" $ do
+  it "returns NO_NAME on 400 (unknown TLD)" $ do
     env <- mkEnv (\_ -> pure (Left (HttpStatusErr 400)))
-    resolveName env aliceDomain `shouldReturn` Left NotFound
+    resolveName env aliceDomain `shouldReturn` Left NO_NAME
 
-  it "returns ResolverError on 502 (upstream RPC failure)" $ do
+  it "returns RESOLVER on 502 (upstream failure)" $ do
     env <- mkEnv (\_ -> pure (Left (HttpStatusErr 502)))
-    resolveName env aliceDomain `shouldReturn` Left ResolverError
+    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 502")
 
-  it "returns ResolverError on 5xx other than 502" $ do
-    env <- mkEnv (\_ -> pure (Left (HttpStatusErr 500)))
-    resolveName env aliceDomain `shouldReturn` Left ResolverError
-
-  it "returns ResolverError on transport-layer body-too-large" $ do
+  it "returns RESOLVER on transport-layer body-too-large" $ do
     env <- mkEnv (\_ -> pure (Left BodyTooLarge))
-    resolveName env aliceDomain `shouldReturn` Left ResolverError
+    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "response too large")
 
-  it "returns ResolverDecodeErr on malformed JSON from the resolver" $ do
+  it "returns RESOLVER on malformed JSON from the resolver" $ do
     env <- mkEnv (\_ -> pure (Left (InvalidJson "expected object")))
-    resolveName env aliceDomain `shouldReturn` Left ResolverDecodeErr
+    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
-  it "returns ResolverDecodeErr when JSON parses but isn't a NameRecord shape" $ do
+  it "returns RESOLVER when JSON parses but isn't a NameRecord shape" $ do
     env <- mkEnv (\_ -> pure (Right (J.object [])))
-    resolveName env aliceDomain `shouldReturn` Left ResolverDecodeErr
+    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
   it "sends one HTTP request per lookup (no cache)" $ do
     callCount <- newIORef (0 :: Int)

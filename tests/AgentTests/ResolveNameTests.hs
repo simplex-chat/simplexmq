@@ -12,10 +12,11 @@
 
 -- | End-to-end tests for `Simplex.Messaging.Agent.resolveSimplexName`.
 --
--- Exercises the agent layer (real `AgentClient`) against an SMP server
--- whose `NamesEnv` is a stub `ResolverCall` — same pattern as `RSLVTests`
--- but going through `sendOrProxySMPCommand` so we cover the agent-side
--- direct/proxy selection and the agent's error mapping.
+-- Exercises the agent layer (real `AgentClient`) against an SMP server with a
+-- stub `ResolverCall` (set via `ServerConfig.namesResolverCall_`). The agent
+-- owns server selection: it picks a names-capable server (ServerRoles.names)
+-- from the user's nameSrvs, so the proxy test gives ONLY the resolver server
+-- the names role (deterministic selection) and the proxy server the proxy role.
 module AgentTests.ResolveNameTests (resolveNameTests) where
 
 import AgentTests.FunctionalAPITests (withAgent)
@@ -27,20 +28,14 @@ import SMPClient
 import SMPNamesTests (sampleRecord, sampleRecordJSON)
 import Simplex.Messaging.Agent (resolveSimplexName)
 import Simplex.Messaging.Agent.Client (AgentClient)
-import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..))
+import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..), ServerCfg, ServerRoles (..), presetServerCfg)
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
 import Simplex.Messaging.Client (SMPProxyFallback (..), SMPProxyMode (..), pattern NRMInteractive)
-import Simplex.Messaging.Protocol (pattern SMPServer)
+import Simplex.Messaging.Protocol (SMPServer)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.Names
-  ( NamesConfig (..),
-    NamesEnv,
-    ResolverCall,
-    ResolverCallKind (..),
-    newNamesEnvWith,
-  )
+import Simplex.Messaging.Server.Names (NamesConfig (..), ResolverCall, ResolverCallKind (..))
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
 import Simplex.Messaging.Transport
@@ -56,8 +51,7 @@ stubNamesConfig =
       resolverMaxResponseBytes = 65536
     }
 
--- | 404 stub: the resolver returns "not registered". Server maps to ERR
--- AUTH; agent surfaces as SMP host AUTH.
+-- | 404 stub: resolver returns "not registered". Server -> ERR (NAME NO_NAME).
 stubResolverNotFound :: ResolverCall
 stubResolverNotFound = \case
   ResolverFetch _ -> pure (Left (HttpStatusErr 404))
@@ -69,21 +63,15 @@ stubResolverSuccess = \case
   ResolverFetch _ -> pure (Right sampleRecordJSON)
   ResolverHealth -> pure (Right (J.object []))
 
--- | 502 stub: the backing resolver fails (upstream RPC error). Server maps to
--- ERR INTERNAL; agent surfaces as SMP host INTERNAL (transient, not "not found").
+-- | 502 stub: backing resolver fails. Server -> ERR (NAME (RESOLVER "HTTP 502")).
 stubResolverError :: ResolverCall
 stubResolverError = \case
   ResolverFetch _ -> pure (Left (HttpStatusErr 502))
   ResolverHealth -> pure (Right (J.object []))
 
-mkNotFoundNamesEnv :: IO NamesEnv
-mkNotFoundNamesEnv = newNamesEnvWith stubNamesConfig stubResolverNotFound Nothing
-
-mkSuccessNamesEnv :: IO NamesEnv
-mkSuccessNamesEnv = newNamesEnvWith stubNamesConfig stubResolverSuccess Nothing
-
-mkErrorNamesEnv :: IO NamesEnv
-mkErrorNamesEnv = newNamesEnvWith stubNamesConfig stubResolverError Nothing
+-- | Enable names on a server config with a stub resolver (no real HTTP/probe).
+withNames :: ResolverCall -> AServerConfig -> AServerConfig
+withNames stub c = updateCfg c $ \cfg_ -> cfg_ {namesConfig = Just stubNamesConfig, namesResolverCall_ = Just stub}
 
 memCfg :: AServerConfig
 memCfg = cfgMS (ASType SQSMemory SMSMemory)
@@ -100,34 +88,44 @@ memCfg2 = case memCfg of
       SSCMemory _ -> SSCMemory (Just StorePaths {storeLogFile = testStoreLogFile2, storeMsgsFile = Just testStoreMsgsFile2})
       other -> other
 
-withDirectResolver :: NamesEnv -> (AgentClient -> IO a) -> IO a
-withDirectResolver nenv k =
-  withSmpServerConfigOnWithNames (transport @TLS) memCfg testPort nenv $ \_ ->
-    withAgent 1 agentCfg directServers testDB k
-  where
-    directServers = (initAgentServersProxy_ SPMNever SPFProhibit) {smp = userServers [testSMPServer]}
+-- per-server roles: only the resolver server carries the names role
+nameSrvCfg :: SMPServer -> ServerCfg 'SMP.PSMP
+nameSrvCfg = presetServerCfg True ServerRoles {storage = True, proxy = False, names = True} (Just 1) . SMP.noAuthSrv
 
-withProxyAndResolver :: NamesEnv -> (AgentClient -> IO a) -> IO a
-withProxyAndResolver nenv k =
+proxySrvCfg :: SMPServer -> ServerCfg 'SMP.PSMP
+proxySrvCfg = presetServerCfg True ServerRoles {storage = True, proxy = True, names = False} (Just 1) . SMP.noAuthSrv
+
+-- single-server (operator 1) agent config, direct (no proxy)
+oneSrv :: ServerCfg 'SMP.PSMP -> InitialAgentServers
+oneSrv cfg_ = (initAgentServersProxy_ SPMNever SPFProhibit) {smp = [(1, [cfg_])]}
+
+withDirectResolver :: ResolverCall -> (AgentClient -> IO a) -> IO a
+withDirectResolver stub k =
+  withSmpServerConfigOn (transport @TLS) (withNames stub memCfg) testPort $ \_ ->
+    withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
+
+withProxyAndResolver :: ResolverCall -> (AgentClient -> IO a) -> IO a
+withProxyAndResolver stub k =
   withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
-    withSmpServerConfigOnWithNames (transport @TLS) memCfg2 testPort2 nenv $ \_ ->
+    withSmpServerConfigOn (transport @TLS) (withNames stub memCfg2) testPort2 $ \_ ->
       withAgent 1 agentCfg proxyServers testDB k
   where
-    proxyServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = userServers [testSMPServer, testSMPServer2]}
+    -- only testSMPServer2 (the resolver) has the names role; testSMPServer is the proxy
+    proxyServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = [(1, [proxySrvCfg testSMPServer, nameSrvCfg testSMPServer2])]}
 
--- | A direct SMP server with NO names role configured (namesEnv = Nothing).
+-- | A direct SMP server with NO names role configured (namesEnv = Nothing): the
+-- agent still picks it (client-side names role) and the server answers
+-- NAME NO_RESOLVER.
 withNoResolver :: (AgentClient -> IO a) -> IO a
 withNoResolver k =
   withSmpServerConfigOn (transport @TLS) memCfg testPort $ \_ ->
-    withAgent 1 agentCfg directServers testDB k
-  where
-    directServers = (initAgentServersProxy_ SPMNever SPFProhibit) {smp = userServers [testSMPServer]}
+    withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
 
-directResolverSrv :: SMP.SMPServer
-directResolverSrv = SMPServer testHost testPort testKeyHash
-
-proxiedResolverSrv :: SMP.SMPServer
-proxiedResolverSrv = SMPServer testHost2 testPort2 testKeyHash
+-- | An agent whose one server has the names role OFF (proxySrvCfg): nameSrvs is
+-- empty, but the user exists, so resolution fails agent-side in getNextNameServer
+-- with NO_SERVERS (not the unknown-user INTERNAL path) - no server is contacted.
+withNoNameServers :: (AgentClient -> IO a) -> IO a
+withNoNameServers k = withAgent 1 agentCfg (oneSrv (proxySrvCfg testSMPServer)) testDB k
 
 -- ---------------------------------------------------------------------------
 -- Spec
@@ -137,17 +135,19 @@ resolveNameTests :: Spec
 resolveNameTests = do
   describe "Agent resolveSimplexName" $ do
     describe "direct path (SPMNever)" $
-      it "AUTH propagates as SMP host AUTH (resolver 404 -> NotFound)" testDirectAuth
+      it "404 propagates as SMP host (NAME NO_NAME)" testDirectNotFound
     describe "proxy path (SPMAlways)" $
-      it "AUTH from resolver propagates via proxy as SMP <proxyHost> AUTH" testProxyAuth
+      it "404 from resolver propagates via proxy as SMP <proxyHost> (NAME NO_NAME)" testProxyNotFound
     describe "TLDTesting path" $
-      it "AUTH (resolver 404 -> NotFound) for TLDTesting too" testTestingTldAuth
+      it "NAME NO_NAME for TLDTesting too" testTestingTldNotFound
     describe "TLDWeb path" $
-      it "AUTH (resolver 404 -> NotFound) for TLDWeb too" testWebTldAuth
+      it "NAME NO_NAME for TLDWeb too" testWebTldNotFound
     describe "no resolver configured" $
-      it "answers CMD PROHIBITED so the client skips this server" testNoResolverProhibited
+      it "answers NAME NO_RESOLVER" testNoResolver
+    describe "no names servers (names role off everywhere)" $
+      it "fails agent-side with NAME NO_SERVERS" testNoNameServers
     describe "backing resolver failure" $
-      it "surfaces as SMP host INTERNAL (transient, not not-found)" testBackendErrorInternal
+      it "surfaces as SMP host (NAME (RESOLVER ..))" testBackendError
     describe "success path" $
       it "returns NameRecord" testDirectSuccess
 
@@ -155,98 +155,72 @@ resolveNameTests = do
 -- Tests
 -- ---------------------------------------------------------------------------
 
--- | Direct path: agent with SPMNever sends RSLV without PFWD; resolver
--- replies 404 (not found); server returns ERR AUTH; agent maps to
--- `SMP host AUTH`.
-testDirectAuth :: HasCallStack => IO ()
-testDirectAuth = do
-  nenv <- mkNotFoundNamesEnv
-  withDirectResolver nenv $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+testDirectNotFound :: HasCallStack => IO ()
+testDirectNotFound =
+  withDirectResolver stubResolverNotFound $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDSimplex "alice" [])
     case r of
-      Left (SMP _ SMP.AUTH) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ AUTH), got: " <> show r
-  where
-    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
+      Left (SMP _ (SMP.NAME SMP.NO_NAME)) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME NO_NAME)), got: " <> show r
 
--- | Proxy path: relay-level protocol errors are reported transparently as
--- SMP errors with the proxy host (see Client.hs:1178 "transparent for
--- AUTH/QUOTA").
-testProxyAuth :: HasCallStack => IO ()
-testProxyAuth = do
-  nenv <- mkNotFoundNamesEnv
-  withProxyAndResolver nenv $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 proxiedResolverSrv simplexDomain
+testProxyNotFound :: HasCallStack => IO ()
+testProxyNotFound =
+  withProxyAndResolver stubResolverNotFound $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDSimplex "alice" [])
     case r of
-      Left (SMP host SMP.AUTH) | testPort `isInfixOf` host -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP <proxyHost:" <> testPort <> "> AUTH), got: " <> show r
-  where
-    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
+      Left (SMP host (SMP.NAME SMP.NO_NAME)) | testPort `isInfixOf` host -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP <proxyHost:" <> testPort <> "> (NAME NO_NAME)), got: " <> show r
 
--- | TLDTesting routes through the same code path as TLDSimplex (the contract
--- field is ignored server-side; the resolver decides which registry to query).
-testTestingTldAuth :: HasCallStack => IO ()
-testTestingTldAuth = do
-  nenv <- mkNotFoundNamesEnv
-  withDirectResolver nenv $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv testingDomain
+testTestingTldNotFound :: HasCallStack => IO ()
+testTestingTldNotFound =
+  withDirectResolver stubResolverNotFound $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDTesting "bob" [])
     case r of
-      Left (SMP _ SMP.AUTH) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ AUTH), got: " <> show r
-  where
-    testingDomain = SimplexNameDomain TLDTesting "bob" []
+      Left (SMP _ (SMP.NAME SMP.NO_NAME)) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME NO_NAME)), got: " <> show r
 
--- | TLDWeb is no longer a TLDContract-gated short-circuit on the agent side;
--- the agent forwards the request to the server, which forwards to the
--- resolver, which decides (per its configured TLDs) whether to honour the
--- lookup. The stub here returns 404 for every fetch, so we get AUTH.
-testWebTldAuth :: HasCallStack => IO ()
-testWebTldAuth = do
-  nenv <- mkNotFoundNamesEnv
-  withDirectResolver nenv $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv webDomain
+testWebTldNotFound :: HasCallStack => IO ()
+testWebTldNotFound =
+  withDirectResolver stubResolverNotFound $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDWeb "example.com" [])
     case r of
-      Left (SMP _ SMP.AUTH) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ AUTH), got: " <> show r
-  where
-    webDomain = SimplexNameDomain TLDWeb "example.com" []
+      Left (SMP _ (SMP.NAME SMP.NO_NAME)) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME NO_NAME)), got: " <> show r
 
--- | A router with no resolver configured (namesEnv = Nothing) answers
--- CMD PROHIBITED, so a client iterating its servers skips it and tries the
--- next rather than treating the response as an authoritative "not found".
-testNoResolverProhibited :: HasCallStack => IO ()
-testNoResolverProhibited =
+-- | A router with the names role but no resolver configured answers
+-- NAME NO_RESOLVER (distinct from NO_NAME / NO_SERVERS).
+testNoResolver :: HasCallStack => IO ()
+testNoResolver =
   withNoResolver $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDSimplex "alice" [])
     case r of
-      Left (SMP _ (SMP.CMD SMP.PROHIBITED)) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ (CMD PROHIBITED)), got: " <> show r
-  where
-    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
+      Left (SMP _ (SMP.NAME SMP.NO_RESOLVER)) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME NO_RESOLVER)), got: " <> show r
 
--- | A backing-resolver failure (502 upstream) surfaces as SMP host INTERNAL -
--- a transient error the client surfaces / retries, distinct from AUTH which
--- would (incorrectly) read as "name not registered".
-testBackendErrorInternal :: HasCallStack => IO ()
-testBackendErrorInternal = do
-  nenv <- mkErrorNamesEnv
-  withDirectResolver nenv $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+-- | With no names-role servers, resolution fails agent-side (no server is
+-- contacted) with the agent-origin AgentErrorType.NAME NO_SERVERS.
+testNoNameServers :: HasCallStack => IO ()
+testNoNameServers =
+  withNoNameServers $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDSimplex "alice" [])
     case r of
-      Left (SMP _ SMP.INTERNAL) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ INTERNAL), got: " <> show r
-  where
-    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
+      Left (NAME SMP.NO_SERVERS) -> pure ()
+      _ -> expectationFailure $ "expected Left (NAME NO_SERVERS), got: " <> show r
 
--- | Success path: stub returns a real NameRecord. The agent surfaces it
--- verbatim.
+-- | A backing-resolver failure (502) surfaces as SMP host (NAME (RESOLVER ..)) -
+-- a transient error distinct from NO_NAME ("name not registered").
+testBackendError :: HasCallStack => IO ()
+testBackendError =
+  withDirectResolver stubResolverError $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDSimplex "alice" [])
+    case r of
+      Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER ..))), got: " <> show r
+
 testDirectSuccess :: HasCallStack => IO ()
-testDirectSuccess = do
-  nenv <- mkSuccessNamesEnv
-  withDirectResolver nenv $ \c -> do
-    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 directResolverSrv simplexDomain
+testDirectSuccess =
+  withDirectResolver stubResolverSuccess $ \c -> do
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexNameDomain TLDSimplex "alice" [])
     case r of
       Right nr -> nr `shouldBe` sampleRecord
       _ -> expectationFailure $ "expected Right NameRecord, got: " <> show r
-  where
-    simplexDomain = SimplexNameDomain TLDSimplex "alice" []
