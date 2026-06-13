@@ -89,6 +89,11 @@ flag server_postgres
   manual: True
   default: False
 
+flag commoncrypto
+  description: On Apple platforms, use SecRandomCopyBytes (Security.framework) for libbbs randomness. getentropy is a non-public symbol on iOS and triggers App Store rejection (ITMS-90338).
+  manual: True
+  default: False
+
 library
   exposed-modules:
       Simplex.FileTransfer.Agent
@@ -311,6 +316,9 @@ library
       cbits/libbbs/include
       cbits/libbbs/src
   cc-options: -D__BLST_PORTABLE__
+  if flag(commoncrypto)
+    cc-options: -DBBS_CRYPTO_CC
+    frameworks: Security
   c-sources:
       cbits/sha512.c
       cbits/sntrup761.c
