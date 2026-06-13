@@ -6,11 +6,13 @@
 module Simplex.Messaging.Crypto.BBS
   ( BBSSecretKey (..),
     BBSPublicKey (..),
+    BBSKeyPair,
     BBSSignature (..),
     BBSProof (..),
     BBSHeader (..),
     BBSPresHeader (..),
     bbsKeyGen,
+    bbsPublicKey,
     bbsSign,
     bbsVerify,
     bbsProofGen,
@@ -38,6 +40,8 @@ instance FromJSON BBSSecretKey where
 newtype BBSPublicKey = BBSPublicKey ByteString
   deriving newtype (Eq, Show, StrEncoding)
   deriving (ToJSON, FromJSON) via BBSSecretKey
+
+type BBSKeyPair = (BBSPublicKey, BBSSecretKey)
 
 newtype BBSSignature = BBSSignature ByteString
   deriving newtype (Eq, Show, StrEncoding)
@@ -73,6 +77,9 @@ data BBS_Ciphersuite
 
 foreign import ccall "bbs_keygen_full"
   c_bbs_keygen_full :: Ptr BBS_Ciphersuite -> Ptr Word8 -> Ptr Word8 -> IO CInt
+
+foreign import ccall "bbs_sk_to_pk"
+  c_bbs_sk_to_pk :: Ptr BBS_Ciphersuite -> Ptr Word8 -> Ptr Word8 -> IO CInt
 
 foreign import ccall "bbs_sign"
   c_bbs_sign ::
@@ -152,7 +159,7 @@ withIndexes idxs f = do
 
 -- Public API
 
-bbsKeyGen :: IO (Either String (BBSSecretKey, BBSPublicKey))
+bbsKeyGen :: IO (Either String BBSKeyPair)
 bbsKeyGen = do
   cs <- getCiphersuite
   allocaBytes bbsSkLen $ \skPtr ->
@@ -163,25 +170,37 @@ bbsKeyGen = do
         else do
           sk <- packPtr skPtr bbsSkLen
           pk <- packPtr pkPtr bbsPkLen
-          pure $ Right (BBSSecretKey sk, BBSPublicKey pk)
+          pure $ Right (BBSPublicKey pk, BBSSecretKey sk)
+
+bbsPublicKey :: BBSSecretKey -> IO (Either String BBSPublicKey)
+bbsPublicKey (BBSSecretKey sk) = do
+  cs <- getCiphersuite
+  allocaBytes bbsPkLen $ \pkPtr ->
+    withBS sk $ \skPtr _ -> do
+      rc <- c_bbs_sk_to_pk cs skPtr pkPtr
+      if rc /= 0
+        then pure $ Left "bbsPublicKey failed"
+        else Right . BBSPublicKey <$> packPtr pkPtr bbsPkLen
 
 bbsSign ::
   BBSSecretKey ->
-  BBSPublicKey ->
   BBSHeader ->
   [ByteString] ->
   IO (Either String BBSSignature)
-bbsSign (BBSSecretKey sk) (BBSPublicKey pk) (BBSHeader header) msgs = do
-  cs <- getCiphersuite
-  allocaBytes bbsSigLen $ \sigPtr ->
-    withBS sk $ \skPtr _ ->
-      withBS pk $ \pkPtr _ ->
-        withBS header $ \hdrPtr hdrLen ->
-          withMessages msgs $ \msgsPtr lensPtr n -> do
-            rc <- c_bbs_sign cs skPtr pkPtr sigPtr hdrPtr hdrLen n msgsPtr lensPtr
-            if rc /= 0
-              then pure $ Left "bbsSign failed"
-              else Right . BBSSignature <$> packPtr sigPtr bbsSigLen
+bbsSign secret@(BBSSecretKey sk) (BBSHeader header) msgs =
+  bbsPublicKey secret >>= either (pure . Left) sign'
+  where
+    sign' (BBSPublicKey pk) = do
+      cs <- getCiphersuite
+      allocaBytes bbsSigLen $ \sigPtr ->
+        withBS sk $ \skPtr _ ->
+          withBS pk $ \pkPtr _ ->
+            withBS header $ \hdrPtr hdrLen ->
+              withMessages msgs $ \msgsPtr lensPtr n -> do
+                rc <- c_bbs_sign cs skPtr pkPtr sigPtr hdrPtr hdrLen n msgsPtr lensPtr
+                if rc /= 0
+                  then pure $ Left "bbsSign failed"
+                  else Right . BBSSignature <$> packPtr sigPtr bbsSigLen
 
 bbsVerify ::
   BBSPublicKey ->

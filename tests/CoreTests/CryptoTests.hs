@@ -104,6 +104,7 @@ cryptoTests = do
     it "should enc/dec key" testSNTRUP761
   describe "BBS+" $ do
     it "should sign and verify" testBBSSignVerify
+    it "should derive public key from secret key" testBBSPublicKeyDerivation
     it "should generate and verify proof" testBBSProofRoundtrip
     it "should reject tampered proof" testBBSTamperedProof
     it "should reject wrong disclosed message" testBBSWrongMessage
@@ -297,21 +298,27 @@ bbsDisclosedMsgs = ["2026-07-31", "supporter"]
 
 testBBSSignVerify :: IO ()
 testBBSSignVerify = do
-  Right (sk, pk) <- bbsKeyGen
+  Right (pk, sk) <- bbsKeyGen
   let BBSSecretKey skBs = sk
       BBSPublicKey pkBs = pk
   B.length skBs `shouldBe` 32
   B.length pkBs `shouldBe` 96
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let BBSSignature sigBs = sig
   B.length sigBs `shouldBe` 80
   bbsVerify pk sig bbsHeader bbsMessages >>= (`shouldBe` True)
   bbsVerify pk sig bbsHeader ["wrong", "2026-07-31", "supporter"] >>= (`shouldBe` False)
 
+testBBSPublicKeyDerivation :: IO ()
+testBBSPublicKeyDerivation = do
+  Right (pk, sk) <- bbsKeyGen
+  -- the public key derived from the secret key matches the one keygen returned
+  bbsPublicKey sk >>= (`shouldBe` Right pk)
+
 testBBSProofRoundtrip :: IO ()
 testBBSProofRoundtrip = do
-  Right (sk, pk) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-1"
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   result <- bbsProofVerify pk proof bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
@@ -319,8 +326,8 @@ testBBSProofRoundtrip = do
 
 testBBSTamperedProof :: IO ()
 testBBSTamperedProof = do
-  Right (sk, pk) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-2"
   Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   let tampered = BBSProof $ B.take 10 proofBs <> "\xff" <> B.drop 11 proofBs
@@ -329,8 +336,8 @@ testBBSTamperedProof = do
 
 testBBSWrongMessage :: IO ()
 testBBSWrongMessage = do
-  Right (sk, pk) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-3"
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   result <- bbsProofVerify pk proof bbsHeader ph bbsDisclosedIdxs 3 ["2026-07-31", "business"]
@@ -338,9 +345,9 @@ testBBSWrongMessage = do
 
 testBBSWrongKey :: IO ()
 testBBSWrongKey = do
-  Right (sk, pk) <- bbsKeyGen
-  Right (_, pk2) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right (pk, sk) <- bbsKeyGen
+  Right (pk2, _) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-4"
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   result <- bbsProofVerify pk2 proof bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
@@ -348,8 +355,8 @@ testBBSWrongKey = do
 
 testBBSUnlinkable :: IO ()
 testBBSUnlinkable = do
-  Right (sk, pk) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph1 = BBSPresHeader "nonce-contact-1"
       ph2 = BBSPresHeader "nonce-contact-2"
   Right (BBSProof proof1) <- bbsProofGen pk sig bbsHeader ph1 bbsDisclosedIdxs bbsMessages
@@ -360,8 +367,8 @@ testBBSUnlinkable = do
 
 testBBSProofSize :: IO ()
 testBBSProofSize = do
-  Right (sk, pk) <- bbsKeyGen
-  Right sig <- bbsSign sk pk bbsHeader bbsMessages
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-size"
   Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   B.length proofBs `shouldBe` 304 -- 272 + 32 * 1 undisclosed
