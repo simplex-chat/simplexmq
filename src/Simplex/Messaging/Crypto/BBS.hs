@@ -44,31 +44,31 @@ import System.IO.Unsafe (unsafePerformIO)
 newtype BBSSecretKey = BBSSecretKey ByteString
   deriving newtype (Eq, Show)
   deriving (StrEncoding) via (FixedBS "BBSSecretKey" 32)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSSecretKey" BBSSecretKey)
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSSecretKey")
 
 newtype BBSPublicKey = BBSPublicKey ByteString
   deriving newtype (Eq, Show)
   deriving (StrEncoding) via (FixedBS "BBSPublicKey" 96)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSPublicKey" BBSPublicKey)
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSPublicKey")
 
 type BBSKeyPair = (BBSPublicKey, BBSSecretKey)
 
 newtype BBSSignature = BBSSignature ByteString
   deriving newtype (Eq, Show)
   deriving (StrEncoding) via (FixedBS "BBSSignature" 80)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSSignature" BBSSignature)
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSSignature")
 
 newtype BBSProof = BBSProof ByteString
   deriving newtype (Eq, Show)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSProof" BBSProof)
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSProof")
 
 newtype BBSHeader = BBSHeader ByteString
   deriving newtype (Eq, Show, StrEncoding)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSHeader" BBSHeader)
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSHeader")
 
 newtype BBSPresHeader = BBSPresHeader ByteString
   deriving newtype (Eq, Show, StrEncoding)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSPresHeader" BBSPresHeader)
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSPresHeader")
 
 -- | A ByteString validated to be exactly @n@ bytes when parsed via StrEncoding
 -- (and the JSON derived from it). Local to BBS, where every key/signature is a

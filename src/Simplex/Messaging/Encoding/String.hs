@@ -254,18 +254,11 @@ textToEncoding = JE.text . textEncode
 textParseJSON :: TextEncoding a => String -> J.Value -> JT.Parser a
 textParseJSON name = J.withText name $ maybe (fail name) pure . textDecode
 
--- | Derives ToJSON/FromJSON from a type's own StrEncoding (a base64url string),
--- so any length (or other) validation in StrEncoding also applies to JSON
--- parsing. The @name@ symbol is the JSON parse error label. Intended for
--- DerivingVia:
---
--- > newtype Key = Key ByteString
--- >   deriving (ToJSON, FromJSON) via (StrJSON "Key" Key)
-newtype StrJSON (name :: Symbol) a = StrJSON a
+newtype StrJSON (name :: Symbol) = StrJSON ByteString
 
-instance StrEncoding a => ToJSON (StrJSON name a) where
-  toJSON (StrJSON a) = strToJSON a
-  toEncoding (StrJSON a) = strToJEncoding a
+instance ToJSON (StrJSON name) where
+  toJSON (StrJSON s) = strToJSON s
+  toEncoding (StrJSON s) = strToJEncoding s
 
-instance forall name a. (KnownSymbol name, StrEncoding a) => FromJSON (StrJSON name a) where
+instance forall name. KnownSymbol name => FromJSON (StrJSON name) where
   parseJSON = fmap StrJSON . strParseJSON (symbolVal (Proxy :: Proxy name))
