@@ -1,10 +1,14 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Encoding.String
   ( TextEncoding (..),
     StrEncoding (..),
     Str (..),
+    StrJSON (..),
     strP_,
     _strP,
     strToJSON,
@@ -34,6 +38,7 @@ import Data.Int (Int64)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.List.NonEmpty as L
+import Data.Proxy (Proxy (..))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -44,6 +49,7 @@ import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
+import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
@@ -247,3 +253,12 @@ textToEncoding = JE.text . textEncode
 
 textParseJSON :: TextEncoding a => String -> J.Value -> JT.Parser a
 textParseJSON name = J.withText name $ maybe (fail name) pure . textDecode
+
+newtype StrJSON (name :: Symbol) = StrJSON ByteString
+
+instance ToJSON (StrJSON name) where
+  toJSON (StrJSON s) = strToJSON s
+  toEncoding (StrJSON s) = strToJEncoding s
+
+instance forall name. KnownSymbol name => FromJSON (StrJSON name) where
+  parseJSON = fmap StrJSON . strParseJSON (symbolVal (Proxy :: Proxy name))
