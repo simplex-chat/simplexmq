@@ -68,6 +68,8 @@ module Simplex.Messaging.Agent.Client
     deleteQueueLink,
     secureGetQueueLink,
     getQueueLink,
+    resolveName,
+    getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
     enableQueuesNtfs,
@@ -267,6 +269,7 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
+    NameRecord,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -1989,6 +1992,28 @@ getQueueLink c nm userId server lnkId =
   where
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp nm proxySess lnkId
     getDirectly smp = getSMPQueueLink smp nm lnkId
+
+-- | Resolve a public-namespace name. Prefers PFWD (hides client IP from the
+-- resolver) and falls back to a direct send when the proxy is unavailable
+-- (faster but exposes the client IP). Mode selection is delegated to
+-- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
+resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexNameDomain -> AM NameRecord
+resolveName c nm userId server domain =
+  snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
+  where
+    resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
+    resolveDirectly smp = directResolveName smp nm domain
+
+-- | Pick a names-capable server for the user (the agent owns server selection,
+-- accounting for the names role). nameSrvs is opt-in (a plain list); empty means
+-- no server resolves names - a declared agent error, never a fallback.
+getNextNameServer :: AgentClient -> UserId -> AM SMPServer
+getNextNameServer c userId =
+  liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
+    Just UserServers {nameSrvs} -> case L.nonEmpty nameSrvs of
+      Just srvs -> protoServer <$> pickServer srvs
+      Nothing -> throwE $ NAME SMP.NO_SERVERS
+    Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =

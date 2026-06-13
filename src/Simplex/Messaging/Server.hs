@@ -65,7 +65,7 @@ import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
 import Data.Foldable (foldrM)
-import Data.Functor (($>))
+import Data.Functor (($>), (<&>))
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
@@ -108,6 +108,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
+import Simplex.Messaging.Server.Names (closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -245,7 +246,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       saveServerStats
 
     closeServer :: M s ()
-    closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
+    closeServer = do
+      pa <- asks (smpAgent . proxyAgent)
+      ne <- asks namesEnv
+      liftIO $ closeSMPClientAgent pa `E.finally` mapM_ closeNamesEnv ne
 
     serverThread ::
       forall sub. String ->
@@ -513,7 +517,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices}
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices, rslvStats}
         <- asks serverStats
       st <- asks msgStore
       EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
@@ -576,6 +580,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           qCount' <- readIORef qCount
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
+          rslvStats' <- getResetNameResolverStatsData rslvStats
           T.hPutStrLn h $
             T.intercalate
               ","
@@ -649,6 +654,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                      ]
                        <> showServiceStats rcvServices'
                        <> showServiceStats ntfServices'
+                       <> showNameResolverStats rslvStats'
               )
         liftIO $ threadDelay' interval
       where
@@ -656,6 +662,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -1262,6 +1270,9 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, comma
     vc SNotifierService NSUBS {} = verifyServiceCmd
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
+    -- RSLV is accepted both forwarded (via PFWD, preferred - hides client IP from resolver)
+    -- and direct (client->resolver, faster, exposes client IP). Mode is chosen by the client.
+    vc SResolver (RSLV _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True
@@ -1486,6 +1497,19 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> response . (corrId,NoEntity,) <$> processForwardedCommand encBlock
+      Cmd SResolver (RSLV d) -> do
+        st <- asks (rslvStats . serverStats)
+        incStat (rslvReqs st)
+        -- The name is validated at command parse (invalid syntax never reaches
+        -- here), so the handler only maps the resolver outcome to a declared
+        -- error that reaches the client as ERR (NAME ...).
+        (selector, msg) <- asks namesEnv >>= \case
+          Nothing -> pure (rslvDisabled, ERR $ NAME NO_RESOLVER)
+          Just nenv -> liftIO (resolveName nenv d) <&> \case
+            Right rec -> (rslvSucc, RNAME rec)
+            Left e@NO_NAME -> (rslvNotFound, ERR $ NAME e)
+            Left e -> (rslvResolverErrs, ERR $ NAME e)
+        incStat (selector st) $> response (corrId, NoEntity, msg)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2134,6 +2158,7 @@ client
                     Cmd SSender (SKEY _) -> True
                     Cmd SSenderLink (LKEY _) -> True
                     Cmd SSenderLink LGET -> True
+                    Cmd SResolver (RSLV _) -> True
                     _ -> False
                   verified = \case
                     VRVerified q -> Right (q, t'')
@@ -2216,10 +2241,6 @@ updateDeletedStats q = do
   incStat $ delSel stats
   incStat $ qDeletedAll stats
   liftIO $ atomicModifyIORef'_ (qCount stats) (subtract 1)
-
-incStat :: MonadIO m => IORef Int -> m ()
-incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
-{-# INLINE incStat #-}
 
 randomId' :: Int -> M s ByteString
 randomId' n = atomically . C.randomBytes n =<< asks random

@@ -1,4 +1,4 @@
-Version 19, 2025-01-24
+Version 20, 2026-05-25
 
 # Simplex Messaging Protocol (SMP)
 
@@ -67,6 +67,9 @@ Version 19, 2025-01-24
     - [Queue deleted notification](#queue-deleted-notification)
     - [Error responses](#error-responses)
     - [OK response](#ok-response)
+  - [Resolver commands](#resolver-commands)
+    - [Resolve name command](#resolve-name-command)
+    - [Name record response](#name-record-response)
 - [Transport connection with the SMP router](#transport-connection-with-the-SMP-router)
   - [General transport protocol considerations](#general-transport-protocol-considerations)
   - [TLS transport encryption](#tls-transport-encryption)
@@ -83,7 +86,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 19. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 20. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -103,6 +106,7 @@ This document describes SMP protocol version 19. Versions 1-5 are discontinued. 
 - v17: create notification credentials with NEW command
 - v18: support client notices in BLOCKED error
 - v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
+- v20: public namespaces resolver (RSLV command, NAME response) — forwarded-only via PFWD
 
 ## Introduction
 
@@ -423,6 +427,8 @@ Simplex messaging router implementations MUST NOT create, store or send to any o
 - Snapshots of the database they use to store queues and messages (instead simplex messaging clients must manage redundancy by using more than one simplex messaging router). In-memory persistence is recommended.
 
 - Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging routers (the routers cannot compromise forward secrecy of any application layer protocol, such as double ratchet).
+
+Routers with the names role make outbound HTTP calls to a backing resolver service (the reference implementation is `scripts/resolver/snrc-resolve.py`, which in turn makes JSON-RPC calls to an Ethereum endpoint) to read `NameRecord` data; the lookup key reaches that resolver and its upstream RPC endpoint. Operators MUST run both the resolver process and its upstream RPC endpoint themselves (loopback Reth + Nimbus, or a self-hosted central deployment) — sharing them across multiple operators collapses the two-server privacy property because the resolver / RPC operator would see every lookup key across all of them. The names role and the SMP-proxy role MUST NOT be enabled on the same router by default; a slow `RSLV` cache miss can serialise other forwarded commands on the same proxy-relay session.
 
 ## Message delivery notifications
 
@@ -1421,6 +1427,119 @@ When the command is successfully executed by the router, it should respond with 
 ```abnf
 ok = %s"OK"
 ```
+
+### Resolver commands
+
+Resolver commands implement public-namespace name resolution on the names-role
+router. A names router translates an opaque lookup key (such as `alice` or
+`alice.simplex.eth`) into a `NameRecord` carrying the channel and contact links
+the named party publishes.
+
+**Forwarded-only.** RSLV is only valid when delivered inside a `PFWD` block via
+the SMP proxy. A direct `RSLV` from a transport client is rejected with
+`ERR CMD PROHIBITED`. This preserves the two-server privacy property of the
+resolver design: the names router sees the lookup key but never the client IP,
+session, or identity; the proxy router sees the client connection but cannot
+read the encrypted lookup key inside the forwarded transmission.
+
+**Backing store.** This protocol does not prescribe where the names router
+reads `NameRecord` from. The reference implementation forwards each RSLV to a
+companion REST resolver process (`scripts/resolver/snrc-resolve.py`) that
+queries the SNRC contract on Ethereum; alternative backings (different chains,
+DHT, etc.) are valid as long as they expose the documented HTTP shape (`GET
+/resolve/<name>` returning a `NameRecord` on 200, 404 / 400 for unknown names
+or TLDs, 502 for upstream RPC failures) or substitute a different transport
+while still returning a `NameRecord` matching the encoding below.
+
+#### Resolve name command
+
+The `RSLV` command carries a JSON-encoded request as the payload:
+
+```abnf
+rslv = %s"RSLV" SP json-bytes   ; json-bytes consumes the remainder of the transmission
+```
+
+`json-bytes` MUST be a UTF-8 JSON object with the following schema:
+
+| Field | JSON type | Constraints |
+|---|---|---|
+| `name` | string | the canonical fully-qualified name (TLD always explicit, e.g. `"privacy.simplex"`, `"test.testing"`, `"example.com"`); UTF-8 bytes only |
+| `contract` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes); currently ignored by the server, reserved for future eth-backed implementations that may use it to constrain which on-chain registry the client expects the server to query |
+
+**Server-side validation.** The names router parses `name` as a fully-qualified
+domain (TLD required — bare labels are rejected) and forwards it to the
+configured backing resolver. The `contract` field is parsed for forward
+compatibility but ignored by the reference implementation: the backing
+resolver is the source of truth for which on-chain registry maps to each TLD.
+
+The names router responds with either a `NAME` response carrying the resolved
+record, or one of three error responses that a client iterating across several
+configured servers can act on distinctly:
+
+| Response | Condition | Client action |
+|---|---|---|
+| `NAME` | record resolved | use it |
+| `ERR AUTH` | name not registered, or malformed name | authoritative "no such name" — stop |
+| `ERR CMD PROHIBITED` | this router has no resolver (names role not enabled) | skip this server, try the next |
+| `ERR INTERNAL` | backing resolver failure (404/400/5xx upstream, transport failure, timeout, decode error) | transient — retry or surface, do not treat as "not found" |
+
+A client SHOULD NOT broadcast a `name` to further servers after a name-capable
+router has answered (`AUTH` or `INTERNAL`), since that router has already seen
+the lookup key; `CMD PROHIBITED` discloses nothing about the name beyond the
+fact that this router cannot resolve, so iterating past it is safe. Stats
+counters MAY be exposed out-of-band for operator observability (`bad_name` is
+incremented for validation failures, distinct from `not_found` for valid
+lookups with no backing record).
+
+#### Name record response
+
+The `NAME` response carries a JSON-encoded record as the payload:
+
+```abnf
+name = %s"NAME" SP json-bytes   ; json-bytes consumes the remainder of the transmission
+```
+
+`json-bytes` MUST be a UTF-8 JSON object with the following schema:
+
+| Field | JSON type | Constraints |
+|---|---|---|
+| `name` | string | ≤ 255 bytes UTF-8 |
+| `nickname` | string | ≤ 255 bytes UTF-8; senders MUST emit the empty string `""` when unset |
+| `website` | string | ≤ 255 bytes UTF-8; same empty-string-when-unset rule |
+| `location` | string | ≤ 255 bytes UTF-8; same empty-string-when-unset rule |
+| `simplexContact` | string | ≤ 1024 bytes UTF-8; same empty-string-when-unset rule |
+| `simplexChannel` | string | ≤ 1024 bytes UTF-8; same empty-string-when-unset rule |
+| `eth` | string or null | ≤ 255 bytes UTF-8; senders MUST emit `null` when unset; receivers MUST also accept absent keys as unset |
+| `btc` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `xmr` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `dot` | string or null | ≤ 255 bytes UTF-8; same null / absent rules |
+| `owner` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes) |
+| `resolver` | string | `"0x"` followed by 40 lowercase hex characters; the resolver contract address that produced the record |
+
+Text fields (`nickname`, `website`, `location`, `simplexContact`,
+`simplexChannel`) use the empty string `""` as the "unset" sentinel: a
+backing resolver with no value for the field MUST emit an empty string, not
+JSON `null` and not an absent key. Coin fields (`eth`, `btc`, `xmr`, `dot`)
+use JSON `null` as the "unset" sentinel and MAY also be absent from the
+object entirely.
+
+The server MUST filter records its backing resolver indicates are expired
+or otherwise unavailable (returning `ERR AUTH` to the client), so the wire
+format carries no expiry field. Testnet-vs-mainnet status is derived from
+the queried TLD rather than an in-record flag.
+
+Receivers MUST tolerate extra unknown fields (forward-compatibility for future
+field additions). Adding a required field is a breaking change requiring an
+SMP version bump.
+
+**Canonical encoding.** Two names routers reading the same backing state and
+producing the same `NameRecord` MUST emit byte-identical JSON: emit object
+keys in the order listed above, integers without decimal points, no
+insignificant whitespace.
+
+**Wire-size budget.** A maximal `nameRecord` (two 1024-byte SimpleX links
+plus the other capped strings) JSON-encodes to roughly 4 KB, well under the
+SMP proxied transmission budget of 16224 bytes.
 
 ## Transport connection with the SMP router
 

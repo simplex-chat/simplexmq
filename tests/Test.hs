@@ -8,6 +8,7 @@ import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import CoreTests.BatchingTests
+import CoreTests.ConnectTargetTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
@@ -21,7 +22,9 @@ import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
+import RSLVTests (rslvTests)
 import RemoteControl (remoteControlTests)
+import SMPNamesTests (smpNamesTests)
 import SMPProxyTests (smpProxyTests)
 import ServerTests
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
@@ -82,6 +85,7 @@ main = do
       $ do
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
+          describe "ConnectTarget tests" connectTargetTests
           describe "Encoding tests" encodingTests
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
@@ -97,6 +101,8 @@ main = do
 #endif
           describe "TSessionSubs tests" tSessionSubsTests
           describe "Util tests" utilTests
+          describe "Names resolver tests" smpNamesTests
+          describe "RSLV functional API tests" rslvTests
           describe "Agent core tests" agentCoreTests
 #if defined(dbServerPostgres)
         around_ (postgressBracket testServerDBConnectInfo) $
