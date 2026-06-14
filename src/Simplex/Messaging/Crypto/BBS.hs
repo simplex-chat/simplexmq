@@ -44,31 +44,31 @@ import System.IO.Unsafe (unsafePerformIO)
 newtype BBSSecretKey = BBSSecretKey ByteString
   deriving newtype (Eq, Show)
   deriving (StrEncoding) via (FixedBS "BBSSecretKey" 32)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSSecretKey")
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSSecretKey" BBSSecretKey)
 
 newtype BBSPublicKey = BBSPublicKey ByteString
   deriving newtype (Eq, Show)
   deriving (StrEncoding) via (FixedBS "BBSPublicKey" 96)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSPublicKey")
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSPublicKey" BBSPublicKey)
 
 type BBSKeyPair = (BBSPublicKey, BBSSecretKey)
 
 newtype BBSSignature = BBSSignature ByteString
   deriving newtype (Eq, Show)
   deriving (StrEncoding) via (FixedBS "BBSSignature" 80)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSSignature")
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSSignature" BBSSignature)
 
 newtype BBSProof = BBSProof ByteString
   deriving newtype (Eq, Show)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSProof")
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSProof" BBSProof)
 
 newtype BBSHeader = BBSHeader ByteString
   deriving newtype (Eq, Show, StrEncoding)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSHeader")
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSHeader" BBSHeader)
 
 newtype BBSPresHeader = BBSPresHeader ByteString
   deriving newtype (Eq, Show, StrEncoding)
-  deriving (ToJSON, FromJSON) via (StrJSON "BBSPresHeader")
+  deriving (ToJSON, FromJSON) via (StrJSON "BBSPresHeader" BBSPresHeader)
 
 -- | A ByteString validated to be exactly @n@ bytes when parsed via StrEncoding
 -- (and the JSON derived from it). Local to BBS, where every key/signature is a
@@ -188,6 +188,13 @@ withIndexes :: [Int] -> (Ptr CSize -> CSize -> IO a) -> IO a
 withIndexes idxs f =
   withArrayLen (map fromIntegral idxs :: [CSize]) $ \n ptr -> f ptr (fromIntegral n)
 
+-- libbbs expects disclosed indexes strictly ascending and in [0, total). This
+-- both matches the spec and guarantees the output-buffer size we compute matches
+-- what libbbs writes (no out-of-bounds write from a bad index list).
+ascendingInRange :: [Int] -> Int -> Bool
+ascendingInRange idxs total =
+  all (\i -> i >= 0 && i < total) idxs && and (zipWith (<) idxs (drop 1 idxs))
+
 -- Public API
 
 bbsKeyGen :: IO (Either String BBSKeyPair)
@@ -252,7 +259,9 @@ bbsProofGen ::
   [Int] ->
   [ByteString] ->
   IO (Either String BBSProof)
-bbsProofGen (BBSPublicKey pk) (BBSSignature sig) (BBSHeader header) (BBSPresHeader ph) disclosedIdxs msgs =
+bbsProofGen (BBSPublicKey pk) (BBSSignature sig) (BBSHeader header) (BBSPresHeader ph) disclosedIdxs msgs
+  | not (ascendingInRange disclosedIdxs (length msgs)) = pure $ Left "bbsProofGen: invalid disclosed indexes"
+  | otherwise =
   allocaBytes proofSz $ \proofPtr ->
     withBS pk $ \pkPtr _ ->
       withBS sig $ \sigPtr _ ->
@@ -277,7 +286,10 @@ bbsProofVerify ::
   Int ->
   [ByteString] ->
   IO Bool
-bbsProofVerify (BBSPublicKey pk) (BBSProof proof) (BBSHeader header) (BBSPresHeader ph) disclosedIdxs numMessages disclosedMsgs =
+bbsProofVerify (BBSPublicKey pk) (BBSProof proof) (BBSHeader header) (BBSPresHeader ph) disclosedIdxs numMessages disclosedMsgs
+  | length disclosedIdxs /= length disclosedMsgs = pure False
+  | not (ascendingInRange disclosedIdxs numMessages) = pure False
+  | otherwise =
   withBS pk $ \pkPtr _ ->
     withBS proof $ \proofPtr proofLen ->
       withBS header $ \hdrPtr hdrLen ->

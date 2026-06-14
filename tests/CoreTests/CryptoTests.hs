@@ -7,6 +7,7 @@ module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
 import Control.Monad.Except
+import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
@@ -111,6 +112,7 @@ cryptoTests = do
     it "should reject wrong public key" testBBSWrongKey
     it "should produce unlinkable proofs" testBBSUnlinkable
     it "should produce proof of expected size" testBBSProofSize
+    it "should roundtrip JSON and reject wrong-length input" testBBSJSON
 
 instance Eq C.APublicKey where
   C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
@@ -372,3 +374,18 @@ testBBSProofSize = do
   let ph = BBSPresHeader "test-nonce-size"
   Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   B.length proofBs `shouldBe` 304 -- 272 + 32 * 1 undisclosed
+
+testBBSJSON :: IO ()
+testBBSJSON = do
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
+  let ph = BBSPresHeader "json-nonce"
+  Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  -- valid values roundtrip through JSON
+  J.decode (J.encode sk) `shouldBe` Just sk
+  J.decode (J.encode pk) `shouldBe` Just pk
+  J.decode (J.encode sig) `shouldBe` Just sig
+  J.decode (J.encode proof) `shouldBe` Just proof
+  -- FromJSON must reject wrong-length input (regression: StrJSON length validation)
+  (J.decode (J.encode (BBSSecretKey (B.replicate 16 '\0'))) :: Maybe BBSSecretKey) `shouldBe` Nothing
+  (J.decode (J.encode (BBSSignature (B.replicate 10 '\0'))) :: Maybe BBSSignature) `shouldBe` Nothing

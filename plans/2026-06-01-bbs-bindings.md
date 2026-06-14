@@ -26,12 +26,11 @@ All newtypes get StrEncoding (base64url), ToJSON/FromJSON (via strToJSON/strPars
 ## Functions
 
 ```haskell
-bbsKeyGen :: IO (BBSSecretKey, BBSPublicKey)
+bbsKeyGen :: IO (Either String BBSKeyPair)  -- BBSKeyPair = (BBSPublicKey, BBSSecretKey)
 
--- C order: sk, pk, header, messages
+-- pk is derived from sk internally, so it is not a parameter
 bbsSign
   :: BBSSecretKey
-  -> BBSPublicKey
   -> BBSHeader            -- always-disclosed context
   -> [ByteString]         -- all N messages
   -> IO (Either String BBSSignature)
@@ -74,7 +73,7 @@ Message layout (always 3 messages):
 
 Signing (v2, on the server):
 ```
-bbsSign sk pk header [ms, encodeUtf8 "2026-07-31", encodeUtf8 "supporter"]
+bbsSign sk header [ms, encodeUtf8 "2026-07-31", encodeUtf8 "supporter"]
 ```
 
 Proof generation (v2, on the client):

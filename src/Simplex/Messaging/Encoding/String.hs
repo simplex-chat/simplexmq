@@ -254,11 +254,19 @@ textToEncoding = JE.text . textEncode
 textParseJSON :: TextEncoding a => String -> J.Value -> JT.Parser a
 textParseJSON name = J.withText name $ maybe (fail name) pure . textDecode
 
-newtype StrJSON (name :: Symbol) = StrJSON ByteString
+-- | Derives ToJSON/FromJSON from the wrapped type's own StrEncoding (a base64url
+-- string), so any validation that StrEncoding performs (e.g. length) also applies
+-- to JSON parsing. The @name@ symbol is the parse error label. The type parameter
+-- @a@ is essential: it makes parseJSON resolve at the wrapped type rather than at
+-- ByteString. Use via DerivingVia, e.g.:
+--
+-- > newtype Key = Key ByteString
+-- >   deriving (ToJSON, FromJSON) via (StrJSON "Key" Key)
+newtype StrJSON (name :: Symbol) a = StrJSON a
 
-instance ToJSON (StrJSON name) where
-  toJSON (StrJSON s) = strToJSON s
-  toEncoding (StrJSON s) = strToJEncoding s
+instance StrEncoding a => ToJSON (StrJSON name a) where
+  toJSON (StrJSON a) = strToJSON a
+  toEncoding (StrJSON a) = strToJEncoding a
 
-instance forall name. KnownSymbol name => FromJSON (StrJSON name) where
+instance forall name a. (KnownSymbol name, StrEncoding a) => FromJSON (StrJSON name a) where
   parseJSON = fmap StrJSON . strParseJSON (symbolVal (Proxy :: Proxy name))
