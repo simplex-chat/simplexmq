@@ -39,6 +39,7 @@ import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
+import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
@@ -75,14 +76,14 @@ ntfSyntaxTests (ATransport t) = do
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
 testApnsTestProviderRejected :: ASrvTransport -> Expectation
-testApnsTestProviderRejected (ATransport t) = do
+testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
   g <- C.newRandom
   (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
   let tkn = DeviceToken PPApnsTest "abcd"
-      cfg = ntfServerCfg {allowTestPushProvider = False, transports = [(ntfTestPort, ATransport t, False)]}
-  withNtfServerCfg cfg $ \_ ->
-    testNtfClient $ \nh -> do
+      ntfCfg = ntfServerCfg {allowTestPushProvider = False, transports = [(ntfTestPort, ATransport t, False)]}
+  withNtfServerCfg ntfCfg $ \_ ->
+    testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
       RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
         signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
       pure ()
