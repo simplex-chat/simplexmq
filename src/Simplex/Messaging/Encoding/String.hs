@@ -1,10 +1,14 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Encoding.String
   ( TextEncoding (..),
     StrEncoding (..),
     Str (..),
+    StrJSON (..),
     strP_,
     _strP,
     strToJSON,
@@ -34,6 +38,7 @@ import Data.Int (Int64)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IS
 import qualified Data.List.NonEmpty as L
+import Data.Proxy (Proxy (..))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -44,6 +49,7 @@ import Data.Time.Format.ISO8601
 import Data.Word (Word16, Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
+import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
@@ -247,3 +253,20 @@ textToEncoding = JE.text . textEncode
 
 textParseJSON :: TextEncoding a => String -> J.Value -> JT.Parser a
 textParseJSON name = J.withText name $ maybe (fail name) pure . textDecode
+
+-- | Derives ToJSON/FromJSON from the wrapped type's own StrEncoding (a base64url
+-- string), so any validation that StrEncoding performs (e.g. length) also applies
+-- to JSON parsing. The @name@ symbol is the parse error label. The type parameter
+-- @a@ is essential: it makes parseJSON resolve at the wrapped type rather than at
+-- ByteString. Use via DerivingVia, e.g.:
+--
+-- > newtype Key = Key ByteString
+-- >   deriving (ToJSON, FromJSON) via (StrJSON "Key" Key)
+newtype StrJSON (name :: Symbol) a = StrJSON a
+
+instance StrEncoding a => ToJSON (StrJSON name a) where
+  toJSON (StrJSON a) = strToJSON a
+  toEncoding (StrJSON a) = strToJEncoding a
+
+instance forall name a. (KnownSymbol name, StrEncoding a) => FromJSON (StrJSON name a) where
+  parseJSON = fmap StrJSON . strParseJSON (symbolVal (Proxy :: Proxy name))
