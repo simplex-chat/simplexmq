@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Clone project
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Log in to Docker Hub
         uses: simplex-chat/docker-login-action@v3
