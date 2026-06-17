@@ -13,7 +13,6 @@ module Simplex.RemoteControl.Invitation
   , RCEncInvitation (..)
   ) where
 
-import Control.Applicative ((<|>))
 import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString (ByteString)
@@ -82,7 +81,7 @@ instance StrEncoding RCInvitation where
     _ <- A.string "xrcp:/"
     ca <- strP
     _ <- A.char '@'
-    host <- hostP
+    host <- strP
     _ <- A.char ':'
     port <- strP
     _ <- A.string "#/?"
@@ -95,11 +94,6 @@ instance StrEncoding RCInvitation where
     idkey <- requiredP q "idkey" $ parseAll strP
     dh <- requiredP q "dh" $ parseAll strP
     pure RCInvitation {ca, host, port, v, app, ts, skey, idkey, dh}
-    where
-      hostP = bracketedHostP <|> rawHostP
-      bracketedHostP = A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']' >>= decodeHost
-      rawHostP = A.takeWhile (/= ':') >>= decodeHost
-      decodeHost = either fail pure . strDecode . urlDecode True
 
 data RCSignedInvitation = RCSignedInvitation
   { invitation :: RCInvitation,

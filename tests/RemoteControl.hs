@@ -37,8 +37,9 @@ import Util
 remoteControlTests :: Spec
 remoteControlTests = do
   describe "preferred bindings should go first" testPreferAddress
-  describe "Invitation parsing" $
+  describe "Invitation parsing" $ do
     it "should parse bracketed IPv6 host with port" testInvitationBracketedIPv6Host
+    it "should reject bracketed non-IPv6 host" testInvitationBracketedNonIPv6HostRejected
   describe "New controller/host pairing" $ do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
@@ -89,6 +90,16 @@ testInvitationBracketedIPv6Host = do
     Right RCInvitation {host, port} -> do
       host `shouldBe` expectedHost
       port `shouldBe` 5223
+
+testInvitationBracketedNonIPv6HostRejected :: IO ()
+testInvitationBracketedNonIPv6HostRejected = do
+  invitation <- testIPv6Invitation
+  let bracketedUri =
+        B.pack . replaceFirst "@2001:db8::1:" "@[simplex.chat]:" . B.unpack $
+          strEncode invitation
+  case strDecode bracketedUri :: Either String RCInvitation of
+    Left _ -> pure ()
+    Right _ -> expectationFailure "expected parse failure for bracketed non-IPv6 host"
 
 replaceFirst :: String -> String -> String -> String
 replaceFirst needle replacement = go

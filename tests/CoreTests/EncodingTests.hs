@@ -70,17 +70,24 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         THDomainName "192.256.0.1" #==# "192.256.0.1"
         THDomainName "192.168.0.-1" #==# "192.168.0.-1"
         shouldNotParse @TransportHost "192.168.0.0.1" "endOfInput"
-  describe "Encoding service locations" $
+        -- brackets are reserved for IPv6 literals
+        shouldReject @TransportHost "[simplex.chat]"
+        shouldReject @TransportHost "[smp.simplex.im]"
+  describe "Encoding service locations" $ do
     it "should parse bracketed IPv6 host with port" $
       strDecode @ServiceScheme "https://[2001:db8::1]:8443"
         `shouldBe` Right (SSAppServer $ SrvLoc "2001:db8::1" "8443")
-  describe "Encoding protocol servers" $
+    it "should reject bracketed non-IPv6 host" $
+      shouldReject @ServiceScheme "https://[simplex.chat]:8443"
+  describe "Encoding protocol servers" $ do
     it "should parse bracketed IPv6 server host with port" $
       case strDecode @XFTPServer "xftp://1234-w==@[2001:db8::1]:443" of
         Left err -> expectationFailure err
         Right (ProtocolServer _ parsedHost parsedPort _) -> do
           parsedHost `shouldBe` (ipv6Host :| [])
           parsedPort `shouldBe` "443"
+    it "should reject bracketed non-IPv6 server host" $
+      shouldReject @XFTPServer "xftp://1234-w==@[simplex.chat]:443"
   where
     ipv6Host :: TransportHost
     ipv6Host = either error id $ strDecode "2001:db8::1"
@@ -94,3 +101,7 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
       strDecode s `shouldBe` Right x
     shouldNotParse :: forall s. (StrEncoding s, Eq s, Show s) => ByteString -> String -> Expectation
     shouldNotParse s err = strDecode s `shouldBe` (Left err :: Either String s)
+    shouldReject :: forall s. (StrEncoding s, Show s) => ByteString -> Expectation
+    shouldReject s = case strDecode s :: Either String s of
+      Left _ -> pure ()
+      Right a -> expectationFailure $ "expected parse failure, got " <> show a
