@@ -641,11 +641,10 @@ showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
 pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
-  pushProviderAllowed token >>= \case
-    True -> do
-      q <- getOrCreatePushWorker s (srvHost_, pp) isOwn
-      atomically $ writeTBQueue q (tkn, ntf)
-    False -> liftIO $ logWarn "skipping disabled APNS test push provider"
+  ifM
+    (pushProviderAllowed token)
+    (getOrCreatePushWorker s (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (logWarn "skipping disabled APNS test push provider")
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
@@ -653,9 +652,10 @@ pushProviderAllowed _ = pure True
 
 guardPushProvider :: DeviceToken -> M NtfResponse -> M NtfResponse
 guardPushProvider token action =
-  pushProviderAllowed token >>= \case
-    True -> action
-    False -> pure $ NRErr $ CMD SMP.PROHIBITED
+  ifM
+    (pushProviderAllowed token)
+    action
+    (pure $ NRErr $ CMD SMP.PROHIBITED)
 
 getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
 getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
