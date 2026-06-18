@@ -287,8 +287,10 @@ bbsProofVerify ::
   [ByteString] ->
   IO Bool
 bbsProofVerify (BBSPublicKey pk) (BBSProof proof) (BBSHeader header) (BBSPresHeader ph) disclosedIdxs numMessages disclosedMsgs
+  | numMessages < 0 = pure False
   | length disclosedIdxs /= length disclosedMsgs = pure False
   | not (ascendingInRange disclosedIdxs numMessages) = pure False
+  | B.length proof /= bbsProofLen (numMessages - length disclosedIdxs) = pure False
   | otherwise =
   withBS pk $ \pkPtr _ ->
     withBS proof $ \proofPtr proofLen ->
