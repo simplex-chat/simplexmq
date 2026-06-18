@@ -335,6 +335,11 @@ library
       cbits/blst/build/assembly.S
   extra-libraries:
       crypto
+  if os(windows)
+    c-sources:
+        cbits/getentropy_win.c
+    extra-libraries:
+        bcrypt
   build-depends:
       aeson ==2.2.*
     , asn1-encoding ==0.9.*
