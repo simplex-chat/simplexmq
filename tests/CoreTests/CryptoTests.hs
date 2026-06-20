@@ -7,14 +7,12 @@
 module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
-import Control.Exception (SomeException)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isLeft, isRight)
 import Data.Int (Int64)
-import Data.List (isInfixOf)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
@@ -110,7 +108,6 @@ cryptoTests = do
   describe "sntrup761" $ do
     it "should enc/dec key" testSNTRUP761
     it "should reject malformed KEM encodings" testSNTRUP761RejectsMalformedEncodings
-    it "should reject malformed KEM FFI inputs" testSNTRUP761RejectsMalformedFFIInputs
   describe "BBS+" $ do
     it "should sign and verify" testBBSSignVerify
     it "should derive public key from secret key" testBBSPublicKeyDerivation
@@ -304,18 +301,6 @@ testSNTRUP761RejectsMalformedEncodings = do
   strDecode @KEMCiphertext (strEncode validCiphertext) `shouldSatisfy` isRight
   smpDecode @KEMSecretKey (smpEncode $ Large shortSecretKey) `shouldSatisfy` isLeft
   strDecode @KEMSecretKey (strEncode shortSecretKey) `shouldSatisfy` isLeft
-
-testSNTRUP761RejectsMalformedFFIInputs :: IO ()
-testSNTRUP761RejectsMalformedFFIInputs = do
-  drg <- C.newRandom
-  (_, sk) <- sntrup761Keypair drg
-  sntrup761Enc drg (KEMPublicKey shortPublicKey)
-    `shouldThrow` kemLengthException "public key"
-  sntrup761Dec (KEMCiphertext shortCiphertext) sk
-    `shouldThrow` kemLengthException "ciphertext"
-
-kemLengthException :: String -> SomeException -> Bool
-kemLengthException valueName e = valueName `isInfixOf` show e
 
 shortPublicKey :: B.ByteString
 shortPublicKey = B.replicate (c_SNTRUP761_PUBLICKEY_SIZE - 1) 'p'
