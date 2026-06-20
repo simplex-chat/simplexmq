@@ -141,6 +141,7 @@ ntfServerCfg =
           { apnsPort = apnsTestPort,
             caStoreFile = "tests/fixtures/ca.crt"
           },
+      allowTestPushProvider = True,
       subsBatchSize = 900,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       dbStoreConfig = ntfTestDBCfg,

@@ -1,0 +1,161 @@
+services:
+  # One-shot setup (runs as root): generates /jwt/jwt.hex and chowns the
+  # nimbus-data volume to UID 1000 (the user Nimbus runs as inside its image).
+  # Without this chown Nimbus gets "Permission denied" on its data dir
+  # because docker creates fresh named volumes owned by root.
+  init:
+    image: alpine:latest
+    volumes:
+      - jwt:/jwt
+      - nimbus-data:/nimbus-data
+    command: >
+      sh -c '
+        set -e;
+        if [ ! -f /jwt/jwt.hex ]; then
+          apk add --no-cache openssl >/dev/null;
+          openssl rand -hex 32 | tr -d "\n" > /jwt/jwt.hex;
+          chmod 644 /jwt/jwt.hex;
+          echo "Generated /jwt/jwt.hex";
+        else
+          echo "jwt.hex already exists";
+        fi;
+        chown 1000:1000 /nimbus-data;
+        echo "Chowned /nimbus-data to 1000:1000";
+      '
+    restart: "no"
+
+  # One-shot: fetches a recent finalised checkpoint into the Nimbus data dir
+  # using the trustedNodeSync subcommand. Skipped if the data dir is already
+  # initialised, so subsequent compose-ups are no-ops.
+  nimbus-checkpoint-sync:
+    image: statusim/nimbus-eth2:multiarch-latest
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - nimbus-data:/home/user/nimbus-eth2/build/data
+    entrypoint:
+      - sh
+      - -c
+      - |
+        if [ -d /home/user/nimbus-eth2/build/data/${NETWORK}/db ]; then
+          echo "Nimbus data dir already initialised — skipping checkpoint sync";
+          exit 0;
+        fi;
+        /home/user/nimbus-eth2/build/nimbus_beacon_node trustedNodeSync \
+          --network=${NETWORK} \
+          --data-dir=/home/user/nimbus-eth2/build/data/${NETWORK} \
+          --trusted-node-url=${TRUSTED_NODE_URL} \
+          --backfill=false
+    restart: "no"
+
+  # One-shot: downloads a pre-synced snapshot from snapshots.reth.rs into the
+  # Reth data dir. Turns a multi-day from-scratch sync into a ~hour download.
+  # Skipped if the data dir is already initialised — re-runs are no-ops.
+  # Privacy note: snapshots.reth.rs sees this download (operator existence).
+  # Subsequent eth_call traffic stays local.
+  reth-snapshot-init:
+    image: ghcr.io/paradigmxyz/reth:latest
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    volumes:
+      - reth-data:/data
+    entrypoint:
+      - sh
+      - -c
+      - |
+        if [ -f /data/.snapshot-done ] || [ -d /data/db ]; then
+          echo "Reth data already initialised — skipping snapshot download";
+          exit 0;
+        fi;
+        echo "Downloading Reth ${NETWORK} --minimal snapshot...";
+        reth download --datadir /data --chain ${NETWORK} --minimal && \
+        touch /data/.snapshot-done && \
+        echo "Snapshot download complete"
+    restart: "no"
+
+  reth:
+    image: ghcr.io/paradigmxyz/reth:latest
+    depends_on:
+      reth-snapshot-init:
+        condition: service_completed_successfully
+    volumes:
+      - reth-data:/data
+      - jwt:/jwt:ro
+    ports:
+      # JSON-RPC for smp-server. Bound to loopback — put Caddy in front for remote access.
+      - "127.0.0.1:8545:8545"
+      # p2p (Ethereum network). Open these on your firewall for sync.
+      - "30303:30303/tcp"
+      - "30303:30303/udp"
+    command: >
+      node
+      --datadir /data
+      --chain ${NETWORK}
+      --minimal
+      --authrpc.jwtsecret /jwt/jwt.hex
+      --authrpc.addr 0.0.0.0 --authrpc.port 8551
+      --http
+      --http.addr 0.0.0.0 --http.port 8545
+      --http.api eth,net
+      --rpc.gascap 50000000
+      --rpc.max-response-size 5
+      --port 30303
+      --discovery.port 30303
+    restart: unless-stopped
+
+  nimbus:
+    image: statusim/nimbus-eth2:multiarch-latest
+    depends_on:
+      nimbus-checkpoint-sync:
+        condition: service_completed_successfully
+    volumes:
+      - nimbus-data:/home/user/nimbus-eth2/build/data
+      - jwt:/jwt:ro
+    ports:
+      - "9000:9000/tcp"
+      - "9000:9000/udp"
+      - "127.0.0.1:5052:5052"
+    command: >
+      --network=${NETWORK}
+      --data-dir=/home/user/nimbus-eth2/build/data/${NETWORK}
+      --el=http://reth:8551
+      --jwt-secret=/jwt/jwt.hex
+      --non-interactive
+      --rest --rest-address=0.0.0.0 --rest-port=5052
+      --nat=${NAT:-any}
+    restart: unless-stopped
+
+  # SNRC REST resolver. Talks to reth on the compose-internal network,
+  # exposes /resolve and /health on 127.0.0.1:8000 by default. The
+  # smp-server points its [NAMES] resolver_endpoint at this URL.
+  # To change the host port, edit the LEFT side of the port mapping below.
+  resolver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      # reth's `service_started` is sufficient — the resolver tolerates
+      # eth_call failures gracefully (returns 502 with the error body), so
+      # starting before reth has finished snapshot replay just yields a few
+      # 502s until the chain is queryable. The upstream reth image doesn't
+      # ship a HEALTHCHECK, so we can't gate on healthy.
+      reth:
+        condition: service_started
+    environment:
+      SNRC_RPC: http://reth:8545
+      SNRC_BIND: 0.0.0.0
+      # Registry addresses cascade through the script's own defaults
+      # (mainnet `.testing`; `.simplex` unconfigured). Set explicitly here
+      # only if you're deploying against a different network or contract.
+      # SNRC_REGISTRY_TESTING: 0x...
+      # SNRC_REGISTRY_SIMPLEX: 0x...
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+volumes:
+  reth-data:
+  nimbus-data:
+  jwt:
