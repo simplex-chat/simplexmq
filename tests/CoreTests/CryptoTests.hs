@@ -115,6 +115,7 @@ cryptoTests = do
     it "should reject tampered proof" testBBSTamperedProof
     it "should reject wrong disclosed message" testBBSWrongMessage
     it "should reject wrong public key" testBBSWrongKey
+    it "should reject invalid proof parameters" testBBSInvalidProofParams
     it "should produce unlinkable proofs" testBBSUnlinkable
     it "should produce proof of expected size" testBBSProofSize
     it "should roundtrip JSON and reject wrong-length input" testBBSJSON
@@ -387,6 +388,27 @@ testBBSWrongKey = do
   Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
   result <- bbsProofVerify pk2 proof bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
   result `shouldBe` False
+
+testBBSInvalidProofParams :: IO ()
+testBBSInvalidProofParams = do
+  Right (pk, sk) <- bbsKeyGen
+  Right sig <- bbsSign sk bbsHeader bbsMessages
+  let ph = BBSPresHeader "test-nonce-invalid"
+  Right proof <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
+  bbsProofGen pk sig bbsHeader ph [2, 1] bbsMessages
+    `shouldReturn` Left "bbsProofGen: invalid disclosed indexes"
+  bbsProofGen pk sig bbsHeader ph [1, 1] bbsMessages
+    `shouldReturn` Left "bbsProofGen: invalid disclosed indexes"
+  bbsProofGen pk sig bbsHeader ph [3] bbsMessages
+    `shouldReturn` Left "bbsProofGen: invalid disclosed indexes"
+  bbsProofVerify pk proof bbsHeader ph bbsDisclosedIdxs 3 ["2026-07-31"]
+    >>= (`shouldBe` False)
+  bbsProofVerify pk proof bbsHeader ph [2, 1] 3 bbsDisclosedMsgs
+    >>= (`shouldBe` False)
+  bbsProofVerify pk proof bbsHeader ph bbsDisclosedIdxs 4 bbsDisclosedMsgs
+    >>= (`shouldBe` False)
+  bbsProofVerify pk proof bbsHeader ph [] (-1) []
+    >>= (`shouldBe` False)
 
 testBBSUnlinkable :: IO ()
 testBBSUnlinkable = do
