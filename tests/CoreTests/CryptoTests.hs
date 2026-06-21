@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module CoreTests.CryptoTests (cryptoTests) where
@@ -10,7 +11,7 @@ import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Either (isRight)
+import Data.Either (isLeft, isRight)
 import Data.Int (Int64)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -25,10 +26,13 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.BBS
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
+import Simplex.Messaging.Encoding (Large (..), smpDecode, smpEncode)
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Transport.Client
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
-import Test.QuickCheck
+import Test.QuickCheck hiding (Large)
 import Util
 
 cryptoTests :: Spec
@@ -101,8 +105,9 @@ cryptoTests = do
     describe "X448" $ testEncoding C.SX448
   describe "X509 chains" $ do
     it "should validate certificates" testValidateX509
-  describe "sntrup761" $
+  describe "sntrup761" $ do
     it "should enc/dec key" testSNTRUP761
+    it "should reject malformed KEM encodings" testSNTRUP761RejectsMalformedEncodings
   describe "BBS+" $ do
     it "should sign and verify" testBBSSignVerify
     it "should derive public key from secret key" testBBSPublicKeyDerivation
@@ -283,6 +288,34 @@ testSNTRUP761 = do
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk
   k' `shouldBe` k
+
+testSNTRUP761RejectsMalformedEncodings :: IO ()
+testSNTRUP761RejectsMalformedEncodings = do
+  smpDecode @KEMPublicKey (smpEncode $ Large shortPublicKey) `shouldSatisfy` isLeft
+  strDecode @KEMPublicKey (strEncode shortPublicKey) `shouldSatisfy` isLeft
+  smpDecode @KEMPublicKey (smpEncode $ Large validPublicKey) `shouldSatisfy` isRight
+  strDecode @KEMPublicKey (strEncode validPublicKey) `shouldSatisfy` isRight
+  smpDecode @KEMCiphertext (smpEncode $ Large shortCiphertext) `shouldSatisfy` isLeft
+  strDecode @KEMCiphertext (strEncode shortCiphertext) `shouldSatisfy` isLeft
+  smpDecode @KEMCiphertext (smpEncode $ Large validCiphertext) `shouldSatisfy` isRight
+  strDecode @KEMCiphertext (strEncode validCiphertext) `shouldSatisfy` isRight
+  smpDecode @KEMSecretKey (smpEncode $ Large shortSecretKey) `shouldSatisfy` isLeft
+  strDecode @KEMSecretKey (strEncode shortSecretKey) `shouldSatisfy` isLeft
+
+shortPublicKey :: B.ByteString
+shortPublicKey = B.replicate (c_SNTRUP761_PUBLICKEY_SIZE - 1) 'p'
+
+validPublicKey :: B.ByteString
+validPublicKey = B.replicate c_SNTRUP761_PUBLICKEY_SIZE 'p'
+
+shortCiphertext :: B.ByteString
+shortCiphertext = B.replicate (c_SNTRUP761_CIPHERTEXT_SIZE - 1) 'c'
+
+validCiphertext :: B.ByteString
+validCiphertext = B.replicate c_SNTRUP761_CIPHERTEXT_SIZE 'c'
+
+shortSecretKey :: B.ByteString
+shortSecretKey = B.replicate (c_SNTRUP761_SECRETKEY_SIZE - 1) 's'
 
 -- BBS+ tests
 
