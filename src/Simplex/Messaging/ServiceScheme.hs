@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Network.Socket (ServiceName)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 
 data ServiceScheme = SSSimplex | SSAppServer SrvLoc
   deriving (Eq, Show)
@@ -30,7 +30,9 @@ data SrvLoc = SrvLoc TransportHost ServiceName
   deriving (Eq, Ord, Show)
 
 instance StrEncoding SrvLoc where
-  strEncode (SrvLoc host port) = strEncode host <> B.pack (if null port then "" else ':' : port)
+  strEncode (SrvLoc host port) = case host of
+    THIPv6 _ | not (null port) -> strEncode ('[',  host, ']') <> B.pack (':' : port)
+    _ -> strEncode host
   strP = SrvLoc <$> strP <*> (port <|> pure "")
     where
       port = show <$> (A.char ':' *> (A.decimal :: A.Parser Int))
