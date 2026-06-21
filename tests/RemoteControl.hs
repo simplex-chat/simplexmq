@@ -1,7 +1,9 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module RemoteControl where
 
@@ -9,15 +11,23 @@ import AgentTests.FunctionalAPITests (runRight)
 import Control.Logger.Simple
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.List (stripPrefix)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Time.Clock.System (SystemTime (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Transport (TSbChainKeys (..))
+import Simplex.Messaging.Transport.Client (TransportHost)
 import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
-import Simplex.RemoteControl.Invitation (RCSignedInvitation, verifySignedInvitation)
+import Simplex.RemoteControl.Invitation
+  ( RCInvitation (..),
+    RCSignedInvitation,
+    verifySignedInvitation,
+  )
 import Simplex.RemoteControl.Types
 import Test.Hspec hiding (fit, it)
 import UnliftIO
@@ -27,6 +37,9 @@ import Util
 remoteControlTests :: Spec
 remoteControlTests = do
   describe "preferred bindings should go first" testPreferAddress
+  describe "Invitation parsing" $ do
+    it "should parse bracketed IPv6 host with port" testInvitationBracketedIPv6Host
+    it "should reject bracketed non-IPv6 host" testInvitationBracketedNonIPv6HostRejected
   describe "New controller/host pairing" $ do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
@@ -64,6 +77,57 @@ testPreferAddress = do
     addrs' = mkLastLocalHost addrs
     addrsDups = "10.20.30.40" `on` "eth1" : addrs'
     ifaceDups = "10.20.30.41" `on` "eth0" : addrs'
+
+testInvitationBracketedIPv6Host :: IO ()
+testInvitationBracketedIPv6Host = do
+  invitation <- testIPv6Invitation
+  let bracketedUri =
+        B.pack . replaceFirst "@2001:db8::1:" "@[2001:db8::1]:" . B.unpack $
+          strEncode invitation
+      expectedHost = either error id (strDecode "2001:db8::1") :: TransportHost
+  case strDecode bracketedUri of
+    Left err -> expectationFailure err
+    Right RCInvitation {host, port} -> do
+      host `shouldBe` expectedHost
+      port `shouldBe` 5223
+
+testInvitationBracketedNonIPv6HostRejected :: IO ()
+testInvitationBracketedNonIPv6HostRejected = do
+  invitation <- testIPv6Invitation
+  let bracketedUri =
+        B.pack . replaceFirst "@2001:db8::1:" "@[simplex.chat]:" . B.unpack $
+          strEncode invitation
+  case strDecode bracketedUri :: Either String RCInvitation of
+    Left _ -> pure ()
+    Right _ -> expectationFailure "expected parse failure for bracketed non-IPv6 host"
+
+replaceFirst :: String -> String -> String -> String
+replaceFirst needle replacement = go
+  where
+    go [] = []
+    go input@(c : cs) =
+      case stripPrefix needle input of
+        Just rest -> replacement <> rest
+        Nothing -> c : go cs
+
+testIPv6Invitation :: IO RCInvitation
+testIPv6Invitation = do
+  drg <- C.newRandom
+  (skey, _) <- atomically $ C.generateKeyPair @'C.Ed25519 drg
+  (idkey, _) <- atomically $ C.generateKeyPair @'C.Ed25519 drg
+  (dh, _) <- atomically $ C.generateKeyPair @'C.X25519 drg
+  pure
+    RCInvitation
+      { ca = C.KeyHash "test-ca",
+        host = either error id $ strDecode "2001:db8::1",
+        port = 5223,
+        v = supportedRCPVRange,
+        app = J.String "app",
+        ts = MkSystemTime 0 0,
+        skey,
+        idkey,
+        dh
+      }
 
 testNewPairing :: IO ()
 testNewPairing = do
