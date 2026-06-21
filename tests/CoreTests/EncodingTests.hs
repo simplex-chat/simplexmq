@@ -74,9 +74,11 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         shouldReject @TransportHost "[simplex.chat]"
         shouldReject @TransportHost "[smp.simplex.im]"
   describe "Encoding service locations" $ do
-    it "should parse bracketed IPv6 host with port" $
+    it "should parse bracketed IPv6 host with port" $ do
       strDecode @ServiceScheme "https://[2001:db8::1]:8443"
         `shouldBe` Right (SSAppServer $ SrvLoc "2001:db8::1" "8443")
+      strEncode (SSAppServer $ SrvLoc "2001:db8::1" "8443")
+        `shouldBe` "https://[2001:db8::1]:8443"
     it "should reject bracketed non-IPv6 host" $
       shouldReject @ServiceScheme "https://[simplex.chat]:8443"
   describe "Encoding protocol servers" $ do

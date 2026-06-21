@@ -30,9 +30,13 @@ data SrvLoc = SrvLoc TransportHost ServiceName
   deriving (Eq, Ord, Show)
 
 instance StrEncoding SrvLoc where
-  strEncode (SrvLoc host port) = case host of
-    THIPv6 _ | not (null port) -> strEncode ('[',  host, ']') <> B.pack (':' : port)
-    _ -> strEncode host
+  strEncode (SrvLoc host port)
+    | null port = strEncode host
+    | otherwise = h <> B.pack (':' : port)
+    where
+      h = case host of
+        THIPv6 _ -> ('[' `B.cons` strEncode host) `B.snoc` ']'
+        _ -> strEncode host
   strP = SrvLoc <$> strP <*> (port <|> pure "")
     where
       port = show <$> (A.char ':' *> (A.decimal :: A.Parser Int))
