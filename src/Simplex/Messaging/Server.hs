@@ -1270,8 +1270,6 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, comma
     vc SNotifierService NSUBS {} = verifyServiceCmd
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
-    -- RSLV is accepted both forwarded (via PFWD, preferred - hides client IP from resolver)
-    -- and direct (client->resolver, faster, exposes client IP). Mode is chosen by the client.
     vc SResolver (RSLV _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
@@ -2141,9 +2139,6 @@ client
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret ntfNonce (smpEncode msgMeta) 128
               pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
-        -- Returns Nothing for a forwarded RSLV: like proxying, it resolves and
-        -- replies from a forked thread (forkCmd writes the RRES to sndQ), so a
-        -- slow RSLV does not serialise other forwarded commands on this session.
         processForwardedCommand :: EncFwdTransmission -> M s (Maybe BrokerMsg)
         processForwardedCommand (EncFwdTransmission s) = do
           prepared <- runExceptT $ do
