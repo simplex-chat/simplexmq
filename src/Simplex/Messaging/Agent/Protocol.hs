@@ -244,7 +244,6 @@ import Simplex.Messaging.Protocol
   ( AProtocolType,
     BrokerErrorType (..),
     ErrorType,
-    NameErrorType (..),
     MsgBody,
     MsgFlags,
     MsgId,
@@ -2019,9 +2018,9 @@ data AgentErrorType
     XFTP {serverAddress :: String, xftpErr :: XFTPErrorType}
   | -- | XFTP agent errors
     FILE {fileErr :: FileErrorType}
-  | -- | name resolution agent errors (e.g. no name-resolving servers configured).
+  | -- | no name-resolving servers configured for the user (agent-origin).
     -- Server-origin name errors arrive forwarded as SMP _ (NAME ...) instead.
-    NAME {nameErr :: NameErrorType}
+    NO_NAME_SERVERS
   | -- | SMP proxy errors
     PROXY {proxyServer :: String, relayServer :: String, proxyErr :: ProxyClientError}
   | -- | XRCP protocol errors forwarded to agent clients

@@ -19,21 +19,21 @@ module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
     NamesEnv (..),
-    ResolverCall,
-    ResolverCallKind (..),
     newNamesEnv,
-    newNamesEnvWith,
     closeNamesEnv,
     pingEndpoint,
     resolveName,
+    resolverAtCapacity,
+    tryAcquireResolver,
+    releaseResolver,
   )
 where
 
+import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
-import qualified Data.Aeson as J
-import qualified Data.Aeson.Types as JT
-import Data.Text (Text)
+import Data.Bifunctor (first)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Simplex.Messaging.Protocol (NameErrorType (..), NameRecord)
 import Simplex.Messaging.Server.Names.HttpResolver
@@ -49,50 +49,51 @@ import Simplex.Messaging.SimplexName (SimplexNameDomain, fullDomainName)
 import System.Timeout (timeout)
 
 data NamesConfig = NamesConfig
-  { resolverEndpoint :: Text,
+  { resolverEndpoint :: String,
     resolverAuth :: Maybe RpcAuth,
     resolverTimeoutMs :: Int,
-    resolverMaxResponseBytes :: Int
+    resolverMaxResponseBytes :: Int,
+    -- | cap on concurrent in-flight resolutions; RSLV beyond it is shed (see
+    -- tryAcquireResolver) so unauthenticated floods cannot exhaust threads or
+    -- saturate the outbound resolver with unbounded concurrent HTTP calls.
+    resolverMaxConcurrent :: Int
   }
   deriving (Show)
 
--- | Test seam: a function from URL path -> JSON value or error. Production
--- wires this to resolveHttp / healthHttp on a real `ResolverEnv`; tests
--- substitute a stub returning canned JSON or a chosen error.
---
--- The first argument is the HTTP endpoint to hit: `ResolverFetch` for a
--- name lookup, `ResolverHealth` for the startup probe. Tests use the tag
--- to assert which kind of call the server made.
-data ResolverCallKind = ResolverFetch Text | ResolverHealth
-  deriving (Eq, Show)
-
--- Re-export so test seams (which need to match on the kind) can use it
--- without depending on the HttpResolver module.
-
-type ResolverCall = ResolverCallKind -> IO (Either ResolverError J.Value)
-
 data NamesEnv = NamesEnv
   { config :: NamesConfig,
-    resolverCall :: ResolverCall,
-    resolverEnv :: Maybe ResolverEnv -- Nothing for test stubs
+    resolverEnv :: ResolverEnv,
+    inFlight :: TVar Int
   }
 
 newNamesEnv :: NamesConfig -> IO NamesEnv
-newNamesEnv cfg = do
-  rEnv <- newResolverEnv (resolverEndpoint cfg) (resolverAuth cfg) (resolverTimeoutMs cfg) (resolverMaxResponseBytes cfg)
-  newNamesEnvWith cfg (httpResolverCall rEnv) (Just rEnv)
-
-httpResolverCall :: ResolverEnv -> ResolverCall
-httpResolverCall env = \case
-  ResolverFetch n -> resolveHttp env n
-  ResolverHealth -> healthHttp env
-
--- | Allocate resolver with an injected `resolverCall` (test seam).
-newNamesEnvWith :: NamesConfig -> ResolverCall -> Maybe ResolverEnv -> IO NamesEnv
-newNamesEnvWith config resolverCall resolverEnv = pure NamesEnv {config, resolverCall, resolverEnv}
+newNamesEnv config = do
+  resolverEnv <- newResolverEnv (resolverEndpoint config) (resolverAuth config) (resolverTimeoutMs config) (resolverMaxResponseBytes config)
+  inFlight <- newTVarIO 0
+  pure NamesEnv {config, resolverEnv, inFlight}
 
 closeNamesEnv :: NamesEnv -> IO ()
-closeNamesEnv NamesEnv {resolverEnv} = mapM_ closeResolverEnv resolverEnv
+closeNamesEnv NamesEnv {resolverEnv} = closeResolverEnv resolverEnv
+
+-- | Non-mutating check: True when in-flight resolutions are already at the cap.
+-- Used to shed an RSLV before forking; the authoritative gate is still
+-- tryAcquireResolver inside the forked action, so a slot is never held across
+-- the fork boundary (which is what makes the slot leak-proof on async kills).
+resolverAtCapacity :: NamesEnv -> IO Bool
+resolverAtCapacity NamesEnv {config, inFlight} =
+  (>= resolverMaxConcurrent config) <$> readTVarIO inFlight
+
+-- | Reserve a resolution slot if under resolverMaxConcurrent. Returns False
+-- when saturated so the caller sheds load (returns a transient error) instead
+-- of making another outbound resolver call. Each True must be paired with
+-- exactly one releaseResolver.
+tryAcquireResolver :: NamesEnv -> IO Bool
+tryAcquireResolver NamesEnv {config, inFlight} =
+  atomically $ stateTVar inFlight $ \n ->
+    if n >= resolverMaxConcurrent config then (False, n) else (True, n + 1)
+
+releaseResolver :: NamesEnv -> IO ()
+releaseResolver NamesEnv {inFlight} = atomically $ modifyTVar' inFlight (subtract 1)
 
 -- | Reach the configured resolver with `GET /health` to confirm reachability
 -- at server startup. A non-2xx response or transport failure surfaces as
@@ -100,12 +101,8 @@ closeNamesEnv NamesEnv {resolverEnv} = mapM_ closeResolverEnv resolverEnv
 -- `resolverTimeoutMs` so a slow-loris endpoint cannot park startup until
 -- http-client's default 30 s response timeout fires.
 pingEndpoint :: NamesEnv -> IO (Either ResolverError ())
-pingEndpoint NamesEnv {resolverCall, config} = do
-  r <- timeout (resolverTimeoutMs config * 1000) $ resolverCall ResolverHealth
-  pure $ case r of
-    Nothing -> Left (HttpStatusErr 0) -- transport-level timeout (0 is not a real HTTP code)
-    Just (Left e) -> Left e
-    Just (Right _) -> Right ()
+pingEndpoint NamesEnv {resolverEnv, config} =
+  fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
 -- | Resolve a parsed domain via the configured HTTP resolver, with an
 -- `resolverTimeoutMs` ceiling. Synchronous exceptions are caught and
@@ -114,7 +111,7 @@ resolveName :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRec
 resolveName env d = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env d))
   case r of
-    Right result -> pure (maybe (Left (RESOLVER "timeout")) id result)
+    Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
     Left e
       | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
       | otherwise -> do
@@ -122,23 +119,20 @@ resolveName env d = do
           pure (Left (RESOLVER "resolver error"))
 
 fetch :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
-fetch NamesEnv {resolverCall} d =
-  resolverCall (ResolverFetch (fullDomainName d)) >>= \case
-    Left e -> pure (Left (mapResolverError e))
-    Right v -> case JT.parseEither J.parseJSON v of
-      Right nr -> pure (Right nr)
-      Left _ -> pure (Left (RESOLVER "invalid response"))
+fetch NamesEnv {resolverEnv} d =
+  first mapResolverError <$> resolveHttp resolverEnv (fullDomainName d)
 
 -- | Map the HTTP-layer error space into the protocol NameErrorType. 404 / 400
--- both map to NO_NAME (name not registered, unknown TLD, or malformed name —
+-- both map to NOT_FOUND (name not registered, unknown TLD, or malformed name —
 -- indistinguishable from the client's point of view). Everything else is a
 -- backend failure surfaced as RESOLVER with a SAFE server-generated diagnostic
 -- (kind only - the adversarial response body is never echoed).
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case
-  HttpStatusErr 404 -> NO_NAME
-  HttpStatusErr 400 -> NO_NAME
+  HttpStatusErr 404 -> NOT_FOUND
+  HttpStatusErr 400 -> NOT_FOUND
   HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
   HttpFailure _ -> RESOLVER "transport failure"
   BodyTooLarge -> RESOLVER "response too large"
   InvalidJson _ -> RESOLVER "invalid response"
+  ResolverTimeout -> RESOLVER "timeout"

@@ -550,6 +550,7 @@ test-suite simplexmq-test
       CoreTests.VersionRangeTests
       FileDescriptionTests
       RemoteControl
+      NamesResolverServer
       RSLVTests
       ServerTests
       SMPAgentClient
@@ -635,6 +636,8 @@ test-suite simplexmq-test
     , unliftio
     , unliftio-core
     , unordered-containers
+    , wai
+    , warp
     , yaml
   default-language: Haskell2010
   if flag(server_postgres)

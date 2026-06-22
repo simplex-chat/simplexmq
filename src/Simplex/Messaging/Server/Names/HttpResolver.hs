@@ -28,23 +28,22 @@ module Simplex.Messaging.Server.Names.HttpResolver
     closeResolverEnv,
     resolveHttp,
     healthHttp,
-    scrubUrl,
   )
 where
 
 import qualified Control.Exception as E
 import qualified Data.Aeson as J
+import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Text.Encoding (decodeLatin1, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
   ( HttpException,
     Manager,
     ManagerSettings (..),
-    Request,
     brReadSome,
     parseRequest,
     redirectCount,
@@ -58,6 +57,7 @@ import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
+import Simplex.Messaging.Names.Record (NameRecord)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -69,7 +69,7 @@ instance Show RpcAuth where
 
 data ResolverEnv = ResolverEnv
   { manager :: Manager,
-    baseUrl :: Text,
+    baseUrl :: String,
     authHdr :: [HT.Header],
     timeoutMicro :: Int,
     maxResponseBytes :: Int
@@ -80,15 +80,16 @@ data ResolverError
   | HttpStatusErr Int
   | BodyTooLarge
   | InvalidJson String
+  | ResolverTimeout
   deriving (Show)
 
-newResolverEnv :: Text -> Maybe RpcAuth -> Int -> Int -> IO ResolverEnv
+newResolverEnv :: String -> Maybe RpcAuth -> Int -> Int -> IO ResolverEnv
 newResolverEnv baseUrl auth_ timeoutMs maxResponseBytes = do
   manager <- HC.newManager tlsManagerSettings {managerConnCount = 10}
   pure
     ResolverEnv
       { manager,
-        baseUrl = stripTrailingSlash baseUrl,
+        baseUrl,
         authHdr = maybe [] (pure . authHeader) auth_,
         timeoutMicro = timeoutMs * 1000,
         maxResponseBytes
@@ -107,17 +108,26 @@ authHeader = \case
     let encoded = BAE.convertToBase BAE.Base64 (encodeUtf8 u <> ":" <> encodeUtf8 p) :: ByteString
      in ("Authorization", "Basic " <> encoded)
 
--- | GET <baseUrl>/resolve/<percent-encoded name>, return the JSON body on 200.
-resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError J.Value)
-resolveHttp env name = doGet env ("/resolve/" <> percentEncode name)
+-- | GET <baseUrl>/resolve/<percent-encoded name>, decoding the 200 body
+-- directly into a NameRecord in one pass (no intermediate Aeson Value). The
+-- name is percent-encoded (every non-unreserved byte per RFC 3986): the
+-- resolver expects raw labels, so slashes/punctuation must not alter the path.
+resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRecord)
+resolveHttp env name =
+  (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
+    <$> httpGet env ("/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
 
--- | GET <baseUrl>/health, return the JSON body on 200.
-healthHttp :: ResolverEnv -> IO (Either ResolverError J.Value)
-healthHttp env = doGet env "/health"
+-- | GET <baseUrl>/health; success = reachable with status < 400. The body is
+-- size-capped but NOT decoded — the probe only checks reachability.
+healthHttp :: ResolverEnv -> IO (Either ResolverError ())
+healthHttp env = (() <$) <$> httpGet env "/health"
 
-doGet :: ResolverEnv -> Text -> IO (Either ResolverError J.Value)
-doGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} path = do
-  req0 <- parseRequest (T.unpack (baseUrl <> path))
+-- | GET <baseUrl><path>, returning the response body bytes on status < 400
+-- within the size cap. Redirects are disabled and Authorization is attached
+-- only when configured.
+httpGet :: ResolverEnv -> String -> IO (Either ResolverError BL.ByteString)
+httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} path = do
+  req0 <- parseRequest (baseUrl <> path)
   let req =
         req0
           { redirectCount = 0,
@@ -130,35 +140,5 @@ doGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} pa
       then pure (Left (HttpStatusErr status))
       else do
         bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
-        if BL.length bs > fromIntegral maxResponseBytes
-          then pure (Left BodyTooLarge)
-          else case J.eitherDecodeStrict (BL.toStrict bs) of
-            Left e -> pure (Left (InvalidJson e))
-            Right v -> pure (Right v)
+        pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right bs
   pure (either (Left . HttpFailure) id result)
-
--- | Percent-encode a name component (path-safe). Aggressive: encode every
--- byte that isn't an unreserved character per RFC 3986. The resolver expects
--- raw labels (e.g., `alice.simplex`); slashes and other ASCII punctuation
--- would change the request path semantics if passed through verbatim.
-percentEncode :: Text -> Text
-percentEncode = decodeLatin1 . urlEncode True . encodeUtf8
-
-stripTrailingSlash :: Text -> Text
-stripTrailingSlash t = case T.unsnoc t of
-  Just (rest, '/') -> rest
-  _ -> t
-
--- | Strip userinfo from a URL so log lines never leak credentials.
-scrubUrl :: Text -> Text
-scrubUrl url =
-  let (scheme, rest) = T.breakOn "://" url
-   in if T.null rest
-        then url
-        else
-          let body = T.drop 3 rest
-              (host, query) = T.breakOn "/" body
-           in case T.breakOn "@" host of
-                (_userinfo, atRest)
-                  | not (T.null atRest) -> scheme <> "://" <> T.drop 1 atRest <> query
-                _ -> url

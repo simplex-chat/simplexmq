@@ -47,11 +47,11 @@ import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Char (isAlpha, isAscii, isDigit, isHexDigit, toLower, toUpper)
+import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.List (find, isInfixOf, isPrefixOf)
+import Data.List (dropWhileEnd, find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
@@ -67,9 +67,6 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClie
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
-import qualified Data.IP as IP
-import Data.Bits (shiftR, (.&.))
-import Data.Word (Word32)
 import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, printMessageStats, runSMPServer)
@@ -612,7 +609,6 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               namesConfig = readNamesConfig ini,
-              namesResolverCall_ = Nothing, -- production builds the resolver from namesConfig
               information = serverPublicInfo ini,
               startOptions
             }
@@ -816,11 +812,15 @@ readNamesConfig ini
                 resolverAuth = resolverAuth_,
                 resolverTimeoutMs = boundedIniInt 3000 100 60000 "resolver_timeout_ms",
                 -- ceiling = SMP transport budget: the NAME response is one SMP
-                -- transmission (proxied: padded to paddedProxiedTLength = 16226),
-                -- and the smpEncoded NameRecord is <= its JSON body, so capping
-                -- the body here guarantees the response always frames. An
-                -- over-cap body fails as BodyTooLarge -> ERR (NAME (RESOLVER ..)).
-                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes"
+                -- transmission (proxied: padded to paddedProxiedTLength = 16226)
+                -- carrying the resolver's JSON record on the wire, so capping the
+                -- resolver response body guarantees the RNAME response always frames.
+                -- An over-cap body fails as BodyTooLarge -> ERR (NAME (RESOLVER ..)).
+                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes",
+                -- cap on concurrent in-flight resolutions; RSLV beyond it is shed
+                -- so an unauthenticated flood cannot exhaust threads / saturate the
+                -- resolver with unbounded concurrent outbound HTTP.
+                resolverMaxConcurrent = boundedIniInt 32 1 1024 "resolver_max_concurrent"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
@@ -842,147 +842,31 @@ readNamesConfig ini
           | otherwise ->
               error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
 
--- | Validate the resolver_endpoint URL:
---   * scheme must be http: or https:
---   * authority (host) must be present and non-empty
---   * port MUST be explicit (rejects http://host without :8000 to avoid
---     accidentally hitting :80 when the resolver listens on :8000)
---   * userinfo (user:pass@) MUST NOT be present (credentials belong in
---     resolver_auth so they don't leak via Host header or logs)
---   * query and fragment MUST NOT be present (a base URL with a query/fragment
---     does not compose with the appended /resolve/<name> and /health paths)
---   * a path prefix IS allowed (e.g. https://gw.example.com:443/snrc for a
---     resolver behind a reverse-proxy sub-path); /resolve/<name> and /health
---     are appended to it. Do not embed secrets in the path — it appears in
---     logs; put credentials in resolver_auth.
---   * on a non-loopback host, only http WITH resolver_auth is rejected (the
---     Authorization header would travel in cleartext). http without auth is
---     allowed (no secret to leak; resolver data is public — also lets dev
---     setups reach a host resolver via host.docker.internal). https is always
---     allowed, with or without auth.
---   * link-local hosts (169.254.0.0/16, including the cloud metadata IP
---     169.254.169.254) are rejected unconditionally
-validateUrl :: Text -> Maybe RpcAuth -> Either String Text
+-- | Validate the resolver_endpoint URL: it must be an absolute http(s) URL
+-- with a host. /resolve/<name> and /health are appended to it, so a
+-- reverse-proxy sub-path prefix is fine. The endpoint is operator-supplied
+-- trusted config (not attacker-controlled), so SSRF/IP-alias hardening is not
+-- applied; credentials go in resolver_auth, not the URL. The one transport
+-- guard kept: http + resolver_auth to a non-loopback host is rejected, since
+-- the Authorization header would otherwise travel in cleartext.
+validateUrl :: Text -> Maybe RpcAuth -> Either String String
 validateUrl url auth_ = do
-  uri <- maybe (Left "not an absolute URI") Right $ parseAbsoluteURI (T.unpack url)
+  let s = T.unpack url
+  uri <- maybe (Left "not an absolute URI") Right $ parseAbsoluteURI s
   let scheme = uriScheme uri
-  unless (scheme == "http:" || scheme == "https:") $
-    Left ("scheme " <> show scheme <> " not supported (use http or https)")
-  ua <- maybe (Left "missing authority (host)") Right (uriAuthority uri)
+  unless (scheme == "http:" || scheme == "https:") $ Left "scheme must be http or https"
+  ua <- maybe (Left "missing host") Right (uriAuthority uri)
   let host = uriRegName ua
   when (null host) $ Left "empty host"
-  when (isBareIntegerHost host) $
-    Left "bare-integer host not allowed (use a hostname or dotted-quad / bracketed IP); rejects 169.254.169.254 decimal/hex aliases"
-  when (isObfuscatedIpv4 host) $
-    Left "non-canonical IPv4 form not allowed (use dotted-quad decimal 0-255 with no leading zeros); rejects inet_aton hex/octal/compact aliases of 169.254.169.254"
-  when (isLinkLocal host || isForbiddenIpv6 host) $
-    Left "link-local host not allowed (rejects cloud metadata services and IPv6 aliases of 169.254.0.0/16)"
-  unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; use resolver_auth instead"
-  case uriPort ua of
-    "" -> Left "explicit port required (e.g. http://host:8000)"
-    ':' : portStr -> case readMaybe portStr of
-      Just n | (n :: Int) >= 1 && n <= 65535 -> Right ()
-      _ -> Left $ "port " <> portStr <> " out of range (must be 1..65535)"
-    other -> Left $ "unexpected port syntax: " <> other
-  unless (null (uriQuery uri)) $ Left "query string not allowed (it does not compose with the appended /resolve/<name> path)"
-  unless (null (uriFragment uri)) $ Left "fragment not allowed (fragments are never sent to the server)"
-  -- A path prefix is allowed and used as the base for /resolve/<name> and
-  -- /health (resolver behind a reverse-proxy sub-path). The join in
-  -- HttpResolver.newResolverEnv strips a single trailing slash, so both
-  -- ".../snrc" and ".../snrc/" behave identically. Secrets do not belong in
-  -- the path (it is logged) — use resolver_auth.
-  -- The only transport-security risk on a non-loopback host is leaking the
-  -- Authorization header in cleartext, so we reject ONLY http+auth. http
-  -- without auth is allowed (nothing secret to leak — the resolver serves
-  -- public name data; this also covers reaching a host resolver via
-  -- host.docker.internal in dev). https is always fine, with or without auth.
-  -- NOTE: http without auth has no transport integrity — a network attacker
-  -- could forge NameRecord responses. Only point at a plaintext resolver on a
-  -- trusted/local network.
-  when (not (isLoopback host) && scheme == "http:" && isJust auth_) $
-    Left "http with resolver_auth on a non-loopback host not allowed (the Authorization header would be sent in cleartext); use https, or drop resolver_auth for a no-auth resolver"
-  Right url
+  unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; put credentials in resolver_auth"
+  when (scheme == "http:" && isJust auth_ && not (isLoopback host)) $
+    Left "http with resolver_auth on a non-loopback host not allowed (the Authorization header would travel in cleartext); use https, or drop resolver_auth"
+  -- drop trailing slash(es) so "<endpoint>/resolve/<name>" never double-slashes
+  Right (dropWhileEnd (== '/') s)
   where
-    -- 127.0.0.0/8 and 0.0.0.0 both bind locally on Linux/BSD; treat them all
-    -- as loopback for the http/auth gate so a misconfigured 0.0.0.0:8545 (or
-    -- 127.0.0.5) doesn't get an Authorization header sent to a colocated
-    -- service or silently dropped onto the wire.
-    isLoopback = \case
-      "localhost" -> True
-      "[::1]" -> True
-      "0.0.0.0" -> True
-      h -> case parseDottedQuad h of
-        Just (127, _, _, _) -> True
-        _ -> False
-    parseDottedQuad s = case splitOnDot s of
-      [a, b, c, d] -> (,,,) <$> octet a <*> octet b <*> octet c <*> octet d
-      _ -> Nothing
-      where
-        octet o = case readMaybe o of
-          Just n | (n :: Int) >= 0 && n <= 255 -> Just n
-          _ -> Nothing
-    splitOnDot s = case break (== '.') s of
-      (chunk, []) -> [chunk]
-      (chunk, _ : rest) -> chunk : splitOnDot rest
-    -- IPv4 link-local 169.254.0.0/16 in dotted-quad form. IPv6 forms are
-    -- delegated to isForbiddenIpv6 which parses the address numerically.
-    isLinkLocal h = "169.254." `isPrefixOf` h
-    -- Reject hostnames that look like decimal or `0x`/`0X`-hex integers —
-    -- glibc's inet_aton accepts both as IPv4 aliases (`2852039166`,
-    -- `0xa9fea9fe`, `0XA9FEA9FE` all resolve to 169.254.169.254). The literal
-    -- prefix `0x` / `0X` with no digits after is also rejected: it isn't a
-    -- legitimate hostname and lets us avoid reasoning about libc's behaviour.
-    isBareIntegerHost h = case map toLower h of
-      '0' : 'x' : rest -> all isHexDigit rest
-      lh -> not (null lh) && all isDigit lh
-    -- Reject dotted hosts whose every component is numeric (decimal or `0x`-hex)
-    -- but which aren't strict canonical IPv4 (exactly 4 decimal octets 0..255 with
-    -- no leading zeros). inet_aton accepts hex octets (`0xA9.0xFE.0xA9.0xFE`),
-    -- octal octets (`0251.0376.0251.0376`, leading zero), mixed forms
-    -- (`169.0376.169.254`), and compact 2/3-segment forms (`169.16689638`,
-    -- `169.254.43518`) as aliases for 169.254.169.254. The literal-prefix check
-    -- in isLinkLocal misses all of these; this predicate closes the gap.
-    isObfuscatedIpv4 h
-      | '.' `notElem` h = False
-      | otherwise = allNumericParts && not strictCanonical
-      where
-        parts = splitOnDot h
-        allNumericParts = not (null parts) && all isNumericPart parts
-        isNumericPart p = case map toLower p of
-          '0' : 'x' : rest@(_ : _) -> all isHexDigit rest
-          lp@(_ : _) -> all isDigit lp
-          _ -> False
-        strictCanonical = length parts == 4 && all isStrictDecOctet parts
-        isStrictDecOctet "0" = True
-        isStrictDecOctet p@(c : _) =
-          c /= '0' && all isDigit p && maybe False (\n -> (n :: Int) <= 255) (readMaybe p)
-        isStrictDecOctet _ = False
-    -- Strip the [...] brackets that parseAbsoluteURI keeps on IPv6 hosts, parse
-    -- as numeric IPv6, and check 128-bit ranges:
-    --   * fe80::/10 (link-local)
-    --   * ::1 (loopback)
-    --   * IPv4-compatible (::/96), IPv4-mapped (::ffff/96), 6to4 (2002::/16),
-    --     NAT64 WKP (64:ff9b::/96) — when they alias an IPv4 in 169.254.0.0/16
-    -- This covers every textual form of those addresses (compressed, uncompressed,
-    -- mixed dotted-quad embed) because Data.IP normalises before we inspect bits.
-    isForbiddenIpv6 h = maybe False (isForbiddenIpv6Word . IP.fromIPv6w) $
-      stripBrackets h >>= readMaybe
-      where
-        stripBrackets ('[' : rest@(_ : _)) | last rest == ']' = Just (init rest)
-        stripBrackets _ = Nothing
-    -- Loopback (::1) is intentionally NOT in this list: loopback is gated
-    -- separately by isLoopback for the http/auth decision.
-    isForbiddenIpv6Word :: (Word32, Word32, Word32, Word32) -> Bool
-    isForbiddenIpv6Word (w1, w2, w3, w4) =
-      linkLocal || compatTo169 || mappedTo169 || sixToFour169 || nat64To169
-      where
-        linkLocal = (w1 `shiftR` 22) == 0x3fa -- fe80::/10
-        is169254v4 = (w4 `shiftR` 16) == 0xa9fe
-        high96Zero = w1 == 0 && w2 == 0
-        compatTo169 = high96Zero && w3 == 0 && is169254v4
-        mappedTo169 = high96Zero && w3 == 0xffff && is169254v4
-        sixToFour169 = (w1 `shiftR` 16) == 0x2002 && (w1 .&. 0xffff) == 0xa9fe
-        nat64To169 = w1 == 0x0064ff9b && w2 == 0 && w3 == 0 && is169254v4
+    -- exact loopback literals only; a "127." prefix would wrongly match hosts
+    -- like 127.evil.com, weakening the cleartext-auth guard above.
+    isLoopback h = h == "localhost" || h == "127.0.0.1" || h == "[::1]" || h == "0.0.0.0"
 
 -- | Parse an rpc_auth INI value. Scheme keyword is case-insensitive so
 -- "Bearer <token>" / "BEARER <token>" (Caddy / RFC 7235 convention) work

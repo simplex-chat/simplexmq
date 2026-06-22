@@ -1594,17 +1594,16 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | Name resolution errors (the NAME family of ErrorType / AgentErrorType).
--- One vocabulary shared server-side and agent-side so name failures flow
--- through the single error type to chat (as ChatErrorAgent) with diagnostics,
--- mirroring ProxyError.
+-- | Name resolution errors returned by the server (Resolver role) via
+-- ErrorType.NAME; they reach the agent forwarded as SMP _ (NAME ...) and on to
+-- chat as ChatErrorAgent with diagnostics, mirroring ProxyError. The
+-- agent-originated "no name-resolving servers" case is a separate agent error
+-- (AgentErrorType.NO_NAME_SERVERS), not part of this server vocabulary.
 data NameErrorType
   = -- | the names role / resolver is not configured on this server
     NO_RESOLVER
   | -- | the name is not registered (resolver returned not-found)
-    NO_NAME
-  | -- | no name-resolving servers configured (agent-originated only)
-    NO_SERVERS
+    NOT_FOUND
   | -- | backing resolver/RPC failure - carries the diagnostic detail
     RESOLVER {resolverErr :: Text}
   deriving (Eq, Show)
@@ -1834,8 +1833,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
-    -- Version gating is the client's job (Client.hs), not the encoder's.
-    RSLV d -> e (RSLV_, ' ', Tail (strEncode d))
+    RSLV d -> e (RSLV_, ' ', d)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1944,11 +1942,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
-    -- Name is validated at parse (invalid syntax fails here -> CMD error),
-    -- so the handler only ever sees a valid SimplexNameDomain.
-    CT SResolver RSLV_ -> do
-      Tail bs <- _smpP
-      either fail (pure . Cmd SResolver . RSLV) (strDecode bs)
+    -- the domain is space-delimited; ignore any trailing bytes so a future
+    -- version appending RSLV fields stays parseable by this server (fwd-compat)
+    CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1995,9 +1991,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    -- Field-ordered Encoding NameRecord (no JSON on the wire); a response that
-    -- arrived is already on a supported version, so no version gate.
-    RNAME rec -> e (RNAME_, ' ', rec)
+    -- length-prefixed (Large) rather than Tail so the JSON record is
+    -- self-delimiting and later versions can append fields after it on the wire
+    RNAME rec -> e (RNAME_, ' ', Large $ LB.toStrict $ J.encode rec)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2045,7 +2041,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
-    RNAME_ -> RNAME <$> _smpP
+    -- A.takeByteString ignores any bytes after the length-prefixed record, so a
+    -- future version appending fields stays parseable by this client (fwd-compat)
+    RNAME_ -> (fmap RNAME . J.eitherDecodeStrict . unLarge <$?> _smpP) <* A.takeByteString
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2137,14 +2135,12 @@ instance Encoding ErrorType where
 instance Encoding NameErrorType where
   smpEncode = \case
     NO_RESOLVER -> "NO_RESOLVER"
-    NO_NAME -> "NO_NAME"
-    NO_SERVERS -> "NO_SERVERS"
+    NOT_FOUND -> "NOT_FOUND"
     RESOLVER e -> "RESOLVER " <> encodeUtf8 e
   smpP =
     A.takeTill (== ' ') >>= \case
       "NO_RESOLVER" -> pure NO_RESOLVER
-      "NO_NAME" -> pure NO_NAME
-      "NO_SERVERS" -> pure NO_SERVERS
+      "NOT_FOUND" -> pure NOT_FOUND
       "RESOLVER" -> RESOLVER . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
       _ -> fail "bad NameErrorType"
 

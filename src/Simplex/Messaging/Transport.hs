@@ -242,11 +242,13 @@ legacyServerSMPRelayVersion = VersionSMP 6
 currentServerSMPRelayVersion :: VersionSMP
 currentServerSMPRelayVersion = VersionSMP 20
 
--- Max SMP protocol version to be used in e2e encrypted
--- connection between client and server, as defined by SMP proxy.
--- SMP proxy sets it to lower than its current version
--- to prevent client version fingerprinting by the
--- destination relays when clients upgrade at different times.
+-- Max SMP protocol version to be used in e2e encrypted connection between
+-- client and server, as defined by SMP proxy. Normally set below the current
+-- version to prevent client version fingerprinting by the destination relays
+-- when clients upgrade at different times. Pinned to the current version (20)
+-- for this release because proxied name resolution is gated on namesSMPVersion
+-- (20), so the one-version anti-fingerprinting buffer does not apply yet; it
+-- reappears once the current version advances past 20.
 proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 20
 

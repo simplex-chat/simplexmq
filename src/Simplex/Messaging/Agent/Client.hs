@@ -2012,7 +2012,7 @@ getNextNameServer c userId =
   liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
     Just UserServers {nameSrvs} -> case L.nonEmpty nameSrvs of
       Just srvs -> protoServer <$> pickServer srvs
-      Nothing -> throwE $ NAME SMP.NO_SERVERS
+      Nothing -> throwE NO_NAME_SERVERS
     Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)

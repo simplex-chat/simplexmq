@@ -279,7 +279,6 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       namesConfig = Nothing,
-      namesResolverCall_ = Nothing,
       information = Nothing,
       startOptions = defaultStartOptions
     }

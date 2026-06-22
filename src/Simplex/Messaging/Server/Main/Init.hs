@@ -159,10 +159,6 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
         \# Operator runs the resolver alongside smp-server (default port 8000)\n\
         \# with its own Ethereum JSON-RPC endpoint configured in resolver.toml.\n\
-        \# Co-locating with the proxy role logs a startup advisory: slow RSLV calls can\n\
-        \# serialise other forwarded commands on the same proxy-relay session.\n\
-        \# For high-volume deployments, run [NAMES] on a separate host.\n\
-        \# Restart required to change settings.\n\
         \enable: off\n\
         \# Same-host:\n\
         \# resolver_endpoint: http://127.0.0.1:8000\n\
@@ -170,7 +166,8 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# resolver_endpoint: https://names.simplex.chat:443\n\
         \# resolver_auth: basic <username>:<password>\n\
         \# resolver_timeout_ms: 3000\n\
-        \# resolver_max_response_bytes: 65536\n\n\
+        \# resolver_max_response_bytes: 16000\n\
+        \# resolver_max_concurrent: 32\n\n\
         \[INACTIVE_CLIENTS]\n\
         \# TTL and interval to check inactive clients\n\
         \disconnect = on\n"

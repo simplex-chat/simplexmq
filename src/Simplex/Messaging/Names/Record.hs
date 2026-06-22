@@ -11,7 +11,6 @@ where
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
 import Data.Text (Text)
-import Simplex.Messaging.Encoding (Encoding (..), smpEncodeList, smpListP)
 import Simplex.Messaging.Names.EthAddress (EthAddress)
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix)
 
@@ -45,19 +44,3 @@ $( JQ.deriveJSON
     defaultJSON {J.omitNothingFields = False, J.fieldLabelModifier = dropPrefix "nr"}
     ''NameRecord
  )
-
--- Wire encoding for the SMP NAME response: field-ordered smpEncode, not embedded
--- JSON. Field order = record declaration order. EthAddress encodes as its raw
--- 20 bytes (length-prefixed via the ByteString instance).
-instance Encoding NameRecord where
-  smpEncode NameRecord {nrName, nrNickname, nrWebsite, nrLocation, nrSimplexContact, nrSimplexChannel, nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver} =
-    smpEncode (nrName, nrNickname, nrWebsite, nrLocation)
-      <> smpEncodeList nrSimplexContact
-      <> smpEncodeList nrSimplexChannel
-      <> smpEncode (nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver)
-  smpP = do
-    (nrName, nrNickname, nrWebsite, nrLocation) <- smpP
-    nrSimplexContact <- smpListP
-    nrSimplexChannel <- smpListP
-    (nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver) <- smpP
-    pure NameRecord {nrName, nrNickname, nrWebsite, nrLocation, nrSimplexContact, nrSimplexChannel, nrEth, nrBtc, nrXmr, nrDot, nrOwner, nrResolver}

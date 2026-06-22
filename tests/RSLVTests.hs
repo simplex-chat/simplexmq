@@ -11,11 +11,11 @@
 
 -- | Functional-API tests for the public-namespace resolver (RSLV).
 --
--- Mocks the resolver at the `resolverCall` layer: tests set a stub via
--- `ServerConfig.namesResolverCall_` (no real HTTP, no startup probe).
+-- Runs a real local HTTP resolver (NamesResolverServer) and points the SMP
+-- server's resolver_endpoint at it, so the full HttpResolver path is exercised.
 -- Tests:
 --   * direct RSLV reaches the resolver (not `CMD PROHIBITED`)
---   * `ERR (NAME NO_NAME)` for backend not-found (404 / 400)
+--   * `ERR (NAME NOT_FOUND)` for backend not-found (404 / 400)
 --   * `ERR (NAME (RESOLVER ..))` for backend transport errors (HTTP 502)
 --   * `ERR (NAME NO_RESOLVER)` when the server has no `namesEnv` (names off)
 --   * `RNAME` returned when the resolver returns a valid JSON record
@@ -25,15 +25,19 @@ module RSLVTests (rslvTests) where
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (getCurrentTime)
+import Network.HTTP.Types (Status, status200, status404, status502)
+import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
+import qualified NamesResolverServer as NRS
 import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
-import SMPNamesTests (sampleRecord, sampleRecordJSON)
+import SMPNamesTests (sampleRecord)
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -50,14 +54,6 @@ import Simplex.Messaging.Protocol
     tPut,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
-import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.Names
-  ( NamesConfig (..),
-    ResolverCall,
-    ResolverCallKind (..),
-  )
-import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexNameDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
@@ -74,60 +70,18 @@ import Util (it)
 domain :: Text -> SimplexNameDomain
 domain = either error id . strDecode . encodeUtf8
 
-stubNamesConfig :: NamesConfig
-stubNamesConfig =
-  NamesConfig
-    { resolverEndpoint = "http://stub",
-      resolverAuth = Nothing,
-      resolverTimeoutMs = 1000,
-      resolverMaxResponseBytes = 65536
-    }
+-- | Run a local HTTP resolver (replying with the given status + body to every
+-- /resolve) and an SMP server with names enabled pointing at it.
+withResolverServer :: (Status, LB.ByteString) -> IO a -> IO a
+withResolverServer (st, body) runTest =
+  NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
+    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort (const runTest)
 
--- | Default stub: the resolver replies 404. Server maps to NAME NO_NAME.
-stubResolverNotFound :: ResolverCall
-stubResolverNotFound = \case
-  ResolverFetch _ -> pure (Left (HttpStatusErr 404))
-  ResolverHealth -> pure (Right (J.object []))
-
--- | Stub that returns a 502 upstream failure on resolve. Server maps to
--- NAME (RESOLVER "HTTP 502").
-stubResolverHttpErr :: ResolverCall
-stubResolverHttpErr = \case
-  ResolverFetch _ -> pure (Left (HttpStatusErr 502))
-  ResolverHealth -> pure (Right (J.object []))
-
--- | Stub returning a real NameRecord JSON value (success path).
-stubResolverSuccess :: ResolverCall
-stubResolverSuccess = \case
-  ResolverFetch _ -> pure (Right sampleRecordJSON)
-  ResolverHealth -> pure (Right (J.object []))
-
-memCfg :: AServerConfig
-memCfg = cfgMS (ASType SQSMemory SMSMemory)
-
-memProxyCfg :: AServerConfig
-memProxyCfg = proxyCfgMS (ASType SQSMemory SMSMemory)
-
-memCfg2 :: AServerConfig
-memCfg2 = case memCfg of
-  ASrvCfg qt mt c -> ASrvCfg qt mt c {serverStoreCfg = newStoreCfg (serverStoreCfg c)}
-  where
-    newStoreCfg :: ServerStoreCfg s -> ServerStoreCfg s
-    newStoreCfg = \case
-      SSCMemory _ -> SSCMemory (Just StorePaths {storeLogFile = testStoreLogFile2, storeMsgsFile = Just testStoreMsgsFile2})
-      other -> other
-
--- | Enable names on a config with a stub resolver (no real HTTP, no probe).
-withNames :: ResolverCall -> AServerConfig -> AServerConfig
-withNames stub c = updateCfg c $ \cfg_ -> cfg_ {namesConfig = Just stubNamesConfig, namesResolverCall_ = Just stub}
-
-withResolverServer :: ResolverCall -> IO a -> IO a
-withResolverServer stub = withSmpServerConfigOn (transport @TLS) (withNames stub memCfg) testPort . const
-
-withProxyAndResolver :: ResolverCall -> IO a -> IO a
-withProxyAndResolver stub runTest =
-  withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
-    withSmpServerConfigOn (transport @TLS) (withNames stub memCfg2) testPort2 (const runTest)
+withProxyAndResolver :: (Status, LB.ByteString) -> IO a -> IO a
+withProxyAndResolver (st, body) runTest =
+  NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
+    withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
+      withSmpServerConfigOn (transport @TLS) (withNames port memCfg2) testPort2 (const runTest)
 
 sendRslv :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexNameDomain -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRslv h@THandle {params} corrId d = do
@@ -143,25 +97,28 @@ sendRslv h@THandle {params} corrId d = do
 rslvTests :: Spec
 rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
-    it "resolver replies 404 -> NAME NO_NAME (reached, not CMD PROHIBITED)" testRslvBackendNotFound
+    it "resolver replies 404 -> NAME NOT_FOUND (reached, not CMD PROHIBITED)" testRslvBackendNotFound
     it "resolver replies 502 -> NAME (RESOLVER ..)" testRslvBackendHttpErr
     it "no names config -> NAME NO_RESOLVER" testRslvDisabled
+    it "refuses to send RSLV on a session below namesSMPVersion" testRslvVersionGate
   describe "RSLV forwarded (PFWD)" $ do
-    it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME NO_NAME))" testRslvForwarded
+    it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME NOT_FOUND))" testRslvForwarded
+    it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
+    it "releases the in-flight slot so sequential RSLVs are not shed (cap=1)" testRslvSlotReleased
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
-  withResolverServer stubResolverNotFound $
+  withResolverServer (status404, "{}") $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "rs01"
-      resp `shouldBe` Right (ERR (NAME NO_NAME))
+      resp `shouldBe` Right (ERR (NAME NOT_FOUND))
 
 testRslvBackendHttpErr :: IO ()
 testRslvBackendHttpErr =
-  withResolverServer stubResolverHttpErr $
+  withResolverServer (status502, "{}") $
     testSMPClient @TLS $ \h -> do
       (_, _, resp) <- sendRslv h "rs05" (domain "alice.simplex")
       resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
@@ -173,31 +130,79 @@ testRslvDisabled =
       (_, _, resp) <- sendRslv h "rs06" (domain "alice.simplex")
       resp `shouldBe` Right (ERR (NAME NO_RESOLVER))
 
-testRslvForwarded :: IO ()
-testRslvForwarded =
-  withProxyAndResolver stubResolverNotFound $ do
+-- The client must refuse to send RSLV on a session negotiated below
+-- namesSMPVersion, surfacing TEVersion without contacting the resolver.
+-- rcvServiceSMPVersion is the last version before names support.
+testRslvVersionGate :: IO ()
+testRslvVersionGate =
+  withResolverServer (status200, J.encode sampleRecord) $ do
     g <- C.newRandom
     ts <- getCurrentTime
-    let proxyServ = SMPServer testHost testPort testKeyHash
-        relayServ = SMPServer testHost2 testPort2 testKeyHash
-        cfg' = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
-    pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
+    let srv = SMPServer testHost testPort testKeyHash
+        oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion rcvServiceSMPVersion}
+    pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
     pc <- either (fail . show) pure pcE
-    sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
-    r <- runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+    r <- runExceptT (directResolveName pc NRMInteractive (domain "alice.simplex"))
     case r of
-      Left (PCEProtocolError (SMP.NAME SMP.NO_NAME)) -> pure ()
-      _ -> expectationFailure $ "expected Left (PCEProtocolError (NAME NO_NAME)), got: " <> show r
+      Left (PCETransportError TEVersion) -> pure ()
+      _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
+
+-- Resolve "alice.simplex" through a proxy client + relay session against the
+-- running proxy/relay servers, returning the raw proxied result.
+forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameRecord))
+forwardedResolveAlice = do
+  g <- C.newRandom
+  ts <- getCurrentTime
+  let proxyServ = SMPServer testHost testPort testKeyHash
+      relayServ = SMPServer testHost2 testPort2 testKeyHash
+      cfg' = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
+  pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
+  pc <- either (fail . show) pure pcE
+  sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
+  runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+
+testRslvForwarded :: IO ()
+testRslvForwarded =
+  withProxyAndResolver (status404, "{}") $
+    forwardedResolveAlice >>= \r -> case r of
+      Left (PCEProtocolError (SMP.NAME SMP.NOT_FOUND)) -> pure ()
+      _ -> expectationFailure $ "expected Left (PCEProtocolError (NAME NOT_FOUND)), got: " <> show r
+
+-- A successful RNAME over the proxy: exercises the resolver-record JSON framing
+-- on the proxied (RRES, paddedProxiedTLength) response path, async on the relay.
+testRslvForwardedSuccess :: IO ()
+testRslvForwardedSuccess =
+  withProxyAndResolver (status200, J.encode sampleRecord) $
+    forwardedResolveAlice >>= \r -> case r of
+      Right (Right nr) -> nr `shouldBe` sampleRecord
+      _ -> expectationFailure $ "expected Right (Right NameRecord), got: " <> show r
 
 testRslvSuccess :: IO ()
 testRslvSuccess =
-  withResolverServer stubResolverSuccess $
+  withResolverServer (status200, J.encode sampleRecord) $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs07" (domain "alice.simplex")
       corrId `shouldBe` CorrId "rs07"
       case resp of
         Right (RNAME nr) -> nr `shouldBe` sampleRecord
         _ -> expectationFailure $ "expected Right (RNAME ..), got: " <> show resp
+
+-- On a names server capped at one concurrent resolution, three sequential RSLVs
+-- must all return RNAME: each resolution has to release its slot, or the 2nd and
+-- 3rd would be shed with ERR (NAME (RESOLVER "resolver overloaded")). Guards that
+-- the in-flight slot release covers the whole forked resolve action.
+testRslvSlotReleased :: IO ()
+testRslvSlotReleased =
+  NRS.withResolverServer (NRS.resolveResp status200 (J.encode sampleRecord)) $ \port _ ->
+    withSmpServerConfigOn (transport @TLS) (NRS.withNamesCap 1 port memCfg) testPort $
+      const $
+        testSMPClient @TLS $ \h ->
+          mapM_
+            ( \cid -> do
+                (_, _, resp) <- sendRslv h cid (domain "alice.simplex")
+                resp `shouldBe` Right (RNAME sampleRecord)
+            )
+            ["sr1", "sr2", "sr3"]
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure

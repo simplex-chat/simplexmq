@@ -29,6 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Simplex.Messaging.Agent.Store.DB (ToField (..))
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
@@ -72,13 +73,17 @@ nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigi
 -- parser would otherwise `takeWhile1 (not . isSpace)` unbounded, allowing
 -- a crafted multi-megabyte token to be decoded and re-parsed before any
 -- validation. Cap at 253 bytes (DNS full-domain limit) — generous against
--- any realistic SimpleX name and forces the surrounding `parseOnly`
--- (which requires consuming all input) to fail on oversized inputs.
+-- any realistic SimpleX name — and FAIL on a longer token rather than stop
+-- at the cap, so an oversized name is rejected outright (not silently
+-- truncated) on every entry point, including the RSLV wire decoder whose
+-- trailing `takeByteString` would otherwise swallow and discard the overflow.
 boundedNonSpace :: A.Parser ByteString
 boundedNonSpace = do
   bs <- A.scan (0 :: Int) $ \i c ->
-    if i < 253 && not (A.isSpace c) then Just (i + 1) else Nothing
-  if B.null bs then fail "expected non-empty name token" else pure bs
+    if i <= 253 && not (A.isSpace c) then Just (i + 1) else Nothing
+  if B.null bs
+    then fail "expected non-empty name token"
+    else if B.length bs > 253 then fail "name token exceeds 253 bytes" else pure bs
 
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
@@ -100,12 +105,20 @@ instance StrEncoding SimplexNameDomain where
       -- `alice.simplex` resolve to different on-chain records. A mixed-case TLD
       -- would also fall through to TLDWeb and route through the `tldAll`
       -- catch-all entry instead of the TLDSimplex registry.
-      mkDomain labels = case reverse (map T.toLower labels) of
+      mkDomain labels = case reverse lowered of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
         "simplex" : name : sub -> Right (SimplexNameDomain TLDSimplex name sub)
         "testing" : name : sub -> Right (SimplexNameDomain TLDTesting name sub)
-        _ -> Right (SimplexNameDomain TLDWeb (T.intercalate "." (map T.toLower labels)) [])
+        _ -> Right (SimplexNameDomain TLDWeb (T.intercalate "." lowered) [])
+        where
+          lowered = map T.toLower labels
+
+-- Wire encoding for the RSLV command: the domain is the trailing field, so it
+-- encodes as the raw StrEncoding bytes (no length prefix) and parses to end.
+instance Encoding SimplexNameDomain where
+  smpEncode = strEncode
+  smpP = strP
 
 fullDomainName :: SimplexNameDomain -> Text
 fullDomainName SimplexNameDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')

@@ -3,16 +3,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, sampleRecord, sampleRecordJSON) where
+module SMPNamesTests (smpNamesTests, sampleRecord) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Either (isLeft, isRight)
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (readIORef)
 import Data.List (sort)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Network.HTTP.Types (status200, status400, status404, status500, status502)
+import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
 import Simplex.Messaging.Names.EthAddress (EthAddress, mkEthAddress, unEthAddress)
@@ -20,11 +22,12 @@ import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NameRecor
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
-    ResolverCallKind (..),
     RpcAuth (..),
-    newNamesEnvWith,
+    newNamesEnv,
     pingEndpoint,
+    releaseResolver,
     resolveName,
+    tryAcquireResolver,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
@@ -55,23 +58,10 @@ sampleRecord =
       nrResolver = unsafeAddr (B.replicate 20 '\x02')
     }
 
--- | JSON value canned by the resolver-stub for the "success" tests.
-sampleRecordJSON :: J.Value
-sampleRecordJSON = J.toJSON sampleRecord
-
-testNamesConfig :: NamesConfig
-testNamesConfig =
-  NamesConfig
-    { resolverEndpoint = "http://stub",
-      resolverAuth = Nothing,
-      resolverTimeoutMs = 1000,
-      resolverMaxResponseBytes = 65536
-    }
-
 smpNamesTests :: Spec
 smpNamesTests = do
   describe "NameRecord JSON (Protocol)" nameRecordEncodingSpec
-  describe "Wire encoding (smpEncode)" wireEncodingSpec
+  describe "ErrorType NAME wire encoding" errorWireSpec
   describe "Smart constructors (EthAddress)" smartCtorsSpec
   describe "Name parsing (SimplexNameDomain)" parseNameSpec
   describe "HTTP resolver" resolverSpec
@@ -127,26 +117,13 @@ nameRecordEncodingSpec = do
     B.isInfixOf "0xdeadbeef" bytes `shouldBe` True
     B.isInfixOf "0xDEADBEEF" bytes `shouldBe` False
 
--- The RNAME response and ERR (NAME ...) travel as field-ordered smpEncode on
--- the wire (no JSON), so round-trip the new Encoding instances directly.
-wireEncodingSpec :: Spec
-wireEncodingSpec = do
-  it "NameRecord round-trips smpEncode / smpDecode" $
-    smpDecode (smpEncode sampleRecord) `shouldBe` Right sampleRecord
-
-  it "NameRecord round-trips with multiple links and unset coins" $ do
-    let r =
-          sampleRecord
-            { nrSimplexContact = ["simplex:/contact/a#1", "simplex:/contact/b#2"],
-              nrSimplexChannel = [],
-              nrEth = Nothing,
-              nrBtc = Nothing
-            }
-    smpDecode (smpEncode r) `shouldBe` Right r
-
+-- ERR (NAME ...) travels as field-ordered smpEncode on the wire; the RNAME
+-- success response carries the NameRecord as JSON (covered by the JSON spec).
+errorWireSpec :: Spec
+errorWireSpec =
   it "ErrorType NAME family round-trips smpEncode / smpDecode" $ do
     smpDecode (smpEncode (NAME NO_RESOLVER)) `shouldBe` Right (NAME NO_RESOLVER)
-    smpDecode (smpEncode (NAME NO_NAME)) `shouldBe` Right (NAME NO_NAME)
+    smpDecode (smpEncode (NAME NOT_FOUND)) `shouldBe` Right (NAME NOT_FOUND)
     -- RESOLVER detail may contain spaces - must survive the round-trip
     smpDecode (smpEncode (NAME (RESOLVER "HTTP 502"))) `shouldBe` Right (NAME (RESOLVER "HTTP 502"))
 
@@ -198,106 +175,122 @@ parseNameSpec = do
 
 resolverSpec :: Spec
 resolverSpec = do
-  let mkEnv stub = newNamesEnvWith testNamesConfig stub Nothing
-      aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+  it "returns NameRecord on 200 OK" $
+    withResolverServer (resolveResp status200 (J.encode sampleRecord)) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Right sampleRecord
 
-  it "returns NameRecord on 200 OK" $ do
-    env <- mkEnv (\_ -> pure (Right sampleRecordJSON))
-    r <- resolveName env aliceDomain
-    r `shouldBe` Right sampleRecord
+  it "returns NOT_FOUND on 404" $
+    withResolverServer (resolveResp status404 "{}") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
 
-  it "returns NO_NAME on 404" $ do
-    env <- mkEnv (\_ -> pure (Left (HttpStatusErr 404)))
-    resolveName env aliceDomain `shouldReturn` Left NO_NAME
+  it "returns NOT_FOUND on 400 (unknown TLD)" $
+    withResolverServer (resolveResp status400 "{}") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
 
-  it "returns NO_NAME on 400 (unknown TLD)" $ do
-    env <- mkEnv (\_ -> pure (Left (HttpStatusErr 400)))
-    resolveName env aliceDomain `shouldReturn` Left NO_NAME
+  it "returns RESOLVER on 502 (upstream failure)" $
+    withResolverServer (resolveResp status502 "{}") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 502")
 
-  it "returns RESOLVER on 502 (upstream failure)" $ do
-    env <- mkEnv (\_ -> pure (Left (HttpStatusErr 502)))
-    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 502")
+  it "returns RESOLVER when the body exceeds the response cap" $
+    withResolverServer (resolveResp status200 (LB.fromStrict (B.replicate 500 'x'))) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 100}
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "response too large")
 
-  it "returns RESOLVER on transport-layer body-too-large" $ do
-    env <- mkEnv (\_ -> pure (Left BodyTooLarge))
-    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "response too large")
+  it "returns RESOLVER on malformed JSON from the resolver" $
+    withResolverServer (resolveResp status200 "this is not json") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
-  it "returns RESOLVER on malformed JSON from the resolver" $ do
-    env <- mkEnv (\_ -> pure (Left (InvalidJson "expected object")))
-    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
+  it "returns RESOLVER when JSON parses but isn't a NameRecord shape" $
+    withResolverServer (resolveResp status200 "{}") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
-  it "returns RESOLVER when JSON parses but isn't a NameRecord shape" $ do
-    env <- mkEnv (\_ -> pure (Right (J.object [])))
-    resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
+  it "returns RESOLVER (timeout) when the resolver is slower than resolverTimeoutMs" $
+    withResolverServerDelayed 1500 (resolveResp status200 (J.encode sampleRecord)) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port) {resolverTimeoutMs = 300}
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "timeout")
 
-  it "sends one HTTP request per lookup (no cache)" $ do
-    callCount <- newIORef (0 :: Int)
-    env <- mkEnv $ \_ -> do
-      atomicModifyIORef' callCount (\v -> (v + 1, ()))
-      pure (Right sampleRecordJSON)
-    _ <- resolveName env aliceDomain
-    _ <- resolveName env aliceDomain
-    readIORef callCount `shouldReturn` 2
+  it "sends one HTTP request per lookup (no cache)" $
+    withResolverServer (resolveResp status200 (J.encode sampleRecord)) $ \port reqs -> do
+      env <- newNamesEnv (testNamesConfig port)
+      _ <- resolveName env aliceDomain
+      _ <- resolveName env aliceDomain
+      readIORef reqs >>= \rs -> length rs `shouldBe` 2
 
-  it "addresses the resolver with the full canonical domain name" $ do
-    seenName <- newIORef ("" :: T.Text)
-    env <-
-      mkEnv $ \case
-        ResolverFetch n -> do
-          atomicModifyIORef' seenName (\_ -> (n, ()))
-          pure (Right sampleRecordJSON)
-        ResolverHealth -> pure (Right (J.object []))
-    _ <- resolveName env aliceDomain
-    readIORef seenName `shouldReturn` "alice.simplex"
+  it "addresses the resolver with the full canonical domain name" $
+    withResolverServer (resolveResp status200 (J.encode sampleRecord)) $ \port reqs -> do
+      env <- newNamesEnv (testNamesConfig port)
+      _ <- resolveName env aliceDomain
+      readIORef reqs `shouldReturn` [["resolve", "alice.simplex"]]
+
+  it "bounds concurrent resolutions at resolverMaxConcurrent; releaseResolver frees a slot" $ do
+    -- no HTTP is made; this exercises the admission counter the RSLV handler uses to shed load
+    env <- newNamesEnv (testNamesConfig 1) {resolverMaxConcurrent = 2}
+    a <- tryAcquireResolver env
+    b <- tryAcquireResolver env
+    c <- tryAcquireResolver env
+    releaseResolver env
+    d <- tryAcquireResolver env
+    [a, b, c, d] `shouldBe` [True, True, False, True]
+  where
+    aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 healthSpec :: Spec
 healthSpec = do
-  let mkEnv stub = newNamesEnvWith testNamesConfig stub Nothing
+  it "pingEndpoint succeeds on a 200 OK /health response" $
+    withResolverServer (resolveResp status200 "{}") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      pingEndpoint env >>= \case
+        Right () -> pure ()
+        Left e -> expectationFailure $ "expected Right (), got Left " <> show e
 
-  it "pingEndpoint succeeds on a 200 OK /health response" $ do
-    env <- mkEnv (\_ -> pure (Right (J.object [])))
-    r <- pingEndpoint env
-    case r of
-      Right () -> pure ()
-      Left e -> expectationFailure $ "expected Right (), got Left " <> show e
+  it "pingEndpoint fails on a 500 /health response" $
+    withResolverServer healthFails $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      pingEndpoint env >>= \case
+        Left (HttpStatusErr 500) -> pure ()
+        r -> expectationFailure $ "expected Left (HttpStatusErr 500), got " <> show r
 
-  it "pingEndpoint fails on a 500 /health response" $ do
-    env <- mkEnv (\_ -> pure (Left (HttpStatusErr 500)))
-    r <- pingEndpoint env
-    case r of
-      Left (HttpStatusErr 500) -> pure ()
-      _ -> expectationFailure $ "expected Left (HttpStatusErr 500), got " <> show r
+  it "pingEndpoint queries /health" $
+    withResolverServer (resolveResp status200 "{}") $ \port reqs -> do
+      env <- newNamesEnv (testNamesConfig port)
+      _ <- pingEndpoint env
+      readIORef reqs `shouldReturn` [["health"]]
+  where
+    healthFails = \case
+      ["health"] -> (status500, "{}")
+      _ -> (status404, "{}")
 
-  it "pingEndpoint routes to ResolverHealth (not ResolverFetch)" $ do
-    seenKind <- newIORef Nothing
-    env <- mkEnv $ \k -> do
-      atomicModifyIORef' seenKind (\_ -> (Just k, ()))
-      pure (Right (J.object []))
-    _ <- pingEndpoint env
-    readIORef seenKind `shouldReturn` Just ResolverHealth
-
+-- The endpoint is operator-supplied trusted config, so validation is just
+-- basic well-formedness: an absolute http(s) URL with a host.
 validateUrlSpec :: Spec
 validateUrlSpec = do
-  let auth = Just (AuthBasic "user" "pass")
-  it "accepts https with explicit port and auth (root path)" $
-    validateUrl "https://gw.example.com:443" auth `shouldSatisfy` isRight
-  it "accepts a path prefix (reverse-proxy sub-path)" $
-    validateUrl "https://gw.example.com:443/snrc" auth `shouldSatisfy` isRight
-  it "accepts a path prefix with trailing slash" $
-    validateUrl "https://gw.example.com:443/snrc/" auth `shouldSatisfy` isRight
-  it "rejects a query string" $
-    validateUrl "https://gw.example.com:443/snrc?x=1" auth `shouldSatisfy` isLeft
-  it "rejects a fragment" $
-    validateUrl "https://gw.example.com:443/snrc#f" auth `shouldSatisfy` isLeft
-  it "rejects userinfo (credentials belong in resolver_auth)" $
-    validateUrl "https://user:pass@gw.example.com:443" auth `shouldSatisfy` isLeft
-  it "rejects a missing port" $
-    validateUrl "https://gw.example.com/snrc" auth `shouldSatisfy` isLeft
-  it "accepts https on a non-loopback host without auth (public resolver)" $
+  it "accepts an https URL with a path prefix" $
     validateUrl "https://gw.example.com:443/snrc" Nothing `shouldSatisfy` isRight
-  it "accepts http without auth on a non-loopback host (e.g. host.docker.internal)" $
-    validateUrl "http://host.docker.internal:9999" Nothing `shouldSatisfy` isRight
-  it "rejects http WITH auth on a non-loopback host (cleartext credential leak)" $
-    validateUrl "http://gw.example.com:9999" auth `shouldSatisfy` isLeft
-  it "allows loopback http without auth (with a path prefix)" $
-    validateUrl "http://localhost:8000/snrc" Nothing `shouldSatisfy` isRight
+  it "accepts an http URL" $
+    validateUrl "http://127.0.0.1:8000" Nothing `shouldSatisfy` isRight
+  it "accepts a URL without an explicit port" $
+    validateUrl "https://gw.example.com/snrc" Nothing `shouldSatisfy` isRight
+  it "rejects a relative / non-absolute URI" $
+    validateUrl "gw.example.com/snrc" Nothing `shouldSatisfy` isLeft
+  it "rejects a non-http(s) scheme" $
+    validateUrl "ftp://gw.example.com:21" Nothing `shouldSatisfy` isLeft
+  it "rejects an empty host" $
+    validateUrl "http://" Nothing `shouldSatisfy` isLeft
+  it "accepts https with auth (Authorization is TLS-protected)" $
+    validateUrl "https://gw.example.com" (Just auth) `shouldSatisfy` isRight
+  it "accepts loopback http with auth (no cleartext exposure)" $
+    validateUrl "http://localhost:8000" (Just auth) `shouldSatisfy` isRight
+  it "rejects non-loopback http with auth (cleartext credential leak)" $
+    validateUrl "http://gw.example.com:8000" (Just auth) `shouldSatisfy` isLeft
+  it "rejects URL-embedded userinfo (credentials belong in resolver_auth)" $
+    validateUrl "https://user:pass@gw.example.com" Nothing `shouldSatisfy` isLeft
+  it "rejects http+auth to a 127.-prefixed non-loopback host (not real loopback)" $
+    validateUrl "http://127.evil.com:8000" (Just auth) `shouldSatisfy` isLeft
+  where
+    auth = AuthBasic "user" "pass"
