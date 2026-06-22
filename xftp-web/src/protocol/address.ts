@@ -35,6 +35,22 @@ export function parseXFTPServer(address: string): XFTPServer {
   const hostPart = m[2]
   // Take the first host (before any comma), then split port from that
   const firstHost = hostPart.split(',')[0]
+  return {keyHash, ...parseHostPort(firstHost)}
+}
+
+function parseHostPort(firstHost: string): Pick<XFTPServer, "host" | "port"> {
+  if (firstHost.length === 0) throw new Error("parseXFTPServer: missing host")
+  if (firstHost.startsWith('[')) {
+    const bracketEnd = firstHost.indexOf(']')
+    if (bracketEnd < 0) throw new Error("parseXFTPServer: invalid bracketed host")
+    const host = firstHost.substring(0, bracketEnd + 1)
+    const rest = firstHost.substring(bracketEnd + 1)
+    if (rest.length === 0) return {host, port: "443"}
+    if (!rest.startsWith(':')) throw new Error("parseXFTPServer: invalid bracketed host")
+    const port = rest.substring(1)
+    if (port.length === 0) throw new Error("parseXFTPServer: missing port")
+    return {host, port}
+  }
   const colonIdx = firstHost.lastIndexOf(':')
   let host: string
   let port: string
@@ -45,7 +61,7 @@ export function parseXFTPServer(address: string): XFTPServer {
     host = firstHost
     port = "443"
   }
-  return {keyHash, host, port}
+  return {host, port}
 }
 
 // Format an XFTPServer back to its URI string representation.

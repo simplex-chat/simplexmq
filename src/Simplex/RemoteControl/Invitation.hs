@@ -81,7 +81,7 @@ instance StrEncoding RCInvitation where
     _ <- A.string "xrcp:/"
     ca <- strP
     _ <- A.char '@'
-    host <- A.takeWhile (/= ':') >>= either fail pure . strDecode . urlDecode True
+    host <- strP
     _ <- A.char ':'
     port <- strP
     _ <- A.string "#/?"

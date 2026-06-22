@@ -81,6 +81,7 @@ data NtfServerConfig = NtfServerConfig
     pushQSize :: Natural,
     smpAgentCfg :: SMPClientAgentConfig,
     apnsConfig :: APNSPushClientConfig,
+    allowTestPushProvider :: Bool,
     subsBatchSize :: Int,
     inactiveClientExpiration :: Maybe ExpirationConfig,
     dbStoreConfig :: PostgresStoreCfg,

@@ -13,7 +13,7 @@ import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Text as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
@@ -85,6 +85,7 @@ cliTests = do
       it "no store log, no password" $ smpServerTest False False
       it "with store log, no password" $ smpServerTest True False
       it "static files" smpServerTestStatic
+      it "cloud scripts disable embedded web without certificates" smpCloudScriptsDisableWeb
 #if defined(dbServerPostgres)
   around_ (postgressBracket ntfTestServerDBConnectInfo) $ before_ (createNtfSchema ntfTestServerDBConnectInfo ntfTestStoreDBOpts) $
     describe "Ntf server CLI" $ do
@@ -199,6 +200,23 @@ smpServerTestStatic = do
     getCerts tls =
       let X.CertificateChain cc = tlsPeerCert tls
        in map (X.signedObject . X.getSigned) cc
+
+smpCloudScriptsDisableWeb :: HasCallStack => IO ()
+smpCloudScriptsDisableWeb = do
+  linode <- readFile "scripts/smp-server-linode.sh"
+  digitalOceanInit <-
+    readFile "scripts/smp-server-digitalocean-droplet/files/opt/simplex/initialize_server.sh"
+  digitalOceanLogin <-
+    readFile "scripts/smp-server-digitalocean-droplet/files/opt/simplex/on_login.sh"
+  linode `shouldSatisfy` ("init_opts+=(--disable-web)" `isInfixOf`)
+  linode `shouldSatisfy` ("web.crt" `isInfixOf`)
+  linode `shouldSatisfy` ("web.key" `isInfixOf`)
+  linode `shouldSatisfy` ("uncomment WEB https/cert/key" `isInfixOf`)
+  digitalOceanInit
+    `shouldSatisfy` ("smp-server init -l --disable-web --ip $ip_address" `isInfixOf`)
+  digitalOceanLogin `shouldSatisfy` ("web.crt" `isInfixOf`)
+  digitalOceanLogin `shouldSatisfy` ("web.key" `isInfixOf`)
+  digitalOceanLogin `shouldSatisfy` ("uncomment WEB https/cert/key" `isInfixOf`)
 
 #if defined(dbServerPostgres)
 createNtfSchema :: PSQL.ConnectInfo -> DBOpts -> IO ()
