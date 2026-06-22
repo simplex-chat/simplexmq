@@ -33,6 +33,5 @@ instance J.ToJSON EthAddress where
 
 instance J.FromJSON EthAddress where
   parseJSON = J.withText "EthAddress" $ \t -> do
-    -- Accept "0x" and "0X" prefixes (matches the server-side hex decoder).
     let hex = fromMaybe t (T.stripPrefix "0x" t <|> T.stripPrefix "0X" t)
     either fail pure $ BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) >>= mkEthAddress

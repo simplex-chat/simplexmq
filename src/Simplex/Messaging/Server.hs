@@ -109,7 +109,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, releaseResolver, resolveName, resolverAtCapacity, tryAcquireResolver)
+import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1470,8 +1470,8 @@ client
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd corrId (EntityId sessId)
     -- Run a slow command on a forked, back-pressured thread, sending its response
-    -- to sndQ from the thread so command processing is not blocked. Returns
-    -- Nothing (no synchronous response). Used for proxying and name resolution.
+    -- to sndQ from the thread so command processing is not blocked. Used for
+    -- proxying and name resolution.
     forkCmd :: CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd corrId entId cmdAction = do
       bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
@@ -1486,42 +1486,28 @@ client
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    -- Count an RSLV request and decide handling: no resolver -> NO_RESOLVER;
-    -- already at the concurrency cap -> shed with a transient RESOLVER error
-    -- (Left, answered without forking) so an unauthenticated flood cannot
-    -- exhaust threads / outbound resolver calls; otherwise return the resolve
-    -- action (Right) for the caller to fork. The capacity check here is a
-    -- non-mutating peek (no slot reserved), so no slot is held across the
-    -- fork boundary; rslvNameResponse acquires and releases the slot in one
-    -- bracket inside the forked thread. Shared by the direct and forwarded paths.
+    -- Count an RSLV request and decide handling: no resolver -> NO_RESOLVER
+    -- (Left, answered without forking); otherwise return the resolve action
+    -- (Right) for the caller to fork. Concurrent resolutions are bounded the
+    -- same way as every other forwarded command: per-client procThreads in
+    -- forkCmd. Shared by the direct and forwarded paths.
     admitRslv :: SimplexNameDomain -> M s (Either BrokerMsg (M s BrokerMsg))
     admitRslv d = do
       st <- asks (rslvStats . serverStats)
       incStat (rslvReqs st)
       asks namesEnv >>= \case
         Nothing -> incStat (rslvDisabled st) $> Left (ERR (NAME NO_RESOLVER))
-        Just nenv ->
-          ifM
-            (liftIO (resolverAtCapacity nenv))
-            (incStat (rslvResolverErrs st) $> Left (ERR (NAME (RESOLVER "resolver overloaded"))))
-            (pure $ Right (rslvNameResponse nenv d))
-    -- Resolve a name to its RNAME / ERR (NAME ...) response. Acquires the
-    -- in-flight slot and releases it in the same bracket, so it cannot leak on
-    -- any exit path (including async kill of the forked thread). A lost race
-    -- on the cap (acquire returns False) sheds, matching admitRslv's peek.
+        Just nenv -> pure $ Right (rslvNameResponse nenv d)
     -- The name is validated at parse, so this only maps the resolver outcome.
     rslvNameResponse :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
     rslvNameResponse nenv d = do
       st <- asks (rslvStats . serverStats)
-      bracket (liftIO (tryAcquireResolver nenv)) (\held -> when held $ liftIO (releaseResolver nenv)) $ \case
-        False -> incStat (rslvResolverErrs st) $> ERR (NAME (RESOLVER "resolver overloaded"))
-        True -> do
-          (selector, msg) <-
-            liftIO (resolveName nenv d) <&> \case
-              Right rec -> (rslvSucc, RNAME rec)
-              Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
-              Left e -> (rslvResolverErrs, ERR $ NAME e)
-          incStat (selector st) $> msg
+      (selector, msg) <-
+        liftIO (resolveName nenv d) <&> \case
+          Right rec -> (rslvSucc, RNAME rec)
+          Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
+          Left e -> (rslvResolverErrs, ERR $ NAME e)
+      incStat (selector st) $> msg
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
@@ -1536,10 +1522,8 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
-      -- Resolve names on a forked thread (like proxying) so a slow RSLV does not
-      -- block other commands; admitRslv bounds concurrent resolutions and sheds
-      -- load (synchronous error, no fork) when saturated. Shared with the
-      -- forwarded path (processForwardedCommand).
+      -- Resolve on a forked thread (like proxying) so a slow RSLV does not block
+      -- other commands. Shared with the forwarded path (processForwardedCommand).
       Cmd SResolver (RSLV d) ->
         admitRslv d >>= either (pure . response . (corrId, NoEntity,)) (forkCmd corrId NoEntity)
       Cmd SSenderLink command -> case command of
@@ -2178,8 +2162,8 @@ client
                 -- rejectOrVerify filters allowed commands, no need to repeat it here.
                 Left r -> respond r
                 Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-                  -- forwarded RSLV is bounded/shed like the direct path (admitRslv);
-                  -- the resolved (or shed) response is wrapped as RRES via encodeResp.
+                  -- forwarded RSLV resolves on a forked thread like the direct path;
+                  -- the response is wrapped as RRES via encodeResp.
                   Cmd SResolver (RSLV d) ->
                     admitRslv d >>= \case
                       Left msg -> respond (corrId', entId', msg)

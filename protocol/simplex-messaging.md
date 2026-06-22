@@ -1481,7 +1481,7 @@ configured servers can act on distinctly:
 | `RNAME` | record resolved | use it |
 | `ERR NAME NOT_FOUND` | name not registered, unknown TLD, or malformed name | authoritative "no such name" — stop |
 | `ERR NAME NO_RESOLVER` | this router has no resolver (names role not enabled) | skip this server, try the next |
-| `ERR NAME RESOLVER <detail>` | transient failure: backing resolver error (upstream 5xx, transport, timeout, decode) or local overload (`"resolver overloaded"` when the router's concurrent-resolution cap is reached) | transient — retry or surface, do not treat as "not found" |
+| `ERR NAME RESOLVER <detail>` | transient failure: backing resolver error (upstream 5xx, transport, timeout, decode) | transient — retry or surface, do not treat as "not found" |
 
 A client SHOULD NOT broadcast a `name` to further servers after a name-capable
 router has answered (`NOT_FOUND` or `RESOLVER`), since that router has already

@@ -106,7 +106,6 @@ rslvTests = do
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
-    it "releases the in-flight slot so sequential RSLVs are not shed (cap=1)" testRslvSlotReleased
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
@@ -186,23 +185,6 @@ testRslvSuccess =
       case resp of
         Right (RNAME nr) -> nr `shouldBe` sampleRecord
         _ -> expectationFailure $ "expected Right (RNAME ..), got: " <> show resp
-
--- On a names server capped at one concurrent resolution, three sequential RSLVs
--- must all return RNAME: each resolution has to release its slot, or the 2nd and
--- 3rd would be shed with ERR (NAME (RESOLVER "resolver overloaded")). Guards that
--- the in-flight slot release covers the whole forked resolve action.
-testRslvSlotReleased :: IO ()
-testRslvSlotReleased =
-  NRS.withResolverServer (NRS.resolveResp status200 (J.encode sampleRecord)) $ \port _ ->
-    withSmpServerConfigOn (transport @TLS) (NRS.withNamesCap 1 port memCfg) testPort $
-      const $
-        testSMPClient @TLS $ \h ->
-          mapM_
-            ( \cid -> do
-                (_, _, resp) <- sendRslv h cid (domain "alice.simplex")
-                resp `shouldBe` Right (RNAME sampleRecord)
-            )
-            ["sr1", "sr2", "sr3"]
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure

@@ -166,8 +166,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# resolver_endpoint: https://names.simplex.chat:443\n\
         \# resolver_auth: basic <username>:<password>\n\
         \# resolver_timeout_ms: 3000\n\
-        \# resolver_max_response_bytes: 16000\n\
-        \# resolver_max_concurrent: 32\n\n\
+        \# resolver_max_response_bytes: 16000\n\n\
         \[INACTIVE_CLIENTS]\n\
         \# TTL and interval to check inactive clients\n\
         \disconnect = on\n"

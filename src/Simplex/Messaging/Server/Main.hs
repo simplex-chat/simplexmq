@@ -816,11 +816,7 @@ readNamesConfig ini
                 -- carrying the resolver's JSON record on the wire, so capping the
                 -- resolver response body guarantees the RNAME response always frames.
                 -- An over-cap body fails as BodyTooLarge -> ERR (NAME (RESOLVER ..)).
-                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes",
-                -- cap on concurrent in-flight resolutions; RSLV beyond it is shed
-                -- so an unauthenticated flood cannot exhaust threads / saturate the
-                -- resolver with unbounded concurrent outbound HTTP.
-                resolverMaxConcurrent = boundedIniInt 32 1 1024 "resolver_max_concurrent"
+                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)

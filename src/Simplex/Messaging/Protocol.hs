@@ -608,8 +608,7 @@ data Command (p :: Party) where
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Name resolution. Preferably forwarded via PFWD (hides the client IP from
-  -- the resolver), but direct RSLV is also accepted. The validated name is the
-  -- only argument; the server resolves it via its configured resolver.
+  -- the resolver), but direct RSLV is also accepted.
   RSLV :: SimplexNameDomain -> Command Resolver
 
 deriving instance Show (Command p)
@@ -746,8 +745,7 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  -- Name resolution response (success), for direct or forwarded RSLV.
-  -- Named RNAME so the error family can use ErrorType.NAME.
+  -- Named RNAME (not NAME) so the error family can use ErrorType.NAME.
   RNAME :: NameRecord -> BrokerMsg
   deriving (Eq, Show)
 

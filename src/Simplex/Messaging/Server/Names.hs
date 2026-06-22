@@ -23,13 +23,9 @@ module Simplex.Messaging.Server.Names
     closeNamesEnv,
     pingEndpoint,
     resolveName,
-    resolverAtCapacity,
-    tryAcquireResolver,
-    releaseResolver,
   )
 where
 
-import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.Bifunctor (first)
@@ -52,48 +48,22 @@ data NamesConfig = NamesConfig
   { resolverEndpoint :: String,
     resolverAuth :: Maybe RpcAuth,
     resolverTimeoutMs :: Int,
-    resolverMaxResponseBytes :: Int,
-    -- | cap on concurrent in-flight resolutions; RSLV beyond it is shed (see
-    -- tryAcquireResolver) so unauthenticated floods cannot exhaust threads or
-    -- saturate the outbound resolver with unbounded concurrent HTTP calls.
-    resolverMaxConcurrent :: Int
+    resolverMaxResponseBytes :: Int
   }
   deriving (Show)
 
 data NamesEnv = NamesEnv
   { config :: NamesConfig,
-    resolverEnv :: ResolverEnv,
-    inFlight :: TVar Int
+    resolverEnv :: ResolverEnv
   }
 
 newNamesEnv :: NamesConfig -> IO NamesEnv
 newNamesEnv config = do
   resolverEnv <- newResolverEnv (resolverEndpoint config) (resolverAuth config) (resolverTimeoutMs config) (resolverMaxResponseBytes config)
-  inFlight <- newTVarIO 0
-  pure NamesEnv {config, resolverEnv, inFlight}
+  pure NamesEnv {config, resolverEnv}
 
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {resolverEnv} = closeResolverEnv resolverEnv
-
--- | Non-mutating check: True when in-flight resolutions are already at the cap.
--- Used to shed an RSLV before forking; the authoritative gate is still
--- tryAcquireResolver inside the forked action, so a slot is never held across
--- the fork boundary (which is what makes the slot leak-proof on async kills).
-resolverAtCapacity :: NamesEnv -> IO Bool
-resolverAtCapacity NamesEnv {config, inFlight} =
-  (>= resolverMaxConcurrent config) <$> readTVarIO inFlight
-
--- | Reserve a resolution slot if under resolverMaxConcurrent. Returns False
--- when saturated so the caller sheds load (returns a transient error) instead
--- of making another outbound resolver call. Each True must be paired with
--- exactly one releaseResolver.
-tryAcquireResolver :: NamesEnv -> IO Bool
-tryAcquireResolver NamesEnv {config, inFlight} =
-  atomically $ stateTVar inFlight $ \n ->
-    if n >= resolverMaxConcurrent config then (False, n) else (True, n + 1)
-
-releaseResolver :: NamesEnv -> IO ()
-releaseResolver NamesEnv {inFlight} = atomically $ modifyTVar' inFlight (subtract 1)
 
 -- | Reach the configured resolver with `GET /health` to confirm reachability
 -- at server startup. A non-2xx response or transport failure surfaces as

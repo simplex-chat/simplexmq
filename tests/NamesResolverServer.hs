@@ -21,7 +21,6 @@ module NamesResolverServer
     memProxyCfg,
     memCfg2,
     withNames,
-    withNamesCap,
   )
 where
 
@@ -75,8 +74,7 @@ testNamesConfig port =
     { resolverEndpoint = "http://127.0.0.1:" <> show port,
       resolverAuth = Nothing,
       resolverTimeoutMs = 1000,
-      resolverMaxResponseBytes = 65536,
-      resolverMaxConcurrent = 32
+      resolverMaxResponseBytes = 65536
     }
 
 memCfg :: AServerConfig
@@ -99,8 +97,3 @@ memCfg2 = case memCfg of
 -- | Enable names on a config pointing at the local test resolver on `port`.
 withNames :: Int -> AServerConfig -> AServerConfig
 withNames port c = updateCfg c $ \cfg_ -> cfg_ {namesConfig = Just (testNamesConfig port)}
-
--- | Like 'withNames' but with a custom in-flight resolver cap, for tests that
--- exercise load-shedding / slot release at a small cap.
-withNamesCap :: Int -> Int -> AServerConfig -> AServerConfig
-withNamesCap cap port c = updateCfg c $ \cfg_ -> cfg_ {namesConfig = Just (testNamesConfig port) {resolverMaxConcurrent = cap}}

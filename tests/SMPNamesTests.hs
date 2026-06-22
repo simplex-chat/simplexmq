@@ -25,9 +25,7 @@ import Simplex.Messaging.Server.Names
     RpcAuth (..),
     newNamesEnv,
     pingEndpoint,
-    releaseResolver,
     resolveName,
-    tryAcquireResolver,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
@@ -228,15 +226,6 @@ resolverSpec = do
       _ <- resolveName env aliceDomain
       readIORef reqs `shouldReturn` [["resolve", "alice.simplex"]]
 
-  it "bounds concurrent resolutions at resolverMaxConcurrent; releaseResolver frees a slot" $ do
-    -- no HTTP is made; this exercises the admission counter the RSLV handler uses to shed load
-    env <- newNamesEnv (testNamesConfig 1) {resolverMaxConcurrent = 2}
-    a <- tryAcquireResolver env
-    b <- tryAcquireResolver env
-    c <- tryAcquireResolver env
-    releaseResolver env
-    d <- tryAcquireResolver env
-    [a, b, c, d] `shouldBe` [True, True, False, True]
   where
     aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
