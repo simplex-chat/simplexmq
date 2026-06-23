@@ -100,7 +100,6 @@ services:
       --http.addr 0.0.0.0 --http.port 8545
       --http.api eth,net
       --rpc.gascap 50000000
-      --rpc.max-response-size 5
       --port 30303
       --discovery.port 30303
     restart: unless-stopped
@@ -133,7 +132,7 @@ services:
   # To change the host port, edit the LEFT side of the port mapping below.
   resolver:
     build:
-      context: .
+      context: ./service
       dockerfile: Dockerfile
     depends_on:
       # reth's `service_started` is sufficient — the resolver tolerates
