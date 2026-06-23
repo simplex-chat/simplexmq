@@ -38,7 +38,7 @@ agentCoreTests = do
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
   describe "Short link tests" shortLinkTests
-  resolveNameTests
+  describe "resolve names" resolveNameTests
 
 agentTests :: (ASrvTransport, AStoreType) -> Spec
 agentTests ps = do

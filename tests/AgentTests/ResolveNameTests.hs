@@ -89,23 +89,22 @@ withNoNameServers k = withAgent 1 agentCfg (oneSrv (proxySrvCfg testSMPServer)) 
 
 resolveNameTests :: Spec
 resolveNameTests = do
-  describe "Agent resolveSimplexName" $ do
-    describe "direct path (SPMNever)" $
-      it "404 propagates as SMP host (NAME NOT_FOUND)" testDirectNotFound
-    describe "proxy path (SPMAlways)" $
-      it "404 from resolver propagates via proxy as SMP <proxyHost> (NAME NOT_FOUND)" testProxyNotFound
-    describe "TLDTesting path" $
-      it "NAME NOT_FOUND for TLDTesting too" testTestingTldNotFound
-    describe "TLDWeb path" $
-      it "NAME NOT_FOUND for TLDWeb too" testWebTldNotFound
-    describe "no resolver configured" $
-      it "answers NAME NO_RESOLVER" testNoResolver
-    describe "no names servers (names role off everywhere)" $
-      it "fails agent-side with NO_NAME_SERVERS" testNoNameServers
-    describe "backing resolver failure" $
-      it "surfaces as SMP host (NAME (RESOLVER ..))" testBackendError
-    describe "success path" $
-      it "returns NameRecord" testDirectSuccess
+  describe "direct path (SPMNever)" $
+    it "404 propagates as SMP host (NAME NOT_FOUND)" testDirectNotFound
+  describe "proxy path (SPMAlways)" $
+    it "404 from resolver propagates via proxy as SMP <proxyHost> (NAME NOT_FOUND)" testProxyNotFound
+  describe "TLDTesting path" $
+    it "NAME NOT_FOUND for TLDTesting too" testTestingTldNotFound
+  describe "TLDWeb path" $
+    it "NAME NOT_FOUND for TLDWeb too" testWebTldNotFound
+  describe "no resolver configured" $
+    it "answers NAME NO_RESOLVER" testNoResolver
+  describe "no names servers (names role off everywhere)" $
+    it "fails agent-side with NO_NAME_SERVERS" testNoNameServers
+  describe "backing resolver failure" $
+    it "surfaces as SMP host (NAME (RESOLVER ..))" testBackendError
+  describe "success path" $
+    it "returns NameRecord" testDirectSuccess
 
 -- ---------------------------------------------------------------------------
 -- Tests
