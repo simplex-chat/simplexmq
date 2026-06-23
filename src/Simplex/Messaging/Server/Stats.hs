@@ -39,7 +39,6 @@ module Simplex.Messaging.Server.Stats
     setServiceStats,
     emptyTimeBuckets,
     updateTimeBuckets,
-    incStat,
     NameResolverStats (..),
     NameResolverStatsData (..),
     newNameResolverStats,
@@ -50,7 +49,6 @@ module Simplex.Messaging.Server.Stats
   ) where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -808,10 +806,6 @@ updatePeriodStats ps (EntityId pId) = do
   where
     ph = hash pId
     updatePeriod ref = unlessM (IS.member ph <$> readIORef ref) $ atomicModifyIORef'_ ref $ IS.insert ph
-
-incStat :: MonadIO m => IORef Int -> m ()
-incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
-{-# INLINE incStat #-}
 
 data ProxyStats = ProxyStats
   { pRequests :: IORef Int,

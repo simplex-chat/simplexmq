@@ -1460,7 +1460,7 @@ The `RSLV` command carries the canonical fully-qualified name directly as the
 payload (not JSON):
 
 ```abnf
-rslv = %s"RSLV" SP domain   ; domain = canonical name as non-space bytes; any trailing bytes are ignored (forward-compatible)
+rslv = %s"RSLV" SP domain   ; domain = canonical name as non-space bytes, consuming the remainder of the transmission
 ```
 
 `domain` is the UTF-8 canonical fully-qualified name with the TLD always
@@ -1493,7 +1493,7 @@ fact that this router cannot resolve, so iterating past it is safe.
 The `RNAME` response carries a JSON-encoded record as the payload:
 
 ```abnf
-rname = %s"RNAME" SP len json-bytes   ; len = length of json-bytes as a 2-byte integer; any bytes after json-bytes are ignored (forward-compatible)
+rname = %s"RNAME" SP json-bytes   ; json-bytes consumes the remainder of the transmission
 ```
 
 `json-bytes` MUST be a UTF-8 JSON object with the following schema:

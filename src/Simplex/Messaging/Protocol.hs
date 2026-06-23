@@ -1940,8 +1940,6 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
-    -- the domain is space-delimited; ignore any trailing bytes so a future
-    -- version appending RSLV fields stays parseable by this server (fwd-compat)
     CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
@@ -1989,9 +1987,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    -- length-prefixed (Large) rather than Tail so the JSON record is
-    -- self-delimiting and later versions can append fields after it on the wire
-    RNAME rec -> e (RNAME_, ' ', Large $ LB.toStrict $ J.encode rec)
+    RNAME rec -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode rec)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2039,9 +2035,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
-    -- A.takeByteString ignores any bytes after the length-prefixed record, so a
-    -- future version appending fields stays parseable by this client (fwd-compat)
-    RNAME_ -> (fmap RNAME . J.eitherDecodeStrict . unLarge <$?> _smpP) <* A.takeByteString
+    RNAME_ -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP

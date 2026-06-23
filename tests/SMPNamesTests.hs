@@ -17,7 +17,6 @@ import Network.HTTP.Types (status200, status400, status404, status500, status502
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
-import Simplex.Messaging.Names.EthAddress (EthAddress, mkEthAddress, unEthAddress)
 import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NameRecord (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
@@ -30,12 +29,6 @@ import Simplex.Messaging.Server.Names
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
 import Test.Hspec
-
-twentyOnes :: B.ByteString
-twentyOnes = B.replicate 20 '\x01'
-
-unsafeAddr :: B.ByteString -> EthAddress
-unsafeAddr = either error id . mkEthAddress
 
 -- | Sample record matching the resolver JSON shape. Text fields use the empty
 -- string as the "unset" sentinel; coin fields use Nothing -> JSON null.
@@ -52,15 +45,14 @@ sampleRecord =
       nrBtc = Nothing,
       nrXmr = Nothing,
       nrDot = Nothing,
-      nrOwner = unsafeAddr twentyOnes,
-      nrResolver = unsafeAddr (B.replicate 20 '\x02')
+      nrOwner = "0x0101010101010101010101010101010101010101",
+      nrResolver = "0x0202020202020202020202020202020202020202"
     }
 
 smpNamesTests :: Spec
 smpNamesTests = do
   describe "NameRecord JSON (Protocol)" nameRecordEncodingSpec
   describe "ErrorType NAME wire encoding" errorWireSpec
-  describe "Smart constructors (EthAddress)" smartCtorsSpec
   describe "Name parsing (SimplexNameDomain)" parseNameSpec
   describe "HTTP resolver" resolverSpec
   describe "Resolver health probe" healthSpec
@@ -103,18 +95,6 @@ nameRecordEncodingSpec = do
     B.isInfixOf "\"simplexChannel\":[]" bytes `shouldBe` True
     B.isInfixOf "\"simplexChannel\":null" bytes `shouldBe` False
 
-  it "FromJSON EthAddress accepts both 0x and 0X prefixes" $ do
-    let json p = "\"" <> p <> "0101010101010101010101010101010101010101\""
-    (J.eitherDecodeStrict (json "0x") :: Either String EthAddress) `shouldSatisfy` isRight
-    (J.eitherDecodeStrict (json "0X") :: Either String EthAddress) `shouldSatisfy` isRight
-
-  it "owner / resolver are emitted as lowercase hex" $ do
-    -- The resolver returns lowercase hex; encoded form must match.
-    let mixedCase = unsafeAddr (B.pack ['\xde', '\xad', '\xbe', '\xef'] <> B.replicate 16 '\x00')
-        bytes = LB.toStrict (J.encode sampleRecord {nrOwner = mixedCase, nrResolver = mixedCase})
-    B.isInfixOf "0xdeadbeef" bytes `shouldBe` True
-    B.isInfixOf "0xDEADBEEF" bytes `shouldBe` False
-
 -- ERR (NAME ...) travels as field-ordered smpEncode on the wire; the RNAME
 -- success response carries the NameRecord as JSON (covered by the JSON spec).
 errorWireSpec :: Spec
@@ -124,18 +104,6 @@ errorWireSpec =
     smpDecode (smpEncode (NAME NOT_FOUND)) `shouldBe` Right (NAME NOT_FOUND)
     -- RESOLVER detail may contain spaces - must survive the round-trip
     smpDecode (smpEncode (NAME (RESOLVER "HTTP 502"))) `shouldBe` Right (NAME (RESOLVER "HTTP 502"))
-
-smartCtorsSpec :: Spec
-smartCtorsSpec = do
-  it "mkEthAddress accepts exactly 20 bytes" $ do
-    mkEthAddress twentyOnes `shouldSatisfy` isRight
-    mkEthAddress (B.replicate 19 '\x01') `shouldSatisfy` isLeft
-    mkEthAddress (B.replicate 21 '\x01') `shouldSatisfy` isLeft
-
-  it "unEthAddress round-trips mkEthAddress" $
-    case mkEthAddress twentyOnes of
-      Right o -> unEthAddress o `shouldBe` twentyOnes
-      Left e -> expectationFailure ("mkEthAddress failed: " <> e)
 
 -- The RSLV command carries a parsed SimplexNameDomain, so name validation
 -- happens at parse (StrEncoding). These exercise that validation directly.

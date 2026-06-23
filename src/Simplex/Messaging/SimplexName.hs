@@ -73,17 +73,13 @@ nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigi
 -- parser would otherwise `takeWhile1 (not . isSpace)` unbounded, allowing
 -- a crafted multi-megabyte token to be decoded and re-parsed before any
 -- validation. Cap at 253 bytes (DNS full-domain limit) — generous against
--- any realistic SimpleX name — and FAIL on a longer token rather than stop
--- at the cap, so an oversized name is rejected outright (not silently
--- truncated) on every entry point, including the RSLV wire decoder whose
--- trailing `takeByteString` would otherwise swallow and discard the overflow.
+-- any realistic SimpleX name — and forces the surrounding `parseOnly`
+-- (which requires consuming all input) to fail on oversized inputs.
 boundedNonSpace :: A.Parser ByteString
 boundedNonSpace = do
   bs <- A.scan (0 :: Int) $ \i c ->
-    if i <= 253 && not (A.isSpace c) then Just (i + 1) else Nothing
-  if B.null bs
-    then fail "expected non-empty name token"
-    else if B.length bs > 253 then fail "name token exceeds 253 bytes" else pure bs
+    if i < 253 && not (A.isSpace c) then Just (i + 1) else Nothing
+  if B.null bs then fail "expected non-empty name token" else pure bs
 
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =

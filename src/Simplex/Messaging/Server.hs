@@ -1486,28 +1486,25 @@ client
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    -- Count an RSLV request and decide handling: no resolver -> NO_RESOLVER
-    -- (Left, answered without forking); otherwise return the resolve action
-    -- (Right) for the caller to fork. Concurrent resolutions are bounded the
-    -- same way as every other forwarded command: per-client procThreads in
-    -- forkCmd. Shared by the direct and forwarded paths.
-    admitRslv :: SimplexNameDomain -> M s (Either BrokerMsg (M s BrokerMsg))
-    admitRslv d = do
+    -- Resolve a name to its RNAME / ERR (NAME ...) response: no resolver ->
+    -- NO_RESOLVER, otherwise resolve via the configured resolver and count the
+    -- outcome. Run on a forked thread (like proxying) so a slow RSLV does not
+    -- block other commands; concurrency is bounded the same way as every other
+    -- forwarded command, by per-client procThreads in forkCmd. Shared by the
+    -- direct and forwarded RSLV paths. The name is validated at parse.
+    rslvNameResponse :: SimplexNameDomain -> M s BrokerMsg
+    rslvNameResponse d = do
       st <- asks (rslvStats . serverStats)
       incStat (rslvReqs st)
       asks namesEnv >>= \case
-        Nothing -> incStat (rslvDisabled st) $> Left (ERR (NAME NO_RESOLVER))
-        Just nenv -> pure $ Right (rslvNameResponse nenv d)
-    -- The name is validated at parse, so this only maps the resolver outcome.
-    rslvNameResponse :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
-    rslvNameResponse nenv d = do
-      st <- asks (rslvStats . serverStats)
-      (selector, msg) <-
-        liftIO (resolveName nenv d) <&> \case
-          Right rec -> (rslvSucc, RNAME rec)
-          Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
-          Left e -> (rslvResolverErrs, ERR $ NAME e)
-      incStat (selector st) $> msg
+        Nothing -> incStat (rslvDisabled st) $> ERR (NAME NO_RESOLVER)
+        Just nenv -> do
+          (selector, msg) <-
+            liftIO (resolveName nenv d) <&> \case
+              Right rec -> (rslvSucc, RNAME rec)
+              Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
+              Left e -> (rslvResolverErrs, ERR $ NAME e)
+          incStat (selector st) $> msg
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
@@ -1524,8 +1521,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       -- Resolve on a forked thread (like proxying) so a slow RSLV does not block
       -- other commands. Shared with the forwarded path (processForwardedCommand).
-      Cmd SResolver (RSLV d) ->
-        admitRslv d >>= either (pure . response . (corrId, NoEntity,)) (forkCmd corrId NoEntity)
+      Cmd SResolver (RSLV d) -> forkCmd corrId NoEntity (rslvNameResponse d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2165,11 +2161,9 @@ client
                   -- forwarded RSLV resolves on a forked thread like the direct path;
                   -- the response is wrapped as RRES via encodeResp.
                   Cmd SResolver (RSLV d) ->
-                    admitRslv d >>= \case
-                      Left msg -> respond (corrId', entId', msg)
-                      Right act -> forkCmd corrId NoEntity $ do
-                        msg <- act
-                        either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                    forkCmd corrId NoEntity $ do
+                      msg <- rslvNameResponse d
+                      either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
                   -- INTERNAL is used because processCommand never returns Nothing for
                   -- the other forwarded commands (could be extracted for better types).
                   -- `fst` removes empty message that is only returned for `SUB` command
@@ -2271,6 +2265,10 @@ updateDeletedStats q = do
   incStat $ delSel stats
   incStat $ qDeletedAll stats
   liftIO $ atomicModifyIORef'_ (qCount stats) (subtract 1)
+
+incStat :: MonadIO m => IORef Int -> m ()
+incStat r = liftIO $ atomicModifyIORef'_ r (+ 1)
+{-# INLINE incStat #-}
 
 randomId' :: Int -> M s ByteString
 randomId' n = atomically . C.randomBytes n =<< asks random
