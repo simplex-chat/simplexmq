@@ -135,6 +135,12 @@ parseNameSpec = do
 
   it "rejects oversized inputs (>253 bytes)" $
     parseN (T.replicate 254 "a" <> ".simplex") `shouldSatisfy` isLeft
+
+  it "rejects a label longer than 63 bytes (DNS label limit)" $
+    parseN (T.replicate 64 "a" <> ".simplex") `shouldSatisfy` isLeft
+
+  it "accepts a label of exactly 63 bytes" $
+    parseN (T.replicate 63 "a" <> ".simplex") `shouldSatisfy` isRight
   where
     parseN :: T.Text -> Either String SimplexNameDomain
     parseN = strDecode . encodeUtf8

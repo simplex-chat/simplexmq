@@ -1486,25 +1486,30 @@ client
             when (used >= serverClientConcurrency) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    -- Resolve a name to its RNAME / ERR (NAME ...) response: no resolver ->
-    -- NO_RESOLVER, otherwise resolve via the configured resolver and count the
-    -- outcome. Run on a forked thread (like proxying) so a slow RSLV does not
-    -- block other commands; concurrency is bounded the same way as every other
-    -- forwarded command, by per-client procThreads in forkCmd. Shared by the
-    -- direct and forwarded RSLV paths. The name is validated at parse.
-    rslvNameResponse :: SimplexNameDomain -> M s BrokerMsg
-    rslvNameResponse d = do
+    -- Account an RSLV request and look up the resolver, shared by the direct and
+    -- forwarded RSLV paths. Nothing => names is disabled (counted), so the caller
+    -- answers NO_RESOLVER without forking; Just nenv => the caller forks the
+    -- resolution. Returning the env (not an action) keeps the fork at the call site.
+    rslvNamesEnv :: M s (Maybe NamesEnv)
+    rslvNamesEnv = do
       st <- asks (rslvStats . serverStats)
       incStat (rslvReqs st)
       asks namesEnv >>= \case
-        Nothing -> incStat (rslvDisabled st) $> ERR (NAME NO_RESOLVER)
-        Just nenv -> do
-          (selector, msg) <-
-            liftIO (resolveName nenv d) <&> \case
-              Right rec -> (rslvSucc, RNAME rec)
-              Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
-              Left e -> (rslvResolverErrs, ERR $ NAME e)
-          incStat (selector st) $> msg
+        Nothing -> incStat (rslvDisabled st) $> Nothing
+        Just nenv -> pure (Just nenv)
+    -- The actual resolution: resolve a parsed name via the configured resolver
+    -- and count the outcome (the name is already validated at parse). Run on a
+    -- forked thread so a slow RSLV does not block other commands; concurrency is
+    -- bounded by per-client procThreads in forkCmd, like every forwarded command.
+    resolveNameMsg :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
+    resolveNameMsg nenv d = do
+      st <- asks (rslvStats . serverStats)
+      (selector, msg) <-
+        liftIO (resolveName nenv d) <&> \case
+          Right rec -> (rslvSucc, RNAME rec)
+          Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
+          Left e -> (rslvResolverErrs, ERR $ NAME e)
+      incStat (selector st) $> msg
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
@@ -1519,9 +1524,14 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
-      -- Resolve on a forked thread (like proxying) so a slow RSLV does not block
-      -- other commands. Shared with the forwarded path (processForwardedCommand).
-      Cmd SResolver (RSLV d) -> forkCmd corrId NoEntity (rslvNameResponse d)
+      Cmd SResolver (RSLV d) -> rslvName
+        where
+          -- only fork when a resolver is configured; NO_RESOLVER is answered
+          -- without forking. Like proxying, the resolution runs on a forked
+          -- thread so a slow RSLV does not block other commands.
+          rslvName = rslvNamesEnv >>= \case
+            Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
+            Just nenv -> forkCmd corrId NoEntity (resolveNameMsg nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2158,12 +2168,15 @@ client
                 -- rejectOrVerify filters allowed commands, no need to repeat it here.
                 Left r -> respond r
                 Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-                  -- forwarded RSLV resolves on a forked thread like the direct path;
-                  -- the response is wrapped as RRES via encodeResp.
+                  -- like the direct path: fork only when a resolver is configured
+                  -- (else NO_RESOLVER without forking); the response is wrapped as
+                  -- RRES via encodeResp.
                   Cmd SResolver (RSLV d) ->
-                    forkCmd corrId NoEntity $ do
-                      msg <- rslvNameResponse d
-                      either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                    rslvNamesEnv >>= \case
+                      Nothing -> respond (corrId', entId', ERR (NAME NO_RESOLVER))
+                      Just nenv -> forkCmd corrId NoEntity $ do
+                        msg <- resolveNameMsg nenv d
+                        either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
                   -- INTERNAL is used because processCommand never returns Nothing for
                   -- the other forwarded commands (could be extracted for better types).
                   -- `fst` removes empty message that is only returned for `SUB` command

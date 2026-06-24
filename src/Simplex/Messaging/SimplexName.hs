@@ -60,7 +60,11 @@ instance StrEncoding SimplexNameType where
   strP = A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
 
 nameLabelP :: AT.Parser Text
-nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
+nameLabelP = do
+  label <- T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
+  -- DNS label limit: each dot-separated component is at most 63 bytes (labels
+  -- are ASCII, so character count == byte count)
+  if T.length label > 63 then fail "name label exceeds 63 bytes" else pure label
   where
     -- ASCII letters only. SNRC contracts hash byte sequences via keccak; ENS
     -- uses UTS-46 + Punycode for IDN, which we do not implement. Admitting
@@ -69,17 +73,18 @@ nameLabelP = T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigi
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
--- | DoS defense for the bare-name / bare-domain entry points. The outer
--- parser would otherwise `takeWhile1 (not . isSpace)` unbounded, allowing
--- a crafted multi-megabyte token to be decoded and re-parsed before any
--- validation. Cap at 253 bytes (DNS full-domain limit) — generous against
--- any realistic SimpleX name — and forces the surrounding `parseOnly`
--- (which requires consuming all input) to fail on oversized inputs.
+-- | Cap the name at 253 bytes (DNS full-domain limit) and FAIL on a longer
+-- token rather than stop at the cap, so an oversized name is rejected outright
+-- (not silently truncated) on every entry point — including the RSLV wire
+-- decoder, whose trailing `takeByteString` would otherwise swallow the overflow
+-- and resolve a truncated name.
 boundedNonSpace :: A.Parser ByteString
 boundedNonSpace = do
   bs <- A.scan (0 :: Int) $ \i c ->
-    if i < 253 && not (A.isSpace c) then Just (i + 1) else Nothing
-  if B.null bs then fail "expected non-empty name token" else pure bs
+    if i <= 253 && not (A.isSpace c) then Just (i + 1) else Nothing
+  if B.null bs
+    then fail "expected non-empty name token"
+    else if B.length bs > 253 then fail "name exceeds 253 bytes" else pure bs
 
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
