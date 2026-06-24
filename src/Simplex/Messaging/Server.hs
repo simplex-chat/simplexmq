@@ -1523,7 +1523,7 @@ client
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
-      Cmd SProxyService (RFWD encBlock) -> response . (corrId, NoEntity,) <$> processForwardedCommand encBlock
+      Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvName
         where
           -- only fork when a resolver is configured; NO_RESOLVER is answered
@@ -2129,8 +2129,8 @@ client
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret ntfNonce (smpEncode msgMeta) 128
               pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
-        processForwardedCommand :: EncFwdTransmission -> M s BrokerMsg
-        processForwardedCommand (EncFwdTransmission s) = fmap (either ERR RRES) . runExceptT $ do
+        processForwardedCommand :: EncFwdTransmission -> M s (Maybe BrokerMsg)
+        processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
@@ -2145,31 +2145,35 @@ client
             t :| [] -> pure $ tDecodeServer clntTHParams t
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, sessSecret' = Just clientSecret}
-          -- process forwarded command
-          r <-
-            lift (rejectOrVerify clntThAuth t') >>= \case
-              Left r -> pure r
-              -- rejectOrVerify filters allowed commands, no need to repeat it here.
-              -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
-              -- `fst` removes empty message that is only returned for `SUB` command
-              Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-                -- forwarded RSLV resolves synchronously here (idempotent read, no ordering concern), unlike forked direct RSLV
-                Cmd SResolver (RSLV d) -> (corrId', entId',) <$> lift (rslvNamesEnv >>= maybe (pure $ ERR (NAME NO_RESOLVER)) (\nenv -> resolveNameMsg nenv d))
-                _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right (M.empty, M.empty, M.empty)) t'')
-          -- encode response
-          r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
-            [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
-            TBError _ _ : _ -> throwE BLOCK
-            TBTransmission b' _ : _ -> pure b'
-            TBTransmissions b' _ _ : _ -> pure b'
-          -- encrypt to client
-          r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
-          -- encrypt to proxy
-          let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-              r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+              -- encode an inner response into the RRES reply (master's tail, factored
+              -- so the forked RSLV path reuses it)
+              encodeResp r = do
+                r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
+                  [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
+                  TBError _ _ : _ -> throwE BLOCK
+                  TBTransmission b' _ : _ -> pure b'
+                  TBTransmissions b' _ _ : _ -> pure b'
+                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
+                let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
+                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+          -- the inner response, or Nothing if forked. forwarded RSLV is forked (like direct
+          -- RSLV) so a slow resolution does not block other forwarded commands - the fork
+          -- delivers its own RRES via forkCmd; NO_RESOLVER and everything else reply in line.
+          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
+            -- rejectOrVerify filters allowed commands, no need to repeat it here.
+            Left r -> pure $ Just r
+            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
+                Just nenv -> forkCmd corrId NoEntity $ do
+                  msg <- resolveNameMsg nenv d
+                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+              -- INTERNAL because processCommand never returns Nothing for sender commands;
+              -- `fst` drops the empty message only returned for SUB.
+              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right (M.empty, M.empty, M.empty)) t'')
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          pure r3
+          traverse encodeResp r_
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
