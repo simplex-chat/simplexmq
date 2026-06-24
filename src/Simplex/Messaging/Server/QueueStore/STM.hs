@@ -116,6 +116,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       serviceCount role = M.foldl' (\ !n s -> if serviceRole (serviceRec s) == role then n + 1 else n) 0
       serviceQueuesCount serviceSel = foldM (\n s -> (n +) . S.size . fst <$> readTVarIO (serviceSel s)) 0
 
+  -- spec: spec/modules/Simplex/Messaging/Server/QueueStore/STM.md#addqueue_--atomic-multi-id-duplicate-check
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
     sq <- mkQ rId qr

@@ -103,6 +103,7 @@ currentXFTPVersion = VersionXFTP 3
 supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
+-- spec: spec/modules/Simplex/FileTransfer/Transport.md#xftpclienthandshakestub--xftp-doesnt-use-tls-handshake
 -- XFTP protocol does not use this handshake method
 xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
 xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys = throwE TEVersion
@@ -190,6 +191,7 @@ receiveEncFile getBody = receiveFile_ . receive
 
 data ReceiveFileError = RFESize | RFECrypto
 
+-- spec: spec/modules/Simplex/FileTransfer/Transport.md#receivesbfile--constant-time-auth-tag-verification
 receiveSbFile :: (Int -> IO ByteString) -> Handle -> LC.SbState -> Word32 -> IO (Either ReceiveFileError ())
 receiveSbFile getBody h = receive
   where

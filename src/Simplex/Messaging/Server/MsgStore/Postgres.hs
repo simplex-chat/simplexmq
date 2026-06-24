@@ -76,6 +76,7 @@ data PostgresQueue = PostgresQueue
     queueRec' :: TVar (Maybe QueueRec)
   }
 
+-- spec: spec/modules/Simplex/Messaging/Server/MsgStore/Postgres.md#msgqueue-is-unit-type
 instance StoreQueueClass PostgresQueue where
   recipientId = recipientId'
   {-# INLINE recipientId #-}

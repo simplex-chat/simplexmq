@@ -368,6 +368,7 @@ data ServerSubscribers s = ServerSubscribers
     pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
 
+-- spec: spec/modules/Simplex/Messaging/Server/Env/STM.md#subscribedclients--tvar-of-maybe-pattern
 -- not exported, to prevent accidental concurrent Map lookups inside STM transactions.
 -- Map stores TVars with pointers to the clients rather than client ID to allow reading the same TVar
 -- inside transactions to ensure that transaction is re-evaluated in case subscriber changes.

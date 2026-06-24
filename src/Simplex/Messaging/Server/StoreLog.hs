@@ -96,6 +96,7 @@ data SLRTag
   | NewService_
   | QueueService_
 
+-- spec: spec/modules/Simplex/Messaging/Server/StoreLog.md#queuerec-strencoding--backward-compatible-parsing
 instance StrEncoding QueueRec where
   strEncode QueueRec {recipientKeys, rcvDhSecret, rcvServiceId, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt} =
     B.concat
@@ -242,6 +243,7 @@ closeStoreLog = \case
   where
     close_ h = hClose h `catchAny` \e -> logError ("STORE: closeStoreLog, error closing, " <> tshow e)
 
+-- spec: spec/modules/Simplex/Messaging/Server/StoreLog.md#writestorelogrecord--atomicity-via-manual-write
 writeStoreLogRecord :: StrEncoding r => StoreLog 'WriteMode -> r -> IO ()
 writeStoreLogRecord (WriteStoreLog _ h) r = E.uninterruptibleMask_ $ do
   B.hPut h $ strEncode r `B.snoc` '\n' -- hPutStrLn makes write non-atomic for length > 1024
@@ -289,6 +291,7 @@ logNewService s  = writeStoreLogRecord s . NewService
 logQueueService :: (PartyI p, ServiceParty p) => StoreLog 'WriteMode -> RecipientId -> SParty p -> Maybe ServiceId -> IO ()
 logQueueService s rId party = writeStoreLogRecord s . QueueService rId (ASP party)
 
+-- spec: spec/modules/Simplex/Messaging/Server/StoreLog.md#readwritestorelog--crash-recovery-state-machine
 readWriteStoreLog :: (FilePath -> s -> IO ()) -> (StoreLog 'WriteMode -> s -> IO ()) -> FilePath -> s -> IO (StoreLog 'WriteMode)
 readWriteStoreLog readStore writeStore f st =
   ifM
