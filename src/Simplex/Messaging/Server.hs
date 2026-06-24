@@ -2130,57 +2130,47 @@ client
               pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
         processForwardedCommand :: EncFwdTransmission -> M s (Maybe BrokerMsg)
-        processForwardedCommand (EncFwdTransmission s) = do
-          prepared <- runExceptT $ do
-            THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
-            sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
-            let proxyNonce = C.cbNonce $ bs corrId
-            s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
-            FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
-            let clientSecret = C.dh' fwdKey serverPrivKey
-                clientNonce = C.cbNonce $ bs fwdCorrId
-            b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
-            let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
-            -- only allowing single forwarded transactions
-            t' <- case tParse clntTHParams b of
-              t :| [] -> pure $ tDecodeServer clntTHParams t
-              _ -> throwE BLOCK
-            let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, sessSecret' = Just clientSecret}
-                -- wrap an inner response transmission into the encrypted RRES reply
-                encodeResp r = do
-                  r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
-                    [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
-                    TBError _ _ : _ -> throwE BLOCK
-                    TBTransmission b' _ : _ -> pure b'
-                    TBTransmissions b' _ _ : _ -> pure b'
-                  -- encrypt to client
-                  r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
-                  -- encrypt to proxy
-                  let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-                  pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-            pure (clntThAuth, fwdVersion, t', encodeResp)
-          case prepared of
-            Left e -> pure $ Just $ ERR e
-            Right (clntThAuth, fwdVersion, t', encodeResp) -> do
-              incFwdRecv -- count every decrypted forwarded command, on either path
-              let respond r = Just . either ERR id <$> runExceptT (encodeResp r)
-              rejectOrVerify clntThAuth t' >>= \case
-                -- rejectOrVerify filters allowed commands, no need to repeat it here.
-                Left r -> respond r
-                Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-                  -- like the direct path: fork only when a resolver is configured
-                  -- (else NO_RESOLVER without forking); the response is wrapped as
-                  -- RRES via encodeResp.
-                  Cmd SResolver (RSLV d) ->
-                    rslvNamesEnv >>= \case
-                      Nothing -> respond (corrId', entId', ERR (NAME NO_RESOLVER))
-                      Just nenv -> forkCmd corrId NoEntity $ do
-                        msg <- resolveNameMsg nenv d
-                        either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                  -- INTERNAL is used because processCommand never returns Nothing for
-                  -- the other forwarded commands (could be extracted for better types).
-                  -- `fst` removes empty message that is only returned for `SUB` command
-                  _ -> processCommand Nothing fwdVersion (Right (M.empty, M.empty, M.empty)) t'' >>= respond . maybe (corrId', entId', ERR INTERNAL) fst
+        processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
+          THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
+          sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
+          let proxyNonce = C.cbNonce $ bs corrId
+          s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
+          FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          let clientSecret = C.dh' fwdKey serverPrivKey
+              clientNonce = C.cbNonce $ bs fwdCorrId
+          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
+          let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
+          -- only allowing single forwarded transactions
+          t' <- case tParse clntTHParams b of
+            t :| [] -> pure $ tDecodeServer clntTHParams t
+            _ -> throwE BLOCK
+          let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, sessSecret' = Just clientSecret}
+              -- encrypt an inner response back to client and proxy as the RRES
+              -- reply (or ERR to the proxy if it cannot be batched/encrypted)
+              encodeResp r = either ERR id $ do
+                r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
+                  [] -> Left INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
+                  TBError _ _ : _ -> Left BLOCK
+                  TBTransmission b' _ : _ -> Right b'
+                  TBTransmissions b' _ _ : _ -> Right b'
+                r2 <- first (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
+                let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
+                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+          lift incFwdRecv -- count every decrypted forwarded command, on either path
+          lift (rejectOrVerify clntThAuth t') >>= \case
+            -- rejectOrVerify filters allowed commands, no need to repeat it here.
+            Left r -> pure $ Just $ encodeResp r
+            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+              -- forwarded RSLV resolves on a forked thread (only when a resolver is
+              -- configured); the forked thread encodes and sends its own RRES.
+              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+                Nothing -> pure $ Just $ encodeResp (corrId', entId', ERR (NAME NO_RESOLVER))
+                Just nenv -> forkCmd corrId NoEntity $ do
+                  msg <- resolveNameMsg nenv d
+                  pure $ encodeResp (corrId', entId', msg)
+              -- INTERNAL because processCommand never returns Nothing for these
+              -- commands; `fst` drops the empty message only returned for SUB.
+              _ -> Just . encodeResp . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right (M.empty, M.empty, M.empty)) t'')
           where
             incFwdRecv = asks serverStats >>= incStat . pMsgFwdsRecv
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
