@@ -1468,22 +1468,22 @@ client
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
-        forkProxiedCmd = forkCmd corrId (EntityId sessId)
+        forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
     -- Run a slow command on a forked, back-pressured thread, sending its response
-    -- to sndQ from the thread so command processing is not blocked. Used for
-    -- proxying and name resolution.
-    forkCmd :: CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
-    forkCmd corrId entId cmdAction = do
+    -- to sndQ from the thread so command processing is not blocked. The concurrency
+    -- selector picks the per-connection limit (proxying vs name resolution).
+    forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
+    forkCmd concurrency corrId entId cmdAction = do
       bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
         -- commands MUST be processed under a reasonable timeout or the client would halt
         cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
       pure Nothing
       where
         wait = do
-          ServerConfig {serverClientConcurrency} <- asks config
+          limit <- asks (concurrency . config)
           atomically $ do
             used <- readTVar procThreads
-            when (used >= serverClientConcurrency) retry
+            when (used >= limit) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     -- Account an RSLV request and look up the resolver, shared by the direct and
@@ -1500,7 +1500,7 @@ client
     -- The actual resolution: resolve a parsed name via the configured resolver
     -- and count the outcome (the name is already validated at parse). Run on a
     -- forked thread so a slow RSLV does not block other commands; concurrency is
-    -- bounded by per-client procThreads in forkCmd, like every forwarded command.
+    -- bounded by serverResolverConcurrency in forkCmd.
     resolveNameMsg :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
     resolveNameMsg nenv d = do
       st <- asks (rslvStats . serverStats)
@@ -1531,7 +1531,7 @@ client
           -- thread so a slow RSLV does not block other commands.
           rslvName = rslvNamesEnv >>= \case
             Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-            Just nenv -> forkCmd corrId NoEntity (resolveNameMsg nenv d)
+            Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2165,7 +2165,7 @@ client
             Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
               Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> forkCmd corrId NoEntity $ do
+                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
                   msg <- resolveNameMsg nenv d
                   either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
               -- INTERNAL because processCommand never returns Nothing for sender commands;
