@@ -184,7 +184,7 @@ jobs:
           chmod -fR 777 ~/.cabal ./dist-newstyle || :; git config --global --add safe.directory '*'
           cabal clean
           cabal update
-          cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
+          cabal build --jobs=$(nproc) --enable-tests -fserver_postgres ${{ github.event_name != 'pull_request' && '-foptimize' || '' }}
           mkdir -p /out
           for i in smp-server xftp-server simplexmq-test; do
             bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
@@ -227,7 +227,7 @@ jobs:
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
-          cabal build --jobs=$(nproc)
+          cabal build --jobs=$(nproc) ${{ github.event_name != 'pull_request' && '-foptimize' || '' }}
           mkdir -p /out
           for i in ${{ env.apps }}; do
             bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
