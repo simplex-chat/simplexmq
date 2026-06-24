@@ -1524,14 +1524,9 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
-      Cmd SResolver (RSLV d) -> rslvName
-        where
-          -- only fork when a resolver is configured; NO_RESOLVER is answered
-          -- without forking. Like proxying, the resolution runs on a forked
-          -- thread so a slow RSLV does not block other commands.
-          rslvName = rslvNamesEnv >>= \case
-            Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-            Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg nenv d)
+      Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
+        Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
