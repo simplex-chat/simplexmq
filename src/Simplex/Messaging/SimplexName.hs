@@ -138,10 +138,6 @@ shortNameInfoStr = \case
         NTPublicGroup -> "#"
         NTContact -> "@"
 
--- | Stored as TEXT (the canonical strEncode form). `FromField` hard-decodes: a
--- stored value that fails to parse fails the row, matching the wire (a name that
--- won't decode fails the profile). Consumers that want soft-decode (degrade to
--- Nothing) use the explicit decodeSimplexName helper instead.
 instance ToField SimplexNameInfo where toField = toField . decodeLatin1 . strEncode
 
 instance FromField SimplexNameInfo where fromField = fromTextField_ (eitherToMaybe . strDecode . encodeUtf8)
