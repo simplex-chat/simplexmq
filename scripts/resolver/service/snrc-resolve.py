@@ -35,7 +35,7 @@ Environment:
   SNRC_RPC               JSON-RPC endpoint (default: http://127.0.0.1:8545)
   SNRC_REGISTRY_TESTING  ENSRegistry for the .testing deployment
                          (default: mainnet,
-                          0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6)
+                          0x58fc46996d975c57883564648bda5206d1a0102b)
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
                          (default: empty — TLD not yet deployed)
   SNRC_PORT              Listen port (default: 8000)
@@ -80,7 +80,7 @@ PORT = int(os.environ.get("SNRC_PORT", "8000"))
 # without duplicating the registry address.
 REGISTRIES = {
     "testing": os.environ.get("SNRC_REGISTRY_TESTING", "")
-    or "0x03f438da0bd44da3c6c1d0392f8ba183b8b3a7a6",  # mainnet .testing
+    or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
 
