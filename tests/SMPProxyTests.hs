@@ -63,6 +63,9 @@ smpProxyTests = do
       testProxyRecoversWithoutDisconnect
     it "reconnects to relay after sender disconnects mid-connection" $ \_ ->
       testProxyReconnectAfterRelayRestart
+  describe "agent client reconnection" $ do
+    it "reconnects after a connect is cancelled mid-flight" $ \_ ->
+      testAgentClientReconnectAfterCancel
   describe "proxy requests" $ do
     describe "bad relay URIs" $ do
       xit "host not resolved" todo
@@ -506,6 +509,34 @@ testProxyReconnectAfterRelayRestart =
     withStallingServerOn testPort2 $
       race_ (threadDelay 1000000) requestRelaySession
     requireProxyReconnect
+
+-- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
+-- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
+-- rethrows async exceptions. If the connecting thread is cancelled mid-connect, putTMVar is
+-- skipped and the empty var is left in smpClients, so every later connection to that server times
+-- out on it. Phase 1 cancels a connect to a stalling relay; phase 2 requires a fresh connect to a
+-- healthy relay to succeed.
+testAgentClientReconnectAfterCancel :: IO ()
+testAgentClientReconnectAfterCancel =
+  withAgent 1 agentCfg agentServersLeak testDB $ \a -> do
+    withStallingServerOn testPort2 $ do
+      t <- async $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      threadDelay 1000000 -- let the connect to the stalling relay start, then kill it mid-flight
+      cancel t
+    withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ -> do
+      testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+        (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
+        reply `shouldBe` Right SMP.PONG -- the relay is up and reachable, so a timeout can only be the poisoned var
+      r <- timeout 8000000 $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      case r of
+        Just (Right _) -> pure ()
+        _ -> expectationFailure $ "agent failed to connect after a cancelled connect; got: " <> show r
+  where
+    agentServersLeak =
+      initAgentServers
+        { smp = userServers [testSMPServer2],
+          netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 4000000 4000000}
+        }
 
 todo :: AStoreType -> IO ()
 todo _ = fail "TODO"
