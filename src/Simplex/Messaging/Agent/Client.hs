@@ -674,8 +674,7 @@ getSMPServerClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -
 getSMPServerClient c@AgentClient {active, smpClients, workerSeq} nm tSess = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
-  atomically (getSessVar workerSeq tSess smpClients ts)
-    >>= either newClient (waitForProtocolClient c nm tSess smpClients)
+  withGetSessVar workerSeq tSess smpClients ts newClient (waitForProtocolClient c nm tSess smpClients)
   where
     newClient v = do
       prs <- liftIO TM.emptyIO
@@ -686,29 +685,25 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
   unlessM (readTVarIO active) $ throwE INACTIVE
   proxySrv <- maybe (getNextServer c userId proxySrvs [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
-  atomically (getClientVar proxySrv ts) >>= \(tSess, auth, v) ->
-    either (newProxyClient tSess auth ts) (waitForProxyClient tSess auth) v
+  (tSess, auth) <- atomically $ proxiedTransportSession proxySrv
+  withGetSessVar workerSeq tSess smpClients ts (newProxyClient tSess auth ts) (waitForProxyClient tSess auth)
   where
-    getClientVar :: SMPServerWithAuth -> UTCTime -> STM (SMPTransportSession, Maybe SMP.BasicAuth, Either SMPClientVar SMPClientVar)
-    getClientVar proxySrv ts = do
+    proxiedTransportSession :: SMPServerWithAuth -> STM (SMPTransportSession, Maybe SMP.BasicAuth)
+    proxiedTransportSession proxySrv = do
       ProtoServerWithAuth srv auth <- TM.lookup destSess smpProxiedRelays >>= maybe (TM.insert destSess proxySrv smpProxiedRelays $> proxySrv) pure
-      let tSess = (userId, srv, qId)
-      (tSess,auth,) <$> getSessVar workerSeq tSess smpClients ts
+      pure ((userId, srv, qId), auth)
     newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> UTCTime -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     newProxyClient tSess auth ts v = do
       prs <- liftIO TM.emptyIO
-      -- we do not need to check if it is a new proxied relay session,
-      -- as the client is just created and there are no sessions yet
-      rv <- atomically $ either id id <$> getSessVar workerSeq destSrv prs ts
       clnt <- smpConnectClient c nm tSess prs v
-      (clnt,) <$> newProxiedRelay clnt auth rv
+      -- the relay var is always new (the client is just created and has no sessions yet)
+      sess <- withGetSessVar workerSeq destSrv prs ts (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
+      pure (clnt, sess)
     waitForProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     waitForProxyClient tSess auth v = do
       clnt@(SMPConnectedClient _ prs) <- waitForProtocolClient c nm tSess smpClients v
       ts <- liftIO getCurrentTime
-      sess <-
-        atomically (getSessVar workerSeq destSrv prs ts)
-          >>= either (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
+      sess <- withGetSessVar workerSeq destSrv prs ts (newProxiedRelay clnt auth) (waitForProxiedRelay tSess)
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     newProxiedRelay (SMPConnectedClient smp prs) proxyAuth rv =
@@ -846,10 +841,7 @@ getNtfServerClient :: AgentClient -> NetworkRequestMode -> NtfTransportSession -
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, presetDomains} nm tSess@(_, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
-  atomically (getSessVar workerSeq tSess ntfClients ts)
-    >>= either
-      (newProtocolClient c tSess ntfClients connectClient)
-      (waitForProtocolClient c nm tSess ntfClients)
+  withGetSessVar workerSeq tSess ntfClients ts (newProtocolClient c tSess ntfClients connectClient) (waitForProtocolClient c nm tSess ntfClients)
   where
     connectClient :: NtfClientVar -> AM NtfClient
     connectClient v = do
@@ -870,10 +862,7 @@ getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq, proxySessTs, presetDomains} tSess@(_, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
-  atomically (getSessVar workerSeq tSess xftpClients ts)
-    >>= either
-      (newProtocolClient c tSess xftpClients connectClient)
-      (waitForProtocolClient c NRMBackground tSess xftpClients)
+  withGetSessVar workerSeq tSess xftpClients ts (newProtocolClient c tSess xftpClients connectClient) (waitForProtocolClient c NRMBackground tSess xftpClients)
   where
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do

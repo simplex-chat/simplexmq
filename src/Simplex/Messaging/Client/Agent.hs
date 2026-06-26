@@ -205,11 +205,8 @@ getSMPServerClient' ca srv = snd <$> getSMPServerClient'' ca srv
 getSMPServerClient'' :: SMPClientAgent p -> SMPServer -> ExceptT SMPClientError IO (OwnServer, SMPClient)
 getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv = do
   ts <- liftIO getCurrentTime
-  atomically (getClientVar ts) >>= either (ExceptT . newSMPClient) waitForSMPClient
+  withGetSessVar workerSeq srv smpClients ts (ExceptT . newSMPClient) waitForSMPClient
   where
-    getClientVar :: UTCTime -> STM (Either SMPClientVar SMPClientVar)
-    getClientVar = getSessVar workerSeq srv smpClients
-
     waitForSMPClient :: SMPClientVar -> ExceptT SMPClientError IO (OwnServer, SMPClient)
     waitForSMPClient v = do
       let ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg

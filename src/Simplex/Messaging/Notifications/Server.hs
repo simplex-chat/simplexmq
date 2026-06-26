@@ -647,13 +647,14 @@ pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = DeviceToken pp _} ntf =
 getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
 getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
   ts <- liftIO getCurrentTime
-  atomically (getSessVar pushWorkerSeq key pushWorkers ts) >>= \case
-    Left v -> do
+  withGetSessVar' pushWorkerSeq key pushWorkers ts createWorker existingWorker
+  where
+    createWorker v = do
       q <- liftIO $ newTBQueueIO pushQSize
       tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)
       atomically $ putTMVar (sessionVar v) PushWorker {workerQ = q, workerThreadId = tId}
       pure q
-    Right v -> workerQ <$> atomically (readTMVar $ sessionVar v)
+    existingWorker v = workerQ <$> atomically (readTMVar $ sessionVar v)
 
 runPushWorker :: NtfPushServer -> Maybe T.Text -> OwnServer -> TBQueue (NtfTknRec, PushNotification) -> M ()
 runPushWorker s srvHost_ isOwn q = forever $ do
