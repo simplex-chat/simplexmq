@@ -28,11 +28,11 @@ import Data.Functor (($>))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Simplex.Messaging.Agent.Store.DB (ToField (..))
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
-import Simplex.Messaging.Util (safeDecodeUtf8, (<$?>))
+import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, (<$?>))
 
 data SimplexNameInfo = SimplexNameInfo
   { nameType :: SimplexNameType,
@@ -138,12 +138,13 @@ shortNameInfoStr = \case
         NTPublicGroup -> "#"
         NTContact -> "@"
 
--- | Stored as TEXT. The matching `FromField` instance is intentionally not
--- defined: existing consumers want soft-decode semantics (parse failure
--- degrades to `Nothing` rather than failing the row), which doesn't
--- compose with `fromTextField_`. Add a `FromField` instance here only
--- when a consumer wants the row-fail behaviour and document the divide.
+-- | Stored as TEXT (the canonical strEncode form). `FromField` hard-decodes: a
+-- stored value that fails to parse fails the row, matching the wire (a name that
+-- won't decode fails the profile). Consumers that want soft-decode (degrade to
+-- Nothing) use the explicit decodeSimplexName helper instead.
 instance ToField SimplexNameInfo where toField = toField . decodeLatin1 . strEncode
+
+instance FromField SimplexNameInfo where fromField = fromTextField_ (eitherToMaybe . strDecode . encodeUtf8)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
 
