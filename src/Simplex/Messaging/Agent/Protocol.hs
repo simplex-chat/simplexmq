@@ -138,7 +138,9 @@ module Simplex.Messaging.Agent.Protocol
     validateOwners,
     validateLinkOwners,
     sameConnReqContact,
+    sameConnShortLink,
     sameShortLinkContact,
+    sameShortLinkInv,
     simplexChat,
     connReqUriP',
     simplexConnReqUri,
@@ -1752,9 +1754,20 @@ sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUr
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')
 
+sameConnShortLink :: AConnShortLink -> AConnShortLink -> Bool
+sameConnShortLink (ACSL m sl) (ACSL m' sl') = case testEquality m m' of
+  Just Refl -> case sl of
+    CSLContact {} -> sameShortLinkContact sl sl'
+    CSLInvitation {} -> sameShortLinkInv sl sl'
+  Nothing -> False
+
 sameShortLinkContact :: ConnShortLink 'CMContact -> ConnShortLink 'CMContact -> Bool
 sameShortLinkContact (CSLContact _ ct srv k) (CSLContact _ ct' srv' k') =
   ct == ct' && sameSrvAddr srv srv' && k == k'
+
+sameShortLinkInv :: ConnShortLink 'CMInvitation -> ConnShortLink 'CMInvitation -> Bool
+sameShortLinkInv (CSLInvitation _ srv lnkId k) (CSLInvitation _ srv' lnkId' k') =
+  sameSrvAddr srv srv' && lnkId == lnkId' && k == k'
 
 checkConnMode :: forall t m m'. (ConnectionModeI m, ConnectionModeI m') => t m' -> Either String (t m)
 checkConnMode c = case testEquality (sConnectionMode @m) (sConnectionMode @m') of
