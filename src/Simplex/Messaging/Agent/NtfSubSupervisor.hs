@@ -504,7 +504,7 @@ workerInternalError c connId internalErrStr = do
 notifyInternalError :: MonadIO m => AgentClient -> ConnId -> String -> m ()
 notifyInternalError c connId internalErrStr = do
   logError $ T.pack internalErrStr
-  liftIO $ notifyEvent c ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
+  liftIO $ nonBlockingNotifyEvent c ("", connId, AEvt SAEConn $ ERR $ INTERNAL internalErrStr)
 
 notifyInternalError' :: MonadIO m => AgentClient -> String -> m ()
 notifyInternalError' c = notifyInternalError c ""

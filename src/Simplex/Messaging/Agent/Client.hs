@@ -834,7 +834,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
     handleNotify = E.handleAny $ notifySub' c "" . ERR . INTERNAL . show
 
 notifySub' :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
-notifySub' c connId cmd = liftIO $ notifyEvent c (B.empty, connId, AEvt (sAEntity @e) cmd)
+notifySub' c connId cmd = liftIO $ nonBlockingNotifyEvent c (B.empty, connId, AEvt (sAEntity @e) cmd)
 {-# INLINE notifySub' #-}
 
 notifySub :: MonadIO m => AgentClient -> AEvent 'AENone -> m ()
@@ -925,7 +925,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
-      liftIO $ notifyEvent c ("", "", AEvt SAENone $ hostEvent CONNECT client)
+      liftIO $ nonBlockingNotifyEvent c ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
       ei <- asks $ persistErrorInterval . config

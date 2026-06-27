@@ -147,7 +147,10 @@ import Simplex.Messaging.Server.QueueStore.Types (QueueStoreClass (..))
 
 data AgentClient = AgentClient
   { client :: A.AgentClient,
-    subQ :: TBQueue ATransmission
+    subQ :: TBQueue ATransmission,
+    -- DOWN/UP events skipped by a typed get' (e.g. get @'AEConn), kept in arrival order
+    -- so that a later nGet can still consume them instead of them being silently dropped.
+    skippedQ :: TVar [ATransmission]
   }
 
 type AEntityTransmission e = (ACorrId, ConnId, AEvent e)
@@ -185,12 +188,20 @@ nGet :: (MonadIO m, HasCallStack) => AgentClient -> m (AEntityTransmission 'AENo
 nGet c = withFrozenCallStack $ get' @'AENone c
 
 get' :: forall e m. (MonadIO m, AEntityI e, HasCallStack) => AgentClient -> m (AEntityTransmission e)
-get' c = withFrozenCallStack $ do
-  t@(corrId, connId, AEvt e cmd) <- pGet c
-  case testEquality e (sAEntity @e) of
-    Just Refl -> pure (corrId, connId, cmd)
-    _ | skipEvent t -> get' c
-      | otherwise -> error $ "unexpected command " <> show cmd
+get' c@AgentClient {skippedQ} = withFrozenCallStack $ do
+  -- return a previously skipped event if it matches the requested entity (used by nGet for DOWN/UP);
+  -- a typed get' never matches the skipped DOWN/UP, so they stay buffered for nGet
+  skipped <- atomically $ stateTVar skippedQ $ \case
+    t@(_, _, AEvt e _) : ts | isJust (testEquality e (sAEntity @e)) -> (Just t, ts)
+    ts -> (Nothing, ts)
+  case skipped of
+    Just (corrId, connId, AEvt e cmd) | Just Refl <- testEquality e (sAEntity @e) -> pure (corrId, connId, cmd)
+    _ -> do
+      t@(corrId, connId, AEvt e cmd) <- pGet c
+      case testEquality e (sAEntity @e) of
+        Just Refl -> pure (corrId, connId, cmd)
+        _ | skipEvent t -> atomically (modifyTVar' skippedQ (<> [t])) >> get' c
+          | otherwise -> error $ "unexpected command " <> show cmd
   where
     skipEvent (_, _, AEvt _ A.DOWN {}) = True
     skipEvent (_, _, AEvt _ A.UP {}) = True
@@ -4431,10 +4442,11 @@ getSMPAgentClient' :: Int -> AgentConfig -> InitialAgentServers -> String -> IO 
 getSMPAgentClient' clientId cfg' initServers dbPath = do
   Right st <- liftIO $ createStore dbPath
   subQ <- newTBQueueIO 1024
+  skippedQ <- newTVarIO []
   Right client <- runExceptT $ getSMPAgentClient_ clientId cfg' initServers st (\_ -> atomically . writeTBQueue subQ)
   when (dbNew st) $ insertUser st
   startSMPAgentClient client False
-  pure AgentClient {client, subQ}
+  pure AgentClient {client, subQ, skippedQ}
 
 #if defined(dbPostgres)
 createStore :: String -> IO (Either MigrationError DBStore)

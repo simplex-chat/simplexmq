@@ -1862,14 +1862,10 @@ runCommandProcessing c connId server_ Worker {doWork} = do
     lift $ waitForWork doWork
     liftIO $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (\db -> getPendingServerCommand db connId server_) $ runProcessCmd (riFast ri)
+    withWork c doWork (\db -> getPendingServerCommand db connId server_) $ processCmd (riFast ri)
   where
-    runProcessCmd ri cmd = do
-      pending <- newTVarIO []
-      processCmd ri cmd pending
-      mapM_ (liftIO . notifyEvent c) . reverse =<< readTVarIO pending
-    processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
-    processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
+    processCmd :: RetryInterval -> PendingCommand -> AM ()
+    processCmd ri PendingCommand {cmdId, corrId, userId, command} = case command of
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
           triedHosts <- newTVarIO S.empty
@@ -2023,7 +2019,7 @@ runCommandProcessing c connId server_ Worker {doWork} = do
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
         notify :: forall e. AEntityI e => AEvent e -> AM ()
-        notify cmd = atomically $ modifyTVar' pendingCmds ((corrId, connId, AEvt (sAEntity @e) cmd) :)
+        notify cmd = liftIO $ notifyEvent c (corrId, connId, AEvt (sAEntity @e) cmd)
 -- ^ ^ ^ async command processing /
 
 enqueueMessages :: AgentClient -> ConnData -> NonEmpty SndQueue -> MsgFlags -> AMessage -> AM (AgentMsgId, PQEncryption)
@@ -3068,7 +3064,7 @@ processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion Err
 processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessionId = sessId}, ts) = do
   upConnIds <- newTVarIO []
   serviceRQs <- newTVarIO ([] :: [RcvQueue])
-  forM_ ts $ \(entId, t) -> case t of
+  forM_ ts $ \(entId, t) -> E.uninterruptibleMask_ $ case t of
     STEvent msgOrErr
       | entId == SMP.NoEntity -> case msgOrErr of
           Right msg -> case msg of
@@ -3077,7 +3073,7 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
             _ -> logError $ "unexpected event: " <> tshow msg
           Left e -> notifyErr "" e
       | otherwise -> withRcvConn entId $ \rq@RcvQueue {connId} conn -> case msgOrErr of
-          Right msg -> runProcessSMP rq conn (toConnData conn) msg
+          Right msg -> processSMP rq conn (toConnData conn) msg
           Left e -> lift $ do
             processClientNotice rq e
             notifyErr connId e
@@ -3088,11 +3084,11 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
           Right (SMP.SOK serviceId_) -> liftIO $ processSubOk rq upConnIds serviceRQs serviceId_
           Right msg@SMP.MSG {} -> do
             liftIO $ processSubOk rq upConnIds serviceRQs Nothing -- the connection is UP even when processing this particular message fails
-            runProcessSMP rq conn (toConnData conn) msg
+            processSMP rq conn (toConnData conn) msg
           Right r -> lift $ processSubErr rq $ unexpectedResponse r
           Left e -> lift $ unless (temporaryClientError e) $ processSubErr rq e -- timeout/network was already reported
         SMP.ACK _ -> case respOrErr of
-          Right msg@SMP.MSG {} -> runProcessSMP rq conn (toConnData conn) msg
+          Right msg@SMP.MSG {} -> processSMP rq conn (toConnData conn) msg
           _ -> pure () -- TODO process OK response to ACK
         _ -> pure () -- TODO process expired response to DEL
     STResponse {} -> pure () -- TODO process expired responses to sent messages
@@ -3141,18 +3137,12 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
     notify' connId msg = liftIO $ notifyEvent c ("", connId, AEvt (sAEntity @e) msg)
     notifyErr :: ConnId -> SMPClientError -> AM' ()
     notifyErr connId = notify' connId . ERR . protocolClientError SMP (B.unpack $ strEncode srv)
-    runProcessSMP :: RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
-    runProcessSMP rq conn cData msg = do
-      pending <- newTVarIO []
-      processSMP rq conn cData msg pending
-      mapM_ (liftIO . notifyEvent c) . reverse =<< readTVarIO pending
-    processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> TVar [ATransmission] -> AM ()
+    processSMP :: forall c. RcvQueue -> Connection c -> ConnData -> BrokerMsg -> AM ()
     processSMP
       rq@RcvQueue {rcvId = rId, queueMode, e2ePrivKey, e2eDhSecret, status, smpClientVersion = agreedClientVerion}
       conn
       cData@ConnData {connId, connAgentVersion = agreedAgentVersion, ratchetSyncState = rss}
-      smpMsg
-      pendingMsgs =
+      smpMsg =
         withConnLock c connId "processSMP" $ case smpMsg of
           SMP.MSG msg@SMP.RcvMessage {msgId = srvMsgId} -> do
             atomically $ incSMPServerStat c userId srv recvMsgs
@@ -3352,7 +3342,7 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
           notify :: forall e m. (AEntityI e, MonadIO m) => AEvent e -> m ()
           notify = notify_ connId
           notify_ :: forall e m. (AEntityI e, MonadIO m) => ConnId -> AEvent e -> m ()
-          notify_ connId' msg = atomically $ modifyTVar' pendingMsgs (("", connId', AEvt (sAEntity @e) msg) :)
+          notify_ connId' msg = liftIO $ notifyEvent c ("", connId', AEvt (sAEntity @e) msg)
 
           prohibited :: Text -> AM ()
           prohibited s = do
