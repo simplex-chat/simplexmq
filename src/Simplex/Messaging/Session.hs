@@ -44,10 +44,6 @@ removeSessVar v sessKey vs =
     Just v' | sessionVarId v == sessionVarId v' -> TM.delete sessKey vs
     _ -> pure ()
 
--- Remove the var from the map only if it is still empty (its fill was interrupted).
-dropEmptySessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
-dropEmptySessVar v sessKey vs = whenM (isEmptyTMVar $ sessionVar v) $ removeSessVar v sessKey vs
-
 -- | Get or create a session var and route to onNew (newly created) or onExisting. The new-var
 -- branch is bracketed from the point of creation: if it is interrupted before filling the var
 -- (e.g. an async exception during connect), the still-empty var is dropped from the map so the
@@ -69,8 +65,10 @@ withGetSessVar' ::
 withGetSessVar' sessSeq sessKey vs ts onNew onExisting =
   bracketOnError
     (liftIO $ atomically $ getSessVar sessSeq sessKey vs ts)
-    (\case Left v -> liftIO $ atomically $ dropEmptySessVar v sessKey vs; Right _ -> pure ())
+    (either (liftIO . atomically . dropEmptySessVar) (\_ -> pure ()))
     (either onNew onExisting)
+  where
+    dropEmptySessVar v = whenM (isEmptyTMVar $ sessionVar v) $ removeSessVar v sessKey vs
 
 tryReadSessVar :: Ord k => k -> TMap k (SessionVar a) -> STM (Maybe a)
 tryReadSessVar sessKey vs = TM.lookup sessKey vs $>>= (tryReadTMVar . sessionVar)
