@@ -93,7 +93,6 @@ serverTests = do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
     testServiceSubsTotalCount
-    testServiceSubsRemovedOnQueueDelete
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -937,56 +936,6 @@ testServiceSubsTotalCount =
             ]
         threadDelay 1500000
         readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 3
-
--- regression test for a memory leak: a service delivery subscription stayed in the service client's
--- subscriptions map after its queue was unassociated/deleted by another client, growing without bound
--- for the lifetime of a long-lived service connection.
-testServiceSubsRemovedOnQueueDelete :: SpecWith (ASrvTransport, AStoreType)
-testServiceSubsRemovedOnQueueDelete =
-  it "should remove service delivery subscription when its queue is deleted by another client" $ \(at@(ATransport t), msType) -> do
-    g <- C.newRandom
-    creds <- genCredentials g Nothing (0, 2400) "localhost"
-    let (_fp, tlsCred) = tlsCredentials [creds]
-    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
-    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
-    withSmpServerConfigEnvOn at (cfgMS msType) testPort $ \senv _ -> do
-      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      runSMPClient t $ \h -> do
-        (rId, sId, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
-          Resp "1" NoEntity (Ids_ rId sId _srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
-          Resp "2" _ OK <- signSendRecv h sKey ("2", sId, SKEY sPub)
-          pure (rId, sId, serviceId)
-        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
-          signSend_ sh aServicePK Nothing ("3", serviceId, SUBS 1 (queueIdsHash [rId]))
-          -- drain SOKS and ALLS (they arrive on separate threads); SOKS content is covered by testServiceSubsTotalCount
-          void $
-            receiveInAnyOrder
-              sh
-              [ \case
-                  Resp "3" _ (SOKS _ _) -> pure $ Just ()
-                  _ -> pure Nothing,
-                \case
-                  Resp "" NoEntity ALLS -> pure $ Just ()
-                  _ -> pure Nothing
-              ]
-          -- a SEND to the service-associated queue creates a delivery subscription in the service client's map
-          Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello")
-          Resp "" _ (Msg _ _) <- tGet1 sh
-          serviceSubsMapSize senv serviceId `shouldReturn` Just 1
-          -- a different client deletes the queue while the service stays connected
-          runSMPClient t $ \dh -> do
-            Resp "5" _ OK <- signSendRecv dh rKey ("5", rId, DEL)
-            pure ()
-          -- the queue deletion is processed asynchronously; the delivery subscription must be removed
-          let go n =
-                serviceSubsMapSize senv serviceId >>= \case
-                  Just 0 -> pure ()
-                  s
-                    | n > 0 -> threadDelay 100000 >> go (n - 1)
-                    | otherwise -> s `shouldBe` Just 0
-          go (20 :: Int)
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =

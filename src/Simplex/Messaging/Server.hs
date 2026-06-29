@@ -32,7 +32,6 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
-    runSMPServerBlocking_,
     controlPortAuth,
     importMessages,
     exportMessages,
@@ -160,15 +159,7 @@ runSMPServer cfg attachHTTP_ = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
-runSMPServerBlocking = runSMPServerBlocking_ $ \_ -> pure ()
-
--- | Like 'runSMPServerBlocking', but passes the created 'Env' to the given action before the server starts,
--- allowing tests to introspect the running server's internal state.
-runSMPServerBlocking_ :: MsgStoreClass s => (Env s -> IO ()) -> TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
-runSMPServerBlocking_ withEnv started cfg attachHTTP_ = do
-  env <- newEnv cfg
-  withEnv env
-  runReaderT (smpServer started cfg attachHTTP_) env
+runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
 
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
