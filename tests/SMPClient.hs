@@ -25,7 +25,7 @@ import Network.Socket
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
-import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -339,6 +339,16 @@ proxyCfgJ2QS = \case
   SQSMemory -> journalCfg (proxyCfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
   SQSPostgres -> journalCfgDB (proxyCfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
 
+-- Proxy config with a short relay-connection timeout, to bound how long a failing
+-- proxy->relay connection attempt blocks in the relay reconnection tests.
+proxyCfgShortTimeout :: AServerConfig
+proxyCfgShortTimeout =
+  updateCfg proxyCfg $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+        nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
+     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
+
 proxyVRangeV8 :: VersionRangeSMP
 proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
@@ -382,6 +392,15 @@ serverBracket process afterProcess f = do
       5_000_000 `timeout` atomically (takeTMVar started) >>= \case
         Nothing -> error $ "server did not " <> s
         _ -> pure ()
+
+-- A TCP server that accepts connections but never performs a TLS handshake, so a client
+-- connecting to it stays blocked in the TLS handshake until its connection timeout.
+withStallingServerOn :: HasCallStack => ServiceName -> IO a -> IO a
+withStallingServerOn port action =
+  serverBracket
+    (\started -> runLocalTCPServer started port (\_ -> threadDelay maxBound))
+    (pure ())
+    (const action)
 
 withSmpServerOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const
