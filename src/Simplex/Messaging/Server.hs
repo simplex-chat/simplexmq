@@ -338,7 +338,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
           where
             unsubPrev :: Maybe sub -> IO ()
-            unsubPrev s_ = forM_ unsub_ $ \unsub -> mapM_ unsub s_
+            unsubPrev s_ = sequence_ (unsub_ <*> s_)
             endSub :: Client s -> QueueId -> STM (Maybe sub)
             endSub c qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs c $>)
             endServiceQueueSub :: Client s -> QueueId -> STM (Maybe sub)
