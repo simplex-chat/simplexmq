@@ -19,6 +19,7 @@ import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
+import qualified Data.Map.Strict as M
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket
@@ -30,7 +31,7 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClie
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (runSMPServerBlocking)
+import Simplex.Messaging.Server (runSMPServerBlocking_)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -38,14 +39,14 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, ($>>=))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, readTVarIO, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
@@ -357,13 +358,32 @@ withServerCfg :: AServerConfig -> (forall s. ServerConfig s -> a) -> a
 withServerCfg (ASrvCfg _ _ cfg') f = f cfg'
 
 withSmpServerConfigOn :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
-withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
-  serverBracket
-    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
-    (threadDelay 10000)
+withSmpServerConfigOn t srvCfg port' f = withSmpServerConfigEnvOn t srvCfg port' (const f)
 
 withSmpServerThreadOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)
+
+-- the message store type is existential in AServerConfig, so the running Env is wrapped to hide it
+data SomeEnv = forall s. SomeEnv (Env s)
+
+-- runs the server like withSmpServerConfigOn, also passing its Env for white-box assertions on internal state
+withSmpServerConfigEnvOn :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> (HasCallStack => SomeEnv -> ThreadId -> IO a) -> IO a
+withSmpServerConfigEnvOn t (ASrvCfg _ _ cfg') port' f = do
+  envVar <- newEmptyTMVarIO
+  serverBracket
+    (\started -> runSMPServerBlocking_ (atomically . putTMVar envVar . SomeEnv) started cfg' {transports = [(port', t, False)]} Nothing)
+    (threadDelay 10000)
+    (\tId -> atomically (takeTMVar envVar) >>= (`f` tId))
+
+-- size of the service client's delivery subscriptions map, Nothing if no client is subscribed as the service
+serviceSubsMapSize :: SomeEnv -> ServiceId -> IO (Maybe Int)
+serviceSubsMapSize (SomeEnv env) serviceId =
+  getSubscribedClient serviceId serviceSubscribers
+    $>>= readTVarIO
+    $>>= \Client {subscriptions} -> Just . M.size <$> readTVarIO subscriptions
+  where
+    Server {subscribers} = server env
+    ServerSubscribers {serviceSubscribers} = subscribers
 
 serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do

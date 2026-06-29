@@ -32,6 +32,7 @@
 module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
+    runSMPServerBlocking_,
     controlPortAuth,
     importMessages,
     exportMessages,
@@ -159,7 +160,15 @@ runSMPServer cfg attachHTTP_ = do
 -- This function uses passed TMVar to signal when the server is ready to accept TCP requests (True)
 -- and when it is disconnected from the TCP socket once the server thread is killed (False).
 runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
-runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
+runSMPServerBlocking = runSMPServerBlocking_ $ \_ -> pure ()
+
+-- | Like 'runSMPServerBlocking', but passes the created 'Env' to the given action before the server starts,
+-- allowing tests to introspect the running server's internal state.
+runSMPServerBlocking_ :: MsgStoreClass s => (Env s -> IO ()) -> TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
+runSMPServerBlocking_ withEnv started cfg attachHTTP_ = do
+  env <- newEnv cfg
+  withEnv env
+  runReaderT (smpServer started cfg attachHTTP_) env
 
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
@@ -329,21 +338,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         endPreviousSubscriptions = mapM_ $ \(c, subAction, evt) -> do
           atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt] (evt <|)) (clientId c)
           case subAction of
-            CSAEndSub qId -> atomically (endSub c qId) >>= a unsub_
-              where
-                a (Just unsub) (Just s) = unsub s
-                a _ _ = pure ()
-            CSAEndServiceSub qId -> atomically $ do
-              modifyTVar' (clientServiceSubs c) decrease
-              modifyTVar' totalServiceSubs decrease
-              where
-                decrease = subtractServiceSubs (1, queueIdHash qId)
+            CSAEndSub qId -> atomically (endSub c qId) >>= unsubPrev
+            -- like endSub, also removes the delivery subscription from the service client's subscriptions map,
+            -- otherwise the map retains entries for queues unassociated/deleted while the service stays connected.
+            CSAEndServiceSub qId -> atomically (endServiceQueueSub c qId) >>= unsubPrev
             CSADecreaseSubs changedSubs -> do
               atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
               forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
           where
+            unsubPrev :: Maybe sub -> IO ()
+            unsubPrev s_ = forM_ unsub_ $ \unsub -> mapM_ unsub s_
             endSub :: Client s -> QueueId -> STM (Maybe sub)
             endSub c qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs c $>)
+            endServiceQueueSub :: Client s -> QueueId -> STM (Maybe sub)
+            endServiceQueueSub c qId = do
+              modifyTVar' (clientServiceSubs c) decrease
+              modifyTVar' totalServiceSubs decrease
+              endSub c qId
+              where
+                decrease = subtractServiceSubs (1, queueIdHash qId)
         -- remove client from server's subscribed cients
         removeWhenNoSubs c = do
           noClientSubs <- null <$> readTVar (clientSubs c)
