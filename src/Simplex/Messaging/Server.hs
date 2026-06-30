@@ -329,21 +329,25 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         endPreviousSubscriptions = mapM_ $ \(c, subAction, evt) -> do
           atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt] (evt <|)) (clientId c)
           case subAction of
-            CSAEndSub qId -> atomically (endSub c qId) >>= a unsub_
-              where
-                a (Just unsub) (Just s) = unsub s
-                a _ _ = pure ()
-            CSAEndServiceSub qId -> atomically $ do
-              modifyTVar' (clientServiceSubs c) decrease
-              modifyTVar' totalServiceSubs decrease
-              where
-                decrease = subtractServiceSubs (1, queueIdHash qId)
+            CSAEndSub qId -> atomically (endSub c qId) >>= unsubPrev
+            -- like endSub, also removes the delivery subscription from the service client's subscriptions map,
+            -- otherwise the map retains entries for queues unassociated/deleted while the service stays connected.
+            CSAEndServiceSub qId -> atomically (endServiceQueueSub c qId) >>= unsubPrev
             CSADecreaseSubs changedSubs -> do
               atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
               forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
           where
+            unsubPrev :: Maybe sub -> IO ()
+            unsubPrev s_ = sequence_ (unsub_ <*> s_)
             endSub :: Client s -> QueueId -> STM (Maybe sub)
             endSub c qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs c $>)
+            endServiceQueueSub :: Client s -> QueueId -> STM (Maybe sub)
+            endServiceQueueSub c qId = do
+              modifyTVar' (clientServiceSubs c) decrease
+              modifyTVar' totalServiceSubs decrease
+              endSub c qId
+              where
+                decrease = subtractServiceSubs (1, queueIdHash qId)
         -- remove client from server's subscribed cients
         removeWhenNoSubs c = do
           noClientSubs <- null <$> readTVar (clientSubs c)
