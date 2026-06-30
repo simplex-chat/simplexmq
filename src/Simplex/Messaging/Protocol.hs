@@ -1597,7 +1597,7 @@ data NameErrorType
     NO_RESOLVER
   | -- | the name is not registered (resolver returned not-found)
     NOT_FOUND
-  | -- | backing resolver/RPC failure - carries the diagnostic detail
+  | -- | backing resolver/RPC failure - contains the diagnostic detail
     RESOLVER {resolverErr :: Text}
   deriving (Eq, Show)
 
