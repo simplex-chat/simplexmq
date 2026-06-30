@@ -65,7 +65,7 @@ import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
 import Data.Foldable (foldrM)
-import Data.Functor (($>))
+import Data.Functor (($>), (<&>))
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
@@ -103,11 +103,13 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.SimplexName (SimplexNameDomain)
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
+import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -245,7 +247,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       saveServerStats
 
     closeServer :: M s ()
-    closeServer = asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
+    closeServer = do
+      asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
+      asks namesEnv >>= liftIO . mapM_ closeNamesEnv
 
     serverThread ::
       forall sub. String ->
@@ -517,7 +521,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
       liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
-      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices}
+      ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices, rslvStats}
         <- asks serverStats
       st <- asks msgStore
       EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
@@ -580,6 +584,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           qCount' <- readIORef qCount
           msgCount' <- readIORef msgCount
           ntfCount' <- readIORef ntfCount
+          rslvStats' <- getResetNameResolverStatsData rslvStats
           T.hPutStrLn h $
             T.intercalate
               ","
@@ -653,6 +658,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                      ]
                        <> showServiceStats rcvServices'
                        <> showServiceStats ntfServices'
+                       <> showNameResolverStats rslvStats'
               )
         liftIO $ threadDelay' interval
       where
@@ -660,6 +666,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -1266,6 +1274,7 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, comma
     vc SNotifierService NSUBS {} = verifyServiceCmd
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
+    vc SResolver (RSLV _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True
@@ -1463,19 +1472,40 @@ client
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
-        forkProxiedCmd cmdAction = do
-          bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " proxy") $ do
-            -- commands MUST be processed under a reasonable timeout or the client would halt
-            cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, EntityId sessId, t)], [])
-          pure Nothing
-          where
-            wait = do
-              ServerConfig {serverClientConcurrency} <- asks config
-              atomically $ do
-                used <- readTVar procThreads
-                when (used >= serverClientConcurrency) retry
-                writeTVar procThreads $! used + 1
-            signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
+        forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
+    -- Run a slow command on a thread
+    forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
+    forkCmd concurrency corrId entId cmdAction = do
+      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
+        -- commands MUST be processed under a reasonable timeout or the client would halt
+        cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+      pure Nothing
+      where
+        wait = do
+          limit <- asks (concurrency . config)
+          atomically $ do
+            used <- readTVar procThreads
+            when (used >= limit) retry
+            writeTVar procThreads $! used + 1
+        signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
+    rslvNamesEnv :: M s (Maybe NamesEnv)
+    rslvNamesEnv = do
+      st <- asks (rslvStats . serverStats)
+      incStat (rslvReqs st)
+      asks namesEnv >>= \case
+        Nothing -> incStat (rslvDisabled st) $> Nothing
+        Just nenv -> pure (Just nenv)
+    -- Runs on a forked thread so RSLV does not block other commands;
+    -- concurrency is limited by serverResolverConcurrency in forkCmd.
+    resolveNameMsg :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
+    resolveNameMsg nenv d = do
+      st <- asks (rslvStats . serverStats)
+      (selector, msg) <-
+        liftIO (resolveName nenv d) <&> \case
+          Right rec -> (rslvSucc, RNAME rec)
+          Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
+          Left e -> (rslvResolverErrs, ERR $ NAME e)
+      incStat (selector st) $> msg
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
@@ -1489,7 +1519,10 @@ client
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
-      Cmd SProxyService (RFWD encBlock) -> response . (corrId,NoEntity,) <$> processForwardedCommand encBlock
+      Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
+      Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
+        Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2087,8 +2120,8 @@ client
                   encNMsgMeta = C.cbEncrypt rcvNtfDhSecret ntfNonce (smpEncode msgMeta) 128
               pure $ MsgNtf {ntfMsgId = msgId, ntfTs = msgTs, ntfNonce, ntfEncMeta = fromRight "" encNMsgMeta}
 
-        processForwardedCommand :: EncFwdTransmission -> M s BrokerMsg
-        processForwardedCommand (EncFwdTransmission s) = fmap (either ERR RRES) . runExceptT $ do
+        processForwardedCommand :: EncFwdTransmission -> M s (Maybe BrokerMsg)
+        processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
           let proxyNonce = C.cbNonce $ bs corrId
@@ -2103,28 +2136,31 @@ client
             t :| [] -> pure $ tDecodeServer clntTHParams t
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, sessSecret' = Just clientSecret}
-          -- process forwarded command
-          r <-
-            lift (rejectOrVerify clntThAuth t') >>= \case
-              Left r -> pure r
-              -- rejectOrVerify filters allowed commands, no need to repeat it here.
-              -- INTERNAL is used because processCommand never returns Nothing for sender commands (could be extracted for better types).
-              -- `fst` removes empty message that is only returned for `SUB` command
-              Right t''@(_, (corrId', entId', _)) -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right (M.empty, M.empty, M.empty)) t'')
-          -- encode response
-          r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
-            [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
-            TBError _ _ : _ -> throwE BLOCK
-            TBTransmission b' _ : _ -> pure b'
-            TBTransmissions b' _ _ : _ -> pure b'
-          -- encrypt to client
-          r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
-          -- encrypt to proxy
-          let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-              r3 = EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+              encodeResp r = do
+                r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
+                  [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
+                  TBError _ _ : _ -> throwE BLOCK
+                  TBTransmission b' _ : _ -> pure b'
+                  TBTransmissions b' _ _ : _ -> pure b'
+                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
+                let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
+                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+          -- the inner response, or Nothing if forked (RSLV).
+          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
+            -- rejectOrVerify filters allowed commands, no need to repeat it here.
+            Left r -> pure $ Just r
+            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
+                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
+                  msg <- resolveNameMsg nenv d
+                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+              -- INTERNAL because processCommand never returns Nothing for sender commands;
+              -- `fst` drops the empty message only returned for SUB.
+              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing fwdVersion (Right (M.empty, M.empty, M.empty)) t'')
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          pure r3
+          traverse encodeResp r_
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
@@ -2138,6 +2174,7 @@ client
                     Cmd SSender (SKEY _) -> True
                     Cmd SSenderLink (LKEY _) -> True
                     Cmd SSenderLink LGET -> True
+                    Cmd SResolver (RSLV _) -> True
                     _ -> False
                   verified = \case
                     VRVerified q -> Right (q, t'')

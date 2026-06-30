@@ -12,6 +12,7 @@ import AgentTests.ConnectionRequestTests
 import AgentTests.DoubleRatchetTests (doubleRatchetTests)
 import AgentTests.FunctionalAPITests (functionalAPITests)
 import AgentTests.MigrationTests (migrationTests)
+import AgentTests.ResolveNameTests (resolveNameTests)
 import AgentTests.ServerChoice (serverChoiceTests)
 import AgentTests.ShortLinkTests (shortLinkTests)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..))
@@ -37,6 +38,7 @@ agentCoreTests = do
   describe "Connection request" connectionRequestTests
   describe "Double ratchet tests" doubleRatchetTests
   describe "Short link tests" shortLinkTests
+  describe "resolve names" resolveNameTests
 
 agentTests :: (ASrvTransport, AStoreType) -> Spec
 agentTests ps = do

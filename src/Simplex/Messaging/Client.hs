@@ -73,6 +73,8 @@ module Simplex.Messaging.Client
     deleteSMPQueues,
     connectSMPProxiedRelay,
     proxySMPMessage,
+    proxyResolveName,
+    directResolveName,
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
@@ -164,6 +166,7 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.SimplexName (SimplexNameDomain)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -1045,6 +1048,33 @@ sendSMPMessage c nm spKey sId flags msg =
 
 proxySMPMessage :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> Maybe SndPrivateAuthKey -> SenderId -> MsgFlags -> MsgBody -> ExceptT SMPClientError IO (Either ProxyClientError ())
 proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm proxiedRelay spKey sId (SEND flags msg)
+
+-- | Resolve a public-namespace name via PFWD. Preferred path - hides the
+-- client IP from the resolver. Mirrors `proxySMPMessage`'s shape; routes
+-- through `proxySMPCommand` and pattern-matches the expected RNAME response.
+-- Version-gated on the destination relay (mirrors `connectSMPProxiedRelay`):
+-- the client never sends RSLV to a relay that predates names support.
+proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexNameDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
+proxyResolveName c nm proxiedRelay name
+  | prVersion proxiedRelay >= namesSMPVersion =
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV name) >>= \case
+        Right (RNAME nr) -> pure $ Right nr
+        Right r -> throwE $ unexpectedResponse r
+        Left e -> pure $ Left e
+  | otherwise = throwE $ PCETransportError TEVersion
+
+-- | Direct (non-PFWD) name resolution. Exposes the client IP to the resolver;
+-- callers that want anonymity should use `proxyResolveName` via the standard
+-- proxy fallback in the agent. RSLV requires no entity ID or authorization
+-- (see `noAuthCmd` in Protocol.hs). Version-gated on the session here, not the
+-- encoder, so an old server never receives RSLV.
+directResolveName :: SMPClient -> NetworkRequestMode -> SimplexNameDomain -> ExceptT SMPClientError IO NameRecord
+directResolveName c nm name
+  | thVersion (thParams c) >= namesSMPVersion =
+      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV name)) >>= \case
+        RNAME nr -> pure nr
+        r -> throwE $ unexpectedResponse r
+  | otherwise = throwE $ PCETransportError TEVersion
 
 -- | Acknowledge message delivery (server deletes the message).
 --

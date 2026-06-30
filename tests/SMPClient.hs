@@ -278,6 +278,8 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
       allowSMPProxy = False,
       serverClientConcurrency = 2,
+      serverResolverConcurrency = defaultNameResolverConcurrency,
+      namesConfig = Nothing,
       information = Nothing,
       startOptions = defaultStartOptions
     }

@@ -80,6 +80,7 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
+    NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
     BlockingInfo (..),
@@ -163,6 +164,7 @@ module Simplex.Messaging.Protocol
     EncTransmission (..),
     FwdResponse (..),
     FwdTransmission (..),
+    NameRecord (..),
     MsgFlags (..),
     initialSMPClientVersion,
     currentSMPClientVersion,
@@ -263,10 +265,12 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Names.Record (NameRecord (..))
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
+import Simplex.Messaging.SimplexName (SimplexNameDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -343,6 +347,7 @@ data Party
   | LinkClient
   | ProxiedClient
   | ProxyService
+  | Resolver
   deriving (Show)
 
 -- | Singleton types for SMP protocol clients
@@ -357,6 +362,7 @@ data SParty :: Party -> Type where
   SSenderLink :: SParty LinkClient
   SProxiedClient :: SParty ProxiedClient
   SProxyService :: SParty ProxyService
+  SResolver :: SParty Resolver
 
 instance TestEquality SParty where
   testEquality SCreator SCreator = Just Refl
@@ -369,6 +375,7 @@ instance TestEquality SParty where
   testEquality SSenderLink SSenderLink = Just Refl
   testEquality SProxiedClient SProxiedClient = Just Refl
   testEquality SProxyService SProxyService = Just Refl
+  testEquality SResolver SResolver = Just Refl
   testEquality _ _ = Nothing
 
 deriving instance Show (SParty p)
@@ -394,6 +401,8 @@ instance PartyI LinkClient where sParty = SSenderLink
 instance PartyI ProxiedClient where sParty = SProxiedClient
 
 instance PartyI ProxyService where sParty = SProxyService
+
+instance PartyI Resolver where sParty = SResolver
 
 -- command parties that can read queues
 type family QueueParty (p :: Party) :: Constraint where
@@ -473,6 +482,7 @@ partyClientRole = \case
   SSenderLink -> Just SRMessaging
   SProxiedClient -> Just SRMessaging
   SProxyService -> Just SRProxy
+  SResolver -> Just SRMessaging
 {-# INLINE partyClientRole #-}
 
 partyServiceRole :: ServiceParty p => SParty p -> SMPServiceRole
@@ -597,6 +607,8 @@ data Command (p :: Party) where
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
+  -- Resolve SimpleX name.
+  RSLV :: SimplexNameDomain -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -732,6 +744,8 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
+  -- Resolved SimpleX name.
+  RNAME :: NameRecord -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -942,6 +956,7 @@ data CommandTag (p :: Party) where
   RFWD_ :: CommandTag ProxyService
   NSUB_ :: CommandTag Notifier
   NSUBS_ :: CommandTag NotifierService
+  RSLV_ :: CommandTag Resolver
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -968,6 +983,7 @@ data BrokerMsgTag
   | OK_
   | ERR_
   | PONG_
+  | RNAME_
   deriving (Show)
 
 class ProtocolMsgTag t where
@@ -1004,6 +1020,7 @@ instance PartyI p => Encoding (CommandTag p) where
     RFWD_ -> "RFWD"
     NSUB_ -> "NSUB"
     NSUBS_ -> "NSUBS"
+    RSLV_ -> "RSLV"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
@@ -1032,6 +1049,7 @@ instance ProtocolMsgTag CmdTag where
     "RFWD" -> Just $ CT SProxyService RFWD_
     "NSUB" -> Just $ CT SNotifier NSUB_
     "NSUBS" -> Just $ CT SNotifierService NSUBS_
+    "RSLV" -> Just $ CT SResolver RSLV_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1061,6 +1079,7 @@ instance Encoding BrokerMsgTag where
     OK_ -> "OK"
     ERR_ -> "ERR"
     PONG_ -> "PONG"
+    RNAME_ -> "RNAME"
   smpP = messageTagP
 
 instance ProtocolMsgTag BrokerMsgTag where
@@ -1083,6 +1102,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "OK" -> Just OK_
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
+    "RNAME" -> Just RNAME_
     _ -> Nothing
 
 -- | SMP message body format
@@ -1565,8 +1585,20 @@ data ErrorType
     EXPIRED
   | -- | internal server error
     INTERNAL
+  | -- | name resolution error
+    NAME {nameErr :: NameErrorType}
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
+  deriving (Eq, Show)
+
+-- | Name resolution error
+data NameErrorType
+  = -- | the names role / resolver is not configured on this server
+    NO_RESOLVER
+  | -- | the name is not registered (resolver returned not-found)
+    NOT_FOUND
+  | -- | backing resolver/RPC failure - contains the diagnostic detail
+    RESOLVER {resolverErr :: Text}
   deriving (Eq, Show)
 
 instance StrEncoding ErrorType where
@@ -1585,6 +1617,7 @@ instance StrEncoding ErrorType where
     LARGE_MSG -> "LARGE_MSG"
     EXPIRED -> "EXPIRED"
     INTERNAL -> "INTERNAL"
+    NAME e -> "NAME " <> strEncode e
     DUPLICATE_ -> "DUPLICATE_"
   strP =
     A.choice
@@ -1592,6 +1625,7 @@ instance StrEncoding ErrorType where
         "SESSION" $> SESSION,
         "CMD " *> (CMD <$> parseRead1),
         "PROXY " *> (PROXY <$> strP),
+        "NAME " *> (NAME <$> strP),
         "AUTH" $> AUTH,
         "BLOCKED " *> strP,
         "SERVICE" $> SERVICE,
@@ -1792,6 +1826,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
+    RSLV d -> e (RSLV_, ' ', d)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1816,6 +1851,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY {} -> noAuthCmd
     PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
+    RSLV _ -> noAuthCmd
     SUB -> serviceCmd
     NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
@@ -1899,6 +1935,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
+    CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1945,6 +1982,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
+    RNAME rec -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode rec)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1992,6 +2030,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
+    RNAME_ -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2014,6 +2053,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
+    RNAME _ -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY
@@ -2056,6 +2096,7 @@ instance Encoding ErrorType where
     NO_MSG -> "NO_MSG"
     LARGE_MSG -> "LARGE_MSG"
     INTERNAL -> "INTERNAL"
+    NAME err -> "NAME " <> smpEncode err
     DUPLICATE_ -> "DUPLICATE_"
 
   smpP =
@@ -2074,8 +2115,25 @@ instance Encoding ErrorType where
       "NO_MSG" -> pure NO_MSG
       "LARGE_MSG" -> pure LARGE_MSG
       "INTERNAL" -> pure INTERNAL
+      "NAME" -> NAME <$> _smpP
       "DUPLICATE_" -> pure DUPLICATE_
       _ -> fail "bad ErrorType"
+
+instance Encoding NameErrorType where
+  smpEncode = \case
+    NO_RESOLVER -> "NO_RESOLVER"
+    NOT_FOUND -> "NOT_FOUND"
+    RESOLVER e -> "RESOLVER " <> encodeUtf8 e
+  smpP =
+    A.takeTill (== ' ') >>= \case
+      "NO_RESOLVER" -> pure NO_RESOLVER
+      "NOT_FOUND" -> pure NOT_FOUND
+      "RESOLVER" -> RESOLVER . safeDecodeUtf8 <$> (A.space *> A.takeByteString)
+      _ -> fail "bad NameErrorType"
+
+instance StrEncoding NameErrorType where
+  strEncode = smpEncode
+  strP = smpP
 
 instance Encoding CommandError where
   smpEncode e = case e of
@@ -2376,4 +2434,4 @@ $(J.deriveJSON (sumTypeJSON id) ''BrokerErrorType)
 $(J.deriveJSON defaultJSON ''BlockingInfo)
 
 -- run deriveJSON in one TH splice to allow mutual instance
-$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''ErrorType])
+$(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
