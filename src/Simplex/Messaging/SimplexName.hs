@@ -4,9 +4,6 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
 
--- | SimpleX name shape — parsed surface form for `@contact.simplex`,
--- `#group`, and similar. Shared between the agent (which receives names
--- from the user) and the server (which validates them on the RSLV path).
 module Simplex.Messaging.SimplexName
   ( SimplexNameInfo (..),
     SimplexNameDomain (..),
@@ -73,11 +70,7 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
--- | Cap the name at 253 bytes (DNS full-domain limit) and FAIL on a longer
--- token rather than stop at the cap, so an oversized name is rejected outright
--- (not silently truncated) on every entry point — including the RSLV wire
--- decoder, whose trailing `takeByteString` would otherwise swallow the overflow
--- and resolve a truncated name.
+-- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString
 boundedNonSpace = do
   bs <- A.scan (0 :: Int) $ \i c ->
@@ -88,7 +81,7 @@ boundedNonSpace = do
 
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
-    "simplex:/name" <> strEncode nameType <> strEncode nameDomain
+    strEncode nameType <> strEncode nameDomain
   strP = optional "simplex:/name" *> ((strP >>= infoP) <|> infoP NTPublicGroup)
     where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
@@ -101,11 +94,6 @@ instance StrEncoding SimplexNameDomain where
   strP = parseDomain . safeDecodeUtf8 <$?> boundedNonSpace
     where
       parseDomain s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
-      -- All labels lowercased: DNS labels are case-insensitive, and namehash is
-      -- byte-defined — preserving original case would make `Alice.simplex` and
-      -- `alice.simplex` resolve to different on-chain records. A mixed-case TLD
-      -- would also fall through to TLDWeb and route through the `tldAll`
-      -- catch-all entry instead of the TLDSimplex registry.
       mkDomain labels = case reverse lowered of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
@@ -115,8 +103,6 @@ instance StrEncoding SimplexNameDomain where
         where
           lowered = map T.toLower labels
 
--- Wire encoding for the RSLV command: the domain is the trailing field, so it
--- encodes as the raw StrEncoding bytes (no length prefix) and parses to end.
 instance Encoding SimplexNameDomain where
   smpEncode = strEncode
   smpP = strP
