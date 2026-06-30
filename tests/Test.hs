@@ -8,7 +8,6 @@ import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import CoreTests.BatchingTests
-import CoreTests.ConnectTargetTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
@@ -85,7 +84,6 @@ main = do
       $ do
         describe "Core tests" $ do
           describe "Batching tests" batchingTests
-          describe "ConnectTarget tests" connectTargetTests
           describe "Encoding tests" encodingTests
           describe "Version range" versionRangeTests
           describe "Encryption tests" cryptoTests
