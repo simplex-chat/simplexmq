@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, sampleRecord) where
+module SMPNamesTests (smpNamesTests, testNameRecord) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -30,10 +30,8 @@ import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
 import Test.Hspec
 
--- | Sample record matching the resolver JSON shape. Text fields use the empty
--- string as the "unset" sentinel; coin fields use Nothing -> JSON null.
-sampleRecord :: NameRecord
-sampleRecord =
+testNameRecord :: NameRecord
+testNameRecord =
   NameRecord
     { nrName = "alice.simplex",
       nrNickname = "Alice",
@@ -61,10 +59,10 @@ smpNamesTests = do
 nameRecordEncodingSpec :: Spec
 nameRecordEncodingSpec = do
   it "round-trips JSON encode / decode" $
-    J.eitherDecodeStrict (LB.toStrict (J.encode sampleRecord)) `shouldBe` Right sampleRecord
+    J.eitherDecodeStrict (LB.toStrict (J.encode testNameRecord)) `shouldBe` Right testNameRecord
 
   it "emits keys in spec-documented order (resolver shape)" $ do
-    let bytes = LB.toStrict (J.encode sampleRecord)
+    let bytes = LB.toStrict (J.encode testNameRecord)
         offset k = B.length (fst (B.breakSubstring k bytes))
         offsets =
           map
@@ -85,18 +83,16 @@ nameRecordEncodingSpec = do
     offsets `shouldBe` sort offsets
 
   it "emits unset coin fields as null (not absent)" $ do
-    let bytes = LB.toStrict (J.encode sampleRecord)
+    let bytes = LB.toStrict (J.encode testNameRecord)
     B.isInfixOf "\"btc\":null" bytes `shouldBe` True
     B.isInfixOf "\"xmr\":null" bytes `shouldBe` True
     B.isInfixOf "\"dot\":null" bytes `shouldBe` True
 
   it "emits unset link fields as empty arrays (not null)" $ do
-    let bytes = LB.toStrict (J.encode sampleRecord)
+    let bytes = LB.toStrict (J.encode testNameRecord)
     B.isInfixOf "\"simplexChannel\":[]" bytes `shouldBe` True
     B.isInfixOf "\"simplexChannel\":null" bytes `shouldBe` False
 
--- ERR (NAME ...) travels as field-ordered smpEncode on the wire; the RNAME
--- success response carries the NameRecord as JSON (covered by the JSON spec).
 errorWireSpec :: Spec
 errorWireSpec =
   it "ErrorType NAME family round-trips smpEncode / smpDecode" $ do
@@ -105,8 +101,6 @@ errorWireSpec =
     -- RESOLVER detail may contain spaces - must survive the round-trip
     smpDecode (smpEncode (NAME (RESOLVER "HTTP 502"))) `shouldBe` Right (NAME (RESOLVER "HTTP 502"))
 
--- The RSLV command carries a parsed SimplexNameDomain, so name validation
--- happens at parse (StrEncoding). These exercise that validation directly.
 parseNameSpec :: Spec
 parseNameSpec = do
   it "accepts a valid simplex-TLD name" $
@@ -148,9 +142,9 @@ parseNameSpec = do
 resolverSpec :: Spec
 resolverSpec = do
   it "returns NameRecord on 200 OK" $
-    withResolverServer (resolveResp status200 (J.encode sampleRecord)) $ \port _ -> do
+    withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Right sampleRecord
+      resolveName env aliceDomain `shouldReturn` Right testNameRecord
 
   it "returns NOT_FOUND on 404" $
     withResolverServer (resolveResp status404 "{}") $ \port _ -> do
@@ -183,19 +177,19 @@ resolverSpec = do
       resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
   it "returns RESOLVER (timeout) when the resolver is slower than resolverTimeoutMs" $
-    withResolverServerDelayed 1500 (resolveResp status200 (J.encode sampleRecord)) $ \port _ -> do
+    withResolverServerDelayed 1500 (resolveResp status200 (J.encode testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverTimeoutMs = 300}
       resolveName env aliceDomain `shouldReturn` Left (RESOLVER "timeout")
 
   it "sends one HTTP request per lookup (no cache)" $
-    withResolverServer (resolveResp status200 (J.encode sampleRecord)) $ \port reqs -> do
+    withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port reqs -> do
       env <- newNamesEnv (testNamesConfig port)
       _ <- resolveName env aliceDomain
       _ <- resolveName env aliceDomain
       readIORef reqs >>= \rs -> length rs `shouldBe` 2
 
   it "addresses the resolver with the full canonical domain name" $
-    withResolverServer (resolveResp status200 (J.encode sampleRecord)) $ \port reqs -> do
+    withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port reqs -> do
       env <- newNamesEnv (testNamesConfig port)
       _ <- resolveName env aliceDomain
       readIORef reqs `shouldReturn` [["resolve", "alice.simplex"]]
@@ -229,8 +223,6 @@ healthSpec = do
       ["health"] -> (status500, "{}")
       _ -> (status404, "{}")
 
--- The endpoint is operator-supplied trusted config, so validation is just
--- basic well-formedness: an absolute http(s) URL with a host.
 validateUrlSpec :: Spec
 validateUrlSpec = do
   it "accepts an https URL with a path prefix" $

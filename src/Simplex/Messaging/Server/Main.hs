@@ -812,11 +812,6 @@ readNamesConfig ini
               { resolverEndpoint = either (error . ("[NAMES] resolver_endpoint: " <>)) id (validateUrl endpoint resolverAuth_),
                 resolverAuth = resolverAuth_,
                 resolverTimeoutMs = boundedIniInt 3000 100 60000 "resolver_timeout_ms",
-                -- ceiling = SMP transport budget: the NAME response is one SMP
-                -- transmission (proxied: padded to paddedProxiedTLength = 16226)
-                -- carrying the resolver's JSON record on the wire, so capping the
-                -- resolver response body guarantees the RNAME response always frames.
-                -- An over-cap body fails as BodyTooLarge -> ERR (NAME (RESOLVER ..)).
                 resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes"
               }
   where
@@ -824,11 +819,6 @@ readNamesConfig ini
     requiredText key =
       either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
         lookupValue "NAMES" key ini
-    -- Lower bound rejects values that would time-out every RSLV immediately
-    -- (timeout = 0) or accept zero-length responses (max_response_bytes = 0).
-    -- The upper bounds defend against operator-misconfig footguns: the response
-    -- cap is the SMP transport budget (see resolverMaxResponseBytes above), and
-    -- 60 s is the max RSLV timeout no operator wants exceeded.
     boundedIniInt def floor_ ceiling_ key = case lookupValue "NAMES" key ini of
       Left _ -> def
       Right raw -> case readMaybe (T.unpack (T.strip raw)) of
@@ -839,13 +829,8 @@ readNamesConfig ini
           | otherwise ->
               error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
 
--- | Validate the resolver_endpoint URL: it must be an absolute http(s) URL
--- with a host. /resolve/<name> and /health are appended to it, so a
--- reverse-proxy sub-path prefix is fine. The endpoint is operator-supplied
--- trusted config (not attacker-controlled), so SSRF/IP-alias hardening is not
--- applied; credentials go in resolver_auth, not the URL. The one transport
--- guard kept: http + resolver_auth to a non-loopback host is rejected, since
--- the Authorization header would otherwise travel in cleartext.
+-- | Validate the resolver_endpoint URL: it must be an absolute http(s) URL with a host.
+-- http + resolver_auth to a non-loopback host is rejected.
 validateUrl :: Text -> Maybe RpcAuth -> Either String String
 validateUrl url auth_ = do
   let s = T.unpack url
@@ -858,11 +843,8 @@ validateUrl url auth_ = do
   unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; put credentials in resolver_auth"
   when (scheme == "http:" && isJust auth_ && not (isLoopback host)) $
     Left "http with resolver_auth on a non-loopback host not allowed (the Authorization header would travel in cleartext); use https, or drop resolver_auth"
-  -- drop trailing slash(es) so "<endpoint>/resolve/<name>" never double-slashes
   Right (dropWhileEnd (== '/') s)
   where
-    -- exact loopback literals only; a "127." prefix would wrongly match hosts
-    -- like 127.evil.com, weakening the cleartext-auth guard above.
     isLoopback h = h == "localhost" || h == "127.0.0.1" || h == "[::1]" || h == "0.0.0.0"
 
 -- | Parse an rpc_auth INI value. Scheme keyword is case-insensitive so

@@ -1469,9 +1469,7 @@ client
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
-    -- Run a slow command on a forked, back-pressured thread, sending its response
-    -- to sndQ from the thread so command processing is not blocked. The concurrency
-    -- selector picks the per-connection limit (proxying vs name resolution).
+    -- Run a slow command on a thread
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId cmdAction = do
       bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
@@ -1486,10 +1484,6 @@ client
             when (used >= limit) retry
             writeTVar procThreads $! used + 1
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    -- Account an RSLV request and look up the resolver, shared by the direct and
-    -- forwarded RSLV paths. Nothing => names is disabled (counted), so the caller
-    -- answers NO_RESOLVER without forking; Just nenv => the caller forks the
-    -- resolution. Returning the env (not an action) keeps the fork at the call site.
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
       st <- asks (rslvStats . serverStats)
@@ -1497,10 +1491,8 @@ client
       asks namesEnv >>= \case
         Nothing -> incStat (rslvDisabled st) $> Nothing
         Just nenv -> pure (Just nenv)
-    -- The actual resolution: resolve a parsed name via the configured resolver
-    -- and count the outcome (the name is already validated at parse). Run on a
-    -- forked thread so a slow RSLV does not block other commands; concurrency is
-    -- bounded by serverResolverConcurrency in forkCmd.
+    -- Runs on a forked thread so RSLV does not block other commands;
+    -- concurrency is limited by serverResolverConcurrency in forkCmd.
     resolveNameMsg :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
     resolveNameMsg nenv d = do
       st <- asks (rslvStats . serverStats)
@@ -2140,8 +2132,6 @@ client
             t :| [] -> pure $ tDecodeServer clntTHParams t
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, sessSecret' = Just clientSecret}
-              -- encode an inner response into the RRES reply (master's tail, factored
-              -- so the forked RSLV path reuses it)
               encodeResp r = do
                 r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
                   [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right
@@ -2151,9 +2141,7 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked. forwarded RSLV is forked (like direct
-          -- RSLV) so a slow resolution does not block other forwarded commands - the fork
-          -- delivers its own RRES via forkCmd; NO_RESOLVER and everything else reply in line.
+          -- the inner response, or Nothing if forked (RSLV).
           r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
             Left r -> pure $ Just r

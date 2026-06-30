@@ -4,17 +4,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 
--- | Public-namespace resolver. Each RSLV becomes one HTTP GET to the
--- configured names resolver service (the Python REST resolver in PR #1795
--- by default), bounded by resolverTimeoutMs and the maximum response size.
--- The resolver_endpoint URL is operator-supplied; the resolver service is the
--- source of truth for which on-chain registries are queried per TLD.
---
--- Resolver outcomes map to the protocol's `NameErrorType` so failures reach the
--- client (as `ERR (NAME ...)` -> ChatErrorAgent) instead of being swallowed.
---
--- HTTP details (URL building, redirects disabled, body cap, auth header)
--- live in Names.HttpResolver.
 module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
@@ -65,18 +54,10 @@ newNamesEnv config = do
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {resolverEnv} = closeResolverEnv resolverEnv
 
--- | Reach the configured resolver with `GET /health` to confirm reachability
--- at server startup. A non-2xx response or transport failure surfaces as
--- Left so misconfigured deployments fail loudly. Bounded by
--- `resolverTimeoutMs` so a slow-loris endpoint cannot park startup until
--- http-client's default 30 s response timeout fires.
 pingEndpoint :: NamesEnv -> IO (Either ResolverError ())
 pingEndpoint NamesEnv {resolverEnv, config} =
   fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
--- | Resolve a parsed domain via the configured HTTP resolver, with an
--- `resolverTimeoutMs` ceiling. Synchronous exceptions are caught and
--- logged; async exceptions propagate.
 resolveName :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
 resolveName env d = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env d))
@@ -92,11 +73,6 @@ fetch :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
 fetch NamesEnv {resolverEnv} d =
   first mapResolverError <$> resolveHttp resolverEnv (fullDomainName d)
 
--- | Map the HTTP-layer error space into the protocol NameErrorType. 404 / 400
--- both map to NOT_FOUND (name not registered, unknown TLD, or malformed name —
--- indistinguishable from the client's point of view). Everything else is a
--- backend failure surfaced as RESOLVER with a SAFE server-generated diagnostic
--- (kind only - the adversarial response body is never echoed).
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case
   HttpStatusErr 404 -> NOT_FOUND

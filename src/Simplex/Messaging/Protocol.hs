@@ -607,8 +607,7 @@ data Command (p :: Party) where
   -- - entity ID: empty
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
-  -- Name resolution. Preferably forwarded via PFWD (hides the client IP from
-  -- the resolver), but direct RSLV is also accepted.
+  -- Resolve SimpleX name.
   RSLV :: SimplexNameDomain -> Command Resolver
 
 deriving instance Show (Command p)
@@ -745,7 +744,7 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  -- Named RNAME (not NAME) so the error family can use ErrorType.NAME.
+  -- Resolved SimpleX name.
   RNAME :: NameRecord -> BrokerMsg
   deriving (Eq, Show)
 
@@ -1586,17 +1585,13 @@ data ErrorType
     EXPIRED
   | -- | internal server error
     INTERNAL
-  | -- | name resolution error (Resolver role) - see NameErrorType
+  | -- | name resolution error
     NAME {nameErr :: NameErrorType}
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | Name resolution errors returned by the server (Resolver role) via
--- ErrorType.NAME; they reach the agent forwarded as SMP _ (NAME ...) and on to
--- chat as ChatErrorAgent with diagnostics, mirroring ProxyError. The
--- agent-originated "no name-resolving servers" case is a separate agent error
--- (AgentErrorType.NO_NAME_SERVERS), not part of this server vocabulary.
+-- | Name resolution error
 data NameErrorType
   = -- | the names role / resolver is not configured on this server
     NO_RESOLVER

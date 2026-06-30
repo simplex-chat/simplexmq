@@ -5,13 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
--- | A real local HTTP resolver for the names tests. Tests point
--- `resolver_endpoint` at this server (http://127.0.0.1:<port>) so the full
--- HttpResolver path - request building, response reading, body cap, JSON
--- decoding - is exercised end to end, instead of injecting a stub below HTTP.
---
--- It also hosts the SMP server config fixtures shared by the names tests
--- (RSLVTests and AgentTests.ResolveNameTests), so the two suites stay in sync.
+-- | Name resolver mock
 module NamesResolverServer
   ( withResolverServer,
     withResolverServerDelayed,
@@ -37,15 +31,10 @@ import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), Ser
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Names (NamesConfig (..))
 
--- | Run an action with a local HTTP resolver listening on a free port. The
--- handler maps the request path segments to an HTTP response; every request's
--- path segments are appended to the returned log (for "no cache" / "addressed
--- with full name" assertions).
+-- | Run an action with a local HTTP resolver on a free port.
 withResolverServer :: ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Text]] -> IO a) -> IO a
 withResolverServer = withResolverServerDelayed 0
 
--- | Like 'withResolverServer' but delays each response by delayMs (exercises
--- the resolverTimeoutMs path).
 withResolverServerDelayed :: Int -> ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Text]] -> IO a) -> IO a
 withResolverServerDelayed delayMs handler action = do
   reqs <- newIORef []
@@ -58,16 +47,12 @@ withResolverServerDelayed delayMs handler action = do
       let (st, body) = handler (pathInfo req)
       send $ responseLBS st [(hContentType, "application/json")] body
 
--- | Handler that answers /health with 200 and every /resolve/<name> with the
--- given status + body; anything else 404s.
 resolveResp :: Status -> LB.ByteString -> [Text] -> (Status, LB.ByteString)
 resolveResp st body = \case
   ["health"] -> (ok200, "{}")
   ("resolve" : _) -> (st, body)
   _ -> (notFound404, "{}")
 
--- | Names config pointing at the local test resolver on `port`. Response cap
--- defaults to 65536; override via record update for the body-cap case.
 testNamesConfig :: Int -> NamesConfig
 testNamesConfig port =
   NamesConfig
@@ -83,8 +68,6 @@ memCfg = cfgMS (ASType SQSMemory SMSMemory)
 memProxyCfg :: AServerConfig
 memProxyCfg = proxyCfgMS (ASType SQSMemory SMSMemory)
 
--- | 'memCfg' on the second store-log/messages files, for the second SMP server
--- (proxy + relay setups need two servers with distinct on-disk state).
 memCfg2 :: AServerConfig
 memCfg2 = case memCfg of
   ASrvCfg qt mt c -> ASrvCfg qt mt c {serverStoreCfg = newStoreCfg (serverStoreCfg c)}
@@ -94,6 +77,5 @@ memCfg2 = case memCfg of
       SSCMemory _ -> SSCMemory (Just StorePaths {storeLogFile = testStoreLogFile2, storeMsgsFile = Just testStoreMsgsFile2})
       other -> other
 
--- | Enable names on a config pointing at the local test resolver on `port`.
 withNames :: Int -> AServerConfig -> AServerConfig
 withNames port c = updateCfg c $ \cfg_ -> cfg_ {namesConfig = Just (testNamesConfig port)}
