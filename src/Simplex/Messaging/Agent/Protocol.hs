@@ -1691,6 +1691,10 @@ ctTypeChar = \case
   CCTRelay -> 'R'
 {-# INLINE ctTypeChar #-}
 
+instance StrEncoding ContactConnType where
+  strEncode = B.singleton . ctTypeChar
+  strP = A.anyChar >>= ctTypeP
+
 -- the servers passed to this function should be all preset servers, not servers configured by the user.
 shortenShortLink :: NonEmpty SMPServer -> ConnShortLink m -> ConnShortLink m
 shortenShortLink presetSrvs = \case
