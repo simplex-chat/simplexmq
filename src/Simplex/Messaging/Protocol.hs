@@ -270,7 +270,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.SimplexName (SimplexNameDomain)
+import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -608,7 +608,7 @@ data Command (p :: Party) where
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Resolve SimpleX name.
-  RSLV :: SimplexNameDomain -> Command Resolver
+  RSLV :: SimplexDomain -> Command Resolver
 
 deriving instance Show (Command p)
 

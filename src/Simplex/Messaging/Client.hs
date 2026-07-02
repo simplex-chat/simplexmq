@@ -166,7 +166,7 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.SimplexName (SimplexNameDomain)
+import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -1054,7 +1054,7 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 -- through `proxySMPCommand` and pattern-matches the expected RNAME response.
 -- Version-gated on the destination relay (mirrors `connectSMPProxiedRelay`):
 -- the client never sends RSLV to a relay that predates names support.
-proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexNameDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
+proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
 proxyResolveName c nm proxiedRelay name
   | prVersion proxiedRelay >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV name) >>= \case
@@ -1068,7 +1068,7 @@ proxyResolveName c nm proxiedRelay name
 -- proxy fallback in the agent. RSLV requires no entity ID or authorization
 -- (see `noAuthCmd` in Protocol.hs). Version-gated on the session here, not the
 -- encoder, so an old server never receives RSLV.
-directResolveName :: SMPClient -> NetworkRequestMode -> SimplexNameDomain -> ExceptT SMPClientError IO NameRecord
+directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRecord
 directResolveName c nm name
   | thVersion (thParams c) >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV name)) >>= \case

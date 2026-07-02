@@ -30,7 +30,7 @@ import Simplex.Messaging.Server.Names.HttpResolver
     newResolverEnv,
     resolveHttp,
   )
-import Simplex.Messaging.SimplexName (SimplexNameDomain, fullDomainName)
+import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
 import System.Timeout (timeout)
 
 data NamesConfig = NamesConfig
@@ -58,7 +58,7 @@ pingEndpoint :: NamesEnv -> IO (Either ResolverError ())
 pingEndpoint NamesEnv {resolverEnv, config} =
   fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
-resolveName :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
+resolveName :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameRecord)
 resolveName env d = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env d))
   case r of
@@ -69,7 +69,7 @@ resolveName env d = do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
           pure (Left (RESOLVER "resolver error"))
 
-fetch :: NamesEnv -> SimplexNameDomain -> IO (Either NameErrorType NameRecord)
+fetch :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameRecord)
 fetch NamesEnv {resolverEnv} d =
   first mapResolverError <$> resolveHttp resolverEnv (fullDomainName d)
 

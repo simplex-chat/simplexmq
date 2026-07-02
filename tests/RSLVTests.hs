@@ -43,13 +43,13 @@ import Simplex.Messaging.Protocol
     tPut,
   )
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.SimplexName (SimplexNameDomain)
+import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec hiding (fit, it)
 import Util (it)
 
-domain :: Text -> SimplexNameDomain
+domain :: Text -> SimplexDomain
 domain = either error id . strDecode . encodeUtf8
 
 withResolverServer :: (Status, LB.ByteString) -> IO a -> IO a
@@ -63,7 +63,7 @@ withProxyAndResolver (st, body) runTest =
     withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
       withSmpServerConfigOn (transport @TLS) (withNames port memCfg2) testPort2 (const runTest)
 
-sendRslv :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexNameDomain -> IO (Transmission (Either ErrorType BrokerMsg))
+sendRslv :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexDomain -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRslv h@THandle {params} corrId d = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (RSLV d))
   [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])

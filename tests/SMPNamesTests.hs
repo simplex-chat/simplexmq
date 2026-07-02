@@ -27,7 +27,7 @@ import Simplex.Messaging.Server.Names
     resolveName,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
-import Simplex.Messaging.SimplexName (SimplexNameDomain (..), SimplexTLD (..))
+import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..))
 import Test.Hspec
 
 testNameRecord :: NameRecord
@@ -51,7 +51,7 @@ smpNamesTests :: Spec
 smpNamesTests = do
   describe "NameRecord JSON (Protocol)" nameRecordEncodingSpec
   describe "ErrorType NAME wire encoding" errorWireSpec
-  describe "Name parsing (SimplexNameDomain)" parseNameSpec
+  describe "Name parsing (SimplexDomain)" parseNameSpec
   describe "HTTP resolver" resolverSpec
   describe "Resolver health probe" healthSpec
   describe "resolver_endpoint validation" validateUrlSpec
@@ -136,7 +136,7 @@ parseNameSpec = do
   it "accepts a label of exactly 63 bytes" $
     parseN (T.replicate 63 "a" <> ".simplex") `shouldSatisfy` isRight
   where
-    parseN :: T.Text -> Either String SimplexNameDomain
+    parseN :: T.Text -> Either String SimplexDomain
     parseN = strDecode . encodeUtf8
 
 resolverSpec :: Spec
@@ -195,7 +195,7 @@ resolverSpec = do
       readIORef reqs `shouldReturn` [["resolve", "alice.simplex"]]
 
   where
-    aliceDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+    aliceDomain = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 healthSpec :: Spec
 healthSpec = do
