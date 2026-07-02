@@ -66,6 +66,7 @@ module Simplex.Messaging.Agent
     setConnShortLink,
     deleteConnShortLink,
     getConnShortLink,
+    resolveSimplexName,
     getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -217,6 +218,7 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
+    NameRecord,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -444,6 +446,13 @@ deleteConnShortLink c = withAgentEnv c .:. deleteConnShortLink' c
 getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
+
+-- | Resolve a SimpleX name (PFWD RSLV). The agent owns server selection: it
+-- picks a names-capable server (ServerRoles.names) from the user's nameSrvs, so
+-- chat clients just pass the parsed domain.
+resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexNameDomain -> AE NameRecord
+resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
+{-# INLINE resolveSimplexName #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
@@ -1172,6 +1181,11 @@ getConnShortLink' c nm userId = \case
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
+
+resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexNameDomain -> AM NameRecord
+resolveSimplexName' c nm userId domain = do
+  resolverSrv <- getNextNameServer c userId
+  resolveName c nm userId resolverSrv domain
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

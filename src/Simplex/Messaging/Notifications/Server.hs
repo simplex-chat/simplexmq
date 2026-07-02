@@ -640,20 +640,34 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = DeviceToken pp _} ntf = do
-  q <- getOrCreatePushWorker s (srvHost_, pp) isOwn
-  atomically $ writeTBQueue q (tkn, ntf)
+pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
+  ifM
+    (pushProviderAllowed token)
+    (getOrCreatePushWorker s (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (logWarn "skipping disabled APNS test push provider")
+
+pushProviderAllowed :: DeviceToken -> M Bool
+pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
+pushProviderAllowed _ = pure True
+
+guardPushProvider :: DeviceToken -> M NtfResponse -> M NtfResponse
+guardPushProvider token action =
+  ifM
+    (pushProviderAllowed token)
+    action
+    (pure $ NRErr $ CMD SMP.PROHIBITED)
 
 getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
 getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
   ts <- liftIO getCurrentTime
-  atomically (getSessVar pushWorkerSeq key pushWorkers ts) >>= \case
-    Left v -> do
+  withGetSessVar' pushWorkerSeq key pushWorkers ts createWorker existingWorker
+  where
+    createWorker v = do
       q <- liftIO $ newTBQueueIO pushQSize
       tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)
       atomically $ putTMVar (sessionVar v) PushWorker {workerQ = q, workerThreadId = tId}
       pure q
-    Right v -> workerQ <$> atomically (readTMVar $ sessionVar v)
+    existingWorker v = workerQ <$> atomically (readTMVar $ sessionVar v)
 
 runPushWorker :: NtfPushServer -> Maybe T.Text -> OwnServer -> TBQueue (NtfTknRec, PushNotification) -> M ()
 runPushWorker s srvHost_ isOwn q = forever $ do
@@ -834,7 +848,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
   where
     processCommand :: NtfRequest -> M (Transmission NtfResponse)
     processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> do
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> guardPushProvider token (do
         logDebug "TNEW - new token"
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
@@ -846,10 +860,10 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
           pushNotification ps Nothing False tkn $ PNVerification regCode
           incNtfStatT token ntfVrfQueued
           incNtfStatT token tknCreated
-          pure $ NRTknId tknId srvDhPubKey
+          pure $ NRTknId tknId srvDhPubKey)
       NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
-          TNEW (NewNtfTkn _ _ dhPubKey) -> do
+          TNEW (NewNtfTkn _ _ dhPubKey) -> guardPushProvider token $ do
             logDebug "TNEW - registered token"
             let dhSecret = C.dh' dhPubKey tknDhPrivKey
             -- it is required that DH secret is the same, to avoid failed verifications if notification is delaying
@@ -872,7 +886,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
           TCHK -> do
             logDebug "TCHK"
             pure $ NRTkn tknStatus
-          TRPL token' -> do
+          TRPL token' -> guardPushProvider token' $ do
             logDebug "TRPL - replace token"
             regCode <- getRegCode
             let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}

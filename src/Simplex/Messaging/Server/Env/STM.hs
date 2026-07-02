@@ -67,6 +67,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultNtfExpiration,
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
+    defaultNameResolverConcurrency,
     defaultMaxJournalMsgCount,
     defaultMaxJournalStateLines,
     defaultIdleQueueInterval,
@@ -115,6 +116,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
+import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, newNamesEnv, pingEndpoint)
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
@@ -128,7 +130,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
-import Simplex.Messaging.Util (ifM, whenM, ($>>=))
+import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=))
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..))
@@ -197,6 +199,13 @@ data ServerConfig s = ServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
+    -- | max concurrent name resolutions per connection, enforced in forkCmd.
+    -- Much higher than serverClientConcurrency: forwarded RSLVs from many clients
+    -- aggregate over a single proxy->relay connection (only servers send proxied
+    -- requests), so bounding them by the per-client limit would throttle unduly.
+    serverResolverConcurrency :: Int,
+    -- | public-namespace resolver config; Nothing disables the names role
+    namesConfig :: Maybe NamesConfig,
     -- | server public information
     information :: Maybe ServerPublicInfo,
     startOptions :: StartOptions
@@ -243,6 +252,9 @@ defaultInactiveClientExpiration =
 defaultProxyClientConcurrency :: Int
 defaultProxyClientConcurrency = 32
 
+defaultNameResolverConcurrency :: Int
+defaultNameResolverConcurrency = 1000
+
 journalMsgStoreDepth :: Int
 journalMsgStoreDepth = 5
 
@@ -272,7 +284,8 @@ data Env s = Env
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
-    proxyAgent :: ProxyAgent -- senders served on this proxy
+    proxyAgent :: ProxyAgent, -- senders served on this proxy
+    namesEnv :: Maybe NamesEnv -- public-namespace resolver, present when [NAMES] enable: on
   }
 
 msgStore :: Env s -> s
@@ -558,7 +571,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of
@@ -603,6 +616,16 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
+  namesEnv <- forM namesConfig $ \nc -> do
+    logInfo $ "[NAMES] resolver enabled, endpoint=" <> T.pack (resolverEndpoint nc)
+    env <- newNamesEnv nc
+    -- Probe the endpoint at startup. Don't exitFailure: a flapping network or a
+    -- resolver host coming up minutes after smp-server should not block the
+    -- server. Log so operators can spot it.
+    pingEndpoint env >>= \case
+      Right _ -> logInfo "[NAMES] endpoint probe ok"
+      Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR (NAME ...) until reachable): " <> tshow e
+    pure env
   pure
     Env
       { serverActive,
@@ -618,7 +641,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         serverStats,
         sockets,
         clientSeq,
-        proxyAgent
+        proxyAgent,
+        namesEnv
       }
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()
