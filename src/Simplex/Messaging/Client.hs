@@ -562,10 +562,10 @@ type SMPTransportSession = TransportSession BrokerMsg
 -- | Connects to 'ProtocolServer' using passed client configuration
 -- and queue for messages and notifications.
 --
--- A single queue can be used for multiple 'SMPClient' instances,
+-- A single callback can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
-getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (ServerTransmissionBatch v err msg -> IO ()) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
+getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains processServerMsg proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -583,6 +583,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       sentCommands <- TM.emptyIO
       sndQ <- newTBQueueIO qSize
       rcvQ <- newTBQueueIO qSize
+      msgQ <- mapM (const $ newTBQueueIO qSize) processServerMsg
       return
         PClient
           { connected,
@@ -641,7 +642,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
-          raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
+          raceAny_ ([send c' th, process c', receive c' th] <> readMsgs c' <> [monitor c' | smpPingInterval > 0])
             `E.finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
@@ -680,13 +681,18 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         recoverWindow = 15 * 60 -- seconds
         maxCnt = smpPingCount networkConfig
 
+    readMsgs :: ProtocolClient v err msg -> [IO ()]
+    readMsgs c = case (processServerMsg, msgQ $ client_ c) of
+      (Just cb, Just q) -> [forever $ atomically (readTBQueue q) >>= cb]
+      _ -> []
+
     process :: ProtocolClient v err msg -> IO ()
     process c = forever $ atomically (readTBQueue $ rcvQ $ client_ c) >>= processMsgs c
 
     processMsgs :: ProtocolClient v err msg -> NonEmpty (Transmission (Either err msg)) -> IO ()
     processMsgs c ts = do
       ts' <- catMaybes <$> mapM (processMsg c) (L.toList ts)
-      forM_ msgQ $ \q ->
+      forM_ (msgQ $ client_ c) $ \q ->
         mapM_ (atomically . writeTBQueue q . serverTransmission c) (L.nonEmpty ts')
 
     processMsg :: ProtocolClient v err msg -> Transmission (Either err msg) -> IO (Maybe (EntityId, ServerTransmission err msg))
@@ -714,7 +720,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             Just e -> Left $ PCEProtocolError e
             _ -> Right r
         sendMsg :: ServerTransmission err msg -> IO (Maybe (EntityId, ServerTransmission err msg))
-        sendMsg t = case msgQ of
+        sendMsg t = case processServerMsg of
           Just _ -> pure $ Just (entId, t)
           Nothing ->
             Nothing <$ case clientResp of

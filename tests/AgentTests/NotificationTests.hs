@@ -17,7 +17,10 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests
-  ( agentCfgVPrevPQ,
+  ( AgentClient (..),
+    ackMessage,
+    agentCfgVPrevPQ,
+    allowConnection,
     createConnection,
     exchangeGreetings,
     get,
@@ -27,6 +30,7 @@ import AgentTests.FunctionalAPITests
     runRight,
     runRight_,
     sendMessage,
+    subscribeConnection,
     switchComplete,
     testServerMatrix2,
     withAgent,
@@ -61,7 +65,7 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, testDB2, testNtfServer, testNtfServer2)
 import SMPClient
-import Simplex.Messaging.Agent hiding (checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
+import Simplex.Messaging.Agent hiding (AgentClient, ackMessage, allowConnection, checkNtfToken, createConnection, deleteNtfToken, foregroundAgent, getConnectionMessages, getNtfTokenData, getNotificationConns, joinConnection, registerNtfToken, sendMessage, setNtfServers, subscribeConnection, suspendAgent, switchConnectionAsync, toggleConnectionNtfs, verifyNtfToken)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
@@ -197,13 +201,41 @@ testNtfMatrix ps@(_, msType) runTest = do
     cfgVPrev' = cfgVPrev msType
 
 registerNtfToken :: AgentClient -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
-registerNtfToken c = A.registerNtfToken c NRMInteractive
+registerNtfToken c = A.registerNtfToken (client c) NRMInteractive
 
 checkNtfToken :: AgentClient -> DeviceToken -> AE NtfTknStatus
-checkNtfToken c = A.checkNtfToken c NRMInteractive
+checkNtfToken c = A.checkNtfToken (client c) NRMInteractive
 
 verifyNtfToken :: AgentClient -> DeviceToken -> C.CbNonce -> ByteString -> AE ()
-verifyNtfToken c = A.verifyNtfToken c NRMInteractive
+verifyNtfToken c = A.verifyNtfToken (client c) NRMInteractive
+
+deleteNtfToken :: AgentClient -> DeviceToken -> AE ()
+deleteNtfToken c = A.deleteNtfToken (client c)
+
+getNtfTokenData :: AgentClient -> AE NtfToken
+getNtfTokenData = A.getNtfTokenData . client
+
+setNtfServers :: AgentClient -> [NtfServer] -> IO ()
+setNtfServers c = A.setNtfServers (client c)
+
+foregroundAgent :: AgentClient -> IO ()
+foregroundAgent = A.foregroundAgent . client
+
+suspendAgent :: AgentClient -> Int -> IO ()
+suspendAgent c = A.suspendAgent (client c)
+
+toggleConnectionNtfs :: AgentClient -> ConnId -> Bool -> AE ()
+toggleConnectionNtfs c = A.toggleConnectionNtfs (client c)
+
+getNotificationConns :: AgentClient -> C.CbNonce -> ByteString -> AE (NonEmpty NotificationInfo)
+getNotificationConns c = A.getNotificationConns (client c)
+
+getConnectionMessages :: AgentClient -> NonEmpty ConnMsgReq -> IO (NonEmpty (Either AgentErrorType (Maybe SMPMsgMeta)))
+getConnectionMessages c = A.getConnectionMessages (client c)
+
+switchConnectionAsync :: AgentClient -> ACorrId -> ConnId -> AE ConnectionStats
+switchConnectionAsync c = A.switchConnectionAsync (client c)
+
 
 runNtfTestCfg :: HasCallStack => (ASrvTransport, AStoreType) -> AgentMsgId -> AServerConfig -> NtfServerConfig -> AgentConfig -> AgentConfig -> (APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()) -> IO ()
 runNtfTestCfg (t, msType) baseId smpCfg ntfCfg aCfg bCfg runTest = do
@@ -335,7 +367,7 @@ testNtfTokenServerRestartReverify t apns = do
 testNtfTokenServerRestartReverifyTimeout :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReverifyTimeout t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
-  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
+  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {client = A.AgentClient {agentEnv = Env {store}}} -> do
     (nonce, verification) <- withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
@@ -394,7 +426,7 @@ testNtfTokenServerRestartReregister t apns = do
 testNtfTokenServerRestartReregisterTimeout :: ASrvTransport -> APNSMockServer -> IO ()
 testNtfTokenServerRestartReregisterTimeout t apns = do
   let tkn = DeviceToken PPApnsTest "abcd"
-  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {agentEnv = Env {store}} -> do
+  withAgent 1 agentCfg initAgentServers testDB $ \a@AgentClient {client = A.AgentClient {agentEnv = Env {store}}} -> do
     withNtfServer t $ runRight $ do
       NTRegistered <- registerNtfToken a tkn NMPeriodic
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just _}} <-
@@ -428,7 +460,7 @@ testNtfTokenServerRestartReregisterTimeout t apns = do
 
 getTestNtfTokenPort :: AgentClient -> AE String
 getTestNtfTokenPort a =
-  ExceptT (runExceptT (withStore' a getSavedNtfToken) `runReaderT` agentEnv a) >>= \case
+  ExceptT (runExceptT (withStore' (client a) getSavedNtfToken) `runReaderT` agentEnv (client a)) >>= \case
     Just NtfToken {ntfServer = ProtocolServer {port}} -> pure port
     Nothing -> error "no active NtfToken"
 
@@ -540,10 +572,10 @@ testRunNTFServerTests :: ASrvTransport -> NtfServer -> IO (Maybe ProtocolTestFai
 testRunNTFServerTests t srv =
   withNtfServer t $
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a NRMInteractive 1 $ ProtoServerWithAuth srv Nothing
+      A.testProtocolServer (client a) NRMInteractive 1 $ ProtoServerWithAuth srv Nothing
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
-testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do
+testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {client = A.AgentClient {agentEnv = Env {config = aliceCfg, store}}} bob = do
   (bobId, aliceId, nonce, message) <- runRight $ do
     -- establish connection
     (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe

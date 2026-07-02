@@ -47,8 +47,8 @@ import Util
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig)
 import Simplex.FileTransfer.Server.Store (STMFileStore)
 import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpTestPort)
-import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAgent)
-import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import AgentTests.FunctionalAPITests (AgentClient (..), rfGet, runRight, runRight_, sfGet, withAgent)
+import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Protocol (AEvent (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import XFTPCLI (recipientFiles, senderFiles, testBracket)
@@ -3143,8 +3143,8 @@ tsUploadHaskellDownloadTest cfg caFile = do
           <> jsOut2 "Buffer.from(yaml)" "Buffer.from(originalData)"
     let vfd :: ValidFileDescription 'FRecipient = either error id $ strDecode yamlDesc
     withAgent 1 agentCfg initAgentServers testDB $ \rcp -> do
-      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
-      _ <- runRight $ xftpReceiveFile rcp 1 vfd Nothing True
+      runRight_ $ A.xftpStartWorkers (client rcp) (Just recipientFiles)
+      _ <- runRight $ A.xftpReceiveFile (client rcp) 1 vfd Nothing True
       rfProgress rcp 50000
       (_, _, RFDONE outPath) <- rfGet rcp
       downloadedData <- B.readFile outPath
@@ -3179,8 +3179,8 @@ tsUploadRedirectHaskellDownloadTest cfg caFile = do
     let vfd@(ValidFileDescription fd) :: ValidFileDescription 'FRecipient = either error id $ strDecode yamlDesc
     redirect fd `shouldSatisfy` (/= Nothing)
     withAgent 1 agentCfg initAgentServers testDB $ \rcp -> do
-      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
-      _ <- runRight $ xftpReceiveFile rcp 1 vfd Nothing True
+      runRight_ $ A.xftpStartWorkers (client rcp) (Just recipientFiles)
+      _ <- runRight $ A.xftpReceiveFile (client rcp) 1 vfd Nothing True
       outPath <- waitRfDone rcp
       downloadedData <- B.readFile outPath
       downloadedData `shouldBe` originalData
@@ -3194,8 +3194,8 @@ haskellUploadTsDownloadTest cfg = do
   B.writeFile filePath originalData
   withXFTPServerCfg cfg $ \_ -> do
     vfd <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-      runRight_ $ xftpStartWorkers sndr (Just senderFiles)
-      _ <- runRight $ xftpSendFile sndr 1 (CF.plain filePath) 1
+      runRight_ $ A.xftpStartWorkers (client sndr) (Just senderFiles)
+      _ <- runRight $ A.xftpSendFile (client sndr) 1 (CF.plain filePath) 1
       sfProgress sndr 50000
       (_, _, SFDONE _ [rfd]) <- sfGet sndr
       pure rfd

@@ -157,6 +157,7 @@ module Simplex.Messaging.Agent.Client
     suspendOperation,
     notifySuspended,
     whenSuspending,
+    whenSuspendingB,
     withStore,
     withStore',
     withStoreBatch,
@@ -165,6 +166,8 @@ module Simplex.Messaging.Agent.Client
     storeError,
     notifySub,
     notifySub',
+    notifyEvent,
+    nonBlockingNotifyEvent,
     userServers,
     pickServer,
     getNextServer,
@@ -337,8 +340,8 @@ type XFTPTransportSession = TransportSession FileResponse
 data AgentClient = AgentClient
   { acThread :: TVar (Maybe (Weak ThreadId)),
     active :: TVar Bool,
-    subQ :: TBQueue ATransmission,
-    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
+    processEvent :: Bool -> ATransmission -> IO (),
+    processServerMsg :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO (),
     smpServers :: TMap UserId (UserServers 'PSMP),
     smpClients :: TMap SMPTransportSession SMPClientVar,
     useClientServices :: TMap UserId Bool,
@@ -419,7 +422,8 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
           t <- liftIO getSystemTime
           let maxRestarts = maxWorkerRestartsPerMin $ config agentEnv
           -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
-          restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
+          (restart, notify_) <- atomically $ getWorker >>= maybe (pure (False, Nothing)) (shouldRestart e_ (toW w) t maxRestarts)
+          forM_ notify_ $ liftIO . notifyEvent c
           when restart runWork
         shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
           | wId == workerId (toW w') = do
@@ -427,24 +431,21 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
               isActive <- readTVar $ active c
               checkRestarts isActive $ updateRestartCount t rc
           | otherwise =
-              pure False -- there is a new worker in the map, no action
+              pure (False, Nothing) -- there is a new worker in the map, no action
           where
             checkRestarts isActive rc
               | isActive && restartCount rc < maxRestarts = do
                   writeTVar restarts rc
                   hasWorkToDo' doWork
                   void $ tryPutTMVar action Nothing
-                  notifyErr INTERNAL
-                  pure True
+                  pure (True, Just $ notifyMsg rc INTERNAL)
               | otherwise = do
                   TM.delete key ws
-                  when isActive $ notifyErr $ CRITICAL True
-                  pure False
-              where
-                notifyErr err = do
-                  let e = either ((", error: " <>) . show) (\_ -> ", no error") e_
-                      msg = "Worker " <> name <> " for " <> show key <> " terminated " <> show (restartCount rc) <> " times" <> e
-                  writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err msg)
+                  pure (False, if isActive then Just (notifyMsg rc $ CRITICAL True) else Nothing)
+            notifyMsg rc err =
+              let e = either ((", error: " <>) . show) (\_ -> ", no error") e_
+                  msg = "Worker " <> name <> " for " <> show key <> " terminated " <> show (restartCount rc) <> " times" <> e
+               in ("", "", AEvt SAEConn $ ERR $ err msg)
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
@@ -505,15 +506,13 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
   deriving (Eq, Show)
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
-newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
+newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> (Bool -> ATransmission -> IO ()) -> (AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> Env -> IO AgentClient
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices processEvent processServerMsg agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
   acThread <- newTVarIO Nothing
   active <- newTVarIO True
-  subQ <- newTBQueueIO qSize
-  msgQ <- newTBQueueIO qSize
   smpServers <- newTVarIO $ M.map mkUserServers smp
   smpClients <- TM.emptyIO
   useClientServices <- newTVarIO useServices
@@ -552,8 +551,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
     AgentClient
       { acThread,
         active,
-        subQ,
-        msgQ,
+        processEvent,
+        processServerMsg,
         smpServers,
         smpClients,
         useClientServices,
@@ -733,7 +732,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
+smpConnectClient c@AgentClient {processServerMsg, smpClients, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAllErrors` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
@@ -746,7 +745,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       env <- ask
       smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
-        ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
+        ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just $ processServerMsg c) ts $ smpClientDisconnected c tSess env v' prs
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
@@ -835,7 +834,7 @@ resubscribeSMPSession c@AgentClient {smpSubWorkers, workerSeq} tSess = do
     handleNotify = E.handleAny $ notifySub' c "" . ERR . INTERNAL . show
 
 notifySub' :: forall e m. (AEntityI e, MonadIO m) => AgentClient -> ConnId -> AEvent e -> m ()
-notifySub' c connId cmd = liftIO $ nonBlockingWriteTBQueue (subQ c) (B.empty, connId, AEvt (sAEntity @e) cmd)
+notifySub' c connId cmd = liftIO $ nonBlockingNotifyEvent c (B.empty, connId, AEvt (sAEntity @e) cmd)
 {-# INLINE notifySub' #-}
 
 notifySub :: MonadIO m => AgentClient -> AEvent 'AENone -> m ()
@@ -863,7 +862,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, pr
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
     clientDisconnected v client = do
       atomically $ removeSessVar v tSess ntfClients
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
+      notifyEvent c ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
@@ -887,7 +886,7 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq, proxySessTs, 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
       atomically $ removeSessVar v tSess xftpClients
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
+      notifyEvent c ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 waitForProtocolClient ::
@@ -926,7 +925,7 @@ newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
     Right client -> do
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
-      liftIO $ nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
+      liftIO $ nonBlockingNotifyEvent c ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
       ei <- asks $ persistErrorInterval . config
@@ -1053,6 +1052,12 @@ withConnLock' :: AgentClient -> ConnId -> Text -> AM' a -> AM' a
 withConnLock' _ "" _ = id
 withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId name
 {-# INLINE withConnLock' #-}
+
+notifyEvent :: AgentClient -> ATransmission -> IO ()
+notifyEvent AgentClient {processEvent} = processEvent True
+
+nonBlockingNotifyEvent :: AgentClient -> ATransmission -> IO ()
+nonBlockingNotifyEvent AgentClient {processEvent} = processEvent False
 
 withInvLock :: AgentClient -> ByteString -> Text -> AM a -> AM a
 withInvLock c key name = ExceptT . withInvLock' c key name . runExceptT
@@ -1740,7 +1745,7 @@ resubscribeClientService c tSess@(userId, srv, _) serviceSub =
         r <$ withStore' c (\db -> removeRcvServiceAssocs db userId srv)
       _ -> pure r
     Left e -> do
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR e)
+      liftIO $ notifyEvent c ("", "", AEvt SAEConn $ ERR e)
       when (clientServiceError e) $ do
         atomically $ SS.deleteServiceSub tSess $ currentSubs c
         unassocSubscribeQueues
@@ -2266,7 +2271,7 @@ withWork_ c doWork getWork action =
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = do
       logError $ "withWork_ error: " <> tshow e
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
+      liftIO $ notifyEvent c ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
 withWorkItems :: (AnyStoreError e', MonadIO m) => AgentClient -> TMVar () -> ExceptT e m (Either e' [Either e' a]) -> (NonEmpty a -> ExceptT e m ()) -> ExceptT e m ()
 withWorkItems c doWork getWork action = do
@@ -2291,7 +2296,7 @@ withWorkItems c doWork getWork action = do
     noWork = liftIO $ noWorkToDo doWork
     notifyErr err e = do
       logError $ "withWorkItems error: " <> tshow e
-      atomically $ writeTBQueue (subQ c) ("", "", AEvt SAEConn $ ERR $ err $ show e)
+      liftIO $ notifyEvent c ("", "", AEvt SAEConn $ ERR $ err $ show e)
 
 noWorkToDo :: TMVar () -> IO ()
 noWorkToDo = void . atomically . tryTakeTMVar
@@ -2305,9 +2310,9 @@ hasWorkToDo' :: TMVar () -> STM ()
 hasWorkToDo' = void . (`tryPutTMVar` ())
 {-# INLINE hasWorkToDo' #-}
 
-endAgentOperation :: AgentClient -> AgentOperation -> STM ()
+endAgentOperation :: AgentClient -> AgentOperation -> STM Bool
 endAgentOperation c op = endOperation c op $ case op of
-  AONtfNetwork -> pure ()
+  AONtfNetwork -> pure False
   AORcvNetwork ->
     suspendOperation c AOMsgDelivery $
       suspendSendingAndDatabase c
@@ -2319,35 +2324,36 @@ endAgentOperation c op = endOperation c op $ case op of
   AODatabase ->
     notifySuspended c
 
-suspendSendingAndDatabase :: AgentClient -> STM ()
+suspendSendingAndDatabase :: AgentClient -> STM Bool
 suspendSendingAndDatabase c =
   suspendOperation c AOSndNetwork $
     suspendOperation c AODatabase $
       notifySuspended c
 
-suspendOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
+suspendOperation :: AgentClient -> AgentOperation -> STM Bool -> STM Bool
 suspendOperation c op endedAction = do
   n <- stateTVar (agentOpSel op c) $ \s -> (opsInProgress s, s {opSuspended = True})
-  -- unsafeIOToSTM $ putStrLn $ "suspendOperation_ " <> show op <> " " <> show n
-  when (n == 0) $ whenSuspending c endedAction
+  if n == 0 then whenSuspendingB c endedAction else pure False
 
-notifySuspended :: AgentClient -> STM ()
+notifySuspended :: AgentClient -> STM Bool
 notifySuspended c = do
-  -- unsafeIOToSTM $ putStrLn "notifySuspended"
-  writeTBQueue (subQ c) ("", "", AEvt SAENone SUSPENDED)
   writeTVar (agentState c) ASSuspended
+  pure True
 
-endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
+endOperation :: AgentClient -> AgentOperation -> STM Bool -> STM Bool
 endOperation c op endedAction = do
   (suspended, n) <- stateTVar (agentOpSel op c) $ \s ->
     let n = max 0 (opsInProgress s - 1)
      in ((opSuspended s, n), s {opsInProgress = n})
-  -- unsafeIOToSTM $ putStrLn $ "endOperation: " <> show op <> " " <> show suspended <> " " <> show n
-  when (suspended && n == 0) $ whenSuspending c endedAction
+  if suspended && n == 0 then whenSuspendingB c endedAction else pure False
 
 whenSuspending :: AgentClient -> STM () -> STM ()
 whenSuspending c = whenM ((== ASSuspending) <$> readTVar (agentState c))
 {-# INLINE whenSuspending #-}
+
+whenSuspendingB :: AgentClient -> STM Bool -> STM Bool
+whenSuspendingB c action =
+  ifM ((== ASSuspending) <$> readTVar (agentState c)) action (pure False)
 
 beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
 beginAgentOperation c op = do
@@ -2362,7 +2368,9 @@ agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (Ag
 agentOperationBracket c op check action =
   E.bracket
     (liftIO (check c) >> atomically (beginAgentOperation c op))
-    (\_ -> atomically $ endAgentOperation c op)
+    (\_ -> do
+      suspended <- atomically $ endAgentOperation c op
+      when suspended $ liftIO $ notifyEvent c ("", "", AEvt SAENone SUSPENDED))
     (const action)
 
 waitUntilForeground :: AgentClient -> IO ()
@@ -2835,9 +2843,9 @@ data ClientInfo
   deriving (Show)
 
 getAgentQueuesInfo :: AgentClient -> IO AgentQueuesInfo
-getAgentQueuesInfo AgentClient {msgQ, subQ, smpClients} = do
-  msgQInfo <- atomically $ getTBQueueInfo msgQ
-  subQInfo <- atomically $ getTBQueueInfo subQ
+getAgentQueuesInfo AgentClient {smpClients} = do
+  let msgQInfo = TBQueueInfo {qLength = 0, qFull = False}
+      subQInfo = TBQueueInfo {qLength = 0, qFull = False}
   smpClientsMap <- readTVarIO smpClients
   let smpClientsMap' = M.mapKeys (decodeLatin1 . strEncode) smpClientsMap
   smpClientsQueues <- mapM getClientQueuesInfo smpClientsMap'
