@@ -159,6 +159,9 @@ downloadChunk _ _ = throwE $ INTERNAL "no replicas"
 getPrefixPath :: String -> AM' FilePath
 getPrefixPath suffix = do
   workPath <- getXFTPWorkPath
+  -- re-create the work directory if it was removed while the app was running,
+  -- otherwise the non-recursive createDirectory on the returned prefix path fails
+  createDirectoryIfMissing True workPath
   ts <- liftIO getCurrentTime
   let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
   uniqueCombine workPath (isoTime <> "_" <> suffix)
