@@ -42,7 +42,7 @@ import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, NetworkError (..), ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Util (tshow)
-import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO
@@ -74,6 +74,7 @@ xftpAgentTests =
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
       it "should resume sending file after restart" $ \_ -> testXFTPAgentSendRestore
+      it "should recreate work directory removed while running before sending" $ withXFTPServer testXFTPAgentSendWorkDirRecreated
       xit'' "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
       it "should delete sent file on server" testXFTPAgentDelete
       it "should resume deleting file after restart" $ \_ -> testXFTPAgentDeleteRestore
@@ -142,6 +143,23 @@ testXFTPAgentSendReceive = do
       withAgent clientId agentCfg initAgentServers testDB2 $ \rcp -> do
         rfId <- runRight $ testReceive rcp rfd originalFilePath
         xftpDeleteRcvFile rcp rfId
+
+-- regression test: the XFTP work directory can be removed while the app is running
+-- (temp/disk cleaner, roaming-profile sync, manual deletion). Sending a file must
+-- recreate the work directory instead of failing with "createDirectory ...: does not exist".
+testXFTPAgentSendWorkDirRecreated :: HasCallStack => IO ()
+testXFTPAgentSendWorkDirRecreated = do
+  filePath <- createRandomFile
+  let workDir = senderFiles </> "work"
+  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight_ $ do
+    liftIO $ createDirectoryIfMissing True workDir
+    xftpStartWorkers sndr (Just workDir)
+    -- remove the work directory after workers started, before sending
+    liftIO $ removeDirectoryRecursive workDir
+    sfId <- xftpSendFile sndr 1 (CF.plain filePath) 2
+    sfProgress sndr $ mb 18
+    ("", sfId', SFDONE _ _) <- sfGet sndr
+    liftIO $ sfId' `shouldBe` sfId
 
 testXFTPAgentSendReceiveEncrypted :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentSendReceiveEncrypted = withXFTPServer $ do
