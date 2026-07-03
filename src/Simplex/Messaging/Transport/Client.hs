@@ -89,7 +89,7 @@ instance StrEncoding TransportHost where
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
         maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> ipv6StrP,
         THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
-        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t"))
+        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t[]"))
       ]
     where
       ipNum = validIP <$?> (A.decimal <* A.char '.')

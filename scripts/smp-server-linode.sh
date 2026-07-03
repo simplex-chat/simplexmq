@@ -75,6 +75,9 @@ init_opts=()
 
 [[ $ENABLE_STORE_LOG == "on" ]] && init_opts+=(-l)
 
+# This script does not provision /etc/opt/simplex/web.crt or web.key.
+init_opts+=(--disable-web)
+
 ip_address=$(curl ifconfig.me)
 init_opts+=(--ip $ip_address)
 
@@ -110,6 +113,11 @@ Check SMP server status with: systemctl status smp-server
 
 To keep this server secure, the UFW firewall is enabled.
 All ports are BLOCKED except 22 (SSH), 443 (HTTPS), 5223 (SMP server).
+
+Embedded HTTPS web is disabled because this script does not provision
+/etc/opt/simplex/web.crt or /etc/opt/simplex/web.key. To enable it, provision
+those files, uncomment WEB https/cert/key in /etc/opt/simplex/smp-server.ini,
+and restart smp-server.
 
 ********************************************************************************
 To stop seeing this message delete line - bash /opt/simplex/on_login.sh - from /root/.bashrc

@@ -57,6 +57,7 @@ module Simplex.Messaging.Transport
     newNtfCredsSMPVersion,
     clientNoticesSMPVersion,
     rcvServiceSMPVersion,
+    namesSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -223,6 +224,9 @@ clientNoticesSMPVersion = VersionSMP 18
 rcvServiceSMPVersion :: VersionSMP
 rcvServiceSMPVersion = VersionSMP 19
 
+namesSMPVersion :: VersionSMP
+namesSMPVersion = VersionSMP 20
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 6
 
@@ -230,21 +234,23 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 6
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 19
+currentClientSMPRelayVersion = VersionSMP 20
 
 legacyServerSMPRelayVersion :: VersionSMP
 legacyServerSMPRelayVersion = VersionSMP 6
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 19
+currentServerSMPRelayVersion = VersionSMP 20
 
--- Max SMP protocol version to be used in e2e encrypted
--- connection between client and server, as defined by SMP proxy.
--- SMP proxy sets it to lower than its current version
--- to prevent client version fingerprinting by the
--- destination relays when clients upgrade at different times.
+-- Max SMP protocol version to be used in e2e encrypted connection between
+-- client and server, as defined by SMP proxy. Normally set below the current
+-- version to prevent client version fingerprinting by the destination relays
+-- when clients upgrade at different times. Pinned to the current version (20)
+-- for this release because proxied name resolution is gated on namesSMPVersion
+-- (20), so the one-version anti-fingerprinting buffer does not apply yet; it
+-- reappears once the current version advances past 20.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 18
+proxiedSMPRelayVersion = VersionSMP 20
 
 -- minimal supported protocol version is 6
 -- TODO remove code that supports sending commands without batching

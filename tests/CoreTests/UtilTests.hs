@@ -50,6 +50,13 @@ utilTests = do
       runExceptT (tryAllErrors throwTestException) `shouldReturn` Right (Left (TestException "user error (error)"))
     it "should return no errors as Right" $
       runExceptT (tryAllErrors noErrors) `shouldReturn` Right (Right "no errors")
+    -- tryAllErrors rethrows asynchronous exceptions (it uses UnliftIO.catch). Any recovery placed
+    -- after `tryAllErrors action` - e.g. putTMVar to fill a SessionVar - is therefore SKIPPED when
+    -- the thread is killed mid-action. Unlike tryAllOwnErrors, it also rethrows the overflow exceptions.
+    it "should rethrow ThreadKilled" $
+      runExceptT (tryAllErrors $ throwAsync ThreadKilled) `shouldThrow` (\e -> e == ThreadKilled)
+    it "should rethrow StackOverflow" $
+      runExceptT (tryAllErrors $ throwAsync StackOverflow) `shouldThrow` (\e -> e == StackOverflow)
   describe "catchAllErrors" $ do
     it "should catch ExceptT error" $
       runExceptT (throwTestError `catchAllErrors` handleCatch) `shouldReturn` Right "caught TestError \"error\""

@@ -8,6 +8,7 @@ module Simplex.Messaging.Compression
     compress1,
     decompress1,
     limitDecompress1,
+    limitDecompress',
     decompressedSize,
   ) where
 
@@ -57,9 +58,12 @@ decompress1 = \case
 limitDecompress1 :: Int -> Compressed -> Either String ByteString
 limitDecompress1 limit = \case
   Passthrough bs -> Right bs
-  Compressed (Large bs) -> case Z1.decompressedSize bs of
-    Just sz | sz <= limit -> decompress_ bs
-    _ -> Left $ "compressed size not specified or exceeds " <> show limit
+  Compressed (Large bs) -> limitDecompress' limit bs
+
+limitDecompress' :: Int -> ByteString -> Either String ByteString
+limitDecompress' limit bs = case Z1.decompressedSize bs of
+  Just sz | sz <= limit -> decompress_ bs
+  _ -> Left $ "compressed size not specified or exceeds " <> show limit
 
 decompress_ :: ByteString -> Either String ByteString
 decompress_ bs = case Z1.decompress bs of

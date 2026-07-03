@@ -23,18 +23,21 @@ import Util
 import XFTPClient (testXFTPPostgresCfg)
 
 xftpStoreTests :: Spec
-xftpStoreTests = describe "PostgresFileStore operations" $ do
-  it "should add and get file by sender" testAddGetFileSender
-  it "should add and get file by recipient" testAddGetFileRecipient
-  it "should reject duplicate file" testDuplicateFile
-  it "should return AUTH for nonexistent file" testGetNonexistent
-  it "should set file path with IS NULL guard" testSetFilePath
-  it "should reject duplicate recipient" testDuplicateRecipient
-  it "should delete file and cascade recipients" testDeleteFileCascade
-  it "should block file and update status" testBlockFile
-  it "should ack file reception" testAckFile
-  it "should return expired files with limit" testExpiredFiles
-  it "should compute used storage and file count" testStorageAndCount
+xftpStoreTests = do
+  describe "STMFileStore operations" $
+    it "should compute committed used storage and file count" testSTMStorageAndCount
+  describe "PostgresFileStore operations" $ do
+    it "should add and get file by sender" testAddGetFileSender
+    it "should add and get file by recipient" testAddGetFileRecipient
+    it "should reject duplicate file" testDuplicateFile
+    it "should return AUTH for nonexistent file" testGetNonexistent
+    it "should set file path with IS NULL guard" testSetFilePath
+    it "should reject duplicate recipient" testDuplicateRecipient
+    it "should delete file and cascade recipients" testDeleteFileCascade
+    it "should block file and update status" testBlockFile
+    it "should ack file reception" testAckFile
+    it "should return expired files with limit" testExpiredFiles
+    it "should compute committed used storage and file count" testStorageAndCount
 
 xftpMigrationTests :: Spec
 xftpMigrationTests = describe "XFTP migration round-trip" $ do
@@ -201,16 +204,32 @@ testExpiredFiles = withPgStore $ \st -> do
 
 testStorageAndCount :: Expectation
 testStorageAndCount = withPgStore $ \st -> do
+  testStorageAndCountForStore st
+
+testSTMStorageAndCount :: Expectation
+testSTMStorageAndCount = do
+  st <- newFileStore () :: IO STMFileStore
+  testStorageAndCountForStore st
+  closeFileStore st
+
+testStorageAndCountForStore :: FileStoreClass s => s -> Expectation
+testStorageAndCountForStore st = do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   getUsedStorage st `shouldReturn` 0
   getFileCount st `shouldReturn` 0
-  let fileInfo = testFileInfo sndKey
-  addFile st (EntityId "file_a__________") fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
-  addFile st (EntityId "file_b__________") fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  let fileInfoA = testFileInfo sndKey
+      fileInfoB = fileInfoA {size = 64000}
+      fileA = EntityId "file_a__________"
+      fileB = EntityId "file_b__________"
+  addFile st fileA fileInfoA testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st fileB fileInfoB testCreatedAt EntityActive `shouldReturn` Right ()
   getFileCount st `shouldReturn` 2
-  used <- getUsedStorage st
-  used `shouldBe` 256000 -- 128000 * 2
+  getUsedStorage st `shouldReturn` 0
+  setFilePath st fileA "/tmp/file_a" `shouldReturn` Right ()
+  getUsedStorage st `shouldReturn` 128000
+  setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
+  getUsedStorage st `shouldReturn` 192000
 
 -- Migration round-trip test
 

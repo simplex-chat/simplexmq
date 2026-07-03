@@ -9,7 +9,6 @@
 module XFTPClient where
 
 import Control.Concurrent (ThreadId, threadDelay)
-import Control.Monad (void)
 import Data.String (fromString)
 import Data.Time.Clock (getCurrentTime)
 import Network.Socket (ServiceName)
@@ -25,6 +24,7 @@ import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
 #if defined(dbServerPostgres)
+import Control.Monad (void)
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)

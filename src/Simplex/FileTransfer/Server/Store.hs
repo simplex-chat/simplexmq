@@ -22,11 +22,11 @@ where
 import Data.Kind (Type)
 
 import Control.Concurrent.STM
-import Control.Monad (forM, void)
+import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, isJust)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word32)
@@ -175,8 +175,10 @@ instance FileStoreClass STMFileStore where
           pure $ Just (sId, path, size)
         else pure Nothing
 
-  getUsedStorage STMFileStore {files} =
-    M.foldl' (\acc FileRec {fileInfo = FileInfo {size}} -> acc + fromIntegral size) 0 <$> readTVarIO files
+  getUsedStorage STMFileStore {files} = foldM addSize 0 =<< readTVarIO files
+    where
+      addSize acc FileRec {fileInfo = FileInfo {size}, filePath} =
+        ifM (isJust <$> readTVarIO filePath) (pure $! acc + fromIntegral size) (pure acc)
 
   getFileCount STMFileStore {files} = M.size <$> readTVarIO files
 

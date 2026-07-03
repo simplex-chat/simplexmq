@@ -11,8 +11,9 @@ import Control.Applicative ((<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
-import Network.Socket (HostName, ServiceName)
+import Network.Socket (ServiceName)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 
 data ServiceScheme = SSSimplex | SSAppServer SrvLoc
   deriving (Eq, Show)
@@ -25,14 +26,19 @@ instance StrEncoding ServiceScheme where
     "simplex:" $> SSSimplex
       <|> "https://" *> (SSAppServer <$> strP)
 
-data SrvLoc = SrvLoc HostName ServiceName
+data SrvLoc = SrvLoc TransportHost ServiceName
   deriving (Eq, Ord, Show)
 
 instance StrEncoding SrvLoc where
-  strEncode (SrvLoc host port) = B.pack $ host <> if null port then "" else ':' : port
-  strP = SrvLoc <$> host <*> (port <|> pure "")
+  strEncode (SrvLoc host port)
+    | null port = strEncode host
+    | otherwise = h <> B.pack (':' : port)
     where
-      host = B.unpack <$> A.takeWhile1 (A.notInClass ":#,;/ ")
+      h = case host of
+        THIPv6 _ -> ('[' `B.cons` strEncode host) `B.snoc` ']'
+        _ -> strEncode host
+  strP = SrvLoc <$> strP <*> (port <|> pure "")
+    where
       port = show <$> (A.char ':' *> (A.decimal :: A.Parser Int))
 
 simplexChat :: ServiceScheme

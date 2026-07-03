@@ -193,6 +193,7 @@ ntfServerCLI cfgPath logPath =
                     persistErrorInterval = 0 -- seconds
                   },
               apnsConfig = defaultAPNSPushClientConfig,
+              allowTestPushProvider = False,
               subsBatchSize = 900,
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini

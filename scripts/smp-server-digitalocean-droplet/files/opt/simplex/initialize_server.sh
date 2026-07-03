@@ -22,7 +22,7 @@ smp-server --version
 
 # Initialize server
 ip_address=$(curl ifconfig.me)
-smp-server init -l --ip $ip_address
+smp-server init -l --disable-web --ip $ip_address
 
 # Server fingerprint
 fingerprint=$(cat /etc/opt/simplex/fingerprint)

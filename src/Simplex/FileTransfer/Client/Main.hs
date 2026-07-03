@@ -14,6 +14,7 @@ module Simplex.FileTransfer.Client.Main
   ( SendOptions (..),
     CLIError (..),
     xftpClientCLI,
+    xftpClientDeprecationNotice,
     cliSendFile,
     cliSendFileOpts,
     encodeWebURI,
@@ -69,7 +70,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
-import Simplex.Messaging.Server.CLI (getCliCommand')
 import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitFileName, (</>))
@@ -80,6 +80,10 @@ import UnliftIO.Directory
 
 xftpClientVersion :: String
 xftpClientVersion = "1.0.1"
+
+xftpClientDeprecationNotice :: String
+xftpClientDeprecationNotice =
+  "WARNING: the standalone xftp CLI is experimental and deprecated."
 
 newtype CLIError = CLIError String
   deriving (Eq, Show, Exception)
@@ -223,7 +227,13 @@ logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 xftpClientCLI :: IO ()
 xftpClientCLI =
-  getCliCommand' cliCommandP clientVersion >>= \case
+  customExecParser
+    (prefs showHelpOnEmpty)
+    ( info
+        (helper <*> versionOption <*> cliCommandP)
+        (header (clientVersion <> "\n" <> xftpClientDeprecationNotice) <> fullDesc)
+    )
+    >>= \case
     SendFile opts -> runLogE opts $ cliSendFile opts
     ReceiveFile opts -> runLogE opts $ cliReceiveFile opts
     DeleteFile opts -> runLogE opts $ cliDeleteFile opts
@@ -231,6 +241,7 @@ xftpClientCLI =
     RandomFile opts -> cliRandomFile opts
   where
     clientVersion = "SimpleX XFTP client v" <> xftpClientVersion
+    versionOption = infoOption clientVersion (long "version" <> short 'v' <> help "Show version")
 
 runLogE :: HasField "verbose" a Bool => a -> ExceptT CLIError IO () -> IO ()
 runLogE opts a

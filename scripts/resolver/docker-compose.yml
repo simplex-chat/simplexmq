@@ -100,7 +100,6 @@ services:
       --http.addr 0.0.0.0 --http.port 8545
       --http.api eth,net
       --rpc.gascap 50000000
-      --rpc.max-response-size 5
       --port 30303
       --discovery.port 30303
     restart: unless-stopped
@@ -125,6 +124,34 @@ services:
       --non-interactive
       --rest --rest-address=0.0.0.0 --rest-port=5052
       --nat=${NAT:-any}
+    restart: unless-stopped
+
+  # SNRC REST resolver. Talks to reth on the compose-internal network,
+  # exposes /resolve and /health on 127.0.0.1:8000 by default. The
+  # smp-server points its [NAMES] resolver_endpoint at this URL.
+  # To change the host port, edit the LEFT side of the port mapping below.
+  resolver:
+    build:
+      context: ./service
+      dockerfile: Dockerfile
+    depends_on:
+      # reth's `service_started` is sufficient — the resolver tolerates
+      # eth_call failures gracefully (returns 502 with the error body), so
+      # starting before reth has finished snapshot replay just yields a few
+      # 502s until the chain is queryable. The upstream reth image doesn't
+      # ship a HEALTHCHECK, so we can't gate on healthy.
+      reth:
+        condition: service_started
+    environment:
+      SNRC_RPC: http://reth:8545
+      SNRC_BIND: 0.0.0.0
+      # Registry addresses cascade through the script's own defaults
+      # (mainnet `.testing`; `.simplex` unconfigured). Set explicitly here
+      # only if you're deploying against a different network or contract.
+      # SNRC_REGISTRY_TESTING: 0x...
+      # SNRC_REGISTRY_SIMPLEX: 0x...
+    ports:
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
 volumes:

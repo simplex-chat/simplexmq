@@ -1,7 +1,7 @@
-cabal-version: 1.12
+cabal-version: 3.0
 
 name:           simplexmq
-version:        6.5.2.0
+version:        7.0.0.3
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -16,7 +16,7 @@ homepage:       https://github.com/simplex-chat/simplexmq#readme
 author:         simplex.chat
 maintainer:     chat@simplex.chat
 copyright:      2020-2022 simplex.chat
-license:        AGPL-3
+license:        AGPL-3.0-only
 license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
@@ -24,6 +24,13 @@ extra-source-files:
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
+    cbits/blst/**/*.c
+    cbits/blst/**/*.h
+    cbits/blst/**/*.s
+    cbits/blst/**/*.S
+    cbits/blst/**/*.asm
+    cbits/libbbs/**/*.c
+    cbits/libbbs/**/*.h
     apps/common/Web/static/index.html
     apps/common/Web/static/link.html
     apps/common/Web/static/media/apk_icon.png
@@ -82,6 +89,11 @@ flag server_postgres
   manual: True
   default: False
 
+flag commoncrypto
+  description: On Apple platforms, use SecRandomCopyBytes (Security.framework) for libbbs randomness. getentropy is a non-public symbol on iOS and triggers App Store rejection (ITMS-90338).
+  manual: True
+  default: False
+
 library
   exposed-modules:
       Simplex.FileTransfer.Agent
@@ -122,6 +134,7 @@ library
       Simplex.Messaging.Crypto.File
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
+      Simplex.Messaging.Crypto.BBS
       Simplex.Messaging.Crypto.SNTRUP761
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
@@ -130,6 +143,7 @@ library
       Simplex.Messaging.Crypto.ShortLink
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
+      Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
       Simplex.Messaging.Notifications.Transport
@@ -141,6 +155,7 @@ library
       Simplex.Messaging.Server.QueueStore.Postgres.Config
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
+      Simplex.Messaging.SimplexName
       Simplex.Messaging.Session
       Simplex.Messaging.SystemTime
       Simplex.Messaging.TMap
@@ -261,6 +276,8 @@ library
           Simplex.Messaging.Server.MsgStore.Journal.SharedLock
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
+          Simplex.Messaging.Server.Names
+          Simplex.Messaging.Server.Names.HttpResolver
           Simplex.Messaging.Server.NtfStore
           Simplex.Messaging.Server.Prometheus
           Simplex.Messaging.Server.QueueStore
@@ -300,11 +317,33 @@ library
   ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-home-modules -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2
   include-dirs:
       cbits
+      cbits/blst/bindings
+      cbits/blst/src
+      cbits/libbbs/include
+      cbits/libbbs/src
+  cc-options: -D__BLST_PORTABLE__
+  if flag(commoncrypto)
+    cc-options: -DBBS_CRYPTO_CC
+    frameworks: Security
   c-sources:
       cbits/sha512.c
       cbits/sntrup761.c
+      cbits/blst/src/server.c
+      cbits/libbbs/src/bbs.c
+      cbits/libbbs/src/bbs_ciphersuites.c
+      cbits/libbbs/src/bbs_util.c
+      cbits/libbbs/src/compat-string.c
+      cbits/libbbs/src/sha256.c
+      cbits/libbbs/src/shake256.c
+  asm-sources:
+      cbits/blst/build/assembly.S
   extra-libraries:
       crypto
+  if os(windows)
+    c-sources:
+        cbits/getentropy_win.c
+    extra-libraries:
+        bcrypt
   build-depends:
       aeson ==2.2.*
     , asn1-encoding ==0.9.*
@@ -355,7 +394,10 @@ library
     build-depends:
         case-insensitive ==1.2.*
       , hashable ==1.4.*
+      , http-client >=0.7 && <0.8
+      , http-client-tls >=0.3 && <0.4
       , ini ==0.4.1
+      , network-uri >=2.6 && <2.7
       , optparse-applicative >=0.15 && <0.17
       , process ==1.6.*
       , temporary ==1.3.*
@@ -489,6 +531,7 @@ test-suite simplexmq-test
       AgentTests.EqInstances
       AgentTests.FunctionalAPITests
       AgentTests.MigrationTests
+      AgentTests.ResolveNameTests
       AgentTests.ServerChoice
       AgentTests.ShortLinkTests
       CLITests
@@ -505,9 +548,12 @@ test-suite simplexmq-test
       CoreTests.VersionRangeTests
       FileDescriptionTests
       RemoteControl
+      NamesResolverServer
+      RSLVTests
       ServerTests
       SMPAgentClient
       SMPClient
+      SMPNamesTests
       SMPProxyTests
       Util
       XFTPAgent
@@ -588,6 +634,8 @@ test-suite simplexmq-test
     , unliftio
     , unliftio-core
     , unordered-containers
+    , wai
+    , warp
     , yaml
   default-language: Haskell2010
   if flag(server_postgres)
