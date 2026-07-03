@@ -409,7 +409,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             s ->
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
-                _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
+                _ -> putStrLn "Invalid password. Passwords can contain printable ASCII characters except whitespace, '@', ':' and '/'" >> serverPassword
         checkInitOptions InitOptions {sourceCode, serverInfo, operatorCountry, hostingCountry} = do
           let err_
                 | isNothing sourceCode && hasServerInfo serverInfo =

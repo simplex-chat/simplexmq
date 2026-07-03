@@ -63,7 +63,7 @@ if [ ! -f "${confd}/smp-server.ini" ]; then
                   --store-log \
                   --daily-stats \
                   --source-code \
-                  "$@" > /dev/null 2>&1
+                  "$@" > /dev/null
 
   # Fix path to certificates
   if [ -n "${WEB_MANUAL}" ]; then
