@@ -103,7 +103,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.SimplexName (SimplexNameDomain)
+import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
@@ -1497,7 +1497,7 @@ client
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
     -- concurrency is limited by serverResolverConcurrency in forkCmd.
-    resolveNameMsg :: NamesEnv -> SimplexNameDomain -> M s BrokerMsg
+    resolveNameMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
     resolveNameMsg nenv d = do
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-

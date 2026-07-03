@@ -6,7 +6,7 @@
 
 module Simplex.Messaging.SimplexName
   ( SimplexNameInfo (..),
-    SimplexNameDomain (..),
+    SimplexDomain (..),
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
@@ -33,11 +33,11 @@ import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, (<$?>))
 
 data SimplexNameInfo = SimplexNameInfo
   { nameType :: SimplexNameType,
-    nameDomain :: SimplexNameDomain
+    nameDomain :: SimplexDomain
   }
   deriving (Eq, Show)
 
-data SimplexNameDomain = SimplexNameDomain
+data SimplexDomain = SimplexDomain
   { nameTLD :: SimplexTLD,
     domain :: Text,
     subDomain :: [Text] -- parent to child: ["b", "a"] for a.b.domain.simplex
@@ -87,9 +87,9 @@ instance StrEncoding SimplexNameInfo where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP
       bareName = parseBare . safeDecodeUtf8 <$?> boundedNonSpace
-      parseBare s = (\name -> SimplexNameDomain TLDSimplex (T.toLower name) []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
+      parseBare s = (\name -> SimplexDomain TLDSimplex (T.toLower name) []) <$> AT.parseOnly (nameLabelP <* AT.endOfInput) s
 
-instance StrEncoding SimplexNameDomain where
+instance StrEncoding SimplexDomain where
   strEncode = encodeUtf8 . fullDomainName
   strP = parseDomain . safeDecodeUtf8 <$?> boundedNonSpace
     where
@@ -97,18 +97,18 @@ instance StrEncoding SimplexNameDomain where
       mkDomain labels = case reverse lowered of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
-        "simplex" : name : sub -> Right (SimplexNameDomain TLDSimplex name sub)
-        "testing" : name : sub -> Right (SimplexNameDomain TLDTesting name sub)
-        _ -> Right (SimplexNameDomain TLDWeb (T.intercalate "." lowered) [])
+        "simplex" : name : sub -> Right (SimplexDomain TLDSimplex name sub)
+        "testing" : name : sub -> Right (SimplexDomain TLDTesting name sub)
+        _ -> Right (SimplexDomain TLDWeb (T.intercalate "." lowered) [])
         where
           lowered = map T.toLower labels
 
-instance Encoding SimplexNameDomain where
+instance Encoding SimplexDomain where
   smpEncode = strEncode
   smpP = strP
 
-fullDomainName :: SimplexNameDomain -> Text
-fullDomainName SimplexNameDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
+fullDomainName :: SimplexDomain -> Text
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
   where
     tld' = case nameTLD of
       TLDSimplex -> ["simplex"]
@@ -117,21 +117,21 @@ fullDomainName SimplexNameDomain {nameTLD, domain, subDomain} = T.intercalate ".
 
 shortNameInfoStr :: SimplexNameInfo -> Text
 shortNameInfoStr = \case
-  SimplexNameInfo {nameType = NTPublicGroup, nameDomain = SimplexNameDomain {nameTLD = TLDSimplex, domain, subDomain = []}} -> "#" <> domain
+  SimplexNameInfo {nameType = NTPublicGroup, nameDomain = SimplexDomain {nameTLD = TLDSimplex, domain, subDomain = []}} -> "#" <> domain
   info -> pfx <> fullDomainName (nameDomain info)
     where
       pfx = case nameType info of
         NTPublicGroup -> "#"
         NTContact -> "@"
 
-instance ToField SimplexNameInfo where toField = toField . decodeLatin1 . strEncode
+instance ToField SimplexDomain where toField = toField . decodeLatin1 . strEncode
 
-instance FromField SimplexNameInfo where fromField = fromTextField_ (eitherToMaybe . strDecode . encodeUtf8)
+instance FromField SimplexDomain where fromField = fromTextField_ (eitherToMaybe . strDecode . encodeUtf8)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "TLD") ''SimplexTLD)
 
 $(J.deriveJSON (enumJSON $ dropPrefix "NT") ''SimplexNameType)
 
-$(J.deriveJSON defaultJSON ''SimplexNameDomain)
+$(J.deriveJSON defaultJSON ''SimplexDomain)
 
 $(J.deriveJSON defaultJSON ''SimplexNameInfo)
