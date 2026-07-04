@@ -3926,7 +3926,7 @@ testSMPServerConnectionTest (t, msType) newQueueBasicAuth srv =
   withSmpServerConfigOn t cfg' testPort2 $ \_ -> do
     -- initially passed server is not running
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a NRMInteractive 1 srv
+      either Just (const Nothing) <$> testProtocolServer a NRMInteractive 1 srv
   where
     cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth}
 

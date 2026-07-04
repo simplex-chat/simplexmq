@@ -540,7 +540,7 @@ testRunNTFServerTests :: ASrvTransport -> NtfServer -> IO (Maybe ProtocolTestFai
 testRunNTFServerTests t srv =
   withNtfServer t $
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a NRMInteractive 1 $ ProtoServerWithAuth srv Nothing
+      either Just (const Nothing) <$> testProtocolServer a NRMInteractive 1 (ProtoServerWithAuth srv Nothing)
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
 testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do

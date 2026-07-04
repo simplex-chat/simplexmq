@@ -247,7 +247,8 @@ testTHandleParams sessionId =
       thAuth = Nothing,
       implySessId = True,
       encryptBlock = Nothing,
-      serviceAuth = True
+      serviceAuth = True,
+      serverInfoBytes = Nothing
     }
 
 testTHandleAuth :: TVar ChaChaDRG -> C.APublicAuthKey -> IO (Maybe (THandleAuth 'TClient))

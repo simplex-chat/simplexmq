@@ -99,7 +99,7 @@ testXFTPServerTest newFileBasicAuth srv =
   withXFTPServerCfg testXFTPServerConfig {newFileBasicAuth, xftpPort = xftpTestPort2} $ \_ ->
     -- initially passed server is not running
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a NRMInteractive 1 srv
+      either Just (const Nothing) <$> testProtocolServer a NRMInteractive 1 srv
 
 rfProgress :: forall m. (HasCallStack, MonadIO m, MonadFail m) => AgentClient -> Int64 -> m ()
 rfProgress c expected = loop 0
@@ -685,4 +685,4 @@ testXFTPServerTest_ :: HasCallStack => XFTPServerWithAuth -> IO (Maybe ProtocolT
 testXFTPServerTest_ srv =
   -- initially passed server is not running
   withAgent 1 agentCfg initAgentServers testDB $ \a ->
-    testProtocolServer a NRMInteractive 1 srv
+    either Just (const Nothing) <$> testProtocolServer a NRMInteractive 1 srv

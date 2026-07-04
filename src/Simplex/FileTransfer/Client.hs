@@ -141,7 +141,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       v = VersionXFTP 1
       thServerVRange = versionToRange v
-      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False}
+      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfoBytes = Nothing}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just alpn
