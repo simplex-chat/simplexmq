@@ -31,6 +31,8 @@ module Simplex.Messaging.Client.Agent
     removeActiveSubs,
     removePendingSub,
     removePendingSubs,
+    AgentLeakStats (..),
+    getAgentLeakStats,
   )
 where
 
@@ -157,6 +159,33 @@ data SMPClientAgent p = SMPClientAgent
   }
 
 type OwnServer = Bool
+
+-- | Sizes of every per-server/per-session map in the client agent, plus total in-flight
+-- forwarded commands - for leak diagnostics on the proxy path.
+data AgentLeakStats = AgentLeakStats
+  { alSmpClients :: Int,
+    alSmpSessions :: Int,
+    alActiveServiceSubs :: Int,
+    alActiveQueueSubs :: Int,
+    alPendingServiceSubs :: Int,
+    alPendingQueueSubs :: Int,
+    alSmpSubWorkers :: Int,
+    alSentCommands :: Int
+  }
+
+getAgentLeakStats :: SMPClientAgent p -> IO AgentLeakStats
+getAgentLeakStats SMPClientAgent {smpClients, smpSessions, activeServiceSubs, activeQueueSubs, pendingServiceSubs, pendingQueueSubs, smpSubWorkers} = do
+  alSmpClients <- msize smpClients
+  sess <- readTVarIO smpSessions
+  alActiveServiceSubs <- msize activeServiceSubs
+  alActiveQueueSubs <- msize activeQueueSubs
+  alPendingServiceSubs <- msize pendingServiceSubs
+  alPendingQueueSubs <- msize pendingQueueSubs
+  alSmpSubWorkers <- msize smpSubWorkers
+  alSentCommands <- foldM (\ !a (_, c) -> (a +) <$> pClientSentCommandsCount c) 0 (M.elems sess)
+  pure AgentLeakStats {alSmpClients, alSmpSessions = M.size sess, alActiveServiceSubs, alActiveQueueSubs, alPendingServiceSubs, alPendingQueueSubs, alSmpSubWorkers, alSentCommands}
+  where
+    msize m = M.size <$> readTVarIO m
 
 newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> Maybe DBService -> TVar ChaChaDRG -> IO (SMPClientAgent p)
 newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} dbService randomDrg = do
