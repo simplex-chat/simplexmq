@@ -1546,11 +1546,14 @@ queueIdHash = IdsHash . C.md5Hash . unEntityId
 {-# INLINE queueIdHash #-}
 
 addServiceSubs :: (Int64, IdsHash) -> (Int64, IdsHash) -> (Int64, IdsHash)
-addServiceSubs (n', idsHash') (n, idsHash) = (n + n', idsHash <> idsHash')
+addServiceSubs (n', idsHash') (n, idsHash) =
+  let !n'' = n + n'
+      !h = idsHash <> idsHash'
+   in (n'', h)
 
 subtractServiceSubs :: (Int64, IdsHash) -> (Int64, IdsHash) -> (Int64, IdsHash)
 subtractServiceSubs (n', idsHash') (n, idsHash)
-  | n > n' = (n - n', idsHash <> idsHash') -- concat is a reversible xor: (x `xor` y) `xor` y == x
+  | n > n' = let !n'' = n - n'; !h = idsHash <> idsHash' in (n'', h) -- concat is a reversible xor: (x `xor` y) `xor` y == x
   | otherwise = (0, mempty)
 
 data ProtocolErrorType = PECmdSyntax | PECmdUnknown | PESession | PEBlock
