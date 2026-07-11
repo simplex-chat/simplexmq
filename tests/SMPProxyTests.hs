@@ -520,14 +520,14 @@ testAgentClientReconnectAfterCancel :: IO ()
 testAgentClientReconnectAfterCancel =
   withAgent 1 agentCfg agentServersLeak testDB $ \a -> do
     withStallingServerOn testPort2 $ do
-      t <- async $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      t <- async $ runExceptT $ A.createConnection (client a) NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
       threadDelay 1000000 -- let the connect to the stalling relay start, then kill it mid-flight
       cancel t
     withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ -> do
       testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
         reply `shouldBe` Right SMP.PONG -- the relay is up and reachable, so a timeout can only be the poisoned var
-      r <- timeout 8000000 $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      r <- timeout 8000000 $ runExceptT $ A.createConnection (client a) NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
       case r of
         Just (Right _) -> pure ()
         _ -> expectationFailure $ "agent failed to connect after a cancelled connect; got: " <> show r
