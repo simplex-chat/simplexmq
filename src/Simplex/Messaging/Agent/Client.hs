@@ -320,7 +320,7 @@ import System.Mem.Weak (Weak, deRefWeak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
-import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, forkIOWithUnmask, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -465,7 +465,8 @@ runWorkerAsync Worker {action} work =
     (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
     (\a -> when (isNothing a) start) -- start worker if it's not running
   where
-    start = atomically . putTMVar action . Just =<< mkWeakThreadId =<< forkIO work
+    -- unmask so the worker doesn't inherit an uninterruptibleMask from the enqueueing thread (else killThread hangs on teardown)
+    start = atomically . putTMVar action . Just =<< mkWeakThreadId =<< forkIOWithUnmask ($ work)
 
 data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
