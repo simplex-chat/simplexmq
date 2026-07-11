@@ -6,6 +6,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecursiveDo #-}
 
 module Simplex.Messaging.Notifications.Server.Env
   ( NtfServerConfig (..),
@@ -120,7 +121,7 @@ data NtfEnv = NtfEnv
     serverStats :: NtfServerStats
   }
 
-newNtfServerEnv :: NtfServerConfig -> (NtfPostgresStore -> NtfPushServer -> NtfServerStats -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> IO NtfEnv
+newNtfServerEnv :: NtfServerConfig -> (NtfEnv -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()) -> IO NtfEnv
 newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds} mkProcessMsg = do
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
@@ -129,9 +130,9 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   let dbService = if useServiceCreds then Just $ mkDbService random store else Nothing
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
-  let processMsg = mkProcessMsg store pushServer serverStats
-  subscriber <- newNtfSubscriber smpAgentCfg processMsg dbService random
-  pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  rec subscriber <- newNtfSubscriber smpAgentCfg (mkProcessMsg env) dbService random
+      let env = NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure env
   where
     mkDbService g st = DBService {getCredentials, updateServiceId}
       where

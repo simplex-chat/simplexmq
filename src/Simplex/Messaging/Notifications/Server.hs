@@ -109,7 +109,6 @@ ntfServer :: NtfServerConfig -> TMVar Bool -> M ()
 ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions} started = do
   restoreServerStats
   s <- asks subscriber
-  ps <- asks pushServer
   when (maintenance startOptions) $ do
     liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
     stopServer
@@ -117,7 +116,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
   void $ forkIO $ resubscribe s
   raceAny_
     ( ntfSubscriber s
-        : periodicNtfsThread ps
+        : periodicNtfsThread
         : map runServer transports
           <> serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
@@ -525,8 +524,8 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       void $ updateSubStatus st srvId' nId NSPending
       subscribeQueuesNtfs ca smpServer' [sub]
 
-receiveSMPMessage :: NtfPostgresStore -> NtfPushServer -> NtfServerStats -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()
-receiveSMPMessage st ps stats ca ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) =
+receiveSMPMessage :: NtfEnv -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()
+receiveSMPMessage env@NtfEnv {store = st, serverStats = stats} ca ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) =
   forM_ ts $ \(ntfId, t) -> case t of
     STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
     STResponse {} -> pure () -- it was already reported as timeout error
@@ -541,7 +540,7 @@ receiveSMPMessage st ps stats ca ((_, srv@(SMPServer (h :| _) _ _), _), THandleP
               isOwn = isOwnServer ca srv
           addTokenLastNtf st newNtf >>= \case
             Right (tkn, lastNtfs) -> do
-              pushNotification st stats ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
+              pushNotification env (Just srvHost) isOwn tkn $ PNMessage lastNtfs
               incNtfStat_ stats ntfReceived
               when isOwn $ incServerStat srvHost (ntfReceivedOwn stats)
             Left AUTH -> do
@@ -630,38 +629,37 @@ logSubStatus srv event n updated =
 showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
-pushNotification :: NtfPostgresStore -> NtfServerStats -> NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> IO ()
-pushNotification st stats s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
-  ifM
-    (pushProviderAllowed token)
-    (getOrCreatePushWorker st stats s (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
-    (logWarn "skipping disabled APNS test push provider")
+pushNotification :: NtfEnv -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> IO ()
+pushNotification env srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
+  if pushProviderAllowed env token
+    then getOrCreatePushWorker env (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf))
+    else logWarn "skipping disabled APNS test push provider"
 
-pushProviderAllowed :: DeviceToken -> M Bool
-pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
-pushProviderAllowed _ = pure True
+pushProviderAllowed :: NtfEnv -> DeviceToken -> Bool
+pushProviderAllowed NtfEnv {config} (DeviceToken PPApnsTest _) = allowTestPushProvider config
+pushProviderAllowed _ _ = True
 
 guardPushProvider :: DeviceToken -> M NtfResponse -> M NtfResponse
 guardPushProvider token action =
   ifM
-    (pushProviderAllowed token)
+    ((`pushProviderAllowed` token) <$> ask)
     action
     (pure $ NRErr $ CMD SMP.PROHIBITED)
 
-getOrCreatePushWorker :: NtfPostgresStore -> NtfServerStats -> NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> IO (TBQueue (NtfTknRec, PushNotification))
-getOrCreatePushWorker st stats s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
+getOrCreatePushWorker :: NtfEnv -> (Maybe T.Text, PushProvider) -> OwnServer -> IO (TBQueue (NtfTknRec, PushNotification))
+getOrCreatePushWorker env@NtfEnv {pushServer = NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize}} key@(srvHost_, _) isOwn = do
   ts <- getCurrentTime
   withGetSessVar' pushWorkerSeq key pushWorkers ts createWorker existingWorker
   where
     createWorker v = do
       q <- newTBQueueIO pushQSize
-      tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)  
+      tId <- mkWeakThreadId =<< forkIO (runPushWorker env srvHost_ isOwn q)
       atomically $ putTMVar (sessionVar v) PushWorker {workerQ = q, workerThreadId = tId}
       pure q
     existingWorker v = workerQ <$> atomically (readTMVar $ sessionVar v)
 
-runPushWorker :: NtfPostgresStore -> NtfServerStats -> NtfPushServer -> Maybe T.Text -> OwnServer -> TBQueue (NtfTknRec, PushNotification) -> IO ()
-runPushWorker st stats s srvHost_ isOwn q = forever $ do
+runPushWorker :: NtfEnv -> Maybe T.Text -> OwnServer -> TBQueue (NtfTknRec, PushNotification) -> IO ()
+runPushWorker NtfEnv {store = st, serverStats = stats, pushServer = s} srvHost_ isOwn q = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue q)
   logDebug $ "sending push notification to " <> T.pack (show pp)
   case ntf of
@@ -730,16 +728,16 @@ pushWorkersQLength workers = do
         Just PushWorker {workerQ} -> (acc +) <$> atomically (lengthTBQueue workerQ)
         Nothing -> pure acc
 
-periodicNtfsThread :: NtfPushServer -> M ()
-periodicNtfsThread s = do
+periodicNtfsThread :: M ()
+periodicNtfsThread = do
+  env <- ask
   st <- asks store
-  stats <- asks serverStats
   ntfsInterval <- asks $ periodicNtfsInterval . config
   let interval = 1000000 * ntfsInterval
   liftIO $ forever $ do
     threadDelay interval
     now <- systemSeconds <$> getSystemTime
-    cnt <- withPeriodicNtfTokens st now $ \tkn -> pushNotification st stats s Nothing False tkn PNCheckMessages
+    cnt <- withPeriodicNtfTokens st now $ \tkn -> pushNotification env Nothing False tkn PNCheckMessages
     logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
@@ -748,10 +746,9 @@ runNtfClientTransport th@THandle {params} = do
   ts <- liftIO getSystemTime
   c <- liftIO $ newNtfServerClient qSize params ts
   s <- asks subscriber
-  ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
   st <- asks store
-  raceAny_ ([liftIO $ send th c, client c s ps, liftIO $ receive st th c] <> disconnectThread_ c expCfg)
+  raceAny_ ([liftIO $ send th c, client c s, liftIO $ receive st th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (pure True)]
@@ -828,17 +825,16 @@ verifyNtfTransmission st thAuth (tAuth, authorized, (corrId, entId, cmd)) = case
       AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
       e -> VRFailed e
 
-client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
-client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps = do
-  st <- asks store
-  stats <- asks serverStats
+client :: NtfServerClient -> NtfSubscriber -> M ()
+client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} = do
+  env <- ask
   forever $
     atomically (readTBQueue rcvQ)
-      >>= mapM (processCommand st stats)
+      >>= mapM (processCommand env)
       >>= atomically . writeTBQueue sndQ
   where
-    processCommand :: NtfPostgresStore -> NtfServerStats -> NtfRequest -> M (Transmission NtfResponse)
-    processCommand st stats = \case
+    processCommand :: NtfEnv -> NtfRequest -> M (Transmission NtfResponse)
+    processCommand env = \case
       NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> fmap (corrId,NoEntity,) $ guardPushProvider token $ do
         logDebug "TNEW - new token"
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
@@ -848,7 +844,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps = do
         ts <- liftIO $ getSystemDate
         let tkn = mkNtfTknRec tknId newTkn srvDhPrivKey dhSecret regCode ts
         withNtfStore (`addNtfToken` tkn) $ \_ -> do
-          liftIO $ pushNotification st stats ps Nothing False tkn $ PNVerification regCode
+          liftIO $ pushNotification env Nothing False tkn $ PNVerification regCode
           incNtfStatT token ntfVrfQueued
           incNtfStatT token tknCreated
           pure $ NRTknId tknId srvDhPubKey
@@ -864,7 +860,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps = do
               | otherwise -> withNtfStore (\st -> updateTknStatus st tkn NTRegistered) $ \_ -> sendVerification
             where
               sendVerification = do
-                liftIO $ pushNotification st stats ps Nothing False tkn $ PNVerification tknRegCode
+                liftIO $ pushNotification env Nothing False tkn $ PNVerification tknRegCode
                 incNtfStatT token ntfVrfQueued
                 pure $ NRTknId ntfTknId $ C.publicKey tknDhPrivKey
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
@@ -882,7 +878,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps = do
             regCode <- getRegCode
             let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
             withNtfStore (`replaceNtfToken` tkn') $ \_ -> do
-              liftIO $ pushNotification st stats ps Nothing False tkn' $ PNVerification regCode
+              liftIO $ pushNotification env Nothing False tkn' $ PNVerification regCode
               incNtfStatT token ntfVrfQueued
               incNtfStatT token tknReplaced
               pure NROk
