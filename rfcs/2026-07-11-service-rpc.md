@@ -12,13 +12,13 @@ This is the wrong primitive for most service interactions:
 
 2. Privacy. A connection is a stable pairwise pseudonym. If a service were to use a duplex connection, it could link all requests made over it into a profile: search history in the directory, blockchain operations linked even when different on-chain keys are used, telemetry that becomes longitudinal tracking. The client also accumulates history that can be recovered from the device. Where continuity is needed, it can be provided in the application protocol (e.g., a token included in requests), without a transport-level identity.
 
-3. Encryption. Messages sent to contact addresses outside an established connection (invitations) have a single layer of X25519 encryption. This was acceptable while such messages contained only a connection link and profile (though it is planned to be improved); it is not acceptable for service requests.
+3. Encryption. Messages sent to contact addresses outside an established connection (invitations) have a single layer of X25519 encryption. This was acceptable while such messages contained only a connection link and profile (though it is planned to be improved); it is probably less acceptable for service requests.
 
 In-app service addresses should be stored as names resolving to links via the existing addressing layer (server host in the link authority, current link data retrieved with LGET), so that service links can be changed without redeploying the apps. Name resolution is already supported, and out of scope.
 
 ## Security objectives
 
-1. Requests from the same client must not be linkable to each other by the service or by servers, and no state that outlives the exchange is created on either side.
+1. Requests from the same client must not be linkable to each other by the service or by servers, and no long term state is created on either side in the transport layer.
 2. Post-quantum resistant e2e encryption of requests and replies; decryptability of recorded requests must be bounded by key rotation, without changing the address.
 3. Reply authenticity must be verifiable against the link; substitution, replay, dropping or reordering of replies by servers must be detectable.
 4. A repeated request for the same operation must not be executed twice.
@@ -171,7 +171,7 @@ This gives single execution over at-least-once delivery. The retention period bo
 - Recovery across restart: the transport keeps no exchange across a client restart. The application persists its own state and sends a new request when it needs to.
 - Service-initiated messages: there is no standing channel; use a connection where the service must reach the client without a request.
 - Abuse protection beyond existing queue quotas: services can require application-level credentials (e.g., a badge) in the request payload; rate limiting is a separate discussion.
-- Scaling request reception: a single address queue bounds service throughput; distributing reception across multiple queues or relays (the existing `relays` field in contact link data) is a separate discussion.
+- Scaling request reception: a single address queue bounds service throughput; distributing reception across multiple queues or relays (the existing `relays` field in contact link data) is a separate question, but it would fit well with name resolving to multiple addresses, both for redundancy, reliability and higher throughput.
 - Name resolution: existing addressing layer.
 
 [1]: https://tools.ietf.org/html/rfc5234
