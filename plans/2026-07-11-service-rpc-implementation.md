@@ -2,378 +2,204 @@
 
 RFC: [../rfcs/2026-07-11-service-rpc.md](../rfcs/2026-07-11-service-rpc.md)
 
-Types and instances below must encode exactly the ABNF in the RFC. Constructor, event, table and function names are provisional.
+Depends on: [2026-07-12-address-dr-implementation.md](2026-07-12-address-dr-implementation.md). RPC establishes the double ratchet from the service address exactly as the address-DR plan does; this plan is the RPC layer on top of it. Steps named R2'/O2'/O3' below are from that plan. Constructor, event, table and function names are provisional.
+
+RPC is a one-directional short-lived DR exchange: the client establishes the ratchet from the address (address-DR requester), sends one request, receives one or more responses on its reply queue, and both sides tear the ratchet down after the final response. Unlike a connection, the service does not send a reply queue back and no persistent connection remains.
 
 ## Versions
 
-- `VersionSMPA` (agent protocol): new version for `AgentRequest`/`AgentResponse` envelopes and the service key bundle in link data.
-- `VersionSMPC` (SMP client): new version for the hybrid public header.
-- `VersionSMP` (SMP protocol): new version for the `SSND` command.
+- `VersionSMPA` (agent protocol): the new `AgentServiceRequest`/`AgentServiceResponse` messages and the service address subtype. RPC requires the address-DR agent version, whose ratchet establishment it reuses.
 
-## Address type - `Simplex.Messaging.Agent.Protocol`
+`SSND` (SMP protocol) and the hybrid queue header (SMP client) are not used here - they are separate RFCs (combined secure-send; queue-layer PQ). The ratchet provides post-quantum encryption, and the reply queue is secured with `SKEY` as in the address-DR owner path (O3').
+
+## Service address
+
+A service address is a DR-advertising contact address (address-DR plan: `linkRatchetKey` in fixed data, `RatchetKeys` in mutable data) with a service subtype. There is no separate `ServiceKeyBundle` - requests are encrypted by establishing the ratchet against the advertised keys.
+
+The subtype distinguishes RPC from a normal connection and drives the owner's handling. Reuse the `ContactConnType` char slot:
 
 ```haskell
 data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay | CCTService
-
-ctTypeChar CCTService = 'S' -- 's' in links: link encoding lowercases, parsing uppercases
-
+ctTypeChar CCTService = 'S' -- 's' in links
 ctTypeP 'S' = pure CCTService
 ```
 
-The contact type is currently fixed to `CCTContact` when the agent reconstructs a contact link (`Agent.hs`, `cslContact`). It becomes a stored property of the address (column `link_contact_type` below), read when the link is reconstructed and when an address queue message is dispatched.
+Stored on the address receive queue as `link_contact_type` (NULL means the current contact type). A service address rejects `AgentInvitation` and connection `AgentConfirmation`; a non-service address rejects service requests.
 
-## Service key bundle in link data - `Simplex.Messaging.Agent.Protocol`
+## RPC messages
 
-```haskell
-data ServiceKeyBundle = ServiceKeyBundle
-  { keyId :: ByteString,
-    reqDhKey :: C.PublicKeyX25519,
-    reqKemKey :: KEMPublicKey
-  }
-
-instance Encoding ServiceKeyBundle where
-  smpEncode ServiceKeyBundle {keyId, reqDhKey, reqKemKey} = smpEncode (keyId, reqDhKey, reqKemKey)
-  smpP = do
-    (keyId, reqDhKey, reqKemKey) <- smpP
-    pure ServiceKeyBundle {keyId, reqDhKey, reqKemKey}
-```
-
-`UserContactData` gains a field, appended to the encoding, absent in data written by earlier versions. The agent sets it when it signs and updates link data; the application supplies only its own data. There is no retention value in link data - retention is service configuration (see Idempotency).
+RPC adds two `AgentMessage` variants (Protocol.hs:883-889, parsed by `parseMessage`), parallel to `AgentConnInfoReply`, not new top-level envelopes. They are the decrypted content of the existing per-queue-e2e envelopes: the request is the `encConnInfo` of the address-DR `AgentConfirmation`; each response is the `encConnInfo` of an `AgentConfirmation` (first message to the reply queue) or the `encAgentMessage` of an `AgentMsgEnvelope` (later messages), all double-ratchet-encrypted. Their tags `Q`/`P` are the RFC's `agentRequest`/`agentResponse`.
 
 ```haskell
-data UserContactData = UserContactData
-  { direct :: Bool,
-    owners :: [OwnerAuth],
-    relays :: [ConnShortLink 'CMContact],
-    userData :: UserLinkData,
-    serviceKeys :: Maybe ServiceKeyBundle
-  }
+data AgentMessage
+  = ... -- AgentConnInfo 'I', AgentConnInfoReply 'D', AgentRatchetInfo 'R', AgentMessage 'M'
+  | AgentServiceRequest (NonEmpty SMPQueueInfo) MsgBody       -- 'Q': reply queue(s) + opaque request payload
+  | AgentServiceResponse Bool (NonEmpty MsgBody)              -- 'P': final flag + one or more response payloads
 
-instance Encoding UserContactData where
-  smpEncode UserContactData {direct, owners, relays, userData, serviceKeys} =
-    B.concat [smpEncode direct, smpEncodeList owners, smpEncodeList relays, smpEncode userData, smpEncode serviceKeys]
-  smpP = do
-    direct <- smpP
-    owners <- smpListP
-    relays <- smpListP
-    userData <- smpP
-    serviceKeys <- fromMaybe Nothing <$> optional smpP -- absent in data from earlier versions
-    _ <- A.takeByteString -- ignoring tail for forward compatibility
-    pure UserContactData {direct, owners, relays, userData, serviceKeys}
+-- encoding (extends AgentMessage Encoding)
+AgentServiceRequest qs body -> smpEncode ('Q', qs, Tail body)
+AgentServiceResponse final bodies -> smpEncode ('P', final) <> smpEncodeList (map Large (L.toList bodies))
 ```
 
-## SSND command - `Simplex.Messaging.Protocol`, `Simplex.Messaging.Server`
+One response message carries one or more response payloads, so responses known together are one message; responses over time are separate messages, each with `final = False` until the last. There is no signature and no previous-message hash: the ratchet, established against the `linkRatchetKey` committed by the link hash (address-DR authentication), authenticates each message and its message numbering detects dropping and reordering. The request payload is opaque application bytes (the chat command); the reply queue fields are outside it.
 
-```haskell
--- Protocol.hs
-SSND :: SndPublicAuthKey -> MsgFlags -> MsgBody -> Command Sender
+The request hash used for idempotency is `SHA3-256` of the decrypted request payload (the `MsgBody` in `AgentServiceRequest`).
 
--- CommandTag, encoding "SSND"
-SSND_ :: CommandTag Sender
+The `AgentMsgEnvelope` receive path (`agentClientMsg`, Agent.hs:3289) today expects only `AgentMessage APrivHeader aMessage`; it is extended to accept `AgentServiceResponse` for the stream after the first response.
 
--- encodeProtocol
-SSND k flags msg -> e (SSND_, ' ', k, ' ', flags, ' ', Tail msg)
+## Ratchet establishment - reuse of the address-DR flow
 
--- protocolP, in a new VersionSMP
-SSND_ -> SSND <$> (smpP <* A.space) <*> (smpP <* A.space) <*> (unTail <$> smpP)
-```
+Request (client), reusing the address-DR requester path (R2'/R3'):
 
-`checkCredentials`: as `SKEY` - authorization required, sender entity ID. Server verification: `vc SSender (SSND k _ _) = verifySecure k` - authorized by the key it sets.
+- Retrieve link data, reconstruct and negotiate the advertised `RcvE2ERatchetParamsUri`, create the reply queue Q_A (messaging mode, subscribed), establish the send ratchet (`generateSndE2EParams`, `pqX3dhSnd`, `initSndRatchet`, `createSndRatchet`).
+- Send `AgentConfirmation {e2eEncryption_ = Just sndParams, ratchetKeyId = Just ratchetKeyId, encConnInfo = ratchetEncrypt(AgentServiceRequest (Q_A :| []) payload)}` to the address queue, unauthenticated (`agentCbEncryptOnce`). The client connection is `RcvConnection` (Q_A) with the send ratchet.
 
-Server processing: `checkMode QMMessaging`, then `secureQueue_` (existing, idempotent), then deliver with deduplication. All queue store backends (STM, journal, PostgreSQL) keep the hash of the message delivered by `SSND` until it is acknowledged; a repeated `SSND` with an equal message hash responds `OK` without delivering it again; the hash is removed when the message is acknowledged. Server stats gain an `SSND` counter.
+Request (service), reusing the address-DR owner path (O1'/O2'):
 
-Proxying: `proxySMPCommand` is polymorphic in the sender command, so `SSND` forwards through `PFWD`/`RFWD` without changes.
+- `smpAddressConfirmation` selects the private keys by `ratchetKeyId`, `pqX3dhRcv`, `initRcvRatchet`, and `rcDecrypt` of `encConnInfo`, which also gives the connection its send side. The decrypted message is `AgentServiceRequest` (not `AgentConnInfoReply`), so the owner takes the RPC branch: create a `SndConnection` to Q_A (no Q_B, unidirectional) holding the ratchet, run idempotency (below), and either deliver `SREQ` or replay stored responses. This is receive-time establishment on unauthenticated input - the abuse bound of the address-DR plan ("Receive-time establishment, state, and abuse") applies unchanged.
 
-## Hybrid public header - `Simplex.Messaging.Protocol`
+Response (service): send each response to Q_A under the ratchet. The first message to Q_A is `AgentConfirmation {e2eEncryption_ = Nothing, encConnInfo = ratchetEncrypt(AgentServiceResponse final bodies)}` (per-queue e2e is unestablished on Q_A - the address-DR first-message constraint), securing Q_A with `SKEY` using the service's own key (`agentSecureSndQueue`, Q_A is messaging mode); later messages are `AgentMsgEnvelope {encAgentMessage = ratchetEncrypt(AgentServiceResponse …)}`. After the `final = True` message, delete the send connection and its ratchet.
 
-```haskell
-data PubHeader
-  = PubHeader
-      { phVersion :: VersionSMPC,
-        phE2ePubKey :: Maybe C.PublicKeyX25519
-      }
-  | PubHeaderHybrid
-      { phVersion :: VersionSMPC,
-        phKeyId :: Maybe ByteString, -- present in requests, absent in replies
-        phDhKey :: C.PublicKeyX25519,
-        phKemCt :: KEMCiphertext
-      }
+Response (client): a message on Q_A (its `snd_service_requests` row marks it an RPC reply queue). The first is `AgentConfirmation … Nothing` and takes the address-DR `RcvConnection … Nothing` branch (R5'), extended to accept `AgentServiceResponse`; later ones are `AgentMsgEnvelope` and take the standard message path, extended to accept `AgentServiceResponse`. Each `agentRatchetDecrypt` advances the ratchet. The first response returns from the call; later responses go to the callback. On `final`, the deadline, or `cancelServiceRequest`, delete Q_A (`DEL`) and the reply connection.
 
-instance Encoding PubHeader where
-  smpEncode = \case
-    PubHeader v k_ -> smpEncode (v, k_) -- Maybe encodes as '0' / '1' key, as today
-    PubHeaderHybrid v kId_ k ct -> smpEncode (v, '2', kId_, k, ct)
-  smpP = do
-    v <- smpP
-    A.anyChar >>= \case
-      '0' -> pure $ PubHeader v Nothing
-      '1' -> PubHeader v . Just <$> smpP
-      '2' -> PubHeaderHybrid v <$> smpP <*> smpP <*> smpP
-      _ -> fail "bad PubHeader"
-```
+## Reply queue - the requester's DR connection
 
-Secret derivation and encryption (`Simplex.Messaging.Crypto`, used from `Simplex.Messaging.Agent.Client`):
+The reply queue is the address-DR requester connection: an `RcvConnection` whose receive queue is Q_A, with a ratchet. No `reply_kem_priv_key`/`reply_secret` columns (those were the queue-layer hybrid secret, not used here). A `snd_service_requests` row referencing this connection marks it an RPC reply queue for dispatch and cleanup; there is no new connection type.
 
-```haskell
-hybridSecret :: C.DhSecretX25519 -> KEMSharedKey -> C.SbKey
-hybridSecret dh (KEMSharedKey k) = C.unsafeSbKey $ C.hkdf "" (C.dhBytes' dh <> BA.convert k) "SimpleXSMPQueue" 32
-```
+## Database schema
 
-The body is encrypted with `C.sbEncrypt` (secret_box) rather than `C.cbEncrypt`, padded to the same lengths. The sending side generates an ephemeral X25519 pair, encapsulates to the recipient KEM key, and writes `PubHeaderHybrid`. The receiving side selects private keys by `phKeyId` for a request, or uses the reply queue keys for a reply, and computes the same secret. A request with an unknown key ID is discarded and counted.
-
-Size constants: the hybrid header adds about 1.2KB (KEM ciphertext 1039 bytes plus the ephemeral key). Define the request and reply body length constants from the existing padded body lengths at implementation.
-
-## Agent envelopes - `Simplex.Messaging.Agent.Protocol`
-
-```haskell
-data AgentMsgEnvelope
-  = ... -- existing constructors
-  | AgentRequest
-      { agentVersion :: VersionSMPA,
-        replyQueue :: RequestReplyQueue,
-        requestPayload :: ByteString -- opaque, hashed
-      }
-  | AgentResponse
-      { agentVersion :: VersionSMPA,
-        signature :: C.Signature 'C.Ed25519, -- root key signature of signedResponse
-        signedResponse :: ByteString -- encoded SignedResponse, parsed after the signature is verified
-      }
-
-data RequestReplyQueue = RequestReplyQueue
-  { smpClientVersion :: VersionSMPC,
-    smpServer :: SMPServer,
-    senderId :: SMP.SenderId, -- sender ID of the reply queue
-    dhPublicKey :: C.PublicKeyX25519, -- reply queue X25519 key (its e2e key)
-    kemPublicKey :: KEMPublicKey -- reply queue sntrup761 key
-  }
-
-data SignedResponse = SignedResponse
-  { requestHash :: ByteString, -- SHA3-256 of requestPayload
-    prevMsgHash :: ByteString, -- SHA3-256 of the previous AgentResponse, empty in the first
-    more :: Bool, -- True if more reply messages follow
-    responses :: NonEmpty ByteString -- opaque application responses
-  }
-```
-
-The request does not include a key to secure the reply queue: the service generates its own sender key and secures the queue with `SSND`. `requestPayload` is the only hashed part; the reply queue fields are not hashed.
-
-```haskell
-instance Encoding AgentMsgEnvelope where
-  smpEncode = \case
-    ... -- existing constructors
-    AgentRequest {agentVersion, replyQueue, requestPayload} ->
-      smpEncode (agentVersion, 'Q', replyQueue, Tail requestPayload)
-    AgentResponse {agentVersion, signature, signedResponse} ->
-      smpEncode (agentVersion, 'P', signature, Tail signedResponse)
-  smpP = do
-    agentVersion <- smpP
-    smpP >>= \case
-      ... -- existing constructors
-      'Q' -> do
-        (replyQueue, Tail requestPayload) <- smpP
-        pure AgentRequest {agentVersion, replyQueue, requestPayload}
-      'P' -> do
-        (signature, Tail signedResponse) <- smpP
-        pure AgentResponse {agentVersion, signature, signedResponse}
-
-instance Encoding RequestReplyQueue where
-  smpEncode RequestReplyQueue {smpClientVersion, smpServer, senderId, dhPublicKey, kemPublicKey} =
-    smpEncode (smpClientVersion, smpServer, senderId, dhPublicKey, kemPublicKey)
-  smpP = do
-    (smpClientVersion, smpServer, senderId, dhPublicKey, kemPublicKey) <- smpP
-    pure RequestReplyQueue {smpClientVersion, smpServer, senderId, dhPublicKey, kemPublicKey}
-
-instance Encoding SignedResponse where
-  smpEncode SignedResponse {requestHash, prevMsgHash, more, responses} =
-    smpEncode (requestHash, prevMsgHash, more) <> smpEncodeList (map Large $ L.toList responses)
-  smpP = do
-    (requestHash, prevMsgHash, more) <- smpP
-    rs <- map unLarge <$> smpListP
-    responses <- maybe (fail "empty responses") pure $ L.nonEmpty rs
-    pure SignedResponse {requestHash, prevMsgHash, more, responses}
-```
-
-Signing and verification follow the link data pattern (`Simplex.Messaging.Crypto.ShortLink`):
-
-```haskell
--- service: signing key is linkPrivSigKey from the address ShortLinkCreds
-mkAgentResponse :: C.PrivateKeyEd25519 -> VersionSMPA -> SignedResponse -> AgentMsgEnvelope
-mkAgentResponse rootPrivKey agentVersion resp =
-  let signedResponse = smpEncode resp
-   in AgentResponse {agentVersion, signature = C.sign' rootPrivKey signedResponse, signedResponse}
-
--- client: rootKey from the fixed link data
-verifyAgentResponse :: C.PublicKeyEd25519 -> AgentMsgEnvelope -> Either AgentErrorType SignedResponse
-verifyAgentResponse rootKey AgentResponse {signature, signedResponse}
-  | C.verify' rootKey signature signedResponse = parse smpP (AGENT A_MESSAGE) signedResponse
-  | otherwise = Left ... -- verification error
-```
-
-## Reply queue - no new connection type
-
-The reply queue on the client is a receive connection (`RcvConnection`), extended to carry the KEM key and the computed hybrid secret. There is no new connection type and no flag on the connection: a client service request row (below) references the reply queue connection, and its presence identifies the connection as an RPC reply queue for dispatch and cleanup.
-
-The reply queue reuses the existing receive queue fields. `e2ePrivKey` is its X25519 key, its public half is the queue address DH key sent in the request. Two nullable columns are added to `rcv_queues`:
-
-- `reply_kem_priv_key` - the reply queue KEM private key.
-- `reply_secret` - the hybrid secret, empty until the first reply, then set from the first reply's header, as the per-queue DH secret is set by `setRcvQueueConfirmedE2E` on the first message today. Later replies are decrypted with it by the standard receive path.
-
-The service does not create a connection or queue for the reply queue. It sends replies directly to the reply queue address, as `sendInvitation` sends to a queue with no connection.
-
-## Database schema - `Agent/Store/SQLite/Migrations`, `Agent/Store/Postgres/Migrations`
-
-One migration (`M20260712_service_rpc`), SQLite shown, PostgreSQL mirrors it; column types follow existing schema conventions.
+One migration (`M20260712_service_rpc`), on top of the address-DR migration. SQLite shown, PostgreSQL mirrors it.
 
 ```sql
--- address contact type (contact address queues), and reply queue keys (reply queues).
--- NULL link_contact_type means 'A' (contact) for existing rows.
-ALTER TABLE rcv_queues ADD COLUMN link_contact_type TEXT;
-ALTER TABLE rcv_queues ADD COLUMN reply_kem_priv_key BLOB;
-ALTER TABLE rcv_queues ADD COLUMN reply_secret BLOB;
-
--- service side: current and retired bundle private keys.
-CREATE TABLE service_address_keys(
-  service_address_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  key_id BLOB NOT NULL,
-  dh_priv_key BLOB NOT NULL,
-  kem_priv_key BLOB NOT NULL,
-  created_at TEXT NOT NULL,
-  retired_at TEXT -- set on rotation, row deleted when the key retention period ends
-);
-CREATE UNIQUE INDEX idx_service_address_keys ON service_address_keys(conn_id, key_id);
+-- service subtype on the address receive queue (address-DR adds the ratchet key columns)
+ALTER TABLE rcv_queues ADD COLUMN link_contact_type TEXT; -- NULL = current contact type
 
 -- client side: one pending request per reply queue connection.
 CREATE TABLE snd_service_requests(
   snd_service_request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- reply queue connection
-  request_hash BLOB NOT NULL,
-  root_key BLOB NOT NULL, -- to verify replies
-  last_reply_hash BLOB, -- updated as reply messages arrive
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- reply queue (RcvConnection) with the ratchet
   deadline TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
--- service side: one record per distinct request hash on an address.
+-- service side: one record per distinct request hash on a service address.
 CREATE TABLE rcv_service_requests(
   rcv_service_request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- address connection
+  address_conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- the service address connection
   request_hash BLOB NOT NULL,
-  ended INTEGER NOT NULL DEFAULT 0, -- a reply message with more = False was sent
+  ended INTEGER NOT NULL DEFAULT 0, -- a response with final = True was produced
   expires_at TEXT NOT NULL, -- created + retention
   created_at TEXT NOT NULL
 );
-CREATE UNIQUE INDEX idx_rcv_service_requests ON rcv_service_requests(conn_id, request_hash);
+CREATE UNIQUE INDEX idx_rcv_service_requests ON rcv_service_requests(address_conn_id, request_hash);
 
--- service side: ordered signed reply messages for a request; the signed envelope
--- is independent of the reply queue, so it is stored once and encrypted per queue on send.
-CREATE TABLE rcv_service_replies(
-  rcv_service_reply_id INTEGER PRIMARY KEY AUTOINCREMENT,
+-- service side: ordered response payloads (plaintext) for a request; re-encrypted per reply
+-- connection because each request establishes its own ratchet, so ciphertext is not reusable.
+CREATE TABLE rcv_service_responses(
+  rcv_service_response_id INTEGER PRIMARY KEY AUTOINCREMENT,
   rcv_service_request_id INTEGER NOT NULL REFERENCES rcv_service_requests ON DELETE CASCADE,
-  reply_seq INTEGER NOT NULL,
-  more INTEGER NOT NULL,
-  signed_reply BLOB NOT NULL -- encoded AgentResponse
+  response_seq INTEGER NOT NULL,
+  final INTEGER NOT NULL,
+  response_bodies BLOB NOT NULL -- plaintext response payloads for this message (encoded NonEmpty MsgBody)
 );
-CREATE UNIQUE INDEX idx_rcv_service_replies ON rcv_service_replies(rcv_service_request_id, reply_seq);
+CREATE UNIQUE INDEX idx_rcv_service_responses ON rcv_service_responses(rcv_service_request_id, response_seq);
 
--- service side: reply queues subscribed under a request (the first, and any repeat).
-CREATE TABLE rcv_service_reply_queues(
-  rcv_service_reply_queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+-- service side: reply connections subscribed under a request (the first, and any repeat while pending
+-- or after completion). Each is a SndConnection to a reply queue with its own ratchet (in ratchets table).
+CREATE TABLE rcv_service_reply_conns(
+  rcv_service_reply_conn_id INTEGER PRIMARY KEY AUTOINCREMENT,
   rcv_service_request_id INTEGER NOT NULL REFERENCES rcv_service_requests ON DELETE CASCADE,
-  host TEXT NOT NULL,
-  port TEXT NOT NULL,
-  snd_id BLOB NOT NULL,
-  server_key_hash BLOB,
-  reply_secret BLOB NOT NULL, -- hybrid secret to this reply queue
-  secured INTEGER NOT NULL DEFAULT 0, -- reply queue secured with SSND
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- SndConnection to the reply queue, holds the ratchet
   last_sent_seq INTEGER NOT NULL DEFAULT 0
 );
 ```
+
+The service's address ratchet keys are the address-DR `address_ratchet_keys` table - not duplicated here.
 
 ## Agent API - `Simplex.Messaging.Agent`
 
 Service side:
 
 ```haskell
--- Creates a contact connection with CCTService link type, generates the root key
--- and the first key bundle, composes and signs link data.
+-- Creates a DR-advertising contact address with CCTService subtype (address-DR createServiceAddress
+-- plus the subtype), generating the link ratchet key and the first RatchetKeys row.
 createServiceAddress :: AgentClient -> UserId -> UserLinkData -> AE (ConnId, ConnShortLink 'CMContact)
 
--- Re-signs and updates user data with LSET, keeping the agent-owned key bundle.
-updateServiceAddressData :: AgentClient -> ConnId -> UserLinkData -> AE ()
-
--- Generates a new bundle, updates link data, retires the previous keys until the retention period ends.
--- Also runs on a schedule (config) while the address is subscribed.
-rotateServiceAddressKeys :: AgentClient -> ConnId -> AE ()
-
--- Sends one reply message with a list of responses; more = False ends the exchange.
--- The first message to each reply queue secures it with SSND; later messages use SEND.
-sendServiceReply :: AgentClient -> ServiceRequestRef -> Bool -> NonEmpty ByteString -> AE ()
+-- Sends one response message with one or more payloads (final = True ends the exchange). The first
+-- message to each reply connection secures the reply queue with SKEY; later ones use SEND. Appends to
+-- rcv_service_responses.
+sendServiceReply :: AgentClient -> ServiceRequestRef -> Bool -> NonEmpty MsgBody -> AE ()
 ```
 
-Address deletion: existing `deleteConnection`.
+Key rotation and update use the address-DR `rotateRatchetKeys`/link-data update; address deletion is `deleteConnection`.
 
-Client side (name resolution to a link is an existing API; the link must have `CCTService` type and a key bundle in link data):
+Client side (name resolution to a link is an existing API; the link must be a `CCTService` DR-advertising address):
 
 ```haskell
--- Retrieves link data, creates the reply queue, sends the request, and waits for the first
--- reply message up to the deadline. The callback receives later reply messages while the process runs.
+-- Establishes the ratchet from the address, creates the reply queue, sends the request, and waits for
+-- the first response up to the deadline. The callback receives later responses while the process runs.
 sendServiceRequest ::
   AgentClient -> UserId -> ConnShortLink 'CMContact -> UTCTime ->
-  ByteString -> (ServiceReply -> IO ()) -> AE ServiceReply
+  MsgBody -> (ServiceResponse -> IO ()) -> AE ServiceResponse
 
--- Deletes the reply queue and the request row, and drops the callback.
 cancelServiceRequest :: AgentClient -> ConnId -> AE ()
 
-data ServiceReply = ServiceReply {responses :: NonEmpty ByteString, more :: Bool}
+data ServiceResponse = ServiceResponse {bodies :: NonEmpty MsgBody, final :: Bool}
 ```
 
-The first reply message returns from `sendServiceRequest`; later messages are delivered through the callback. Both the waiting call and the callback are held in an in-memory map in `AgentClient`, keyed by the reply queue connection, and filled by the receive path. They do not survive a restart.
+The waiting call and the callback are held in an in-memory map in `AgentClient`, keyed by the reply queue connection, filled by the receive path; they do not survive a restart.
 
-Service side events (`AEvent`, entity is the address connection):
+Service side event (`AEvent`, entity is the service address connection):
 
 ```haskell
-SREQ :: ServiceRequestRef -> ByteString -> AEvent AEConn -- request received, payload for the bot
+SREQ :: ServiceRequestRef -> MsgBody -> AEvent AEConn -- request payload for the bot
 ```
 
-`ServiceRequestRef` identifies the request record; the bot passes it to `sendServiceReply`.
+`ServiceRequestRef` identifies the `rcv_service_requests` record; the bot passes it to `sendServiceReply`.
 
-## Agent processing - `Simplex.Messaging.Agent`, `Simplex.Messaging.Agent.Client`
+Rejection reuses `AgentRejection` (communicating-rejection RFC) as an `AgentServiceResponse`-level refusal or a dedicated variant - decided with that RFC.
+
+## Agent processing
 
 Client side:
 
-- `sendServiceRequest`: retrieve link data (`LGET`, proxied per config) for every request - no caching; create the reply queue (`NEW`, messaging mode, subscribed) with an added KEM key; write the `snd_service_requests` row; send the request (proxied per config); wait on the in-memory sink for the first reply until the deadline.
-- Reply processing in `processSMPTransmissions`: a message on a receive queue that has a `snd_service_requests` row is a reply. Decrypt (the first message sets `reply_secret` from its header), verify with `verifyAgentResponse`, check the request hash and the previous-message hash, update `last_reply_hash`, deliver to the waiting call or the callback. A message that fails verification is acknowledged and discarded. On `more = False`, or on the deadline, or on `cancelServiceRequest`, delete the reply queue (`DEL`) and the row.
-- `cleanupManager` gains one step: delete `snd_service_requests` past the deadline and mark their reply queue connections deleted; the existing deleted-connections step sends `DEL` and removes them. After a restart every row is stale, so this step removes all reply queues left behind.
+- `sendServiceRequest`: retrieve link data per request (proxied per config); establish the ratchet and create Q_A (address-DR R2'); write the `snd_service_requests` row; send the `AgentServiceRequest` confirmation (proxied per config); wait on the in-memory sink for the first response until the deadline.
+- Response processing in `processSMPTransmissions`: a message on a queue with a `snd_service_requests` row is a response; `agentRatchetDecrypt` (advancing the ratchet), parse `AgentServiceResponse`, deliver to the waiting call or the callback. On `final`/deadline/cancel, delete Q_A and the reply connection.
+- `cleanupManager`: delete `snd_service_requests` past the deadline and mark their reply connections deleted; the existing deleted-connections step sends `DEL`. After a restart every row is stale, so this removes reply queues left behind.
 
 Service side:
 
-- Address queue message dispatch reads `link_contact_type`: a service address accepts only `AgentRequest` and rejects invitations and confirmations; a non-service address rejects `AgentRequest`.
-- On `AgentRequest`: select bundle private keys by `keyId`, decrypt, compute the request hash. Look up `rcv_service_requests` by (address conn, hash):
-  - new: insert the request, insert a `rcv_service_reply_queues` row for the reply queue in the request, deliver `SREQ` to the bot.
-  - existing: insert a `rcv_service_reply_queues` row for the reply queue in this request, and send it every `rcv_service_replies` message already stored, in order.
-- `sendServiceReply`: append a `rcv_service_replies` message (sign with the address root key), then send it to every reply queue of the request - `SSND` for a queue not yet secured, `SEND` after - encrypting the stored envelope to each queue's `reply_secret`; set `ended` when `more = False`.
-- `cleanupManager` gains one step: delete `rcv_service_requests` past `expires_at` (cascading to replies and reply queues) and `service_address_keys` past the key retention period.
+- Address-queue dispatch on `link_contact_type`: a service address routes `AgentConfirmation` with `ratchetKeyId` to the RPC handler (address-DR `smpAddressConfirmation` producing `AgentServiceRequest`); it rejects `AgentInvitation` and connection confirmations.
+- On `AgentServiceRequest`: establish the ratchet (address-DR O2'), create the `SndConnection` to Q_A, compute the request hash, look up `rcv_service_requests` by (address conn, hash):
+  - new: insert the request, insert a `rcv_service_reply_conns` row, deliver `SREQ` to the bot.
+  - existing: insert a `rcv_service_reply_conns` row and send it every stored `rcv_service_responses` in order, each `AgentServiceResponse` re-encrypted under this connection's ratchet.
+- `sendServiceReply`: append a `rcv_service_responses` row, then send `AgentServiceResponse` to every reply connection of the request under its ratchet (`SKEY`+`SEND` for the first message to a connection, `SEND` after); set `ended` on `final`.
+- `cleanupManager`: delete `rcv_service_requests` past `expires_at` (cascading to responses and reply connections, and their ratchets/queues).
 
-Configuration (`AgentConfig`): default request deadline, request retention period (1 to 24 hours), key rotation interval.
+Configuration (`AgentConfig`): default request deadline, request retention period (1 to 24 hours). Ratchet key rotation interval is the address-DR config.
 
-Errors: API failures reuse `AgentErrorType` (for example `CMD PROHIBITED` for a link that is not a service address). A new constructor is added only if the chat library needs to distinguish service request failures - decided at implementation.
+Errors reuse `AgentErrorType` (e.g. `CMD PROHIBITED` for a link that is not a service address).
+
+## Idempotency
+
+The service identifies a request by its hash and keeps, for the retention period (config, not in link data), the ordered response payloads (`rcv_service_responses`) and the reply connections under that hash (`rcv_service_reply_conns`). A repeat request (same payload, therefore same hash) establishes its own ratchet and reply connection and does not reach the bot: while pending it is added and receives the responses so far and each later one; after completion it receives the whole stored sequence. Responses are stored as plaintext and re-encrypted per reply connection because each request has its own ratchet. This gives single execution over at-least-once delivery, bounded by the retention period.
 
 ## Correlation and chat
 
-A reply is connected to its request by the reply queue: one request has one reply queue, and every message in that queue is a reply to that request. The request hash is used only in the reply signature, to bind a reply to the request content. The application ID is content inside `requestPayload`, used only by the application to make two requests equal or different; the agent does not read it.
+A response is connected to its request by the reply queue (one request, one reply queue, one ratchet). The request hash is only the idempotency key. The application ID is content inside the request payload, used only by the application to make two requests equal or different; the agent does not read it.
 
-Both ends are chat bots on the chat library. The chat library serializes a service command into `requestPayload` and deserializes the responses; the agent transports them and correlates by reply queue. The chat framework's `chatServiceCalls` correlation by `(AgentConnId, SharedMsgId)` is not used - the agent correlates by reply queue and the call returns the first reply directly.
+Both ends are chat bots on the chat library, which serializes a service command into the request payload and deserializes the responses; the agent transports them and correlates by reply queue. The chat framework's `chatServiceCalls` correlation is not used.
 
 ## Tests
 
-- Encoding roundtrips: envelopes, `ServiceKeyBundle` in `UserContactData`, `PubHeader` (all three variants), `SSND`, `SignedResponse` with one and several responses.
-- Server: `SSND` on messaging and contact queues, repeated `SSND` before and after ACK, a different key, via proxy.
-- Agent end-to-end: a request with one reply message; several responses in one message; responses in several messages delivered to the callback; a repeat request while pending coalesces onto the same operation; a repeat request after completion receives the stored messages without a second execution; key rotation with an old key still accepted while kept; a request whose key was deleted fails at the deadline; deadline; cancellation; a restart deletes reply queues; envelope rejection on both address types.
+- Encoding roundtrips: `AgentServiceRequest`, `AgentServiceResponse` in `AgentMessage` (one and several response bodies); the service subtype in `UserContactData`/link.
+- End to end (on the address-DR machinery): a request with one response; several responses streamed to the callback; `pqEncryption` on (hybrid) and off (X448-only) per the advertised keys; the request payload never travels under per-queue-only encryption.
+- Idempotency: a repeat while pending coalesces onto the same operation; a repeat after completion receives the stored responses without a second `SREQ`; both under fresh ratchets.
+- Lifecycle: the reply connection and the service ratchet are deleted after `final`; deadline; cancellation; a restart deletes client reply queues.
+- Rejection and rejection of the wrong envelope on a service vs non-service address.
 
 ## Phases
 
-1. SMP protocol: `SSND`, hybrid public header, version bumps, server dedup hash, server tests.
-2. Agent: address type, key bundle in link data, envelopes, reply queue columns, schema migration, `createServiceAddress`, `sendServiceRequest`, reply processing, cleanup.
-3. Agent: service-side request store, `sendServiceReply`, coalescing and repeats, key rotation, end-to-end tests.
-4. Adoption: `SSND` in the fast connection handshake; the hybrid scheme for invitations and confirmations.
+1. Service address subtype and dispatch on top of the address-DR flow; `AgentServiceRequest`/`AgentServiceResponse` messages; `createServiceAddress`.
+2. Client: `sendServiceRequest`, reply-queue reception and callback, cleanup.
+3. Service: request store, `sendServiceReply`, idempotency (coalescing and repeats under fresh ratchets), end-to-end and idempotency tests.
