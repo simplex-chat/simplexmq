@@ -6,6 +6,8 @@ All references are to the current tree. Names of new constructors, fields, table
 
 Goal: a contact address advertises the owner's X3DH parameters in link data; a requester establishes the double ratchet in its first message, so that message and the profile in it are under the ratchet with post-quantum protection. The change reuses the invitation/confirmation machinery, with the requester in the joiner role and the owner in the initiator role - opposite to today's contact flow, but every message and code path below is reused.
 
+Version: `addressDRVersion = VersionSMPA 8`, a plain agent-layer bump; `currentSMPAgentVersion` goes 7 → 8 (Agent/Protocol.hs:317-324). It gates the `AgentConfirmation.ratchetKeyId` field and the DR-from-address behavior. The receive-at-address path relies on ratchet-on-confirmation, already present since `ratchetOnConfSMPAgentVersion = 7` (Agent/Protocol.hs:317), so there is no cross-layer version dependency; the SMP and e2e-encryption versions are unchanged.
+
 ## Part 1 - the current contact-address handshake, step by step
 
 Requester Alice connects to owner Bob's contact address. Q_A is Alice's receive queue (Bob to Alice), Q_B is Bob's receive queue (Alice to Bob).
@@ -37,7 +39,7 @@ Owner side, receiving confirmation #2 on Q_B:
 - O7. dispatch (Agent.hs:3182): `AgentConfirmation` -> `smpConfirmation`.
 - O8. `smpConfirmation`, accepting-party branch `DuplexConnection … Nothing` (Agent.hs:3447-3462): `agentRatchetDecrypt` with the established ratchet; `AgentConnInfo` -> `INFO` (Agent.hs:3452); `ICDuplexSecure` or `CON`.
 
-`HELLO`/`CON` completion follows via `helloMsg` (Agent.hs:3466).
+Completion is direct `CON` on `senderCanSecure` (SKEY) messaging-mode queues (the sender on `AgentConnInfo`, Agent.hs:2252; the receiver with no `senderKey`, Agent.hs:3459-3461); the separate `HELLO` via `helloMsg` (Agent.hs:3466) is the older non-`senderCanSecure` (duplexHandshake v2, in-band-securing) path.
 
 ## Part 2 - the DR-from-address handshake, mapped to Part 1
 
@@ -45,21 +47,21 @@ The address advertises Bob's Rcv X3DH parameters in link data (Part 3). Alice, w
 
 Requester side - a new branch in `joinConnSrv … CRContactUri`, chosen when the fetched link data has `ratchetKeys`:
 
-- R2'. Replaces R2/R3. Read the advertised `linkRatchetKey`, `ratchetKeyId`, `e2eVRange`, `prekey`, and optional `kemKey` from link data; reconstruct Bob's `RcvE2ERatchetParamsUri 'C.X448` and negotiate the concrete version with `compatibleVersion` against the client e2e range, as `compatibleInvitationUri` does (Agent.hs:1362-1368). Create the receive queue Q_A subscribed (`newRcvQueue` with `subMode`), messaging mode so Bob can secure it. Run `generateSndE2EParams` (with `replyKEM_` to accept the KEM only when advertised), `pqX3dhSnd` against the negotiated parameters, `initSndRatchet`, `createSndRatchet` - the body of `createRatchet_` (Agent.hs:1343-1350), with parameters from link data rather than a received invitation.
-- R3'. Build `AgentConfirmation {e2eEncryption_ = Just aliceSndParams, ratchetKeyId = Just ratchetKeyId, encConnInfo = ratchetEncrypt(AgentConnInfoReply (Q_A :| []) aliceProfile)}` - the `mkAgentConfirmation`/`mkConfirmation` bodies (Agent.hs:3780-3765) with the reply queue being Alice's own Q_A. Send it to the address queue unauthenticated with `agentCbEncryptOnce`, as `sendInvitation` sends (Agent/Client.hs:1929-1934). **Alice's profile is now inside `encConnInfo`, under the ratchet.** Alice's connection is `RcvConnection` (Q_A) with a send ratchet, until she receives Q_B.
+- R2'. Replaces R2/R3. Read the advertised bundle from link data - `ratchetKeyId` and `e2eParams :: RcvE2ERatchetParamsUri 'C.X448` - and negotiate the concrete version with `compatibleVersion` against the client e2e range, as `compatibleInvitationUri` does (Agent.hs:1362-1368). Create the receive queue Q_A subscribed (`newRcvQueue` with `subMode`), messaging mode so Bob can secure it. Choose the requester's KEM with `replyKEM_ v ownerKem_ pqSup` (Ratchet.hs:839): if the bundle advertises a KEM (owner `IKUsePQ`) the requester encapsulates to it (`AcceptKEM`, PQ from message 1); if not and the requester wants PQ, it proposes its own (`ProposeKEM`, PQ from message 2 if the owner supports it). Run `generateSndE2EParams g v (replyKEM_ …)`, `pqX3dhSnd` against the negotiated parameters, `initSndRatchet`, `createSndRatchet` - the body of `createRatchet_` (Agent.hs:1343-1350), with parameters from link data rather than a received invitation.
+- R3'. Build `AgentConfirmation {e2eEncryption_ = Just aliceSndParams, ratchetKeyId = Just ratchetKeyId, encConnInfo = ratchetEncrypt(AgentConnInfoReply (Q_A :| []) aliceProfile)}` - the `mkAgentConfirmation`/`mkConfirmation` bodies (Agent.hs:3780-3765) with the reply queue being Alice's own Q_A. Send it to the address queue unauthenticated with `agentCbEncryptOnce`, as `sendInvitation` sends (Agent/Client.hs:1929-1934). Retry is chat re-invoking the join, reusing the prepared connection's keys via the existing `startJoinInvitation`-style reuse (Agent.hs:1314) - exactly as a classic contact request; a resend is not deduplicated (it may produce another `REQ` on the owner, as a resent classic invitation does). The connect UX (premature failure, lost-reply recovery) is a separate chat-layer concern, out of scope here. **Alice's profile is now inside `encConnInfo`, under the ratchet.** Alice's connection is `RcvConnection` (Q_A) with a send ratchet, until she receives Q_B.
 
 Owner side - a new dispatch branch and a new receive handler:
 
 - O1'. In `processClientMsg` (Agent.hs:3176-3187), add a branch in state `(Nothing, Just e2ePubKey)`: an `AgentConfirmation` with `ratchetKeyId = Just _` on a `ContactConnection` -> `smpAddressConfirmation` (new). It must be placed **before** the existing `(PHEmpty, AgentConfirmation) | senderCanSecure queueMode` case (Agent.hs:3182-3184), because a contact-address queue is `QMContact` (not `senderCanSecure`) and would otherwise fall into `prohibited "handshake: missing sender key"` (Agent.hs:3184). The address queue's `e2eDhSecret` stays `Nothing` (it is never set for a contact address - `smpInvitation` does not set it, Agent.hs:3609-3622), so every request is decrypted with its own ephemeral key via this `(Nothing, Just e2ePubKey)` path.
-- O2'. `smpAddressConfirmation` (new, modeled on `smpConfirmation` initiating branch, Agent.hs:3405-3444): select the private prekey and, if any, KEM keypair by `ratchetKeyId` from `address_ratchet_keys`; `pqX3dhRcv` with the `linkRatchetKey` private key, the selected prekey private key, and the optional KEM keypair (as `PrivateRKParamsProposed`) against `aliceSndParams`; `initRcvRatchet` (its `PQSupport` follows from whether the address advertises a KEM and version compatibility, as `smpConfirmation` derives `pqSupport'`, Agent.hs:3410); `rcDecrypt` of `encConnInfo` performs the first ratchet step, giving the connection its send side too (as it does for the initiator today), so the owner can later reply; `createRatchet` stores the post-decrypt ratchet under a **new connection created now** for this request. Parse `AgentConnInfoReply (Q_A :| []) aliceProfile`, store a pending-request record referencing the new connection, its ratchet, and Q_A (not a `connReq`), and emit `REQ`. An unknown or expired `ratchetKeyId`, or a decryption failure: discard and acknowledge, as an undecryptable message is dropped today. This establishes ratchet state on unauthenticated input before the user accepts - see "Receive-time establishment, state, and abuse".
-- O3'. `acceptContact'` for a DR-established request - a new branch that continues the ratchet instead of `joinConn`: reuse `mkAgentConfirmation` (Agent.hs:3780-3785) to create Bob's receive queue Q_B and return `AgentConnInfoReply (Q_B :| []) bobInfo`; create Bob's send queue to Q_A (`newSndQueue`, generating Bob's own sender key) and secure Q_A with `SKEY` using that key (`agentSecureSndQueue`, valid because Q_A is messaging mode) - the securing key is Bob's own, not taken from Alice's message; send the response to Q_A as `AgentConfirmation {e2eEncryption_ = Nothing, ratchetKeyId = Nothing, encConnInfo = ratchetEncrypt(AgentConnInfoReply (Q_B :| []) bobInfo)}`, per-queue encrypted with `agentCbEncryptOnce` (first message to Q_A). The reply content is `AgentConnInfoReply`, not `AgentConnInfo`: it takes the `mkAgentConfirmation` path with `e2eEncryption_ = Nothing`, not the `enqueueConfirmation` path (which produces `AgentConnInfo`, Agent.hs:3789).
+- O2'. `smpAddressConfirmation` (new, modeled on `smpConfirmation` initiating branch, Agent.hs:3405-3444): select the private triple `(pk1, pk2, pKem)` by `ratchetKeyId` from `address_ratchet_keys`; `pqX3dhRcv pk1 pk2 pKem aliceSndParams`; `initRcvRatchet` with the address connection's stored `PQSupport` (`connPQEncryption` of the address `InitialKeys` - `On` for `IKUsePQ` and `IKPQOn`, `Off` for `IKPQOff`; this is what lets `IKPQOn` accept the requester's proposed KEM), combined with version compatibility as `smpConfirmation` derives `pqSupport'` (Agent.hs:3410); `rcDecrypt` of `encConnInfo` performs the first ratchet step, giving the ratchet its send side too (as it does for the initiator today), so the owner can later reply. Parse `AgentConnInfoReply (Q_A :| []) aliceProfile`. Store the request with `createInvitation` on the address connection (`contact_conn_id`), exactly as a classic invitation - except the request value is the `CRConfirmation` variant (Part 3) carrying the post-decrypt ratchet state and Q_A, and `recipient_conn_info` is `aliceProfile` - so **no connection or `ratchets` row is created at receive**, as with a classic invitation. Emit `REQ` with the `invitation_id`. A resend is not deduplicated: like a resent classic invitation it produces another `REQ` (the connect-UX fix for that is separate chat work). An unknown or expired `ratchetKeyId`, or a decryption failure: discard and acknowledge, as an undecryptable message is dropped today. This establishes ratchet state on unauthenticated input before the user accepts - see "Receive-time establishment, state, and abuse".
+- O3'. `acceptContact'` for a DR request - a new branch that continues the ratchet instead of `joinConn`. `getInvitation` returns the request; its `CRConfirmation` variant gives the stored ratchet state and Q_A. Create the connection now (as `joinConn` does for a classic invitation) and `createRatchet` (AgentStore.hs:1419) from the stored ratchet state. Reuse `mkAgentConfirmation` (Agent.hs:3780-3785) to create Bob's receive queue Q_B and return `AgentConnInfoReply (Q_B :| []) bobInfo`; create Bob's send queue to Q_A (`newSndQueue`, generating Bob's own sender key) and secure Q_A with `SKEY` using that key (`agentSecureSndQueue`, valid because Q_A is messaging mode) - the securing key is Bob's own, not taken from Alice's message; send the response to Q_A as `AgentConfirmation {e2eEncryption_ = Nothing, ratchetKeyId = Nothing, encConnInfo = ratchetEncrypt(AgentConnInfoReply (Q_B :| []) bobInfo)}` via `sendConfirmation` (`agentCbEncrypt` over Bob's send queue to Q_A, `PHEmpty` because Q_A is `senderCanSecure`) - exactly the current contact msg 2 path (Client.hs:1916), not `agentCbEncryptOnce`. The reply content is `AgentConnInfoReply`, not `AgentConnInfo`: it takes the `mkAgentConfirmation` path with `e2eEncryption_ = Nothing`, not the `enqueueConfirmation` path (which produces `AgentConnInfo`, Agent.hs:3789). `rejectContact'` deletes the `conn_invitations` row (the current behaviour), discarding the inline ratchet; no connection was created, so there is nothing else to clean up.
 
 Requester side, receiving the response on Q_A:
 
-- R5'. `smpConfirmation` needs a new branch `RcvConnection … Nothing` (today only `RcvConnection … Just` and `DuplexConnection … Nothing` exist, Agent.hs:3403-3447): Alice already holds the send ratchet, so `agentRatchetDecrypt` advances it and creates the receive side; `setRcvQueueConfirmedE2E` on Q_A so later messages use the stored per-queue secret (as the current branches do, Agent.hs:3440,3455); parse `AgentConnInfoReply (Q_B :| []) bobInfo`; connect Q_B (create Alice's send queue to Q_B, `agentSecureSndQueue` it, upgrade `RcvConnection` to `DuplexConnection`); emit `INFO`. The accepting-party branch (Agent.hs:3447) must also accept `AgentConnInfoReply`, not only `AgentConnInfo` (Agent.hs:3451, 3462), for the reply-queue case.
-- R6'/completion. The response went to Q_A, so Bob has no signal that Alice secured Q_B and would never reach `CON` on its own. The essential extra message is Alice -> Q_B: after R5' Alice sends `HELLO` on Q_B, and `helloMsg` (Agent.hs:3466) sets Q_B active on Bob's side and emits Bob's `CON`. Alice reaches `CON` from the response (Q_A active, Q_B secured). Whether Bob also needs to send `HELLO` on Q_A for Alice's `CON`, or the response suffices, follows the existing `helloMsg`/fast-path completion and is confirmed at implementation - the fixed point is that Alice must send on Q_B.
+- R5'. `smpConfirmation` needs a new branch `RcvConnection … Nothing` (today only `RcvConnection … Just` and `DuplexConnection … Nothing` exist, Agent.hs:3403-3447): Alice already holds the send ratchet, so `agentRatchetDecrypt` advances it and creates the receive side; `setRcvQueueConfirmedE2E` on Q_A so later messages use the stored per-queue secret (as the current branches do, Agent.hs:3440,3455); parse `AgentConnInfoReply (Q_B :| []) bobInfo`; emit `INFO` (Bob's profile); then `connectReplyQueues` (Agent.hs:3724) - create Alice's send queue to Q_B, secure Q_B with `SKEY` (`agentSecureSndQueue`, Q_B is messaging mode), upgrade to `DuplexConnection`, and `enqueueConfirmation … Nothing` to send the third message, `AgentConnInfo` to Q_B (`encConnInfo = ratchetEncrypt(AgentConnInfo aliceInfo)`). Because Q_B is sender-securable, sending `AgentConnInfo` completes Alice with `CON` (Agent.hs:2252) - no `HELLO`.
+- R6'/completion. Unchanged from the current contact handshake, and modern (no `HELLO`). The exchange is three agent↔agent wire messages - Alice → address queue (msg 1), Bob → Q_A (msg 2, an `AgentConfirmation` carrying `AgentConnInfoReply` with Q_B), Alice → Q_B (msg 3, an `AgentConfirmation` carrying `AgentConnInfo`) - the same shape as the current contact flow, where msg 1 was `AgentInvitation`; here it is the ratchet-establishing `AgentConfirmation`. (`CON` is not a wire message - it is the agent→app event; `HELLO` and `AgentConnInfo` are the wire messages.) `HELLO` belongs to the older non-`senderCanSecure` path (duplexHandshake v2, before SKEY): there the confirmation secures the queue in-band (`PHConfirmation` carries the sender key, Client.hs:1918) and the receiver replies with `HELLO` (`ICDuplexSecure` → `enqueueDuplexHello`, Agent.hs:3457-3458). Both Q_A and Q_B here are messaging-mode - Q_A by R2', Q_B via `createReplyQueue` → `SCMInvitation` → `QMMessaging` (Agent.hs:1233,1458,3783) - so the sender secures with SKEY and sends `PHEmpty` (Client.hs:1918), the dispatch takes the `senderCanSecure` branch (Agent.hs:3182-3184), and each agent raises the `CON` app event locally off msg 3 - Bob on receiving it (`senderKey = Nothing`, Agent.hs:3459-3461), Alice on sending it (Agent.hs:2252) - with no separate `HELLO` wire message. (msg 2's `AgentConnInfoReply` only sets Q_A `Confirmed`, Agent.hs:2254.) Invitations are two messages because the initiator's queue is already in the link; a contact address needs three because Bob's receive queue Q_B is only delivered in msg 2. The third message no longer has a ratchet role: Bob's X3DH params are pre-published, so the agreement is complete once Bob receives msg 1 (in the current flow Bob's Snd params instead arrive in msg 2). msg 2 and msg 3 are queue setup - msg 2 delivers Q_B, msg 3 secures Q_B so Alice can send to Bob and signals Bob's `CON`; neither negotiates the ratchet. A one-directional exchange (the RPC) needs no Q_B and is two messages.
 
-Net code touch points: `joinConnSrv` (new requester branch), `processClientMsg` (new owner dispatch), `smpConfirmation` (new `RcvConnection … Nothing` branch and `AgentConnInfoReply` acceptance), `acceptContact'` (new continue-ratchet branch), a new `smpAddressConfirmation`, and the link data and storage of Part 3-4.
+Net code touch points: `joinConnSrv` (new requester branch), `processClientMsg` (new owner dispatch), `smpConfirmation` (new `RcvConnection … Nothing` branch and `AgentConnInfoReply` acceptance), `acceptContact'` (new continue-ratchet branch), a new `smpAddressConfirmation` reusing `createInvitation`/`getInvitation` with the sum request value, and the link data and storage of Part 3-4. `rejectContact'` is unchanged (it deletes the `conn_invitations` row either way).
 
 ### Receive-time establishment, state, and abuse
 
@@ -69,59 +71,82 @@ Design decision (Q1): decrypt at receive. Both use cases need the request conten
 
 Consequences:
 
-- A connection is created at receive to hold the ratchet (ratchets are keyed by `conn_id`). O2' creates a `NewConnection`, stores the post-decrypt ratchet under it, and a pending-request record with Q_A's address; O3' (accept) adds Bob's send queue to Q_A and receive queue Q_B, upgrading to `DuplexConnection`; reject deletes the connection, its ratchet, and the record.
-- Per incoming `AgentConfirmation` the owner does one `pqX3dhRcv` (three DH plus, with PQ, one `sntrup761` decapsulation) and one `rcDecrypt`, on unauthenticated input, and creates a connection row and a ratchet row - more CPU and state than the current `NewInvitation`.
+- No connection is created at receive, exactly as for a classic invitation. O2' stores the request with `createInvitation` on the address connection; the post-decrypt ratchet state and Q_A live inline in the `CRConfirmation` request value (`cr_invitation`). O3' (accept) creates the connection, `createRatchet` from the stored state, and adds Bob's queues, becoming a `DuplexConnection`; `rejectContact'` deletes the `conn_invitations` row.
+- Per incoming `AgentConfirmation` the owner does one `pqX3dhRcv` (three DH plus, with PQ, one `sntrup761` decapsulation) and one `rcDecrypt`, on unauthenticated input, and writes one `conn_invitations` row - more CPU than the current `NewInvitation`, the same order of state (no connection, no `ratchets` row until accept).
 
-Abuse (Q2): a contact address already accepts and processes unauthenticated invitations today, so this is a degree-worse version of an existing surface, not a new class. It is bounded by the address queue quota (an attacker fills it, the owner drains and acknowledges) and, optionally, by basic auth on the address (already supported for contact addresses, `optBasicAuth`). The pending-request state is bounded by a request TTL: `cleanupManager` deletes pending DR connections never accepted or rejected past that TTL (Part 4 cleanup). Proof-of-work or a stricter gate can be added later; it is out of scope here and noted as a follow-up.
+Abuse (Q2): a contact address already accepts and processes unauthenticated invitations today, so this is a degree-worse version of an existing surface, not a new class. It is bounded by the address queue quota (an attacker fills it, the owner drains and acknowledges) and, optionally, by basic auth on the address (already supported for contact addresses, `optBasicAuth`). The per-request state is a single `conn_invitations` row - the same class as a classic contact request - so it is subject to the same limits and lifecycle, with no DR-specific dedup or TTL. Proof-of-work or a stricter gate can be added later; it is out of scope here and noted as a follow-up.
 
-The `acceptContact'` dispatch branches on the pending record: a classic invitation (`connReq` present) takes the current `joinConn` path (O3-O6); a DR request (pending connection and ratchet present, no `connReq`) takes the continue-ratchet path (O3').
+`acceptContact'`/`rejectContact'` keep taking the `invitation_id` from `REQ` unchanged; the only difference is that `getInvitation` returns a request that is either a `CRInvitation` URI (current `joinConn` path, O3-O6) or a `CRConfirmation` (continue-ratchet path, O3'). Nothing in the `REQ`/accept/reject flow or the chat client changes - the change is contained in the agent.
+
+### The four communication layers, per message (verified against code)
+
+Layers, outermost (server-visible) first:
+
+- **L1 `ClientMsgEnvelope`** (Protocol.hs:1089), `PubHeader {phVersion, phE2ePubDhKey :: Maybe PublicKeyX25519}` (1096) - **this is where per-queue encryption is agreed** (not L2). `phE2ePubDhKey` is the sender's e2e DH public key; the recipient combines it with the queue's e2e private key: `(e2eDhSecret, e2ePubKey_) -> (Nothing, Just e2ePubKey) -> e2eDh = dh' e2ePubKey e2ePrivKey` (Agent.hs:3172-3178). `agentCbEncryptOnce` (Client.hs:2214) puts a **fresh ephemeral** pubkey (generated 2217, set 2223) - used when the sender has no send queue (the address queue), whose `e2eDhSecret` stays `Nothing`, so it decrypts every message with the per-message ephemeral. `agentCbEncrypt` (Client.hs:2203) puts the **send queue's persistent** e2e pubkey (`Just` on a confirmation, 2210); the recipient stores the secret via `setRcvQueueConfirmedE2E`, and *later* messages send `phE2ePubDhKey = Nothing` (`sendAgentMessage`, 2080).
+- **L2 `ClientMessage PrivHeader`** (Protocol.hs:1113), `PrivHeader = PHConfirmation APublicAuthKey | PHEmpty` (1115) - **queue securing / authorization, not encryption**. `PHConfirmation` carries the sender's AUTH key for in-band securing (v2, non-`senderCanSecure`); `PHEmpty` when the sender secured the queue with SKEY out-of-band. `PHEmpty` on every message here is about securing, and says nothing about encryption (that is L1). Set in `sendConfirmation` (Client.hs:1918), `sendInvitation` (1934), `sendAgentMessage` (2079).
+- **L3 `AgentMsgEnvelope`** (Agent/Protocol.hs:829, encoding 851) - outside the ratchet. `AgentConfirmation` ('C') carries `e2eEncryption_` (Snd X3DH params, agrees DR) + `encConnInfo`; `AgentInvitation` ('I') carries `connReq` (Rcv X3DH params) + plaintext `connInfo` (no DR); `AgentMsgEnvelope` ('M') carries `encAgentMessage`.
+- **L4 `AgentMessage`** (Agent/Protocol.hs:883, encoding 893) - inside the ratchet. `AgentConnInfo` ('I'), `AgentConnInfoReply` ('D', reply queues + info), `AgentMessage APrivHeader AMessage` ('M'; `AMessage` includes `HELLO`, Agent/Protocol.hs:1018-1020). **Absent when L3 is `AgentInvitation`** (that profile is per-queue-only - the gap this plan closes).
+
+Send routing: msg 1 (to address) → `sendInvitation` today / a new `agentCbEncryptOnce` confirmation send for DR; msg 2 → `secureConfirmQueue` → `sendConfirmation` (Agent.hs:3747); msg 3 → `connectReplyQueues` → `enqueueConfirmation` → delivery worker `AM_CONN_INFO` → `sendConfirmation` (Agent.hs:3733,3789,2183). `AM_CONN_INFO`/`AM_CONN_INFO_REPLY` both go through `sendConfirmation` (2183-2184); other `AMessage`s go through `sendAgentMessage` wrapping `AgentMsgEnvelope` 'M' (2192-2193).
+
+Current contact handshake (address does **not** advertise DR):
+
+| msg | L1 `PubHeader.phE2ePubDhKey` (per-queue enc) | L2 `PrivHeader` (securing) | L3 `AgentMsgEnvelope` | L4 `AgentMessage` |
+|---|---|---|---|---|
+| 1 Alice→addr | `Just` fresh ephemeral, `agentCbEncryptOnce` (Client.hs:1933,2223) | `PHEmpty` (1934) | `AgentInvitation` {connReq = Alice Rcv params, connInfo = profile} (Client.hs:1932) | — none (profile per-queue only) |
+| 2 Bob→Q_A | `Just` Bob's send-queue e2e pubkey, `agentCbEncrypt` (1920,2210) | `PHEmpty` [`senderCanSecure`] (1918) | `AgentConfirmation` {e2eEncryption_ = **Just Bob Snd params**, encConnInfo} (Agent.hs:3765) | `AgentConnInfoReply` (Q_B) bobInfo, DR-enc (Agent.hs:3785) |
+| 3 Alice→Q_B | `Just` Alice's send-queue e2e pubkey, `agentCbEncrypt` (1920,2210) | `PHEmpty` [`senderCanSecure`] (1918) | `AgentConfirmation` {e2eEncryption_ = **Nothing**, encConnInfo} (Agent.hs:3802) | `AgentConnInfo` aliceInfo, DR-enc (Agent.hs:3789) |
+
+New DR handshake (address advertises DR):
+
+| msg | L1 `PubHeader.phE2ePubDhKey` (per-queue enc) | L2 `PrivHeader` (securing) | L3 `AgentMsgEnvelope` | L4 `AgentMessage` |
+|---|---|---|---|---|
+| 1 Alice→addr | `Just` fresh ephemeral, `agentCbEncryptOnce` [same] | `PHEmpty` [same] | **`AgentConfirmation`** {e2eEncryption_ = **Just Alice Snd params**, **ratchetKeyId = Just**, encConnInfo} [was `AgentInvitation`] | **`AgentConnInfoReply`** (Q_A) aliceProfile, **DR-enc** [was plaintext connInfo] |
+| 2 Bob→Q_A | `Just` Bob's send-queue e2e pubkey, `agentCbEncrypt` [same] | `PHEmpty` [same] | `AgentConfirmation` {e2eEncryption_ = **Nothing**, ratchetKeyId = Nothing, encConnInfo} [was Just Bob Snd params] | `AgentConnInfoReply` (Q_B) bobInfo, DR-enc [same] |
+| 3 Alice→Q_B | `Just` Alice's send-queue e2e pubkey, `agentCbEncrypt` [same] | `PHEmpty` [same] | `AgentConfirmation` {e2eEncryption_ = Nothing, encConnInfo} [same] | `AgentConnInfo` aliceInfo, DR-enc [same] |
+
+Net difference: **only msg 1 and msg 2's L3/L4 change.** msg 1's L3 becomes `AgentConfirmation` (was `AgentInvitation`) carrying Alice's Snd params + `ratchetKeyId`, and the profile moves from plaintext L3 to DR-encrypted L4 (`AgentConnInfoReply`) - the whole point of the change. msg 2 drops `e2eEncryption_` (Bob no longer sends Snd params - the ratchet is agreed from msg 1). msg 3 is unchanged. L1 (per-queue encryption - each queue agrees its own secret via the sender's e2e pubkey in the `PubHeader` on the first message to it) and L2 (securing, `PHEmpty` because SKEY is used) are unchanged throughout; the DR change is entirely at L3/L4. The only new send code is msg 1 (an `AgentConfirmation` fired to the address with `agentCbEncryptOnce`, like `sendInvitation` but with a confirmation envelope).
 
 ## Part 3 - types and link data
 
-### Fixed data - link ratchet key
+### Fixed data - unchanged
 
-Appended to `FixedLinkData` (Protocol.hs:1824); the encoding already stops at a trailing tail (Protocol.hs:1928), so earlier versions ignore it:
-
-```haskell
-data FixedLinkData c = FixedLinkData
-  { agentVRange :: VersionRangeSMPA,
-    rootKey :: C.PublicKeyEd25519,
-    linkConnReq :: ConnectionRequestUri c,
-    linkEntityId :: Maybe ByteString,
-    linkRatchetKey :: Maybe C.PublicKeyX448 -- stable X448 key, the first X3DH key
-  }
-```
+`FixedLinkData` (Protocol.hs:1824) is not touched. The double-ratchet keys go entirely in mutable data, so an existing address advertises them without a new link (the fixed data is hash-committed and cannot change). Fixed data keeps only `agentVRange`, `rootKey`, `linkConnReq`, `linkEntityId`.
 
 ### Mutable data - ratchet keys bundle
 
 Appended to `UserContactData` (Protocol.hs:1840); the encoding stops at a trailing tail (Protocol.hs:1981), so earlier versions ignore it:
 
 ```haskell
-data RatchetKeys = RatchetKeys
-  { ratchetKeyId :: ByteString, -- identifies this bundle; changes on rotation
-    e2eVRange :: VersionRangeE2E, -- advertised e2e version range, for negotiation
-    prekey :: C.PublicKeyX448,
-    kemKey :: Maybe KEMPublicKey -- opt-in, as PQ is opt-in in the ratchet (PQSupport)
+data AddressRatchetKeys = AddressRatchetKeys
+  { ratchetKeyId :: ByteString, -- identifies this bundle; changes on rotation, echoed in the request
+    e2eParams :: CR.RcvE2ERatchetParamsUri 'C.X448 -- version range + both X3DH keys + optional KEM
   }
 
 data UserContactData = UserContactData
   { direct :: Bool, owners :: [OwnerAuth], relays :: [ConnShortLink 'CMContact],
     userData :: UserLinkData,
-    ratchetKeys :: Maybe RatchetKeys
+    ratchetKeys :: Maybe AddressRatchetKeys
   }
 ```
 
-Reconstruction produces `RcvE2ERatchetParamsUri 'C.X448` (a version range, `E2ERatchetParamsUri VersionRangeE2E k1 k2 (Maybe kem)`), not concrete params: `e2eVRange` as the range, `linkRatchetKey` (from fixed data) as the first key, `prekey` as the second, `kemKey` as the optional KEM parameter. The requester negotiates the concrete version with `compatibleVersion` against its own e2e range, exactly as `compatibleInvitationUri` does for an invitation (Agent.hs:1362-1368), then uses the resulting `RcvE2ERatchetParams` in `pqX3dhSnd`. The KEM is optional: with `kemKey = Nothing` the ratchet is X448-only, as when `PQSupport` is off; with `Just` it is hybrid, matching `E2ERatchetParams … (Maybe (RKEMParams s))` (Ratchet.hs:220-221) and `generateRcvE2EParams`'s `PQSupport` gate (Ratchet.hs:439-445).
+`e2eParams` is the existing `RcvE2ERatchetParamsUri 'C.X448` (`E2ERatchetParamsUri VersionRangeE2E k1 k2 (Maybe (RKEMParams s))`, Ratchet.hs:282-286) - the same type a `CRInvitationUri` advertises - with `StrEncoding`/`Encoding` already defined (Ratchet.hs:302-374). There is no bespoke key type and no reconstruction: the requester negotiates the concrete version with `compatibleVersion` against its own e2e range, exactly as `compatibleInvitationUri` does for an invitation (Agent.hs:1362-1368), giving `RcvE2ERatchetParams` for `pqX3dhSnd`. The KEM is optional: `Nothing` gives an X448-only ratchet (as when `PQSupport` is off), `Just` a hybrid one, matching `generateRcvE2EParams`'s `PQSupport` gate (Ratchet.hs:439-445).
 
-The owner does not use `generateRcvE2EParams` (which generates both keys together, Ratchet.hs:439): `linkRatchetKey` (k1) is generated once at address creation, the prekey (k2) and KEM per rotation. To advertise it derives the public keys with `mkRcvE2ERatchetParams` (Ratchet.hs:412), whose argument is `(PrivateKey a, PrivateKey a, Maybe RcvPrivRKEMParams)`, from the stored link ratchet private key, the current prekey private key, and the current KEM keypair; the published `e2eVRange` is stored alongside, so the version in `mkRcvE2ERatchetParams` is only a carrier for the public keys. `ratchetKeys` and `linkRatchetKey` are set by the agent when it signs link data (`Crypto.ShortLink.encodeSignFixedData`/`encodeSignUserData`), not by the application.
+The address-creation parameter is `InitialKeys` (Ratchet.hs:864) - the same 3-way choice as invitations, not a bare `PQSupport`. Currently `IKUsePQ` is prohibited for `SCMContact` (Agent.hs:990,1198) because a contact address carries no owner keys; this change lifts that prohibition. The bundle plays the published-contact-request role, so its KEM follows `initialPQEncryption False pqInitKeys` (Ratchet.hs:882) - exactly as the requester's contact request does today (Agent.hs:1422):
+
+- `IKUsePQ` - the bundle advertises the KEM; the requester encapsulates to it, so PQ from message 1.
+- `IKPQOn` (`IKLinkPQ PQSupportOn`) - the bundle is X448-only (no KEM advertised), but the owner's ratchet supports PQ (`connPQEncryption` = On, Ratchet.hs:888); the requester proposes its own KEM (R2'), so PQ from message 2.
+- `IKPQOff` (`IKLinkPQ PQSupportOff`) - X448-only, and the owner's ratchet does not support PQ even if the requester proposes it.
+
+Advertising the KEM adds ~1158 B to the rotated, widely-fetched link data, which is why `IKPQOn` exists (PQ one round later, without the size cost). The owner generates the bundle with `generateRcvE2EParams g v (initialPQEncryption False pqInitKeys)` (Ratchet.hs:439), stores the private triple `(pk1, pk2, pKem)` (Part 4), and advertises `e2eParams` by wrapping the public `E2ERatchetParams` in the address's e2e version range (`toVersionRangeT`; or `mkRcvE2ERatchetParams` from the stored privates, Ratchet.hs:412) - the same private-key shape `createRatchetX3dhKeys`/`getRatchetX3dhKeys` already store (AgentStore.hs:1362-1367). `ratchetKeys` is set by the agent when it signs mutable link data (`Crypto.ShortLink.encodeSignUserData`), not by the application.
 
 ### Authentication of the advertised keys
 
-No signature is added on the keys: the link data already signs them. `decryptLinkData` (Crypto/ShortLink.hs:106-114) verifies `sig1` over fixed data and `sig2` over the mutable `UserContactData`, both by `rootKey`, and checks `linkKey = sha3_256(fixedData)`. So `linkRatchetKey` is hash-committed and root-signed, and `ratchetKeys` (prekey, KEM, `e2eVRange`) is root-signed as part of `UserContactData`. This is the X3DH anti-substitution property: an SMP server cannot substitute the prekey or KEM without forging the root signature or breaking the link hash. The signer is the root Ed25519 key, not `linkRatchetKey` (X448, which cannot sign) - the DH identity and the signing identity are separate keys, both anchored to the link hash. A malicious server can still serve an older but validly-signed mutable data (rollback to a retired prekey); this is bounded by the prekey retention window and by the ratchet advancing after the first message, and a signature does not prevent it. Inline ratchet params in a `CRInvitationUri` contact request are not in signed link data and remain unsigned - a separate change, out of scope here.
+No signature is added on the keys: the mutable link data already signs them. `decryptLinkData` (Crypto/ShortLink.hs:106-114) verifies `sig2` over the mutable `UserContactData` by `rootKey`, so `ratchetKeys` is root-signed. This is the X3DH anti-substitution property: an SMP server cannot substitute the keys without forging the root signature. The signer is the root Ed25519 key (the address's signing identity); the X3DH keys are separate DH keys (X448, which cannot sign). A single owner signs address data ("we don't use multiple owners"), so the root signature alone is sufficient - no per-key signature. A malicious server can still serve an older but validly-signed `UserContactData` (rollback to a retired bundle); this is bounded by the retention window and by the ratchet advancing after the first message, and a signature does not prevent it. Inline ratchet params in a `CRInvitationUri` contact request are not in signed link data and remain unsigned - a separate change, out of scope here.
 
 ### Request envelope
 
-`AgentConfirmation` (Protocol.hs:830-834) gains an optional `ratchetKeyId` - the `ratchetKeyId` of the `RatchetKeys` bundle the requester used, so the owner selects the matching private keys:
+`AgentConfirmation` (Protocol.hs:830-834) gains an optional `ratchetKeyId` - the `ratchetKeyId` of the `AddressRatchetKeys` bundle the requester used, so the owner selects the matching private keys:
 
 ```haskell
 AgentConfirmation
@@ -134,62 +159,84 @@ AgentConfirmation
 
 Encoding (extends Protocol.hs:853-866): from `addressDRVersion`, `smpEncode (agentVersion, 'C', e2eEncryption_, ratchetKeyId, Tail encConnInfo)`, where `ratchetKeyId` is `Just` for an address-DR confirmation and `Nothing` for the current joiner-to-initiator and initiator-to-joiner confirmations; earlier versions omit the field entirely and use `smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)`. Parsing gates the field on `agentVersion`. `CRInvitationUri` is unchanged - a connection request URI holds Rcv parameters and must not hold Snd parameters.
 
+### Stored request - the invitation record
+
+The `conn_invitations` record stays; only the type of the stored request widens. From chat's point of view a DR request is still an invitation - it "contains a confirmation" instead of an invitation URI - so `REQ`, `acceptContact'`/`rejectContact'`, and the chat side are unchanged; the change is contained in the agent. The `NewInvitation`/`Invitation` request field (`cr_invitation`, stays `NOT NULL`) becomes a sum:
+
+```haskell
+data ContactRequest
+  = CRInvitation (ConnectionRequestUri 'CMInvitation) -- classic: joinConn on accept (O3-O6)
+  | CRConfirmation DRRequest                          -- DR: continue the ratchet on accept (O3')
+
+data DRRequest = DRRequest
+  { drRatchet :: RatchetX448,        -- post-decrypt receiving ratchet (with send side), stored inline
+    drReplyQueue :: SMPQueueInfo     -- Q_A, where the owner replies
+  }
+```
+
+`recipient_conn_info` holds the profile in both cases. `getInvitation`/`createInvitation` carry `ContactRequest`; `acceptContact'` branches on the constructor. There is no dedup column: a resent request produces another `REQ`, exactly as a resent classic invitation does.
+
 ## Part 4 - key rotation (separate concern)
 
-Rotation is required but independent of the handshake above. The link ratchet key is stable; the prekey and KEM pair rotate on a schedule.
+Rotation is required but independent of the handshake above. The whole ratchet-keys bundle - both X448 keys and the KEM - rotates on a schedule, generated fresh each time.
 
 ### Schema
 
 ```sql
--- private stable link ratchet key on the contact address receive queue
-ALTER TABLE rcv_queues ADD COLUMN link_ratchet_priv_key BLOB; -- X448
-
--- one row per ratchet-keys generation for an address; current plus retired-within-window
+-- one row per ratchet-keys generation for an address; current plus retired-within-window.
+-- private side of the advertised RcvE2ERatchetParamsUri - same shape as the ratchets x3dh
+-- columns and createRatchetX3dhKeys (AgentStore.hs:1362-1367).
 CREATE TABLE address_ratchet_keys(
   address_ratchet_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  ratchet_key_id BLOB NOT NULL,            -- the published id echoed by requests
-  prekey_priv_key BLOB NOT NULL,           -- X448 private key (public derivable with publicKey)
-  kem_keypair BLOB,                        -- sntrup761 keypair (public + secret): the ratchet keeps the KEM keypair, and the retired public is not otherwise retained after LSET; NULL when PQ is off for this address
+  ratchet_key_id BLOB NOT NULL,     -- the published id echoed by requests
+  x3dh_priv_key_1 BLOB NOT NULL,    -- X448
+  x3dh_priv_key_2 BLOB NOT NULL,    -- X448
+  pq_priv_kem BLOB,                 -- RcvPrivRKEMParams (sntrup761 keypair); NULL when PQ is off for this address
   created_at TEXT NOT NULL,
-  retired_at TEXT                          -- set on rotation
+  retired_at TEXT                   -- set on rotation
 );
 CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ratchet_key_id);
+
+-- a DR request stays in conn_invitations with NO schema change: cr_invitation now holds a ContactRequest
+-- sum (an invitation URI or a confirmation carrying the post-decrypt ratchet + reply queue), so it stays
+-- NOT NULL - no nullable change, no new column on conn_invitations, no new table for the request.
 ```
 
-PostgreSQL mirrors this. Migration `M20260712_address_dr`.
+`cr_invitation` stays `NOT NULL` - only its decoded value gains a variant (Part 3), so the invitations flow, `REQ`, and chat are unchanged; the only new storage is the `address_ratchet_keys` table. The link signing key is already on the address queue (`rcv_queues.link_priv_sig_key`, M20250322), so nothing is added there - rotation and retrofit re-sign mutable data with it. PostgreSQL mirrors this. Migration `M20260712_address_dr`.
 
 ### Rotation logic
 
-`rotateRatchetKeys` (new), scheduled while the address is subscribed:
+`rotateRatchetKeys` (new), run on address subscription, at most every 2 weeks (skip if the current generation is younger):
 
-1. Generate an X448 prekey pair, and an sntrup761 pair only if PQ is on for this address, with a fresh `ratchetKeyId`.
-2. Recompute mutable link data with the new `RatchetKeys`, re-sign with the root key (`encodeSignUserData`), and `LSET` it to the address queue (`addSMPQueueLink`/`setConnShortLink` path).
-3. Insert the new `address_ratchet_keys` row; set `retired_at` on the previous row.
+1. `generateRcvE2EParams` (Ratchet.hs:439) for a fresh generation - two X448 keys, and an sntrup761 keypair only if PQ is on for this address - with a fresh `ratchetKeyId`.
+2. Recompute mutable link data with the new `AddressRatchetKeys` (the public `e2eParams`), re-sign with the root key (`encodeSignUserData`, key from `rcv_queues.link_priv_sig_key`), and `LSET` it to the address queue (`setConnShortLink` path).
+3. Insert the new `address_ratchet_keys` row (`x3dh_priv_key_1`, `x3dh_priv_key_2`, `pq_priv_kem`); set `retired_at` on the previous row.
 
-Retention window equals queue message retention (`storedMsgDataTTL`, Env/SQLite.hs:237), covering a request that used a just-retired prekey and is still in the address queue. Cadence is configuration; it bounds how long a recorded first message stays decryptable after a compromise of the current prekey - the link ratchet key alone decrypts nothing.
+Retention window equals queue message retention (`storedMsgDataTTL`, Env/SQLite.hs:237), covering a request that used a just-retired bundle and is still in the address queue. The 2-week cadence bounds how long a recorded first message stays decryptable after a compromise of the current private keys - a retired generation is deleted after the window and then decrypts nothing.
 
 ### Cleanup
 
-`cleanupManager` (Agent.hs:2994) gains two steps: delete `address_ratchet_keys` rows with `retired_at` older than the window; and delete pending DR request connections (below) never accepted or rejected, past a request TTL. Both are batched like `deleteRcvMsgHashesExpired` (Agent.hs:3001).
+`cleanupManager` (Agent.hs:2994) gains one step: delete `address_ratchet_keys` rows with `retired_at` older than the window, batched like `deleteRcvMsgHashesExpired` (Agent.hs:3001). Unaccepted DR request rows in `conn_invitations` are handled exactly like unaccepted classic invitation requests - no DR-specific cleanup (a DR request is one `conn_invitations` row, the same class of state as a classic contact request).
 
 ## Part 5 - backward compatibility
 
 - A requester older than `addressDRVersion`, or an address without `ratchetKeys`, uses R2/R3 (`AgentInvitation`); the owner uses O1-O8. Unchanged.
 - The owner dispatches on the envelope: `AgentInvitation` -> `smpInvitation` (current); `AgentConfirmation` with `ratchetKeyId` on a `ContactConnection` -> `smpAddressConfirmation` (new). Both coexist.
 - `AgentConfirmation` without `ratchetKeyId` remains the current confirmation on established connections.
+- An existing address gains `ratchetKeys` when the app updates the address - with the user's confirmation and the current profile - combined with the full→short address migration, not by the agent alone (which has neither the profile nor the user's intent). The update is an `LSET` of mutable data re-signed with `rcv_queues.link_priv_sig_key`; no new link is issued, because the keys are in mutable, not fixed, data. Requesters that fetch the updated data use DR; older ones still use `AgentInvitation`.
 
 ## Part 6 - tests
 
-- Encoding roundtrips: `FixedLinkData` with and without `linkRatchetKey`; `UserContactData` with and without `ratchetKeys`, and with `kemKey` present and absent; `AgentConfirmation` with and without `ratchetKeyId`, across versions.
-- Address creation advertises `linkRatchetKey`, `prekey`, and optionally `kemKey`; `decryptLinkData` (Crypto/ShortLink.hs:100) verifies hash and signatures and reconstructs the advertised `RcvE2ERatchetParamsUri` (then negotiates to concrete) with and without the KEM.
-- Both PQ modes: an address with `kemKey` gives a hybrid ratchet (`pqEncryption` on); an address without gives an X448-only ratchet.
+- Encoding roundtrips: `UserContactData` with and without `ratchetKeys`, and with the KEM present and absent; `AgentConfirmation` with and without `ratchetKeyId`, across versions.
+- Address creation advertises `ratchetKeys` (the `RcvE2ERatchetParamsUri`); `decryptLinkData` (Crypto/ShortLink.hs:100) verifies signatures and the requester negotiates the advertised params to a concrete version, with and without the KEM.
+- Both PQ modes: an address whose bundle carries a KEM gives a hybrid ratchet (`pqEncryption` on); one without gives an X448-only ratchet.
 - End to end: a DR-advertising address; a new requester establishes the ratchet, sends its profile under it, owner emits `REQ`, accepts, both reach `CON`; assert the profile never travels under per-queue-only encryption; assert `pqEncryption` on.
-- Rotation: request against the current prekey; request against a just-retired prekey within the window still decrypts; request against a prekey past the window is discarded and the requester times out.
+- Rotation and retrofit: request against the current bundle; against a just-retired bundle within the window still decrypts; against a bundle past the window is discarded and the requester times out; an address that adds `ratchetKeys` via `LSET` is then reached by DR while an old requester still uses `AgentInvitation`.
 - Backward compatibility: old requester against a DR address connects via `AgentInvitation`; new requester against a non-DR address falls back to `AgentInvitation`.
 
 ## Part 7 - phases
 
-1. Link data: `linkRatchetKey`, `RatchetKeys` (with optional `kemKey`), encodings, reconstruction, `encodeSignFixedData`/`encodeSignUserData`; address creation generating and storing the link ratchet private key and the first prekey row.
-2. Handshake: requester R2'/R3', `AgentConfirmation.ratchetKeyId`, owner O1'/O2'/O3', `smpConfirmation` `RcvConnection … Nothing` branch and `AgentConnInfoReply` acceptance; end-to-end connection with the profile under the ratchet.
-3. Rotation: schema migration, `rotateRatchetKeys`, retention window, cleanup step, rotation tests.
+1. Link data: `AddressRatchetKeys` in `UserContactData` (reusing `RcvE2ERatchetParamsUri`), encoding, `encodeSignUserData`; `AgentConfirmation.ratchetKeyId`; address creation taking `InitialKeys` (lifting the `IKUsePQ`-for-`SCMContact` prohibition), generating (`generateRcvE2EParams`, KEM per `initialPQEncryption False`) and storing the first `address_ratchet_keys` row.
+2. Handshake: requester R2'/R3'; owner O1'/O2'/O3' storing the DR request as a `conn_invitations` row whose request value is the `CRConfirmation` variant; `smpConfirmation` `RcvConnection … Nothing` branch and `AgentConnInfoReply` acceptance; end-to-end connection with the profile under the ratchet.
+3. Rotation and retrofit: schema migration, `rotateRatchetKeys`, retention window, cleanup step, app-driven `LSET` retrofit (with the full→short address migration), rotation/retrofit tests.

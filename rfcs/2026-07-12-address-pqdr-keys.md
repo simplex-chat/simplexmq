@@ -15,14 +15,11 @@ The cause is that the address owner's X3DH contribution is generated per request
 
 Publish the address owner's X3DH contribution in the address link data, so a requester can establish the double ratchet in its first message. The requester runs the existing `pqX3dhSnd` against the published keys, initializes a sending ratchet, and encrypts its first message under it. The owner runs the existing `pqX3dhRcv` against its stored private keys and the requester's X3DH keys from the message, initializes a receiving ratchet, and decrypts it.
 
-The published keys follow the X3DH structure:
+Publish the owner's X3DH contribution - two X448 keys and an optional sntrup761 KEM key, with the e2e version range - as one bundle in the mutable contact user data, signed by the root key. The bundle is the existing `RcvE2ERatchetParamsUri` type that a one-time invitation already advertises, with an id for rotation.
 
-- The link ratchet key - the stable first X3DH key - goes in the immutable fixed link data, next to the root key, committed by the link hash.
-- The prekey, the KEM encapsulation key, and the e2e version range go in the mutable user data as a ratchet-keys bundle with an id, signed by the root key, rotated with `LSET`.
+This is backward compatible. A requester that does not use the published bundle sends a current `AgentInvitation` with its own X3DH keys, and the owner does what it does today: generates fresh X3DH keys and sends them in the confirmation. The owner branches on whether the incoming message uses the published bundle.
 
-This is backward compatible. A requester that does not use the published keys sends a current `AgentInvitation` with its own X3DH keys, and the owner does what it does today: generates fresh X3DH keys and sends them in the confirmation. The owner branches on whether the incoming message uses the published keys.
-
-Two properties follow. The first message, including the profile, is under the double ratchet, which closes the profile gap and gives it post-quantum protection through the ratchet's sntrup761 KEM. And a decryptable message proves the sender established X3DH against the link ratchet key committed by the link hash, so it authenticates the address owner without a separate signature.
+Three properties follow. The first message, including the profile, is under the double ratchet, which closes the profile gap and gives it post-quantum protection through the ratchet's sntrup761 KEM. A decryptable message proves the sender established X3DH against the root-signed keys, so it authenticates the address owner without a separate signature. And because the bundle is in mutable data, an existing address can advertise the double ratchet by updating its mutable data - no new link.
 
 ## Design
 
@@ -30,27 +27,18 @@ Syntax uses [ABNF][1] with [case-sensitive strings extension][2]. Key and ratche
 
 ### Published keys in link data
 
-The link ratchet key is appended to fixed link data:
-
-```abnf
-fixedData =/ linkRatchetKey ; appended, ignored by earlier versions
-linkRatchetKey = %s"0" / (%s"1" length x509encoded) ; X448, stable, the first X3DH key
-```
-
-The ratchet-keys bundle is appended to contact user data:
+The owner's X3DH contribution is a ratchet-keys bundle appended to the mutable contact user data, signed by the root key. Nothing is added to the immutable fixed link data:
 
 ```abnf
 userContactData =/ ratchetKeys ; appended, ignored by earlier versions
-ratchetKeys = %s"0" / (%s"1" ratchetKeyId e2eVRange prekey kemKey)
+ratchetKeys = %s"0" / (%s"1" ratchetKeyId e2eParams)
 ratchetKeyId = shortString ; identifies this bundle, changes on rotation, echoed in the request
-e2eVRange = <e2e encryption version range, for negotiation>
-prekey = length x509encoded ; X448
-kemKey = %s"0" / (%s"1" largeString) ; sntrup761 encapsulation key, optional (PQ is opt-in)
+e2eParams = <RcvE2ERatchetParamsUri: e2e version range, two X448 keys, optional sntrup761 key>
 ```
 
-Together these reconstruct the owner's X3DH contribution as an `RcvE2ERatchetParamsUri` - a version-range form: `linkRatchetKey` (from fixed data) as the first key, `prekey` as the second, `kemKey` as the optional KEM parameter, `e2eVRange` as the version range. The requester negotiates the concrete version against its own e2e range, as it does for an invitation, then runs `pqX3dhSnd` against the result.
+`e2eParams` is the existing `RcvE2ERatchetParamsUri` - the same type a one-time invitation advertises - so a requester reads it, negotiates the concrete e2e version against its own range, and runs `pqX3dhSnd` against it, exactly as it does for an invitation. The KEM key is optional (the params' KEM field is a `Maybe`), controlled by the address's initial-keys mode, the same 3-way choice as invitations: advertise the KEM (post-quantum from the first message), advertise X448-only but still support post-quantum if the requester proposes its own KEM (one message later, avoiding the ~1158-byte key in link data), or no post-quantum.
 
-The owner keeps the private prekey and, when PQ is on, the KEM keypair, indexed by `ratchetKeyId`. On rotation with `LSET` it publishes a new bundle with a new `ratchetKeyId` and keeps the previous private keys for a window covering queue message retention, so a request that used a just-rotated prekey still decrypts. The link ratchet key is stable and not rotated.
+The owner keeps the private side of each bundle - the two X448 private keys and, when PQ is on, the KEM keypair - indexed by `ratchetKeyId`. On rotation with `LSET` it publishes a new bundle with a new `ratchetKeyId` and keeps the previous private keys for a window covering queue message retention, so a request that used a just-rotated bundle still decrypts. Because the bundle is in mutable data, an existing address advertises the double ratchet by updating its mutable data - no new link, no re-creation.
 
 ### Request confirmation
 
@@ -66,26 +54,27 @@ The confirmation holds the requester's Snd X3DH parameters (so the owner runs `p
 
 Requester:
 
-1. Retrieve link data (`LGET`), read the link ratchet key, the prekey with its `ratchetKeyId`, the `e2eVRange`, and the optional KEM key, reconstruct the owner's `RcvE2ERatchetParamsUri`, and negotiate the concrete version against its own e2e range.
-2. `generateSndE2EParams` for its own X3DH contribution (with the KEM only when the address advertises one).
-3. `pqX3dhSnd` against the owner's parameters, then `initSndRatchet` - the sending ratchet.
+1. Retrieve link data (`LGET`), read the bundle - its `ratchetKeyId` and `e2eParams` (`RcvE2ERatchetParamsUri`) - and negotiate the concrete e2e version against its own range.
+2. `generateSndE2EParams` for its own X3DH contribution - encapsulating to the bundle's KEM if it advertises one, or proposing its own KEM if the requester wants post-quantum and the bundle is X448-only.
+3. `pqX3dhSnd` against the bundle's parameters, then `initSndRatchet` - the sending ratchet.
 4. Encrypt the first message under the ratchet, and send a confirmation with its Snd parameters and `ratchetKeyId`.
 
 Owner:
 
-1. On a confirmation with `ratchetKeyId` on a contact address, select the private prekey and, if any, KEM keypair by `ratchetKeyId` (current or a retained previous generation).
-2. `pqX3dhRcv` against the requester's Snd parameters with the link ratchet, prekey, and optional KEM private keys, then `initRcvRatchet` - the receiving ratchet. Decrypting the first message advances the ratchet and gives it a send side, so the owner can reply.
+1. On a confirmation with `ratchetKeyId` on a contact address, select the private X3DH keys and, if any, KEM keypair by `ratchetKeyId` (current or a retained previous generation).
+2. `pqX3dhRcv` against the requester's Snd parameters with those private keys, then `initRcvRatchet` - the receiving ratchet. Decrypting the first message advances the ratchet and gives it a send side, so the owner can reply.
 3. Decrypt, and reply under the ratchet.
 
 A request whose `ratchetKeyId` is no longer retained cannot be decrypted; the owner does not learn the requester or its reply address, and the requester's attempt fails at its own timeout.
 
 ### Authentication
 
-The ratchet is established against the link ratchet key committed by the link hash and the prekey signed by the root key, so a decryptable message proves the sender established X3DH against the owner's published, link-committed keys. Where a message today relies on a separate signature over its content for authenticity, this establishment provides it, and the signature is not needed. The link ratchet key is a DH key (X448) and X3DH is over crypto_box, so deniability is preserved; the signing identity (the root key) and the DH key are separate keys, both anchored to the link hash. Reusing the link ratchet key across requesters is consistent with the address already being a shared identifier.
+The ratchet-keys bundle is in the mutable link data, signed by the root key. A decryptable message proves the sender established X3DH against those root-signed keys: an SMP server cannot substitute them without forging the root signature (`decryptLinkData` verifies it), which is the X3DH anti-substitution property. Where a message today relies on a separate signature over its content for authenticity, this establishment provides it, and the signature is not needed. The root Ed25519 key is the address's signing identity; the X3DH keys are separate DH keys (X448), and X3DH is over crypto_box, so deniability is preserved. A malicious server can still serve an older but validly-signed bundle (rollback to a retired generation); this is bounded by the retention window and by the ratchet advancing after the first message, and a per-key signature would not prevent it. Reusing a bundle across requesters is consistent with the address already being a shared identifier.
 
 ## Uses
 
 - Invitations to an address, and the profile in them, are under the double ratchet from the first message.
+- An existing address gains the double ratchet when the app updates its mutable link data (`LSET`, with the user's confirmation and current profile, combined with the full→short address migration); no new link is issued.
 - The service RPC (see the RPC RFC) establishes the ratchet this way to send the request as the first ratchet message.
 
 This RFC depends on nothing else here. It replaces the need for the PQ-queue RFC in the address case, because the ratchet provides post-quantum protection for the first message; the PQ-queue RFC remains for first messages that do not establish a ratchet.
