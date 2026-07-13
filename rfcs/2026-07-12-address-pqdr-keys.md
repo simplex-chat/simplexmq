@@ -17,12 +17,12 @@ Publish the address owner's X3DH contribution in the address link data, so a req
 
 The published keys follow the X3DH structure:
 
-- The identity key goes in the immutable fixed link data, next to the root key, committed by the link hash. It is stable.
-- The prekey and the KEM encapsulation key go in the mutable user data, signed by the root key, rotated with `LSET`.
+- The link ratchet key - the stable first X3DH key - goes in the immutable fixed link data, next to the root key, committed by the link hash.
+- The prekey, the KEM encapsulation key, and the e2e version range go in the mutable user data as a ratchet-keys bundle with an id, signed by the root key, rotated with `LSET`.
 
 This is backward compatible. A requester that does not use the published keys sends a current `AgentInvitation` with its own X3DH keys, and the owner does what it does today: generates fresh X3DH keys and sends them in the confirmation. The owner branches on whether the incoming message uses the published keys.
 
-Two properties follow. The first message, including the profile, is under the double ratchet, which closes the profile gap and gives it post-quantum protection through the ratchet's sntrup761 KEM. And a decryptable message proves the sender established X3DH against the identity key committed by the link hash, so it authenticates the address owner without a separate signature.
+Two properties follow. The first message, including the profile, is under the double ratchet, which closes the profile gap and gives it post-quantum protection through the ratchet's sntrup761 KEM. And a decryptable message proves the sender established X3DH against the link ratchet key committed by the link hash, so it authenticates the address owner without a separate signature.
 
 ## Design
 
@@ -30,59 +30,58 @@ Syntax uses [ABNF][1] with [case-sensitive strings extension][2]. Key and ratche
 
 ### Published keys in link data
 
-The identity key is appended to fixed link data:
+The link ratchet key is appended to fixed link data:
 
 ```abnf
-fixedData =/ addressIdentityKey ; appended, ignored by earlier versions
-addressIdentityKey = %s"0" / (%s"1" length x509encoded) ; X448
+fixedData =/ linkRatchetKey ; appended, ignored by earlier versions
+linkRatchetKey = %s"0" / (%s"1" length x509encoded) ; X448, stable, the first X3DH key
 ```
 
-The prekey and KEM key are appended to contact user data:
+The ratchet-keys bundle is appended to contact user data:
 
 ```abnf
-userContactData =/ addressRatchetKeys ; appended, ignored by earlier versions
-addressRatchetKeys = %s"0" / (%s"1" prekeyId prekey kemKey)
-prekeyId = shortString ; identifies the prekey, echoed in the request
+userContactData =/ ratchetKeys ; appended, ignored by earlier versions
+ratchetKeys = %s"0" / (%s"1" ratchetKeyId e2eVRange prekey kemKey)
+ratchetKeyId = shortString ; identifies this bundle, changes on rotation, echoed in the request
+e2eVRange = <e2e encryption version range, for negotiation>
 prekey = length x509encoded ; X448
-kemKey = largeString ; sntrup761 encapsulation key
+kemKey = %s"0" / (%s"1" largeString) ; sntrup761 encapsulation key, optional (PQ is opt-in)
 ```
 
-Together with the version range in fixed data these reconstruct an `RcvE2ERatchetParams` (the owner's X3DH contribution): identity key as the first key, prekey as the second, KEM key as the KEM parameter.
+Together these reconstruct the owner's X3DH contribution as an `RcvE2ERatchetParamsUri` - a version-range form: `linkRatchetKey` (from fixed data) as the first key, `prekey` as the second, `kemKey` as the optional KEM parameter, `e2eVRange` as the version range. The requester negotiates the concrete version against its own e2e range, as it does for an invitation, then runs `pqX3dhSnd` against the result.
 
-The owner keeps the private prekey and KEM key indexed by `prekeyId`. On rotation with `LSET` it publishes a new pair with a new id and keeps the previous private pair for a window covering queue message retention, so a request that used a just-rotated prekey still decrypts. The identity key is not rotated.
+The owner keeps the private prekey and, when PQ is on, the KEM keypair, indexed by `ratchetKeyId`. On rotation with `LSET` it publishes a new bundle with a new `ratchetKeyId` and keeps the previous private keys for a window covering queue message retention, so a request that used a just-rotated prekey still decrypts. The link ratchet key is stable and not rotated.
 
-### Existential ratchet in the request
+### Request confirmation
 
-`CRInvitationUri` fixes the ratchet parameters to `RcvE2ERatchetParamsUri 'C.X448` today. It becomes existential over the establishment form, so a message can include either the current inline parameters or a reference to the published address keys:
+A requester that uses the published keys establishes the sending ratchet before its first message, so it sends that message as a confirmation, not an invitation - the same envelope a joining party sends in a connection. The confirmation gains an optional `ratchetKeyId` naming the bundle the requester used, so the owner selects the matching private keys:
 
-```haskell
-data AddressE2EParams
-  = InlineE2EParams (RcvE2ERatchetParamsUri 'C.X448) -- current: requester's own keys
-  | PublishedE2EParams ByteString (SndE2ERatchetParams 'C.X448) -- prekeyId, requester's Snd params
+```abnf
+agentConfirmation =/ ratchetKeyId ; the bundle the requester used, echoed; absent on other confirmations
 ```
 
-`InlineE2EParams` is the current message. `PublishedE2EParams` names the prekey the requester used (so the owner selects the matching private keys) and includes the requester's Snd X3DH parameters (so the owner runs `pqX3dhRcv`). The owner branches on the constructor: `PublishedE2EParams` takes the published-key path with `pqX3dhRcv` against the stored private keys; `InlineE2EParams` takes the current path, generating fresh Snd params and sending them in the confirmation.
+The confirmation holds the requester's Snd X3DH parameters (so the owner runs `pqX3dhRcv`) and, encrypted under the ratchet, the first message. A confirmation with `ratchetKeyId` on a contact address takes the published-key path; an `AgentInvitation`, as today, takes the current path where the owner generates fresh X3DH keys and returns them in its own confirmation. A connection-request URI is unchanged: it advertises the requester's Rcv parameters and must not include Snd parameters.
 
 ### Establishing the ratchet
 
 Requester:
 
-1. Retrieve link data (`LGET`), read the identity key, the prekey with its id, and the KEM key, and reconstruct the owner's `RcvE2ERatchetParams`.
-2. `generateSndE2EParams` for its own X3DH contribution.
+1. Retrieve link data (`LGET`), read the link ratchet key, the prekey with its `ratchetKeyId`, the `e2eVRange`, and the optional KEM key, reconstruct the owner's `RcvE2ERatchetParamsUri`, and negotiate the concrete version against its own e2e range.
+2. `generateSndE2EParams` for its own X3DH contribution (with the KEM only when the address advertises one).
 3. `pqX3dhSnd` against the owner's parameters, then `initSndRatchet` - the sending ratchet.
-4. Encrypt the first message under the ratchet, and include `PublishedE2EParams prekeyId sndParams`.
+4. Encrypt the first message under the ratchet, and send a confirmation with its Snd parameters and `ratchetKeyId`.
 
 Owner:
 
-1. On a message with `PublishedE2EParams prekeyId sndParams`, select the private prekey and KEM key by `prekeyId` (current or a retained previous pair).
-2. `pqX3dhRcv` against `sndParams` with the identity, prekey, and KEM private keys, then `initRcvRatchet` - the receiving ratchet.
+1. On a confirmation with `ratchetKeyId` on a contact address, select the private prekey and, if any, KEM keypair by `ratchetKeyId` (current or a retained previous generation).
+2. `pqX3dhRcv` against the requester's Snd parameters with the link ratchet, prekey, and optional KEM private keys, then `initRcvRatchet` - the receiving ratchet. Decrypting the first message advances the ratchet and gives it a send side, so the owner can reply.
 3. Decrypt, and reply under the ratchet.
 
-A request whose `prekeyId` is no longer retained cannot be decrypted; the owner does not learn the requester or its reply address, and the requester's attempt fails at its own timeout.
+A request whose `ratchetKeyId` is no longer retained cannot be decrypted; the owner does not learn the requester or its reply address, and the requester's attempt fails at its own timeout.
 
 ### Authentication
 
-The ratchet is established against the identity key committed by the link hash, so a decryptable message proves the sender holds that identity key. Where a message today relies on a separate signature over its content for authenticity, this establishment provides it, and the signature is not needed. The identity key is a DH key and X3DH is over crypto_box, so deniability is preserved, and reuse of the identity key across requesters is consistent with the address already being a shared identifier.
+The ratchet is established against the link ratchet key committed by the link hash and the prekey signed by the root key, so a decryptable message proves the sender established X3DH against the owner's published, link-committed keys. Where a message today relies on a separate signature over its content for authenticity, this establishment provides it, and the signature is not needed. The link ratchet key is a DH key (X448) and X3DH is over crypto_box, so deniability is preserved; the signing identity (the root key) and the DH key are separate keys, both anchored to the link hash. Reusing the link ratchet key across requesters is consistent with the address already being a shared identifier.
 
 ## Uses
 
