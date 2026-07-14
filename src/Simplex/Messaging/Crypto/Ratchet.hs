@@ -37,6 +37,7 @@ module Simplex.Messaging.Crypto.Ratchet
     AUseKEM (..),
     RatchetKEMState (..),
     SRatchetKEMState (..),
+    RatchetKEMStateI (..),
     RcvPrivRKEMParams,
     APrivRKEMParams (..),
     RcvE2ERatchetParamsUri,
