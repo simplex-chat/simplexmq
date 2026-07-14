@@ -3702,8 +3702,8 @@ testDeliveryReceiptsVersion ps = do
       subscribeConnection a' bId
       subscribeConnection b' aId
       exchangeGreetingsMsgId_ PQEncOff 4 a' bId b' aId
-      checkVersion a' bId 7
-      checkVersion b' aId 7
+      checkVersion a' bId 8
+      checkVersion b' aId 8
       (6, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 6)
       get b' =##> \case ("", c, Msg' 6 PQEncOff "hello") -> c == aId; _ -> False
