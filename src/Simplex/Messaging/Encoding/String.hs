@@ -262,7 +262,8 @@ textParseJSON name = J.withText name $ maybe (fail name) pure . textDecode
 --
 -- > newtype Key = Key ByteString
 -- >   deriving (ToJSON, FromJSON) via (StrJSON "Key" Key)
-newtype StrJSON (name :: Symbol) a = StrJSON a
+newtype StrJSON (name :: Symbol) a = StrJSON {unStrJSON :: a}
+  deriving (Eq, Show)
 
 instance StrEncoding a => ToJSON (StrJSON name a) where
   toJSON (StrJSON a) = strToJSON a

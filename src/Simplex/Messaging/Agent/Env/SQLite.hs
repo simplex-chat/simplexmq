@@ -105,12 +105,13 @@ data ServerCfg p = ServerCfg
 
 data ServerRoles = ServerRoles
   { storage :: Bool,
-    proxy :: Bool
+    proxy :: Bool,
+    names :: Bool
   }
   deriving (Show)
 
 allRoles :: ServerRoles
-allRoles = ServerRoles True True
+allRoles = ServerRoles True True True
 
 presetServerCfg :: Bool -> ServerRoles -> Maybe OperatorId -> ProtoServerWithAuth p -> ServerCfg p
 presetServerCfg enabled roles operator server =
@@ -119,6 +120,9 @@ presetServerCfg enabled roles operator server =
 data UserServers p = UserServers
   { storageSrvs :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p),
     proxySrvs :: NonEmpty (Maybe OperatorId, ProtoServerWithAuth p),
+    -- name resolution is opt-in: a plain list (NOT NonEmpty, no fallback-to-all).
+    -- Empty = no servers resolve names = a clean agent error, never falls back.
+    nameSrvs :: [(Maybe OperatorId, ProtoServerWithAuth p)],
     knownHosts :: Set TransportHost
   }
 
@@ -126,9 +130,10 @@ type OperatorId = Int64
 
 -- This function sets all servers as enabled in case all passed servers are disabled.
 mkUserServers :: NonEmpty (ServerCfg p) -> UserServers p
-mkUserServers srvs = UserServers {storageSrvs = filterSrvs storage, proxySrvs = filterSrvs proxy, knownHosts}
+mkUserServers srvs = UserServers {storageSrvs = filterSrvs storage, proxySrvs = filterSrvs proxy, nameSrvs, knownHosts}
   where
     filterSrvs role = L.map (\ServerCfg {operator, server} -> (operator, server)) $ fromMaybe srvs $ L.nonEmpty $ L.filter (\ServerCfg {enabled, roles} -> enabled && role roles) srvs
+    nameSrvs = map (\ServerCfg {operator, server} -> (operator, server)) $ L.filter (\ServerCfg {enabled, roles} -> enabled && names roles) srvs
     knownHosts = S.unions $ L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> serverHosts srv) srvs
 
 serverHosts :: ProtocolServer p -> Set TransportHost

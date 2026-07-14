@@ -52,10 +52,10 @@ testSMPServers =
   ]
 
 storageOnly :: ServerRoles
-storageOnly = ServerRoles {storage = True, proxy = False}
+storageOnly = ServerRoles {storage = True, proxy = False, names = False}
 
 proxyOnly :: ServerRoles
-proxyOnly = ServerRoles {storage = False, proxy = True}
+proxyOnly = ServerRoles {storage = False, proxy = True, names = False}
 
 initServers :: InitialAgentServers
 initServers =

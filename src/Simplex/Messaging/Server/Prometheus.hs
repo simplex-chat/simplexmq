@@ -59,7 +59,7 @@ data RTSubscriberMetrics = RTSubscriberMetrics
 {-# FOURMOLU_DISABLE\n#-}
 prometheusMetrics :: ServerMetrics -> RealTimeMetrics -> UTCTime -> Text
 prometheusMetrics sm rtm ts =
-  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> info
+  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> names <> info
   where
     ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions} = sm
     RealTimeMetrics
@@ -128,7 +128,8 @@ prometheusMetrics sm rtm ts =
         _rcvServicesSubDuplicate,
         _qCount,
         _msgCount,
-        _ntfCount
+        _ntfCount,
+        _rslvStats
       } = statsData
     time =
       "# Recorded at: " <> T.pack (iso8601Show ts) <> "\n\
@@ -459,6 +460,31 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_" <> pfx <> "_services_sub_fewer_total gauge\n\
       \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
+    names =
+      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} = _rslvStats
+       in "# Names\n\
+          \# -----\n\
+          \\n\
+          \# HELP simplex_smp_names_reqs Total RSLV requests forwarded to this server.\n\
+          \# TYPE simplex_smp_names_reqs counter\n\
+          \simplex_smp_names_reqs " <> mshow _rslvReqs <> "\n# rslvReqs\n\
+          \\n\
+          \# HELP simplex_smp_names_success NameRecord successfully resolved and returned.\n\
+          \# TYPE simplex_smp_names_success counter\n\
+          \simplex_smp_names_success " <> mshow _rslvSucc <> "\n# rslvSucc\n\
+          \\n\
+          \# HELP simplex_smp_names_not_found Name not registered (resolver returned 404 / 400).\n\
+          \# TYPE simplex_smp_names_not_found counter\n\
+          \simplex_smp_names_not_found " <> mshow _rslvNotFound <> "\n# rslvNotFound\n\
+          \\n\
+          \# HELP simplex_smp_names_resolver_errs Resolver backend errors (HTTP 5xx, transport, decode, or timeout).\n\
+          \# TYPE simplex_smp_names_resolver_errs counter\n\
+          \simplex_smp_names_resolver_errs " <> mshow _rslvResolverErrs <> "\n# rslvResolverErrs\n\
+          \\n\
+          \# HELP simplex_smp_names_disabled RSLV requests rejected because no resolver is configured (names role off).\n\
+          \# TYPE simplex_smp_names_disabled counter\n\
+          \simplex_smp_names_disabled " <> mshow _rslvDisabled <> "\n# rslvDisabled\n\
+          \\n"
     info =
       "# Info\n\
       \# ----\n\

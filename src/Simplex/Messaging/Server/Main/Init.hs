@@ -155,6 +155,22 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
     <> "\n\n\
+        \[NAMES]\n\
+        \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
+        \# Operator runs the resolver alongside smp-server (default port 8000)\n\
+        \# with its own Ethereum JSON-RPC endpoint configured in resolver.toml.\n\
+        \enable: off\n\
+        \# Same-host:\n\
+        \# resolver_endpoint: http://127.0.0.1:8000\n\
+        \# Resolver behind TLS reverse proxy:\n\
+        \# resolver_endpoint: https://names.simplex.chat:443\n\
+        \# resolver_auth: basic <username>:<password>\n\
+        \# resolver_timeout_ms: 3000\n\
+        \# resolver_max_response_bytes: 16000\n\
+        \# Max concurrent name resolutions per connection (forwarded RSLVs from many\n\
+        \# clients share one proxy connection, so this is much higher than PROXY client_concurrency).\n"
+    <> ("# resolver_concurrency = " <> tshow defaultNameResolverConcurrency)
+    <> "\n\n\
         \[INACTIVE_CLIENTS]\n\
         \# TTL and interval to check inactive clients\n\
         \disconnect = on\n"

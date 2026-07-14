@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for snrc-resolve helpers.
 
-Run with `python3 -m unittest scripts/resolver/test_snrc_resolve.py`.
+Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
 """
 
 import importlib.util

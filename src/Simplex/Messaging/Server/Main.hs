@@ -34,6 +34,7 @@ module Simplex.Messaging.Server.Main
     simplexmqSource,
     serverPublicInfo,
     validCountryValue,
+    validateUrl,
     printSourceCode,
     cliCommandP,
     strParse,
@@ -50,7 +51,7 @@ import Data.Char (isAlpha, isAscii, toUpper)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
-import Data.List (find, isPrefixOf)
+import Data.List (dropWhileEnd, find, isPrefixOf)
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
@@ -66,6 +67,7 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClie
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
+import Network.URI (URI (..), URIAuth (..), parseAbsoluteURI)
 import Simplex.Messaging.Protocol (BasicAuth (..), ProtoServerWithAuth (ProtoServerWithAuth), pattern SMPServer)
 import Simplex.Messaging.Server (AttachHTTP, exportMessages, importMessages, printMessageStats, runSMPServer)
 import Simplex.Messaging.Server.CLI
@@ -76,6 +78,7 @@ import Simplex.Messaging.Server.Main.Init
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore (..), QStoreCfg (..), stmQueueStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SQSType (..), SMSType (..), newMsgStore)
+import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.StoreLog.ReadWrite (readQueueStore)
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
@@ -605,6 +608,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                   },
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
+              serverResolverConcurrency = readIniDefault defaultNameResolverConcurrency "NAMES" "resolver_concurrency" ini,
+              namesConfig = readNamesConfig ini,
               information = serverPublicInfo ini,
               startOptions
             }
@@ -795,6 +800,64 @@ validCountryValue :: String -> String -> Either String Text
 validCountryValue field s
   | length s == 2 && all (\c -> isAscii c && isAlpha c) s = Right $ T.pack $ map toUpper s
   | otherwise = Left $ "Use ISO3166 2-letter code for " <> field
+
+readNamesConfig :: Ini -> Maybe NamesConfig
+readNamesConfig ini
+  | not enabled = Nothing
+  | otherwise =
+      let resolverAuth_ = either (error . ("[NAMES] resolver_auth: " <>)) Just . parseRpcAuth =<< eitherToMaybe (lookupValue "NAMES" "resolver_auth" ini)
+          endpoint = requiredText "resolver_endpoint"
+       in Just
+            NamesConfig
+              { resolverEndpoint = either (error . ("[NAMES] resolver_endpoint: " <>)) id (validateUrl endpoint resolverAuth_),
+                resolverAuth = resolverAuth_,
+                resolverTimeoutMs = boundedIniInt 3000 100 60000 "resolver_timeout_ms",
+                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes"
+              }
+  where
+    enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
+    requiredText key =
+      either (error . (("[NAMES] " <> T.unpack key <> " is required: ") <>)) id $
+        lookupValue "NAMES" key ini
+    boundedIniInt def floor_ ceiling_ key = case lookupValue "NAMES" key ini of
+      Left _ -> def
+      Right raw -> case readMaybe (T.unpack (T.strip raw)) of
+        Nothing ->
+          error $ "[NAMES] " <> T.unpack key <> ": not an integer (got " <> show raw <> ")"
+        Just n
+          | n >= floor_ && n <= ceiling_ -> n
+          | otherwise ->
+              error $ "[NAMES] " <> T.unpack key <> " must be in [" <> show floor_ <> ".." <> show ceiling_ <> "] (got " <> show n <> ")"
+
+-- | Validate the resolver_endpoint URL: it must be an absolute http(s) URL with a host.
+-- http + resolver_auth to a non-loopback host is rejected.
+validateUrl :: Text -> Maybe RpcAuth -> Either String String
+validateUrl url auth_ = do
+  let s = T.unpack url
+  uri <- maybe (Left "not an absolute URI") Right $ parseAbsoluteURI s
+  let scheme = uriScheme uri
+  unless (scheme == "http:" || scheme == "https:") $ Left "scheme must be http or https"
+  ua <- maybe (Left "missing host") Right (uriAuthority uri)
+  let host = uriRegName ua
+  when (null host) $ Left "empty host"
+  unless (null (uriUserInfo ua)) $ Left "userinfo (user:pass@) not allowed; put credentials in resolver_auth"
+  when (scheme == "http:" && isJust auth_ && not (isLoopback host)) $
+    Left "http with resolver_auth on a non-loopback host not allowed (the Authorization header would travel in cleartext); use https, or drop resolver_auth"
+  Right (dropWhileEnd (== '/') s)
+  where
+    isLoopback h = h == "localhost" || h == "127.0.0.1" || h == "[::1]" || h == "0.0.0.0"
+
+-- | Parse an rpc_auth INI value. Scheme keyword is case-insensitive so
+-- "Bearer <token>" / "BEARER <token>" (Caddy / RFC 7235 convention) work
+-- as well as the lowercase form.
+parseRpcAuth :: Text -> Either String RpcAuth
+parseRpcAuth t = case T.words t of
+  [scheme, tok] | T.toLower scheme == "bearer" -> Right $ AuthBearer tok
+  [scheme, up] | T.toLower scheme == "basic" -> case T.breakOn ":" up of
+    (u, rest)
+      | not (T.null u) && ":" `T.isPrefixOf` rest -> Right $ AuthBasic u (T.drop 1 rest)
+    _ -> Left "basic auth expects user:password"
+  _ -> Left "expected `bearer <token>` or `basic <user>:<pass>`"
 
 printSourceCode :: Maybe Text -> IO ()
 printSourceCode = \case
