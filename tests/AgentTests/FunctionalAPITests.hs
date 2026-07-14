@@ -1016,10 +1016,10 @@ runAgentClientContactDRTest addrIK useDR bPQ ps = withSmpServer ps $ withAgentCl
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
     sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False
-    ("", _, A.REQ invId _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
-    ("", _, A.CONF confId _ "alice's connInfo") <- get bob
+    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, A.INFO (CR.connPQEncryption addrIK) "bob's connInfo")
     get alice ##> ("", bobId, A.CON pqEnc)

@@ -656,8 +656,6 @@ data DRRequest = DRRequest
     pqSupport :: PQSupport
   }
 
-$(J.deriveJSON defaultJSON ''DRRequest)
-
 -- * Message integrity validation types
 
 -- | Corresponds to `last_external_snd_msg_id` in `connections` table
@@ -847,3 +845,5 @@ instance AnyStoreError StoreError where
     SEWorkItemError {} -> True
     _ -> False
   mkWorkItemError errContext = SEWorkItemError {errContext}
+
+$(J.deriveJSON defaultJSON ''DRRequest)
