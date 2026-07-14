@@ -1384,7 +1384,7 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
 
 -- initializes the receive ratchet from X3DH keys and decrypts the confirmation reply (first ratchet message);
 -- shared by the connection initiator and the address DR owner, which differ only in the key source.
-initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.RcvE2ERatchetParams 'C.X448 -> ByteString -> AM (Either C.CryptoError ByteString, CR.RatchetX448, PQSupport)
+initRcvRatchetDecrypt :: CR.RatchetKEMStateI s => VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.E2ERatchetParams s 'C.X448 -> ByteString -> AM (Either C.CryptoError ByteString, CR.RatchetX448, PQSupport)
 initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _) encConnInfo = do
   e2eEncryptVRange <- asks $ e2eEncryptVRange . config
   unless (e2eVersion `isCompatible` e2eEncryptVRange) $ throwE $ AGENT A_VERSION
