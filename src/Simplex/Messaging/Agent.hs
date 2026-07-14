@@ -1382,6 +1382,23 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   liftIO $ createSndRatchet db connId rc e2eSndParams
   pure e2eSndParams
 
+-- initializes the receive ratchet from X3DH keys and decrypts the confirmation reply (first ratchet message);
+-- shared by the connection initiator and the address DR owner, which differ only in the key source.
+initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.RcvE2ERatchetParams 'C.X448 -> ByteString -> AM (Either C.CryptoError ByteString, CR.RatchetX448, PQSupport)
+initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _) encConnInfo = do
+  e2eEncryptVRange <- asks $ e2eEncryptVRange . config
+  unless (e2eVersion `isCompatible` e2eEncryptVRange) $ throwE $ AGENT A_VERSION
+  rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eSndParams
+  let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
+      pqSupport' = pqSupport `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
+      rc = CR.initRcvRatchet rcVs pk2 rcParams pqSupport'
+  g <- asks random
+  (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
+  case skipped of
+    CR.SMDNoChange -> pure ()
+    _ -> logWarn "conf: skipped confirmations"
+  pure (agentMsgBody_, rc', pqSupport')
+
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
   CRInvitationUri {} -> invPQSupported <$$> compatibleInvitationUri cReq
@@ -3474,18 +3491,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             case status of
               New -> case (conn', e2eEncryption) of
                 -- party initiating connection
-                (RcvConnection _ _, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _))) -> do
-                  unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwE $ AGENT A_VERSION)
-                  (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
-                  rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
-                  let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
-                      pqSupport' = pqSupport `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
-                      rc = CR.initRcvRatchet rcVs rcDHRs rcParams pqSupport'
-                  g <- asks random
-                  (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
-                  case skipped of
-                    CR.SMDNoChange -> pure ()
-                    _ -> logWarn "conf: skipped confirmations"
+                (RcvConnection _ _, Just (CR.AE2ERatchetParams _ e2eSndParams)) -> do
+                  keys <- withStore c (`getRatchetX3dhKeys` connId)
+                  (agentMsgBody_, rc', pqSupport') <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
                   case agentMsgBody_ of
                     Right agentMsgBody ->
                       parseMessage agentMsgBody >>= \case
@@ -3553,7 +3561,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
           smpAddressConfirmation :: SMP.MsgId -> Connection c -> C.PublicKeyX25519 -> RatchetKeyId -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()
           smpAddressConfirmation srvMsgId conn' _e2ePubKey rkId e2eSndParams encConnInfo phVer agentVersion = do
             logServer "<--" c srv rId $ "MSG <ACONF>:" <> logSecret' srvMsgId
-            AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
+            AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
             let ConnData {pqSupport} = toConnData conn'
                 compatible =
                   (agentVersion `isCompatible` smpAgentVRange || agentVersion <= agreedAgentVersion)
@@ -3561,21 +3569,16 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             unless compatible $ throwE $ AGENT A_VERSION
             case conn' of
               ContactConnection {} -> case e2eSndParams of
-                CR.AE2ERatchetParams _ innerParams@(CR.E2ERatchetParams e2eVersion _ _ _) -> do
-                  unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwE $ AGENT A_VERSION)
+                CR.AE2ERatchetParams _ innerParams ->
                   withStore' c (\db -> getAddressRatchetKeys db connId rkId) >>= \case
                     Left _ -> prohibited "addr conf: unknown ratchetKeyId"
-                    Right (pk1, pk2, pKem) -> do
-                      rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem innerParams
-                      let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
-                          pqSupport' = pqSupport `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
-                          rc = CR.initRcvRatchet rcVs pk2 rcParams pqSupport'
-                      g <- asks random
-                      (agentMsgBody_, rc', _skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
+                    Right keys -> do
+                      (agentMsgBody_, rc', pqSupport') <- initRcvRatchetDecrypt agentVersion pqSupport keys innerParams encConnInfo
                       case agentMsgBody_ of
                         Right agentMsgBody ->
                           parseMessage agentMsgBody >>= \case
                             AgentConnInfoReply (qA :| _) aliceProfile -> do
+                              g <- asks random
                               let dr = DRRequest {ratchetState = rc', replyQueue = qA, agentVersion, pqSupport = pqSupport'}
                                   newInv = NewInvitation {contactConnId = connId, connReq = CRConfirmation dr, recipientConnInfo = aliceProfile}
                               invId <- withStore c $ \db -> createInvitation db g newInv

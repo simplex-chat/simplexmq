@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -1342,6 +1343,7 @@ sameQueue addr q = sameQAddress addr (qAddress q)
 
 data SMPQueueInfo = SMPQueueInfo {clientVersion :: VersionSMPC, queueAddress :: SMPQueueAddress}
   deriving (Eq, Show)
+  deriving (ToJSON, FromJSON) via (StrJSON "SMPQueueInfo" SMPQueueInfo)
 
 instance Encoding SMPQueueInfo where
   smpEncode (SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
@@ -1358,13 +1360,6 @@ instance Encoding SMPQueueInfo where
     (senderId, dhPublicKey) <- smpP
     queueMode <- queueModeP
     pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
-
-instance ToJSON SMPQueueInfo where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
-
-instance FromJSON SMPQueueInfo where
-  parseJSON = strParseJSON "SMPQueueInfo"
 
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
