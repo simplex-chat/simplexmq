@@ -347,6 +347,8 @@ functionalAPITests ps = do
     testRatchetMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix3 ps $ runAgentClientContactTestPQ3 True
+  describe "Establish duplex connection via contact address with DR" $
+    testContactDRMatrix ps
   it "should support rejecting contact request" $
     withSmpServer ps testRejectContactRequest
   describe "Changing connection user id" $ do
@@ -993,6 +995,49 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId . fst
+
+-- Establish a connection via a DR-advertising contact address (short-link data carries ratchetKeys).
+-- addrIK drives the advertised bundle and the owner's PQ; useDR chooses the DR path (pass the fetched
+-- keys) or the classic path (ignore them); bPQ is the joiner's PQSupport.
+runAgentClientContactDRTest :: HasCallStack => InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
+runAgentClientContactDRTest addrIK useDR bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  linkEntId <- atomically $ C.randomBytes 32 g
+  let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+      userLinkData = UserContactLinkData userCtData
+      connIK = IKLinkPQ (CR.connPQEncryption addrIK) -- owner connection PQ (never IKUsePQ)
+      pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
+  runRight_ $ do
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
+    _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData connIK (Just addrIK) SMSubscribe
+    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    let addrKeys_ = if useDR then ratchetKeys userCtData' else Nothing
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
+    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
+    liftIO $ sqSecuredJoin `shouldBe` False
+    ("", _, A.REQ invId _ "bob's connInfo") <- get alice
+    bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
+    _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+    ("", _, A.CONF confId _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, A.INFO (CR.connPQEncryption addrIK) "bob's connInfo")
+    get alice ##> ("", bobId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.CON pqEnc)
+    exchangeGreetings_ pqEnc alice bobId bob aliceId
+
+testContactDRMatrix :: HasCallStack => (ASrvTransport, AStoreType) -> Spec
+testContactDRMatrix ps = do
+  describe "DR join (ratchet from the invitation)" $ do
+    it "IKPQOff, dh join" $ runAgentClientContactDRTest IKPQOff True PQSupportOff ps
+    it "IKPQOff, pq join" $ runAgentClientContactDRTest IKPQOff True PQSupportOn ps
+    it "IKPQOn, dh join" $ runAgentClientContactDRTest IKPQOn True PQSupportOff ps
+    it "IKPQOn, pq join" $ runAgentClientContactDRTest IKPQOn True PQSupportOn ps
+    it "IKUsePQ, dh join" $ runAgentClientContactDRTest IKUsePQ True PQSupportOff ps
+    it "IKUsePQ, pq join" $ runAgentClientContactDRTest IKUsePQ True PQSupportOn ps
+  describe "classic join, ratchet keys ignored" $ do
+    it "IKUsePQ, dh join" $ runAgentClientContactDRTest IKUsePQ False PQSupportOff ps
+    it "IKUsePQ, pq join" $ runAgentClientContactDRTest IKUsePQ False PQSupportOn ps
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do

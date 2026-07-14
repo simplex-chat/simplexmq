@@ -1926,7 +1926,6 @@ sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {s
       agentCbEncryptOnce v dhPublicKey . smpEncode $
         SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
 
--- send a pre-built confirmation to a contact address, unauthenticated (as sendInvitation)
 sendConfirmationToAddress :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Compatible SMPQueueInfo -> AgentMsgEnvelope -> AM (Maybe SMPServer)
 sendConfirmationToAddress c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) agentEnvelope = do
   msg <- agentCbEncryptOnce v dhPublicKey . smpEncode $ SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)

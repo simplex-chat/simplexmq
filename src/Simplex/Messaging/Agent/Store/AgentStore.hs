@@ -2108,8 +2108,7 @@ instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary 
 
 instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
 
--- a classic invitation keeps its legacy URI encoding (unchanged, so older agents can still read it);
--- a DR confirmation is JSON, told apart by the leading '{' (a URI never starts with it)
+-- CRInvitation keeps the legacy URI (downgrade-safe); CRConfirmation is JSON, told apart by leading '{'
 instance ToField ContactRequest where
   toField = toField . Binary . \case
     CRInvitation cr -> strEncode cr

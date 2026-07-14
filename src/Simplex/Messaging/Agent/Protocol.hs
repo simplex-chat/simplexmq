@@ -840,7 +840,6 @@ data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: VersionSMPA,
         e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
-        -- DR-from-address (with e2eEncryption_): selects the owner's key generation; else Nothing
         ratchetKeyId :: Maybe RatchetKeyId,
         encConnInfo :: ByteString
       }
@@ -1811,7 +1810,6 @@ deriving instance Eq (ConnLinkData c)
 
 deriving instance Show (ConnLinkData c)
 
--- | Identifies an 'AddressRatchetKeys' generation; echoed in a request so the owner selects its keys.
 newtype RatchetKeyId = RatchetKeyId ByteString
   deriving (Eq, Show)
 
@@ -1821,7 +1819,6 @@ instance Encoding RatchetKeyId where
   smpP = RatchetKeyId <$> smpP
   {-# INLINE smpP #-}
 
--- | The address owner's published X3DH keys, letting a requester establish the ratchet from message 1.
 data AddressRatchetKeys = AddressRatchetKeys
   { ratchetKeyId :: RatchetKeyId,
     e2eParams :: RcvE2ERatchetParamsUri 'C.X448
@@ -1842,7 +1839,6 @@ data UserContactData = UserContactData
     -- alternative addresses of chat relays that receive requests for this contact address.
     relays :: [ConnShortLink 'CMContact],
     userData :: UserLinkData,
-    -- appended, so earlier versions ignore it
     ratchetKeys :: Maybe AddressRatchetKeys
   }
   deriving (Eq, Show)

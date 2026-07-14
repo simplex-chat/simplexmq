@@ -12,6 +12,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store
@@ -109,11 +110,11 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
-import Data.Aeson (FromJSON (..), ToJSON (..))
-import qualified Data.Aeson as J
+import qualified Data.Aeson.TH as J
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -643,30 +644,19 @@ data Invitation = Invitation
     accepted :: Bool
   }
 
--- | The stored request in a conn_invitations row: a classic connection request URI, or a
--- double-ratchet confirmation received on a DR-advertising address.
+-- | A classic connection request URI, or a double-ratchet confirmation received at a DR address.
 data ContactRequest
   = CRInvitation (ConnectionRequestUri 'CMInvitation)
   | CRConfirmation DRRequest
 
--- | A double-ratchet request received at a contact address (no connection until accept): the
--- receiving ratchet from decrypting the first message, the reply queue, and the negotiated versions.
 data DRRequest = DRRequest
-  { drRatchet :: RatchetX448,
-    drReplyQueue :: SMPQueueInfo,
-    drAgentVersion :: VersionSMPA,
-    drPQSupport :: PQSupport
+  { ratchetState :: RatchetX448,
+    replyQueue :: SMPQueueInfo,
+    agentVersion :: VersionSMPA,
+    pqSupport :: PQSupport
   }
 
-instance ToJSON DRRequest where
-  toJSON DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport} =
-    J.object ["ratchet" J..= drRatchet, "replyQueue" J..= drReplyQueue, "agentVersion" J..= drAgentVersion, "pqSupport" J..= drPQSupport]
-  toEncoding DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport} =
-    J.pairs $ "ratchet" J..= drRatchet <> "replyQueue" J..= drReplyQueue <> "agentVersion" J..= drAgentVersion <> "pqSupport" J..= drPQSupport
-
-instance FromJSON DRRequest where
-  parseJSON = J.withObject "DRRequest" $ \o ->
-    DRRequest <$> o J..: "ratchet" <*> o J..: "replyQueue" <*> o J..: "agentVersion" <*> o J..: "pqSupport"
+$(J.deriveJSON defaultJSON ''DRRequest)
 
 -- * Message integrity validation types
 

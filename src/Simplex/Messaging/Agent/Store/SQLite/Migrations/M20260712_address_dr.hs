@@ -11,12 +11,12 @@ m20260712_address_dr =
 CREATE TABLE address_ratchet_keys(
   address_ratchet_key_id INTEGER PRIMARY KEY,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
-  ratchet_key_id BLOB NOT NULL,     -- published id echoed by requests
-  x3dh_priv_key_1 BLOB NOT NULL,    -- X448
-  x3dh_priv_key_2 BLOB NOT NULL,    -- X448
-  pq_priv_kem BLOB,                 -- sntrup761 keypair; NULL when PQ is off for this address
+  ratchet_key_id BLOB NOT NULL,
+  x3dh_priv_key_1 BLOB NOT NULL,
+  x3dh_priv_key_2 BLOB NOT NULL,
+  pq_priv_kem BLOB,
   created_at TEXT NOT NULL,
-  retired_at TEXT                   -- set on rotation
+  retired_at TEXT
 ) STRICT;
 
 CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ratchet_key_id);
