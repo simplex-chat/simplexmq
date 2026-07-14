@@ -465,6 +465,16 @@ CREATE TABLE client_services(
   service_queue_ids_hash BLOB NOT NULL DEFAULT x'00000000000000000000000000000000',
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
 ) STRICT;
+CREATE TABLE address_ratchet_keys(
+  address_ratchet_key_id INTEGER PRIMARY KEY,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  ratchet_key_id BLOB NOT NULL, -- published id echoed by requests
+  x3dh_priv_key_1 BLOB NOT NULL, -- X448
+  x3dh_priv_key_2 BLOB NOT NULL, -- X448
+  pq_priv_kem BLOB, -- sntrup761 keypair; NULL when PQ is off for this address
+  created_at TEXT NOT NULL,
+  retired_at TEXT -- set on rotation
+) STRICT;
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -615,6 +625,10 @@ CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(
   server_key_hash
 );
 CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
+CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(
+  conn_id,
+  ratchet_key_id
+);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW
