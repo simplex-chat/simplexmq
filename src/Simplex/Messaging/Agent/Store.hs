@@ -109,11 +109,10 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
+import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
-import qualified Data.ByteString.Lazy as LB
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport (..), RatchetX448)
-import Simplex.Messaging.Encoding
+import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
@@ -659,23 +658,15 @@ data DRRequest = DRRequest
     drPQSupport :: PQSupport
   }
 
-instance Encoding DRRequest where
-  smpEncode DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport} =
-    smpEncode (Large $ LB.toStrict $ J.encode drRatchet, drReplyQueue, drAgentVersion, supportPQ drPQSupport)
-  smpP = do
-    (rcJson, drReplyQueue, drAgentVersion, pqB) <- smpP
-    drRatchet <- either fail pure $ J.eitherDecodeStrict' $ unLarge rcJson
-    pure DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport = PQSupport pqB}
+instance ToJSON DRRequest where
+  toJSON DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport} =
+    J.object ["ratchet" J..= drRatchet, "replyQueue" J..= drReplyQueue, "agentVersion" J..= drAgentVersion, "pqSupport" J..= drPQSupport]
+  toEncoding DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport} =
+    J.pairs $ "ratchet" J..= drRatchet <> "replyQueue" J..= drReplyQueue <> "agentVersion" J..= drAgentVersion <> "pqSupport" J..= drPQSupport
 
-instance Encoding ContactRequest where
-  smpEncode = \case
-    CRInvitation cr -> smpEncode ('I', cr)
-    CRConfirmation dr -> smpEncode ('C', dr)
-  smpP =
-    smpP >>= \case
-      'I' -> CRInvitation <$> smpP
-      'C' -> CRConfirmation <$> smpP
-      _ -> fail "bad ContactRequest tag"
+instance FromJSON DRRequest where
+  parseJSON = J.withObject "DRRequest" $ \o ->
+    DRRequest <$> o J..: "ratchet" <*> o J..: "replyQueue" <*> o J..: "agentVersion" <*> o J..: "pqSupport"
 
 -- * Message integrity validation types
 

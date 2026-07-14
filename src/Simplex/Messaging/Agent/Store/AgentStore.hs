@@ -280,9 +280,11 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
+import qualified Data.Aeson as J
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortBy)
@@ -2106,13 +2108,18 @@ instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary 
 
 instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
 
-instance ToField ContactRequest where toField = toField . Binary . smpEncode
+-- a classic invitation keeps its legacy URI encoding (unchanged, so older agents can still read it);
+-- a DR confirmation is JSON, told apart by the leading '{' (a URI never starts with it)
+instance ToField ContactRequest where
+  toField = toField . Binary . \case
+    CRInvitation cr -> strEncode cr
+    CRConfirmation dr -> LB.toStrict $ J.encode dr
 
--- falls back to a legacy bare-URI row (un-tagged) as a classic invitation
 instance FromField ContactRequest where
-  fromField = blobFieldDecoder $ \bs -> case smpDecode bs of
-    Right cr -> Right cr
-    Left _ -> CRInvitation <$> strDecode bs
+  fromField = blobFieldDecoder $ \bs ->
+    if "{" `B.isPrefixOf` bs
+      then CRConfirmation <$> J.eitherDecodeStrict' bs
+      else CRInvitation <$> strDecode bs
 
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 

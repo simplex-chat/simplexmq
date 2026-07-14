@@ -1360,6 +1360,17 @@ instance Encoding SMPQueueInfo where
     queueMode <- queueModeP
     pure $ SMPQueueInfo clientVersion SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
 
+instance StrEncoding SMPQueueInfo where
+  strEncode = strEncode . smpEncode
+  strP = smpDecode <$?> strP
+
+instance ToJSON SMPQueueInfo where
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
+
+instance FromJSON SMPQueueInfo where
+  parseJSON = strParseJSON "SMPQueueInfo"
+
 -- This instance seems contrived and there was a temptation to split a common part of both types.
 -- But this is created to allow backward and forward compatibility where SMPQueueUri
 -- could have more fields to convert to different versions of SMPQueueInfo in a different way,
