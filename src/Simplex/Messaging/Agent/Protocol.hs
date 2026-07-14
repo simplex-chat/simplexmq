@@ -46,6 +46,7 @@ module Simplex.Messaging.Agent.Protocol
     pqdrSMPAgentVersion,
     sndAuthKeySMPAgentVersion,
     ratchetOnConfSMPAgentVersion,
+    addressDRSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -118,6 +119,8 @@ module Simplex.Messaging.Agent.Protocol
     UserConnLinkData (..),
     UserContactData (..),
     UserLinkData (..),
+    AddressRatchetKeys (..),
+    RatchetKeyId (..),
     OwnerAuth (..),
     OwnerId,
     ConnectionLink (..),
@@ -317,11 +320,16 @@ sndAuthKeySMPAgentVersion = VersionSMPA 6
 ratchetOnConfSMPAgentVersion :: VersionSMPA
 ratchetOnConfSMPAgentVersion = VersionSMPA 7
 
+-- | The address advertises the owner's X3DH keys in link data, and a requester
+-- establishes the double ratchet from its first message (a confirmation with ratchetKeyId).
+addressDRSMPAgentVersion :: VersionSMPA
+addressDRSMPAgentVersion = VersionSMPA 8
+
 minSupportedSMPAgentVersion :: VersionSMPA
 minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
 
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 7
+currentSMPAgentVersion = VersionSMPA 8
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
@@ -830,6 +838,8 @@ data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: VersionSMPA,
         e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
+        -- DR-from-address (with e2eEncryption_): selects the owner's key generation; else Nothing
+        ratchetKeyId :: Maybe RatchetKeyId,
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -850,8 +860,11 @@ data AgentMsgEnvelope
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
-    AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo} ->
-      smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
+    AgentConfirmation {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo}
+      | agentVersion >= addressDRSMPAgentVersion ->
+          smpEncode (agentVersion, 'C', e2eEncryption_, ratchetKeyId, Tail encConnInfo)
+      | otherwise ->
+          smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
@@ -862,8 +875,10 @@ instance Encoding AgentMsgEnvelope where
     agentVersion <- smpP
     smpP >>= \case
       'C' -> do
-        (e2eEncryption_, Tail encConnInfo) <- smpP
-        pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
+        e2eEncryption_ <- smpP
+        ratchetKeyId <- if agentVersion >= addressDRSMPAgentVersion then smpP else pure Nothing
+        Tail encConnInfo <- smpP
+        pure AgentConfirmation {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo}
       'M' -> do
         Tail encAgentMessage <- smpP
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
@@ -1837,6 +1852,29 @@ deriving instance Eq (ConnLinkData c)
 
 deriving instance Show (ConnLinkData c)
 
+-- | Identifies an 'AddressRatchetKeys' generation; echoed in a request so the owner selects its keys.
+newtype RatchetKeyId = RatchetKeyId ByteString
+  deriving (Eq, Show)
+
+instance Encoding RatchetKeyId where
+  smpEncode (RatchetKeyId s) = smpEncode s
+  {-# INLINE smpEncode #-}
+  smpP = RatchetKeyId <$> smpP
+  {-# INLINE smpP #-}
+
+-- | The address owner's published X3DH keys, letting a requester establish the ratchet from message 1.
+data AddressRatchetKeys = AddressRatchetKeys
+  { ratchetKeyId :: RatchetKeyId,
+    e2eParams :: RcvE2ERatchetParamsUri 'C.X448
+  }
+  deriving (Eq, Show)
+
+instance Encoding AddressRatchetKeys where
+  smpEncode AddressRatchetKeys {ratchetKeyId, e2eParams} = smpEncode (ratchetKeyId, e2eParams)
+  smpP = do
+    (ratchetKeyId, e2eParams) <- smpP
+    pure AddressRatchetKeys {ratchetKeyId, e2eParams}
+
 data UserContactData = UserContactData
   { -- direct connection via connReq in fixed data is allowed.
     direct :: Bool,
@@ -1844,7 +1882,9 @@ data UserContactData = UserContactData
     owners :: [OwnerAuth],
     -- alternative addresses of chat relays that receive requests for this contact address.
     relays :: [ConnShortLink 'CMContact],
-    userData :: UserLinkData
+    userData :: UserLinkData,
+    -- appended, so earlier versions ignore it
+    ratchetKeys :: Maybe AddressRatchetKeys
   }
   deriving (Eq, Show)
 
@@ -1972,14 +2012,17 @@ instance ConnectionModeI c => StrEncoding (UserConnLinkData c) where
   {-# INLINE strP #-}
 
 instance Encoding UserContactData where
-  smpEncode UserContactData {direct, owners, relays, userData} =
-    B.concat [smpEncode direct, smpEncodeList owners, smpEncodeList relays, smpEncode userData]
+  smpEncode UserContactData {direct, owners, relays, userData, ratchetKeys} =
+    B.concat [smpEncode direct, smpEncodeList owners, smpEncodeList relays, smpEncode userData, maybe "" smpEncode ratchetKeys]
   smpP = do
     direct <- smpP
     owners <- smpListP
     relays <- smpListP
-    userData <- smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
-    pure UserContactData {direct, owners, relays, userData}
+    userData <- smpP
+    -- ratchetKeys is appended: absent in earlier data (optional -> Nothing), and the trailing
+    -- takeByteString ignores any further fields for forward compatibility.
+    ratchetKeys <- optional smpP <* A.takeByteString
+    pure UserContactData {direct, owners, relays, userData, ratchetKeys}
 
 instance Encoding UserLinkData where
   smpEncode (UserLinkData s) = if B.length s <= 254 then smpEncode s else smpEncode ('\255', Large s)

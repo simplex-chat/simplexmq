@@ -188,6 +188,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251230_strict_tables
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260410_receive_attempts
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260411_service_certs
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260712_address_dr
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -240,6 +241,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251230_strict_tables
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260410_receive_attempts
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260411_service_certs
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:

@@ -59,6 +59,7 @@ module Simplex.Messaging.Agent.Client
     getSubscriptions,
     sendConfirmation,
     sendInvitation,
+    sendConfirmationToAddress,
     temporaryAgentError,
     temporaryOrHostError,
     serverHostError,
@@ -1932,6 +1933,12 @@ sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {s
       let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
       agentCbEncryptOnce v dhPublicKey . smpEncode $
         SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
+
+-- send a pre-built confirmation to a contact address, unauthenticated (as sendInvitation)
+sendConfirmationToAddress :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Compatible SMPQueueInfo -> AgentMsgEnvelope -> AM (Maybe SMPServer)
+sendConfirmationToAddress c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) agentEnvelope = do
+  msg <- agentCbEncryptOnce v dhPublicKey . smpEncode $ SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
+  sendOrProxySMPMessage c nm userId smpServer connId "<CONF>" Nothing senderId (MsgFlags {notification = True}) msg
 
 getQueueMessage :: AgentClient -> RcvQueue -> AM (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do

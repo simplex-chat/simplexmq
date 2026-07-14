@@ -80,7 +80,7 @@ testContactShortLink = do
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let userData = UserLinkData "some user data"
-      userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       userLinkData = UserContactLinkData userCtData
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest Nothing userLinkData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
@@ -96,14 +96,14 @@ testUpdateContactShortLink = do
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let userData = UserLinkData "some user data"
-      userCtData = UserContactData {direct = True, owners = [], relays = [], userData}
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       userLinkData = UserContactLinkData userCtData
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest Nothing userLinkData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
   -- encrypt updated user data
   let updatedUserData = UserLinkData "updated user data"
-      userCtData' = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedUserData}
+      userCtData' = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedUserData, ratchetKeys = Nothing}
       userLinkData' = UserContactLinkData userCtData'
       signed = SL.encodeSignUserData SCMContact (snd sigKeys) supportedSMPAgentVRange userLinkData'
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
@@ -118,7 +118,7 @@ testContactShortLinkBadDataHash = do
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let userData = UserLinkData "some user data"
-      userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData}
+      userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       (_linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest Nothing userLinkData
   -- different key
   linkKey <- LinkKey <$> atomically (C.randomBytes 32 g)
@@ -134,13 +134,13 @@ testContactShortLinkBadSignature = do
   g <- C.newRandom
   sigKeys <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let userData = UserLinkData "some user data"
-      userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData}
+      userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest Nothing userLinkData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
   -- encrypt updated user data
   let updatedUserData = UserLinkData "updated user data"
-      userLinkData' = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = updatedUserData}
+      userLinkData' = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = updatedUserData, ratchetKeys = Nothing}
   -- another signature key
   (_, pk) <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let signed = SL.encodeSignUserData SCMContact pk supportedSMPAgentVRange userLinkData'
@@ -156,7 +156,7 @@ testContactShortLinkOwner = do
   (pk, lnk) <- encryptLink g
   -- encrypt updated user data
   (ownerPK, owner) <- authNewOwner g pk
-  let ud = UserContactData {direct = True, owners = [owner], relays = [], userData = UserLinkData "updated user data"}
+  let ud = UserContactData {direct = True, owners = [owner], relays = [], userData = UserLinkData "updated user data", ratchetKeys = Nothing}
   testEncDec g pk lnk ud
   testEncDec g ownerPK lnk ud
   (_, wrongKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
@@ -166,7 +166,7 @@ encryptLink :: TVar ChaChaDRG -> IO (C.PrivateKeyEd25519, (EncFixedDataBytes, Li
 encryptLink g = do
   sigKeys@(_, pk) <- atomically $ C.generateKeyPair @'C.Ed25519 g
   let userData = UserLinkData "some user data"
-      userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData}
+      userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       (linkKey, linkData) = SL.encodeSignLinkData sigKeys supportedSMPAgentVRange contactConnRequest Nothing userLinkData
       (_linkId, k) = SL.contactShortLinkKdf linkKey
   Right (fd, _ud) <- runExceptT $ SL.encryptLinkData g k linkData
@@ -199,7 +199,7 @@ testContactShortLinkManyOwners = do
   (ownerPK4, owner4) <- authNewOwner g ownerPK1
   (ownerPK5, owner5) <- authNewOwner g ownerPK3
   let owners = [owner1, owner2, owner3, owner4, owner5]
-      ud = UserContactData {direct = True, owners, relays = [], userData = UserLinkData "updated user data"}
+      ud = UserContactData {direct = True, owners, relays = [], userData = UserLinkData "updated user data", ratchetKeys = Nothing}
   testEncDec g pk lnk ud
   testEncDec g ownerPK1 lnk ud
   testEncDec g ownerPK2 lnk ud
@@ -216,7 +216,7 @@ testContactShortLinkInvalidOwners = do
   (pk, lnk) <- encryptLink g
   -- encrypt updated user data
   (ownerPK, owner) <- authNewOwner g pk
-  let mkCtData owners = UserContactData {direct = True, owners, relays = [], userData = UserLinkData "updated user data"}
+  let mkCtData owners = UserContactData {direct = True, owners, relays = [], userData = UserLinkData "updated user data", ratchetKeys = Nothing}
   -- decryption fails: owner uses root key
   let ud = mkCtData [owner {ownerKey = C.publicKey pk}]
       err = A_LINK $ "owner key for ID " <> ownerIdStr owner <> " matches root key"

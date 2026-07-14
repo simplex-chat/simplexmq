@@ -152,6 +152,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
     setRatchetX3dhKeys,
+    createAddressRatchetKeys,
+    getAddressRatchetKeys,
     createSndRatchet,
     getSndRatchet,
     createRatchet,
@@ -1384,6 +1386,31 @@ setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
     |]
     (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, connId)
 
+createAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> UTCTime -> IO ()
+createAddressRatchetKeys db connId ratchetKeyId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem createdAt =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO address_ratchet_keys
+        (conn_id, ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    |]
+    (connId, ratchetKeyId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, createdAt)
+
+getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
+getAddressRatchetKeys db connId ratchetKeyId =
+  firstRow' keys SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ? AND ratchet_key_id = ?
+      |]
+      (connId, ratchetKeyId)
+  where
+    keys (k1, k2, pKem) = Right (k1, k2, pKem)
+
 createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
 createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =
   DB.execute
@@ -2074,6 +2101,18 @@ instance FromField AConnectionRequestUri where fromField = blobFieldDecoder strD
 instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = toField . Binary . strEncode
 
 instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldDecoder strDecode
+
+instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary s
+
+instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
+
+instance ToField ContactRequest where toField = toField . Binary . smpEncode
+
+-- falls back to a legacy bare-URI row (un-tagged) as a classic invitation
+instance FromField ContactRequest where
+  fromField = blobFieldDecoder $ \bs -> case smpDecode bs of
+    Right cr -> Right cr
+    Left _ -> CRInvitation <$> strDecode bs
 
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 

@@ -45,6 +45,8 @@ module Simplex.Messaging.Agent.Store
     AcceptedConfirmation (..),
     NewInvitation (..),
     Invitation (..),
+    ContactRequest (..),
+    DRRequest (..),
     PrevExternalSndId,
     PrevRcvMsgHash,
     PrevSndMsgHash,
@@ -107,8 +109,11 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
+import qualified Data.Aeson as J
+import qualified Data.ByteString.Lazy as LB
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
+import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport (..), RatchetX448)
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( MsgBody,
@@ -626,18 +631,51 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
-    connReq :: ConnectionRequestUri 'CMInvitation,
+    connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
     contactConnId_ :: Maybe ConnId,
-    connReq :: ConnectionRequestUri 'CMInvitation,
+    connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool
   }
+
+-- | The stored request in a conn_invitations row: a classic connection request URI, or a
+-- double-ratchet confirmation received on a DR-advertising address.
+data ContactRequest
+  = CRInvitation (ConnectionRequestUri 'CMInvitation)
+  | CRConfirmation DRRequest
+
+-- | A double-ratchet request received at a contact address (no connection until accept): the
+-- receiving ratchet from decrypting the first message, the reply queue, and the negotiated versions.
+data DRRequest = DRRequest
+  { drRatchet :: RatchetX448,
+    drReplyQueue :: SMPQueueInfo,
+    drAgentVersion :: VersionSMPA,
+    drPQSupport :: PQSupport
+  }
+
+instance Encoding DRRequest where
+  smpEncode DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport} =
+    smpEncode (Large $ LB.toStrict $ J.encode drRatchet, drReplyQueue, drAgentVersion, supportPQ drPQSupport)
+  smpP = do
+    (rcJson, drReplyQueue, drAgentVersion, pqB) <- smpP
+    drRatchet <- either fail pure $ J.eitherDecodeStrict' $ unLarge rcJson
+    pure DRRequest {drRatchet, drReplyQueue, drAgentVersion, drPQSupport = PQSupport pqB}
+
+instance Encoding ContactRequest where
+  smpEncode = \case
+    CRInvitation cr -> smpEncode ('I', cr)
+    CRConfirmation dr -> smpEncode ('C', dr)
+  smpP =
+    smpP >>= \case
+      'I' -> CRInvitation <$> smpP
+      'C' -> CRConfirmation <$> smpP
+      _ -> fail "bad ContactRequest tag"
 
 -- * Message integrity validation types
 

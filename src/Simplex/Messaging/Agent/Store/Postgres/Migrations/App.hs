@@ -13,6 +13,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251010_client_notice
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20251230_strict_tables
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260410_receive_attempts
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260411_service_certs
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260712_address_dr
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Text, Maybe Text)]
@@ -25,7 +26,8 @@ schemaMigrations =
     ("20251010_client_notices", m20251010_client_notices, Just down_m20251010_client_notices),
     ("20251230_strict_tables", m20251230_strict_tables, Just down_m20251230_strict_tables),
     ("20260410_receive_attempts", m20260410_receive_attempts, Just down_m20260410_receive_attempts),
-    ("20260411_service_certs", m20260411_service_certs, Just down_m20260411_service_certs)
+    ("20260411_service_certs", m20260411_service_certs, Just down_m20260411_service_certs),
+    ("20260712_address_dr", m20260712_address_dr, Just down_m20260712_address_dr)
   ]
 
 -- | The list of migrations in ascending order by date
