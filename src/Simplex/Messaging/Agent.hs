@@ -1357,7 +1357,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
               Right r -> pure $ Right $ snd r
               Left e -> do
                 nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
-                runExceptT $ createRatchet_ db g maxSupported pqSupport e2eRcvParams
+                runExceptT $ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
           pure (cData, sq, e2eSndParams, Nothing)
         _ -> do
           let Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {smpServer, senderId}} = qInfo
@@ -1367,19 +1367,20 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
           (q, _) <- lift $ newSndQueue userId "" qInfo sndKey_
           withStore c $ \db -> runExceptT $ do
             liftIO $ lockConnForUpdate db connId
-            e2eSndParams <- createRatchet_ db g maxSupported pqSupport e2eRcvParams
+            e2eSndParams <- createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
             pure (cData, sq', e2eSndParams, lnkId_)
     Nothing -> throwE $ AGENT A_VERSION
-  where
-    createRatchet_ db g maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
-      (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
-      (_, rcDHRs) <- atomically $ C.generateKeyPair g
-      rcParams <- liftEitherWith (SEAgentError . cryptoError) $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
-      let rcVs = CR.RatchetVersions {current = v, maxSupported}
-          rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
-      liftIO $ createSndRatchet db connId rc e2eSndParams
-      pure e2eSndParams
+
+createRatchet_ :: DB.Connection -> TVar ChaChaDRG -> ConnId -> CR.VersionE2E -> PQSupport -> CR.RcvE2ERatchetParams 'C.X448 -> ExceptT StoreError IO (CR.SndE2ERatchetParams 'C.X448)
+createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
+  (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
+  (_, rcDHRs) <- atomically $ C.generateKeyPair g
+  rcParams <- liftEitherWith (SEAgentError . cryptoError) $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
+  let rcVs = CR.RatchetVersions {current = v, maxSupported}
+      rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
+  liftIO $ createSndRatchet db connId rc e2eSndParams
+  pure e2eSndParams
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
@@ -1431,7 +1432,7 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, vrsn@(Compatible v)) ->
       withInvLock c (strEncode cReqUri) "joinConnSrv" $ case addrKeys_ of
-        Just addrKeys -> joinAddressDR qInfo v addrKeys
+        Just addrKeys -> joinAddressDR addrKeys
         Nothing -> do
           SomeConn cType conn <- withStore c (`getConn` connId)
           let pqInitKeys = CR.joinContactInitialKeys (v >= pqdrSMPAgentVersion) pqSup
@@ -1459,18 +1460,13 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys
                 pure e2eRcvParams
           let cReq = CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eVR
           pure $ CCLink cReq Nothing
-        joinAddressDR qInfo v AddressRatchetKeys {ratchetKeyId = addrRKId, e2eParams} = do
+        joinAddressDR AddressRatchetKeys {ratchetKeyId = addrRKId, e2eParams} = do
           g <- asks random
           e2eVR <- asks $ e2eEncryptVRange . config
           case e2eParams `compatibleVersion` e2eVR of
             Nothing -> throwE $ AGENT A_VERSION
-            Just (Compatible e2eRcvParams@(CR.E2ERatchetParams e2eV _ rcDHRr kem_)) -> do
+            Just (Compatible e2eRcvParams@(CR.E2ERatchetParams e2eV _ _ _)) -> do
               let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ v (Just e2eV)
-              (pk1, pk2, pKem, aliceSndParams) <- liftIO $ CR.generateSndE2EParams g e2eV (CR.replyKEM_ e2eV kem_ pqSupport)
-              (_, rcDHRs) <- atomically $ C.generateKeyPair g
-              rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
-              let rcVs = CR.RatchetVersions {current = e2eV, maxSupported = maxVersion e2eVR}
-                  rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
               e2eKeys <- atomically $ C.generateKeyPair g
               (rq, _) <- createRcvQueue c NRMBackground userId connId srv enableNtfs subMode Nothing (CQRMessaging Nothing) e2eKeys
               SomeConn _ conn <- withStore c (`getConn` connId)
@@ -1478,14 +1474,11 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys
                   cData = (toConnData conn) {pqSupport} :: ConnData
                   qAInfo = SMPQueueInfo rqV (rcvSMPQueueAddress rq)
                   aliceReply = AgentConnInfoReply (qAInfo :| []) cInfo
-              currentE2EVersion <- asks $ maxVersion . e2eEncryptVRange . config
-              encConnInfo <- withStore c $ \db -> runExceptT $ do
-                liftIO $ createSndRatchet db connId rc aliceSndParams
+              (aliceSndParams, encConnInfo) <- withStore c $ \db -> runExceptT $ do
+                aliceSndParams <- createRatchet_ db g connId (maxVersion e2eVR) pqSupport e2eRcvParams
                 liftIO $ setConnPQSupport db connId pqSupport
-                let agentMsgBody = smpEncode aliceReply
-                (_, internalSndId, _) <- ExceptT $ updateSndIds db connId
-                liftIO $ updateSndMsgHash db connId internalSndId (C.sha256Hash agentMsgBody)
-                fst <$> agentRatchetEncrypt db cData agentMsgBody e2eEncConnInfoLength (Just $ CR.pqSupportToEnc pqSupport) currentE2EVersion
+                encConnInfo <- fst <$> agentRatchetEncrypt db cData (smpEncode aliceReply) e2eEncConnInfoLength (Just $ CR.pqSupportToEnc pqSupport) (maxVersion e2eVR)
+                pure (aliceSndParams, encConnInfo)
               let agentEnvelope = AgentConfirmation {agentVersion = v, e2eEncryption_ = Just aliceSndParams, ratchetKeyId = Just addrRKId, encConnInfo}
               void $ sendConfirmationToAddress c nm userId connId qInfo agentEnvelope
               pure False
@@ -3497,30 +3490,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     Right agentMsgBody ->
                       parseMessage agentMsgBody >>= \case
                         AgentConnInfoReply smpQueues connInfo -> do
-                          processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
+                          processReplyConf agentVersion pqSupport pqSupport' rc' SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer} connInfo
                           withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
                         _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
-                      where
-                        processConf connInfo senderConf = do
-                          let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
-                          confId <- withStore c $ \db -> do
-                            setConnAgentVersion db connId agentVersion
-                            when (pqSupport /= pqSupport') $ setConnPQSupport db connId pqSupport'
-                            -- /
-                            -- Starting with agent version 7 (ratchetOnConfSMPAgentVersion),
-                            -- initiating party initializes ratchet on processing confirmation;
-                            -- previously, it initialized ratchet on allowConnection;
-                            -- this is to support decryption of messages that may be received before allowConnection
-                            liftIO $ do
-                              createRatchet db connId rc'
-                              let RcvQueue {smpClientVersion = v, e2ePrivKey = e2ePrivKey'} = rq
-                                  SMPConfirmation {smpClientVersion = v', e2ePubKey = e2ePubKey'} = senderConf
-                                  dhSecret = C.dh' e2ePubKey' e2ePrivKey'
-                              setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
-                            -- /
-                            createConfirmation db g newConfirmation
-                          let srvs = map qServer $ smpReplyQueues senderConf
-                          notify $ CONF confId pqSupport' srvs connInfo
                     _ -> prohibited "conf: decrypt error"
                 -- party accepting connection
                 (DuplexConnection _ (rq'@RcvQueue {smpClientVersion = v'} :| _) _, Nothing) -> do
@@ -3550,21 +3522,33 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                         Right agentMsgBody ->
                           parseMessage agentMsgBody >>= \case
                             AgentConnInfoReply smpQueues connInfo -> do
-                              let senderConf = SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
-                                  newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
-                              confId <- withStore c $ \db -> do
-                                liftIO $ do
-                                  createRatchet db connId rc'
-                                  let RcvQueue {smpClientVersion = v, e2ePrivKey = e2ePrivKey'} = rq
-                                      dhSecret = C.dh' e2ePubKey e2ePrivKey'
-                                  setRcvQueueConfirmedE2E db rq dhSecret $ min v phVer
-                                  updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
-                                createConfirmation db g newConfirmation
-                              notify $ CONF confId pqSupport (map qServer $ smpReplyQueues senderConf) connInfo
+                              processReplyConf agentVersion pqSupport pqSupport rc' SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer} connInfo
+                              withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
                             _ -> prohibited "conf: not AgentConnInfoReply"
                         _ -> prohibited "conf: decrypt error"
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
+
+          -- persists a confirmation reply and its ratchet, then notifies CONF; shared by the connection
+          -- initiator (ratchet built here) and the address DR requester (ratchet built during join).
+          processReplyConf :: VersionSMPA -> PQSupport -> PQSupport -> CR.RatchetX448 -> SMPConfirmation -> ConnInfo -> AM ()
+          processReplyConf agentVersion pqSupport pqSupport' rc' senderConf connInfo = do
+            let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
+            g <- asks random
+            confId <- withStore c $ \db -> do
+              setConnAgentVersion db connId agentVersion
+              when (pqSupport /= pqSupport') $ setConnPQSupport db connId pqSupport'
+              -- Starting with agent version 7 (ratchetOnConfSMPAgentVersion), the ratchet is initialized
+              -- on processing confirmation (previously on allowConnection), to decrypt messages that may
+              -- be received before allowConnection.
+              liftIO $ do
+                createRatchet db connId rc'
+                let RcvQueue {smpClientVersion = v, e2ePrivKey = e2ePrivKey'} = rq
+                    SMPConfirmation {smpClientVersion = v', e2ePubKey = e2ePubKey'} = senderConf
+                    dhSecret = C.dh' e2ePubKey' e2ePrivKey'
+                setRcvQueueConfirmedE2E db rq dhSecret $ min v v'
+              createConfirmation db g newConfirmation
+            notify $ CONF confId pqSupport' (map qServer $ smpReplyQueues senderConf) connInfo
 
           smpAddressConfirmation :: SMP.MsgId -> Connection c -> C.PublicKeyX25519 -> RatchetKeyId -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()
           smpAddressConfirmation srvMsgId conn' _e2ePubKey rkId e2eSndParams encConnInfo phVer agentVersion = do
