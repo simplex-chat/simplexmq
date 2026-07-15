@@ -986,23 +986,6 @@ prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNo
   pure (ccLink, params)
 
 -- | Create connection for prepared link (single network call).
-mkAddressRatchetKeys :: AgentClient -> ConnId -> CR.InitialKeys -> AM AddressRatchetKeys
-mkAddressRatchetKeys c connId pqInitKeys = do
-  g <- asks random
-  e2eVR <- asks $ e2eEncryptVRange . config
-  let pqEnc = CR.initialPQEncryption False pqInitKeys
-  (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
-  rkId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
-  now <- liftIO getCurrentTime
-  withStore' c $ \db -> createAddressRatchetKeys db connId rkId pk1 pk2 pKem now
-  pure AddressRatchetKeys {ratchetKeyId = rkId, e2eParams = toVersionRangeT e2eRcvParams e2eVR}
-
-addAddressRatchetKeys :: AgentClient -> ConnId -> Maybe CR.InitialKeys -> UserConnLinkData 'CMContact -> AM (UserConnLinkData 'CMContact)
-addAddressRatchetKeys _ _ Nothing uld = pure uld
-addAddressRatchetKeys c connId (Just pqInitKeys) (UserContactLinkData ucd) = do
-  bundle <- mkAddressRatchetKeys c connId pqInitKeys
-  pure $ UserContactLinkData ucd {ratchetKeys = Just bundle}
-
 createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> Maybe CR.InitialKeys -> SubscriptionMode -> AM ConnId
 createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth} userLinkData pqInitKeys drInitKeys_ subMode = do
   g <- asks random
@@ -1011,7 +994,16 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
     CR.IKUsePQ -> throwE $ CMD PROHIBITED "createConnectionForLink"
     _ -> pure ()
   connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption pqInitKeys)
-  userLinkData' <- addAddressRatchetKeys c connId drInitKeys_ userLinkData
+  userLinkData' <- case drInitKeys_ of
+    Nothing -> pure userLinkData
+    Just ik -> do
+      e2eVR <- asks $ e2eEncryptVRange . config
+      (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.initialPQEncryption False ik)
+      rkId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
+      now <- liftIO getCurrentTime
+      withStore' c $ \db -> createAddressRatchetKeys db connId rkId pk1 pk2 pKem now
+      let UserContactLinkData ucd = userLinkData
+      pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId = rkId, e2eParams = toVersionRangeT e2eRcvParams e2eVR}}
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
       md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
       linkData = (plpSignedFixedData, md)
