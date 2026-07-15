@@ -996,7 +996,7 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
   where
     msgId = subtract baseId . fst
 
--- Establish a connection via a DR-advertising contact address (short-link data carries ratchetKeys).
+-- Establish a connection via a DR-advertising contact address (short-link data includes ratchetKeys).
 -- addrIK drives the advertised bundle and the owner's PQ; useDR chooses the DR path (pass the fetched
 -- keys) or the classic path (ignore them); bPQ is the joiner's PQSupport.
 runAgentClientContactDRTest :: HasCallStack => InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
@@ -1016,10 +1016,12 @@ runAgentClientContactDRTest addrIK useDR bPQ ps = withSmpServer ps $ withAgentCl
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
     sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False
-    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId reqPQ _ "bob's connInfo") <- get alice
+    liftIO $ reqPQ `shouldBe` PQSupportOn -- REQ reports the connection PQ capability (On when versions support PQ); same for DR and classic paths
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
-    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
+    ("", _, A.CONF confId confPQ _ "alice's connInfo") <- get bob
+    liftIO $ confPQ `shouldBe` bPQ -- CONF reports the joiner's own connection PQ support
     allowConnection bob aliceId confId "bob's connInfo"
     get alice ##> ("", bobId, A.INFO (CR.connPQEncryption addrIK) "bob's connInfo")
     get alice ##> ("", bobId, A.CON pqEnc)
@@ -1036,6 +1038,10 @@ testContactDRMatrix ps = do
     it "IKUsePQ, dh join" $ runAgentClientContactDRTest IKUsePQ True PQSupportOff ps
     it "IKUsePQ, pq join" $ runAgentClientContactDRTest IKUsePQ True PQSupportOn ps
   describe "classic join, ratchet keys ignored" $ do
+    it "IKPQOff, dh join" $ runAgentClientContactDRTest IKPQOff False PQSupportOff ps
+    it "IKPQOff, pq join" $ runAgentClientContactDRTest IKPQOff False PQSupportOn ps
+    it "IKPQOn, dh join" $ runAgentClientContactDRTest IKPQOn False PQSupportOff ps
+    it "IKPQOn, pq join" $ runAgentClientContactDRTest IKPQOn False PQSupportOn ps
     it "IKUsePQ, dh join" $ runAgentClientContactDRTest IKUsePQ False PQSupportOff ps
     it "IKUsePQ, pq join" $ runAgentClientContactDRTest IKUsePQ False PQSupportOn ps
 
