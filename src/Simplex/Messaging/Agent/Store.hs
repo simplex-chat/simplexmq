@@ -631,14 +631,14 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
-    connReq :: ContactRequest,
+    contactReq :: ContactRequest,
     recipientConnInfo :: ConnInfo
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
     contactConnId_ :: Maybe ConnId,
-    connReq :: ContactRequest,
+    contactReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool

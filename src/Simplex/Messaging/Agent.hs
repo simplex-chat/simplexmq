@@ -898,8 +898,8 @@ allowConnectionAsync' c corrId connId confId ownConnInfo =
 -- while marking invitation as accepted inside "lock level transaction" after successful `joinConnAsync`.
 acceptContactAsync' :: AgentClient -> ACorrId -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
 acceptContactAsync' c corrId connId enableNtfs invId ownConnInfo pqSupport subMode = do
-  Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
-  case connReq of
+  Invitation {contactReq} <- withStore c $ \db -> getInvitation db "acceptContactAsync'" invId
+  case contactReq of
     CRConfirmation _ -> throwE $ CMD PROHIBITED "acceptContactAsync: address DR requires sync accept"
     CRInvitation cReq -> do
       withStore' c $ \db -> acceptInvitation db invId ownConnInfo
@@ -999,11 +999,11 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
     Just ik -> do
       e2eVR <- asks $ e2eEncryptVRange . config
       (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.initialPQEncryption False ik)
-      rkId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
+      ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
       now <- liftIO getCurrentTime
-      withStore' c $ \db -> createAddressRatchetKeys db connId rkId pk1 pk2 pKem now
+      withStore' c $ \db -> createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem now
       let UserContactLinkData ucd = userLinkData
-      pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId = rkId, e2eParams = toVersionRangeT e2eRcvParams e2eVR}}
+      pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eParams = toVersionRangeT e2eRcvParams e2eVR}}
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
       md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
       linkData = (plpSignedFixedData, md)
@@ -1313,8 +1313,8 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
 
 newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
 newConnToAccept c userId connId enableNtfs invId pqSup = do
-  Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
-  case connReq of
+  Invitation {contactReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
+  case contactReq of
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs cReq pqSup
     CRConfirmation DRRequest {agentVersion, pqSupport} -> do
       g <- asks random
@@ -1547,8 +1547,8 @@ allowConnection' c connId confId ownConnInfo = withConnLock c connId "allowConne
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
-  Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
-  r <- case connReq of
+  Invitation {contactReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
+  r <- case contactReq of
     CRInvitation cReq -> joinConn c nm userId connId enableNtfs cReq ownConnInfo Nothing pqSupport subMode
     CRConfirmation DRRequest {ratchetState, replyQueue} -> do
       SomeConn _ conn <- withStore c (`getConn` connId)
@@ -3580,7 +3580,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                           AgentConnInfoReply (qA :| _) aliceProfile -> do
                             g <- asks random
                             let dr = DRRequest {ratchetState = rc', replyQueue = qA, agentVersion, pqSupport = pqSupport'}
-                                newInv = NewInvitation {contactConnId = connId, connReq = CRConfirmation dr, recipientConnInfo = aliceProfile}
+                                newInv = NewInvitation {contactConnId = connId, contactReq = CRConfirmation dr, recipientConnInfo = aliceProfile}
                             invId <- withStore c $ \db -> createInvitation db g newInv
                             -- REQ reports the connection PQ capability (as smpInvitation does), not the owner's enable choice
                             notify $ REQ invId pqCapability (qServer qA :| []) aliceProfile
@@ -3740,7 +3740,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 -- in case invitation not compatible, assume there is no PQ encryption support.
                 pqSupport <- lift $ maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq
                 g <- asks random
-                let newInv = NewInvitation {contactConnId = connId, connReq = CRInvitation connReq, recipientConnInfo = cInfo}
+                let newInv = NewInvitation {contactConnId = connId, contactReq = CRInvitation connReq, recipientConnInfo = cInfo}
                 invId <- withStore c $ \db -> createInvitation db g newInv
                 let srvs = L.map qServer $ crSmpQueues crData
                 notify $ REQ invId pqSupport srvs cInfo
