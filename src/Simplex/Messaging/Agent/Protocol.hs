@@ -866,7 +866,7 @@ data AgentMsgEnvelope
 -- what a requester sends: a classic invitation, or an address-DR confirmation (message 1)
 data SndInvOrConf
   = SndInvitation (ConnectionRequestUri 'CMInvitation) ConnInfo
-  | SndConfirmation (SndE2ERatchetParams 'C.X448) RatchetKeyId ConnInfo
+  | SndConfirmation (SndE2ERatchetParams 'C.X448) RatchetKeyId ByteString
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
