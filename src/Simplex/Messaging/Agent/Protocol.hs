@@ -854,7 +854,7 @@ data AgentMsgEnvelope
     -- ratchetKeyId selects the owner's advertised key, encConnInfo is a ratchet-encrypted AgentConnInfoReply
     AgentInvitationDR
       { agentVersion :: VersionSMPA,
-        e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
+        e2eSndParams :: SndE2ERatchetParams 'C.X448,
         ratchetKeyId :: RatchetKeyId,
         encConnInfo :: ByteString
       }
@@ -873,16 +873,15 @@ instance Encoding AgentMsgEnvelope where
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
-    AgentInvitationDR {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo} ->
-      smpEncode (agentVersion, 'J', e2eEncryption_, ratchetKeyId, Tail encConnInfo)
+    AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo} ->
+      smpEncode (agentVersion, 'J', e2eSndParams, ratchetKeyId, Tail encConnInfo)
     AgentRatchetKey {agentVersion, e2eEncryption, info} ->
       smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
     agentVersion <- smpP
     smpP >>= \case
       'C' -> do
-        e2eEncryption_ <- smpP
-        Tail encConnInfo <- smpP
+        (e2eEncryption_, Tail encConnInfo) <- smpP
         pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
       'M' -> do
         Tail encAgentMessage <- smpP
@@ -892,10 +891,8 @@ instance Encoding AgentMsgEnvelope where
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
       'J' -> do
-        e2eEncryption_ <- smpP
-        ratchetKeyId <- smpP
-        Tail encConnInfo <- smpP
-        pure AgentInvitationDR {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo}
+        (e2eSndParams, ratchetKeyId, Tail encConnInfo) <- smpP
+        pure AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}
       'R' -> do
         e2eEncryption <- smpP
         Tail info <- smpP
@@ -1838,7 +1835,7 @@ data DRInvitation = DRInvitation
   deriving (Show)
 
 data JoinRequest
-  = JRInvitation Bool AConnectionRequestUri PQSupport
+  = JRInvitation {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
   | JRInvitationDR DRInvitation
   deriving (Show)
 
