@@ -12,7 +12,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
 
 module Simplex.Messaging.Agent.Store
@@ -110,11 +109,9 @@ import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (createDBStore)
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
-import qualified Data.Aeson.TH as J
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (MsgEncryptKeyX448, PQEncryption, PQSupport, RatchetX448)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Protocol
   ( MsgBody,
     MsgFlags,
@@ -645,7 +642,6 @@ data Invitation = Invitation
   }
 
 -- | A classic connection request URI, or a double-ratchet confirmation received at a DR address.
--- DRRequest is defined in Agent.Protocol (re-exported here) so JOIN commands can carry it.
 data ContactRequest
   = CRInvitation (ConnectionRequestUri 'CMInvitation)
   | CRConfirmation DRRequest

@@ -262,11 +262,13 @@ connectionRequestTests =
           -- the pre-DR JOIN wire format: "JOIN <ntfs> <cReq> <pqSup> <subMode> <binary connInfo>"
           oldJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode PQSupportOff <> " " <> strEncode SMSubscribe <> " 2\nhi"
       serializeCommand cmd `shouldBe` oldJoin
-      -- an old-format JOIN string decodes to a JRInvitation and re-serializes unchanged
       case parseAll dbCommandP oldJoin of
         Right (JOIN JRInvitation {} _ _) -> pure ()
         r -> expectationFailure $ "expected JOIN JRInvitation, got " <> show r
       (serializeCommand <$> parseAll dbCommandP oldJoin) `shouldBe` Right oldJoin
+      -- a legacy JOIN omitting pqSup parses with the PQSupportOff default (re-serializing with pqSup present)
+      let legacyJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode SMSubscribe <> " 2\nhi"
+      (serializeCommand <$> parseAll dbCommandP legacyJoin) `shouldBe` Right oldJoin
     it "should serialize and parse connection invitations and contact addresses" $ do
       connectionRequest #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest #== ("https://simplex.chat/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)

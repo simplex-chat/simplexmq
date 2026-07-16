@@ -153,7 +153,6 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getRatchetX3dhKeys,
     setRatchetX3dhKeys,
     createAddressRatchetKeys,
-    getAddressRatchetKeys,
     getAddressRatchetKeysByConnId,
     createSndRatchet,
     getSndRatchet,
@@ -1389,30 +1388,17 @@ setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
     |]
     (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, connId)
 
-createAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> UTCTime -> IO ()
-createAddressRatchetKeys db connId ratchetKeyId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem createdAt =
+createAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
+createAddressRatchetKeys db connId ratchetKeyId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
   DB.execute
     db
     [sql|
       INSERT INTO address_ratchet_keys
-        (conn_id, ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+        (conn_id, ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem)
+      VALUES (?, ?, ?, ?, ?)
     |]
-    (connId, ratchetKeyId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, createdAt)
+    (connId, ratchetKeyId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)
 
-getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
-getAddressRatchetKeys db connId ratchetKeyId =
-  firstRow id SEX3dhKeysNotFound $
-    DB.query
-      db
-      [sql|
-        SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
-        FROM address_ratchet_keys
-        WHERE conn_id = ? AND ratchet_key_id = ?
-      |]
-      (connId, ratchetKeyId)
-
--- the address's current advertised key set, read by conn only, to preserve it across short-link data updates
 getAddressRatchetKeysByConnId :: DB.Connection -> ConnId -> IO (Either StoreError (RatchetKeyId, C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
 getAddressRatchetKeysByConnId db connId =
   firstRow id SEX3dhKeysNotFound $

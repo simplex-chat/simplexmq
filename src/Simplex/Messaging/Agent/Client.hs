@@ -1913,14 +1913,14 @@ sendConfirmation c nm sq@SndQueue {userId, server, connId, sndId, queueMode, snd
   sendOrProxySMPMessage c nm userId server connId "<CONF>" spKey sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ _ = throwE $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
--- sends an agent envelope to a contact address queue, encrypted only with per-queue E2E, not the double
--- ratchet: a classic AgentInvitation, or an address-DR AgentConfirmation (message 1) that establishes the ratchet
-sendInvitation :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Compatible SMPQueueInfo -> AgentMsgEnvelope -> AM (Maybe SMPServer)
-sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) agentEnvelope = do
+sendInvitation :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> SndInvOrConf -> AM (Maybe SMPServer)
+sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) invOrConf = do
   msg <- agentCbEncryptOnce v dhPublicKey . smpEncode $ SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
   sendOrProxySMPMessage c nm userId smpServer connId label Nothing senderId (MsgFlags {notification = True}) msg
   where
-    label = case agentEnvelope of AgentConfirmation {} -> "<CONF>"; _ -> "<INV>"
+    (agentEnvelope, label) = case invOrConf of
+      SndInvitation connReq connInfo -> (AgentInvitation {agentVersion, connReq, connInfo}, "<INV>")
+      SndConfirmation e2eSndParams rkId encConnInfo -> (AgentConfirmation {agentVersion, e2eEncryption_ = Just e2eSndParams, ratchetKeyId = Just rkId, encConnInfo}, "<CONF>")
 
 getQueueMessage :: AgentClient -> RcvQueue -> AM (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do

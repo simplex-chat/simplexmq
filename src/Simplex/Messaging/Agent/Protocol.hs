@@ -82,6 +82,7 @@ module Simplex.Messaging.Agent.Protocol
     RatchetSyncState (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
+    SndInvOrConf (..),
     AgentMessage (..),
     AgentMessageType (..),
     APrivHeader (..),
@@ -327,8 +328,6 @@ sndAuthKeySMPAgentVersion = VersionSMPA 6
 ratchetOnConfSMPAgentVersion :: VersionSMPA
 ratchetOnConfSMPAgentVersion = VersionSMPA 7
 
--- | The address advertises the owner's X3DH keys in link data, and a requester
--- establishes the double ratchet from its first message (a confirmation with ratchetKeyId).
 addressDRSMPAgentVersion :: VersionSMPA
 addressDRSMPAgentVersion = VersionSMPA 8
 
@@ -864,6 +863,11 @@ data AgentMsgEnvelope
         info :: ByteString
       }
   deriving (Show)
+
+-- what a requester sends: a classic invitation, or an address-DR confirmation (message 1)
+data SndInvOrConf
+  = SndInvitation (ConnectionRequestUri 'CMInvitation) ConnInfo
+  | SndConfirmation (SndE2ERatchetParams 'C.X448) RatchetKeyId ByteString
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
@@ -1417,52 +1421,46 @@ sameQAddress :: (SMPServer, SMP.QueueId) -> (SMPServer, SMP.QueueId) -> Bool
 sameQAddress (srv, qId) (srv', qId') = sameSrvAddr srv srv' && qId == qId'
 {-# INLINE sameQAddress #-}
 
-strEncodeSMPQueue :: StrEncoding v => (v -> VersionSMPC) -> v -> SMPQueueAddress -> ByteString
-strEncodeSMPQueue minVer v SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, queueMode}
-  | minVer v >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
-  | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
-  where
-    query = strEncode . QSP QEscape
-    queryParams = [("v", strEncode v), ("dh", strEncode dhPublicKey)] <> queueModeParam <> sndSecureParam
-      where
-        queueModeParam = case queueMode of
-          Just QMMessaging -> [("q", "m")]
-          Just QMContact -> [("q", "c")]
-          Nothing -> []
-        sndSecureParam = [("k", "s") | senderCanSecure queueMode && minVer v < shortLinksSMPClientVersion]
-    srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
-    hs = L.tail $ host srv
-
-strPSMPQueue :: StrEncoding v => v -> (v -> VersionSMPC) -> A.Parser (v, SMPQueueAddress)
-strPSMPQueue defaultVer maxVer = do
-  srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
-  senderId <- strP <* optional (A.char '/') <* A.char '#'
-  (ver, hs, dhPublicKey, queueMode) <- versioned <|> unversioned
-  let srv' = srv {host = h :| host <> hs}
-      smpServer = if maxVer ver < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
-  pure (ver, SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
-  where
-    unversioned = (defaultVer,[],,Nothing) <$> strP <* A.endOfInput
-    versioned = do
-      dhKey_ <- optional strP
-      query <- optional (A.char '/') *> A.char '?' *> strP
-      ver <- queryParam "v" query
-      dhKey <- maybe (queryParam "dh" query) pure dhKey_
-      hs_ <- queryParam_ "srv" query
-      let queueMode = case queryParamStr "q" query of
-            Just "m" -> Just QMMessaging
-            Just "c" -> Just QMContact
-            _ | queryParamStr "k" query == Just "s" -> Just QMMessaging
-            _ -> Nothing
-      pure (ver, maybe [] thList_ hs_, dhKey, queueMode)
-
 instance StrEncoding SMPQueueUri where
-  strEncode (SMPQueueUri vr addr) = strEncodeSMPQueue minVersion vr addr
-  strP = uncurry SMPQueueUri <$> strPSMPQueue (versionToRange initialSMPClientVersion) maxVersion
+  strEncode (SMPQueueUri vr SMPQueueAddress {smpServer = srv, senderId = qId, dhPublicKey, queueMode})
+    | minVersion vr >= srvHostnamesSMPClientVersion = strEncode srv <> "/" <> strEncode qId <> "#/?" <> query queryParams
+    | otherwise = legacyStrEncodeServer srv <> "/" <> strEncode qId <> "#/?" <> query (queryParams <> srvParam)
+    where
+      query = strEncode . QSP QEscape
+      queryParams = [("v", strEncode vr), ("dh", strEncode dhPublicKey)] <> queueModeParam <> sndSecureParam
+        where
+          queueModeParam = case queueMode of
+            Just QMMessaging -> [("q", "m")]
+            Just QMContact -> [("q", "c")]
+            Nothing -> []
+          sndSecureParam = [("k", "s") | senderCanSecure queueMode && minVersion vr < shortLinksSMPClientVersion]
+      srvParam = [("srv", strEncode $ TransportHosts_ hs) | not (null hs)]
+      hs = L.tail $ host srv
+  strP = do
+    srv@ProtocolServer {host = h :| host} <- strP <* A.char '/'
+    senderId <- strP <* optional (A.char '/') <* A.char '#'
+    (vr, hs, dhPublicKey, queueMode) <- versioned <|> unversioned
+    let srv' = srv {host = h :| host <> hs}
+        smpServer = if maxVersion vr < srvHostnamesSMPClientVersion then updateSMPServerHosts srv' else srv'
+    pure $ SMPQueueUri vr SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode}
+    where
+      unversioned = (versionToRange initialSMPClientVersion,[],,Nothing) <$> strP <* A.endOfInput
+      versioned = do
+        dhKey_ <- optional strP
+        query <- optional (A.char '/') *> A.char '?' *> strP
+        vr <- queryParam "v" query
+        dhKey <- maybe (queryParam "dh" query) pure dhKey_
+        hs_ <- queryParam_ "srv" query
+        let queueMode = case queryParamStr "q" query of
+              Just "m" -> Just QMMessaging
+              Just "c" -> Just QMContact
+              _ | queryParamStr "k" query == Just "s" -> Just QMMessaging
+              _ -> Nothing
+        pure (vr, maybe [] thList_ hs_, dhKey, queueMode)
 
 instance StrEncoding SMPQueueInfo where
-  strEncode (SMPQueueInfo v addr) = strEncodeSMPQueue id v addr
-  strP = uncurry SMPQueueInfo <$> strPSMPQueue initialSMPClientVersion id
+  strEncode (SMPQueueInfo v addr) = strEncode (SMPQueueUri (versionToRange v) addr)
+  strP = (\(SMPQueueUri vr addr) -> SMPQueueInfo (maxVersion vr) addr) <$> strP
 
 instance Encoding SMPQueueUri where
   smpEncode (SMPQueueUri clientVRange@(VersionRange minV maxV) SMPQueueAddress {smpServer, senderId, dhPublicKey, queueMode})
@@ -1818,12 +1816,7 @@ deriving instance Show (ConnLinkData c)
 
 newtype RatchetKeyId = RatchetKeyId ByteString
   deriving (Eq, Show)
-
-instance Encoding RatchetKeyId where
-  smpEncode (RatchetKeyId s) = smpEncode s
-  {-# INLINE smpEncode #-}
-  smpP = RatchetKeyId <$> smpP
-  {-# INLINE smpP #-}
+  deriving newtype (Encoding)
 
 data AddressRatchetKeys = AddressRatchetKeys
   { ratchetKeyId :: RatchetKeyId,
@@ -1833,13 +1826,10 @@ data AddressRatchetKeys = AddressRatchetKeys
 
 instance Encoding AddressRatchetKeys where
   smpEncode AddressRatchetKeys {ratchetKeyId, e2eParams} = smpEncode (ratchetKeyId, e2eParams)
-  smpP = do
-    (ratchetKeyId, e2eParams) <- smpP
-    pure AddressRatchetKeys {ratchetKeyId, e2eParams}
+  smpP = uncurry AddressRatchetKeys <$> smpP
 
 -- | The double-ratchet request an address owner receives in message 1 and later accepts: the ratchet the
 -- owner established from that message, the requester's reply queue, and the negotiated version and PQ support.
--- Kept here (not in Agent.Store) so JOIN commands can carry it; Agent.Store re-exports it.
 data DRRequest = DRRequest
   { ratchetState :: RatchetX448,
     replyQueue :: SMPQueueInfo,
@@ -1848,12 +1838,9 @@ data DRRequest = DRRequest
   }
   deriving (Show)
 
--- | What a JOIN command joins or accepts. Each variant carries only its own parameters; SubscriptionMode and
--- ConnInfo are needed by both and stay on JOIN itself. See JOIN's serialization for the backward-compatible
--- encoding (a JRInvitation is byte-identical to the pre-DR JOIN).
 data JoinRequest
-  = JRInvitation {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
-  | JRAddressDR DRRequest -- accepting an address double-ratchet request (owner side)
+  = JRInvitation Bool AConnectionRequestUri PQSupport
+  | JRAddressDR DRRequest
   deriving (Show)
 
 data UserContactData = UserContactData
@@ -2191,19 +2178,15 @@ cryptoErrToSyncState = \case
 
 $(J.deriveJSON defaultJSON ''DRRequest)
 
--- JoinRequest encodes itself, so JOIN's field order (see serializeCommand/commandP below) is fixed and never
--- depends on the variant. Backward compatibility: the pre-DR JOIN serialized "ntfs cReq pqSup subMode
--- <binary connInfo>", and a JRInvitation serializes to "ntfs cReq pqSup", so JOIN (JRInvitation ...) subMode
--- connInfo is byte-for-byte the old JOIN - old and new clients read each other's classic JOINs. JRAddressDR is
--- new, a length-prefixed JSON DRRequest; the parser tells them apart because a JRInvitation starts with the
--- ntfs Bool (T/F) and a DR blob with its length digit.
+-- JRInvitation must stay byte-identical to the pre-DR JOIN "ntfs cReq pqSup" for old/new client interop; pqSup
+-- and subMode still default when a legacy command omits them.
 instance StrEncoding JoinRequest where
   strEncode = \case
     JRInvitation ntfs cReq pqSup -> B.unwords [strEncode ntfs, strEncode cReq, strEncode pqSup]
     JRAddressDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    (JRInvitation <$> strP_ <*> strP_ <*> strP)
-      <|> (JRAddressDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict'))
+    (JRInvitation <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
+      <|> (JRAddressDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict') <* A.space)
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACommand
@@ -2238,7 +2221,7 @@ commandP binaryP =
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
       LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
       LGET_ -> s (LGET <$> strP)
-      JOIN_ -> s (JOIN <$> strP_ <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
+      JOIN_ -> s (JOIN <$> strP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
       SWCH_ -> pure SWCH
