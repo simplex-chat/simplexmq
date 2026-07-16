@@ -1346,10 +1346,6 @@ connReqQueue = \case
   CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
   CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
-data JoinInvitationReq
-  = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
-  | JIRInvitationDR DRInvitation
-
 -- Resume-safe: reuses the send queue, ratchet, and (on a duplex retry) the reply queue from a previous attempt,
 -- returning that reply queue so the caller does not open a duplicate.
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> JoinInvitationReq -> AM (ConnData, SndQueue, Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)
@@ -1420,6 +1416,10 @@ data RcvRatchetInit = RcvRatchetInit
     connPQSupport :: PQSupport,
     pqCapability :: PQSupport
   }
+  
+data JoinInvitationReq
+  = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
+  | JIRInvitationDR DRInvitation  
 
 -- completes the X3DH receive, initializes the receive ratchet, and decrypts the first inbound ratchet message
 -- (the initiator's confirmation reply, or the DR owner's received invitation); the two differ only in the key source.
