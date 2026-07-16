@@ -645,16 +645,10 @@ data Invitation = Invitation
   }
 
 -- | A classic connection request URI, or a double-ratchet confirmation received at a DR address.
+-- DRRequest is defined in Agent.Protocol (re-exported here) so JOIN commands can carry it.
 data ContactRequest
   = CRInvitation (ConnectionRequestUri 'CMInvitation)
   | CRConfirmation DRRequest
-
-data DRRequest = DRRequest
-  { ratchetState :: RatchetX448,
-    replyQueue :: SMPQueueInfo,
-    agentVersion :: VersionSMPA,
-    pqSupport :: PQSupport
-  }
 
 -- * Message integrity validation types
 
@@ -845,5 +839,3 @@ instance AnyStoreError StoreError where
     SEWorkItemError {} -> True
     _ -> False
   mkWorkItemError errContext = SEWorkItemError {errContext}
-
-$(J.deriveJSON defaultJSON ''DRRequest)

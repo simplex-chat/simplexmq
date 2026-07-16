@@ -472,8 +472,7 @@ CREATE TABLE address_ratchet_keys(
   x3dh_priv_key_1 BLOB NOT NULL,
   x3dh_priv_key_2 BLOB NOT NULL,
   pq_priv_kem BLOB,
-  created_at TEXT NOT NULL,
-  retired_at TEXT
+  created_at TEXT NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);

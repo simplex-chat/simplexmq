@@ -25,7 +25,8 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
+import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), SubscriptionMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec hiding (fit, it)
@@ -255,6 +256,17 @@ connectionRequestTests =
       queueV1NoPort #==# ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#" <> testDhKeyStr)
+    it "JOIN command is backward compatible: JRInvitation is byte-identical to the pre-DR JOIN" $ do
+      let uri = ACR SCMInvitation invConnRequest
+          cmd = JOIN (JRInvitation True uri PQSupportOff) SMSubscribe "hi"
+          -- the pre-DR JOIN wire format: "JOIN <ntfs> <cReq> <pqSup> <subMode> <binary connInfo>"
+          oldJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode PQSupportOff <> " " <> strEncode SMSubscribe <> " 2\nhi"
+      serializeCommand cmd `shouldBe` oldJoin
+      -- an old-format JOIN string decodes to a JRInvitation and re-serializes unchanged
+      case parseAll dbCommandP oldJoin of
+        Right (JOIN JRInvitation {} _ _) -> pure ()
+        r -> expectationFailure $ "expected JOIN JRInvitation, got " <> show r
+      (serializeCommand <$> parseAll dbCommandP oldJoin) `shouldBe` Right oldJoin
     it "should serialize and parse connection invitations and contact addresses" $ do
       connectionRequest #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest #== ("https://simplex.chat/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)

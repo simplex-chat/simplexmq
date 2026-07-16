@@ -15,8 +15,7 @@ CREATE TABLE address_ratchet_keys(
   x3dh_priv_key_1 BLOB NOT NULL,
   x3dh_priv_key_2 BLOB NOT NULL,
   pq_priv_kem BLOB,
-  created_at TEXT NOT NULL,
-  retired_at TEXT
+  created_at TEXT NOT NULL
 ) STRICT;
 
 CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ratchet_key_id);

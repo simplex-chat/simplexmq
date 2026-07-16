@@ -349,6 +349,10 @@ functionalAPITests ps = do
     testPQMatrix3 ps $ runAgentClientContactTestPQ3 True
   describe "Establish duplex connection via contact address with DR" $
     testContactDRMatrix ps
+  it "should preserve address DR keys when the link data is updated" $
+    testAddressUpdatePreservesDRKeys ps
+  it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
+    testAcceptContactDRResumeAfterOffline ps
   it "should support rejecting contact request" $
     withSmpServer ps testRejectContactRequest
   describe "Changing connection user id" $ do
@@ -1000,7 +1004,11 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
 -- addrIK drives the advertised bundle and the owner's PQ; useDR chooses the DR path (pass the fetched
 -- keys) or the classic path (ignore them); bPQ is the joiner's PQSupport.
 runAgentClientContactDRTest :: HasCallStack => InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
-runAgentClientContactDRTest addrIK useDR bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
+runAgentClientContactDRTest = runAgentClientContactDRTest_ False
+
+-- asyncAccept True exercises the ACPT command path (acceptContactAsync); False uses synchronous acceptContact.
+runAgentClientContactDRTest_ :: HasCallStack => Bool -> InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
+runAgentClientContactDRTest_ asyncAccept addrIK useDR bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
   g <- C.newRandom
   rootKey <- atomically $ C.generateKeyPair g
   linkEntId <- atomically $ C.randomBytes 32 g
@@ -1012,6 +1020,11 @@ runAgentClientContactDRTest addrIK useDR bPQ ps = withSmpServer ps $ withAgentCl
     (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
     _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData connIK (Just addrIK) SMSubscribe
     (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    -- the advertised DR bundle includes a KEM iff the owner's PQ is on, so a PQ requester gets PQ from message 1
+    liftIO $ case ratchetKeys userCtData' of
+      Just AddressRatchetKeys {e2eParams = CR.E2ERatchetParamsUri _ _ _ kem_} ->
+        isJust kem_ `shouldBe` supportPQ (CR.connPQEncryption addrIK)
+      Nothing -> expectationFailure "address must advertise DR ratchet keys"
     let addrKeys_ = if useDR then ratchetKeys userCtData' else Nothing
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
     sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
@@ -1019,7 +1032,11 @@ runAgentClientContactDRTest addrIK useDR bPQ ps = withSmpServer ps $ withAgentCl
     ("", _, A.REQ invId reqPQ _ "bob's connInfo") <- get alice
     liftIO $ reqPQ `shouldBe` PQSupportOn -- REQ reports the connection PQ capability (On when versions support PQ); same for DR and classic paths
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
-    _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+    if asyncAccept
+      then do
+        acceptContactAsync alice "accept" bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+        get alice =##> \case ("accept", c, A.JOINED _) -> c == bobId; _ -> False
+      else void $ acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
     ("", _, A.CONF confId confPQ _ "alice's connInfo") <- get bob
     liftIO $ confPQ `shouldBe` bPQ -- CONF reports the joiner's own connection PQ support
     allowConnection bob aliceId confId "bob's connInfo"
@@ -1044,6 +1061,90 @@ testContactDRMatrix ps = do
     it "IKPQOn, pq join" $ runAgentClientContactDRTest IKPQOn False PQSupportOn ps
     it "IKUsePQ, dh join" $ runAgentClientContactDRTest IKUsePQ False PQSupportOff ps
     it "IKUsePQ, pq join" $ runAgentClientContactDRTest IKUsePQ False PQSupportOn ps
+  describe "DR join, async accept (JOIN command)" $ do
+    it "IKPQOff, dh join" $ runAgentClientContactDRTest_ True IKPQOff True PQSupportOff ps
+    it "IKPQOff, pq join" $ runAgentClientContactDRTest_ True IKPQOff True PQSupportOn ps
+    it "IKPQOn, dh join" $ runAgentClientContactDRTest_ True IKPQOn True PQSupportOff ps
+    it "IKPQOn, pq join" $ runAgentClientContactDRTest_ True IKPQOn True PQSupportOn ps
+    it "IKUsePQ, dh join" $ runAgentClientContactDRTest_ True IKUsePQ True PQSupportOff ps
+    it "IKUsePQ, pq join" $ runAgentClientContactDRTest_ True IKUsePQ True PQSupportOn ps
+
+-- Defect A: updating the mutable short-link data of a DR-advertising address must preserve the stored
+-- ratchet keys (re-read from the DB), so requesters fetching the updated link can still establish DR.
+testAddressUpdatePreservesDRKeys :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testAddressUpdatePreservesDRKeys ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  linkEntId <- atomically $ C.randomBytes 32 g
+  let addrIK = IKPQOn
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "original", ratchetKeys = Nothing}
+      connIK = IKLinkPQ (CR.connPQEncryption addrIK)
+      bPQ = PQSupportOn
+      pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
+  runRight_ $ do
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
+    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) connIK (Just addrIK) SMSubscribe
+    -- the published link advertises generated ratchet keys
+    (_, ContactLinkData _ published) <- getConnShortLink bob 1 shortLink
+    liftIO $ ratchetKeys published `shouldSatisfy` isJust
+    -- update the mutable data passing ratchetKeys = Nothing; the stored keys must be preserved, not dropped
+    let updatedCtData = userCtData {userData = UserLinkData "updated", ratchetKeys = Nothing}
+    shortLink' <- setConnShortLink alice addrConnId SCMContact (UserContactLinkData updatedCtData) Nothing
+    liftIO $ shortLink' `shouldBe` shortLink
+    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ updated) <- getConnShortLink bob 1 shortLink
+    liftIO $ ratchetKeys updated `shouldBe` ratchetKeys published -- preserved exactly (same id and public params)
+    -- and the preserved keys still establish a DR connection end to end
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
+    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" (ratchetKeys updated) bPQ SMSubscribe
+    liftIO $ sqSecuredJoin `shouldBe` False
+    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
+    _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, A.INFO (CR.connPQEncryption addrIK) "bob's connInfo")
+    get alice ##> ("", bobId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.CON pqEnc)
+    exchangeGreetings_ pqEnc alice bobId bob aliceId
+
+-- Resume-safety regression: if the sync accept of a DR request fails at the network step after the send queue
+-- and ratchet were already committed (SndConnection), retrying the accept must reuse them (startAcceptContactDR
+-- is resume-safe, mirroring joinConnSrv) and complete, not fail with SEBadConnType.
+testAcceptContactDRResumeAfterOffline :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  linkEntId <- atomically $ C.randomBytes 32 g
+  let addrIK = IKPQOn
+      userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "u", ratchetKeys = Nothing}
+      connIK = IKLinkPQ (CR.connPQEncryption addrIK)
+      pqEnc = PQEncryption $ pqConnectionMode addrIK PQSupportOn
+  -- set up the DR address, bob joins, alice receives REQ and pre-creates the accept connection (server up)
+  (bobId, invId, aliceId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
+    _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) connIK (Just addrIK) SMSubscribe
+    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    aId <- A.prepareConnectionToJoin bob 1 True connReq' PQSupportOn
+    _ <- A.joinConnection bob NRMInteractive 1 aId True connReq' "bob's connInfo" (ratchetKeys userCtData') PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
+    pure (bId, invId, aId)
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob
+  -- server is down: the accept commits the send queue + ratchet (DB-local) then fails at the network step
+  Left (BROKER _ (NETWORK _)) <- runExceptT $ acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+  -- server is back: retrying the same accept must reuse the committed state and complete the handshake
+  withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+    ("", "", UP _ _) <- nGet alice
+    ("", "", UP _ _) <- nGet bob
+    liftIO $ threadDelay 250000
+    _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
+    allowConnection bob aliceId confId "bob's connInfo"
+    get alice ##> ("", bobId, A.INFO (CR.connPQEncryption addrIK) "bob's connInfo")
+    get alice ##> ("", bobId, A.CON pqEnc)
+    get bob ##> ("", aliceId, A.CON pqEnc)
+    exchangeGreetings_ pqEnc alice bobId bob aliceId
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do

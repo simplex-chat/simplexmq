@@ -58,6 +58,7 @@ module Simplex.Messaging.Agent.Protocol
     SndQueueSecured,
     AEntityId,
     ACommand (..),
+    JoinRequest (..),
     AEvent (..),
     AEvt (..),
     ACommandTag (..),
@@ -121,6 +122,7 @@ module Simplex.Messaging.Agent.Protocol
     UserContactData (..),
     UserLinkData (..),
     AddressRatchetKeys (..),
+    DRRequest (..),
     RatchetKeyId (..),
     OwnerAuth (..),
     OwnerId,
@@ -204,6 +206,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Char (toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
@@ -234,6 +237,7 @@ import Simplex.Messaging.Crypto.Ratchet
   ( InitialKeys (..),
     PQEncryption (..),
     PQSupport,
+    RatchetX448,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
     SndE2ERatchetParams,
@@ -466,12 +470,13 @@ data ACommand
   = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
   | LSET (UserConnLinkData 'CMContact) (Maybe CRClientData) -- response LINK
   | LGET (ConnShortLink 'CMContact) -- response LDATA
-  | JOIN Bool AConnectionRequestUri PQSupport SubscriptionMode ConnInfo
+  | JOIN JoinRequest SubscriptionMode ConnInfo
   | LET ConfirmationId ConnInfo -- ConnInfo is from client
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
   | SWCH
   | DEL
-  deriving (Eq, Show)
+  -- no Eq: JOIN's JRAddressDR carries a DRRequest with a RatchetX448, which has no Eq
+  deriving (Show)
 
 data ACommandTag
   = NEW_
@@ -1832,6 +1837,25 @@ instance Encoding AddressRatchetKeys where
     (ratchetKeyId, e2eParams) <- smpP
     pure AddressRatchetKeys {ratchetKeyId, e2eParams}
 
+-- | The double-ratchet request an address owner receives in message 1 and later accepts: the ratchet the
+-- owner established from that message, the requester's reply queue, and the negotiated version and PQ support.
+-- Kept here (not in Agent.Store) so JOIN commands can carry it; Agent.Store re-exports it.
+data DRRequest = DRRequest
+  { ratchetState :: RatchetX448,
+    replyQueue :: SMPQueueInfo,
+    agentVersion :: VersionSMPA,
+    pqSupport :: PQSupport
+  }
+  deriving (Show)
+
+-- | What a JOIN command joins or accepts. Each variant carries only its own parameters; SubscriptionMode and
+-- ConnInfo are needed by both and stay on JOIN itself. See JOIN's serialization for the backward-compatible
+-- encoding (a JRInvitation is byte-identical to the pre-DR JOIN).
+data JoinRequest
+  = JRInvitation {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
+  | JRAddressDR DRRequest -- accepting an address double-ratchet request (owner side)
+  deriving (Show)
+
 data UserContactData = UserContactData
   { -- direct connection via connReq in fixed data is allowed.
     direct :: Bool,
@@ -2165,6 +2189,22 @@ cryptoErrToSyncState = \case
   RATCHET_SKIPPED _ -> RSRequired
   RATCHET_SYNC -> RSRequired
 
+$(J.deriveJSON defaultJSON ''DRRequest)
+
+-- JoinRequest encodes itself, so JOIN's field order (see serializeCommand/commandP below) is fixed and never
+-- depends on the variant. Backward compatibility: the pre-DR JOIN serialized "ntfs cReq pqSup subMode
+-- <binary connInfo>", and a JRInvitation serializes to "ntfs cReq pqSup", so JOIN (JRInvitation ...) subMode
+-- connInfo is byte-for-byte the old JOIN - old and new clients read each other's classic JOINs. JRAddressDR is
+-- new, a length-prefixed JSON DRRequest; the parser tells them apart because a JRInvitation starts with the
+-- ntfs Bool (T/F) and a DR blob with its length digit.
+instance StrEncoding JoinRequest where
+  strEncode = \case
+    JRInvitation ntfs cReq pqSup -> B.unwords [strEncode ntfs, strEncode cReq, strEncode pqSup]
+    JRAddressDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
+  strP =
+    (JRInvitation <$> strP_ <*> strP_ <*> strP)
+      <|> (JRAddressDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict'))
+
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACommand
 dbCommandP = commandP $ A.take =<< (A.decimal <* "\n")
@@ -2198,7 +2238,7 @@ commandP binaryP =
       NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
       LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
       LGET_ -> s (LGET <$> strP)
-      JOIN_ -> s (JOIN <$> strP_ <*> strP_ <*> pqSupP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
+      JOIN_ -> s (JOIN <$> strP_ <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
       SWCH_ -> pure SWCH
@@ -2208,8 +2248,6 @@ commandP binaryP =
     s p = A.space *> p
     pqIKP :: Parser InitialKeys
     pqIKP = strP_ <|> pure (IKLinkPQ PQSupportOff)
-    pqSupP :: Parser PQSupport
-    pqSupP = strP_ <|> pure PQSupportOff
 
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand -> ByteString
@@ -2217,7 +2255,7 @@ serializeCommand = \case
   NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
   LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
   LGET sl -> s (LGET_, sl)
-  JOIN ntfs cReq pqSup subMode cInfo -> s (JOIN_, ntfs, cReq, pqSup, subMode, Str $ serializeBinary cInfo)
+  JOIN joinReq subMode cInfo -> s (JOIN_, joinReq, subMode, Str $ serializeBinary cInfo)
   LET confId cInfo -> B.unwords [s LET_, confId, serializeBinary cInfo]
   ACK mId rcptInfo_ -> s (ACK_, mId) <> maybe "" (B.cons ' ' . serializeBinary) rcptInfo_
   SWCH -> s SWCH_

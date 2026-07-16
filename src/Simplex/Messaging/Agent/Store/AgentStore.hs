@@ -154,6 +154,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setRatchetX3dhKeys,
     createAddressRatchetKeys,
     getAddressRatchetKeys,
+    getAddressRatchetKeysByConnId,
     createSndRatchet,
     getSndRatchet,
     createRatchet,
@@ -1401,7 +1402,7 @@ createAddressRatchetKeys db connId ratchetKeyId x3dhPrivKey1 x3dhPrivKey2 pqPriv
 
 getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
 getAddressRatchetKeys db connId ratchetKeyId =
-  firstRow' keys SEX3dhKeysNotFound $
+  firstRow id SEX3dhKeysNotFound $
     DB.query
       db
       [sql|
@@ -1410,8 +1411,19 @@ getAddressRatchetKeys db connId ratchetKeyId =
         WHERE conn_id = ? AND ratchet_key_id = ?
       |]
       (connId, ratchetKeyId)
-  where
-    keys (k1, k2, pKem) = Right (k1, k2, pKem)
+
+-- the address's current advertised key set, read by conn only, to preserve it across short-link data updates
+getAddressRatchetKeysByConnId :: DB.Connection -> ConnId -> IO (Either StoreError (RatchetKeyId, C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
+getAddressRatchetKeysByConnId db connId =
+  firstRow id SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ?
+      |]
+      (Only connId)
 
 createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
 createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =
