@@ -474,7 +474,6 @@ data ACommand
   | ACK AgentMsgId (Maybe MsgReceiptInfo)
   | SWCH
   | DEL
-  -- no Eq: JOIN's JRAddressDR carries a DRRequest with a RatchetX448, which has no Eq
   deriving (Show)
 
 data ACommandTag
@@ -867,7 +866,7 @@ data AgentMsgEnvelope
 -- what a requester sends: a classic invitation, or an address-DR confirmation (message 1)
 data SndInvOrConf
   = SndInvitation (ConnectionRequestUri 'CMInvitation) ConnInfo
-  | SndConfirmation (SndE2ERatchetParams 'C.X448) RatchetKeyId ByteString
+  | SndConfirmation (SndE2ERatchetParams 'C.X448) RatchetKeyId ConnInfo
 
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
