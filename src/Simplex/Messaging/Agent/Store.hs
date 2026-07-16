@@ -46,7 +46,7 @@ module Simplex.Messaging.Agent.Store
     NewInvitation (..),
     Invitation (..),
     ContactRequest (..),
-    DRRequest (..),
+    DRInvitation (..),
     PrevExternalSndId,
     PrevRcvMsgHash,
     PrevSndMsgHash,
@@ -641,10 +641,10 @@ data Invitation = Invitation
     accepted :: Bool
   }
 
--- | A classic connection request URI, or a double-ratchet confirmation received at a DR address.
+-- | A classic connection request URI, or a double-ratchet invitation received at a DR address.
 data ContactRequest
   = CRInvitation (ConnectionRequestUri 'CMInvitation)
-  | CRConfirmation DRRequest
+  | CRInvitationDR DRInvitation
 
 -- * Message integrity validation types
 

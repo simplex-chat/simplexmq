@@ -47,7 +47,6 @@ module Simplex.Messaging.Agent.Protocol
     pqdrSMPAgentVersion,
     sndAuthKeySMPAgentVersion,
     ratchetOnConfSMPAgentVersion,
-    addressDRSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -82,7 +81,6 @@ module Simplex.Messaging.Agent.Protocol
     RatchetSyncState (..),
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
-    SndInvOrConf (..),
     AgentMessage (..),
     AgentMessageType (..),
     APrivHeader (..),
@@ -123,7 +121,7 @@ module Simplex.Messaging.Agent.Protocol
     UserContactData (..),
     UserLinkData (..),
     AddressRatchetKeys (..),
-    DRRequest (..),
+    DRInvitation (..),
     RatchetKeyId (..),
     OwnerAuth (..),
     OwnerId,
@@ -327,9 +325,6 @@ sndAuthKeySMPAgentVersion = VersionSMPA 6
 
 ratchetOnConfSMPAgentVersion :: VersionSMPA
 ratchetOnConfSMPAgentVersion = VersionSMPA 7
-
-addressDRSMPAgentVersion :: VersionSMPA
-addressDRSMPAgentVersion = VersionSMPA 8
 
 minSupportedSMPAgentVersion :: VersionSMPA
 minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
@@ -844,7 +839,6 @@ data AgentMsgEnvelope
   = AgentConfirmation
       { agentVersion :: VersionSMPA,
         e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
-        ratchetKeyId :: Maybe RatchetKeyId,
         encConnInfo :: ByteString
       }
   | AgentMsgEnvelope
@@ -856,6 +850,14 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
+  | -- a requester's first message to a contact address that establishes the double ratchet from the address keys;
+    -- ratchetKeyId selects the owner's advertised key, encConnInfo is a ratchet-encrypted AgentConnInfoReply
+    AgentInvitationDR
+      { agentVersion :: VersionSMPA,
+        e2eEncryption_ :: Maybe (SndE2ERatchetParams 'C.X448),
+        ratchetKeyId :: RatchetKeyId,
+        encConnInfo :: ByteString
+      }
   | AgentRatchetKey
       { agentVersion :: VersionSMPA,
         e2eEncryption :: RcvE2ERatchetParams 'C.X448,
@@ -863,22 +865,16 @@ data AgentMsgEnvelope
       }
   deriving (Show)
 
--- what a requester sends: a classic invitation, or an address-DR confirmation (message 1)
-data SndInvOrConf
-  = SndInvitation (ConnectionRequestUri 'CMInvitation) ConnInfo
-  | SndConfirmation (SndE2ERatchetParams 'C.X448) RatchetKeyId ByteString
-
 instance Encoding AgentMsgEnvelope where
   smpEncode = \case
-    AgentConfirmation {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo}
-      | agentVersion >= addressDRSMPAgentVersion ->
-          smpEncode (agentVersion, 'C', e2eEncryption_, ratchetKeyId, Tail encConnInfo)
-      | otherwise ->
-          smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
+    AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo} ->
+      smpEncode (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
     AgentMsgEnvelope {agentVersion, encAgentMessage} ->
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
+    AgentInvitationDR {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo} ->
+      smpEncode (agentVersion, 'J', e2eEncryption_, ratchetKeyId, Tail encConnInfo)
     AgentRatchetKey {agentVersion, e2eEncryption, info} ->
       smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
@@ -886,9 +882,8 @@ instance Encoding AgentMsgEnvelope where
     smpP >>= \case
       'C' -> do
         e2eEncryption_ <- smpP
-        ratchetKeyId <- if agentVersion >= addressDRSMPAgentVersion then smpP else pure Nothing
         Tail encConnInfo <- smpP
-        pure AgentConfirmation {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo}
+        pure AgentConfirmation {agentVersion, e2eEncryption_, encConnInfo}
       'M' -> do
         Tail encAgentMessage <- smpP
         pure AgentMsgEnvelope {agentVersion, encAgentMessage}
@@ -896,6 +891,11 @@ instance Encoding AgentMsgEnvelope where
         connReq <- strDecode . unLarge <$?> smpP
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
+      'J' -> do
+        e2eEncryption_ <- smpP
+        ratchetKeyId <- smpP
+        Tail encConnInfo <- smpP
+        pure AgentInvitationDR {agentVersion, e2eEncryption_, ratchetKeyId, encConnInfo}
       'R' -> do
         e2eEncryption <- smpP
         Tail info <- smpP
@@ -1827,9 +1827,9 @@ instance Encoding AddressRatchetKeys where
   smpEncode AddressRatchetKeys {ratchetKeyId, e2eParams} = smpEncode (ratchetKeyId, e2eParams)
   smpP = uncurry AddressRatchetKeys <$> smpP
 
--- | The double-ratchet request an address owner receives in message 1 and later accepts: the ratchet the
+-- | The double-ratchet invitation an address owner receives in message 1 and later accepts: the ratchet the
 -- owner established from that message, the requester's reply queue, and the negotiated version and PQ support.
-data DRRequest = DRRequest
+data DRInvitation = DRInvitation
   { ratchetState :: RatchetX448,
     replyQueue :: SMPQueueInfo,
     agentVersion :: VersionSMPA,
@@ -1839,7 +1839,7 @@ data DRRequest = DRRequest
 
 data JoinRequest
   = JRInvitation Bool AConnectionRequestUri PQSupport
-  | JRAddressDR DRRequest
+  | JRInvitationDR DRInvitation
   deriving (Show)
 
 data UserContactData = UserContactData
@@ -2175,17 +2175,17 @@ cryptoErrToSyncState = \case
   RATCHET_SKIPPED _ -> RSRequired
   RATCHET_SYNC -> RSRequired
 
-$(J.deriveJSON defaultJSON ''DRRequest)
+$(J.deriveJSON defaultJSON ''DRInvitation)
 
 -- JRInvitation must stay byte-identical to the pre-DR JOIN "ntfs cReq pqSup" for old/new client interop; pqSup
 -- and subMode still default when a legacy command omits them.
 instance StrEncoding JoinRequest where
   strEncode = \case
     JRInvitation ntfs cReq pqSup -> B.unwords [strEncode ntfs, strEncode cReq, strEncode pqSup]
-    JRAddressDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
+    JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
     (JRInvitation <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
-      <|> (JRAddressDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict') <* A.space)
+      <|> (JRInvitationDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict') <* A.space)
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACommand

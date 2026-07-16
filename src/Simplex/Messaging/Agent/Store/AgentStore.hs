@@ -2106,16 +2106,16 @@ instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary 
 
 instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
 
--- CRInvitation keeps the legacy URI (downgrade-safe); CRConfirmation is JSON, told apart by leading '{'
+-- CRInvitation keeps the legacy URI (downgrade-safe); CRInvitationDR is JSON, told apart by leading '{'
 instance ToField ContactRequest where
   toField = toField . Binary . \case
     CRInvitation cr -> strEncode cr
-    CRConfirmation dr -> LB.toStrict $ J.encode dr
+    CRInvitationDR dr -> LB.toStrict $ J.encode dr
 
 instance FromField ContactRequest where
   fromField = blobFieldDecoder $ \bs ->
     if "{" `B.isPrefixOf` bs
-      then CRConfirmation <$> J.eitherDecodeStrict' bs
+      then CRInvitationDR <$> J.eitherDecodeStrict' bs
       else CRInvitation <$> strDecode bs
 
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
