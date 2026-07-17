@@ -3518,16 +3518,15 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   case e2eEncryption of
                     Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
-                      (agentMsgBody_, ratchetState, connPQSupport) <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
-                      processDecrypted agentMsgBody_ ratchetState connPQSupport
+                      processDecrypted =<< initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> prohibited "conf: incorrect state"
                       Right rc -> do
                         g <- asks random
                         (agentMsgBody_, rc', _) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
-                        processDecrypted agentMsgBody_ rc' pqSupport
+                        processDecrypted (agentMsgBody_, rc', pqSupport)
                   where
-                    processDecrypted agentMsgBody_ rc' pqSupport' = case agentMsgBody_ of
+                    processDecrypted (agentMsgBody_, rc', pqSupport') = case agentMsgBody_ of
                       Right agentMsgBody -> parseMessage agentMsgBody >>= \case
                         AgentConnInfoReply smpQueues connInfo -> do
                           processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
