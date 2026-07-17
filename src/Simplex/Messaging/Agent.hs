@@ -1374,12 +1374,7 @@ startJoinInvitation c userId connId sq_ = \case
             invLink_ <- withStore' c $ \db -> getInvShortLinkKeys db smpServer senderId
             let lnkId_ = fst <$> invLink_
                 sndKey_ = snd <$> invLink_
-            (q, _) <- lift $ newSndQueue userId "" qInfo sndKey_
-            (sq', e2eSndParams) <- withStore c $ \db -> runExceptT $ do
-              liftIO $ lockConnForUpdate db connId
-              e2eSndParams <- createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
-              sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-              pure (sq', e2eSndParams)
+            (sq', e2eSndParams) <- createSndQueue "" qInfo sndKey_ $ \db -> createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
             pure (cData, sq', Just e2eSndParams, lnkId_)
       Nothing -> throwE $ AGENT A_VERSION
   -- DR accept: the ratchet is already established (in the received invitation), so just persist it and send Q_B
@@ -1389,13 +1384,19 @@ startJoinInvitation c userId connId sq_ = \case
       Nothing -> do
         clientVRange <- asks $ smpClientVRange . config
         qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
-        (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
-        withStore c $ \db -> runExceptT $ do
-          liftIO $ lockConnForUpdate db connId
-          liftIO $ createRatchet db connId ratchetState
-          ExceptT $ updateNewConnSnd db connId q
+        fst <$> createSndQueue connId qInfo Nothing (\db -> liftIO $ createRatchet db connId ratchetState)
     SomeConn _ conn <- withStore c (`getConn` connId)
     pure (toConnData conn, sq, Nothing, Nothing)
+  where
+    -- create the send queue and establish the send ratchet in one locked transaction (reusing sq_ on retry)
+    createSndQueue :: ConnId -> Compatible SMPQueueInfo -> Maybe C.APrivateAuthKey -> (DB.Connection -> ExceptT StoreError IO r) -> AM (SndQueue, r)
+    createSndQueue qCid qInfo sndKey_ establishRatchet = do
+      (q, _) <- lift $ newSndQueue userId qCid qInfo sndKey_
+      withStore c $ \db -> runExceptT $ do
+        liftIO $ lockConnForUpdate db connId
+        r <- establishRatchet db
+        sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
+        pure (sq', r)
 
 createRatchet_ :: DB.Connection -> TVar ChaChaDRG -> ConnId -> CR.VersionE2E -> PQSupport -> CR.RcvE2ERatchetParams 'C.X448 -> ExceptT StoreError IO (CR.SndE2ERatchetParams 'C.X448)
 createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
