@@ -3312,13 +3312,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     decryptClientMessage e2eDh clientMsg >>= \case
                       (SMP.PHConfirmation senderKey, AgentConfirmation {e2eEncryption_, encConnInfo, agentVersion}) ->
                         smpConfirmation srvMsgId conn (Just senderKey) e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
-                      (SMP.PHEmpty, e@AgentInvitationDR {}) ->
-                        smpInvitation srvMsgId conn e phVer >> ack
                       (SMP.PHEmpty, AgentConfirmation {e2eEncryption_, encConnInfo, agentVersion})
                         | senderCanSecure queueMode -> smpConfirmation srvMsgId conn Nothing e2ePubKey e2eEncryption_ encConnInfo phVer agentVersion >> ack
                         | otherwise -> prohibited "handshake: missing sender key" >> ack
-                      (SMP.PHEmpty, e@AgentInvitation {}) ->
-                        smpInvitation srvMsgId conn e phVer >> ack
+                      (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
+                        smpInvitation srvMsgId conn connReq connInfo >> ack
+                      (SMP.PHEmpty, AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}) ->
+                        smpInvitationDR srvMsgId conn agentVersion e2eSndParams ratchetKeyId encConnInfo phVer >> ack
                       _ -> prohibited "handshake: incorrect state" >> ack
                   (Just e2eDh, Nothing) -> do
                     decryptClientMessage e2eDh clientMsg >>= \case
@@ -3751,42 +3751,47 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
 
           -- owner receiving a contact request: a classic AgentInvitation, or an address-DR AgentInvitationDR
           -- (message 1) that establishes the ratchet now
-          smpInvitation :: SMP.MsgId -> Connection c -> AgentMsgEnvelope -> VersionSMPC -> AM ()
-          smpInvitation srvMsgId conn' envelope phVer = do
+          smpInvitation :: SMP.MsgId -> Connection c -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM ()
+          smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData _) cInfo = do
             logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret' srvMsgId
             case conn' of
               ContactConnection {} -> do
-                req_ <- case envelope of
-                  AgentInvitation {connReq = connReq@(CRInvitationUri crData _), connInfo} -> do
-                    -- show connection request even if invitation via contact address is not compatible.
-                    -- in case invitation not compatible, assume there is no PQ encryption support.
-                    pqSupport <- lift $ maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq
-                    pure $ Just (CRInvitation connReq, pqSupport, L.map qServer $ crSmpQueues crData, connInfo)
-                  AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo} -> do
-                    checkConfVersions agentVersion phVer
-                    let ConnData {pqSupport} = toConnData conn'
-                    withStore' c (`getAddressRatchetKeysByConnId` connId) >>= \case
-                      Right (rkId', pk1, pk2, pKem) | rkId' == ratchetKeyId -> do
-                        RcvRatchetInit {decrypted = agentMsgBody_, ratchet = rc', connPQSupport = pqSupport', pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
-                        case agentMsgBody_ of
-                          Right agentMsgBody ->
-                            parseMessage agentMsgBody >>= \case
-                              AgentConnInfoReply (replyQInfo :| _) reqConnInfo ->
-                                let dr = DRInvitation {ratchetState = rc', replyQueue = replyQInfo, agentVersion, pqSupport = pqSupport'}
-                                 in pure $ Just (CRInvitationDR dr, pqCapability, qServer replyQInfo :| [], reqConnInfo)
-                              _ -> Nothing <$ prohibited "addr inv: not AgentConnInfoReply"
-                          _ -> Nothing <$ prohibited "addr inv: decrypt error"
-                      _ -> Nothing <$ prohibited "addr inv: unknown ratchetKeyId"
-                  _ -> Nothing <$ prohibited "conf: incorrect state"
-                forM_ req_ $ \(connReq, pqSupport, srvs, cInfo) -> do
-                  g <- asks random
-                  let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
-                  invId <- withStore c $ \db -> createInvitation db g newInv
-                  notify $ REQ invId pqSupport srvs cInfo
+                -- show connection request even if invitaion via contact address is not compatible.
+                -- in case invitation not compatible, assume there is no PQ encryption support.
+                pqSupport <- lift $ maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq
+                storeInvitation (CRInvitation connReq) pqSupport (L.map qServer $ crSmpQueues crData) cInfo
               _ -> prohibited "inv: sent to message conn"
             where
               pqSupported (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible agentVersion) =
                 PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just v)
+
+          storeInvitation :: ContactRequest -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AM ()
+          storeInvitation connReq pqSupport srvs cInfo = do
+            g <- asks random
+            let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo = cInfo}
+            invId <- withStore c $ \db -> createInvitation db g newInv
+            notify $ REQ invId pqSupport srvs cInfo
+
+          smpInvitationDR :: SMP.MsgId -> Connection c -> VersionSMPA -> CR.SndE2ERatchetParams 'C.X448 -> RatchetKeyId -> ByteString -> VersionSMPC -> AM ()
+          smpInvitationDR srvMsgId conn' agentVersion e2eSndParams ratchetKeyId encConnInfo phVer = do
+            logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret' srvMsgId
+            case conn' of
+              ContactConnection {} -> do
+                checkConfVersions agentVersion phVer
+                let ConnData {pqSupport} = toConnData conn'
+                withStore' c (`getAddressRatchetKeysByConnId` connId) >>= \case
+                  Right (rkId', pk1, pk2, pKem) | rkId' == ratchetKeyId -> do
+                    RcvRatchetInit {decrypted = agentMsgBody_, ratchet = rc', connPQSupport = pqSupport', pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
+                    case agentMsgBody_ of
+                      Right agentMsgBody ->
+                        parseMessage agentMsgBody >>= \case
+                          AgentConnInfoReply (replyQInfo :| _) reqConnInfo ->
+                            let dr = DRInvitation {ratchetState = rc', replyQueue = replyQInfo, agentVersion, pqSupport = pqSupport'}
+                             in storeInvitation (CRInvitationDR dr) pqCapability (qServer replyQInfo :| []) reqConnInfo
+                          _ -> prohibited "addr inv: not AgentConnInfoReply"
+                      _ -> prohibited "addr inv: decrypt error"
+                  _ -> prohibited "addr inv: unknown ratchetKeyId"
+              _ -> prohibited "inv: sent to message conn"
 
           qDuplex :: Connection c -> String -> (Connection 'CDuplex -> AM a) -> AM a
           qDuplex conn' name action = case conn' of
