@@ -1346,8 +1346,6 @@ connReqQueue = \case
   CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
   CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
--- Resume-safe: reuses the send queue, ratchet, and (on a duplex retry) the reply queue from a previous attempt,
--- returning that reply queue so the caller does not open a duplicate.
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> JoinInvitationReq -> AM (ConnData, SndQueue, Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)
 startJoinInvitation c userId connId sq_ = \case
   JIRInvitation enableNtfs cReqUri pqSup ->
