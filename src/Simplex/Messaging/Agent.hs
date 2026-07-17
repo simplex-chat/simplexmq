@@ -1346,19 +1346,12 @@ connReqQueue = \case
   CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
   CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
-createSndQueue :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> ConnId -> Compatible SMPQueueInfo -> Maybe C.APrivateAuthKey -> (DB.Connection -> ExceptT StoreError IO r) -> AM (SndQueue, r)
-createSndQueue c userId connId sq_ qCid qInfo sndKey_ establishRatchet = do
-  (q, _) <- lift $ newSndQueue userId qCid qInfo sndKey_
-  withStore c $ \db -> runExceptT $ do
-    liftIO $ lockConnForUpdate db connId
-    r <- establishRatchet db
-    sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-    pure (sq', r)
-
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448, Maybe SMP.LinkId)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
+      -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
+      -- e2ePubKey is always present, it's Maybe historically
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
       g <- asks random
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
@@ -1384,16 +1377,14 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
           pure (cData, sq', e2eSndParams, lnkId_)
     Nothing -> throwE $ AGENT A_VERSION
 
-startJoinInvitationDR :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> DRInvitation -> AM (ConnData, SndQueue)
-startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue} = do
-  sq <- case sq_ of
-    Just sq -> pure sq
-    Nothing -> do
-      clientVRange <- asks $ smpClientVRange . config
-      qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
-      fst <$> createSndQueue c userId connId sq_ connId qInfo Nothing (\db -> liftIO $ createRatchet db connId ratchetState)
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  pure (toConnData conn, sq)
+createSndQueue :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> ConnId -> Compatible SMPQueueInfo -> Maybe C.APrivateAuthKey -> (DB.Connection -> ExceptT StoreError IO r) -> AM (SndQueue, r)
+createSndQueue c userId connId sq_ qCid qInfo sndKey_ establishRatchet = do
+  (q, _) <- lift $ newSndQueue userId qCid qInfo sndKey_
+  withStore c $ \db -> runExceptT $ do
+    liftIO $ lockConnForUpdate db connId
+    r <- establishRatchet db
+    sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
+    pure (sq', r)
 
 createRatchet_ :: DB.Connection -> TVar ChaChaDRG -> ConnId -> CR.VersionE2E -> PQSupport -> CR.RcvE2ERatchetParams 'C.X448 -> ExceptT StoreError IO (CR.SndE2ERatchetParams 'C.X448)
 createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
@@ -1404,6 +1395,17 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
       rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
   liftIO $ createSndRatchet db connId rc e2eSndParams
   pure e2eSndParams
+
+startJoinInvitationDR :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> DRInvitation -> AM (ConnData, SndQueue)
+startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue} = do
+  sq <- case sq_ of
+    Just sq -> pure sq
+    Nothing -> do
+      clientVRange <- asks $ smpClientVRange . config
+      qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
+      fst <$> createSndQueue c userId connId sq_ connId qInfo Nothing (\db -> liftIO $ createRatchet db connId ratchetState)
+  SomeConn _ conn <- withStore c (`getConn` connId)
+  pure (toConnData conn, sq)
 
 data JoinInvitationReq
   = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
