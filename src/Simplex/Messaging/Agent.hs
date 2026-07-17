@@ -1407,7 +1407,7 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   pure e2eSndParams
 
 data RcvRatchetInit = RcvRatchetInit
-  { decrypted :: Either C.CryptoError ByteString,
+  { agentMsgBody_ :: Either C.CryptoError ByteString,
     ratchetState :: CR.RatchetX448,
     connPQSupport :: PQSupport,
     pqCapability :: PQSupport
@@ -3525,8 +3525,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   case e2eEncryption of
                     Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
-                      RcvRatchetInit {decrypted, ratchetState, connPQSupport} <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
-                      processDecrypted decrypted ratchetState connPQSupport
+                      RcvRatchetInit {agentMsgBody_, ratchetState, connPQSupport} <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
+                      processDecrypted agentMsgBody_ ratchetState connPQSupport
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> prohibited "conf: incorrect state"
                       Right rc -> do
@@ -3597,7 +3597,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             case skipped of
               CR.SMDNoChange -> pure ()
               _ -> logWarn "conf: skipped confirmations"
-            pure RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability}
+            pure RcvRatchetInit {agentMsgBody_, ratchetState, connPQSupport, pqCapability}
 
           helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> AM ()
           helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
@@ -3773,7 +3773,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 let ConnData {pqSupport} = toConnData conn'
                 withStore' c (\db -> getAddressRatchetKeys db connId ratchetKeyId) >>= \case
                   Right (pk1, pk2, pKem) -> do
-                    RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
+                    RcvRatchetInit {agentMsgBody_, ratchetState, connPQSupport, pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
                     case agentMsgBody_ of
                       Right agentMsgBody ->
                         parseMessage agentMsgBody >>= \case
