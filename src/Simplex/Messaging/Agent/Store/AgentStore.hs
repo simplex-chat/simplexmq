@@ -154,6 +154,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setRatchetX3dhKeys,
     createAddressRatchetKeys,
     getAddressRatchetKeysByConnId,
+    getAddressRatchetKeys,
     createSndRatchet,
     getSndRatchet,
     createRatchet,
@@ -1410,6 +1411,18 @@ getAddressRatchetKeysByConnId db connId =
         WHERE conn_id = ?
       |]
       (Only connId)
+
+getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
+getAddressRatchetKeys db connId ratchetKeyId =
+  firstRow id SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ? AND ratchet_key_id = ?
+      |]
+      (connId, ratchetKeyId)
 
 createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
 createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =

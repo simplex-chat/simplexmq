@@ -1406,9 +1406,6 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   liftIO $ createSndRatchet db connId rc e2eSndParams
   pure e2eSndParams
 
--- the result of initRcvRatchetDecrypt. connPQSupport is the enable choice clamped to the negotiated versions
--- (it seeds the ratchet); pqCapability is whether the versions support PQ at all (the value smpInvitation
--- reports in REQ - independent of the enable choice). The ratchet is not yet persisted - the caller stores it.
 data RcvRatchetInit = RcvRatchetInit
   { decrypted :: Either C.CryptoError ByteString,
     ratchetState :: CR.RatchetX448,
@@ -1420,8 +1417,6 @@ data JoinInvitationReq
   = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
   | JIRInvitationDR DRInvitation  
 
--- completes the X3DH receive, initializes the receive ratchet, and decrypts the first inbound ratchet message
--- (the initiator's confirmation reply, or the DR owner's received invitation); the two differ only in the key source.
 initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> AM RcvRatchetInit
 initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _)) encConnInfo = do
   e2eEncryptVRange <- asks $ e2eEncryptVRange . config
@@ -3777,8 +3772,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               ContactConnection {} -> do
                 checkConfVersions agentVersion phVer
                 let ConnData {pqSupport} = toConnData conn'
-                withStore' c (`getAddressRatchetKeysByConnId` connId) >>= \case
-                  Right (rkId', pk1, pk2, pKem) | rkId' == ratchetKeyId -> do
+                withStore' c (\db -> getAddressRatchetKeys db connId ratchetKeyId) >>= \case
+                  Right (pk1, pk2, pKem) -> do
                     RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
                     case agentMsgBody_ of
                       Right agentMsgBody ->
@@ -3787,8 +3782,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                             let dr = DRInvitation {ratchetState, replyQueue, agentVersion, pqSupport = connPQSupport}
                              in storeInvitation (CRInvitationDR dr) pqCapability (qServer replyQueue :| []) reqConnInfo
                           _ -> prohibited "addr inv: not AgentConnInfoReply"
-                      _ -> prohibited "addr inv: decrypt error"
-                  _ -> prohibited "addr inv: unknown ratchetKeyId"
+                      Left _ -> prohibited "addr inv: decrypt error"
+                  Left _ -> prohibited "addr inv: unknown ratchetKeyId"
               _ -> prohibited "inv: sent to message conn"
 
           qDuplex :: Connection c -> String -> (Connection 'CDuplex -> AM a) -> AM a
