@@ -1409,6 +1409,8 @@ getCurrentAddressRatchetKeys db connId =
         SELECT ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
         FROM address_ratchet_keys
         WHERE conn_id = ?
+        ORDER BY address_ratchet_key_id DESC
+        LIMIT 1
       |]
       (Only connId)
 

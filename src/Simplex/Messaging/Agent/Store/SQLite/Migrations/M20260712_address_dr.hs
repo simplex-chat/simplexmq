@@ -9,7 +9,7 @@ m20260712_address_dr :: Query
 m20260712_address_dr =
   [sql|
 CREATE TABLE address_ratchet_keys(
-  address_ratchet_key_id INTEGER PRIMARY KEY,
+  address_ratchet_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   ratchet_key_id BLOB NOT NULL,
   x3dh_priv_key_1 BLOB NOT NULL,
