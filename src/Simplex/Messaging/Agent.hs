@@ -3518,24 +3518,22 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   case e2eEncryption of
                     Just e2eSndParams -> do -- create ratchet from sent invitation and received confirmation keys
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
-                      (rc, connPQSupport) <- initRcvRatchet_ agentVersion pqSupport keys e2eSndParams
-                      (agentMsgBody_, rc') <- decryptConnInfo rc encConnInfo
-                      processDecrypted (agentMsgBody_, rc', connPQSupport)
+                      processConnInfo =<< initRcvRatchet_ agentVersion pqSupport keys e2eSndParams
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case -- use ratchet initialized from published ratchet keys during invitation
                       Left _ -> prohibited "conf: incorrect state"
-                      Right rc -> do
-                        (agentMsgBody_, rc') <- decryptConnInfo rc encConnInfo
-                        processDecrypted (agentMsgBody_, rc', pqSupport)
+                      Right rc -> processConnInfo (rc, pqSupport)
                   where
-                    processDecrypted (agentMsgBody_, rc', pqSupport') = case agentMsgBody_ of
-                      Right agentMsgBody -> parseMessage agentMsgBody >>= \case
-                        AgentConnInfoReply smpQueues connInfo -> do
-                          processConf connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
-                          withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
-                        _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
-                      Left _ -> prohibited "conf: decrypt error"
+                    processConnInfo (rc, pqSupport') = do
+                      (agentMsgBody_, rc') <- decryptConnInfo rc encConnInfo
+                      case agentMsgBody_ of
+                        Right agentMsgBody -> parseMessage agentMsgBody >>= \case
+                          AgentConnInfoReply smpQueues connInfo -> do
+                            processConf rc' connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
+                            withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
+                          _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
+                        Left _ -> prohibited "conf: decrypt error"
                       where
-                        processConf connInfo senderConf = do
+                        processConf rc' connInfo senderConf = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
                           g <- asks random
                           confId <- withStore c $ \db -> do

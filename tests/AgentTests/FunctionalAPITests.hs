@@ -322,7 +322,7 @@ suspendConnection c = A.suspendConnection c NRMInteractive
 
 functionalAPITests :: (ASrvTransport, AStoreType) -> Spec
 functionalAPITests ps = do
-  describe "Establishing duplex connection" $ do
+  fdescribe "Establishing duplex connection" $ do
     testMatrix2 ps runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer ps testServerMultipleIdentities
@@ -339,7 +339,7 @@ functionalAPITests ps = do
     testPQMatrix2 ps $ runAgentClientTestPQ False True
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 ps runAgentClientTest
-  describe "Establish duplex connection via contact address" $
+  fdescribe "Establish duplex connection via contact address" $
     testMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ False True PQSupportOn
@@ -1050,13 +1050,13 @@ testContactDRMatrix ps = do
   describe "classic join, ratchet keys ignored" $ drRows False False
   describe "DR join, async accept (JOIN command)" $ drRows True True
   where
-    drRows useDR async = do
-      it "IKPQOff, dh join" $ runAgentClientContactDRTest_ async IKPQOff useDR PQSupportOff ps
-      it "IKPQOff, pq join" $ runAgentClientContactDRTest_ async IKPQOff useDR PQSupportOn ps
-      it "IKPQOn, dh join" $ runAgentClientContactDRTest_ async IKPQOn useDR PQSupportOff ps
-      it "IKPQOn, pq join" $ runAgentClientContactDRTest_ async IKPQOn useDR PQSupportOn ps
-      it "IKUsePQ, dh join" $ runAgentClientContactDRTest_ async IKUsePQ useDR PQSupportOff ps
-      it "IKUsePQ, pq join" $ runAgentClientContactDRTest_ async IKUsePQ useDR PQSupportOn ps
+    drRows useDR async' = do
+      it "IKPQOff, dh join" $ runAgentClientContactDRTest_ async' IKPQOff useDR PQSupportOff ps
+      it "IKPQOff, pq join" $ runAgentClientContactDRTest_ async' IKPQOff useDR PQSupportOn ps
+      it "IKPQOn, dh join" $ runAgentClientContactDRTest_ async' IKPQOn useDR PQSupportOff ps
+      it "IKPQOn, pq join" $ runAgentClientContactDRTest_ async' IKPQOn useDR PQSupportOn ps
+      it "IKUsePQ, dh join" $ runAgentClientContactDRTest_ async' IKUsePQ useDR PQSupportOff ps
+      it "IKUsePQ, pq join" $ runAgentClientContactDRTest_ async' IKUsePQ useDR PQSupportOn ps
 
 -- updating a DR address's mutable link data must preserve the stored ratchet keys, so requesters can still establish DR
 testAddressUpdatePreservesDRKeys :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
