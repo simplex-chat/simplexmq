@@ -1357,8 +1357,6 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       case sq_ of
-        -- this case avoids re-generating queue keys and subsequent failure of SKEY that timed out
-        -- e2ePubKey is always present, it's Maybe historically
         Just sq@SndQueue {e2ePubKey = Just _k} -> do
           e2eSndParams <- withStore c $ \db -> do
             lockConnForUpdate db connId
