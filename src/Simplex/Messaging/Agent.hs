@@ -1411,7 +1411,7 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
 -- reports in REQ - independent of the enable choice). The ratchet is not yet persisted - the caller stores it.
 data RcvRatchetInit = RcvRatchetInit
   { decrypted :: Either C.CryptoError ByteString,
-    ratchet :: CR.RatchetX448,
+    ratchetState :: CR.RatchetX448,
     connPQSupport :: PQSupport,
     pqCapability :: PQSupport
   }
@@ -1429,14 +1429,14 @@ initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) (CR.AE2ERatchetPar
   rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eSndParams
   let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
       pqCapability = PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
-      pqSupport' = pqSupport `CR.pqSupportAnd` pqCapability
-      rc = CR.initRcvRatchet rcVs pk2 rcParams pqSupport'
+      connPQSupport = pqSupport `CR.pqSupportAnd` pqCapability
+      rc = CR.initRcvRatchet rcVs pk2 rcParams connPQSupport
   g <- asks random
-  (agentMsgBody_, rc', skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
+  (agentMsgBody_, ratchetState, skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
   case skipped of
     CR.SMDNoChange -> pure ()
     _ -> logWarn "conf: skipped confirmations"
-  pure RcvRatchetInit {decrypted = agentMsgBody_, ratchet = rc', connPQSupport = pqSupport', pqCapability}
+  pure RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability}
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
@@ -3546,8 +3546,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   init_ <- case e2eEncryption of
                     Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
-                      RcvRatchetInit {decrypted, ratchet, connPQSupport} <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
-                      pure $ Just (decrypted, ratchet, connPQSupport)
+                      RcvRatchetInit {decrypted, ratchetState, connPQSupport} <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
+                      pure $ Just (decrypted, ratchetState, connPQSupport)
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> Nothing <$ prohibited "conf: incorrect state"
                       Right rc -> do
@@ -3779,13 +3779,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 let ConnData {pqSupport} = toConnData conn'
                 withStore' c (`getAddressRatchetKeysByConnId` connId) >>= \case
                   Right (rkId', pk1, pk2, pKem) | rkId' == ratchetKeyId -> do
-                    RcvRatchetInit {decrypted = agentMsgBody_, ratchet = rc', connPQSupport = pqSupport', pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
+                    RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
                     case agentMsgBody_ of
                       Right agentMsgBody ->
                         parseMessage agentMsgBody >>= \case
-                          AgentConnInfoReply (replyQInfo :| _) reqConnInfo ->
-                            let dr = DRInvitation {ratchetState = rc', replyQueue = replyQInfo, agentVersion, pqSupport = pqSupport'}
-                             in storeInvitation (CRInvitationDR dr) pqCapability (qServer replyQInfo :| []) reqConnInfo
+                          AgentConnInfoReply (replyQueue :| _) reqConnInfo ->
+                            let dr = DRInvitation {ratchetState, replyQueue, agentVersion, pqSupport = connPQSupport}
+                             in storeInvitation (CRInvitationDR dr) pqCapability (qServer replyQueue :| []) reqConnInfo
                           _ -> prohibited "addr inv: not AgentConnInfoReply"
                       _ -> prohibited "addr inv: decrypt error"
                   _ -> prohibited "addr inv: unknown ratchetKeyId"
