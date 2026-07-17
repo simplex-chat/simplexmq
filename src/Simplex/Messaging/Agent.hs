@@ -3749,8 +3749,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             when (isNothing rcSnd) . void $
               enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} (EREADY lastExternalSndId)
 
-          -- owner receiving a contact request: a classic AgentInvitation, or an address-DR AgentInvitationDR
-          -- (message 1) that establishes the ratchet now
           smpInvitation :: SMP.MsgId -> Connection c -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM ()
           smpInvitation srvMsgId conn' connReq@(CRInvitationUri crData _) cInfo = do
             logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret' srvMsgId
