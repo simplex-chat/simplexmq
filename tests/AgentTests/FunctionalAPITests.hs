@@ -322,7 +322,7 @@ suspendConnection c = A.suspendConnection c NRMInteractive
 
 functionalAPITests :: (ASrvTransport, AStoreType) -> Spec
 functionalAPITests ps = do
-  fdescribe "Establishing duplex connection" $ do
+  describe "Establishing duplex connection" $ do
     testMatrix2 ps runAgentClientTest
     it "should connect when server with multiple identities is stored" $
       withSmpServer ps testServerMultipleIdentities
@@ -339,7 +339,7 @@ functionalAPITests ps = do
     testPQMatrix2 ps $ runAgentClientTestPQ False True
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 ps runAgentClientTest
-  fdescribe "Establish duplex connection via contact address" $
+  describe "Establish duplex connection via contact address" $
     testMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ False True PQSupportOn

@@ -1835,7 +1835,7 @@ data DRInvitation = DRInvitation
   deriving (Show)
 
 data JoinRequest
-  = JRInvitation {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
+  = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
   | JRInvitationDR DRInvitation
   deriving (Show)
 
@@ -2174,14 +2174,14 @@ cryptoErrToSyncState = \case
 
 $(J.deriveJSON defaultJSON ''DRInvitation)
 
--- JRInvitation must stay byte-identical to the pre-DR JOIN "ntfs cReq pqSup" for old/new client interop; pqSup
+-- JRConnReq must stay byte-identical to the pre-DR JOIN "ntfs cReq pqSup" for old/new client interop; pqSup
 -- and subMode still default when a legacy command omits them.
 instance StrEncoding JoinRequest where
   strEncode = \case
-    JRInvitation ntfs cReq pqSup -> B.unwords [strEncode ntfs, strEncode cReq, strEncode pqSup]
+    JRConnReq ntfs cReq pqSup -> B.unwords [strEncode ntfs, strEncode cReq, strEncode pqSup]
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    (JRInvitation <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
+    (JRConnReq <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
       <|> (JRInvitationDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict') <* A.space)
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
