@@ -1406,13 +1406,6 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   liftIO $ createSndRatchet db connId rc e2eSndParams
   pure e2eSndParams
 
-data RcvRatchetInit = RcvRatchetInit
-  { agentMsgBody_ :: Either C.CryptoError ByteString,
-    ratchetState :: CR.RatchetX448,
-    connPQSupport :: PQSupport,
-    pqCapability :: PQSupport
-  }
-  
 data JoinInvitationReq
   = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
   | JIRInvitationDR DRInvitation  
@@ -3525,7 +3518,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   case e2eEncryption of
                     Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
-                      RcvRatchetInit {agentMsgBody_, ratchetState, connPQSupport} <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
+                      (agentMsgBody_, ratchetState, connPQSupport) <- initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
                       processDecrypted agentMsgBody_ ratchetState connPQSupport
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> prohibited "conf: incorrect state"
@@ -3583,21 +3576,20 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
 
-          initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> AM RcvRatchetInit
+          initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> AM (Either C.CryptoError ByteString, CR.RatchetX448, PQSupport)
           initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _)) encConnInfo = do
             e2eEncryptVRange <- asks $ e2eEncryptVRange . config
             unless (e2eVersion `isCompatible` e2eEncryptVRange) $ throwE $ AGENT A_VERSION
             rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eSndParams
             let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
-                pqCapability = PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
-                connPQSupport = pqSupport `CR.pqSupportAnd` pqCapability
+                connPQSupport = pqSupport `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
                 rc = CR.initRcvRatchet rcVs pk2 rcParams connPQSupport
             g <- asks random
             (agentMsgBody_, ratchetState, skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
             case skipped of
               CR.SMDNoChange -> pure ()
               _ -> logWarn "conf: skipped confirmations"
-            pure RcvRatchetInit {agentMsgBody_, ratchetState, connPQSupport, pqCapability}
+            pure (agentMsgBody_, ratchetState, connPQSupport)
 
           helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> AM ()
           helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
@@ -3773,18 +3765,22 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 let ConnData {pqSupport} = toConnData conn'
                 withStore' c (\db -> getAddressRatchetKeys db connId ratchetKeyId) >>= \case
                   Right (pk1, pk2, pKem) -> do
-                    RcvRatchetInit {agentMsgBody_, ratchetState, connPQSupport, pqCapability} <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
+                    (agentMsgBody_, ratchetState, connPQSupport) <- initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams encConnInfo
                     case agentMsgBody_ of
                       Right agentMsgBody ->
                         parseMessage agentMsgBody >>= \case
                           AgentConnInfoReply (replyQueue :| _) cInfo -> do
                             let dr = DRInvitation {ratchetState, replyQueue, agentVersion, pqSupport = connPQSupport}
                             invId <- storeInvitation (CRInvitationDR dr) cInfo
-                            notify $ REQ invId pqCapability (qServer replyQueue :| []) cInfo
+                            notify $ REQ invId pqSupported (qServer replyQueue :| []) cInfo
                           _ -> prohibited "addr inv: not AgentConnInfoReply"
                       Left _ -> prohibited "addr inv: decrypt error"
                   Left _ -> prohibited "addr inv: unknown ratchetKeyId"
               _ -> prohibited "inv: sent to message conn"
+            where
+              pqSupported = case e2eSndParams of
+                CR.AE2ERatchetParams _ (CR.E2ERatchetParams e2eVersion _ _ _) ->
+                  PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
 
           qDuplex :: Connection c -> String -> (Connection 'CDuplex -> AM a) -> AM a
           qDuplex conn' name action = case conn' of
