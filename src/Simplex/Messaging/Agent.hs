@@ -3513,13 +3513,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             let ConnData {pqSupport} = toConnData conn'
             case status of
               New -> case conn' of
-                -- initiating party (Just: seed the receive ratchet from X3DH), or DR requester (Nothing: reuse the ratchet built in join)
+                -- party initiating connection
                 RcvConnection {} -> do
                   case e2eEncryption of
-                    Just e2eSndParams -> do
+                    Just e2eSndParams -> do -- create ratchet from sent invitation and received confirmation keys
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
                       processDecrypted =<< initRcvRatchetDecrypt agentVersion pqSupport keys e2eSndParams encConnInfo
-                    Nothing -> withStore' c (`getRatchet` connId) >>= \case
+                    Nothing -> withStore' c (`getRatchet` connId) >>= \case -- use ratchet initialized from published ratchet keys during invitation
                       Left _ -> prohibited "conf: incorrect state"
                       Right rc -> do
                         g <- asks random
