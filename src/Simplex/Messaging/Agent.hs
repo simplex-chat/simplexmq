@@ -1417,22 +1417,6 @@ data JoinInvitationReq
   = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
   | JIRInvitationDR DRInvitation  
 
-initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> AM RcvRatchetInit
-initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _)) encConnInfo = do
-  e2eEncryptVRange <- asks $ e2eEncryptVRange . config
-  unless (e2eVersion `isCompatible` e2eEncryptVRange) $ throwE $ AGENT A_VERSION
-  rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eSndParams
-  let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
-      pqCapability = PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
-      connPQSupport = pqSupport `CR.pqSupportAnd` pqCapability
-      rc = CR.initRcvRatchet rcVs pk2 rcParams connPQSupport
-  g <- asks random
-  (agentMsgBody_, ratchetState, skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
-  case skipped of
-    CR.SMDNoChange -> pure ()
-    _ -> logWarn "conf: skipped confirmations"
-  pure RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability}
-
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
   CRInvitationUri {} -> invPQSupported <$$> compatibleInvitationUri cReq
@@ -3600,6 +3584,22 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               createConfirmation db g newConfirmation
             let srvs = map qServer $ smpReplyQueues senderConf
             notify $ CONF confId agreedPQSupport srvs connInfo
+
+          initRcvRatchetDecrypt :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.SndE2ERatchetParams 'C.X448 -> ByteString -> AM RcvRatchetInit
+          initRcvRatchetDecrypt agentVersion pqSupport (pk1, pk2, pKem) (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _)) encConnInfo = do
+            e2eEncryptVRange <- asks $ e2eEncryptVRange . config
+            unless (e2eVersion `isCompatible` e2eEncryptVRange) $ throwE $ AGENT A_VERSION
+            rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eSndParams
+            let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
+                pqCapability = PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
+                connPQSupport = pqSupport `CR.pqSupportAnd` pqCapability
+                rc = CR.initRcvRatchet rcVs pk2 rcParams connPQSupport
+            g <- asks random
+            (agentMsgBody_, ratchetState, skipped) <- liftError cryptoError $ CR.rcDecrypt g rc M.empty encConnInfo
+            case skipped of
+              CR.SMDNoChange -> pure ()
+              _ -> logWarn "conf: skipped confirmations"
+            pure RcvRatchetInit {decrypted = agentMsgBody_, ratchetState, connPQSupport, pqCapability}
 
           helloMsg :: SMP.MsgId -> MsgMeta -> Connection c -> AM ()
           helloMsg srvMsgId MsgMeta {pqEncryption} conn' = do
