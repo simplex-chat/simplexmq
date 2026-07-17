@@ -1144,7 +1144,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
       Nothing -> throwE $ CMD PROHIBITED "setConnShortLink: no ShortLinkCreds in invitation"
     preserveAddressRatchetKeys :: UserConnLinkData 'CMContact -> AM (UserConnLinkData 'CMContact)
     preserveAddressRatchetKeys ud@(UserContactLinkData ucd) =
-      withStore' c (`getAddressRatchetKeysByConnId` connId) >>= \case
+      withStore' c (`getCurrentAddressRatchetKeys` connId) >>= \case
         Left _ -> pure ud
         Right (ratchetKeyId, pk1, pk2, pKem) -> do
           e2eVR <- asks $ e2eEncryptVRange . config
