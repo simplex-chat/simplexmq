@@ -1346,7 +1346,7 @@ connReqQueue = \case
   CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
   CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
 
-startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, CR.SndE2ERatchetParams 'C.X448, Maybe SMP.LinkId)
+startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM (ConnData, SndQueue, Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
@@ -1365,7 +1365,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
               Left e -> do
                 nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
                 runExceptT $ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
-          pure (cData, sq, e2eSndParams, Nothing)
+          pure (cData, sq, Just e2eSndParams, Nothing)
         _ -> do
           let Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {smpServer, senderId}} = qInfo
           invLink_ <- withStore' c $ \db -> getInvShortLinkKeys db smpServer senderId
@@ -1376,7 +1376,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
             liftIO $ lockConnForUpdate db connId
             e2eSndParams <- createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-            pure (cData, sq', e2eSndParams, lnkId_)
+            pure (cData, sq', Just e2eSndParams, lnkId_)
     Nothing -> throwE $ AGENT A_VERSION
 
 createRatchet_ :: DB.Connection -> TVar ChaChaDRG -> ConnId -> CR.VersionE2E -> PQSupport -> CR.RcvE2ERatchetParams 'C.X448 -> ExceptT StoreError IO (CR.SndE2ERatchetParams 'C.X448)
@@ -1403,10 +1403,6 @@ startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue
         ExceptT $ updateNewConnSnd db connId q
   SomeConn _ conn <- withStore c (`getConn` connId)
   pure (toConnData conn, sq)
-
-data JoinInvitationReq
-  = JIRInvitation Bool (ConnectionRequestUri 'CMInvitation) PQSupport
-  | JIRInvitationDR DRInvitation  
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
@@ -1452,7 +1448,7 @@ joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo _addrKeys
     doJoin :: Maybe RcvQueue -> Maybe SndQueue -> AM SndQueueSecured
     doJoin rq_ sq_ = do
       (cData, sq, e2eSndParams, lnkId_) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
-      secureConfirmQueue c nm cData rq_ sq srv cInfo (Just e2eSndParams) subMode
+      secureConfirmQueue c nm cData rq_ sq srv cInfo e2eSndParams subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys_ pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
@@ -1519,8 +1515,8 @@ delInvSL c connId srv lnkId =
   withStore' c (\db -> deleteInvShortLink db (protoServer srv) lnkId) `catchE` \e ->
     liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "error deleting short link " <> show e))
 
-joinConnSrvAsync :: AgentClient -> UserId -> ConnId -> JoinInvitationReq -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrvAsync c userId connId joinReq cInfo subMode srv = do
+joinConnSrvAsync :: AgentClient -> ConnId -> (Maybe SndQueue -> AM (ConnData, SndQueue, Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)) -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
+joinConnSrvAsync c connId startJoin cInfo subMode srv = do
   SomeConn cType conn <- withStore c (`getConn` connId)
   case conn of
     NewConnection _ -> doJoin Nothing Nothing
@@ -1533,13 +1529,7 @@ joinConnSrvAsync c userId connId joinReq cInfo subMode srv = do
   where
     doJoin :: Maybe RcvQueue -> Maybe SndQueue -> AM SndQueueSecured
     doJoin rq_ sq_ = do
-      (cData, sq, params_, lnkId_) <- case joinReq of
-        JIRInvitation enableNtfs inv pqSup -> do
-          (cData, sq, e2eSndParams, lnkId_) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
-          pure (cData, sq, Just e2eSndParams, lnkId_)
-        JIRInvitationDR dr -> do
-          (cData, sq) <- startJoinInvitationDR c userId connId sq_ dr
-          pure (cData, sq, Nothing, Nothing)
+      (cData, sq, params_, lnkId_) <- startJoin sq_
       secureConfirmQueueAsync c cData rq_ sq srv cInfo params_ subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 
@@ -1996,7 +1986,8 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
-            sqSecured <- joinConnSrvAsync c userId connId (JIRInvitation enableNtfs cReq pqEnc) connInfo subMode srv
+            let startJoin sq_ = startJoinInvitation c userId connId sq_ enableNtfs cReq pqEnc
+            sqSecured <- joinConnSrvAsync c connId startJoin connInfo subMode srv
             notify $ JOINED sqSecured
         -- TODO TBC using joinConnSrvAsync for contact URIs, with receive queue created asynchronously.
         -- Currently joinConnSrv is used because even joinConnSrvAsync for invitation URIs creates receive queue synchronously.
@@ -2008,7 +1999,8 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRInvitationDR dr@DRInvitation {replyQueue}) subMode ownCInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer replyQueue] $ \srv -> do
-            sqSecured <- joinConnSrvAsync c userId connId (JIRInvitationDR dr) ownCInfo subMode srv
+            let startJoin sq_ = uncurry (,,Nothing,Nothing) <$> startJoinInvitationDR c userId connId sq_ dr
+            sqSecured <- joinConnSrvAsync c connId startJoin ownCInfo subMode srv
             notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
