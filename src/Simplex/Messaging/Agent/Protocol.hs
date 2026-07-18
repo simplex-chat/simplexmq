@@ -1928,10 +1928,11 @@ validateLinkOwners rootKey = go []
 
 instance ConnectionModeI c => Encoding (FixedLinkData c) where
   smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId} =
-    smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
+    smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId -- TODO replace with smpEncode (fromMaybe "" linkEntityId) - safe to do it in 2027
   smpP = do
     (agentVRange, rootKey, linkConnReq) <- smpP
-    linkEntityId <- optional smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    linkEntityId <- optional smpP -- TODO replace with (smpP <|> pure Nothing)
+    _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding (added in January 2026)
     pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
@@ -1979,13 +1980,11 @@ instance ConnectionModeI c => StrEncoding (UserConnLinkData c) where
 
 instance Encoding UserContactData where
   smpEncode UserContactData {direct, owners, relays, userData, ratchetKeys} =
-    B.concat [smpEncode direct, smpEncodeList owners, smpEncodeList relays, smpEncode userData, maybe "" smpEncode ratchetKeys]
+    smpEncode (direct, EncList owners, EncList relays, userData, ratchetKeys)
   smpP = do
-    direct <- smpP
-    owners <- smpListP
-    relays <- smpListP
-    userData <- smpP
-    ratchetKeys <- optional smpP <* A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    (direct, EncList owners, EncList relays, userData) <- smpP
+    ratchetKeys <- smpP <|> pure Nothing
+    _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
     pure UserContactData {direct, owners, relays, userData, ratchetKeys}
 
 instance Encoding UserLinkData where
