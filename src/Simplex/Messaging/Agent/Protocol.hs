@@ -331,7 +331,7 @@ minSupportedSMPAgentVersion :: VersionSMPA
 minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
 
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 8
+currentSMPAgentVersion = VersionSMPA 7
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
