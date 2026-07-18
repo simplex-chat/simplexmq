@@ -2181,7 +2181,7 @@ $(J.deriveJSON defaultJSON ''DRInvitation)
 -- and subMode still default when a legacy command omits them.
 instance StrEncoding JoinRequest where
   strEncode = \case
-    JRConnReq ntfs cReq pqSup -> B.unwords [strEncode ntfs, strEncode cReq, strEncode pqSup]
+    JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
     (JRConnReq <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
