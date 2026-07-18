@@ -430,7 +430,7 @@ prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData srv_
 
 -- | Create connection for prepared link (single network call).
 -- Validates that server response matches the prepared link.
-createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> Bool -> SubscriptionMode -> AE ConnId
+createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AE ConnId
 createConnectionForLink c nm userId enableNtfs = withAgentEnv c .::: createConnectionForLink' c nm userId enableNtfs
 {-# INLINE createConnectionForLink #-}
 
@@ -986,7 +986,7 @@ prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNo
   pure (ccLink, params)
 
 -- | Create connection for prepared link (single network call).
-createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> Bool -> SubscriptionMode -> AM ConnId
+createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AM ConnId
 createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth} userLinkData pqInitKeys advertiseDR subMode = do
   g <- asks random
   AgentConfig {smpAgentVRange} <- asks config
@@ -994,19 +994,7 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
     CR.IKUsePQ -> throwE $ CMD PROHIBITED "createConnectionForLink"
     _ -> pure ()
   connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption pqInitKeys)
-  userLinkData' <-
-    if advertiseDR
-      then do
-        e2eVR <- asks $ e2eEncryptVRange . config
-        -- the advertised bundle uses the connection's PQ, so its KEM is present iff the owner PQ is on, letting a
-        -- PQ requester encrypt its first message (profile) with PQ from message 1
-        (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.connPQEncryption pqInitKeys)
-        ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
-        withStore' c $ \db -> createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
-        let UserContactLinkData ucd = userLinkData
-            e2eRcvParams = toVersionRangeT e2eParams e2eVR
-        pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}}
-      else pure userLinkData
+  userLinkData' <- if advertiseDR then advertiseDRKeys g connId else pure userLinkData
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
       md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
       linkData = (plpSignedFixedData, md)
@@ -1017,6 +1005,18 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri
   unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
   pure connId
+  where
+    advertiseDRKeys :: TVar ChaChaDRG -> ConnId -> AM (UserConnLinkData 'CMContact)
+    advertiseDRKeys g connId = do
+      e2eVR <- asks $ e2eEncryptVRange . config
+      -- the advertised bundle uses the connection's PQ, so its KEM is present iff the owner PQ is on, letting a
+      -- PQ requester encrypt its first message (profile) with PQ from message 1
+      (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.connPQEncryption pqInitKeys)
+      ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
+      withStore' c $ \db -> createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
+      let UserContactLinkData ucd = userLinkData
+          e2eRcvParams = toVersionRangeT e2eParams e2eVR
+      pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}}
 
 -- | Encrypt signed link data for contact mode.
 encryptContactLinkData :: TVar ChaChaDRG -> C.PrivateKeyEd25519 -> LinkKey -> SMP.SenderId -> (ByteString, ByteString) -> AM ClntQueueReqData

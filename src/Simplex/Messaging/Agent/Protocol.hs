@@ -55,6 +55,7 @@ module Simplex.Messaging.Agent.Protocol
     -- * SMP agent protocol types
     ConnInfo,
     SndQueueSecured,
+    UseRatchetKeys,
     AEntityId,
     ACommand (..),
     JoinRequest (..),
@@ -399,6 +400,8 @@ deriving instance Show AEvt
 type ConnInfo = ByteString
 
 type SndQueueSecured = Bool
+
+type UseRatchetKeys = Bool
 
 -- | Parameterized type for SMP agent events
 data AEvent (e :: AEntity) where
