@@ -1025,7 +1025,7 @@ runAgentClientContactDRTest_ asyncAccept addrIK useDR bPQ ps = withSmpServer ps 
     (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
     -- the advertised DR bundle includes a KEM iff the owner's PQ is on, so a PQ requester gets PQ from message 1
     liftIO $ case ratchetKeys userCtData' of
-      Just AddressRatchetKeys {e2eParams = CR.E2ERatchetParamsUri _ _ _ kem_} ->
+      Just AddressRatchetKeys {e2eRcvParams = CR.E2ERatchetParamsUri _ _ _ kem_} ->
         isJust kem_ `shouldBe` supportPQ (CR.connPQEncryption addrIK)
       Nothing -> expectationFailure "address must advertise DR ratchet keys"
     let addrKeys_ = if useDR then ratchetKeys userCtData' else Nothing
