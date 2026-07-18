@@ -1010,8 +1010,8 @@ allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
 
 -- DR-advertising contact address test. Args: asyncAccept (JOIN vs sync accept), addrIK (advertised bundle + owner
 -- PQ), useDR (DR path vs classic/ignore keys), bPQ (joiner PQSupport).
-runAgentClientContactDRTest_ :: HasCallStack => Bool -> InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
-runAgentClientContactDRTest_ asyncAccept addrIK useDR bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
+runAgentClientContactDRTest_ :: HasCallStack => Bool -> Bool -> InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
+runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
   g <- C.newRandom
   rootKey <- atomically $ C.generateKeyPair g
   linkEntId <- atomically $ C.randomBytes 32 g
@@ -1030,8 +1030,13 @@ runAgentClientContactDRTest_ asyncAccept addrIK useDR bPQ ps = withSmpServer ps 
       Nothing -> expectationFailure "address must advertise DR ratchet keys"
     let addrKeys_ = if useDR then ratchetKeys userCtData' else Nothing
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
-    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
-    liftIO $ sqSecuredJoin `shouldBe` False
+    if asyncJoin
+      then do
+        A.joinConnectionAsync bob "join" False aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
+        get bob =##> \case ("join", c, A.JOINED sqSecured) -> c == aliceId && not sqSecured; _ -> False
+      else do
+        sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" addrKeys_ bPQ SMSubscribe
+        liftIO $ sqSecuredJoin `shouldBe` False
     ("", _, A.REQ invId reqPQ _ "bob's connInfo") <- get alice
     liftIO $ reqPQ `shouldBe` PQSupportOn
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
@@ -1046,17 +1051,18 @@ runAgentClientContactDRTest_ asyncAccept addrIK useDR bPQ ps = withSmpServer ps 
 
 testContactDRMatrix :: HasCallStack => (ASrvTransport, AStoreType) -> Spec
 testContactDRMatrix ps = do
-  describe "DR join (ratchet from the invitation)" $ drRows True False
-  describe "classic join, ratchet keys ignored" $ drRows False False
-  describe "DR join, async accept (JOIN command)" $ drRows True True
+  describe "DR join (ratchet from the invitation)" $ drRows False True False
+  describe "classic join, ratchet keys ignored" $ drRows False False False
+  describe "DR join, async accept (JOIN command)" $ drRows True True False
+  describe "DR join, async join (JOIN command)" $ drRows False True True
   where
-    drRows useDR async' = do
-      it "IKPQOff, dh join" $ runAgentClientContactDRTest_ async' IKPQOff useDR PQSupportOff ps
-      it "IKPQOff, pq join" $ runAgentClientContactDRTest_ async' IKPQOff useDR PQSupportOn ps
-      it "IKPQOn, dh join" $ runAgentClientContactDRTest_ async' IKPQOn useDR PQSupportOff ps
-      it "IKPQOn, pq join" $ runAgentClientContactDRTest_ async' IKPQOn useDR PQSupportOn ps
-      it "IKUsePQ, dh join" $ runAgentClientContactDRTest_ async' IKUsePQ useDR PQSupportOff ps
-      it "IKUsePQ, pq join" $ runAgentClientContactDRTest_ async' IKUsePQ useDR PQSupportOn ps
+    drRows asyncAccept useDR asyncJoin = do
+      it "IKPQOff, dh join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKPQOff useDR PQSupportOff ps
+      it "IKPQOff, pq join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKPQOff useDR PQSupportOn ps
+      it "IKPQOn, dh join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKPQOn useDR PQSupportOff ps
+      it "IKPQOn, pq join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKPQOn useDR PQSupportOn ps
+      it "IKUsePQ, dh join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKUsePQ useDR PQSupportOff ps
+      it "IKUsePQ, pq join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKUsePQ useDR PQSupportOn ps
 
 -- updating a DR address's mutable link data must preserve the stored ratchet keys, so requesters can still establish DR
 testAddressUpdatePreservesDRKeys :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
@@ -1555,7 +1561,7 @@ testInvitationShortLinkAsync viaProxy a b = do
   linkUserData connData' `shouldBe` userData
   runRight $ do
     aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
-    A.joinConnectionAsync b "123" False aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    A.joinConnectionAsync b "123" False aId True connReq "bob's connInfo" Nothing PQSupportOn SMSubscribe
     get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
     ("", _, CONF confId _ "bob's connInfo") <- get a
     allowConnection a bId confId "alice's connInfo"
@@ -2820,7 +2826,7 @@ testAsyncCommands sqSecured alice bob baseId =
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" Nothing PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
       aliceId' `shouldBe` aliceId
@@ -2911,7 +2917,7 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     liftIO $ qInfo' `shouldBe` qInfo
     liftIO $ userCtData' `shouldBe` userCtData
     -- join connection async using connId from getConnShortLinkAsync
-    joinConnectionAsync bob "2" True newId True qInfo' "bob's connInfo" PQSupportOn SMSubscribe
+    joinConnectionAsync bob "2" True newId True qInfo' "bob's connInfo" Nothing PQSupportOn SMSubscribe
     let aliceId = newId
     ("2", aliceId', JOINED False) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
@@ -3224,7 +3230,7 @@ testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" Nothing PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
@@ -3271,7 +3277,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" Nothing PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)

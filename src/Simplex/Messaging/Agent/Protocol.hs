@@ -1838,7 +1838,7 @@ data DRInvitation = DRInvitation
   deriving (Show)
 
 data JoinRequest
-  = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
+  = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport, addrRatchetKeys :: Maybe AddressRatchetKeys}
   | JRInvitationDR DRInvitation
   deriving (Show)
 
@@ -2181,10 +2181,10 @@ $(J.deriveJSON defaultJSON ''DRInvitation)
 -- and subMode still default when a legacy command omits them.
 instance StrEncoding JoinRequest where
   strEncode = \case
-    JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
+    JRConnReq ntfs cReq pqSup addrKeys_ -> strEncode (ntfs, cReq, pqSup) <> maybe "" (B.cons ' ' . serializeBinary . smpEncode) addrKeys_
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    (JRConnReq <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
+    (JRConnReq <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff) <*> optional (smpDecode <$?> (A.take =<< (A.decimal <* "\n")) <* A.space))
       <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))) <* A.space)
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)

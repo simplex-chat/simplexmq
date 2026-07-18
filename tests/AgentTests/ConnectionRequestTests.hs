@@ -258,7 +258,7 @@ connectionRequestTests =
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#" <> testDhKeyStr)
     it "JOIN command is backward compatible: JRConnReq is byte-identical to the pre-DR JOIN" $ do
       let uri = ACR SCMInvitation invConnRequest
-          cmd = JOIN (JRConnReq True uri PQSupportOff) SMSubscribe "hi"
+          cmd = JOIN (JRConnReq True uri PQSupportOff Nothing) SMSubscribe "hi"
           -- the pre-DR JOIN wire format: "JOIN <ntfs> <cReq> <pqSup> <subMode> <binary connInfo>"
           oldJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode PQSupportOff <> " " <> strEncode SMSubscribe <> " 2\nhi"
       serializeCommand cmd `shouldBe` oldJoin
