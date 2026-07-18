@@ -66,6 +66,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getConnSubs,
     getDeletedConns,
     getConnsData,
+    getConnData,
     lockConnForUpdate,
     setConnDeleted,
     setConnUserId,

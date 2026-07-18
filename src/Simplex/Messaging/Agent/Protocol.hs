@@ -2185,7 +2185,7 @@ instance StrEncoding JoinRequest where
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
     (JRConnReq <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff))
-      <|> (JRInvitationDR <$> ((A.take =<< (A.decimal <* A.char '\n')) >>= either fail pure . J'.eitherDecodeStrict') <* A.space)
+      <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))) <* A.space)
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACommand

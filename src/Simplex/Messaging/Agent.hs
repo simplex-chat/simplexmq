@@ -1398,8 +1398,8 @@ startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue
         liftIO $ lockConnForUpdate db connId
         liftIO $ createRatchet db connId ratchetState
         ExceptT $ updateNewConnSnd db connId q
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  pure (toConnData conn, sq)
+  cData <- withStore c $ \db -> maybe (Left SEConnNotFound) (Right . fst) <$> getConnData False False db connId
+  pure (cData, sq)
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
