@@ -1816,13 +1816,13 @@ newtype RatchetKeyId = RatchetKeyId ByteString
 
 data AddressRatchetKeys = AddressRatchetKeys
   { ratchetKeyId :: RatchetKeyId,
-    e2eParams :: RcvE2ERatchetParamsUri 'C.X448
+    e2eRcvParams :: RcvE2ERatchetParamsUri 'C.X448
   }
   deriving (Eq, Show)
 
 instance Encoding AddressRatchetKeys where
-  smpEncode AddressRatchetKeys {ratchetKeyId, e2eParams} = smpEncode (ratchetKeyId, e2eParams)
-  smpP = uncurry AddressRatchetKeys <$> smpP
+  smpEncode AddressRatchetKeys {ratchetKeyId, e2eRcvParams} = smpEncode (ratchetKeyId, e2eRcvParams)
+  smpP = AddressRatchetKeys <$> smpP <*> smpP
 
 -- | The double-ratchet invitation an address owner receives in message 1 and later accepts: the ratchet the
 -- owner established from that message, the requester's reply queue, and the negotiated version and PQ support.

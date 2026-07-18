@@ -1000,12 +1000,12 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
         e2eVR <- asks $ e2eEncryptVRange . config
         -- the advertised bundle uses the connection's PQ, so its KEM is present iff the owner PQ is on, letting a
         -- PQ requester encrypt its first message (profile) with PQ from message 1
-        (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.connPQEncryption pqInitKeys)
+        (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.connPQEncryption pqInitKeys)
         ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
         withStore' c $ \db -> createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
         let UserContactLinkData ucd = userLinkData
-            e2eParams = toVersionRangeT e2eRcvParams e2eVR
-        pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eParams}}
+            e2eRcvParams = toVersionRangeT e2eParams e2eVR
+        pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}}
       else pure userLinkData
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
       md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
@@ -1108,25 +1108,23 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
     pure sl
   where
     prepareContactLinkData :: RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
-    prepareContactLinkData rq@RcvQueue {shortLink} ud@(UserContactLinkData d') = do
+    prepareContactLinkData rq@RcvQueue {shortLink} ud'@(UserContactLinkData d') = do
       liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink d'
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-      -- the app never sees the advertised DR keys, so re-inject them from the database to keep the
-      -- address offering the same ratchet across updates (non-DR addresses are left unchanged)
-      ud' <- preserveAddressRatchetKeys ud
+      ud <- preserveAddressRatchetKeys ud'
       let cslContact = CSLContact SLSServer CCTContact (qServer rq)
       case shortLink of
         Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
           let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
           unless (shortLinkId == linkId) $ throwE $ INTERNAL "setConnShortLink: link ID is not derived from link"
-          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData SCMContact linkPrivSigKey smpAgentVRange ud'
+          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData SCMContact linkPrivSigKey smpAgentVRange ud
           pure (rq, linkId, cslContact shortLinkKey, (linkEncFixedData, d))
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
           let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
               connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
-              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing ud'
+              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing ud
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
           let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing (fst srvData)
@@ -1148,9 +1146,8 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
         Left _ -> pure ud
         Right (ratchetKeyId, pk1, pk2, pKem) -> do
           e2eVR <- asks $ e2eEncryptVRange . config
-          let e2eRcv = CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)
-              e2eParams = toVersionRangeT e2eRcv e2eVR
-          pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eParams}}
+          let e2eRcvParams = toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)) e2eVR
+          pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}}
 
 deleteConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AM ()
 deleteConnShortLink' c nm connId cMode =
@@ -1463,12 +1460,12 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys
               RcvConnection _ rq -> mkJoinInvitation rq pqInitKeys
               _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
             pure AgentInvitation {agentVersion = v, connReq = cReq, connInfo = cInfo}
-          Just AddressRatchetKeys {ratchetKeyId, e2eParams} -> do
+          Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams} -> do
             g <- asks random
             e2eVR <- asks $ e2eEncryptVRange . config
-            case e2eParams `compatibleVersion` e2eVR of
+            case e2eRcvParams `compatibleVersion` e2eVR of
               Nothing -> throwE $ AGENT A_VERSION
-              Just (Compatible e2eRcvParams@(CR.E2ERatchetParams e2eV _ _ _)) -> do
+              Just (Compatible e2eParams@(CR.E2ERatchetParams e2eV _ _ _)) -> do
                 let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ v (Just e2eV)
                     maxV = maxVersion e2eVR
                 rq <- case conn of
@@ -1483,7 +1480,7 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys
                     sndReply = AgentConnInfoReply (replyQInfo :| []) cInfo
                 (e2eSndParams, encConnInfo) <- withStore c $ \db -> runExceptT $ do
                   liftIO $ lockConnForUpdate db connId
-                  e2eSndParams <- liftIO (getSndRatchet db connId e2eV) >>= either (const $ createRatchet_ db g connId maxV pqSupport e2eRcvParams) (pure . snd)
+                  e2eSndParams <- liftIO (getSndRatchet db connId e2eV) >>= either (const $ createRatchet_ db g connId maxV pqSupport e2eParams) (pure . snd)
                   liftIO $ setConnPQSupport db connId pqSupport
                   encConnInfo <- fst <$> agentRatchetEncrypt db cData (smpEncode sndReply) e2eEncConnInfoLength (Just $ CR.pqSupportToEnc pqSupport) maxV
                   pure (e2eSndParams, encConnInfo)
