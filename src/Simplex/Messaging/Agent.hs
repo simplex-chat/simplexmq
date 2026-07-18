@@ -1387,19 +1387,17 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   pure e2eSndParams
 
 startJoinInvitationDR :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> DRInvitation -> AM (ConnData, SndQueue)
-startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue} = do
-  sq <- case sq_ of
-    Just sq -> pure sq
-    Nothing -> do
-      clientVRange <- asks $ smpClientVRange . config
-      qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
-      (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
-      withStore c $ \db -> runExceptT $ do
-        liftIO $ lockConnForUpdate db connId
-        liftIO $ createRatchet db connId ratchetState
-        ExceptT $ updateNewConnSnd db connId q
-  cData <- withStore c $ \db -> maybe (Left SEConnNotFound) (Right . fst) <$> getConnData False False db connId
-  pure (cData, sq)
+startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue} = case sq_ of
+  Just sq -> (,sq) <$> withStore c (`getConnectionData` connId)
+  Nothing -> do
+    clientVRange <- asks $ smpClientVRange . config
+    qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
+    (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
+    withStore c $ \db -> runExceptT $ do
+      liftIO $ lockConnForUpdate db connId
+      liftIO $ createRatchet db connId ratchetState
+      sq <- ExceptT $ updateNewConnSnd db connId q
+      (,sq) <$> ExceptT (getConnectionData db connId)
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
