@@ -1956,7 +1956,7 @@ instance ConnectionModeI c => Encoding (FixedLinkData c) where
     smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId -- TODO replace with smpEncode (fromMaybe "" linkEntityId) - safe to do it in 2027
   smpP = do
     (agentVRange, rootKey, linkConnReq) <- smpP
-    linkEntityId <- optional smpP -- TODO replace with (smpP <|> pure Nothing)
+    linkEntityId <- ((\s -> if B.null s then Nothing else Just s) =<<) <$> optional smpP
     _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding (added in January 2026)
     pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
@@ -2201,16 +2201,13 @@ cryptoErrToSyncState = \case
 
 $(J.deriveJSON defaultJSON ''DRInvitation)
 
--- JRConnReq must stay byte-identical to the pre-DR JOIN "ntfs cReq pqSup" for old/new client interop; pqSup
--- and subMode still default when a legacy command omits them.
+-- JRConnReq is identical to JOIN before DR support for old/new client compatibility
 instance StrEncoding JoinRequest where
   strEncode = \case
     JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    -- self-contained: fields are separated by leading spaces and JoinRequest consumes no trailing space, so it
-    -- round-trips on its own; the space before the next JOIN field is consumed by the JOIN command parser
-    (JRConnReq <$> strP <*> (A.space *> strP) <*> ((A.space *> strP) <|> pure PQSupportOff))
+    (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
       <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))))
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
@@ -2243,8 +2240,8 @@ commandP :: Parser ByteString -> Parser ACommand
 commandP binaryP =
   strP
     >>= \case
-      -- advertiseDR is a trailing field defaulting to False, so NEW persisted before it was added still parses
-      NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe) <*> ((A.space *> strP) <|> pure False))
+      -- useDR is a trailing field defaulting to False, so NEW persisted before it was added still parses
+      NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe) <*> (_strP <|> pure False))
       LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
       LGET_ -> s (LGET <$> strP)
       JOIN_ -> s (JOIN <$> strP_ <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
@@ -2261,7 +2258,7 @@ commandP binaryP =
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode pqIK subMode advertiseDR -> s (NEW_, ntfs, cMode, pqIK, subMode) <> B.cons ' ' (strEncode advertiseDR)
+  NEW ntfs cMode pqIK subMode useDR -> s (NEW_, ntfs, cMode, pqIK, subMode, useDR)
   LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
   LGET sl -> s (LGET_, sl)
   JOIN joinReq subMode cInfo -> s (JOIN_, joinReq, subMode, Str $ serializeBinary cInfo)

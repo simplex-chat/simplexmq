@@ -424,8 +424,8 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::: newCo
 -- Returns the created link and internal params.
 -- The link address is fully determined at this point.
 prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData pqInitKeys advertiseDR srv_ =
-  withAgentEnv c $ prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData pqInitKeys advertiseDR srv_
+prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData pqInitKeys useDR srv_ =
+  withAgentEnv c $ prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData pqInitKeys useDR srv_
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
@@ -853,8 +853,8 @@ setUserService' c userId enable = do
   when (changed && not enable) $ withStore' c (`deleteClientServices` userId)
 
 newConnAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> SConnectionMode c -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AM ()
-newConnAsync c corrId connId enableNtfs cMode pqInitKeys advertiseDR subMode =
-  enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode) pqInitKeys subMode advertiseDR
+newConnAsync c corrId connId enableNtfs cMode pqInitKeys useDR subMode =
+  enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode) pqInitKeys subMode useDR
 {-# INLINE newConnAsync #-}
 
 newConnNoQueues :: AgentClient -> UserId -> Bool -> SConnectionMode c -> PQSupport -> AM ConnId
@@ -959,18 +959,18 @@ switchConnectionAsync' c corrId connId =
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
 newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AM (ConnId, CreatedConnLink c)
-newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKeys advertiseDR subMode = do
+newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKeys useDR subMode = do
   srv <- getSMPServer c userId
   when (checkNotices && connMode cMode == CMContact) $ checkClientNotices c srv
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   (connId,)
-    <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys advertiseDR subMode srv
+    <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys useDR subMode srv
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 -- | Prepare connection link for contact mode (no network, no database).
 -- Caller provides root signing key pair and link entity ID.
 prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData pqInitKeys advertiseDR srv_ = do
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData pqInitKeys useDR srv_ = do
   case pqInitKeys of
     CR.IKUsePQ -> throwE $ CMD PROHIBITED "prepareConnectionLink"
     _ -> pure ()
@@ -983,7 +983,7 @@ prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNo
   -- when opted in, generate the advertised DR keys in memory so the returned connReq carries them; the private
   -- half is persisted later in createConnectionForLink. The bundle uses the connection's PQ, so its KEM is present
   -- iff owner PQ is on, letting a PQ requester encrypt its first message (profile) with PQ from message 1.
-  addrKeys_ <- if advertiseDR then Just <$> generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys) else pure Nothing
+  addrKeys_ <- if useDR then Just <$> generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys) else pure Nothing
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) (fst <$> addrKeys_)
@@ -1256,14 +1256,14 @@ changeConnectionUser' c oldUserId connId newUserId = do
     updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
 
 newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (CreatedConnLink c)
-newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqInitKeys advertiseDR subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
+newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqInitKeys useDR subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   -- when opted in, generate + persist the advertised DR keys for a contact address; the public half goes into the
   -- connReq and the mutable link data so requesters can start the ratchet from message 1
   addrKeys_ <- case cMode of
-    SCMContact | advertiseDR -> do
+    SCMContact | useDR -> do
       (arKeys, stored) <- generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys)
       storeAddressRatchetKeys c connId stored
       pure $ Just arKeys
@@ -2016,10 +2016,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
     processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
     processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
-        NEW enableNtfs (ACM cMode) pqEnc subMode advertiseDR -> noServer $ do
+        NEW enableNtfs (ACM cMode) pqEnc subMode useDR -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
-            CCLink cReq _ <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc advertiseDR subMode srv
+            CCLink cReq _ <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc useDR subMode srv
             notify $ INV (ACR cMode cReq)
         LSET userLinkData clientData ->
           withServer' . tryCommand $ do
