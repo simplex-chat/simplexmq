@@ -1448,14 +1448,16 @@ compatibleInvitationUri (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQue
 compatibleContactUri :: ConnectionRequestUri 'CMContact -> AM' (Maybe (Compatible SMPQueueInfo, Maybe (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)), Compatible VersionSMPA))
 compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} addrKeys_) = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
-  pure $ do
-    q <- qUri `compatibleVersion` smpClientVRange
-    v <- crAgentVRange `compatibleVersion` smpAgentVRange
-    ratchet_ <- case addrKeys_ of
+  pure $
+    (,,)
+      <$> (qUri `compatibleVersion` smpClientVRange)
+      <*> compatibleRatchetKeys e2eEncryptVRange
+      <*> (crAgentVRange `compatibleVersion` smpAgentVRange)
+  where
+    compatibleRatchetKeys e2eVR = case addrKeys_ of
       Nothing -> Just Nothing
       Just (ratchetKeyId, e2eRcvParams) ->
-        Just . (ratchetKeyId,) <$> (e2eRcvParams `compatibleVersion` e2eEncryptVRange)
-    pure (q, ratchet_, v)
+        Just . (ratchetKeyId,) <$> (e2eRcvParams `compatibleVersion` e2eVR)
 
 versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
