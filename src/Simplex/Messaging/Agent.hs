@@ -380,7 +380,7 @@ getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Enqueue JOIN command for a prepared connection.
-joinConnectionAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> Maybe AddressRatchetKeys -> PQSupport -> SubscriptionMode -> AE ()
+joinConnectionAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
 joinConnectionAsync c aCorrId updateConn connId enableNtfs = withAgentEnv c .::. joinConnAsync c aCorrId updateConn connId enableNtfs
 {-# INLINE joinConnectionAsync #-}
 
@@ -484,7 +484,7 @@ prepareConnectionToAccept c userId enableNtfs = withAgentEnv c .: newConnToAccep
 {-# INLINE prepareConnectionToAccept #-}
 
 -- | Join SMP agent connection (JOIN command).
-joinConnection :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> Maybe AddressRatchetKeys -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
+joinConnection :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
 joinConnection c nm userId connId enableNtfs = withAgentEnv c .::. joinConn c nm userId connId enableNtfs
 {-# INLINE joinConnection #-}
 
@@ -866,8 +866,8 @@ newConnNoQueues c userId enableNtfs cMode pqSupport = do
 
 -- TODO [short links] TBC, but probably we will need async join for contact addresses as the contact will be created after user confirming the connection,
 -- and join should retry, the same as 1-time invitation joins.
-joinConnAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> Maybe AddressRatchetKeys -> PQSupport -> SubscriptionMode -> AM ()
-joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} cInfo addrKeys_ pqSup subMode = do
+joinConnAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} addrKeys_ cInfo pqSup subMode = do
   when updateConn $ throwE $ CMD PROHIBITED "joinConnAsync: updateConn not allowed for invitation URI"
   when (isJust addrKeys_) $ throwE $ CMD PROHIBITED "joinConnAsync: address ratchet keys not allowed for invitation URI"
   withInvLock c (strEncode cReqUri) "joinConnAsync" $
@@ -876,7 +876,7 @@ joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} c
         let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
         enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRConnReq enableNtfs (ACR sConnectionMode cReqUri) pqSupport Nothing) subMode cInfo
       Nothing -> throwE $ AGENT A_VERSION
-joinConnAsync c corrId updateConn connId enableNtfs cReqUri@(CRContactUri _) cInfo addrKeys_ pqSup subMode =
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@(CRContactUri _) addrKeys_ cInfo pqSup subMode =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (_, Compatible connAgentVersion) -> do
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion Nothing
@@ -903,7 +903,7 @@ acceptContactAsync' c corrId connId enableNtfs invId ownConnInfo pqSupport subMo
   withStore' c $ \db -> acceptInvitation db invId ownConnInfo
   let joinCmd = case connReq of
         CRInvitationDR dr -> enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRInvitationDR dr) subMode ownConnInfo
-        CRInvitation cReq -> joinConnAsync c corrId False connId enableNtfs cReq ownConnInfo Nothing pqSupport subMode
+        CRInvitation cReq -> joinConnAsync c corrId False connId enableNtfs cReq Nothing ownConnInfo pqSupport subMode
   joinCmd `catchAllErrors` \err -> do
     withStore' c (`unacceptInvitation` invId)
     throwE err
@@ -1019,7 +1019,7 @@ newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchet
 newAddressRatchetKeys c connId pqSupport = do
   g <- asks random
   e2eVR <- asks $ e2eEncryptVRange . config
-  keep <- asks $ addressRatchetKeysToKeep . config
+  keep <- asks $ keepAddressKeys . config
   (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqSupport
   ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
   withStore' c $ \db -> do
@@ -1346,10 +1346,10 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
       let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
-joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> Maybe AddressRatchetKeys -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
-joinConn c nm userId connId enableNtfs cReq cInfo addrKeys_ pqSupport subMode = do
+joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
+joinConn c nm userId connId enableNtfs cReq addrKeys_ cInfo pqSupport subMode = do
   srv <- getNextSMPServer c userId [qServer $ connReqQueue cReq]
-  joinConnSrv c nm userId connId enableNtfs cReq cInfo addrKeys_ pqSupport subMode srv
+  joinConnSrv c nm userId connId enableNtfs cReq addrKeys_ cInfo pqSupport subMode srv
 
 connReqQueue :: ConnectionRequestUri c -> SMPQueueUri
 connReqQueue = \case
@@ -1442,8 +1442,8 @@ versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
 {-# INLINE versionPQSupport_ #-}
 
-joinConnSrv :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> Maybe AddressRatchetKeys -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo addrKeys_ pqSup subMode srv = do
+joinConnSrv :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
+joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} addrKeys_ cInfo pqSup subMode srv = do
   when (isJust addrKeys_) $ throwE $ CMD PROHIBITED "joinConnSrv: address ratchet keys not allowed for invitation URI"
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     SomeConn cType conn <- withStore c (`getConn` connId)
@@ -1459,7 +1459,7 @@ joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo addrKeys_
       ((cData, sq), e2eSndParams, lnkId_) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
       secureConfirmQueue c nm cData rq_ sq srv cInfo e2eSndParams subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
-joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo addrKeys_ pqSup subMode srv =
+joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} addrKeys_ cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, Compatible v) ->
       withInvLock c (strEncode cReqUri) "joinConnSrv" $ do
@@ -1568,7 +1568,7 @@ acceptContact' :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool 
 acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   r <- case connReq of
-    CRInvitation cReq -> joinConn c nm userId connId enableNtfs cReq ownConnInfo Nothing pqSupport subMode
+    CRInvitation cReq -> joinConn c nm userId connId enableNtfs cReq Nothing ownConnInfo pqSupport subMode
     CRInvitationDR dr@DRInvitation {replyQueue} -> do
       srv <- getNextSMPServer c userId [qServer replyQueue]
       SomeConn cType conn <- withStore c (`getConn` connId)
@@ -2009,7 +2009,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _})) pqEnc addrKeys_) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
-            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo addrKeys_ pqEnc subMode srv
+            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq addrKeys_ connInfo pqEnc subMode srv
             notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
