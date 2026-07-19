@@ -53,14 +53,14 @@ invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32
 
 encodeSignLinkData :: forall c. ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> Maybe ByteString -> UserConnLinkData c -> (LinkKey, (ByteString, ByteString))
-encodeSignLinkData keys@(_, pk) agentVRange linkConnReq linkEntityId userData =
-  let (linkKey, fd) = encodeSignFixedData keys agentVRange linkConnReq linkEntityId
+encodeSignLinkData keys@(_, pk) agentVRange connReq linkEntityId userData =
+  let (linkKey, fd) = encodeSignFixedData keys agentVRange connReq linkEntityId
       md = encodeSignUserData (sConnectionMode @c) pk agentVRange userData
    in (linkKey, (fd, md))
 
 encodeSignFixedData :: ConnectionModeI c => C.KeyPairEd25519 -> VersionRangeSMPA -> ConnectionRequestUri c -> Maybe ByteString -> (LinkKey, ByteString)
-encodeSignFixedData (rootKey, pk) agentVRange linkConnReq linkEntityId =
-  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
+encodeSignFixedData (rootKey, pk) agentVRange connReq linkEntityId =
+  let fd = smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq = binaryConnReq connReq, linkEntityId}
    in (LinkKey (C.sha3_256 fd), encodeSign pk fd)
 
 encodeSignUserData :: ConnectionModeI c => SConnectionMode c -> C.PrivateKeyEd25519 -> VersionRangeSMPA -> UserConnLinkData c -> ByteString

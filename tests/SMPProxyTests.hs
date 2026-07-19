@@ -232,9 +232,9 @@ agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty 
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 baseId =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
-      (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
       aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+      sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -288,9 +288,9 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- agent connections have to be set up in advance
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
-      (bobId, CCLink qInfo Nothing) <- runExceptT' $ A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      (bobId, CCLink qInfo Nothing) <- runExceptT' $ A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
       aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-      sqSecured <- runExceptT' $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+      sqSecured <- runExceptT' $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
         get alice >>= \case
@@ -339,9 +339,9 @@ agentViaProxyVersionError =
   withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
     Left (A.BROKER _ (TRANSPORT TEVersion)) <-
       withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
-        (_bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+        (_bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
         aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-        A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+        A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     pure ()
   where
     servers srvs = (initAgentServersProxy_ SPMUnknown SPFProhibit) {smp = userServers srvs}
@@ -359,9 +359,9 @@ agentViaProxyRetryOffline = do
       let pqEnc = CR.PQEncOn
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
-          (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+          (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
           aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-          sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+          sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
           liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -520,14 +520,14 @@ testAgentClientReconnectAfterCancel :: IO ()
 testAgentClientReconnectAfterCancel =
   withAgent 1 agentCfg agentServersLeak testDB $ \a -> do
     withStallingServerOn testPort2 $ do
-      t <- async $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      t <- async $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
       threadDelay 1000000 -- let the connect to the stalling relay start, then kill it mid-flight
       cancel t
     withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ -> do
       testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
         reply `shouldBe` Right SMP.PONG -- the relay is up and reachable, so a timeout can only be the poisoned var
-      r <- timeout 8000000 $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
+      r <- timeout 8000000 $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
       case r of
         Just (Right _) -> pure ()
         _ -> expectationFailure $ "agent failed to connect after a cancelled connect; got: " <> show r

@@ -49,7 +49,7 @@ testInvShortLink = do
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
   Right (FixedLinkData {linkConnReq = connReq}, connData') <- pure $ SL.decryptLinkData linkKey k srvData
-  connReq `shouldBe` invConnRequest
+  connReq `shouldBe` binaryConnReq invConnRequest
   linkUserData connData' `shouldBe` userData
 
 testInvShortLinkBadDataHash :: IO ()
@@ -87,7 +87,7 @@ testContactShortLink = do
   Right srvData <- runExceptT $ SL.encryptLinkData g k linkData
   -- decrypt
   Right (FixedLinkData {linkConnReq = connReq}, ContactLinkData _ userCtData') <- pure $ SL.decryptLinkData @'CMContact linkKey k srvData
-  connReq `shouldBe` contactConnRequest
+  connReq `shouldBe` binaryConnReq contactConnRequest
   userCtData' `shouldBe` userCtData
 
 testUpdateContactShortLink :: IO ()
@@ -109,7 +109,7 @@ testUpdateContactShortLink = do
   Right ud' <- runExceptT $ SL.encryptUserData g k signed
   -- decrypt
   Right (FixedLinkData {linkConnReq = connReq}, ContactLinkData _ userCtData'') <- pure $ SL.decryptLinkData @'CMContact linkKey k (fd, ud')
-  connReq `shouldBe` contactConnRequest
+  connReq `shouldBe` binaryConnReq contactConnRequest
   userCtData'' `shouldBe` userCtData'
 
 testContactShortLinkBadDataHash :: IO ()
@@ -184,7 +184,7 @@ testEncDec g pk (fd, linkKey, k) ctData = do
   let signed = SL.encodeSignUserData SCMContact pk supportedSMPAgentVRange $ UserContactLinkData ctData
   Right ud <- runExceptT $ SL.encryptUserData g k signed
   Right (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ ctData') <- pure $ SL.decryptLinkData @'CMContact linkKey k (fd, ud)
-  connReq' `shouldBe` contactConnRequest
+  connReq' `shouldBe` binaryConnReq contactConnRequest
   ctData' `shouldBe` ctData
 
 testContactShortLinkManyOwners :: IO ()

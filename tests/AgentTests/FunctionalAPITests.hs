@@ -284,13 +284,13 @@ inAnyOrder g rs = withFrozenCallStack $ do
 
 createConnection :: ConnectionModeI c => AgentClient -> UserId -> Bool -> SConnectionMode c -> Maybe CRClientData -> SubscriptionMode -> AE (ConnId, ConnectionRequestUri c)
 createConnection c userId enableNtfs cMode clientData subMode = do
-  (connId, CCLink cReq _) <- A.createConnection c NRMInteractive userId enableNtfs True cMode Nothing clientData IKPQOn subMode
+  (connId, CCLink cReq _) <- A.createConnection c NRMInteractive userId enableNtfs True cMode Nothing clientData IKPQOn False subMode
   pure (connId, cReq)
 
 joinConnection :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> ConnInfo -> SubscriptionMode -> AE (ConnId, SndQueueSecured)
 joinConnection c userId enableNtfs cReq connInfo subMode = do
   connId <- A.prepareConnectionToJoin c userId enableNtfs cReq PQSupportOn
-  sndSecure <- A.joinConnection c NRMInteractive userId connId enableNtfs cReq Nothing connInfo PQSupportOn subMode
+  sndSecure <- A.joinConnection c NRMInteractive userId connId enableNtfs cReq connInfo PQSupportOn subMode
   pure (connId, sndSecure)
 
 acceptContact :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
@@ -311,7 +311,7 @@ deleteConnection c = A.deleteConnection c NRMInteractive
 deleteConnections :: AgentClient -> [ConnId] -> AE (M.Map ConnId (Either AgentErrorType ()))
 deleteConnections c = A.deleteConnections c NRMInteractive
 
-getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
+getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c, ConnectionRequestUri c)
 getConnShortLink c = A.getConnShortLink c NRMInteractive
 
 setConnShortLink :: AgentClient -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE (ConnShortLink c)
@@ -596,18 +596,18 @@ testMatrix2 ps runTest = do
   it "current, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 agentCfg agentCfg initAgentServersProxy 1 $ runTest PQSupportOn True True
   it "v8, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 initAgentServersProxy 3 $ runTest PQSupportOn False True
   it "current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
-  it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfgVPrev 1 $ runTest PQSupportOff True False
-  it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfg 1 $ runTest PQSupportOff True False
-  it "current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgVPrev 1 $ runTest PQSupportOff True False
+  it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfgVPrev 1 $ runTest PQSupportOff False False
+  it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfg 1 $ runTest PQSupportOff False False
+  it "current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgVPrev 1 $ runTest PQSupportOff False False
 
 testMatrix2Stress :: HasCallStack => (ASrvTransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2Stress ps runTest = do
   it "current, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 aCfg aCfg initAgentServersProxy 1 $ runTest PQSupportOn True True
   it "v8, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 aProxyCfgV8 aProxyCfgV8 initAgentServersProxy 1 $ runTest PQSupportOn False True
   it "current" $ withSmpServer ps $ runTestCfg2 aCfg aCfg 1 $ runTest PQSupportOn True False
-  it "prev" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfgVPrev 1 $ runTest PQSupportOff True False
-  it "prev to current" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfg 1 $ runTest PQSupportOff True False
-  it "current to prev" $ withSmpServer ps $ runTestCfg2 aCfg aCfgVPrev 1 $ runTest PQSupportOff True False
+  it "prev" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfgVPrev 1 $ runTest PQSupportOff False False
+  it "prev to current" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfg 1 $ runTest PQSupportOff False False
+  it "current to prev" $ withSmpServer ps $ runTestCfg2 aCfg aCfgVPrev 1 $ runTest PQSupportOff False False
   where
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     aProxyCfgV8 = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
@@ -616,9 +616,9 @@ testMatrix2Stress ps runTest = do
 testBasicMatrix2 :: HasCallStack => (ASrvTransport, AStoreType) -> (SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testBasicMatrix2 ps runTest = do
   it "current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest True
-  it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 1 $ runTest True
-  it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrevPQ agentCfg 1 $ runTest True
-  it "current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgVPrevPQ 1 $ runTest True
+  it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrevPQ agentCfgVPrevPQ 1 $ runTest False
+  it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrevPQ agentCfg 1 $ runTest False
+  it "current to prev" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfgVPrevPQ 1 $ runTest False
 
 testRatchetMatrix2 :: HasCallStack => (ASrvTransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 ps runTest = do
@@ -733,9 +733,9 @@ runAgentClientTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientTestPQ :: HasCallStack => SndQueueSecured -> Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing aPQ SMSubscribe
+    (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing aPQ False SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    sqSecured' <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" bPQ SMSubscribe
+    sqSecured' <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecured' `shouldBe` sqSecured
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` CR.connPQEncryption aPQ
@@ -962,9 +962,9 @@ runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =
 runAgentClientContactTestPQ :: HasCallStack => SndQueueSecured -> Bool -> PQSupport -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, bPQ) baseId =
   runRight_ $ do
-    (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ SMSubscribe
+    (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ False SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
-    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" bPQ SMSubscribe
+    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
@@ -1024,22 +1024,23 @@ runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmp
       connIK = IKLinkPQ (CR.connPQEncryption addrIK) -- owner connection PQ (never IKUsePQ)
       pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
-    _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData connIK True SMSubscribe
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
+    _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (_, ContactLinkData _ userCtData', connReq') <- getConnShortLink bob 1 shortLink
     -- the advertised DR bundle includes a KEM iff the owner's PQ is on, so a PQ requester gets PQ from message 1
     liftIO $ case ratchetKeys userCtData' of
       Just AddressRatchetKeys {e2eRcvParams = CR.E2ERatchetParamsUri _ _ _ kem_} ->
         isJust kem_ `shouldBe` supportPQ (CR.connPQEncryption addrIK)
       Nothing -> expectationFailure "address must advertise DR ratchet keys"
-    let addrKeys_ = if useDR then ratchetKeys userCtData' else Nothing
-    aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
+    -- classic (non-DR) join drops the address keys from the request
+    let connReqJoin = if useDR then connReq' else case connReq' of CRContactUri d _ -> CRContactUri d Nothing
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReqJoin bPQ
     if asyncJoin
       then do
-        A.joinConnectionAsync bob "join" False aliceId True connReq' addrKeys_ "bob's connInfo" bPQ SMSubscribe
+        A.joinConnectionAsync bob "join" False aliceId True connReqJoin "bob's connInfo" bPQ SMSubscribe
         get bob =##> \case ("join", c, A.JOINED sqSecured) -> c == aliceId && not sqSecured; _ -> False
       else do
-        sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' addrKeys_ "bob's connInfo" bPQ SMSubscribe
+        sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReqJoin "bob's connInfo" bPQ SMSubscribe
         liftIO $ sqSecuredJoin `shouldBe` False
     ("", _, A.REQ invId reqPQ _ "bob's connInfo") <- get alice
     liftIO $ reqPQ `shouldBe` PQSupportOn
@@ -1068,10 +1069,10 @@ testContactDRMatrix ps = do
       it "IKUsePQ, dh join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKUsePQ useDR PQSupportOff ps
       it "IKUsePQ, pq join" $ runAgentClientContactDRTest_ asyncAccept asyncJoin IKUsePQ useDR PQSupportOn ps
 
-joinContactDR :: HasCallStack => AgentClient -> AgentClient -> ConnectionRequestUri 'CMContact -> Maybe AddressRatchetKeys -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
-joinContactDR alice requester connReq addrKeys_ addrIK pqEnc = do
+joinContactDR :: HasCallStack => AgentClient -> AgentClient -> ConnectionRequestUri 'CMContact -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
+joinContactDR alice requester connReq addrIK pqEnc = do
   aliceId <- A.prepareConnectionToJoin requester 1 True connReq PQSupportOn
-  void $ A.joinConnection requester NRMInteractive 1 aliceId True connReq addrKeys_ "bob's connInfo" PQSupportOn SMSubscribe
+  void $ A.joinConnection requester NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
   ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
   reqId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
   void $ acceptContact alice 1 reqId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
@@ -1088,21 +1089,21 @@ testAddressKeyRotation ps = withSmpServer ps $ withAgentClients3 $ \alice bob ca
       connIK = IKLinkPQ (CR.connPQEncryption addrIK)
       pqEnc = PQEncryption $ pqConnectionMode addrIK PQSupportOn
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
-    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData connIK True SMSubscribe
-    (FixedLinkData {linkConnReq = connReq}, ContactLinkData _ ctData1) <- getConnShortLink bob 1 shortLink
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
+    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (_, ContactLinkData _ ctData1, connReq1) <- getConnShortLink bob 1 shortLink
     let key1 = ratchetKeys ctData1
     liftIO $ key1 `shouldSatisfy` isJust
     void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
-    (_, ContactLinkData _ ctData2) <- getConnShortLink carol 1 shortLink
+    (_, ContactLinkData _ ctData2, connReq2) <- getConnShortLink carol 1 shortLink
     let key2 = ratchetKeys ctData2
     liftIO $ (key1 == key2) `shouldBe` False
-    joinContactDR alice bob connReq key1 addrIK pqEnc
-    joinContactDR alice carol connReq key2 addrIK pqEnc
+    joinContactDR alice bob connReq1 addrIK pqEnc
+    joinContactDR alice carol connReq2 addrIK pqEnc
     void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
     void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
-    aId <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
-    void $ A.joinConnection bob NRMInteractive 1 aId True connReq key1 "bob's connInfo" PQSupportOn SMSubscribe
+    aId <- A.prepareConnectionToJoin bob 1 True connReq1 PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aId True connReq1 "bob's connInfo" PQSupportOn SMSubscribe
     get alice =##> \case ("", _, A.ERR _) -> True; _ -> False
 
 testAddDRViaSetConnShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
@@ -1114,12 +1115,12 @@ testAddDRViaSetConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \alice 
       userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
       connIK = IKLinkPQ (CR.connPQEncryption addrIK)
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
-    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData connIK False SMSubscribe
-    (_, ContactLinkData _ cd0) <- getConnShortLink bob 1 shortLink
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK False Nothing
+    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (_, ContactLinkData _ cd0, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys cd0 `shouldBe` Nothing
     void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
-    (_, ContactLinkData _ cd1) <- getConnShortLink bob 1 shortLink
+    (_, ContactLinkData _ cd1, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys cd1 `shouldSatisfy` isJust
 
 -- updating a DR address's mutable link data must preserve the stored ratchet keys, so requesters can still establish DR
@@ -1134,18 +1135,18 @@ testAddressUpdatePreservesDRKeys ps = withSmpServer ps $ withAgentClients2 $ \al
       bPQ = PQSupportOn
       pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
-    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) connIK True SMSubscribe
-    (_, ContactLinkData _ published) <- getConnShortLink bob 1 shortLink
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
+    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
+    (_, ContactLinkData _ published, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys published `shouldSatisfy` isJust
     -- update passing ratchetKeys = Nothing; the stored keys must be preserved
     let updatedCtData = userCtData {userData = UserLinkData "updated", ratchetKeys = Nothing}
     shortLink' <- setConnShortLink alice addrConnId SCMContact (UserContactLinkData updatedCtData) Nothing
     liftIO $ shortLink' `shouldBe` shortLink
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ updated) <- getConnShortLink bob 1 shortLink
+    (_, ContactLinkData _ updated, connReq') <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys updated `shouldBe` ratchetKeys published
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
-    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' (ratchetKeys updated) "bob's connInfo" bPQ SMSubscribe
+    sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False
     ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
@@ -1166,11 +1167,11 @@ testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
       pqEnc = PQEncryption $ pqConnectionMode addrIK PQSupportOn
   -- set up the DR address, bob joins, alice receives REQ and pre-creates the accept connection (server up)
   (bobId, invId, aliceId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing Nothing
-    _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) connIK True SMSubscribe
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
+    _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
+    (_, _, connReq') <- getConnShortLink bob 1 shortLink
     aId <- A.prepareConnectionToJoin bob 1 True connReq' PQSupportOn
-    _ <- A.joinConnection bob NRMInteractive 1 aId True connReq' (ratchetKeys userCtData') "bob's connInfo" PQSupportOn SMSubscribe
+    _ <- A.joinConnection bob NRMInteractive 1 aId True connReq' "bob's connInfo" PQSupportOn SMSubscribe
     ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
     bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     pure (bId, invId, aId)
@@ -1189,7 +1190,7 @@ testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
-  (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ SMSubscribe
+  (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ False SMSubscribe
   (bAliceId, bobId, abPQEnc) <- connectViaContact bob bPQ qInfo
   sentMessages abPQEnc alice bobId bob bAliceId
   (tAliceId, tomId, atPQEnc) <- connectViaContact tom tPQ qInfo
@@ -1198,7 +1199,7 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
     msgId = subtract baseId . fst
     connectViaContact b pq qInfo = do
       aId <- A.prepareConnectionToJoin b 1 True qInfo pq
-      sqSecuredJoin <- A.joinConnection b NRMInteractive 1 aId True qInfo Nothing "bob's connInfo" pq SMSubscribe
+      sqSecuredJoin <- A.joinConnection b NRMInteractive 1 aId True qInfo "bob's connInfo" pq SMSubscribe
       liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
       ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -1242,9 +1243,9 @@ noMessages_ ingoreQCONT c err = tryGet `shouldReturn` ()
 testRejectContactRequest :: HasCallStack => IO ()
 testRejectContactRequest =
   withAgentClients2 $ \alice bob -> runRight_ $ do
-    (_addrConnId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+    (_addrConnId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
     rejectContact alice invId
@@ -1257,7 +1258,7 @@ testUpdateConnectionUserId =
     newUserId <- createUser alice False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
     _ <- changeConnectionUser alice 1 connId newUserId
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    sqSecured' <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    sqSecured' <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured' `shouldBe` True
     ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
     liftIO $ pqSup' `shouldBe` PQSupportOn
@@ -1417,13 +1418,13 @@ testInvitationErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   aId <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
   -- fails to secure the queue on testPort
-  BROKER srv (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+  BROKER srv (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
   (testPort `isSuffixOf` srv) `shouldBe` True
   withServer1 ps $ do
     ("", "", UP _ [_]) <- nGet a
     let loopSecure = do
           -- secures the queue on testPort, but fails to create reply queue on testPort2
-          BROKER srv2 (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+          BROKER srv2 (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
           unless (testPort2 `isSuffixOf` srv2) $ putStrLn "retrying secure" >> threadDelay 200000 >> loopSecure
     loopSecure
   ("", "", DOWN _ [_]) <- nGet a
@@ -1431,7 +1432,7 @@ testInvitationErrors ps restart = do
     threadDelay 200000
     let loopCreate = do
           -- creates the reply queue on testPort2, but fails to send it to testPort
-          BROKER srv' (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+          BROKER srv' (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
           unless (testPort `isSuffixOf` srv') $ putStrLn "retrying create" >> threadDelay 200000 >> loopCreate
     loopCreate
     restartAgentB restart b [aId]
@@ -1440,7 +1441,7 @@ testInvitationErrors ps restart = do
     ("", "", UP _ [_]) <- nGet a
     threadDelay 200000
     let loopConfirm n =
-          runExceptT (A.joinConnection b' NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
+          runExceptT (A.joinConnection b' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
             Right True -> pure n
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
@@ -1487,12 +1488,12 @@ testContactErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   aId <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
   -- fails to create queue on testPort2
-  BROKER srv2 (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+  BROKER srv2 (NETWORK _) <- runLeft $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
   (testPort2 `isSuffixOf` srv2) `shouldBe` True
   b' <- restartAgentB restart b [aId]
   let loopCreate2 = do
         -- creates the reply queue on testPort2, but fails to send invitation to testPort
-        BROKER srv' (NETWORK _) <- runLeft $ A.joinConnection b' NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+        BROKER srv' (NETWORK _) <- runLeft $ A.joinConnection b' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe
         unless (testPort `isSuffixOf` srv') $ putStrLn "retrying create 2" >> threadDelay 200000 >> loopCreate2
   b'' <- withServer2 ps $ do
     loopCreate2
@@ -1502,7 +1503,7 @@ testContactErrors ps restart = do
     ("", "", UP _ [_]) <- nGet a
     let loopSend = do
           -- sends the invitation to testPort
-          runExceptT (A.joinConnection b'' NRMInteractive 1 aId True cReq Nothing "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
+          runExceptT (A.joinConnection b'' NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) >>= \case
             Right False -> pure ()
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
@@ -1569,13 +1570,13 @@ testInvitationShortLink viaProxy a b =
   withAgent 3 agentCfg initAgentServers testDB3 $ \c -> do
     let userData = UserLinkData "some user data"
         newLinkData = UserInvLinkData userData
-    (bId, CCLink connReq (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMSubscribe
-    (FixedLinkData {linkConnReq = connReq'}, connData') <- runRight $ getConnShortLink b 1 shortLink
+    (bId, CCLink connReq (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ False SMSubscribe
+    (_, connData', connReq') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
     linkUserData connData' `shouldBe` userData
     -- same user can get invitation link again
-    (FixedLinkData {linkConnReq = connReq2}, connData2) <- runRight $ getConnShortLink b 1 shortLink
+    (_, connData2, connReq2) <- runRight $ getConnShortLink b 1 shortLink
     connReq2 `shouldBe` connReq
     linkUserData connData2 `shouldBe` userData
     -- another user cannot get the same invitation link
@@ -1591,7 +1592,7 @@ testInvitationShortLink viaProxy a b =
 testJoinConn_ :: Bool -> Bool -> AgentClient -> ConnId -> AgentClient -> ConnectionRequestUri c -> ExceptT AgentErrorType IO ()
 testJoinConn_ viaProxy sndSecure a bId b connReq = do
   aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
-  sndSecure' <- A.joinConnection b NRMInteractive 1 aId True connReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+  sndSecure' <- A.joinConnection b NRMInteractive 1 aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
   liftIO $ sndSecure' `shouldBe` sndSecure
   ("", _, CONF confId _ "bob's connInfo") <- get a
   allowConnection a bId confId "alice's connInfo"
@@ -1605,21 +1606,21 @@ testInvitationShortLinkPrev viaProxy sndSecure a b = runRight_ $ do
   let userData = UserLinkData "some user data"
       newLinkData = UserInvLinkData userData
   -- can't create short link with previous version
-  (bId, CCLink connReq Nothing) <- A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
+  (bId, CCLink connReq Nothing) <- A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKPQOn False SMSubscribe
   testJoinConn_ viaProxy sndSecure a bId b connReq
 
 testInvitationShortLinkAsync :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testInvitationShortLinkAsync viaProxy a b = do
   let userData = UserLinkData "some user data"
       newLinkData = UserInvLinkData userData
-  (bId, CCLink connReq (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMSubscribe
-  (FixedLinkData {linkConnReq = connReq'}, connData') <- runRight $ getConnShortLink b 1 shortLink
+  (bId, CCLink connReq (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ False SMSubscribe
+  (_, connData', connReq') <- runRight $ getConnShortLink b 1 shortLink
   strDecode (strEncode shortLink) `shouldBe` Right shortLink
   connReq' `shouldBe` connReq
   linkUserData connData' `shouldBe` userData
   runRight $ do
     aId <- A.prepareConnectionToJoin b 1 True connReq PQSupportOn
-    A.joinConnectionAsync b "123" False aId True connReq Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    A.joinConnectionAsync b "123" False aId True connReq "bob's connInfo" PQSupportOn SMSubscribe
     get b =##> \case ("123", c, JOINED sndSecure) -> c == aId && sndSecure; _ -> False
     ("", _, CONF confId _ "bob's connInfo") <- get a
     allowConnection a bId confId "alice's connInfo"
@@ -1640,18 +1641,20 @@ testContactShortLink viaProxy a b =
     let userData = UserLinkData "some user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
         newLinkData = UserContactLinkData userCtData
-    (contactId, CCLink connReq0 (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn SMSubscribe
-    Right connReq <- pure $ smpDecode (smpEncode connReq0)
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (contactId, CCLink connReq0 (Just shortLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn False SMSubscribe
+    -- normalize through binary fixed-data encoding (queue mode patch); the extended type has no binary encoding
+    Right connReqBin <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
+    let connReq = connReqWithKeys connReqBin Nothing
+    (_, ContactLinkData _ userCtData', connReq') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
     -- same user can get contact link again
-    (FixedLinkData {linkConnReq = connReq2}, ContactLinkData _ userCtData2) <- runRight $ getConnShortLink b 1 shortLink
+    (_, ContactLinkData _ userCtData2, connReq2) <- runRight $ getConnShortLink b 1 shortLink
     connReq2 `shouldBe` connReq
     userCtData2 `shouldBe` userCtData
     -- another user can get the same contact link
-    (FixedLinkData {linkConnReq = connReq3}, ContactLinkData _ userCtData3) <- runRight $ getConnShortLink c 1 shortLink
+    (_, ContactLinkData _ userCtData3, connReq3) <- runRight $ getConnShortLink c 1 shortLink
     connReq3 `shouldBe` connReq
     userCtData3 `shouldBe` userCtData
     runRight $ do
@@ -1673,7 +1676,7 @@ testContactShortLink viaProxy a b =
         userLinkData' = UserContactLinkData updatedCtData
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact userLinkData' Nothing
     shortLink' `shouldBe` shortLink
-    (FixedLinkData {linkConnReq = connReq4}, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink c 1 shortLink
+    (_, ContactLinkData _ updatedCtData', connReq4) <- runRight $ getConnShortLink c 1 shortLink
     connReq4 `shouldBe` connReq
     updatedCtData' `shouldBe` updatedCtData
     -- one more time
@@ -1687,22 +1690,24 @@ testContactShortLink viaProxy a b =
 testAddContactShortLink :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testAddContactShortLink viaProxy a b =
   withAgent 3 agentCfg initAgentServers testDB3 $ \c -> do
-    (contactId, CCLink connReq0 Nothing) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMSubscribe
-    Right connReq <- pure $ smpDecode (smpEncode connReq0) --
+    (contactId, CCLink connReq0 Nothing) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMSubscribe
+    -- normalize through binary fixed-data encoding (queue mode patch); the extended type has no binary encoding
+    Right connReqBin <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
+    let connReq = connReqWithKeys connReqBin Nothing
     let userData = UserLinkData "some user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
         newLinkData = UserContactLinkData userCtData
     shortLink <- runRight $ setConnShortLink a contactId SCMContact newLinkData Nothing
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (_, ContactLinkData _ userCtData', connReq') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
     -- same user can get contact link again
-    (FixedLinkData {linkConnReq = connReq2}, ContactLinkData _ userCtData2) <- runRight $ getConnShortLink b 1 shortLink
+    (_, ContactLinkData _ userCtData2, connReq2) <- runRight $ getConnShortLink b 1 shortLink
     connReq2 `shouldBe` connReq
     userCtData2 `shouldBe` userCtData
     -- another user can get the same contact link
-    (FixedLinkData {linkConnReq = connReq3}, ContactLinkData _ userCtData3) <- runRight $ getConnShortLink c 1 shortLink
+    (_, ContactLinkData _ userCtData3, connReq3) <- runRight $ getConnShortLink c 1 shortLink
     connReq3 `shouldBe` connReq
     userCtData3 `shouldBe` userCtData
     runRight $ do
@@ -1724,7 +1729,7 @@ testAddContactShortLink viaProxy a b =
         userLinkData' = UserContactLinkData updatedCtData
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact userLinkData' Nothing
     shortLink' `shouldBe` shortLink
-    (FixedLinkData {linkConnReq = connReq4}, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink c 1 shortLink
+    (_, ContactLinkData _ updatedCtData', connReq4) <- runRight $ getConnShortLink c 1 shortLink
     connReq4 `shouldBe` connReq
     updatedCtData' `shouldBe` updatedCtData
 
@@ -1733,10 +1738,10 @@ testInvitationShortLinkRestart ps = withAgentClients2 $ \a b -> do
   let userData = UserLinkData "some user data"
       newLinkData = UserInvLinkData userData
   (bId, CCLink connReq (Just shortLink)) <- withSmpServer ps $
-    runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ SMOnlyCreate
+    runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ False SMOnlyCreate
   withSmpServer ps $ do
     runRight_ $ subscribeConnection a bId
-    (FixedLinkData {linkConnReq = connReq'}, connData') <- runRight $ getConnShortLink b 1 shortLink
+    (_, connData', connReq') <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     connReq' `shouldBe` connReq
     linkUserData connData' `shouldBe` userData
@@ -1747,13 +1752,13 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
       userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       newLinkData = UserContactLinkData userCtData
   (contactId, CCLink connReq0 (Just shortLink)) <- withSmpServer ps $
-    runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn SMOnlyCreate
-  Right connReq <- pure $ smpDecode (smpEncode connReq0)
+    runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn False SMOnlyCreate
+  Right connReq <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
   let updatedData = UserLinkData "updated user data"
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData, ratchetKeys = Nothing}
       updatedLinkData = UserContactLinkData updatedCtData
   withSmpServer ps $ do
-    (fd', ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (fd', ContactLinkData _ userCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     linkConnReq fd' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
@@ -1761,7 +1766,7 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
   withSmpServer ps $ do
-    (fd4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (fd4, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     linkConnReq fd4 `shouldBe` connReq
     updatedCtData' `shouldBe` updatedCtData
 
@@ -1771,14 +1776,14 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
       userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
       newLinkData = UserContactLinkData userCtData
   ((contactId, CCLink connReq0 Nothing), shortLink) <- withSmpServer ps $ runRight $ do
-    r@(contactId, _) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
+    r@(contactId, _) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMOnlyCreate
     (r,) <$> setConnShortLink a contactId SCMContact newLinkData Nothing
-  Right connReq <- pure $ smpDecode (smpEncode connReq0)
+  Right connReq <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
   let updatedData = UserLinkData "updated user data"
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData, ratchetKeys = Nothing}
       updatedLinkData = UserContactLinkData updatedCtData
   withSmpServer ps $ do
-    (fd', ContactLinkData _  userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (fd', ContactLinkData _  userCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
     linkConnReq fd' `shouldBe` connReq
     userCtData' `shouldBe` userCtData
@@ -1786,14 +1791,14 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
   withSmpServer ps $ do
-    (fd4, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (fd4, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     linkConnReq fd4 `shouldBe` connReq
     updatedCtData' `shouldBe` updatedCtData
 
 testOldContactQueueShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
   (contactId, CCLink connReq Nothing) <- withSmpServer ps $ runRight $
-    A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn SMOnlyCreate
+    A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMOnlyCreate
   -- make it an "old" queue
   let updateStoreLog f = replaceSubstringInFile f " queue_mode=C" ""
 #if defined(dbServerPostgres)
@@ -1825,9 +1830,9 @@ testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
         userLinkData = UserContactLinkData userCtData
     shortLink <- runRight $ setConnShortLink a contactId SCMContact userLinkData Nothing
-    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData') <- runRight $ getConnShortLink b 1 shortLink
+    (FixedLinkData {linkConnReq = connReq'}, ContactLinkData _ userCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     strDecode (strEncode shortLink) `shouldBe` Right shortLink
-    connReq' `shouldBe` connReq
+    connReq' `shouldBe` binaryConnReq connReq
     userCtData' `shouldBe` userCtData
     -- update user data
     let updatedData = UserLinkData "updated user data"
@@ -1836,8 +1841,8 @@ testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact userLinkData' Nothing
     shortLink' `shouldBe` shortLink
     -- check updated
-    (FixedLinkData {linkConnReq = connReq''}, ContactLinkData _ updatedCtData') <- runRight $ getConnShortLink b 1 shortLink
-    connReq'' `shouldBe` connReq
+    (FixedLinkData {linkConnReq = connReq''}, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
+    connReq'' `shouldBe` binaryConnReq connReq
     updatedCtData' `shouldBe` updatedCtData
 
 replaceSubstringInFile :: FilePath -> T.Text -> T.Text -> IO ()
@@ -1856,12 +1861,13 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
   linkEntId <- atomically $ C.randomBytes 32 g
   runRight $ do
     (ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
-      A.prepareConnectionLink a 1 rootKey linkEntId True Nothing Nothing
+      A.prepareConnectionLink a 1 rootKey linkEntId True Nothing CR.IKPQOn False Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
-    _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData CR.IKPQOn False SMSubscribe
-    (FixedLinkData {linkConnReq = connReq', linkEntityId}, ContactLinkData _ userCtData') <- getConnShortLink b 1 shortLink
+    _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (FixedLinkData {linkEntityId}, ContactLinkData _ userCtData', connReq') <- getConnShortLink b 1 shortLink
     liftIO $ Just linkEntId `shouldBe` linkEntityId
-    Right connReqDecoded <- pure $ smpDecode (smpEncode connReq)
+    Right connReqBin <- pure $ smpDecode (smpEncode (binaryConnReq connReq))
+    let connReqDecoded = connReqWithKeys connReqBin Nothing
     liftIO $ connReq' `shouldBe` connReqDecoded
     liftIO $ userCtData' `shouldBe` userCtData
     (bId, sndSecure) <- joinConnection b 1 True connReq' "bob's connInfo" SMSubscribe
@@ -2600,9 +2606,9 @@ makeConnectionForUsers = makeConnectionForUsers_ PQSupportOn True
 
 makeConnectionForUsers_ :: HasCallStack => PQSupport -> SndQueueSecured -> AgentClient -> UserId -> AgentClient -> UserId -> ExceptT AgentErrorType IO (ConnId, ConnId)
 makeConnectionForUsers_ pqSupport sqSecured alice aliceUserId bob bobUserId = do
-  (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive aliceUserId True True SCMInvitation Nothing Nothing (IKLinkPQ pqSupport) SMSubscribe
+  (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive aliceUserId True True SCMInvitation Nothing Nothing (IKLinkPQ pqSupport) False SMSubscribe
   aliceId <- A.prepareConnectionToJoin bob bobUserId True qInfo pqSupport
-  sqSecured' <- A.joinConnection bob NRMInteractive bobUserId aliceId True qInfo Nothing "bob's connInfo" pqSupport SMSubscribe
+  sqSecured' <- A.joinConnection bob NRMInteractive bobUserId aliceId True qInfo "bob's connInfo" pqSupport SMSubscribe
   liftIO $ sqSecured' `shouldBe` sqSecured
   ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
   liftIO $ pqSup' `shouldBe` pqSupport
@@ -2880,11 +2886,11 @@ testAsyncCommands :: SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId
 testAsyncCommands sqSecured alice bob baseId =
   runRight_ $ do
     bobId <- prepareConnectionToCreate alice 1 True SCMInvitation PQSupportOn
-    createConnectionAsync alice "1" bobId True SCMInvitation IKPQOn SMSubscribe
+    createConnectionAsync alice "1" bobId True SCMInvitation IKPQOn False SMSubscribe
     ("1", bobId', INV (ACR _ qInfo)) <- get alice
     liftIO $ bobId' `shouldBe` bobId
     aliceId <- prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-    joinConnectionAsync bob "2" False aliceId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     ("2", aliceId', JOINED sqSecured') <- get bob
     liftIO $ do
       aliceId' `shouldBe` aliceId
@@ -2935,9 +2941,9 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let userData = UserLinkData "test user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
         newLinkData = UserContactLinkData userCtData
-    (cId, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    (cId, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn False SMSubscribe
     -- verify initial link data
-    (_, ContactLinkData _ userCtData') <- getConnShortLink bob 1 shortLink
+    (_, ContactLinkData _ userCtData', _) <- getConnShortLink bob 1 shortLink
     liftIO $ userCtData' `shouldBe` userCtData
     -- update link data async
     let updatedData = UserLinkData "updated user data"
@@ -2948,7 +2954,7 @@ testSetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     liftIO $ shortLink' `shouldBe` shortLink
     liftIO $ updatedCtData' `shouldBe` updatedCtData
     -- verify updated link data
-    (_, ContactLinkData _ updatedCtData'') <- getConnShortLink bob 1 shortLink'
+    (_, ContactLinkData _ updatedCtData'', _) <- getConnShortLink bob 1 shortLink'
     liftIO $ updatedCtData'' `shouldBe` updatedCtData
     -- complete connection via contact address
     (aliceId, _) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
@@ -2967,15 +2973,15 @@ testGetConnShortLinkAsync ps = withAgentClients2 $ \alice bob ->
     let userData = UserLinkData "test user data"
         userCtData = UserContactData {direct = True, owners = [], relays = [], userData, ratchetKeys = Nothing}
         newLinkData = UserContactLinkData userCtData
-    (_, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn SMSubscribe
+    (_, CCLink qInfo (Just shortLink)) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing IKPQOn False SMSubscribe
     -- get link data async - creates new connection for bob
     newId <- getConnShortLinkAsync bob 1 "1" Nothing shortLink
-    ("1", newId', LDATA FixedLinkData {linkConnReq = qInfo'} (ContactLinkData _ userCtData')) <- get bob
+    ("1", newId', LDATA FixedLinkData {linkConnReq = qInfo'} (ContactLinkData _ userCtData') connReq') <- get bob
     liftIO $ newId' `shouldBe` newId
-    liftIO $ qInfo' `shouldBe` qInfo
+    liftIO $ qInfo' `shouldBe` binaryConnReq qInfo
     liftIO $ userCtData' `shouldBe` userCtData
-    -- join connection async using connId from getConnShortLinkAsync
-    joinConnectionAsync bob "2" True newId True qInfo' Nothing "bob's connInfo" PQSupportOn SMSubscribe
+    -- join connection async using connId from getConnShortLinkAsync and the merged connReq from LDATA
+    joinConnectionAsync bob "2" True newId True connReq' "bob's connInfo" PQSupportOn SMSubscribe
     let aliceId = newId
     ("2", aliceId', JOINED False) <- get bob
     liftIO $ aliceId' `shouldBe` aliceId
@@ -2994,7 +3000,7 @@ testAsyncCommandsRestore ps = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bobId <- runRight $ do
     connId <- prepareConnectionToCreate alice 1 True SCMInvitation PQSupportOn
-    createConnectionAsync alice "1" connId True SCMInvitation IKPQOn SMSubscribe
+    createConnectionAsync alice "1" connId True SCMInvitation IKPQOn False SMSubscribe
     pure connId
   liftIO $ noMessages alice "alice doesn't receive INV because server is down"
   disposeAgentClient alice
@@ -3284,11 +3290,11 @@ testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
     withAgent 2 cfg' initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
         bId <- prepareConnectionToCreate a 1 True SCMInvitation PQSupportOn
-        createConnectionAsync a "1" bId True SCMInvitation IKPQOn SMSubscribe
+        createConnectionAsync a "1" bId True SCMInvitation IKPQOn False SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" False aId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
@@ -3331,11 +3337,11 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
     withAgent 2 agentCfg initAgentServersSrv2 testDB2 $ \b -> do
       (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
         bId <- prepareConnectionToCreate a 1 True SCMInvitation PQSupportOn
-        createConnectionAsync a "1" bId True SCMInvitation IKPQOn SMSubscribe
+        createConnectionAsync a "1" bId True SCMInvitation IKPQOn False SMSubscribe
         ("1", bId', INV (ACR _ qInfo)) <- get a
         liftIO $ bId' `shouldBe` bId
         aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" False aId True qInfo Nothing "bob's connInfo" PQSupportOn SMSubscribe
+        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
         liftIO $ threadDelay 500000
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
@@ -4636,7 +4642,7 @@ testClientNotice :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testClientNotice ps = do
   withAgent 1 agentCfg initAgentServers testDB $ \c -> do
     (cId, _) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $
-      A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
     ("", "", DOWN _ [_]) <- nGet c
 
     addNotice c cId $ Just 1
@@ -4645,7 +4651,7 @@ testClientNotice ps = do
       subscribedWithErrors c 1
       testNotice c True
       threadDelay 1000000
-      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
     ("", "", DOWN _ [_]) <- nGet c
 
     addNotice c cId' $ Just 1
@@ -4656,7 +4662,7 @@ testClientNotice ps = do
       threadDelay 1000000
       testNotice c True
       threadDelay 1000000
-      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
 
     addNotice c cId'' $ Just 1
 
@@ -4668,7 +4674,7 @@ testClientNotice ps = do
       threadDelay 2000000
       testNotice c True
       threadDelay 1000000
-      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
     ("", "", DOWN _ [_]) <- nGet c
 
     addNotice c cId3 Nothing
@@ -4683,7 +4689,7 @@ testClientNotice ps = do
     withSmpServerStoreLogOn ps testPort $ \_ -> do
       runRight_ $ subscribeAllConnections c False Nothing
       subscribedWithErrors c 4
-      void $ runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      void $ runRight $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
   where
     addNotice c cId ttl = logNotice c cId $ Just ClientNotice {ttl}
     removeNotice c cId = logNotice c cId Nothing
@@ -4699,7 +4705,7 @@ testClientNotice ps = do
         r -> expectationFailure $ "unexpected event: " <> show r
     testNotice :: HasCallStack => AgentClient -> Bool -> IO ()
     testNotice c willExpire = do
-      NOTICE "localhost" False expiresAt_ <- runLeft $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn SMSubscribe
+      NOTICE "localhost" False expiresAt_ <- runLeft $ A.createConnection c NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
       isJust expiresAt_ `shouldBe` willExpire
 
 noNetworkDelay :: AgentClient -> IO ()

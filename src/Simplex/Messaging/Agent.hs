@@ -365,8 +365,8 @@ prepareConnectionToCreate c userId enableNtfs = withAgentEnv c .: newConnNoQueue
 {-# INLINE prepareConnectionToCreate #-}
 
 -- | Enqueue NEW command for a prepared connection.
-createConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AE ()
-createConnectionAsync c aCorrId connId enableNtfs = withAgentEnv c .:. newConnAsync c aCorrId connId enableNtfs
+createConnectionAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> SConnectionMode c -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AE ()
+createConnectionAsync c aCorrId connId enableNtfs = withAgentEnv c .:: newConnAsync c aCorrId connId enableNtfs
 {-# INLINE createConnectionAsync #-}
 
 -- | Create or update user's contact connection short link (LSET command) asynchronously, no synchronous response
@@ -380,8 +380,8 @@ getConnShortLinkAsync c = withAgentEnv c .:: getConnShortLinkAsync' c
 {-# INLINE getConnShortLinkAsync #-}
 
 -- | Enqueue JOIN command for a prepared connection.
-joinConnectionAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
-joinConnectionAsync c aCorrId updateConn connId enableNtfs = withAgentEnv c .::. joinConnAsync c aCorrId updateConn connId enableNtfs
+joinConnectionAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE ()
+joinConnectionAsync c aCorrId updateConn connId enableNtfs = withAgentEnv c .:: joinConnAsync c aCorrId updateConn connId enableNtfs
 {-# INLINE joinConnectionAsync #-}
 
 -- | Allow connection to continue after CONF notification (LET command), no synchronous response
@@ -415,27 +415,27 @@ deleteConnectionsAsync c waitDelivery = withAgentEnv c . deleteConnectionsAsync'
 {-# INLINE deleteConnectionsAsync #-}
 
 -- | Create SMP agent connection (NEW command)
-createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AE (ConnId, CreatedConnLink c)
-createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newConn c nm userId enableNtfs checkNotices
+createConnection :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AE (ConnId, CreatedConnLink c)
+createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::: newConn c nm userId enableNtfs checkNotices
 {-# INLINE createConnection #-}
 
 -- | Prepare connection link for contact mode (no network call).
 -- Caller provides root signing key pair and link entity ID.
 -- Returns the created link and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> Maybe SMPServerWithAuth -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData srv_ =
-  withAgentEnv c $ prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData srv_
+prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData pqInitKeys advertiseDR srv_ =
+  withAgentEnv c $ prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData pqInitKeys advertiseDR srv_
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
 -- Validates that server response matches the prepared link.
-createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AE ConnId
-createConnectionForLink c nm userId enableNtfs = withAgentEnv c .::: createConnectionForLink' c nm userId enableNtfs
+createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> SubscriptionMode -> AE ConnId
+createConnectionForLink c nm userId enableNtfs = withAgentEnv c .:: createConnectionForLink' c nm userId enableNtfs
 {-# INLINE createConnectionForLink #-}
 
 -- | Create or update user's contact connection short link
-setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> Bool -> AE (ConnShortLink c)
+setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> AE (ConnShortLink c)
 setConnShortLink c = withAgentEnv c .::: setConnShortLink' c
 {-# INLINE setConnShortLink #-}
 
@@ -444,7 +444,7 @@ deleteConnShortLink c = withAgentEnv c .:. deleteConnShortLink' c
 {-# INLINE deleteConnShortLink #-}
 
 -- | Get and verify data from short link. For 1-time invitations it preserves the key to allow retries
-getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c)
+getConnShortLink :: AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AE (FixedLinkData c, ConnLinkData c, ConnectionRequestUri c)
 getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 {-# INLINE getConnShortLink #-}
 
@@ -484,8 +484,8 @@ prepareConnectionToAccept c userId enableNtfs = withAgentEnv c .: newConnToAccep
 {-# INLINE prepareConnectionToAccept #-}
 
 -- | Join SMP agent connection (JOIN command).
-joinConnection :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
-joinConnection c nm userId connId enableNtfs = withAgentEnv c .::. joinConn c nm userId connId enableNtfs
+joinConnection :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AE SndQueueSecured
+joinConnection c nm userId connId enableNtfs = withAgentEnv c .:: joinConn c nm userId connId enableNtfs
 {-# INLINE joinConnection #-}
 
 -- | Allow connection to continue after CONF notification (LET command)
@@ -852,9 +852,9 @@ setUserService' c userId enable = do
   unless ok $ throwE $ CMD PROHIBITED "setUserService"
   when (changed && not enable) $ withStore' c (`deleteClientServices` userId)
 
-newConnAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> SConnectionMode c -> CR.InitialKeys -> SubscriptionMode -> AM ()
-newConnAsync c corrId connId enableNtfs cMode pqInitKeys subMode =
-  enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode) pqInitKeys subMode
+newConnAsync :: ConnectionModeI c => AgentClient -> ACorrId -> ConnId -> Bool -> SConnectionMode c -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AM ()
+newConnAsync c corrId connId enableNtfs cMode pqInitKeys advertiseDR subMode =
+  enqueueCommand c corrId connId Nothing $ AClientCommand $ NEW enableNtfs (ACM cMode) pqInitKeys subMode advertiseDR
 {-# INLINE newConnAsync #-}
 
 newConnNoQueues :: AgentClient -> UserId -> Bool -> SConnectionMode c -> PQSupport -> AM ConnId
@@ -866,22 +866,21 @@ newConnNoQueues c userId enableNtfs cMode pqSupport = do
 
 -- TODO [short links] TBC, but probably we will need async join for contact addresses as the contact will be created after user confirming the connection,
 -- and join should retry, the same as 1-time invitation joins.
-joinConnAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
-joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} addrKeys_ cInfo pqSup subMode = do
+joinConnAsync :: AgentClient -> ACorrId -> Bool -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM ()
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} cInfo pqSup subMode = do
   when updateConn $ throwE $ CMD PROHIBITED "joinConnAsync: updateConn not allowed for invitation URI"
-  when (isJust addrKeys_) $ throwE $ CMD PROHIBITED "joinConnAsync: address ratchet keys not allowed for invitation URI"
   withInvLock c (strEncode cReqUri) "joinConnAsync" $
     lift (compatibleInvitationUri cReqUri) >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
         let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
-        enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRConnReq enableNtfs (ACR sConnectionMode cReqUri) pqSupport Nothing) subMode cInfo
+        enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRConnReq enableNtfs (ACR sConnectionMode cReqUri) pqSupport) subMode cInfo
       Nothing -> throwE $ AGENT A_VERSION
-joinConnAsync c corrId updateConn connId enableNtfs cReqUri@(CRContactUri _) addrKeys_ cInfo pqSup subMode =
+joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode =
   lift (compatibleContactUri cReqUri) >>= \case
-    Just (_, Compatible connAgentVersion) -> do
-      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion Nothing
+    Just (_, ratchet_, Compatible connAgentVersion) -> do
+      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (addrKeysE2EVersion ratchet_)
       when updateConn $ withStore' c $ \db -> updateNewConnJoin db connId connAgentVersion pqSupport enableNtfs
-      enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRConnReq enableNtfs (ACR sConnectionMode cReqUri) pqSupport addrKeys_) subMode cInfo
+      enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRConnReq enableNtfs (ACR sConnectionMode cReqUri) pqSupport) subMode cInfo
     Nothing -> throwE $ AGENT A_VERSION
 
 allowConnectionAsync' :: AgentClient -> ACorrId -> ConnId -> ConfirmationId -> ConnInfo -> AM ()
@@ -903,7 +902,7 @@ acceptContactAsync' c corrId connId enableNtfs invId ownConnInfo pqSupport subMo
   withStore' c $ \db -> acceptInvitation db invId ownConnInfo
   let joinCmd = case connReq of
         CRInvitationDR dr -> enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRInvitationDR dr) subMode ownConnInfo
-        CRInvitation cReq -> joinConnAsync c corrId False connId enableNtfs cReq Nothing ownConnInfo pqSupport subMode
+        CRInvitation cReq -> joinConnAsync c corrId False connId enableNtfs cReq ownConnInfo pqSupport subMode
   joinCmd `catchAllErrors` \err -> do
     withStore' c (`unacceptInvitation` invId)
     throwE err
@@ -959,44 +958,53 @@ switchConnectionAsync' c corrId connId =
             connectionStats c $ DuplexConnection cData rqs' sqs
       _ -> throwE $ CMD PROHIBITED "switchConnectionAsync: not duplex"
 
-newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> AM (ConnId, CreatedConnLink c)
-newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKeys subMode = do
+newConn :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AM (ConnId, CreatedConnLink c)
+newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKeys advertiseDR subMode = do
   srv <- getSMPServer c userId
   when (checkNotices && connMode cMode == CMContact) $ checkClientNotices c srv
   connId <- newConnNoQueues c userId enableNtfs cMode (CR.connPQEncryption pqInitKeys)
   (connId,)
-    <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys subMode srv
+    <$> newRcvConnSrv c nm userId connId enableNtfs cMode linkData_ clientData pqInitKeys advertiseDR subMode srv
       `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
 
 -- | Prepare connection link for contact mode (no network, no database).
 -- Caller provides root signing key pair and link entity ID.
-prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> Maybe SMPServerWithAuth -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData srv_ = do
+prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData pqInitKeys advertiseDR srv_ = do
+  case pqInitKeys of
+    CR.IKUsePQ -> throwE $ CMD PROHIBITED "prepareConnectionLink"
+    _ -> pure ()
   g <- asks random
   plpSrvWithAuth@(ProtoServerWithAuth srv _) <- maybe (getSMPServer c userId) pure srv_
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
+  -- when opted in, generate the advertised DR keys in memory so the returned connReq carries them; the private
+  -- half is persisted later in createConnectionForLink. The bundle uses the connection's PQ, so its KEM is present
+  -- iff owner PQ is on, letting a PQ requester encrypt its first message (profile) with PQ from message 1.
+  addrKeys_ <- if advertiseDR then Just <$> generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys) else pure Nothing
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
-      connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
+      connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) (fst <$> addrKeys_)
       (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData rootKey smpAgentVRange connReq (Just linkEntityId)
       ccLink = CCLink connReq $ Just $ CSLContact SLSServer CCTContact srv plpLinkKey
-      params = PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth}
+      params = PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth, plpInitKeys = pqInitKeys, plpAddressKeys = snd <$> addrKeys_}
   pure (ccLink, params)
 
 -- | Create connection for prepared link (single network call).
-createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> AM ConnId
-createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth} userLinkData pqInitKeys advertiseDR subMode = do
+createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink 'CMContact -> PreparedLinkParams -> UserConnLinkData 'CMContact -> SubscriptionMode -> AM ConnId
+createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth, plpInitKeys, plpAddressKeys} userLinkData subMode = do
   g <- asks random
   AgentConfig {smpAgentVRange} <- asks config
-  case pqInitKeys of
-    CR.IKUsePQ -> throwE $ CMD PROHIBITED "createConnectionForLink"
-    _ -> pure ()
-  connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption pqInitKeys)
-  userLinkData' <- if advertiseDR then advertiseDRKeys connId else pure userLinkData
-  let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
+  connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption plpInitKeys)
+  -- persist the private half of the advertised keys (generated in prepareConnectionLink) so the owner can complete
+  -- the ratchet when a requester joins; the public half rides in the connReq and goes into the mutable link data
+  mapM_ (storeAddressRatchetKeys c connId) plpAddressKeys
+  let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} addrKeys_ = connReq
+      userLinkData' = case addrKeys_ of
+        Just arKeys -> let UserContactLinkData ucd = userLinkData in UserContactLinkData ucd {ratchetKeys = Just arKeys}
+        Nothing -> userLinkData
       md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
       linkData = (plpSignedFixedData, md)
   qd <- encryptContactLinkData g plpRootPrivKey plpLinkKey sndId linkData
@@ -1006,26 +1014,33 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri
   unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
   pure connId
-  where
-    advertiseDRKeys :: ConnId -> AM (UserConnLinkData 'CMContact)
-    advertiseDRKeys connId = do
-      -- the advertised bundle uses the connection's PQ, so its KEM is present iff the owner PQ is on, letting a
-      -- PQ requester encrypt its first message (profile) with PQ from message 1
-      arKeys <- newAddressRatchetKeys c connId (CR.connPQEncryption pqInitKeys)
-      let UserContactLinkData ucd = userLinkData
-      pure $ UserContactLinkData ucd {ratchetKeys = Just arKeys}
 
-newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchetKeys
-newAddressRatchetKeys c connId pqSupport = do
+-- Generate a fresh address ratchet key set in memory (no DB): the advertised public part and the private half to persist.
+generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, StoredAddressRatchetKeys)
+generateAddressRatchetKeys pqSupport = do
   g <- asks random
   e2eVR <- asks $ e2eEncryptVRange . config
-  keep <- asks $ keepAddressKeys . config
   (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqSupport
   ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
+  pure
+    ( AddressRatchetKeys {ratchetKeyId, e2eRcvParams = toVersionRangeT e2eParams e2eVR},
+      StoredAddressRatchetKeys {saRatchetKeyId = ratchetKeyId, saRcvPrivKey1 = pk1, saRcvPrivKey2 = pk2, saRcvPrivKem = pKem}
+    )
+
+-- Persist the private half (keyed by connId + ratchetKeyId) and prune old keys.
+storeAddressRatchetKeys :: AgentClient -> ConnId -> StoredAddressRatchetKeys -> AM ()
+storeAddressRatchetKeys c connId StoredAddressRatchetKeys {saRatchetKeyId, saRcvPrivKey1, saRcvPrivKey2, saRcvPrivKem} = do
+  keep <- asks $ keepAddressKeys . config
   withStore' c $ \db -> do
-    createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
+    createAddressRatchetKeys db connId saRatchetKeyId saRcvPrivKey1 saRcvPrivKey2 saRcvPrivKem
     deleteOldAddressRatchetKeys db connId keep
-  pure AddressRatchetKeys {ratchetKeyId, e2eRcvParams = toVersionRangeT e2eParams e2eVR}
+
+-- Generate + persist, used for rotation via setConnShortLink where the connId already exists.
+newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchetKeys
+newAddressRatchetKeys c connId pqSupport = do
+  (arKeys, stored) <- generateAddressRatchetKeys pqSupport
+  storeAddressRatchetKeys c connId stored
+  pure arKeys
 
 currentAddressRatchetKeys :: AgentClient -> ConnId -> AM (Maybe AddressRatchetKeys)
 currentAddressRatchetKeys c connId =
@@ -1113,7 +1128,7 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
               }
       createNewConn db g cData SCMInvitation
 
-setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> Bool -> AM (ConnShortLink c)
+setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData rotate =
   withConnLock c connId "setConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
@@ -1144,7 +1159,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotate =
         Nothing -> do
           sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
           let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
-              connReq = CRContactUri $ ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
+              connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) ratchetKeys
               (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing ud
               (linkId, k) = SL.contactShortLinkKdf linkKey
           srvData <- liftError id $ SL.encryptLinkData g k linkData
@@ -1180,7 +1195,7 @@ getConnLinkPrivKey' c connId = do
     _ -> Nothing
 
 -- TODO [short links] remove 1-time invitation data and link ID from the server after the message is sent.
-getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (FixedLinkData c, ConnLinkData c)
+getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (FixedLinkData c, ConnLinkData c, ConnectionRequestUri c)
 getConnShortLink' c nm userId = \case
   CSLInvitation _ srv linkId linkKey -> do
     g <- asks random
@@ -1201,22 +1216,29 @@ getConnShortLink' c nm userId = \case
     ld <- getQueueLink c nm userId srv linkId
     decryptData srv linkKey k ld
   where
-    decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (FixedLinkData c, ConnLinkData c)
+    decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (FixedLinkData c, ConnLinkData c, ConnectionRequestUri c)
     decryptData srv linkKey k (sndId, d) = do
-      r@(fd, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
-      let (srv', sndId') = qAddress (connReqQueue $ linkConnReq fd)
+      (fd0, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
+      -- merge the keys-less fixed-data connReq with the mutable ratchet keys, so callers get the full address connReq
+      let connReq0 = connReqWithKeys (linkConnReq fd0) (clRatchetKeys clData)
+          (srv', sndId') = qAddress (connReqQueue connReq0)
       unless (srv `sameSrvHost` srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
-      pure $ if srv' == srv then r else (updateConnReqServer srv fd, clData)
+      let fd = if srv' == srv then fd0 else updateConnReqServer srv fd0
+      pure (fd, clData, connReqWithKeys (linkConnReq fd) (clRatchetKeys clData))
     sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
     updateConnReqServer :: SMPServer -> FixedLinkData c -> FixedLinkData c
     updateConnReqServer srv fd =
       let connReq' = case linkConnReq fd of
-            CRInvitationUri crData e2eParams -> CRInvitationUri (updateQueues crData) e2eParams
-            CRContactUri crData -> CRContactUri $ updateQueues crData
+            BCRInvitationUri crData e2eParams -> BCRInvitationUri (updateQueues crData) e2eParams
+            BCRContactUri crData -> BCRContactUri $ updateQueues crData
        in fd {linkConnReq = connReq'}
       where
         updateQueues crData@(ConnReqUriData {crSmpQueues = SMPQueueUri vr addr :| qs}) =
           crData {crSmpQueues = SMPQueueUri vr addr {smpServer = srv} :| qs}
+    clRatchetKeys :: ConnLinkData c -> Maybe AddressRatchetKeys
+    clRatchetKeys = \case
+      InvitationLinkData {} -> Nothing
+      ContactLinkData _ UserContactData {ratchetKeys} -> ratchetKeys
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
@@ -1236,38 +1258,50 @@ changeConnectionUser' c oldUserId connId newUserId = do
   where
     updateConn = withStore' c $ \db -> setConnUserId db oldUserId connId newUserId
 
-newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (CreatedConnLink c)
-newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqInitKeys subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
+newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (CreatedConnLink c)
+newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqInitKeys advertiseDR subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
+  -- when opted in, generate + persist the advertised DR keys for a contact address; the public half goes into the
+  -- connReq and the mutable link data so requesters can start the ratchet from message 1
+  addrKeys_ <- case cMode of
+    SCMContact | advertiseDR -> do
+      (arKeys, stored) <- generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys)
+      storeAddressRatchetKeys c connId stored
+      pure $ Just arKeys
+    _ -> pure Nothing
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
   case userLinkData_ of
     Just d -> do
-      (nonce, qUri, cReq, qd) <- prepareLinkData d $ fst e2eKeys
+      (nonce, qUri, cReq, qd) <- prepareLinkData addrKeys_ (setLinkDataRatchetKeys addrKeys_ d) $ fst e2eKeys
       (rq, qUri') <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just nonce) qd e2eKeys
-      ccLink <- connReqWithShortLink qUri cReq qUri' (shortLink rq)
-      pure ccLink
+      connReqWithShortLink qUri cReq qUri' (shortLink rq)
     Nothing -> do
       let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
       (_rq, qUri) <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode Nothing qd e2eKeys
-      cReq <- createConnReq qUri
+      cReq <- createConnReq addrKeys_ qUri
       pure $ CCLink cReq Nothing
   where
-    createConnReq :: SMPQueueUri -> AM (ConnectionRequestUri c)
-    createConnReq qUri = do
+    createConnReq :: Maybe AddressRatchetKeys -> SMPQueueUri -> AM (ConnectionRequestUri c)
+    createConnReq addrKeys_ qUri = do
       AgentConfig {smpAgentVRange, e2eEncryptVRange} <- asks config
       let crData = ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData
       case cMode of
-        SCMContact -> pure $ CRContactUri crData
+        SCMContact -> pure $ CRContactUri crData addrKeys_
         SCMInvitation -> do
           g <- asks random
           let pqEnc = CR.initialPQEncryption (isJust userLinkData_) pqInitKeys
           (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
           withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
-    prepareLinkData :: UserConnLinkData c -> C.PublicKeyX25519 -> AM (C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
-    prepareLinkData userLinkData e2eDhKey = do
+    -- inject the agent-generated advertised keys into the contact mutable link data (requesters fetch them here)
+    setLinkDataRatchetKeys :: Maybe AddressRatchetKeys -> UserConnLinkData c -> UserConnLinkData c
+    setLinkDataRatchetKeys ks = \case
+      UserContactLinkData ucd -> UserContactLinkData ucd {ratchetKeys = ks}
+      d@UserInvLinkData {} -> d
+    prepareLinkData :: Maybe AddressRatchetKeys -> UserConnLinkData c -> C.PublicKeyX25519 -> AM (C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
+    prepareLinkData addrKeys_ userLinkData e2eDhKey = do
       g <- asks random
       nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
       sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
@@ -1276,7 +1310,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
       let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
-      connReq <- createConnReq qUri
+      connReq <- createConnReq addrKeys_ qUri
       let (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing userLinkData
       qd <- case cMode of
         SCMContact -> encryptContactLinkData g privSigKey linkKey sndId linkData
@@ -1289,7 +1323,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
     connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey}
         | qUri == qUri' -> pure $ case cReq of
-            CRContactUri _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
+            CRContactUri _ _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
             CRInvitationUri crData (CR.E2ERatchetParamsUri vr k1 k2 _) ->
               let cReq' = case pqInitKeys of
                     CR.IKPQOn -> CRInvitationUri crData $ CR.E2ERatchetParamsUri vr k1 k2 Nothing -- remove PQ keys
@@ -1299,7 +1333,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
       Nothing ->
         let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri'] clientData)
             cReq' = case cReq of
-              CRContactUri crData -> CRContactUri (updated crData)
+              CRContactUri crData rk -> CRContactUri (updated crData) rk
               CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams
          in pure $ CCLink cReq' Nothing
 
@@ -1326,7 +1360,7 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
       Nothing -> throwE $ AGENT A_VERSION
   CRContactUri {} ->
     lift (compatibleContactUri cReq) >>= \case
-      Just (_, aVersion) -> create aVersion Nothing
+      Just (_, ratchet_, aVersion) -> create aVersion (addrKeysE2EVersion ratchet_)
       Nothing -> throwE $ AGENT A_VERSION
   where
     create :: Compatible VersionSMPA -> Maybe CR.VersionE2E -> AM ConnId
@@ -1346,15 +1380,16 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
       let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
-joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
-joinConn c nm userId connId enableNtfs cReq addrKeys_ cInfo pqSupport subMode = do
+joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
+joinConn c nm userId connId enableNtfs cReq cInfo pqSupport subMode = do
   srv <- getNextSMPServer c userId [qServer $ connReqQueue cReq]
-  joinConnSrv c nm userId connId enableNtfs cReq addrKeys_ cInfo pqSupport subMode srv
+  joinConnSrv c nm userId connId enableNtfs cReq cInfo pqSupport subMode srv
 
+-- a queue is addressed by server + sender-ID + DH key; the advertised DR keys are not part of that address
 connReqQueue :: ConnectionRequestUri c -> SMPQueueUri
 connReqQueue = \case
   CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
-  CRContactUri ConnReqUriData {crSmpQueues = q :| _} -> q
+  CRContactUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
 
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM ((ConnData, SndQueue), Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
@@ -1419,7 +1454,7 @@ connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
       invPQSupported (_, Compatible (CR.E2ERatchetParams e2eV _ _ _), Compatible agentV) = (agentV, pqSup `CR.pqSupportAnd` versionPQSupport_ agentV (Just e2eV))
   CRContactUri {} -> ctPQSupported <$$> compatibleContactUri cReq
     where
-      ctPQSupported (_, Compatible agentV) = (agentV, pqSup `CR.pqSupportAnd` versionPQSupport_ agentV Nothing)
+      ctPQSupported (_, ratchet_, Compatible agentV) = (agentV, pqSup `CR.pqSupportAnd` versionPQSupport_ agentV (addrKeysE2EVersion ratchet_))
 
 compatibleInvitationUri :: ConnectionRequestUri 'CMInvitation -> AM' (Maybe (Compatible SMPQueueInfo, Compatible (CR.RcvE2ERatchetParams 'C.X448), Compatible VersionSMPA))
 compatibleInvitationUri (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) = do
@@ -1430,21 +1465,31 @@ compatibleInvitationUri (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQue
       <*> (e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange)
       <*> (crAgentVRange `compatibleVersion` smpAgentVRange)
 
-compatibleContactUri :: ConnectionRequestUri 'CMContact -> AM' (Maybe (Compatible SMPQueueInfo, Compatible VersionSMPA))
-compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)}) = do
-  AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
-  pure $
-    (,)
-      <$> (qUri `compatibleVersion` smpClientVRange)
-      <*> (crAgentVRange `compatibleVersion` smpAgentVRange)
+-- | A contact address advertising DR keys must have version-compatible e2e ratchet params too; the returned
+-- Compatible params (and ratchetKeyId) are what joinConnSrv/connRequestPQSupport use, so the check lives here.
+compatibleContactUri :: ConnectionRequestUri 'CMContact -> AM' (Maybe (Compatible SMPQueueInfo, Maybe (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)), Compatible VersionSMPA))
+compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} addrKeys_) = do
+  AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
+  pure $ do
+    q <- qUri `compatibleVersion` smpClientVRange
+    v <- crAgentVRange `compatibleVersion` smpAgentVRange
+    -- an advertised DR bundle must be version-compatible, otherwise the whole address is incompatible
+    ratchet_ <- case addrKeys_ of
+      Nothing -> Just Nothing
+      Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams} ->
+        Just . (ratchetKeyId,) <$> (e2eRcvParams `compatibleVersion` e2eEncryptVRange)
+    pure (q, ratchet_, v)
 
 versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
 {-# INLINE versionPQSupport_ #-}
 
-joinConnSrv :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> Maybe AddressRatchetKeys -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} addrKeys_ cInfo pqSup subMode srv = do
-  when (isJust addrKeys_) $ throwE $ CMD PROHIBITED "joinConnSrv: address ratchet keys not allowed for invitation URI"
+-- | e2e ratchet version of a contact address's compatible advertised DR keys (if any), for PQ-support calculation.
+addrKeysE2EVersion :: Maybe (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)) -> Maybe CR.VersionE2E
+addrKeysE2EVersion = fmap $ \(_, Compatible (CR.E2ERatchetParams e2eV _ _ _)) -> e2eV
+
+joinConnSrv :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
+joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     SomeConn cType conn <- withStore c (`getConn` connId)
     case conn of
@@ -1459,44 +1504,42 @@ joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} addrKeys_ cInfo
       ((cData, sq), e2eSndParams, lnkId_) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
       secureConfirmQueue c nm cData rq_ sq srv cInfo e2eSndParams subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
-joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} addrKeys_ cInfo pqSup subMode srv =
+joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
   lift (compatibleContactUri cReqUri) >>= \case
-    Just (qInfo, Compatible v) ->
+    Just (qInfo, ratchet_, Compatible v) ->
       withInvLock c (strEncode cReqUri) "joinConnSrv" $ do
         SomeConn cType conn <- withStore c (`getConn` connId)
-        envelope <- case addrKeys_ of
+        envelope <- case ratchet_ of
           Nothing -> do
             let pqInitKeys = CR.joinContactInitialKeys (v >= pqdrSMPAgentVersion) pqSup
             CCLink cReq _ <- case conn of
-              NewConnection _ -> newRcvConnSrv c NRMBackground userId connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys subMode srv
+              NewConnection _ -> newRcvConnSrv c NRMBackground userId connId enableNtfs SCMInvitation Nothing Nothing pqInitKeys False subMode srv
               RcvConnection _ rq -> mkJoinInvitation rq pqInitKeys
               _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
             pure AgentInvitation {agentVersion = v, connReq = cReq, connInfo = cInfo}
-          Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams} -> do
+          -- the advertised keys' e2e version was already checked by compatibleContactUri; use the compatible params
+          Just (ratchetKeyId, Compatible e2eParams@(CR.E2ERatchetParams e2eV _ _ _)) -> do
             g <- asks random
             e2eVR <- asks $ e2eEncryptVRange . config
-            case e2eRcvParams `compatibleVersion` e2eVR of
-              Nothing -> throwE $ AGENT A_VERSION
-              Just (Compatible e2eParams@(CR.E2ERatchetParams e2eV _ _ _)) -> do
-                let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ v (Just e2eV)
-                    maxV = maxVersion e2eVR
-                rq <- case conn of
-                  NewConnection _ -> do
-                    e2eKeys <- atomically $ C.generateKeyPair g
-                    fst <$> createRcvQueue c NRMBackground userId connId srv enableNtfs subMode Nothing (CQRMessaging Nothing) e2eKeys
-                  RcvConnection _ rq -> pure rq
-                  _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
-                let RcvQueue {smpClientVersion = rqV} = rq
-                    cData = (toConnData conn) {pqSupport} :: ConnData
-                    replyQInfo = SMPQueueInfo rqV (rcvSMPQueueAddress rq)
-                    sndReply = AgentConnInfoReply (replyQInfo :| []) cInfo
-                (e2eSndParams, encConnInfo) <- withStore c $ \db -> runExceptT $ do
-                  liftIO $ lockConnForUpdate db connId
-                  e2eSndParams <- liftIO (getSndRatchet db connId e2eV) >>= either (const $ createRatchet_ db g connId maxV pqSupport e2eParams) (pure . snd)
-                  liftIO $ setConnPQSupport db connId pqSupport
-                  encConnInfo <- fst <$> agentRatchetEncrypt db cData (smpEncode sndReply) e2eEncConnInfoLength (Just $ CR.pqSupportToEnc pqSupport) maxV
-                  pure (e2eSndParams, encConnInfo)
-                pure AgentInvitationDR {agentVersion = v, e2eSndParams, ratchetKeyId, encConnInfo}
+            let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ v (Just e2eV)
+                maxV = maxVersion e2eVR
+            rq <- case conn of
+              NewConnection _ -> do
+                e2eKeys <- atomically $ C.generateKeyPair g
+                fst <$> createRcvQueue c NRMBackground userId connId srv enableNtfs subMode Nothing (CQRMessaging Nothing) e2eKeys
+              RcvConnection _ rq -> pure rq
+              _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
+            let RcvQueue {smpClientVersion = rqV} = rq
+                cData = (toConnData conn) {pqSupport} :: ConnData
+                replyQInfo = SMPQueueInfo rqV (rcvSMPQueueAddress rq)
+                sndReply = AgentConnInfoReply (replyQInfo :| []) cInfo
+            (e2eSndParams, encConnInfo) <- withStore c $ \db -> runExceptT $ do
+              liftIO $ lockConnForUpdate db connId
+              e2eSndParams <- liftIO (getSndRatchet db connId e2eV) >>= either (const $ createRatchet_ db g connId maxV pqSupport e2eParams) (pure . snd)
+              liftIO $ setConnPQSupport db connId pqSupport
+              encConnInfo <- fst <$> agentRatchetEncrypt db cData (smpEncode sndReply) e2eEncConnInfoLength (Just $ CR.pqSupportToEnc pqSupport) maxV
+              pure (e2eSndParams, encConnInfo)
+            pure AgentInvitationDR {agentVersion = v, e2eSndParams, ratchetKeyId, encConnInfo}
         void $ sendInvitation c nm userId connId qInfo envelope
         pure False
       where
@@ -1568,7 +1611,7 @@ acceptContact' :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool 
 acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   r <- case connReq of
-    CRInvitation cReq -> joinConn c nm userId connId enableNtfs cReq Nothing ownConnInfo pqSupport subMode
+    CRInvitation cReq -> joinConn c nm userId connId enableNtfs cReq ownConnInfo pqSupport subMode
     CRInvitationDR dr@DRInvitation {replyQueue} -> do
       srv <- getNextSMPServer c userId [qServer replyQueue]
       SomeConn cType conn <- withStore c (`getConn` connId)
@@ -1979,10 +2022,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
     processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
     processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
-        NEW enableNtfs (ACM cMode) pqEnc subMode -> noServer $ do
+        NEW enableNtfs (ACM cMode) pqEnc subMode advertiseDR -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [] $ \srv -> do
-            CCLink cReq _ <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc subMode srv
+            CCLink cReq _ <- newRcvConnSrv c NRMBackground userId connId enableNtfs cMode Nothing Nothing pqEnc advertiseDR subMode srv
             notify $ INV (ACR cMode cReq)
         LSET userLinkData clientData ->
           withServer' . tryCommand $ do
@@ -1990,15 +2033,15 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             notify $ LINK link userLinkData
         LGET shortLink ->
           withServer' . tryCommand $ do
-            (fixedData, linkData) <- getConnShortLink' c NRMBackground userId shortLink
-            notify $ LDATA fixedData linkData
+            (fixedData, linkData, connReq) <- getConnShortLink' c NRMBackground userId shortLink
+            notify $ LDATA fixedData linkData connReq
         JOIN (JRInvitationDR dr@DRInvitation {replyQueue}) subMode ownCInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer replyQueue] $ \srv -> do
             let startJoin sq_ = (,Nothing,Nothing) <$> startJoinInvitationDR c userId connId sq_ dr
             sqSecured <- joinConnSrvAsync c connId startJoin ownCInfo subMode srv
             notify $ JOINED sqSecured
-        JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc _) subMode connInfo -> noServer $ do
+        JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
             let startJoin sq_ = startJoinInvitation c userId connId sq_ enableNtfs cReq pqEnc
@@ -2006,10 +2049,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             notify $ JOINED sqSecured
         -- TODO TBC using joinConnSrvAsync for contact URIs, with receive queue created asynchronously.
         -- Currently joinConnSrv is used because even joinConnSrvAsync for invitation URIs creates receive queue synchronously.
-        JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _})) pqEnc addrKeys_) subMode connInfo -> noServer $ do
+        JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
-            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq addrKeys_ connInfo pqEnc subMode srv
+            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv
             notify $ JOINED sqSecured
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK

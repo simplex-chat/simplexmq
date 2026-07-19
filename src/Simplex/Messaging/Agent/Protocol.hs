@@ -110,6 +110,10 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionModeI (..),
     ConnectionRequestUri (..),
     AConnectionRequestUri (..),
+    BinaryConnectionRequestUri (..),
+    ABinaryConnectionRequestUri (..),
+    binaryConnReq,
+    connReqWithKeys,
     ShortLinkCreds (..),
     ConnReqUriData (..),
     CRClientData,
@@ -122,6 +126,8 @@ module Simplex.Messaging.Agent.Protocol
     UserContactData (..),
     UserLinkData (..),
     AddressRatchetKeys (..),
+    StoredAddressRatchetKeys (..),
+    NewRatchetKeys,
     DRInvitation (..),
     RatchetKeyId (..),
     OwnerAuth (..),
@@ -240,6 +246,7 @@ import Simplex.Messaging.Crypto.Ratchet
     RatchetX448,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
+    RcvPrivRKEMParams,
     SndE2ERatchetParams,
     pattern PQSupportOff,
     pattern PQSupportOn,
@@ -407,7 +414,7 @@ type UseRatchetKeys = Bool
 data AEvent (e :: AEntity) where
   INV :: AConnectionRequestUri -> AEvent AEConn
   LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
-  LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> AEvent AEConn
+  LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -464,7 +471,7 @@ instance Eq AEvtTag where
 deriving instance Show AEvtTag
 
 data ACommand
-  = NEW Bool AConnectionMode InitialKeys SubscriptionMode -- response INV
+  = NEW Bool AConnectionMode InitialKeys SubscriptionMode UseRatchetKeys -- response INV; UseRatchetKeys advertises address DR keys (contact mode)
   | LSET (UserConnLinkData 'CMContact) (Maybe CRClientData) -- response LINK
   | LGET (ConnShortLink 'CMContact) -- response LDATA
   | JOIN JoinRequest SubscriptionMode ConnInfo
@@ -1154,11 +1161,12 @@ instance Encoding AMessageReceipt where
 
 instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
-    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams)
-    CRContactUri crData -> crEncode "contact" crData Nothing
+    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams) Nothing
+    CRContactUri crData Nothing -> crEncode "contact" crData Nothing Nothing
+    CRContactUri crData (Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}) -> crEncode "contact" crData (Just e2eRcvParams) (Just ratchetKeyId)
     where
-      crEncode :: ByteString -> ConnReqUriData -> Maybe (RcvE2ERatchetParamsUri 'C.X448) -> ByteString
-      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams =
+      crEncode :: ByteString -> ConnReqUriData -> Maybe (RcvE2ERatchetParamsUri 'C.X448) -> Maybe RatchetKeyId -> ByteString
+      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams rk =
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
           queryStr =
@@ -1166,23 +1174,24 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
               -- semicolon is used to separate SMP queues because comma is used to separate server address hostnames
               [("v", strEncode crAgentVRange), ("smp", B.intercalate ";" $ map strEncode $ L.toList crSmpQueues)]
                 <> maybe [] (\e2e -> [("e2e", strEncode e2e)]) e2eParams
+                <> maybe [] (\k -> [("rk", strEncode k)]) rk
                 <> maybe [] (\cd -> [("data", encodeUtf8 cd)]) crClientData
   strP = connReqUriP' (Just SSSimplex)
 
-instance ConnectionModeI m => Encoding (ConnectionRequestUri m) where
+instance ConnectionModeI m => Encoding (BinaryConnectionRequestUri m) where
   smpEncode = \case
-    CRInvitationUri crData e2eParams -> smpEncode (CMInvitation, crData, e2eParams)
-    CRContactUri crData -> smpEncode (CMContact, crData)
-  smpP = (\(ACR _ cr) -> checkConnMode cr) <$?> smpP
+    BCRInvitationUri crData e2eParams -> smpEncode (CMInvitation, crData, e2eParams)
+    BCRContactUri crData -> smpEncode (CMContact, crData)
+  smpP = (\(ABCR _ cr) -> checkConnMode cr) <$?> smpP
   {-# INLINE smpP #-}
 
-instance Encoding AConnectionRequestUri where
-  smpEncode (ACR _ cr) = smpEncode cr
+instance Encoding ABinaryConnectionRequestUri where
+  smpEncode (ABCR _ cr) = smpEncode cr
   {-# INLINE smpEncode #-}
   smpP =
     smpP >>= \case
-      CMInvitation -> ACR SCMInvitation <$> (CRInvitationUri <$> smpP <*> smpP)
-      CMContact -> ACR SCMContact . CRContactUri <$> smpP
+      CMInvitation -> ABCR SCMInvitation <$> (BCRInvitationUri <$> smpP <*> smpP)
+      CMContact -> ABCR SCMContact . BCRContactUri <$> smpP
 
 instance Encoding ConnReqUriData where
   smpEncode ConnReqUriData {crAgentVRange, crSmpQueues, crClientData} =
@@ -1225,7 +1234,10 @@ connReqUriP overrideScheme = do
       pure . ACR SCMInvitation $ CRInvitationUri crData crE2eParams
     -- contact links are adjusted to the minimum version supported by the agent
     -- to preserve compatibility with the old links published online
-    CMContact -> pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange}
+    CMContact -> do
+      e2e_ <- queryParam_ "e2e" query
+      rk_ <- queryParam_ "rk" query
+      pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange} (AddressRatchetKeys <$> rk_ <*> e2e_)
   where
     crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
     -- semicolon is used to separate SMP queues because comma is used to separate server address hostnames
@@ -1480,16 +1492,35 @@ instance Encoding SMPQueueUri where
 queueModeP :: Parser (Maybe QueueMode)
 queueModeP = Just <$> smpP <|> optional ((\case True -> QMMessaging; _ -> QMContact) <$> smpP)
 
+data BinaryConnectionRequestUri (m :: ConnectionMode) where
+  BCRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> BinaryConnectionRequestUri CMInvitation
+  BCRContactUri :: ConnReqUriData -> BinaryConnectionRequestUri CMContact
+
+deriving instance Eq (BinaryConnectionRequestUri m)
+
+deriving instance Show (BinaryConnectionRequestUri m)
+
+data ABinaryConnectionRequestUri = forall m. ConnectionModeI m => ABCR (SConnectionMode m) (BinaryConnectionRequestUri m)
+
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
-  -- contact connection request does NOT contain E2E encryption parameters for double ratchet -
-  -- they are passed in AgentInvitation message
-  CRContactUri :: ConnReqUriData -> ConnectionRequestUri CMContact
+  -- optional address DR keys enable the ratchet from message 1; absent in BinaryConnectionRequestUri (link fixed data) so they can rotate via mutable data
+  CRContactUri :: ConnReqUriData -> Maybe AddressRatchetKeys -> ConnectionRequestUri CMContact
 
 simplexConnReqUri :: ConnectionRequestUri m -> ConnectionRequestUri m
 simplexConnReqUri = \case
   CRInvitationUri crData e2eParams -> CRInvitationUri crData {crScheme = SSSimplex} e2eParams
-  CRContactUri crData -> CRContactUri crData {crScheme = SSSimplex}
+  CRContactUri crData rk -> CRContactUri crData {crScheme = SSSimplex} rk
+
+binaryConnReq :: ConnectionRequestUri m -> BinaryConnectionRequestUri m
+binaryConnReq = \case
+  CRInvitationUri crData e2eParams -> BCRInvitationUri crData e2eParams
+  CRContactUri crData _ -> BCRContactUri crData
+
+connReqWithKeys :: BinaryConnectionRequestUri m -> Maybe AddressRatchetKeys -> ConnectionRequestUri m
+connReqWithKeys cr rk = case cr of
+  BCRInvitationUri crData e2eParams -> CRInvitationUri crData e2eParams
+  BCRContactUri crData -> CRContactUri crData rk
 
 deriving instance Eq (ConnectionRequestUri m)
 
@@ -1547,7 +1578,12 @@ data PreparedLinkParams = PreparedLinkParams
     -- | smpEncode of FixedLinkData (includes linkEntityId)
     plpSignedFixedData :: ByteString,
     -- | Server with basic auth (not stored in link)
-    plpSrvWithAuth :: SMPServerWithAuth
+    plpSrvWithAuth :: SMPServerWithAuth,
+    -- | Connection initial keys (decided in prepareConnectionLink, used to create the connection)
+    plpInitKeys :: InitialKeys,
+    -- | Private half of the advertised address ratchet keys, generated in prepareConnectionLink and
+    -- persisted in createConnectionForLink; present iff the address advertises DR keys
+    plpAddressKeys :: Maybe StoredAddressRatchetKeys
   }
   deriving (Show)
 
@@ -1761,7 +1797,7 @@ findPresetServer ProtocolServer {host = h :| _} = find (\ProtocolServer {host = 
 {-# INLINE findPresetServer #-}
 
 sameConnReqContact :: ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact -> Bool
-sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs}) (CRContactUri ConnReqUriData {crSmpQueues = qs'}) =
+sameConnReqContact (CRContactUri ConnReqUriData {crSmpQueues = qs} _) (CRContactUri ConnReqUriData {crSmpQueues = qs'} _) =
   L.length qs == L.length qs' && all same (L.zip qs qs')
   where
     same (q, q') = sameQAddress (qAddress q) (qAddress q')
@@ -1800,7 +1836,7 @@ type CRClientData = Text
 data FixedLinkData c = FixedLinkData
   { agentVRange :: VersionRangeSMPA,
     rootKey :: C.PublicKeyEd25519,
-    linkConnReq :: ConnectionRequestUri c,
+    linkConnReq :: BinaryConnectionRequestUri c,
     linkEntityId :: Maybe ByteString
   }
   deriving (Eq, Show)
@@ -1815,7 +1851,7 @@ deriving instance Show (ConnLinkData c)
 
 newtype RatchetKeyId = RatchetKeyId ByteString
   deriving (Eq, Show)
-  deriving newtype (Encoding)
+  deriving newtype (Encoding, StrEncoding)
 
 data AddressRatchetKeys = AddressRatchetKeys
   { ratchetKeyId :: RatchetKeyId,
@@ -1826,6 +1862,23 @@ data AddressRatchetKeys = AddressRatchetKeys
 instance Encoding AddressRatchetKeys where
   smpEncode AddressRatchetKeys {ratchetKeyId, e2eRcvParams} = smpEncode (ratchetKeyId, e2eRcvParams)
   smpP = AddressRatchetKeys <$> smpP <*> smpP
+
+-- | The private half of an AddressRatchetKeys bundle: generated together with the advertised public part in
+-- prepareConnectionLink and persisted by the owner (keyed by connId + ratchetKeyId) in createConnectionForLink,
+-- so the ratchet can be completed when a requester joins with that ratchetKeyId.
+data StoredAddressRatchetKeys = StoredAddressRatchetKeys
+  { saRatchetKeyId :: RatchetKeyId,
+    saRcvPrivKey1 :: C.PrivateKeyX448,
+    saRcvPrivKey2 :: C.PrivateKeyX448,
+    saRcvPrivKem :: Maybe RcvPrivRKEMParams
+  }
+
+-- private key material is redacted (and RcvPrivRKEMParams has no Show)
+instance Show StoredAddressRatchetKeys where
+  show StoredAddressRatchetKeys {saRatchetKeyId} = "StoredAddressRatchetKeys {saRatchetKeyId = " <> show saRatchetKeyId <> ", <private keys redacted>}"
+
+-- | Whether setConnShortLink should generate a fresh address ratchet key set, rotating the advertised keys.
+type NewRatchetKeys = Bool
 
 -- | The double-ratchet invitation an address owner receives in message 1 and later accepts: the ratchet the
 -- owner established from that message, the requester's reply queue, and the negotiated version and PQ support.
@@ -1838,7 +1891,7 @@ data DRInvitation = DRInvitation
   deriving (Show)
 
 data JoinRequest
-  = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport, addrRatchetKeys :: Maybe AddressRatchetKeys}
+  = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
   | JRInvitationDR DRInvitation
   deriving (Show)
 
@@ -2180,11 +2233,13 @@ $(J.deriveJSON defaultJSON ''DRInvitation)
 -- and subMode still default when a legacy command omits them.
 instance StrEncoding JoinRequest where
   strEncode = \case
-    JRConnReq ntfs cReq pqSup addrKeys_ -> strEncode (ntfs, cReq, pqSup) <> maybe "" (B.cons ' ' . serializeBinary . smpEncode) addrKeys_
+    JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    (JRConnReq <$> strP_ <*> strP_ <*> (strP_ <|> pure PQSupportOff) <*> optional (smpDecode <$?> (A.take =<< (A.decimal <* "\n")) <* A.space))
-      <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))) <* A.space)
+    -- self-contained: fields are separated by leading spaces and JoinRequest consumes no trailing space, so it
+    -- round-trips on its own; the space before the next JOIN field is consumed by the JOIN command parser
+    (JRConnReq <$> strP <*> (A.space *> strP) <*> ((A.space *> strP) <|> pure PQSupportOff))
+      <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))))
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
 dbCommandP :: Parser ACommand
@@ -2216,10 +2271,11 @@ commandP :: Parser ByteString -> Parser ACommand
 commandP binaryP =
   strP
     >>= \case
-      NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe))
+      -- advertiseDR is a trailing field defaulting to False, so NEW persisted before it was added still parses
+      NEW_ -> s (NEW <$> strP_ <*> strP_ <*> pqIKP <*> (strP <|> pure SMP.SMSubscribe) <*> ((A.space *> strP) <|> pure False))
       LSET_ -> s (LSET <$> strP <*> optional (A.space *> strP))
       LGET_ -> s (LGET <$> strP)
-      JOIN_ -> s (JOIN <$> strP <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
+      JOIN_ -> s (JOIN <$> strP_ <*> (strP_ <|> pure SMP.SMSubscribe) <*> binaryP)
       LET_ -> s (LET <$> A.takeTill (== ' ') <* A.space <*> binaryP)
       ACK_ -> s (ACK <$> A.decimal <*> optional (A.space *> binaryP))
       SWCH_ -> pure SWCH
@@ -2233,7 +2289,7 @@ commandP binaryP =
 -- | Serialize SMP agent command.
 serializeCommand :: ACommand -> ByteString
 serializeCommand = \case
-  NEW ntfs cMode pqIK subMode -> s (NEW_, ntfs, cMode, pqIK, subMode)
+  NEW ntfs cMode pqIK subMode advertiseDR -> s (NEW_, ntfs, cMode, pqIK, subMode) <> B.cons ' ' (strEncode advertiseDR)
   LSET uld cd_ -> s (LSET_, uld) <> maybe "" (B.cons ' ' . s) cd_
   LGET sl -> s (LGET_, sl)
   JOIN joinReq subMode cInfo -> s (JOIN_, joinReq, subMode, Str $ serializeBinary cInfo)

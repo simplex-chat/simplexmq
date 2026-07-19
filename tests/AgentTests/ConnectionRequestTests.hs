@@ -18,6 +18,7 @@ module AgentTests.ConnectionRequestTests
     invConnRequest,
   ) where
 
+import AgentTests.EqInstances ()
 import Data.ByteString (ByteString)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
@@ -177,7 +178,7 @@ connectionRequestNoQM :: AConnectionRequestUri
 connectionRequestNoQM = ACR SCMInvitation $ CRInvitationUri connReqDataNoQM testE2ERatchetParams
 
 connectionRequestContact :: AConnectionRequestUri
-connectionRequestContact = ACR SCMContact $ CRContactUri connReqDataContact
+connectionRequestContact = ACR SCMContact $ CRContactUri connReqDataContact Nothing
 
 connectionRequestV1 :: AConnectionRequestUri
 connectionRequestV1 = ACR SCMInvitation $ CRInvitationUri connReqDataV1 testE2ERatchetParams
@@ -195,13 +196,13 @@ contactAddress :: AConnectionRequestUri
 contactAddress = ACR SCMContact $ contactConnRequest
 
 contactConnRequest :: ConnectionRequestUri 'CMContact
-contactConnRequest = CRContactUri connReqData
+contactConnRequest = CRContactUri connReqData Nothing
 
 contactAddressV2 :: AConnectionRequestUri
-contactAddressV2 = ACR SCMContact $ CRContactUri connReqDataV2
+contactAddressV2 = ACR SCMContact $ CRContactUri connReqDataV2 Nothing
 
 contactAddressNew :: AConnectionRequestUri
-contactAddressNew = ACR SCMContact $ CRContactUri connReqDataNew
+contactAddressNew = ACR SCMContact $ CRContactUri connReqDataNew Nothing
 
 connectionRequest2queues :: AConnectionRequestUri
 connectionRequest2queues = ACR SCMInvitation $ CRInvitationUri connReqData {crSmpQueues = [queue, queue]} testE2ERatchetParams
@@ -210,16 +211,20 @@ connectionRequest2queuesNew :: AConnectionRequestUri
 connectionRequest2queuesNew = ACR SCMInvitation $ CRInvitationUri connReqDataNew {crSmpQueues = [queueNew, queueNew]} testE2ERatchetParams
 
 contactAddress2queues :: AConnectionRequestUri
-contactAddress2queues = ACR SCMContact $ CRContactUri connReqData {crSmpQueues = [queue, queue]}
+contactAddress2queues = ACR SCMContact $ CRContactUri connReqData {crSmpQueues = [queue, queue]} Nothing
 
 contactAddress2queuesNew :: AConnectionRequestUri
-contactAddress2queuesNew = ACR SCMContact $ CRContactUri connReqDataNew {crSmpQueues = [queueNew, queueNew]}
+contactAddress2queuesNew = ACR SCMContact $ CRContactUri connReqDataNew {crSmpQueues = [queueNew, queueNew]} Nothing
 
 connectionRequestClientDataEmpty :: AConnectionRequestUri
 connectionRequestClientDataEmpty = ACR SCMInvitation $ CRInvitationUri connReqData {crClientData = Just "{}"} testE2ERatchetParams
 
 contactAddressClientData :: AConnectionRequestUri
-contactAddressClientData = ACR SCMContact $ CRContactUri connReqData {crClientData = Just "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}"}
+contactAddressClientData = ACR SCMContact $ CRContactUri connReqData {crClientData = Just "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}"} Nothing
+
+-- binary encoding is defined only for BinaryConnectionRequestUri (link fixed data); drop the address keys for the round-trip
+aBinaryConnReq :: AConnectionRequestUri -> ABinaryConnectionRequestUri
+aBinaryConnReq (ACR m cr) = ABCR m (binaryConnReq cr)
 
 url :: ByteString -> ByteString
 url = urlEncode True
@@ -258,7 +263,7 @@ connectionRequestTests =
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#" <> testDhKeyStr)
     it "JOIN command is backward compatible: JRConnReq is byte-identical to the pre-DR JOIN" $ do
       let uri = ACR SCMInvitation invConnRequest
-          cmd = JOIN (JRConnReq True uri PQSupportOff Nothing) SMSubscribe "hi"
+          cmd = JOIN (JRConnReq True uri PQSupportOff) SMSubscribe "hi"
           -- the pre-DR JOIN wire format: "JOIN <ntfs> <cReq> <pqSup> <subMode> <binary connInfo>"
           oldJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode PQSupportOff <> " " <> strEncode SMSubscribe <> " 2\nhi"
       serializeCommand cmd `shouldBe` oldJoin
@@ -270,26 +275,26 @@ connectionRequestTests =
       let legacyJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode SMSubscribe <> " 2\nhi"
       (serializeCommand <$> parseAll dbCommandP legacyJoin) `shouldBe` Right oldJoin
     it "should serialize and parse connection invitations and contact addresses" $ do
-      connectionRequest #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest #== ("https://simplex.chat/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestNoQM #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueStrNoQM <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest1 #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queue1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest2queues #==# ("simplex:/invitation#/?v=2-8&smp=" <> url (queueStr <> ";" <> queueStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestNew #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueNewStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestNew1 #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueNew1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest2queuesNew #==# ("simplex:/invitation#/?v=2-8&smp=" <> url (queueNewStr <> ";" <> queueNewStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest #== ("https://simplex.chat/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNoQM #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStrNoQM <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest1 #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queue1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest2queues #==# ("simplex:/invitation#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNew #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueNewStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNew1 #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueNew1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest2queuesNew #==# ("simplex:/invitation#/?v=2-7&smp=" <> url (queueNewStr <> ";" <> queueNewStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequestV1 #== ("https://simplex.chat/invitation#/?v=1&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestClientDataEmpty #==# ("simplex:/invitation#/?v=2-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&data=" <> url "{}")
-      contactAddress #==# ("simplex:/contact#/?v=2-8&smp=" <> url queueStr)
-      contactAddress #== ("https://simplex.chat/contact#/?v=2-8&smp=" <> url queueStr)
-      contactAddress2queues #==# ("simplex:/contact#/?v=2-8&smp=" <> url (queueStr <> ";" <> queueStr))
-      contactAddressNew #==# ("simplex:/contact#/?v=2-8&smp=" <> url queueNewStr)
-      contactAddress2queuesNew #==# ("simplex:/contact#/?v=2-8&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
+      connectionRequestClientDataEmpty #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&data=" <> url "{}")
+      contactAddress #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr)
+      contactAddress #== ("https://simplex.chat/contact#/?v=2-7&smp=" <> url queueStr)
+      contactAddress2queues #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr))
+      contactAddressNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueNewStr)
+      contactAddress2queuesNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
       contactAddressV2 #==# ("simplex:/contact#/?v=2&smp=" <> url queueStr)
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
       contactAddressV2 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
-      contactAddressClientData #==# ("simplex:/contact#/?v=2-8&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
+      contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
       smpEncodingTest queue
       smpEncodingTest queueNoQM -- this passes, no queue mode patch in SMPQueueUri encoding
@@ -301,21 +306,21 @@ connectionRequestTests =
       smpEncodingTest queueNew1NoPort
       smpEncodingTest queueV1
       smpEncodingTest queueV1NoPort
-      smpEncodingTest connectionRequest
+      smpEncodingTest (aBinaryConnReq connectionRequest)
       -- smpEncodingTest connectionRequestNoQM -- this fails, because of queue mode patch
-      smpEncodingTest connectionRequestContact -- this passes because of queue mode patch in ConnReqUriData encoding
-      smpEncodingTest connectionRequest1
-      smpEncodingTest connectionRequest2queues
-      smpEncodingTest connectionRequestNew
-      smpEncodingTest connectionRequestNew1
-      smpEncodingTest connectionRequest2queuesNew
-      smpEncodingTest connectionRequestClientDataEmpty
-      smpEncodingTest contactAddress
-      smpEncodingTest contactAddress2queues
-      smpEncodingTest contactAddressNew
-      smpEncodingTest contactAddress2queuesNew
-      smpEncodingTest contactAddressV2
-      smpEncodingTest contactAddressClientData
+      smpEncodingTest (aBinaryConnReq connectionRequestContact) -- this passes because of queue mode patch in ConnReqUriData encoding
+      smpEncodingTest (aBinaryConnReq connectionRequest1)
+      smpEncodingTest (aBinaryConnReq connectionRequest2queues)
+      smpEncodingTest (aBinaryConnReq connectionRequestNew)
+      smpEncodingTest (aBinaryConnReq connectionRequestNew1)
+      smpEncodingTest (aBinaryConnReq connectionRequest2queuesNew)
+      smpEncodingTest (aBinaryConnReq connectionRequestClientDataEmpty)
+      smpEncodingTest (aBinaryConnReq contactAddress)
+      smpEncodingTest (aBinaryConnReq contactAddress2queues)
+      smpEncodingTest (aBinaryConnReq contactAddressNew)
+      smpEncodingTest (aBinaryConnReq contactAddress2queuesNew)
+      smpEncodingTest (aBinaryConnReq contactAddressV2)
+      smpEncodingTest (aBinaryConnReq contactAddressClientData)
     it "should serialize / parse short links" $ do
       CSLContact SLSServer CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
       CSLContact SLSServer CCTGroup srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/g#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
