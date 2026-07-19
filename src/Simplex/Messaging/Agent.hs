@@ -1016,23 +1016,20 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   pure connId
 
 -- Generate a fresh address ratchet key set in memory (no DB): the advertised public part and the private half to persist.
-generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, StoredAddressRatchetKeys)
+generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, (RatchetKeyId, (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams)))
 generateAddressRatchetKeys pqSupport = do
   g <- asks random
   e2eVR <- asks $ e2eEncryptVRange . config
   (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqSupport
   ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
-  pure
-    ( AddressRatchetKeys {ratchetKeyId, e2eRcvParams = toVersionRangeT e2eParams e2eVR},
-      StoredAddressRatchetKeys {saRatchetKeyId = ratchetKeyId, saRcvPrivKey1 = pk1, saRcvPrivKey2 = pk2, saRcvPrivKem = pKem}
-    )
+  pure ((ratchetKeyId, toVersionRangeT e2eParams e2eVR), (ratchetKeyId, (pk1, pk2, pKem)))
 
 -- Persist the private half (keyed by connId + ratchetKeyId) and prune old keys.
-storeAddressRatchetKeys :: AgentClient -> ConnId -> StoredAddressRatchetKeys -> AM ()
-storeAddressRatchetKeys c connId StoredAddressRatchetKeys {saRatchetKeyId, saRcvPrivKey1, saRcvPrivKey2, saRcvPrivKem} = do
+storeAddressRatchetKeys :: AgentClient -> ConnId -> (RatchetKeyId, (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams)) -> AM ()
+storeAddressRatchetKeys c connId (ratchetKeyId, (pk1, pk2, pKem)) = do
   keep <- asks $ keepAddressKeys . config
   withStore' c $ \db -> do
-    createAddressRatchetKeys db connId saRatchetKeyId saRcvPrivKey1 saRcvPrivKey2 saRcvPrivKem
+    createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
     deleteOldAddressRatchetKeys db connId keep
 
 -- Generate + persist, used for rotation via setConnShortLink where the connId already exists.
@@ -1048,7 +1045,7 @@ currentAddressRatchetKeys c connId =
     Left _ -> pure Nothing
     Right (ratchetKeyId, pk1, pk2, pKem) -> do
       e2eVR <- asks $ e2eEncryptVRange . config
-      pure $ Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams = toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)) e2eVR}
+      pure $ Just (ratchetKeyId, toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)) e2eVR)
 
 -- | Encrypt signed link data for contact mode.
 encryptContactLinkData :: TVar ChaChaDRG -> C.PrivateKeyEd25519 -> LinkKey -> SMP.SenderId -> (ByteString, ByteString) -> AM ClntQueueReqData
@@ -1473,7 +1470,7 @@ compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = 
     -- an advertised DR bundle must be version-compatible, otherwise the whole address is incompatible
     ratchet_ <- case addrKeys_ of
       Nothing -> Just Nothing
-      Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams} ->
+      Just (ratchetKeyId, e2eRcvParams) ->
         Just . (ratchetKeyId,) <$> (e2eRcvParams `compatibleVersion` e2eEncryptVRange)
     pure (q, ratchet_, v)
 

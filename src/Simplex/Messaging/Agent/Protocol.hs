@@ -124,8 +124,7 @@ module Simplex.Messaging.Agent.Protocol
     UserConnLinkData (..),
     UserContactData (..),
     UserLinkData (..),
-    AddressRatchetKeys (..),
-    StoredAddressRatchetKeys (..),
+    AddressRatchetKeys,
     NewRatchetKeys,
     DRInvitation (..),
     RatchetKeyId (..),
@@ -1162,7 +1161,7 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
     CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams, Nothing)
     CRContactUri crData rks -> crEncode "contact" crData $ case rks of
-      Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams} -> (Just e2eRcvParams, Just ratchetKeyId)
+      Just (ratchetKeyId, e2eRcvParams) -> (Just e2eRcvParams, Just ratchetKeyId)
       Nothing -> (Nothing, Nothing)
     where
       crEncode :: ByteString -> ConnReqUriData -> (Maybe (RcvE2ERatchetParamsUri 'C.X448), Maybe RatchetKeyId) -> ByteString
@@ -1237,7 +1236,7 @@ connReqUriP overrideScheme = do
     CMContact -> do
       e2e_ <- queryParam_ "e2e" query
       rk_ <- queryParam_ "rk" query
-      pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange} (AddressRatchetKeys <$> rk_ <*> e2e_)
+      pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange} ((,) <$> rk_ <*> e2e_)
   where
     crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
     -- semicolon is used to separate SMP queues because comma is used to separate server address hostnames
@@ -1576,11 +1575,10 @@ data PreparedLinkParams = PreparedLinkParams
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Connection initial keys (decided in prepareConnectionLink, used to create the connection)
     plpInitKeys :: InitialKeys,
-    -- | Private half of the advertised address ratchet keys, generated in prepareConnectionLink and
-    -- persisted in createConnectionForLink; present iff the address advertises DR keys
-    plpAddressKeys :: Maybe StoredAddressRatchetKeys
+    -- | The ratchetKeyId and private rcv ratchet keys of the advertised address DR keys, generated in
+    -- prepareConnectionLink and persisted in createConnectionForLink; present iff the address advertises DR keys
+    plpAddressKeys :: Maybe (RatchetKeyId, (C.PrivateKeyX448, C.PrivateKeyX448, Maybe RcvPrivRKEMParams))
   }
-  deriving (Show)
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
 
@@ -1848,29 +1846,8 @@ newtype RatchetKeyId = RatchetKeyId ByteString
   deriving (Eq, Show)
   deriving newtype (Encoding, StrEncoding)
 
-data AddressRatchetKeys = AddressRatchetKeys
-  { ratchetKeyId :: RatchetKeyId,
-    e2eRcvParams :: RcvE2ERatchetParamsUri 'C.X448
-  }
-  deriving (Eq, Show)
-
-instance Encoding AddressRatchetKeys where
-  smpEncode AddressRatchetKeys {ratchetKeyId, e2eRcvParams} = smpEncode (ratchetKeyId, e2eRcvParams)
-  smpP = AddressRatchetKeys <$> smpP <*> smpP
-
--- | The private half of an AddressRatchetKeys bundle: generated together with the advertised public part in
--- prepareConnectionLink and persisted by the owner (keyed by connId + ratchetKeyId) in createConnectionForLink,
--- so the ratchet can be completed when a requester joins with that ratchetKeyId.
-data StoredAddressRatchetKeys = StoredAddressRatchetKeys
-  { saRatchetKeyId :: RatchetKeyId,
-    saRcvPrivKey1 :: C.PrivateKeyX448,
-    saRcvPrivKey2 :: C.PrivateKeyX448,
-    saRcvPrivKem :: Maybe RcvPrivRKEMParams
-  }
-
--- private key material is redacted (and RcvPrivRKEMParams has no Show)
-instance Show StoredAddressRatchetKeys where
-  show StoredAddressRatchetKeys {saRatchetKeyId} = "StoredAddressRatchetKeys {saRatchetKeyId = " <> show saRatchetKeyId <> ", <private keys redacted>}"
+-- | The advertised address DR keys: the id selecting the owner's stored key set, and the public rcv ratchet params.
+type AddressRatchetKeys = (RatchetKeyId, RcvE2ERatchetParamsUri 'C.X448)
 
 -- | Whether setConnShortLink should generate a fresh address ratchet key set, rotating the advertised keys.
 type NewRatchetKeys = Bool

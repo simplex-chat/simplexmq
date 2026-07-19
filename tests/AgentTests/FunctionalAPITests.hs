@@ -1029,7 +1029,7 @@ runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmp
     (_, ContactLinkData _ userCtData', connReq') <- getConnShortLink bob 1 shortLink
     -- the advertised DR bundle includes a KEM iff the owner's PQ is on, so a PQ requester gets PQ from message 1
     liftIO $ case ratchetKeys userCtData' of
-      Just AddressRatchetKeys {e2eRcvParams = CR.E2ERatchetParamsUri _ _ _ kem_} ->
+      Just (_, CR.E2ERatchetParamsUri _ _ _ kem_) ->
         isJust kem_ `shouldBe` supportPQ (CR.connPQEncryption addrIK)
       Nothing -> expectationFailure "address must advertise DR ratchet keys"
     -- classic (non-DR) join drops the address keys from the request
