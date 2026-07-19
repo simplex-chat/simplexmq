@@ -46,6 +46,7 @@ module Simplex.Messaging.Crypto.Ratchet
     AE2ERatchetParams (..),
     E2ERatchetParamsUri (..),
     E2ERatchetParams (..),
+    RcvE2EPrivRatchetParams,
     VersionE2E,
     VersionRangeE2E,
     pattern VersionE2E,
@@ -404,24 +405,30 @@ instance RatchetKEMStateI s => ToField (PrivRKEMParams s) where toField = toFiel
 
 instance (Typeable s, RatchetKEMStateI s) => FromField (PrivRKEMParams s) where fromField = blobFieldDecoder smpDecode
 
+type E2EPrivRatchetParams s a = (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams s))\
+
+type RcvE2EPrivRatchetParams a = E2EPrivRatchetParams 'RKSProposed a
+
+type AE2EPrivRatchetParams a = (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams)
+
 data UseKEM (s :: RatchetKEMState) where
   ProposeKEM :: UseKEM 'RKSProposed
   AcceptKEM :: KEMPublicKey -> UseKEM 'RKSAccepted
 
 data AUseKEM = forall s. RatchetKEMStateI s => AUseKEM (SRatchetKEMState s) (UseKEM s)
 
-mkRcvE2ERatchetParams :: VersionE2E -> (PrivateKey a, PrivateKey a, Maybe RcvPrivRKEMParams) -> RcvE2ERatchetParams a
+mkRcvE2ERatchetParams :: VersionE2E -> RcvE2EPrivRatchetParams a -> RcvE2ERatchetParams a
 mkRcvE2ERatchetParams v (pk1, pk2, pKem) = E2ERatchetParams v (publicKey pk1) (publicKey pk2) (mkKem <$> pKem)
   where
     mkKem :: RcvPrivRKEMParams -> RcvRKEMParams
     mkKem (PrivateRKParamsProposed (k, _)) = RKParamsProposed k
 
-generateE2EParams :: forall s a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe (UseKEM s) -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams s), E2ERatchetParams s a)
+generateE2EParams :: forall s a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe (UseKEM s) -> IO (E2EPrivRatchetParams s a, E2ERatchetParams s a)
 generateE2EParams g v useKEM_ = do
   (k1, pk1) <- atomically $ generateKeyPair g
   (k2, pk2) <- atomically $ generateKeyPair g
   kems <- kemParams
-  pure (pk1, pk2, snd <$> kems, E2ERatchetParams v k1 k2 (fst <$> kems))
+  pure ((pk1, pk2, snd <$> kems), E2ERatchetParams v k1 k2 (fst <$> kems))
   where
     kemParams :: IO (Maybe (RKEMParams s, PrivRKEMParams s))
     kemParams = case useKEM_ of
@@ -437,7 +444,7 @@ generateE2EParams g v useKEM_ = do
       _ -> pure Nothing
 
 -- used by party initiating connection, Bob in double-ratchet spec
-generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> PQSupport -> IO (PrivateKey a, PrivateKey a, Maybe (PrivRKEMParams 'RKSProposed), E2ERatchetParams 'RKSProposed a)
+generateRcvE2EParams :: (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> PQSupport -> IO (RcvE2EPrivRatchetParams a, RcvE2ERatchetParams a)
 generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
   where
     proposeKEM_ :: PQSupport -> Maybe (UseKEM 'RKSProposed)
@@ -446,14 +453,14 @@ generateRcvE2EParams g v = generateE2EParams g v . proposeKEM_
       PQSupportOff -> Nothing
 
 -- used by party accepting connection, Alice in double-ratchet spec
-generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe AUseKEM -> IO (PrivateKey a, PrivateKey a, Maybe APrivRKEMParams, AE2ERatchetParams a)
+generateSndE2EParams :: forall a. (AlgorithmI a, DhAlgorithm a) => TVar ChaChaDRG -> VersionE2E -> Maybe AUseKEM -> IO (AE2EPrivRatchetParams a, AE2ERatchetParams a)
 generateSndE2EParams g v = \case
   Nothing -> do
-    (pk1, pk2, _, e2eParams) <- generateE2EParams g v Nothing
-    pure (pk1, pk2, Nothing, AE2ERatchetParams SRKSProposed e2eParams)
+    ((pk1, pk2, _), e2eParams) <- generateE2EParams g v Nothing
+    pure ((pk1, pk2, Nothing), AE2ERatchetParams SRKSProposed e2eParams)
   Just (AUseKEM s useKEM) -> do
-    (pk1, pk2, pKem, e2eParams) <- generateE2EParams g v (Just useKEM)
-    pure (pk1, pk2, APRKP s <$> pKem, AE2ERatchetParams s e2eParams)
+    ((pk1, pk2, pKem), e2eParams) <- generateE2EParams g v (Just useKEM)
+    pure ((pk1, pk2, APRKP s <$> pKem), AE2ERatchetParams s e2eParams)
 
 data RatchetInitParams = RatchetInitParams
   { assocData :: Str,
@@ -465,9 +472,9 @@ data RatchetInitParams = RatchetInitParams
   deriving (Show)
 
 -- this is used by the peer joining the connection
-pqX3dhSnd :: DhAlgorithm a => PrivateKey a -> PrivateKey a -> Maybe APrivRKEMParams -> E2ERatchetParams 'RKSProposed a -> Either CryptoError (RatchetInitParams, Maybe KEMKeyPair)
+pqX3dhSnd :: DhAlgorithm a => AE2EPrivRatchetParams a -> E2ERatchetParams 'RKSProposed a -> Either CryptoError (RatchetInitParams, Maybe KEMKeyPair)
 --        3. replied       2. received
-pqX3dhSnd spk1 spk2 spKem_ (E2ERatchetParams v rk1 rk2 rKem_) = do
+pqX3dhSnd (spk1, spk2, spKem_) (E2ERatchetParams v rk1 rk2 rKem_) = do
   (ks_, kem_) <- sndPq
   let initParams = pqX3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2) kem_
   pure (initParams, ks_)
@@ -481,9 +488,9 @@ pqX3dhSnd spk1 spk2 spKem_ (E2ERatchetParams v rk1 rk2 rKem_) = do
       _ -> Right (Nothing, Nothing)
 
 -- this is used by the peer that created new connection, after receiving the reply
-pqX3dhRcv :: forall s a. (RatchetKEMStateI s, DhAlgorithm a) => PrivateKey a -> PrivateKey a -> Maybe (PrivRKEMParams 'RKSProposed) -> E2ERatchetParams s a -> ExceptT CryptoError IO (RatchetInitParams, Maybe KEMKeyPair)
+pqX3dhRcv :: forall s a. (RatchetKEMStateI s, DhAlgorithm a) => RcvE2EPrivRatchetParams a -> E2ERatchetParams s a -> ExceptT CryptoError IO (RatchetInitParams, Maybe KEMKeyPair)
 --        1. sent          4. received in reply
-pqX3dhRcv rpk1 rpk2 rpKem_ (E2ERatchetParams v sk1 sk2 sKem_) = do
+pqX3dhRcv (rpk1, rpk2, rpKem_) (E2ERatchetParams v sk1 sk2 sKem_) = do
   kem_ <- rcvPq
   let initParams = pqX3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2) (snd <$> kem_)
   pure (initParams, fst <$> kem_)

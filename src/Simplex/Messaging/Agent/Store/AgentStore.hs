@@ -1366,11 +1366,11 @@ deleteSndMsgsExpired db ttl limit = do
     |]
     (cutoffTs, limit)
 
-createRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
-createRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
+createRatchetX3dhKeys :: DB.Connection -> ConnId -> CR.RcvE2EPrivRatchetParams 'C.X448 -> IO ()
+createRatchetX3dhKeys db connId (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem) =
   DB.execute db "INSERT INTO ratchets (conn_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem) VALUES (?, ?, ?, ?)" (connId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)
 
-getRatchetX3dhKeys :: DB.Connection -> ConnId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
+getRatchetX3dhKeys :: DB.Connection -> ConnId -> IO (Either StoreError (CR.RcvE2EPrivRatchetParams 'C.X448))
 getRatchetX3dhKeys db connId =
   firstRow' keys SEX3dhKeysNotFound $
     DB.query db "SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem FROM ratchets WHERE conn_id = ?" (Only connId)
@@ -1380,8 +1380,8 @@ getRatchetX3dhKeys db connId =
       _ -> Left SEX3dhKeysNotFound
 
 -- used to remember new keys when starting ratchet re-synchronization
-setRatchetX3dhKeys :: DB.Connection -> ConnId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
-setRatchetX3dhKeys db connId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
+setRatchetX3dhKeys :: DB.Connection -> ConnId -> CR.RcvE2EPrivRatchetParams 'C.X448 -> IO ()
+setRatchetX3dhKeys db connId (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem) =
   DB.execute
     db
     [sql|
