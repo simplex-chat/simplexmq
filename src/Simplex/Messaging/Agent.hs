@@ -1016,7 +1016,7 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   pure connId
 
 -- Generate a fresh address ratchet key set in memory (no DB): the advertised public part and the private half to persist.
-generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, (RatchetKeyId, (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams)))
+generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
 generateAddressRatchetKeys pqSupport = do
   g <- asks random
   e2eVR <- asks $ e2eEncryptVRange . config
@@ -1025,11 +1025,11 @@ generateAddressRatchetKeys pqSupport = do
   pure ((ratchetKeyId, toVersionRangeT e2eParams e2eVR), (ratchetKeyId, pks))
 
 -- Persist the private half (keyed by connId + ratchetKeyId) and prune old keys.
-storeAddressRatchetKeys :: AgentClient -> ConnId -> (RatchetKeyId, (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams)) -> AM ()
-storeAddressRatchetKeys c connId (ratchetKeyId, (pk1, pk2, pKem)) = do
+storeAddressRatchetKeys :: AgentClient -> ConnId -> (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448) -> AM ()
+storeAddressRatchetKeys c connId rks = do
   keep <- asks $ keepAddressKeys . config
   withStore' c $ \db -> do
-    createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
+    createAddressRatchetKeys db connId rks
     deleteOldAddressRatchetKeys db connId keep
 
 -- Generate + persist, used for rotation via setConnShortLink where the connId already exists.
@@ -1043,9 +1043,9 @@ currentAddressRatchetKeys :: AgentClient -> ConnId -> AM (Maybe AddressRatchetKe
 currentAddressRatchetKeys c connId =
   withStore' c (`getCurrentAddressRatchetKeys` connId) >>= \case
     Left _ -> pure Nothing
-    Right (ratchetKeyId, pk1, pk2, pKem) -> do
+    Right (ratchetKeyId, pks) -> do
       e2eVR <- asks $ e2eEncryptVRange . config
-      pure $ Just (ratchetKeyId, toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)) e2eVR)
+      pure $ Just (ratchetKeyId, toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) pks) e2eVR)
 
 -- | Encrypt signed link data for contact mode.
 encryptContactLinkData :: TVar ChaChaDRG -> C.PrivateKeyEd25519 -> LinkKey -> SMP.SenderId -> (ByteString, ByteString) -> AM ClntQueueReqData
@@ -1217,14 +1217,14 @@ getConnShortLink' c nm userId = \case
     decryptData srv linkKey k (sndId, d) = do
       (fd0, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
       let crData = case linkConnReq fd0 of
-            BCRInvitationUri d _ -> d
-            BCRContactUri d -> d
+            BCRInvitationUri crd _ -> crd
+            BCRContactUri crd -> crd
           (srv', sndId') = qAddress $ L.head $ crSmpQueues crData
       unless (srv `sameSrvHost` srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
       let fd = if srv' == srv then fd0 else updateConnReqServer srv fd0
           connReq = case (linkConnReq fd, clData) of
-            (BCRInvitationUri d e2eParams, _) -> CRInvitationUri d e2eParams
-            (BCRContactUri d, ContactLinkData _ UserContactData {ratchetKeys}) -> CRContactUri d ratchetKeys
+            (BCRInvitationUri crd e2eParams, _) -> CRInvitationUri crd e2eParams
+            (BCRContactUri crd, ContactLinkData _ UserContactData {ratchetKeys}) -> CRContactUri crd ratchetKeys
       pure (fd, clData, connReq)
     sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
     updateConnReqServer :: SMPServer -> FixedLinkData c -> FixedLinkData c
@@ -3616,7 +3616,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 _ -> prohibited "conf: incorrect state"
               _ -> prohibited "conf: status /= new"
 
-          initRcvRatchet_ :: VersionSMPA -> PQSupport -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> CR.SndE2ERatchetParams 'C.X448 -> AM (CR.RatchetX448, PQSupport)
+          initRcvRatchet_ :: VersionSMPA -> PQSupport -> CR.RcvE2EPrivRatchetParams 'C.X448 -> CR.SndE2ERatchetParams 'C.X448 -> AM (CR.RatchetX448, PQSupport)
           initRcvRatchet_ agentVersion pqSupport pks@(_, pk2, _) (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _)) = do
             e2eEncryptVRange <- asks $ e2eEncryptVRange . config
             unless (e2eVersion `isCompatible` e2eEncryptVRange) $ throwE $ AGENT A_VERSION

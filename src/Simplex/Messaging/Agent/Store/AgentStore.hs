@@ -1391,8 +1391,8 @@ setRatchetX3dhKeys db connId (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem) =
     |]
     (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, connId)
 
-createAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> C.PrivateKeyX448 -> C.PrivateKeyX448 -> Maybe CR.RcvPrivRKEMParams -> IO ()
-createAddressRatchetKeys db connId ratchetKeyId x3dhPrivKey1 x3dhPrivKey2 pqPrivKem =
+createAddressRatchetKeys :: DB.Connection -> ConnId -> (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448) -> IO ()
+createAddressRatchetKeys db connId (ratchetKeyId, (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)) =
   DB.execute
     db
     [sql|
@@ -1402,9 +1402,9 @@ createAddressRatchetKeys db connId ratchetKeyId x3dhPrivKey1 x3dhPrivKey2 pqPriv
     |]
     (connId, ratchetKeyId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)
 
-getCurrentAddressRatchetKeys :: DB.Connection -> ConnId -> IO (Either StoreError (RatchetKeyId, C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
+getCurrentAddressRatchetKeys :: DB.Connection -> ConnId -> IO (Either StoreError (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
 getCurrentAddressRatchetKeys db connId =
-  firstRow id SEX3dhKeysNotFound $
+  firstRow (\(Only rkId :. pks) -> (rkId, pks)) SEX3dhKeysNotFound $
     DB.query
       db
       [sql|
@@ -1416,7 +1416,7 @@ getCurrentAddressRatchetKeys db connId =
       |]
       (Only connId)
 
-getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams))
+getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (CR.RcvE2EPrivRatchetParams 'C.X448))
 getAddressRatchetKeys db connId ratchetKeyId =
   firstRow id SEX3dhKeysNotFound $
     DB.query

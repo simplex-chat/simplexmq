@@ -244,8 +244,8 @@ import Simplex.Messaging.Crypto.Ratchet
     RatchetX448,
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
-    RcvPrivRKEMParams,
     SndE2ERatchetParams,
+    RcvE2EPrivRatchetParams,
     pattern PQSupportOff,
     pattern PQSupportOn,
   )
@@ -1577,7 +1577,7 @@ data PreparedLinkParams = PreparedLinkParams
     plpInitKeys :: InitialKeys,
     -- | The ratchetKeyId and private rcv ratchet keys of the advertised address DR keys, generated in
     -- prepareConnectionLink and persisted in createConnectionForLink; present iff the address advertises DR keys
-    plpAddressKeys :: Maybe (RatchetKeyId, (C.PrivateKeyX448, C.PrivateKeyX448, Maybe RcvPrivRKEMParams))
+    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
   }
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
