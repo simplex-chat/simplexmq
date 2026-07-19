@@ -877,8 +877,8 @@ joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRInvitationUri {} c
       Nothing -> throwE $ AGENT A_VERSION
 joinConnAsync c corrId updateConn connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode =
   lift (compatibleContactUri cReqUri) >>= \case
-    Just (_, ratchet_, Compatible connAgentVersion) -> do
-      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (addrKeysE2EVersion ratchet_)
+    Just (_, rks_, Compatible connAgentVersion) -> do
+      let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (addrKeysE2EVersion <$> rks_)
       when updateConn $ withStore' c $ \db -> updateNewConnJoin db connId connAgentVersion pqSupport enableNtfs
       enqueueCommand c corrId connId Nothing $ AClientCommand $ JOIN (JRConnReq enableNtfs (ACR sConnectionMode cReqUri) pqSupport) subMode cInfo
     Nothing -> throwE $ AGENT A_VERSION
@@ -1343,7 +1343,7 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
       Nothing -> throwE $ AGENT A_VERSION
   CRContactUri {} ->
     lift (compatibleContactUri cReq) >>= \case
-      Just (_, ratchet_, aVersion) -> create aVersion (addrKeysE2EVersion ratchet_)
+      Just (_, rks_, aVersion) -> create aVersion (addrKeysE2EVersion <$> rks_)
       Nothing -> throwE $ AGENT A_VERSION
   where
     create :: Compatible VersionSMPA -> Maybe CR.VersionE2E -> AM ConnId
@@ -1434,7 +1434,7 @@ connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
       invPQSupported (_, Compatible (CR.E2ERatchetParams e2eV _ _ _), Compatible agentV) = (agentV, pqSup `CR.pqSupportAnd` versionPQSupport_ agentV (Just e2eV))
   CRContactUri {} -> ctPQSupported <$$> compatibleContactUri cReq
     where
-      ctPQSupported (_, ratchet_, Compatible agentV) = (agentV, pqSup `CR.pqSupportAnd` versionPQSupport_ agentV (addrKeysE2EVersion ratchet_))
+      ctPQSupported (_, rks_, Compatible agentV) = (agentV, pqSup `CR.pqSupportAnd` versionPQSupport_ agentV (addrKeysE2EVersion <$> rks_))
 
 compatibleInvitationUri :: ConnectionRequestUri 'CMInvitation -> AM' (Maybe (Compatible SMPQueueInfo, Compatible (CR.RcvE2ERatchetParams 'C.X448), Compatible VersionSMPA))
 compatibleInvitationUri (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} e2eRcvParamsUri) = do
@@ -1463,8 +1463,8 @@ versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
 {-# INLINE versionPQSupport_ #-}
 
-addrKeysE2EVersion :: Maybe (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)) -> Maybe CR.VersionE2E
-addrKeysE2EVersion = fmap $ \(_, Compatible (CR.E2ERatchetParams e2eV _ _ _)) -> e2eV
+addrKeysE2EVersion :: (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)) -> CR.VersionE2E
+addrKeysE2EVersion (_, Compatible (CR.E2ERatchetParams e2eV _ _ _)) = e2eV
 
 joinConnSrv :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
 joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
