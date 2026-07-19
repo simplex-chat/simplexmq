@@ -1219,12 +1219,16 @@ getConnShortLink' c nm userId = \case
     decryptData :: ConnectionModeI c => SMPServer -> LinkKey -> C.SbKey -> (SMP.SenderId, QueueLinkData) -> AM (FixedLinkData c, ConnLinkData c, ConnectionRequestUri c)
     decryptData srv linkKey k (sndId, d) = do
       (fd0, clData) <- liftEither $ SL.decryptLinkData @c linkKey k d
-      -- merge the keys-less fixed-data connReq with the mutable ratchet keys, so callers get the full address connReq
-      let connReq0 = connReqWithKeys (linkConnReq fd0) (clRatchetKeys clData)
-          (srv', sndId') = qAddress (connReqQueue connReq0)
+      let crData = case linkConnReq fd0 of
+            BCRInvitationUri d _ -> d
+            BCRContactUri d -> d
+          (srv', sndId') = qAddress $ L.head $ crSmpQueues crData
       unless (srv `sameSrvHost` srv' && sndId == sndId') $ throwE $ AGENT $ A_LINK "different address"
       let fd = if srv' == srv then fd0 else updateConnReqServer srv fd0
-      pure (fd, clData, connReqWithKeys (linkConnReq fd) (clRatchetKeys clData))
+          connReq = case (linkConnReq fd, clData) of
+            (BCRInvitationUri d e2eParams, _) -> CRInvitationUri d e2eParams
+            (BCRContactUri d, ContactLinkData _ UserContactData {ratchetKeys}) -> CRContactUri d ratchetKeys
+      pure (fd, clData, connReq)
     sameSrvHost ProtocolServer {host = h :| _} ProtocolServer {host = hs} = h `elem` hs
     updateConnReqServer :: SMPServer -> FixedLinkData c -> FixedLinkData c
     updateConnReqServer srv fd =
@@ -1235,10 +1239,6 @@ getConnShortLink' c nm userId = \case
       where
         updateQueues crData@(ConnReqUriData {crSmpQueues = SMPQueueUri vr addr :| qs}) =
           crData {crSmpQueues = SMPQueueUri vr addr {smpServer = srv} :| qs}
-    clRatchetKeys :: ConnLinkData c -> Maybe AddressRatchetKeys
-    clRatchetKeys = \case
-      InvitationLinkData {} -> Nothing
-      ContactLinkData _ UserContactData {ratchetKeys} -> ratchetKeys
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
@@ -1382,14 +1382,11 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
 
 joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c nm userId connId enableNtfs cReq cInfo pqSupport subMode = do
-  srv <- getNextSMPServer c userId [qServer $ connReqQueue cReq]
+  let crData = case cReq of
+        CRInvitationUri d _ -> d
+        CRContactUri d _ -> d
+  srv <- getNextSMPServer c userId [qServer $ L.head $ crSmpQueues crData]
   joinConnSrv c nm userId connId enableNtfs cReq cInfo pqSupport subMode srv
-
--- a queue is addressed by server + sender-ID + DH key; the advertised DR keys are not part of that address
-connReqQueue :: ConnectionRequestUri c -> SMPQueueUri
-connReqQueue = \case
-  CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
-  CRContactUri ConnReqUriData {crSmpQueues = q :| _} _ -> q
 
 startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM ((ConnData, SndQueue), Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =

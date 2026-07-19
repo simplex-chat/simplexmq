@@ -1883,6 +1883,11 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
     get b ##> ("", bId, CON)
     exchangeGreetings a aId b bId
 
+connReqWithKeys :: BinaryConnectionRequestUri m -> Maybe AddressRatchetKeys -> ConnectionRequestUri m
+connReqWithKeys cr rk = case cr of
+  BCRInvitationUri crData e2eParams -> CRInvitationUri crData e2eParams
+  BCRContactUri crData -> CRContactUri crData rk
+
 testIncreaseConnAgentVersion :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testIncreaseConnAgentVersion ps = do
   alice <- getSMPAgentClient' 1 agentCfg {smpAgentVRange = mkVersionRange 1 2} initAgentServers testDB
@@ -3901,8 +3906,8 @@ testDeliveryReceiptsVersion ps = do
       subscribeConnection a' bId
       subscribeConnection b' aId
       exchangeGreetingsMsgId_ PQEncOff 4 a' bId b' aId
-      checkVersion a' bId 8
-      checkVersion b' aId 8
+      checkVersion a' bId 7
+      checkVersion b' aId 7
       (6, PQEncOff) <- A.sendMessage a' bId PQEncOn SMP.noMsgFlags "hello"
       get a' ##> ("", bId, SENT 6)
       get b' =##> \case ("", c, Msg' 6 PQEncOff "hello") -> c == aId; _ -> False

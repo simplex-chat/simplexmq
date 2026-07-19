@@ -113,7 +113,6 @@ module Simplex.Messaging.Agent.Protocol
     BinaryConnectionRequestUri (..),
     ABinaryConnectionRequestUri (..),
     binaryConnReq,
-    connReqWithKeys,
     ShortLinkCreds (..),
     ConnReqUriData (..),
     CRClientData,
@@ -1161,12 +1160,13 @@ instance Encoding AMessageReceipt where
 
 instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
   strEncode = \case
-    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams) Nothing
-    CRContactUri crData Nothing -> crEncode "contact" crData Nothing Nothing
-    CRContactUri crData (Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}) -> crEncode "contact" crData (Just e2eRcvParams) (Just ratchetKeyId)
+    CRInvitationUri crData e2eParams -> crEncode "invitation" crData (Just e2eParams, Nothing)
+    CRContactUri crData rks -> crEncode "contact" crData $ case rks of
+      Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams} -> (Just e2eRcvParams, Just ratchetKeyId)
+      Nothing -> (Nothing, Nothing)
     where
-      crEncode :: ByteString -> ConnReqUriData -> Maybe (RcvE2ERatchetParamsUri 'C.X448) -> Maybe RatchetKeyId -> ByteString
-      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} e2eParams rk =
+      crEncode :: ByteString -> ConnReqUriData -> (Maybe (RcvE2ERatchetParamsUri 'C.X448), Maybe RatchetKeyId) -> ByteString
+      crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} (e2eParams, rk) =
         strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
         where
           queryStr =
@@ -1516,11 +1516,6 @@ binaryConnReq :: ConnectionRequestUri m -> BinaryConnectionRequestUri m
 binaryConnReq = \case
   CRInvitationUri crData e2eParams -> BCRInvitationUri crData e2eParams
   CRContactUri crData _ -> BCRContactUri crData
-
-connReqWithKeys :: BinaryConnectionRequestUri m -> Maybe AddressRatchetKeys -> ConnectionRequestUri m
-connReqWithKeys cr rk = case cr of
-  BCRInvitationUri crData e2eParams -> CRInvitationUri crData e2eParams
-  BCRContactUri crData -> CRContactUri crData rk
 
 deriving instance Eq (ConnectionRequestUri m)
 
