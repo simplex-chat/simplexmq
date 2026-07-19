@@ -1025,6 +1025,12 @@ storeAddressRatchetKeys c connId rks = do
     createAddressRatchetKeys db connId rks
     deleteOldAddressRatchetKeys db connId keep
 
+newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchetKeys
+newAddressRatchetKeys c connId pqSupport = do
+  (ks, pks) <- generateAddressRatchetKeys pqSupport
+  storeAddressRatchetKeys c connId pks
+  pure ks
+
 currentAddressRatchetKeys :: AgentClient -> ConnId -> AM (Maybe AddressRatchetKeys)
 currentAddressRatchetKeys c connId =
   withStore' c (`getCurrentAddressRatchetKeys` connId) >>= \case
@@ -1129,10 +1135,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotate =
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
       ratchetKeys <-
         if rotate
-          then do
-            (arKeys, stored) <- generateAddressRatchetKeys pqSupport
-            storeAddressRatchetKeys c connId stored
-            pure $ Just arKeys
+          then Just <$> newAddressRatchetKeys c connId pqSupport
           else currentAddressRatchetKeys c connId
       let ud = UserContactLinkData ucd {ratchetKeys}
           cslContact = CSLContact SLSServer CCTContact (qServer rq)
@@ -1250,10 +1253,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
   addrKeys_ <- case cMode of
-    SCMContact | useDR -> do
-      (arKeys, stored) <- generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys)
-      storeAddressRatchetKeys c connId stored
-      pure $ Just arKeys
+    SCMContact | useDR -> Just <$> newAddressRatchetKeys c connId (CR.connPQEncryption pqInitKeys)
     _ -> pure Nothing
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
   case userLinkData_ of
