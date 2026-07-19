@@ -980,9 +980,6 @@ prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNo
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
-  -- when opted in, generate the advertised DR keys in memory so the returned connReq carries them; the private
-  -- half is persisted later in createConnectionForLink. The bundle uses the connection's PQ, so its KEM is present
-  -- iff owner PQ is on, letting a PQ requester encrypt its first message (profile) with PQ from message 1.
   addrKeys_ <- if useDR then Just <$> generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys) else pure Nothing
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
@@ -998,8 +995,6 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   g <- asks random
   AgentConfig {smpAgentVRange} <- asks config
   connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption plpInitKeys)
-  -- persist the private half of the advertised keys (generated in prepareConnectionLink) so the owner can complete
-  -- the ratchet when a requester joins; the public half rides in the connReq and goes into the mutable link data
   mapM_ (storeAddressRatchetKeys c connId) plpAddressKeys
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} addrKeys_ = connReq
       userLinkData' = case addrKeys_ of
@@ -1015,7 +1010,6 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
   pure connId
 
--- Generate a fresh address ratchet key set in memory (no DB): the advertised public part and the private half to persist.
 generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
 generateAddressRatchetKeys pqSupport = do
   g <- asks random
@@ -1024,20 +1018,12 @@ generateAddressRatchetKeys pqSupport = do
   ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
   pure ((ratchetKeyId, toVersionRangeT e2eParams e2eVR), (ratchetKeyId, pks))
 
--- Persist the private half (keyed by connId + ratchetKeyId) and prune old keys.
 storeAddressRatchetKeys :: AgentClient -> ConnId -> (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448) -> AM ()
 storeAddressRatchetKeys c connId rks = do
   keep <- asks $ keepAddressKeys . config
   withStore' c $ \db -> do
     createAddressRatchetKeys db connId rks
     deleteOldAddressRatchetKeys db connId keep
-
--- Generate + persist, used for rotation via setConnShortLink where the connId already exists.
-newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchetKeys
-newAddressRatchetKeys c connId pqSupport = do
-  (arKeys, stored) <- generateAddressRatchetKeys pqSupport
-  storeAddressRatchetKeys c connId stored
-  pure arKeys
 
 currentAddressRatchetKeys :: AgentClient -> ConnId -> AM (Maybe AddressRatchetKeys)
 currentAddressRatchetKeys c connId =
@@ -1143,7 +1129,10 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotate =
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
       ratchetKeys <-
         if rotate
-          then Just <$> newAddressRatchetKeys c connId pqSupport
+          then do
+            (arKeys, stored) <- generateAddressRatchetKeys pqSupport
+            storeAddressRatchetKeys c connId stored
+            pure $ Just arKeys
           else currentAddressRatchetKeys c connId
       let ud = UserContactLinkData ucd {ratchetKeys}
           cslContact = CSLContact SLSServer CCTContact (qServer rq)
@@ -1260,8 +1249,6 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
   case (cMode, pqInitKeys) of
     (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
     _ -> pure ()
-  -- when opted in, generate + persist the advertised DR keys for a contact address; the public half goes into the
-  -- connReq and the mutable link data so requesters can start the ratchet from message 1
   addrKeys_ <- case cMode of
     SCMContact | useDR -> do
       (arKeys, stored) <- generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys)
@@ -1292,7 +1279,6 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
           (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
           withStore' c $ \db -> createRatchetX3dhKeys db connId pks
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
-    -- inject the agent-generated advertised keys into the contact mutable link data (requesters fetch them here)
     setLinkDataRatchetKeys :: Maybe AddressRatchetKeys -> UserConnLinkData c -> UserConnLinkData c
     setLinkDataRatchetKeys ks = \case
       UserContactLinkData ucd -> UserContactLinkData ucd {ratchetKeys = ks}
@@ -1459,15 +1445,12 @@ compatibleInvitationUri (CRInvitationUri ConnReqUriData {crAgentVRange, crSmpQue
       <*> (e2eRcvParamsUri `compatibleVersion` e2eEncryptVRange)
       <*> (crAgentVRange `compatibleVersion` smpAgentVRange)
 
--- | A contact address advertising DR keys must have version-compatible e2e ratchet params too; the returned
--- Compatible params (and ratchetKeyId) are what joinConnSrv/connRequestPQSupport use, so the check lives here.
 compatibleContactUri :: ConnectionRequestUri 'CMContact -> AM' (Maybe (Compatible SMPQueueInfo, Maybe (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)), Compatible VersionSMPA))
 compatibleContactUri (CRContactUri ConnReqUriData {crAgentVRange, crSmpQueues = (qUri :| _)} addrKeys_) = do
   AgentConfig {smpClientVRange, smpAgentVRange, e2eEncryptVRange} <- asks config
   pure $ do
     q <- qUri `compatibleVersion` smpClientVRange
     v <- crAgentVRange `compatibleVersion` smpAgentVRange
-    -- an advertised DR bundle must be version-compatible, otherwise the whole address is incompatible
     ratchet_ <- case addrKeys_ of
       Nothing -> Just Nothing
       Just (ratchetKeyId, e2eRcvParams) ->
@@ -1478,7 +1461,6 @@ versionPQSupport_ :: VersionSMPA -> Maybe CR.VersionE2E -> PQSupport
 versionPQSupport_ agentV e2eV_ = PQSupport $ agentV >= pqdrSMPAgentVersion && maybe True (>= CR.pqRatchetE2EEncryptVersion) e2eV_
 {-# INLINE versionPQSupport_ #-}
 
--- | e2e ratchet version of a contact address's compatible advertised DR keys (if any), for PQ-support calculation.
 addrKeysE2EVersion :: Maybe (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)) -> Maybe CR.VersionE2E
 addrKeysE2EVersion = fmap $ \(_, Compatible (CR.E2ERatchetParams e2eV _ _ _)) -> e2eV
 
@@ -1511,7 +1493,6 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
               RcvConnection _ rq -> mkJoinInvitation rq pqInitKeys
               _ -> throwE $ CMD PROHIBITED $ "joinConnSrv: bad connection " <> show cType
             pure AgentInvitation {agentVersion = v, connReq = cReq, connInfo = cInfo}
-          -- the advertised keys' e2e version was already checked by compatibleContactUri; use the compatible params
           Just (ratchetKeyId, Compatible e2eParams@(CR.E2ERatchetParams e2eV _ _ _)) -> do
             g <- asks random
             e2eVR <- asks $ e2eEncryptVRange . config
@@ -3457,7 +3438,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                       _ -> prohibited "msg: bad client msg" >> ack
                   (Just e2eDh, Just _) ->
                     decryptClientMessage e2eDh clientMsg >>= \case
-                      -- this is a repeated confirmation/invitation delivery because ack failed to be sent
+                      -- this is a repeated confirmation delivery because ack failed to be sent
                       (_, AgentConfirmation {}) -> ack
                       (_, AgentInvitationDR {}) -> ack
                       _ -> prohibited "msg: public header" >> ack

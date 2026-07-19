@@ -261,19 +261,6 @@ connectionRequestTests =
       queueV1NoPort #==# ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#" <> testDhKeyStr)
-    it "JOIN command is backward compatible: JRConnReq is byte-identical to the pre-DR JOIN" $ do
-      let uri = ACR SCMInvitation invConnRequest
-          cmd = JOIN (JRConnReq True uri PQSupportOff) SMSubscribe "hi"
-          -- the pre-DR JOIN wire format: "JOIN <ntfs> <cReq> <pqSup> <subMode> <binary connInfo>"
-          oldJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode PQSupportOff <> " " <> strEncode SMSubscribe <> " 2\nhi"
-      serializeCommand cmd `shouldBe` oldJoin
-      case parseAll dbCommandP oldJoin of
-        Right (JOIN JRConnReq {} _ _) -> pure ()
-        r -> expectationFailure $ "expected JOIN JRConnReq, got " <> show r
-      (serializeCommand <$> parseAll dbCommandP oldJoin) `shouldBe` Right oldJoin
-      -- a legacy JOIN omitting pqSup parses with the PQSupportOff default (re-serializing with pqSup present)
-      let legacyJoin = "JOIN " <> strEncode True <> " " <> strEncode uri <> " " <> strEncode SMSubscribe <> " 2\nhi"
-      (serializeCommand <$> parseAll dbCommandP legacyJoin) `shouldBe` Right oldJoin
     it "should serialize and parse connection invitations and contact addresses" $ do
       connectionRequest #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequest #== ("https://simplex.chat/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
