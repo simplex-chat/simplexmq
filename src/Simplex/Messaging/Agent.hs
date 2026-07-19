@@ -435,8 +435,8 @@ createConnectionForLink c nm userId enableNtfs = withAgentEnv c .::: createConne
 {-# INLINE createConnectionForLink #-}
 
 -- | Create or update user's contact connection short link
-setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE (ConnShortLink c)
-setConnShortLink c = withAgentEnv c .::. setConnShortLink' c
+setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> Bool -> AE (ConnShortLink c)
+setConnShortLink c = withAgentEnv c .::: setConnShortLink' c
 {-# INLINE setConnShortLink #-}
 
 deleteConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AE ()
@@ -995,7 +995,7 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
     CR.IKUsePQ -> throwE $ CMD PROHIBITED "createConnectionForLink"
     _ -> pure ()
   connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption pqInitKeys)
-  userLinkData' <- if advertiseDR then advertiseDRKeys g connId else pure userLinkData
+  userLinkData' <- if advertiseDR then advertiseDRKeys connId else pure userLinkData
   let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} = connReq
       md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
       linkData = (plpSignedFixedData, md)
@@ -1007,17 +1007,33 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
   pure connId
   where
-    advertiseDRKeys :: TVar ChaChaDRG -> ConnId -> AM (UserConnLinkData 'CMContact)
-    advertiseDRKeys g connId = do
-      e2eVR <- asks $ e2eEncryptVRange . config
+    advertiseDRKeys :: ConnId -> AM (UserConnLinkData 'CMContact)
+    advertiseDRKeys connId = do
       -- the advertised bundle uses the connection's PQ, so its KEM is present iff the owner PQ is on, letting a
       -- PQ requester encrypt its first message (profile) with PQ from message 1
-      (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) (CR.connPQEncryption pqInitKeys)
-      ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
-      withStore' c $ \db -> createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
+      arKeys <- newAddressRatchetKeys c connId (CR.connPQEncryption pqInitKeys)
       let UserContactLinkData ucd = userLinkData
-          e2eRcvParams = toVersionRangeT e2eParams e2eVR
-      pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}}
+      pure $ UserContactLinkData ucd {ratchetKeys = Just arKeys}
+
+newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchetKeys
+newAddressRatchetKeys c connId pqSupport = do
+  g <- asks random
+  e2eVR <- asks $ e2eEncryptVRange . config
+  keep <- asks $ addressRatchetKeysToKeep . config
+  (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqSupport
+  ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
+  withStore' c $ \db -> do
+    createAddressRatchetKeys db connId ratchetKeyId pk1 pk2 pKem
+    deleteOldAddressRatchetKeys db connId keep
+  pure AddressRatchetKeys {ratchetKeyId, e2eRcvParams = toVersionRangeT e2eParams e2eVR}
+
+currentAddressRatchetKeys :: AgentClient -> ConnId -> AM (Maybe AddressRatchetKeys)
+currentAddressRatchetKeys c connId =
+  withStore' c (`getCurrentAddressRatchetKeys` connId) >>= \case
+    Left _ -> pure Nothing
+    Right (ratchetKeyId, pk1, pk2, pKem) -> do
+      e2eVR <- asks $ e2eEncryptVRange . config
+      pure $ Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams = toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)) e2eVR}
 
 -- | Encrypt signed link data for contact mode.
 encryptContactLinkData :: TVar ChaChaDRG -> C.PrivateKeyEd25519 -> LinkKey -> SMP.SenderId -> (ByteString, ByteString) -> AM ClntQueueReqData
@@ -1097,24 +1113,28 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
               }
       createNewConn db g cData SCMInvitation
 
-setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AM (ConnShortLink c)
-setConnShortLink' c nm connId cMode userLinkData clientData =
+setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> Bool -> AM (ConnShortLink c)
+setConnShortLink' c nm connId cMode userLinkData clientData rotate =
   withConnLock c connId "setConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     (rq, lnkId, sl, d) <- case (conn, cMode, userLinkData) of
-      (ContactConnection _ rq, SCMContact, d@UserContactLinkData {}) -> prepareContactLinkData rq d
+      (ContactConnection cData rq, SCMContact, d@UserContactLinkData {}) -> prepareContactLinkData cData rq d
       (RcvConnection _ rq, SCMInvitation, d@UserInvLinkData {}) -> prepareInvLinkData rq d
       _ -> throwE $ CMD PROHIBITED "setConnShortLink: invalid connection or mode"
     addQueueLink c nm rq lnkId d
     pure sl
   where
-    prepareContactLinkData :: RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
-    prepareContactLinkData rq@RcvQueue {shortLink} ud'@(UserContactLinkData d') = do
-      liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink d'
+    prepareContactLinkData :: ConnData -> RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
+    prepareContactLinkData ConnData {pqSupport} rq@RcvQueue {shortLink} (UserContactLinkData ucd) = do
+      liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink ucd
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-      ud <- preserveAddressRatchetKeys ud'
-      let cslContact = CSLContact SLSServer CCTContact (qServer rq)
+      ratchetKeys <-
+        if rotate
+          then Just <$> newAddressRatchetKeys c connId pqSupport
+          else currentAddressRatchetKeys c connId
+      let ud = UserContactLinkData ucd {ratchetKeys}
+          cslContact = CSLContact SLSServer CCTContact (qServer rq)
       case shortLink of
         Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
           let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
@@ -1141,14 +1161,6 @@ setConnShortLink' c nm connId cMode userLinkData clientData =
         let sl = CSLInvitation SLSServer (qServer rq) shortLinkId shortLinkKey
         pure (rq, shortLinkId, sl, (linkEncFixedData, d))
       Nothing -> throwE $ CMD PROHIBITED "setConnShortLink: no ShortLinkCreds in invitation"
-    preserveAddressRatchetKeys :: UserConnLinkData 'CMContact -> AM (UserConnLinkData 'CMContact)
-    preserveAddressRatchetKeys ud@(UserContactLinkData ucd) =
-      withStore' c (`getCurrentAddressRatchetKeys` connId) >>= \case
-        Left _ -> pure ud
-        Right (ratchetKeyId, pk1, pk2, pKem) -> do
-          e2eVR <- asks $ e2eEncryptVRange . config
-          let e2eRcvParams = toVersionRangeT (CR.mkRcvE2ERatchetParams (maxVersion e2eVR) (pk1, pk2, pKem)) e2eVR
-          pure $ UserContactLinkData ucd {ratchetKeys = Just AddressRatchetKeys {ratchetKeyId, e2eRcvParams}}
 
 deleteConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AM ()
 deleteConnShortLink' c nm connId cMode =
@@ -1974,7 +1986,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             notify $ INV (ACR cMode cReq)
         LSET userLinkData clientData ->
           withServer' . tryCommand $ do
-            link <- setConnShortLink' c NRMBackground connId SCMContact userLinkData clientData
+            link <- setConnShortLink' c NRMBackground connId SCMContact userLinkData clientData False
             notify $ LINK link userLinkData
         LGET shortLink ->
           withServer' . tryCommand $ do

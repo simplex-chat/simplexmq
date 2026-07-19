@@ -156,6 +156,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createAddressRatchetKeys,
     getCurrentAddressRatchetKeys,
     getAddressRatchetKeys,
+    deleteOldAddressRatchetKeys,
     createSndRatchet,
     getSndRatchet,
     createRatchet,
@@ -1426,6 +1427,23 @@ getAddressRatchetKeys db connId ratchetKeyId =
         WHERE conn_id = ? AND ratchet_key_id = ?
       |]
       (connId, ratchetKeyId)
+
+deleteOldAddressRatchetKeys :: DB.Connection -> ConnId -> Int -> IO ()
+deleteOldAddressRatchetKeys db connId keep =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM address_ratchet_keys
+      WHERE conn_id = ?
+        AND address_ratchet_key_id NOT IN (
+          SELECT address_ratchet_key_id
+          FROM address_ratchet_keys
+          WHERE conn_id = ?
+          ORDER BY address_ratchet_key_id DESC
+          LIMIT ?
+        )
+    |]
+    (connId, connId, keep)
 
 createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
 createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =

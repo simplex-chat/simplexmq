@@ -170,6 +170,7 @@ data AgentConfig = AgentConfig
     xftpConsecutiveRetries :: Int,
     xftpMaxRecipientsPerRequest :: Int,
     deleteErrorCount :: Int,
+    addressRatchetKeysToKeep :: Int,
     ntfCron :: Word16,
     ntfBatchSize :: Int,
     ntfSubFirstCheckInterval :: NominalDiffTime,
@@ -245,6 +246,7 @@ defaultAgentConfig =
       xftpConsecutiveRetries = 3,
       xftpMaxRecipientsPerRequest = 200,
       deleteErrorCount = 10,
+      addressRatchetKeysToKeep = 3,
       ntfCron = 20, -- minutes
       ntfBatchSize = 150,
       ntfSubFirstCheckInterval = nominalDay,
