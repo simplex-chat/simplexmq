@@ -427,8 +427,9 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::. newCo
 -- Caller provides root signing key pair and link entity ID.
 -- Returns the created link and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink c userId rootKey linkEntityId checkNotices = withAgentEnv c . prepareConnectionLink' c userId rootKey linkEntityId checkNotices
+prepareConnectionLink :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> Maybe SMPServerWithAuth -> AE (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink c userId rootKey linkEntityId checkNotices clientData srv_ =
+  withAgentEnv c $ prepareConnectionLink' c userId rootKey linkEntityId checkNotices clientData srv_
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
@@ -969,10 +970,10 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 
 -- | Prepare connection link for contact mode (no network, no database).
 -- Caller provides root signing key pair and link entity ID.
-prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
-prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData = do
+prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> Maybe SMPServerWithAuth -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
+prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData srv_ = do
   g <- asks random
-  plpSrvWithAuth@(ProtoServerWithAuth srv _) <- getSMPServer c userId
+  plpSrvWithAuth@(ProtoServerWithAuth srv _) <- maybe (getSMPServer c userId) pure srv_
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
@@ -1228,8 +1229,8 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
         SCMInvitation -> do
           g <- asks random
           let pqEnc = CR.initialPQEncryption (isJust userLinkData_) pqInitKeys
-          (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
-          withStore' c $ \db -> createRatchetX3dhKeys db connId pk1 pk2 pKem
+          (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
+          withStore' c $ \db -> createRatchetX3dhKeys db connId pks
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
     prepareLinkData :: UserConnLinkData c -> C.PublicKeyX25519 -> AM (C.CbNonce, SMPQueueUri, ConnectionRequestUri c, ClntQueueReqData)
     prepareLinkData userLinkData e2eDhKey = do
@@ -1350,9 +1351,9 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
     Nothing -> throwE $ AGENT A_VERSION
   where
     createRatchet_ db g maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetParams v _ rcDHRr kem_) = do
-      (pk1, pk2, pKem, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
+      (pks, e2eSndParams) <- liftIO $ CR.generateSndE2EParams g v (CR.replyKEM_ v kem_ pqSupport)
       (_, rcDHRs) <- atomically $ C.generateKeyPair g
-      rcParams <- liftEitherWith (SEAgentError . cryptoError) $ CR.pqX3dhSnd pk1 pk2 pKem e2eRcvParams
+      rcParams <- liftEitherWith (SEAgentError . cryptoError) $ CR.pqX3dhSnd pks e2eRcvParams
       let rcVs = CR.RatchetVersions {current = v, maxSupported}
           rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
       liftIO $ createSndRatchet db connId rc e2eSndParams
@@ -1429,8 +1430,8 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
               Left e -> do
                 nonBlockingNotifyEvent c ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no rcv ratchet " <> show e))
                 let pqEnc = CR.initialPQEncryption False pqInitKeys
-                (pk1, pk2, pKem, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
-                createRatchetX3dhKeys db connId pk1 pk2 pKem
+                (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
+                createRatchetX3dhKeys db connId pks
                 pure e2eRcvParams
           let cReq = CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eVR
           pure $ CCLink cReq Nothing
@@ -2477,11 +2478,11 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
           let cData' = cData {pqSupport = pqSupport'} :: ConnData
           AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
-          (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqSupport'
+          (pks, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqSupport'
           enqueueRatchetKeyMsgs c sqs e2eParams
           withStore' c $ \db -> do
             setConnRatchetSync db connId RSStarted
-            setRatchetX3dhKeys db connId pk1 pk2 pKem
+            setRatchetX3dhKeys db connId pks
           let cData'' = cData' {ratchetSyncState = RSStarted} :: ConnData
               conn' = DuplexConnection cData'' rqs sqs
           connectionStats c conn'
@@ -3403,8 +3404,8 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
                 -- party initiating connection
                 (RcvConnection _ _, Just (CR.AE2ERatchetParams _ e2eSndParams@(CR.E2ERatchetParams e2eVersion _ _ _))) -> do
                   unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwE $ AGENT A_VERSION)
-                  (pk1, rcDHRs, pKem) <- withStore c (`getRatchetX3dhKeys` connId)
-                  rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 rcDHRs pKem e2eSndParams
+                  pks@(_, rcDHRs, _) <- withStore c (`getRatchetX3dhKeys` connId)
+                  rcParams <- liftError cryptoError $ CR.pqX3dhRcv pks e2eSndParams
                   let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
                       pqSupport' = pqSupport `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just e2eVersion)
                       rc = CR.initRcvRatchet rcVs rcDHRs rcParams pqSupport'
@@ -3645,7 +3646,7 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
                 exists <- checkRatchetKeyHashExists db connId rkHashRcv
                 unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
-              getSendRatchetKeys :: AM (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams)
+              getSendRatchetKeys :: AM (CR.RcvE2EPrivRatchetParams 'C.X448)
               getSendRatchetKeys = case rss of
                 RSOk -> sendReplyKey -- receiving client
                 RSAllowed -> sendReplyKey
@@ -3661,9 +3662,9 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
                 where
                   sendReplyKey = do
                     g <- asks random
-                    (pk1, pk2, pKem, e2eParams) <- liftIO $ CR.generateRcvE2EParams g e2eVersion pqSupport
+                    (pks, e2eParams) <- liftIO $ CR.generateRcvE2EParams g e2eVersion pqSupport
                     enqueueRatchetKeyMsgs c sqs e2eParams
-                    pure (pk1, pk2, pKem)
+                    pure pks
                   notifyRatchetSyncError = do
                     let cData'' = cData' {ratchetSyncState = RSRequired} :: ConnData
                         conn'' = updateConnection cData'' conn'
@@ -3682,14 +3683,14 @@ processSMPTransmissions c (tSess@(userId, srv, _), THandleParams {thAuth, sessio
                 createRatchet db connId rc
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: CR.RatchetVersions -> (C.PrivateKeyX448, C.PrivateKeyX448, Maybe CR.RcvPrivRKEMParams) -> AM ()
+              initRatchet :: CR.RatchetVersions -> CR.RcvE2EPrivRatchetParams 'C.X448 -> AM ()
               initRatchet rcVs (pk1, pk2, pKem)
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
-                    rcParams <- liftError cryptoError $ CR.pqX3dhRcv pk1 pk2 pKem e2eOtherPartyParams
+                    rcParams <- liftError cryptoError $ CR.pqX3dhRcv (pk1, pk2, pKem) e2eOtherPartyParams
                     recreateRatchet $ CR.initRcvRatchet rcVs pk2 rcParams pqSupport
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
-                    rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd pk1 pk2 (CR.APRKP CR.SRKSProposed <$> pKem) e2eOtherPartyParams
+                    rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd (pk1, pk2, CR.APRKP CR.SRKSProposed <$> pKem) e2eOtherPartyParams
                     recreateRatchet $ CR.initSndRatchet rcVs k2Rcv rcDHRs rcParams
                     void . enqueueMessages' c cData' sqs SMP.MsgFlags {notification = True} $ EREADY lastExternalSndId
 
