@@ -2140,7 +2140,6 @@ instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary 
 
 instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
 
--- CRInvitation keeps the legacy URI (downgrade-safe); CRInvitationDR is JSON, told apart by leading '{'
 instance ToField ContactRequest where
   toField = toField . Binary . \case
     CRInvitation cr -> strEncode cr

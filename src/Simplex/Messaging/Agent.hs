@@ -435,8 +435,8 @@ createConnectionForLink c nm userId enableNtfs = withAgentEnv c .:: createConnec
 {-# INLINE createConnectionForLink #-}
 
 -- | Create or update user's contact connection short link
-setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> AE (ConnShortLink c)
-setConnShortLink c = withAgentEnv c .::: setConnShortLink' c
+setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> Maybe CR.InitialKeys -> AE (ConnShortLink c)
+setConnShortLink c nm connId cMode uld cd rotate ik = withAgentEnv c $ setConnShortLink' c nm connId cMode uld cd rotate ik
 {-# INLINE setConnShortLink #-}
 
 deleteConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AE ()
@@ -971,16 +971,13 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 -- Caller provides root signing key pair and link entity ID.
 prepareConnectionLink' :: AgentClient -> UserId -> C.KeyPairEd25519 -> ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AM (CreatedConnLink 'CMContact, PreparedLinkParams)
 prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData pqInitKeys useDR srv_ = do
-  case pqInitKeys of
-    CR.IKUsePQ -> throwE $ CMD PROHIBITED "prepareConnectionLink"
-    _ -> pure ()
   g <- asks random
   plpSrvWithAuth@(ProtoServerWithAuth srv _) <- maybe (getSMPServer c userId) pure srv_
   when checkNotices $ checkClientNotices c plpSrvWithAuth
   AgentConfig {smpClientVRange, smpAgentVRange} <- asks config
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
-  addrKeys_ <- if useDR then Just <$> generateAddressRatchetKeys (CR.connPQEncryption pqInitKeys) else pure Nothing
+  addrKeys_ <- if useDR then Just <$> generateAddressRatchetKeys pqInitKeys else pure Nothing
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) (fst <$> addrKeys_)
@@ -1010,10 +1007,11 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
   unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
   pure connId
 
-generateAddressRatchetKeys :: PQSupport -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
-generateAddressRatchetKeys pqSupport = do
+generateAddressRatchetKeys :: CR.InitialKeys -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
+generateAddressRatchetKeys pqInitKeys = do
   g <- asks random
   e2eVR <- asks $ e2eEncryptVRange . config
+  let pqSupport = case pqInitKeys of CR.IKUsePQ -> PQSupportOn; _ -> PQSupportOff
   (pks, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqSupport
   ratchetKeyId <- RatchetKeyId <$> atomically (C.randomBytes 16 g)
   pure ((ratchetKeyId, toVersionRangeT e2eParams e2eVR), (ratchetKeyId, pks))
@@ -1025,9 +1023,9 @@ storeAddressRatchetKeys c connId rks = do
     createAddressRatchetKeys db connId rks
     deleteOldAddressRatchetKeys db connId keep
 
-newAddressRatchetKeys :: AgentClient -> ConnId -> PQSupport -> AM AddressRatchetKeys
-newAddressRatchetKeys c connId pqSupport = do
-  (ks, pks) <- generateAddressRatchetKeys pqSupport
+newAddressRatchetKeys :: AgentClient -> ConnId -> CR.InitialKeys -> AM AddressRatchetKeys
+newAddressRatchetKeys c connId pqInitKeys = do
+  (ks, pks) <- generateAddressRatchetKeys pqInitKeys
   storeAddressRatchetKeys c connId pks
   pure ks
 
@@ -1117,8 +1115,8 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
               }
       createNewConn db g cData SCMInvitation
 
-setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> AM (ConnShortLink c)
-setConnShortLink' c nm connId cMode userLinkData clientData rotate =
+setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> Maybe CR.InitialKeys -> AM (ConnShortLink c)
+setConnShortLink' c nm connId cMode userLinkData clientData rotate pqInitKeys_ =
   withConnLock c connId "setConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     (rq, lnkId, sl, d) <- case (conn, cMode, userLinkData) of
@@ -1129,14 +1127,15 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotate =
     pure sl
   where
     prepareContactLinkData :: ConnData -> RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
-    prepareContactLinkData ConnData {pqSupport} rq@RcvQueue {shortLink} (UserContactLinkData ucd) = do
+    prepareContactLinkData ConnData {} rq@RcvQueue {shortLink} (UserContactLinkData ucd) = do
       liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink ucd
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
+      -- rotate makes fresh keys from InitialKeys; otherwise keep current keys, creating from InitialKeys only when none exist
       ratchetKeys <-
         if rotate
-          then Just <$> newAddressRatchetKeys c connId pqSupport
-          else currentAddressRatchetKeys c connId
+          then maybe (currentAddressRatchetKeys c connId) (fmap Just . newAddressRatchetKeys c connId) pqInitKeys_
+          else currentAddressRatchetKeys c connId >>= maybe (mapM (newAddressRatchetKeys c connId) pqInitKeys_) (pure . Just)
       let ud = UserContactLinkData ucd {ratchetKeys}
           cslContact = CSLContact SLSServer CCTContact (qServer rq)
       case shortLink of
@@ -1249,11 +1248,8 @@ changeConnectionUser' c oldUserId connId newUserId = do
 
 newRcvConnSrv :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> SConnectionMode c -> Maybe (UserConnLinkData c) -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> SubscriptionMode -> SMPServerWithAuth -> AM (CreatedConnLink c)
 newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqInitKeys useDR subMode srvWithAuth@(ProtoServerWithAuth srv _) = do
-  case (cMode, pqInitKeys) of
-    (SCMContact, CR.IKUsePQ) -> throwE $ CMD PROHIBITED "newRcvConnSrv"
-    _ -> pure ()
   addrKeys_ <- case cMode of
-    SCMContact | useDR -> Just <$> newAddressRatchetKeys c connId (CR.connPQEncryption pqInitKeys)
+    SCMContact | useDR -> Just <$> newAddressRatchetKeys c connId pqInitKeys
     _ -> pure Nothing
   e2eKeys <- atomically . C.generateKeyPair =<< asks random
   case userLinkData_ of
@@ -2006,7 +2002,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             notify $ INV (ACR cMode cReq)
         LSET userLinkData clientData ->
           withServer' . tryCommand $ do
-            link <- setConnShortLink' c NRMBackground connId SCMContact userLinkData clientData False
+            link <- setConnShortLink' c NRMBackground connId SCMContact userLinkData clientData False Nothing
             notify $ LINK link userLinkData
         LGET shortLink ->
           withServer' . tryCommand $ do
@@ -3541,10 +3537,10 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 -- party initiating connection
                 RcvConnection {} -> do
                   case e2eEncryption of
-                    Just e2eSndParams -> do -- create ratchet from sent invitation and received confirmation keys
+                    Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
                       processConnInfo =<< initRcvRatchet_ agentVersion pqSupport keys e2eSndParams
-                    Nothing -> withStore' c (`getRatchet` connId) >>= \case -- use ratchet initialized from published ratchet keys during invitation
+                    Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> prohibited "conf: incorrect state"
                       Right rc -> processConnInfo (rc, pqSupport)
                   where

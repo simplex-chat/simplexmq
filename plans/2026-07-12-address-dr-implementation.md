@@ -216,16 +216,16 @@ Three readers of the widened `connReq` field (all via `getInvitation`) branch on
 
 Storage: `cr_invitation`'s `ToField`/`FromField` encode `CRInvitation` as the legacy `strEncode` URI (unchanged from before, so the format is downgrade-safe) and `CRConfirmation` as JSON (`J.encode` of `DRRequest`). `FromField` peeks the first byte: `{` → JSON `CRConfirmation`, else `strDecode` → `CRInvitation` (a URI never starts with `{`). `DRRequest` uses manual `ToJSON`/`FromJSON` (extensible), and `SMPQueueInfo` gets a base64 `StrEncoding` + JSON to sit inside it. `smpInvitation` (Agent.hs:3618) wraps its `connReq` in `CRInvitation`; `smpAddressConfirmation` (O2') writes `CRConfirmation`.
 
-## Part 4 - key rotation (separate concern)
+## Part 4 - key rotation (client-driven)
 
-Rotation is required but independent of the handshake above. The whole ratchet-keys bundle - both X448 keys and the KEM - rotates on a schedule, generated fresh each time.
+Rotation is independent of the handshake above and is driven by the client app, not the agent. The agent never rotates on its own - it lacks the app's intent and the mutable link data (profile/badge and other short-link data). The app rotates by calling `setConnShortLink` with the rotate flag; the whole ratchet-keys bundle - both X448 keys and the KEM - is generated fresh each time.
 
 ### Schema
 
 ```sql
--- one row per ratchet-keys generation for an address; current plus retired-within-window.
+-- one row per ratchet-keys generation for an address; the current generation plus the most recent retained ones.
 -- private side of the advertised RcvE2ERatchetParamsUri - same shape as the ratchets x3dh
--- columns and createRatchetX3dhKeys (AgentStore.hs:1362-1367).
+-- columns and createRatchetX3dhKeys (AgentStore.hs).
 CREATE TABLE address_ratchet_keys(
   address_ratchet_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -233,8 +233,7 @@ CREATE TABLE address_ratchet_keys(
   x3dh_priv_key_1 BLOB NOT NULL,    -- X448
   x3dh_priv_key_2 BLOB NOT NULL,    -- X448
   pq_priv_kem BLOB,                 -- RcvPrivRKEMParams (sntrup761 keypair); NULL when PQ is off for this address
-  created_at TEXT NOT NULL,
-  retired_at TEXT                   -- set on rotation
+  created_at TEXT NOT NULL DEFAULT(datetime('now'))
 );
 CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ratchet_key_id);
 
@@ -247,17 +246,15 @@ CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ra
 
 ### Rotation logic
 
-`rotateRatchetKeys` (new), run on address subscription, at most every 2 weeks (skip if the current generation is younger):
+The app rotates by calling `setConnShortLink` with the rotate flag; there is no automatic, agent-driven rotation. On rotation:
 
-1. `generateRcvE2EParams` (Ratchet.hs:439) for a fresh generation - two X448 keys, and an sntrup761 keypair only if PQ is on for this address - with a fresh `ratchetKeyId`.
+1. `generateRcvE2EParams` for a fresh generation - two X448 keys, and an sntrup761 keypair only if PQ is on for this address - with a fresh `ratchetKeyId`.
 2. Recompute mutable link data with the new `AddressRatchetKeys` (the public `e2eParams`), re-sign with the root key (`encodeSignUserData`, key from `rcv_queues.link_priv_sig_key`), and `LSET` it to the address queue (`setConnShortLink` path).
-3. Insert the new `address_ratchet_keys` row (`x3dh_priv_key_1`, `x3dh_priv_key_2`, `pq_priv_kem`); set `retired_at` on the previous row.
+3. Insert the new `address_ratchet_keys` row (`x3dh_priv_key_1`, `x3dh_priv_key_2`, `pq_priv_kem`).
 
-Retention window equals queue message retention (`storedMsgDataTTL`, Env/SQLite.hs:237), covering a request that used a just-retired bundle and is still in the address queue. The 2-week cadence bounds how long a recorded first message stays decryptable after a compromise of the current private keys - a retired generation is deleted after the window and then decrypts nothing.
+### Retention
 
-### Cleanup
-
-`cleanupManager` (Agent.hs:2994) gains one step: delete `address_ratchet_keys` rows with `retired_at` older than the window, batched like `deleteRcvMsgHashesExpired` (Agent.hs:3001). Unaccepted DR request rows in `conn_invitations` are handled exactly like unaccepted classic invitation requests - no DR-specific cleanup (a DR request is one `conn_invitations` row, the same class of state as a classic contact request).
+Retention is count-based, not time-based: on each rotation `deleteOldAddressRatchetKeys` keeps the newest `keepAddressKeys` generations per address (default 3, ordered by `address_ratchet_key_id`) and deletes older ones. There is no `retired_at` column, no time window, and no `cleanupManager` step. A request that used a recently-retired bundle still decrypts while that generation is retained; how long a recorded first message stays decryptable after a compromise of the current private keys is therefore bounded by the retained-generation count and the app's rotation cadence (both app-controlled). Unaccepted DR request rows in `conn_invitations` are handled exactly like unaccepted classic invitation requests - no DR-specific cleanup (a DR request is one `conn_invitations` row, the same class of state as a classic contact request).
 
 ## Part 5 - backward compatibility
 

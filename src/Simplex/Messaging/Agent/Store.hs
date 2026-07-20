@@ -641,7 +641,6 @@ data Invitation = Invitation
     accepted :: Bool
   }
 
--- | A classic connection request URI, or a double-ratchet invitation received at a DR address.
 data ContactRequest
   = CRInvitation (ConnectionRequestUri 'CMInvitation)
   | CRInvitationDR DRInvitation

@@ -315,7 +315,7 @@ getConnShortLink :: AgentClient -> UserId -> ConnShortLink c -> AE (FixedLinkDat
 getConnShortLink c = A.getConnShortLink c NRMInteractive
 
 setConnShortLink :: AgentClient -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> AE (ConnShortLink c)
-setConnShortLink c connId cMode uld cd = A.setConnShortLink c NRMInteractive connId cMode uld cd False
+setConnShortLink c connId cMode uld cd = A.setConnShortLink c NRMInteractive connId cMode uld cd False Nothing
 
 suspendConnection :: AgentClient -> ConnId -> AE ()
 suspendConnection c = A.suspendConnection c NRMInteractive
@@ -349,6 +349,11 @@ functionalAPITests ps = do
     testPQMatrix3 ps $ runAgentClientContactTestPQ3 True
   describe "Establish duplex connection via contact address with DR" $
     testContactDRMatrix ps
+  describe "Establish duplex connection creating contact address with DR" $ do
+    it "createConnection, IKPQOn" $ runCreateConnectionDRTest_ False IKPQOn PQSupportOn ps
+    it "createConnection, IKUsePQ" $ runCreateConnectionDRTest_ False IKUsePQ PQSupportOn ps
+    it "createConnectionAsync, IKPQOn" $ runCreateConnectionDRTest_ True IKPQOn PQSupportOn ps
+    it "createConnectionAsync, IKUsePQ" $ runCreateConnectionDRTest_ True IKUsePQ PQSupportOn ps
   it "should preserve address DR keys when the link data is updated" $
     testAddressUpdatePreservesDRKeys ps
   it "should rotate address DR keys, keeping old keys for stale requesters until pruned" $
@@ -1012,8 +1017,7 @@ allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
   get bob ##> ("", aliceId, A.CON pqEnc)
   exchangeGreetings_ pqEnc alice bobId bob aliceId
 
--- DR-advertising contact address test. Args: asyncAccept (JOIN vs sync accept), addrIK (advertised bundle + owner
--- PQ), useDR (DR path vs classic/ignore keys), bPQ (joiner PQSupport).
+-- DR-advertising contact address, across accept/join modes, InitialKeys, and joiner PQ
 runAgentClientContactDRTest_ :: HasCallStack => Bool -> Bool -> InitialKeys -> Bool -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
 runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
   g <- C.newRandom
@@ -1021,16 +1025,15 @@ runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmp
   linkEntId <- atomically $ C.randomBytes 32 g
   let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
       userLinkData = UserContactLinkData userCtData
-      connIK = IKLinkPQ (CR.connPQEncryption addrIK) -- owner connection PQ (never IKUsePQ)
       pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing addrIK True Nothing
     _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
     (_, ContactLinkData _ userCtData', connReq') <- getConnShortLink bob 1 shortLink
-    -- the advertised DR bundle includes a KEM iff the owner's PQ is on, so a PQ requester gets PQ from message 1
+    -- the advertised bundle carries a KEM only for IKUsePQ (PQ from message 1)
     liftIO $ case ratchetKeys userCtData' of
       Just (_, CR.E2ERatchetParamsUri _ _ _ kem_) ->
-        isJust kem_ `shouldBe` supportPQ (CR.connPQEncryption addrIK)
+        isJust kem_ `shouldBe` supportPQ (CR.initialPQEncryption False addrIK)
       Nothing -> expectationFailure "address must advertise DR ratchet keys"
     -- classic (non-DR) join drops the address keys from the request
     let connReqJoin = if useDR then connReq' else case connReq' of CRContactUri d _ -> CRContactUri d Nothing
@@ -1052,6 +1055,34 @@ runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmp
       else void $ acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
     ("", _, A.CONF confId confPQ _ "alice's connInfo") <- get bob
     liftIO $ confPQ `shouldBe` bPQ
+    allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc
+
+-- DR advertising via createConnection (sync) and createConnectionAsync (async NEW), reaching newRcvConnSrv
+runCreateConnectionDRTest_ :: HasCallStack => Bool -> InitialKeys -> PQSupport -> (ASrvTransport, AStoreType) -> IO ()
+runCreateConnectionDRTest_ asyncNew addrIK bPQ ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
+  let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+      pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
+  runRight_ $ do
+    connReq <-
+      if asyncNew
+        then do
+          addrConnId <- prepareConnectionToCreate alice 1 True SCMContact (CR.connPQEncryption addrIK)
+          createConnectionAsync alice "1" addrConnId True SCMContact addrIK True SMSubscribe
+          ("1", _, INV (ACR SCMContact cReq)) <- get alice
+          pure cReq
+        else do
+          (_, CCLink cReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing addrIK True SMSubscribe
+          pure cReq
+    let CRContactUri _ addrKeys_ = connReq
+    liftIO $ case addrKeys_ of
+      Just (_, CR.E2ERatchetParamsUri _ _ _ kem_) -> isJust kem_ `shouldBe` supportPQ (CR.initialPQEncryption False addrIK)
+      Nothing -> expectationFailure "createConnection must advertise DR ratchet keys"
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq bPQ
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" bPQ SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
+    void $ acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
+    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc
 
 testContactDRMatrix :: HasCallStack => (ASrvTransport, AStoreType) -> Spec
@@ -1094,14 +1125,14 @@ testAddressKeyRotation ps = withSmpServer ps $ withAgentClients3 $ \alice bob ca
     (_, ContactLinkData _ ctData1, connReq1) <- getConnShortLink bob 1 shortLink
     let key1 = ratchetKeys ctData1
     liftIO $ key1 `shouldSatisfy` isJust
-    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
+    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True (Just addrIK)
     (_, ContactLinkData _ ctData2, connReq2) <- getConnShortLink carol 1 shortLink
     let key2 = ratchetKeys ctData2
     liftIO $ (key1 == key2) `shouldBe` False
     joinContactDR alice bob connReq1 addrIK pqEnc
     joinContactDR alice carol connReq2 addrIK pqEnc
-    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
-    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
+    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True (Just addrIK)
+    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True (Just addrIK)
     aId <- A.prepareConnectionToJoin bob 1 True connReq1 PQSupportOn
     void $ A.joinConnection bob NRMInteractive 1 aId True connReq1 "bob's connInfo" PQSupportOn SMSubscribe
     get alice =##> \case ("", _, A.ERR _) -> True; _ -> False
@@ -1119,11 +1150,11 @@ testAddDRViaSetConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \alice 
     addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
     (_, ContactLinkData _ cd0, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys cd0 `shouldBe` Nothing
-    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing True
+    void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing False (Just addrIK)
     (_, ContactLinkData _ cd1, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys cd1 `shouldSatisfy` isJust
 
--- updating a DR address's mutable link data must preserve the stored ratchet keys, so requesters can still establish DR
+-- updating a DR address's link data must preserve the stored ratchet keys
 testAddressUpdatePreservesDRKeys :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testAddressUpdatePreservesDRKeys ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
   g <- C.newRandom
@@ -1154,8 +1185,7 @@ testAddressUpdatePreservesDRKeys ps = withSmpServer ps $ withAgentClients2 $ \al
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc
 
--- Resume-safety: if the sync accept of a DR request fails at the network step after committing the send queue and
--- ratchet, retrying the accept must reuse them and complete.
+-- a DR accept that fails at the network step after committing send queue + ratchet must resume on retry
 testAcceptContactDRResumeAfterOffline :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
   g <- C.newRandom

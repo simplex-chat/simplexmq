@@ -198,6 +198,9 @@ contactAddress = ACR SCMContact $ contactConnRequest
 contactConnRequest :: ConnectionRequestUri 'CMContact
 contactConnRequest = CRContactUri connReqData Nothing
 
+contactAddressDR :: AConnectionRequestUri
+contactAddressDR = ACR SCMContact $ CRContactUri connReqData (Just (RatchetKeyId "0123456789abcdef", testE2ERatchetParams))
+
 contactAddressV2 :: AConnectionRequestUri
 contactAddressV2 = ACR SCMContact $ CRContactUri connReqDataV2 Nothing
 
@@ -222,7 +225,7 @@ connectionRequestClientDataEmpty = ACR SCMInvitation $ CRInvitationUri connReqDa
 contactAddressClientData :: AConnectionRequestUri
 contactAddressClientData = ACR SCMContact $ CRContactUri connReqData {crClientData = Just "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}"} Nothing
 
--- binary encoding is defined only for BinaryConnectionRequestUri (link fixed data); drop the address keys for the round-trip
+-- binary encoding is defined only for BinaryConnectionRequestUri; drop the address keys for the round-trip
 aBinaryConnReq :: AConnectionRequestUri -> ABinaryConnectionRequestUri
 aBinaryConnReq (ACR m cr) = ABCR m (binaryConnReq cr)
 
@@ -273,6 +276,7 @@ connectionRequestTests =
       connectionRequestV1 #== ("https://simplex.chat/invitation#/?v=1&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequestClientDataEmpty #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&data=" <> url "{}")
       contactAddress #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr)
+      contactAddressDR #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&rk=MDEyMzQ1Njc4OWFiY2RlZg%3D%3D")
       contactAddress #== ("https://simplex.chat/contact#/?v=2-7&smp=" <> url queueStr)
       contactAddress2queues #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr))
       contactAddressNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueNewStr)

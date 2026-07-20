@@ -469,7 +469,7 @@ instance Eq AEvtTag where
 deriving instance Show AEvtTag
 
 data ACommand
-  = NEW Bool AConnectionMode InitialKeys SubscriptionMode UseRatchetKeys -- response INV; UseRatchetKeys advertises address DR keys (contact mode)
+  = NEW Bool AConnectionMode InitialKeys SubscriptionMode UseRatchetKeys -- response INV
   | LSET (UserConnLinkData 'CMContact) (Maybe CRClientData) -- response LINK
   | LGET (ConnShortLink 'CMContact) -- response LDATA
   | JOIN JoinRequest SubscriptionMode ConnInfo
@@ -858,9 +858,7 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
-  | -- a requester's first message to a contact address that establishes the double ratchet from the address keys;
-    -- ratchetKeyId selects the owner's advertised key, encConnInfo is a ratchet-encrypted AgentConnInfoReply
-    AgentInvitationDR
+  | AgentInvitationDR
       { agentVersion :: VersionSMPA,
         e2eSndParams :: SndE2ERatchetParams 'C.X448,
         ratchetKeyId :: RatchetKeyId,
@@ -1503,7 +1501,6 @@ data ABinaryConnectionRequestUri = forall m. ConnectionModeI m => ABCR (SConnect
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
-  -- optional address DR keys enable the ratchet from message 1; absent in BinaryConnectionRequestUri (link fixed data) so they can rotate via mutable data
   CRContactUri :: ConnReqUriData -> Maybe AddressRatchetKeys -> ConnectionRequestUri CMContact
 
 simplexConnReqUri :: ConnectionRequestUri m -> ConnectionRequestUri m
@@ -1573,10 +1570,7 @@ data PreparedLinkParams = PreparedLinkParams
     plpSignedFixedData :: ByteString,
     -- | Server with basic auth (not stored in link)
     plpSrvWithAuth :: SMPServerWithAuth,
-    -- | Connection initial keys (decided in prepareConnectionLink, used to create the connection)
     plpInitKeys :: InitialKeys,
-    -- | The ratchetKeyId and private rcv ratchet keys of the advertised address DR keys, generated in
-    -- prepareConnectionLink and persisted in createConnectionForLink; present iff the address advertises DR keys
     plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
   }
 
@@ -1846,14 +1840,10 @@ newtype RatchetKeyId = RatchetKeyId ByteString
   deriving (Eq, Show)
   deriving newtype (Encoding, StrEncoding)
 
--- | The advertised address DR keys: the id selecting the owner's stored key set, and the public rcv ratchet params.
 type AddressRatchetKeys = (RatchetKeyId, RcvE2ERatchetParamsUri 'C.X448)
 
--- | Whether setConnShortLink should generate a fresh address ratchet key set, rotating the advertised keys.
 type NewRatchetKeys = Bool
 
--- | The double-ratchet invitation an address owner receives in message 1 and later accepts: the ratchet the
--- owner established from that message, the requester's reply queue, and the negotiated version and PQ support.
 data DRInvitation = DRInvitation
   { ratchetState :: RatchetX448,
     replyQueue :: SMPQueueInfo,
@@ -1953,11 +1943,11 @@ validateLinkOwners rootKey = go []
 
 instance ConnectionModeI c => Encoding (FixedLinkData c) where
   smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId} =
-    smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId -- TODO replace with smpEncode (fromMaybe "" linkEntityId) - safe to do it in 2027
+    smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
   smpP = do
     (agentVRange, rootKey, linkConnReq) <- smpP
     linkEntityId <- ((\s -> if B.null s then Nothing else Just s) =<<) <$> optional smpP
-    _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding (added in January 2026)
+    _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
     pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where
