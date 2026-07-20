@@ -74,17 +74,17 @@ testChooseDifferentOperator = do
   c <- getSMPAgentClient' 1 agentCfg initServers testDB
   runRight_ $ do
     -- chooses the only operator with storage role
-    srv1 <- withAgentEnv c $ getNextServer c 1 storageSrvs []
+    srv1 <- withAgentEnv (client c) $ getNextServer (client c) 1 storageSrvs []
     liftIO $ srv1 == testOp1Srv1 || srv1 == testOp1Srv2 `shouldBe` True
     -- chooses another server for storage
-    srv2 <- withAgentEnv c $ getNextServer c 1 storageSrvs [protoServer testOp1Srv1]
+    srv2 <- withAgentEnv (client c) $ getNextServer (client c) 1 storageSrvs [protoServer testOp1Srv1]
     liftIO $ srv2 `shouldBe` testOp1Srv2
     -- chooses another operator for proxy
-    srv3 <- withAgentEnv c $ getNextServer c 1 proxySrvs [protoServer srv1]
+    srv3 <- withAgentEnv (client c) $ getNextServer (client c) 1 proxySrvs [protoServer srv1]
     liftIO $ srv3 == testOp2Srv1 || srv3 == testOp2Srv2 `shouldBe` True
     -- chooses another operator for proxy
-    srv3' <- withAgentEnv c $ getNextServer c 1 proxySrvs [protoServer testOp1Srv1, protoServer testOp1Srv2]
+    srv3' <- withAgentEnv (client c) $ getNextServer (client c) 1 proxySrvs [protoServer testOp1Srv1, protoServer testOp1Srv2]
     liftIO $ srv3' == testOp2Srv1 || srv3' == testOp2Srv2 `shouldBe` True
     -- chooses any other server
-    srv4 <- withAgentEnv c $ getNextServer c 1 proxySrvs [protoServer testOp1Srv1, protoServer testOp2Srv1]
+    srv4 <- withAgentEnv (client c) $ getNextServer (client c) 1 proxySrvs [protoServer testOp1Srv1, protoServer testOp2Srv1]
     liftIO $ srv4 == testOp1Srv2 || srv4 == testOp2Srv2 `shouldBe` True

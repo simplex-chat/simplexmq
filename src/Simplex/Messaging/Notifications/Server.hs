@@ -54,7 +54,7 @@ import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -68,7 +68,7 @@ import Simplex.Messaging.Notifications.Server.Store (NtfSTMStore, TokenNtfMessag
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceSub (..), SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
+import Simplex.Messaging.Protocol (BrokerMsg, EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceSub (..), SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
@@ -77,7 +77,7 @@ import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), 
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
-import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), SMPVersion, THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
 import Simplex.Messaging.Util
@@ -101,7 +101,7 @@ runNtfServer cfg = do
   runNtfServerBlocking started cfg
 
 runNtfServerBlocking :: TMVar Bool -> NtfServerConfig -> IO ()
-runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg
+runNtfServerBlocking started cfg = runReaderT (ntfServer cfg started) =<< newNtfServerEnv cfg receiveSMPMessage
 
 type M a = ReaderT NtfEnv IO a
 
@@ -109,7 +109,6 @@ ntfServer :: NtfServerConfig -> TMVar Bool -> M ()
 ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions} started = do
   restoreServerStats
   s <- asks subscriber
-  ps <- asks pushServer
   when (maintenance startOptions) $ do
     liftIO $ putStrLn "Server started in 'maintenance' mode, exiting"
     stopServer
@@ -117,7 +116,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
   void $ forkIO $ resubscribe s
   raceAny_
     ( ntfSubscriber s
-        : periodicNtfsThread ps
+        : periodicNtfsThread
         : map runServer transports
           <> serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
@@ -525,92 +524,83 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       void $ updateSubStatus st srvId' nId NSPending
       subscribeQueuesNtfs ca smpServer' [sub]
 
+receiveSMPMessage :: NtfEnv -> SMPClientAgent 'NotifierService -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> IO ()
+receiveSMPMessage env@NtfEnv {store = st, serverStats = stats} ca ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) =
+  forM_ ts $ \(ntfId, t) -> case t of
+    STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+    STResponse {} -> pure () -- it was already reported as timeout error
+    STEvent msgOrErr -> do
+      let smpQueue = SMPQueueNtf srv ntfId
+      case msgOrErr of
+        Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
+          ntfTs <- getSystemTime
+          updatePeriodStats (activeSubs stats) ntfId
+          let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
+              srvHost = safeDecodeUtf8 $ strEncode h
+              isOwn = isOwnServer ca srv
+          addTokenLastNtf st newNtf >>= \case
+            Right (tkn, lastNtfs) -> do
+              pushNotification env (Just srvHost) isOwn tkn $ PNMessage lastNtfs
+              incNtfStat_ stats ntfReceived
+              when isOwn $ incServerStat srvHost (ntfReceivedOwn stats)
+            Left AUTH -> do
+              incNtfStat_ stats ntfReceivedAuth
+              when isOwn $ incServerStat srvHost (ntfReceivedAuthOwn stats)
+            Left _ -> pure ()
+        Right SMP.END ->
+          whenM (atomically $ activeClientSession' ca sessionId srv) $
+            void $ updateSrvSubStatus st smpQueue NSEnd
+        Right SMP.DELD ->
+          void $ updateSrvSubStatus st smpQueue NSDeleted
+        Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
+        Right _ -> logError "SMP server unexpected response"
+        Left e -> logError $ "SMP client error: " <> tshow e
+
 ntfSubscriber :: NtfSubscriber -> M ()
-ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
-  race_ receiveSMP receiveAgent
+ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {agentQ}} = do
+  st <- asks store
+  batchSize <- asks $ subsBatchSize . config
+  liftIO $ forever $
+    atomically (readTBQueue agentQ) >>= \case
+      CAConnected srv serviceId -> do
+        let asService = if isJust serviceId then "as service " else ""
+        logInfo $ "SMP server reconnected " <> asService <> showServer' srv
+      CADisconnected srv nIds -> do
+        updated <- batchUpdateSrvSubStatus st srv Nothing nIds NSInactive
+        logSubStatus srv "disconnected" (L.length nIds) updated
+      CASubscribed srv serviceId nIds -> do
+        updated <- batchUpdateSrvSubStatus st srv serviceId nIds NSActive
+        let asService = if isJust serviceId then " as service" else ""
+        logSubStatus srv ("subscribed" <> asService) (L.length nIds) updated
+      CASubError srv errs -> do
+        forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> queueSubErrorStatus err) $ L.toList errs) $ \subStatuses -> do
+          updated <- batchUpdateSrvSubErrors st srv subStatuses
+          logSubErrors srv subStatuses updated
+          -- TODO [certs rcv] resubscribe queues with statuses NSErr and NSService
+      CAServiceDisconnected srv serviceSub ->
+        logNote $ "SMP server service disconnected " <> showService srv serviceSub
+      CAServiceSubscribed srv serviceSub@(ServiceSub _ n idsHash) (ServiceSub _ n' idsHash')
+        | n /= n' -> logWarn $ msg <> ", confirmed subs: " <> tshow n'
+        | idsHash /= idsHash' -> logWarn $ msg <> ", different IDs hash"
+        | otherwise -> logNote msg
+        where
+          msg = "SMP server service subscribed " <> showService srv serviceSub
+      CAServiceSubError srv serviceSub e ->
+        -- Errors that require re-subscribing queues directly are reported as CAServiceUnavailable.
+        -- See smpSubscribeService in Simplex.Messaging.Client.Agent
+        logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
+      CAServiceUnavailable srv serviceSub -> do
+        logError $ "SMP server service unavailable: " <> showService srv serviceSub
+        removeServiceAndAssociations st srv >>= \case
+          Right (srvId, updated) -> do
+            logSubStatus srv "removed service association" updated updated
+            void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
+          Left e -> logError $ "SMP server update and resubscription error " <> tshow e
   where
-    receiveSMP = do
-      st <- asks store
-      ps <- asks pushServer
-      stats <- asks serverStats
-      forever $ do
-        ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) <- atomically $ readTBQueue msgQ
-        forM_ ts $ \(ntfId, t) -> case t of
-          STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
-          STResponse {} -> pure () -- it was already reported as timeout error
-          STEvent msgOrErr -> do
-            let smpQueue = SMPQueueNtf srv ntfId
-            case msgOrErr of
-              Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
-                ntfTs <- liftIO getSystemTime
-                liftIO $ updatePeriodStats (activeSubs stats) ntfId
-                let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                    srvHost = safeDecodeUtf8 $ strEncode h
-                    isOwn = isOwnServer ca srv
-                liftIO (addTokenLastNtf st newNtf) >>= \case
-                  Right (tkn, lastNtfs) -> do
-                    pushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
-                    liftIO $ incNtfStat_ stats ntfReceived
-                    when isOwn $ liftIO $ incServerStat srvHost (ntfReceivedOwn stats)
-                  Left AUTH -> liftIO $ do
-                    incNtfStat_ stats ntfReceivedAuth
-                    when isOwn $ incServerStat srvHost (ntfReceivedAuthOwn stats)
-                  Left _ -> pure ()
-              Right SMP.END ->
-                whenM (atomically $ activeClientSession' ca sessionId srv) $
-                  void $ liftIO $ updateSrvSubStatus st smpQueue NSEnd
-              Right SMP.DELD ->
-                void $ liftIO $ updateSrvSubStatus st smpQueue NSDeleted
-              Right (SMP.ERR e) -> logError $ "SMP server error: " <> tshow e
-              Right _ -> logError "SMP server unexpected response"
-              Left e -> logError $ "SMP client error: " <> tshow e
-
-    receiveAgent = do
-      st <- asks store
-      batchSize <- asks $ subsBatchSize . config
-      liftIO $ forever $
-        atomically (readTBQueue agentQ) >>= \case
-          CAConnected srv serviceId -> do
-            let asService = if isJust serviceId then "as service " else ""
-            logInfo $ "SMP server reconnected " <> asService <> showServer' srv
-          CADisconnected srv nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv Nothing nIds NSInactive
-            logSubStatus srv "disconnected" (L.length nIds) updated
-          CASubscribed srv serviceId nIds -> do
-            updated <- batchUpdateSrvSubStatus st srv serviceId nIds NSActive
-            let asService = if isJust serviceId then " as service" else ""
-            logSubStatus srv ("subscribed" <> asService) (L.length nIds) updated
-          CASubError srv errs -> do
-            forM_ (L.nonEmpty $ mapMaybe (\(nId, err) -> (nId,) <$> queueSubErrorStatus err) $ L.toList errs) $ \subStatuses -> do
-              updated <- batchUpdateSrvSubErrors st srv subStatuses
-              logSubErrors srv subStatuses updated
-              -- TODO [certs rcv] resubscribe queues with statuses NSErr and NSService
-          CAServiceDisconnected srv serviceSub ->
-            logNote $ "SMP server service disconnected " <> showService srv serviceSub
-          CAServiceSubscribed srv serviceSub@(ServiceSub _ n idsHash) (ServiceSub _ n' idsHash')
-            | n /= n' -> logWarn $ msg <> ", confirmed subs: " <> tshow n'
-            | idsHash /= idsHash' -> logWarn $ msg <> ", different IDs hash"
-            | otherwise -> logNote msg
-            where
-              msg = "SMP server service subscribed " <> showService srv serviceSub
-          CAServiceSubError srv serviceSub e ->
-            -- Errors that require re-subscribing queues directly are reported as CAServiceUnavailable.
-            -- See smpSubscribeService in Simplex.Messaging.Client.Agent
-            logError $ "SMP server service subscription error " <> showService srv serviceSub <> ": " <> tshow e
-          CAServiceUnavailable srv serviceSub -> do
-            logError $ "SMP server service unavailable: " <> showService srv serviceSub
-            removeServiceAndAssociations st srv >>= \case
-              Right (srvId, updated) -> do
-                logSubStatus srv "removed service association" updated updated
-                void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
-              Left e -> logError $ "SMP server update and resubscription error " <> tshow e
-      where
-        showService srv (ServiceSub serviceId n _) = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
-
+    showService srv (ServiceSub serviceId n _) = showServer' srv <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"
     logSubErrors :: SMPServer -> NonEmpty (SMP.NotifierId, NtfSubStatus) -> Int -> IO ()
-    logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss -> do
+    logSubErrors srv subs updated = forM_ (L.group $ L.sort $ L.map snd subs) $ \ss ->
       logError $ "SMP server subscription errors " <> showServer' srv <> ": " <> tshow (L.head ss) <> " (" <> tshow (length ss) <> " errors, " <> tshow updated <> " subs updated)"
-
     queueSubErrorStatus :: SMPClientError -> Maybe NtfSubStatus
     queueSubErrorStatus = \case
       PCEProtocolError AUTH -> Just NSAuth
@@ -639,69 +629,66 @@ logSubStatus srv event n updated =
 showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
-pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
-  ifM
-    (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
-    (logWarn "skipping disabled APNS test push provider")
+pushNotification :: NtfEnv -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> IO ()
+pushNotification env srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
+  if pushProviderAllowed env token
+    then getOrCreatePushWorker env (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf))
+    else logWarn "skipping disabled APNS test push provider"
 
-pushProviderAllowed :: DeviceToken -> M Bool
-pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
-pushProviderAllowed _ = pure True
+pushProviderAllowed :: NtfEnv -> DeviceToken -> Bool
+pushProviderAllowed NtfEnv {config} (DeviceToken PPApnsTest _) = allowTestPushProvider config
+pushProviderAllowed _ _ = True
 
 guardPushProvider :: DeviceToken -> M NtfResponse -> M NtfResponse
 guardPushProvider token action =
   ifM
-    (pushProviderAllowed token)
+    ((`pushProviderAllowed` token) <$> ask)
     action
     (pure $ NRErr $ CMD SMP.PROHIBITED)
 
-getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
-getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
-  ts <- liftIO getCurrentTime
+getOrCreatePushWorker :: NtfEnv -> (Maybe T.Text, PushProvider) -> OwnServer -> IO (TBQueue (NtfTknRec, PushNotification))
+getOrCreatePushWorker env@NtfEnv {pushServer = NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize}} key@(srvHost_, _) isOwn = do
+  ts <- getCurrentTime
   withGetSessVar' pushWorkerSeq key pushWorkers ts createWorker existingWorker
   where
     createWorker v = do
-      q <- liftIO $ newTBQueueIO pushQSize
-      tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)
+      q <- newTBQueueIO pushQSize
+      tId <- mkWeakThreadId =<< forkIO (runPushWorker env srvHost_ isOwn q)
       atomically $ putTMVar (sessionVar v) PushWorker {workerQ = q, workerThreadId = tId}
       pure q
     existingWorker v = workerQ <$> atomically (readTMVar $ sessionVar v)
 
-runPushWorker :: NtfPushServer -> Maybe T.Text -> OwnServer -> TBQueue (NtfTknRec, PushNotification) -> M ()
-runPushWorker s srvHost_ isOwn q = forever $ do
+runPushWorker :: NtfEnv -> Maybe T.Text -> OwnServer -> TBQueue (NtfTknRec, PushNotification) -> IO ()
+runPushWorker NtfEnv {store = st, serverStats = stats, pushServer = s} srvHost_ isOwn q = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue q)
-  liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
-  st <- asks store
+  logDebug $ "sending push notification to " <> T.pack (show pp)
   case ntf of
     PNVerification _ ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      deliverNotification st pp tkn ntf >>= \case
         Right _ -> do
-          void $ liftIO $ setTknStatusConfirmed st tkn
-          incNtfStatT t ntfVrfDelivered
-        Left _ -> incNtfStatT t ntfVrfFailed
+          void $ setTknStatusConfirmed st tkn
+          incNtfStatT_ stats t ntfVrfDelivered
+        Left _ -> incNtfStatT_ stats t ntfVrfFailed
     PNCheckMessages ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      deliverNotification st pp tkn ntf >>= \case
         Right _ -> do
-          void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
-          incNtfStatT t ntfCronDelivered
-        Left _ -> incNtfStatT t ntfCronFailed
+          void $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
+          incNtfStatT_ stats t ntfCronDelivered
+        Left _ -> incNtfStatT_ stats t ntfCronFailed
     PNMessage {} -> checkActiveTkn tknStatus $ do
-      stats <- asks serverStats
-      liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      updatePeriodStats (activeTokens stats) ntfTknId
+      deliverNotification st pp tkn ntf >>= \case
         Left _ -> do
-          incNtfStatT t ntfFailed
-          when isOwn $ liftIO $ mapM_ (`incServerStat` ntfFailedOwn stats) srvHost_
+          incNtfStatT_ stats t ntfFailed
+          when isOwn $ mapM_ (`incServerStat` ntfFailedOwn stats) srvHost_
         Right () -> do
-          incNtfStatT t ntfDelivered
-          when isOwn $ liftIO $ mapM_ (`incServerStat` ntfDeliveredOwn stats) srvHost_
+          incNtfStatT_ stats t ntfDelivered
+          when isOwn $ mapM_ (`incServerStat` ntfDeliveredOwn stats) srvHost_
   where
-    checkActiveTkn :: NtfTknStatus -> M () -> M ()
+    checkActiveTkn :: NtfTknStatus -> IO () -> IO ()
     checkActiveTkn status action
       | status == NTActive = action
-      | otherwise = liftIO $ logError "bad notification token status"
+      | otherwise = logError "bad notification token status"
     deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
     deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf' = do
       (deliver, clientVar) <- getPushClient s pp
@@ -741,16 +728,16 @@ pushWorkersQLength workers = do
         Just PushWorker {workerQ} -> (acc +) <$> atomically (lengthTBQueue workerQ)
         Nothing -> pure acc
 
-periodicNtfsThread :: NtfPushServer -> M ()
-periodicNtfsThread s = do
+periodicNtfsThread :: M ()
+periodicNtfsThread = do
+  env <- ask
   st <- asks store
   ntfsInterval <- asks $ periodicNtfsInterval . config
   let interval = 1000000 * ntfsInterval
-  UnliftIO unlift <- askUnliftIO
   liftIO $ forever $ do
     threadDelay interval
     now <- systemSeconds <$> getSystemTime
-    cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
+    cnt <- withPeriodicNtfTokens st now $ \tkn -> pushNotification env Nothing False tkn PNCheckMessages
     logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
@@ -759,10 +746,9 @@ runNtfClientTransport th@THandle {params} = do
   ts <- liftIO getSystemTime
   c <- liftIO $ newNtfServerClient qSize params ts
   s <- asks subscriber
-  ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
   st <- asks store
-  raceAny_ ([liftIO $ send th c, client c s ps, liftIO $ receive st th c] <> disconnectThread_ c expCfg)
+  raceAny_ ([liftIO $ send th c, client c s, liftIO $ receive st th c] <> disconnectThread_ c expCfg)
     `finally` liftIO (clientDisconnected c)
   where
     disconnectThread_ c (Just expCfg) = [liftIO $ disconnectTransport th (rcvActiveAt c) (sndActiveAt c) expCfg (pure True)]
@@ -839,16 +825,17 @@ verifyNtfTransmission st thAuth (tAuth, authorized, (corrId, entId, cmd)) = case
       AUTH -> dummyVerifyCmd thAuth tAuth authorized corrId `seq` VRFailed AUTH
       e -> VRFailed e
 
-client :: NtfServerClient -> NtfSubscriber -> NtfPushServer -> M ()
-client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
+client :: NtfServerClient -> NtfSubscriber -> M ()
+client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} = do
+  env <- ask
   forever $
     atomically (readTBQueue rcvQ)
-      >>= mapM processCommand
+      >>= mapM (processCommand env)
       >>= atomically . writeTBQueue sndQ
   where
-    processCommand :: NtfRequest -> M (Transmission NtfResponse)
-    processCommand = \case
-      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> (corrId,NoEntity,) <$> guardPushProvider token (do
+    processCommand :: NtfEnv -> NtfRequest -> M (Transmission NtfResponse)
+    processCommand env = \case
+      NtfReqNew corrId (ANE SToken newTkn@(NewNtfTkn token _ dhPubKey)) -> fmap (corrId,NoEntity,) $ guardPushProvider token $ do
         logDebug "TNEW - new token"
         (srvDhPubKey, srvDhPrivKey) <- atomically . C.generateKeyPair =<< asks random
         let dhSecret = C.dh' dhPubKey srvDhPrivKey
@@ -857,10 +844,10 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
         ts <- liftIO $ getSystemDate
         let tkn = mkNtfTknRec tknId newTkn srvDhPrivKey dhSecret regCode ts
         withNtfStore (`addNtfToken` tkn) $ \_ -> do
-          pushNotification ps Nothing False tkn $ PNVerification regCode
+          liftIO $ pushNotification env Nothing False tkn $ PNVerification regCode
           incNtfStatT token ntfVrfQueued
           incNtfStatT token tknCreated
-          pure $ NRTknId tknId srvDhPubKey)
+          pure $ NRTknId tknId srvDhPubKey
       NtfReqCmd SToken (NtfTkn tkn@NtfTknRec {token, ntfTknId, tknStatus, tknRegCode, tknDhSecret, tknDhPrivKey}) (corrId, tknId, cmd) -> do
         (corrId,tknId,) <$> case cmd of
           TNEW (NewNtfTkn _ _ dhPubKey) -> guardPushProvider token $ do
@@ -873,7 +860,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
               | otherwise -> withNtfStore (\st -> updateTknStatus st tkn NTRegistered) $ \_ -> sendVerification
             where
               sendVerification = do
-                pushNotification ps Nothing False tkn $ PNVerification tknRegCode
+                liftIO $ pushNotification env Nothing False tkn $ PNVerification tknRegCode
                 incNtfStatT token ntfVrfQueued
                 pure $ NRTknId ntfTknId $ C.publicKey tknDhPrivKey
           TVFY code -- this allows repeated verification for cases when client connection dropped before server response
@@ -891,7 +878,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
             regCode <- getRegCode
             let tkn' = tkn {token = token', tknStatus = NTRegistered, tknRegCode = regCode}
             withNtfStore (`replaceNtfToken` tkn') $ \_ -> do
-              pushNotification ps Nothing False tkn' $ PNVerification regCode
+              liftIO $ pushNotification env Nothing False tkn' $ PNVerification regCode
               incNtfStatT token ntfVrfQueued
               incNtfStatT token tknReplaced
               pure NROk
@@ -962,6 +949,11 @@ incNtfStatT :: DeviceToken -> (NtfServerStats -> IORef Int) -> M ()
 incNtfStatT (DeviceToken PPApnsNull _) _ = pure ()
 incNtfStatT _ statSel = incNtfStat statSel
 {-# INLINE incNtfStatT #-}
+
+incNtfStatT_ :: NtfServerStats -> DeviceToken -> (NtfServerStats -> IORef Int) -> IO ()
+incNtfStatT_ _ (DeviceToken PPApnsNull _) _ = pure ()
+incNtfStatT_ stats _ statSel = incNtfStat_ stats statSel
+{-# INLINE incNtfStatT_ #-}
 
 incNtfStat :: (NtfServerStats -> IORef Int) -> M ()
 incNtfStat statSel = asks serverStats >>= liftIO . (`incNtfStat_` statSel)
