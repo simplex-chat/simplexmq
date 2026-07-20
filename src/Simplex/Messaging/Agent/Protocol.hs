@@ -858,7 +858,7 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
-  | AgentInvitationDR
+  | AgentInvitationDR -- invitation establishing double ratchet e2e with the contact address that included DR keys
       { agentVersion :: VersionSMPA,
         e2eSndParams :: SndE2ERatchetParams 'C.X448,
         ratchetKeyId :: RatchetKeyId,
@@ -1501,6 +1501,7 @@ data ABinaryConnectionRequestUri = forall m. ConnectionModeI m => ABCR (SConnect
 
 data ConnectionRequestUri (m :: ConnectionMode) where
   CRInvitationUri :: ConnReqUriData -> RcvE2ERatchetParamsUri 'C.X448 -> ConnectionRequestUri CMInvitation
+  -- optional contact address DR keys for double ratchet e2e from message 1
   CRContactUri :: ConnReqUriData -> Maybe AddressRatchetKeys -> ConnectionRequestUri CMContact
 
 simplexConnReqUri :: ConnectionRequestUri m -> ConnectionRequestUri m
@@ -1570,7 +1571,9 @@ data PreparedLinkParams = PreparedLinkParams
     plpSignedFixedData :: ByteString,
     -- | Server with basic auth (not stored in link)
     plpSrvWithAuth :: SMPServerWithAuth,
+    -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
+    -- | Contact address double ratchet keys
     plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
   }
 
@@ -1840,10 +1843,13 @@ newtype RatchetKeyId = RatchetKeyId ByteString
   deriving (Eq, Show)
   deriving newtype (Encoding, StrEncoding)
 
+-- | double ratchet keys in contact address
 type AddressRatchetKeys = (RatchetKeyId, RcvE2ERatchetParamsUri 'C.X448)
 
+-- | Whether to rotate double ratchet keys in contact address
 type NewRatchetKeys = Bool
 
+-- | stored inviation with double ratchet keys
 data DRInvitation = DRInvitation
   { ratchetState :: RatchetX448,
     replyQueue :: SMPQueueInfo,
@@ -1943,11 +1949,12 @@ validateLinkOwners rootKey = go []
 
 instance ConnectionModeI c => Encoding (FixedLinkData c) where
   smpEncode FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId} =
+    -- TODO this encoding is not extensible, replace with smpEncode (fromMaybe "" linkEntityId) - safe to do it in 2027
     smpEncode (agentVRange, rootKey, linkConnReq) <> maybe "" smpEncode linkEntityId
   smpP = do
     (agentVRange, rootKey, linkConnReq) <- smpP
     linkEntityId <- ((\s -> if B.null s then Nothing else Just s) =<<) <$> optional smpP
-    _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding
+    _ <- A.takeByteString -- ignoring tail for forward compatibility with the future link data encoding (added in January 2026)
     pure FixedLinkData {agentVRange, rootKey, linkConnReq, linkEntityId}
 
 instance ConnectionModeI c => Encoding (ConnLinkData c) where

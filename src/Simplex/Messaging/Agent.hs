@@ -436,7 +436,7 @@ createConnectionForLink c nm userId enableNtfs = withAgentEnv c .:: createConnec
 
 -- | Create or update user's contact connection short link
 setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> Maybe CR.InitialKeys -> AE (ConnShortLink c)
-setConnShortLink c nm connId cMode uld cd rotate ik = withAgentEnv c $ setConnShortLink' c nm connId cMode uld cd rotate ik
+setConnShortLink c = withAgentEnv c .:::. setConnShortLink' c
 {-# INLINE setConnShortLink #-}
 
 deleteConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AE ()
@@ -1116,7 +1116,7 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
       createNewConn db g cData SCMInvitation
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> Maybe CR.InitialKeys -> AM (ConnShortLink c)
-setConnShortLink' c nm connId cMode userLinkData clientData rotate pqInitKeys_ =
+setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ =
   withConnLock c connId "setConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     (rq, lnkId, sl, d) <- case (conn, cMode, userLinkData) of
@@ -1131,11 +1131,13 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotate pqInitKeys_ =
       liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink ucd
       g <- asks random
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-      -- rotate makes fresh keys from InitialKeys; otherwise keep current keys, creating from InitialKeys only when none exist
-      ratchetKeys <-
-        if rotate
-          then maybe (currentAddressRatchetKeys c connId) (fmap Just . newAddressRatchetKeys c connId) pqInitKeys_
-          else currentAddressRatchetKeys c connId >>= maybe (mapM (newAddressRatchetKeys c connId) pqInitKeys_) (pure . Just)
+      -- rotate makes fresh keys from InitialKeys; otherwise keep current keys or create based on InitialKeys if there are no ratchet keys
+      let currKeys = currentAddressRatchetKeys c connId
+      ratchetKeys <- case pqKeys_ of
+        Just pqKeys -> 
+          let newKeys = newAddressRatchetKeys c connId pqKeys
+           in Just <$> if rotateKeys then newKeys else currKeys >>= maybe newKeys pure
+        Nothing -> currKeys
       let ud = UserContactLinkData ucd {ratchetKeys}
           cslContact = CSLContact SLSServer CCTContact (qServer rq)
       case shortLink of
@@ -3537,9 +3539,11 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 -- party initiating connection
                 RcvConnection {} -> do
                   case e2eEncryption of
+                    -- create ratchet from sent invitation and received confirmation keys
                     Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
                       processConnInfo =<< initRcvRatchet_ agentVersion pqSupport keys e2eSndParams
+                    -- use ratchet initialized from contract address ratchet keys during invitation
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> prohibited "conf: incorrect state"
                       Right rc -> processConnInfo (rc, pqSupport)
