@@ -1849,7 +1849,7 @@ type AddressRatchetKeys = (RatchetKeyId, RcvE2ERatchetParamsUri 'C.X448)
 -- | Whether to rotate double ratchet keys in contact address
 type NewRatchetKeys = Bool
 
--- | stored inviation with double ratchet keys
+-- | stored invitation with double ratchet keys
 data DRInvitation = DRInvitation
   { ratchetState :: RatchetX448,
     replyQueue :: SMPQueueInfo,

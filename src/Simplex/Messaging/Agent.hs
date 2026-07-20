@@ -1134,7 +1134,7 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ =
       -- rotate makes fresh keys from InitialKeys; otherwise keep current keys or create based on InitialKeys if there are no ratchet keys
       let currKeys = currentAddressRatchetKeys c connId
       ratchetKeys <- case pqKeys_ of
-        Just pqKeys -> 
+        Just pqKeys ->
           let newKeys = newAddressRatchetKeys c connId pqKeys
            in Just <$> if rotateKeys then newKeys else currKeys >>= maybe newKeys pure
         Nothing -> currKeys
@@ -3543,7 +3543,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     Just e2eSndParams -> do
                       keys <- withStore c (`getRatchetX3dhKeys` connId)
                       processConnInfo =<< initRcvRatchet_ agentVersion pqSupport keys e2eSndParams
-                    -- use ratchet initialized from contract address ratchet keys during invitation
+                    -- use ratchet initialized from contact address ratchet keys during invitation
                     Nothing -> withStore' c (`getRatchet` connId) >>= \case
                       Left _ -> prohibited "conf: incorrect state"
                       Right rc -> processConnInfo (rc, pqSupport)
