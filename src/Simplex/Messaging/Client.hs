@@ -974,7 +974,7 @@ deleteSMPQueueLink :: SMPClient -> NetworkRequestMode -> RcvPrivateAuthKey -> Re
 deleteSMPQueueLink = okSMPCommand LDEL
 {-# INLINE deleteSMPQueueLink #-}
 
--- | Get 1-time inviation SMP queue link data and secure the queue via queue link ID.
+-- | Get 1-time invitation SMP queue link data and secure the queue via queue link ID.
 secureGetSMPQueueLink :: SMPClient -> NetworkRequestMode -> SndPrivateAuthKey -> LinkId -> ExceptT SMPClientError IO (SenderId, QueueLinkData)
 secureGetSMPQueueLink c nm spKey lnkId =
   sendSMPCommand c nm (Just spKey) lnkId (LKEY $ C.toPublic spKey) >>= \case

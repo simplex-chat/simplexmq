@@ -1913,17 +1913,10 @@ sendConfirmation c nm sq@SndQueue {userId, server, connId, sndId, queueMode, snd
   sendOrProxySMPMessage c nm userId server connId "<CONF>" spKey sndId (MsgFlags {notification = True}) msg
 sendConfirmation _ _ _ _ = throwE $ INTERNAL "sendConfirmation called without snd_queue public key(s) in the database"
 
-sendInvitation :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Compatible SMPQueueInfo -> Compatible VersionSMPA -> ConnectionRequestUri 'CMInvitation -> ConnInfo -> AM (Maybe SMPServer)
-sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) (Compatible agentVersion) connReq connInfo = do
-  msg <- mkInvitation
+sendInvitation :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Compatible SMPQueueInfo -> AgentMsgEnvelope -> AM (Maybe SMPServer)
+sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {smpServer, senderId, dhPublicKey})) agentEnvelope = do
+  msg <- agentCbEncryptOnce v dhPublicKey . smpEncode $ SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
   sendOrProxySMPMessage c nm userId smpServer connId "<INV>" Nothing senderId (MsgFlags {notification = True}) msg
-  where
-    mkInvitation :: AM ByteString
-    -- this is only encrypted with per-queue E2E, not with double ratchet
-    mkInvitation = do
-      let agentEnvelope = AgentInvitation {agentVersion, connReq, connInfo}
-      agentCbEncryptOnce v dhPublicKey . smpEncode $
-        SMP.ClientMessage SMP.PHEmpty (smpEncode agentEnvelope)
 
 getQueueMessage :: AgentClient -> RcvQueue -> AM (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do

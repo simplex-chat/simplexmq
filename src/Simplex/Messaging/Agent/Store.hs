@@ -45,6 +45,8 @@ module Simplex.Messaging.Agent.Store
     AcceptedConfirmation (..),
     NewInvitation (..),
     Invitation (..),
+    ContactRequest (..),
+    DRInvitation (..),
     PrevExternalSndId,
     PrevRcvMsgHash,
     PrevSndMsgHash,
@@ -626,18 +628,22 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
-    connReq :: ConnectionRequestUri 'CMInvitation,
+    connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
     contactConnId_ :: Maybe ConnId,
-    connReq :: ConnectionRequestUri 'CMInvitation,
+    connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool
   }
+
+data ContactRequest
+  = CRInvitation (ConnectionRequestUri 'CMInvitation)
+  | CRInvitationDR DRInvitation
 
 -- * Message integrity validation types
 

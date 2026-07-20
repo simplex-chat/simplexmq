@@ -66,6 +66,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getConnSubs,
     getDeletedConns,
     getConnsData,
+    getConnectionData,
     lockConnForUpdate,
     setConnDeleted,
     setConnUserId,
@@ -152,6 +153,10 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
     setRatchetX3dhKeys,
+    createAddressRatchetKeys,
+    getCurrentAddressRatchetKeys,
+    getAddressRatchetKeys,
+    deleteOldAddressRatchetKeys,
     createSndRatchet,
     getSndRatchet,
     createRatchet,
@@ -278,9 +283,11 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
+import qualified Data.Aeson as J
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortBy)
@@ -1384,6 +1391,60 @@ setRatchetX3dhKeys db connId (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem) =
     |]
     (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, connId)
 
+createAddressRatchetKeys :: DB.Connection -> ConnId -> (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448) -> IO ()
+createAddressRatchetKeys db connId (ratchetKeyId, (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)) =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO address_ratchet_keys
+        (conn_id, ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem)
+      VALUES (?, ?, ?, ?, ?)
+    |]
+    (connId, ratchetKeyId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)
+
+getCurrentAddressRatchetKeys :: DB.Connection -> ConnId -> IO (Either StoreError (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
+getCurrentAddressRatchetKeys db connId =
+  firstRow (\(Only rkId :. pks) -> (rkId, pks)) SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ?
+        ORDER BY address_ratchet_key_id DESC
+        LIMIT 1
+      |]
+      (Only connId)
+
+getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (CR.RcvE2EPrivRatchetParams 'C.X448))
+getAddressRatchetKeys db connId ratchetKeyId =
+  firstRow id SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ? AND ratchet_key_id = ?
+      |]
+      (connId, ratchetKeyId)
+
+deleteOldAddressRatchetKeys :: DB.Connection -> ConnId -> Int -> IO ()
+deleteOldAddressRatchetKeys db connId keep =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM address_ratchet_keys
+      WHERE conn_id = ?
+        AND address_ratchet_key_id NOT IN (
+          SELECT address_ratchet_key_id
+          FROM address_ratchet_keys
+          WHERE conn_id = ?
+          ORDER BY address_ratchet_key_id DESC
+          LIMIT ?
+        )
+    |]
+    (connId, connId, keep)
+
 createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
 createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =
   DB.execute
@@ -2075,6 +2136,21 @@ instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = t
 
 instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldDecoder strDecode
 
+instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary s
+
+instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
+
+instance ToField ContactRequest where
+  toField = toField . Binary . \case
+    CRInvitation cr -> strEncode cr
+    CRInvitationDR dr -> LB.toStrict $ J.encode dr
+
+instance FromField ContactRequest where
+  fromField = blobFieldDecoder $ \bs ->
+    if "{" `B.isPrefixOf` bs
+      then CRInvitationDR <$> J.eitherDecodeStrict' bs
+      else CRInvitation <$> strDecode bs
+
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 
 instance FromField ConnectionMode where fromField = fromTextField_ connModeT
@@ -2576,6 +2652,9 @@ getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . g
 handleDBError :: E.SomeException -> IO (Either StoreError a)
 handleDBError = pure . Left . SEInternal . bshow
 #endif
+
+getConnectionData :: DB.Connection -> ConnId -> IO (Either StoreError ConnData)
+getConnectionData db connId = maybe (Left SEConnNotFound) (Right . fst) <$> getConnData False False db connId
 
 getConnData :: Bool -> Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData deleted' forUpdate db connId' =

@@ -49,6 +49,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251010_client_notices
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20251230_strict_tables
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260410_receive_attempts
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260411_service_certs
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Query, Maybe Query)]
@@ -97,7 +98,8 @@ schemaMigrations =
     ("m20251010_client_notices", m20251010_client_notices, Just down_m20251010_client_notices),
     ("m20251230_strict_tables", m20251230_strict_tables, Just down_m20251230_strict_tables),
     ("m20260410_receive_attempts", m20260410_receive_attempts, Just down_m20260410_receive_attempts),
-    ("m20260411_service_certs", m20260411_service_certs, Just down_m20260411_service_certs)
+    ("m20260411_service_certs", m20260411_service_certs, Just down_m20260411_service_certs),
+    ("m20260712_address_dr", m20260712_address_dr, Just down_m20260712_address_dr)
   ]
 
 -- | The list of migrations in ascending order by date

@@ -11,6 +11,7 @@ module Simplex.Messaging.Encoding
   ( Encoding (..),
     Tail (..),
     Large (..),
+    EncList (..),
     _smpP,
     smpEncodeList,
     smpListP,
@@ -176,6 +177,12 @@ instance Encoding a => Encoding (L.NonEmpty a) where
     lenP >>= \case
       0 -> fail "empty list"
       n -> L.fromList <$> A.count n smpP
+
+newtype EncList a = EncList [a]
+
+instance Encoding a => Encoding (EncList a) where
+  smpEncode (EncList xs) = smpEncodeList xs
+  smpP = EncList <$> smpListP
 
 instance (Encoding a, Encoding b) => Encoding (a, b) where
   smpEncode (a, b) = smpEncode a <> smpEncode b
