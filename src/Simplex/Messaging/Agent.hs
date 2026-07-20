@@ -76,6 +76,7 @@ module Simplex.Messaging.Agent
     allowConnection,
     acceptContact,
     rejectContact,
+    rejectContactAsync,
     DatabaseDiff (..),
     compareConnections,
     syncConnections,
@@ -499,9 +500,13 @@ acceptContact c userId connId enableNtfs = withAgentEnv c .::. acceptContact' c 
 {-# INLINE acceptContact #-}
 
 -- | Reject contact (RJCT command)
-rejectContact :: AgentClient -> ConfirmationId -> AE ()
-rejectContact c = withAgentEnv c . rejectContact' c
+rejectContact :: AgentClient -> NetworkRequestMode -> UserId -> ConfirmationId -> Maybe ByteString -> AE ()
+rejectContact c nm userId invId reason = withAgentEnv c $ rejectContact' c nm userId invId reason
 {-# INLINE rejectContact #-}
+
+rejectContactAsync :: AgentClient -> ACorrId -> UserId -> ConfirmationId -> Maybe ByteString -> AE ()
+rejectContactAsync c corrId userId invId reason = withAgentEnv c $ rejectContactAsync' c corrId userId invId reason
+{-# INLINE rejectContactAsync #-}
 
 data DatabaseDiff a = DatabaseDiff
   { missingIds :: [a],
@@ -1514,7 +1519,7 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
               liftIO $ setConnPQSupport db connId pqSupport
               encConnInfo <- fst <$> agentRatchetEncrypt db cData (smpEncode sndReply) e2eEncConnInfoLength (Just $ CR.pqSupportToEnc pqSupport) maxV
               pure (e2eSndParams, encConnInfo)
-            pure AgentInvitationDR {agentVersion = v, e2eSndParams, ratchetKeyId, encConnInfo}
+            pure AgentContactRequest {agentVersion = v, e2eSndParams, ratchetKeyId, encConnInfo}
         void $ sendInvitation c nm userId connId qInfo envelope
         pure False
       where
@@ -1602,11 +1607,32 @@ acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode
   withStore' c $ \db -> acceptInvitation db invId ownConnInfo
   pure r
 
--- | Reject contact (RJCT command) in Reader monad
-rejectContact' :: AgentClient -> InvitationId -> AM ()
-rejectContact' c invId =
+rejectContact' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
+rejectContact' c nm userId invId reason_ = do
+  forM_ reason_ $ \reason -> do
+    (connId, cData, sq) <- prepareRejection c userId invId reason
+    void $ agentSecureSndQueue c nm cData sq
+    lift $ submitPendingMsg c sq
+    deleteConnectionAsync' c True connId
   withStore' c $ \db -> deleteInvitation db invId
-{-# INLINE rejectContact' #-}
+
+rejectContactAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AM ()
+rejectContactAsync' c corrId userId invId reason_ = do
+  forM_ reason_ $ \reason -> do
+    (connId, _, sq) <- prepareRejection c userId invId reason
+    enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReject
+  withStore' c $ \db -> deleteInvitation db invId
+
+prepareRejection :: AgentClient -> UserId -> InvitationId -> ByteString -> AM (ConnId, ConnData, SndQueue)
+prepareRejection c userId invId reason = do
+  Invitation {connReq} <- withStore c $ \db -> getInvitation db "prepareRejection" invId
+  case connReq of
+    CRInvitation _ -> throwE $ CMD PROHIBITED "rejectContact: connection has no double ratchet to send rejection"
+    CRInvitationDR dr@DRInvitation {pqSupport} -> do
+      connId <- newConnToAccept c userId "" True invId pqSupport
+      (cData, sq) <- startJoinInvitationDR c userId connId Nothing dr
+      storeConfirmation c cData sq Nothing $ AgentRejection (APrivHeader 1 "") reason
+      pure (connId, cData, sq)
 
 syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
 syncConnections' c userIds connIds = do
@@ -2071,6 +2097,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
           void $ enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
+        ICReject -> withServer' . tryWithLock "ICReject" $
+          withStore c (`getConn` connId) >>= \case
+            SomeConn _ (SndConnection cData sq) -> do
+              void $ agentSecureSndQueue c NRMBackground cData sq
+              lift $ submitPendingMsg c sq
+              deleteConnectionAsync' c True connId
+            _ -> throwE $ INTERNAL "ICReject: incorrect connection type"
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
         ICDeleteRcvQueue rId -> withServer $ \srv -> tryWithLock "ICDeleteRcvQueue" $ do
@@ -2310,6 +2343,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
           resp <- tryAllErrors $ case msgType of
             AM_CONN_INFO -> sendConfirmation c NRMBackground sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c NRMBackground sq msgBody
+            AM_RJCT -> sendConfirmation c NRMBackground sq msgBody
             _ -> case pendingMsgPrepData_ of
               Nothing -> sendAgentMessage c sq msgFlags msgBody
               Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody} -> do
@@ -2356,6 +2390,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                     AM_QUSE_ -> qError msgId "QUSE: AUTH"
                     AM_QTEST_ -> qError msgId "QTEST: AUTH"
                     AM_EREADY_ -> notifyDel msgId err
+                    AM_SRV_REQ -> notifyDel msgId err
+                    AM_SRV_RESP -> notifyDel msgId err
+                    AM_RJCT -> notifyDel msgId err
                 _
                   -- for other operations BROKER HOST is treated as a permanent error (e.g., when connecting to the server),
                   -- the message sending would be retried
@@ -2437,6 +2474,9 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                         _ -> internalErr msgId "sent QTEST: queue not in connection or not replacing another queue"
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
+                AM_SRV_REQ -> notify $ SENT mId proxySrv_
+                AM_SRV_RESP -> notify $ SENT mId proxySrv_
+                AM_RJCT -> pure ()
               delMsgKeep (msgType == AM_A_MSG_) msgId
               where
                 setStatus status = do
@@ -3312,7 +3352,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                         | otherwise -> prohibited "handshake: missing sender key" >> ack
                       (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                         smpInvitation srvMsgId conn connReq connInfo >> ack
-                      (SMP.PHEmpty, AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}) ->
+                      (SMP.PHEmpty, AgentContactRequest {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}) ->
                         smpInvitationDR srvMsgId conn agentVersion e2eSndParams ratchetKeyId encConnInfo phVer >> ack
                       _ -> prohibited "handshake: incorrect state" >> ack
                   (Just e2eDh, Nothing) -> do
@@ -3440,7 +3480,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     decryptClientMessage e2eDh clientMsg >>= \case
                       -- this is a repeated confirmation delivery because ack failed to be sent
                       (_, AgentConfirmation {}) -> ack
-                      (_, AgentInvitationDR {}) -> ack
+                      (_, AgentContactRequest {}) -> ack
                       _ -> prohibited "msg: public header" >> ack
                   (Nothing, Nothing) -> prohibited "msg: no keys" >> ack
               updateConnVersion :: Connection c -> ConnData -> VersionSMPA -> AM (Connection c)
@@ -3555,6 +3595,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                           AgentConnInfoReply smpQueues connInfo -> do
                             processConf rc' connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
                             withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
+                          AgentRejection _ reason -> notify $ RJCT reason
                           _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
                         Left _ -> prohibited "conf: decrypt error"
                       where

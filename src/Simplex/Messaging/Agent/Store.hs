@@ -537,6 +537,7 @@ data InternalCommand
   | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICQDelete SMP.RecipientId
+  | ICReject
 
 data InternalCommandTag
   = ICAck_
@@ -547,6 +548,7 @@ data InternalCommandTag
   | ICDeleteRcvQueue_
   | ICQSecure_
   | ICQDelete_
+  | ICReject_
   deriving (Show)
 
 instance StrEncoding InternalCommand where
@@ -559,6 +561,7 @@ instance StrEncoding InternalCommand where
     ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
+    ICReject -> strEncode ICReject_
   strP =
     strP >>= \case
       ICAck_ -> ICAck <$> _strP <*> _strP
@@ -569,6 +572,7 @@ instance StrEncoding InternalCommand where
       ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
+      ICReject_ -> pure ICReject
 
 instance StrEncoding InternalCommandTag where
   strEncode = \case
@@ -580,6 +584,7 @@ instance StrEncoding InternalCommandTag where
     ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
+    ICReject_ -> "REJECT"
   strP =
     A.takeTill (== ' ') >>= \case
       "ACK" -> pure ICAck_
@@ -590,6 +595,7 @@ instance StrEncoding InternalCommandTag where
       "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
+      "REJECT" -> pure ICReject_
       _ -> fail "bad InternalCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
@@ -607,6 +613,7 @@ internalCmdTag = \case
   ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
+  ICReject -> ICReject_
 
 -- * Confirmation types
 

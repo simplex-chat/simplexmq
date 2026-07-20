@@ -415,6 +415,8 @@ data AEvent (e :: AEntity) where
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
+  SREQ :: ConnId -> MsgBody -> AEvent AEConn
+  RJCT :: ConnInfo -> AEvent AEConn
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
   END :: AEvent AEConn
@@ -496,6 +498,8 @@ data AEventTag (e :: AEntity) where
   LDATA_ :: AEventTag AEConn
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
+  SREQ_ :: AEventTag AEConn
+  RJCT_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
   CON_ :: AEventTag AEConn
   END_ :: AEventTag AEConn
@@ -559,6 +563,8 @@ aEventTag = \case
   LDATA {} -> LDATA_
   CONF {} -> CONF_
   REQ {} -> REQ_
+  SREQ {} -> SREQ_
+  RJCT {} -> RJCT_
   INFO {} -> INFO_
   CON _ -> CON_
   END -> END_
@@ -858,7 +864,7 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
-  | AgentInvitationDR -- invitation establishing double ratchet e2e with the contact address that included DR keys
+  | AgentContactRequest -- DR request to a contact address that advertised DR keys: a contact invitation or a service (RPC) request
       { agentVersion :: VersionSMPA,
         e2eSndParams :: SndE2ERatchetParams 'C.X448,
         ratchetKeyId :: RatchetKeyId,
@@ -879,8 +885,8 @@ instance Encoding AgentMsgEnvelope where
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
-    AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo} ->
-      smpEncode (agentVersion, 'J', e2eSndParams, ratchetKeyId, Tail encConnInfo)
+    AgentContactRequest {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo} ->
+      smpEncode (agentVersion, 'A', e2eSndParams, ratchetKeyId, Tail encConnInfo)
     AgentRatchetKey {agentVersion, e2eEncryption, info} ->
       smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
@@ -896,9 +902,9 @@ instance Encoding AgentMsgEnvelope where
         connReq <- strDecode . unLarge <$?> smpP
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
-      'J' -> do
+      'A' -> do
         (e2eSndParams, ratchetKeyId, Tail encConnInfo) <- smpP
-        pure AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}
+        pure AgentContactRequest {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}
       'R' -> do
         e2eEncryption <- smpP
         Tail info <- smpP
@@ -916,6 +922,9 @@ data AgentMessage
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
+  | AgentServiceRequest (NonEmpty SMPQueueInfo) MsgBody
+  | AgentServiceResponse APrivHeader Bool (NonEmpty MsgBody)
+  | AgentRejection APrivHeader ByteString
   deriving (Show)
 
 instance Encoding AgentMessage where
@@ -924,12 +933,18 @@ instance Encoding AgentMessage where
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
     AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
+    AgentServiceRequest qs body -> smpEncode ('A', qs, Tail body)
+    AgentServiceResponse hdr final bodies -> smpEncode ('P', hdr, final, fmap Large bodies)
+    AgentRejection hdr reason -> smpEncode ('J', hdr, Tail reason)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
       'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
+      'A' -> AgentServiceRequest <$> smpP <*> (unTail <$> smpP)
+      'P' -> AgentServiceResponse <$> smpP <*> smpP <*> (fmap unLarge <$> smpP)
+      'J' -> AgentRejection <$> smpP <*> (unTail <$> smpP)
       _ -> fail "bad AgentMessage"
 
 -- internal type for storing message type in the database
@@ -946,6 +961,9 @@ data AgentMessageType
   | AM_QUSE_
   | AM_QTEST_
   | AM_EREADY_
+  | AM_SRV_REQ
+  | AM_SRV_RESP
+  | AM_RJCT
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -962,6 +980,9 @@ instance Encoding AgentMessageType where
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
     AM_EREADY_ -> "E"
+    AM_SRV_REQ -> "A"
+    AM_SRV_RESP -> "P"
+    AM_RJCT -> "J"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -979,6 +1000,9 @@ instance Encoding AgentMessageType where
           'T' -> pure AM_QTEST_
           _ -> fail "bad AgentMessageType"
       'E' -> pure AM_EREADY_
+      'A' -> pure AM_SRV_REQ
+      'P' -> pure AM_SRV_RESP
+      'J' -> pure AM_RJCT
       _ -> fail "bad AgentMessageType"
 
 agentMessageType :: AgentMessage -> AgentMessageType
@@ -987,6 +1011,9 @@ agentMessageType = \case
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentRatchetInfo _ -> AM_RATCHET_INFO
   AgentMessage _ aMsg -> aMessageType aMsg
+  AgentServiceRequest {} -> AM_SRV_REQ
+  AgentServiceResponse {} -> AM_SRV_RESP
+  AgentRejection {} -> AM_RJCT
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent

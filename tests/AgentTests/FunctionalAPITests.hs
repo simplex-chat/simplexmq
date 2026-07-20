@@ -364,6 +364,10 @@ functionalAPITests ps = do
     testAcceptContactDRResumeAfterOffline ps
   it "should support rejecting contact request" $
     withSmpServer ps testRejectContactRequest
+  it "should communicate rejection reason via double ratchet" $
+    withSmpServer ps testRejectContactRequestDR
+  it "should communicate rejection reason via double ratchet (async)" $
+    withSmpServer ps testRejectContactRequestDRAsync
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
@@ -1278,8 +1282,33 @@ testRejectContactRequest =
     sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
-    rejectContact alice invId
+    Left (A.CMD PROHIBITED _) <- tryError $ rejectContact alice NRMInteractive 1 invId (Just "no rejection without double ratchet")
+    rejectContact alice NRMInteractive 1 invId Nothing
     liftIO $ noMessages bob "nothing delivered to bob"
+
+testRejectContactRequestDR :: HasCallStack => IO ()
+testRejectContactRequestDR =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+    (_addrConnId, CCLink connReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing IKPQOn True SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    rejectContact alice NRMInteractive 1 invId (Just "not now")
+    ("", _, A.RJCT "not now") <- get bob
+    pure ()
+
+testRejectContactRequestDRAsync :: HasCallStack => IO ()
+testRejectContactRequestDRAsync =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+    (_addrConnId, CCLink connReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing IKPQOn True SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    rejectContactAsync alice "1" 1 invId (Just "not now")
+    ("", _, A.RJCT "not now") <- get bob
+    pure ()
 
 testUpdateConnectionUserId :: HasCallStack => IO ()
 testUpdateConnectionUserId =
