@@ -865,7 +865,7 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
-  | AgentContactRequest -- DR request to a contact address that advertised DR keys: a contact invitation or a service (RPC) request
+  | AgentContactRequest -- DR request to a contact address that published DR keys: a contact invitation or a service (RPC) request
       { agentVersion :: VersionSMPA,
         e2eSndParams :: SndE2ERatchetParams 'C.X448,
         ratchetKeyId :: RatchetKeyId,
@@ -2198,17 +2198,13 @@ data SMPAgentError
     A_DUPLICATE {droppedMsg_ :: Maybe DroppedMsg}
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
-  | -- | service (RPC) request error
-    A_SERVICE {serviceError :: AgentServiceError}
+  | A_SERVICE {serviceError :: AgentServiceError}
   deriving (Eq, Show, Exception)
 
 data AgentServiceError
-  = -- | the service refused the request, with the reason (bytes as latin1 String)
-    ASERejected {rejectReason :: String}
-  | -- | no response to the request within the configured timeout
-    ASETimeout
-  | -- | response with no pending request (e.g. after a restart)
-    ASENoRequest
+  = ASERejected {rejectReason :: String}
+  | ASETimeout
+  | ASENoPendingRequest
   deriving (Eq, Show)
 
 data AgentCryptoError

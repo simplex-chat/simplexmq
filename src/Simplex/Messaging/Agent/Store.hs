@@ -466,7 +466,7 @@ data ConnData = ConnData
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
     pqSupport :: PQSupport,
-    serviceReply :: Bool
+    serviceRequest :: Bool
   }
   deriving (Eq, Show)
 
@@ -638,7 +638,7 @@ data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
     connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
-    isServiceRequest :: Bool
+    serviceRequest :: Bool
   }
 
 data Invitation = Invitation
@@ -648,7 +648,7 @@ data Invitation = Invitation
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool,
-    isServiceRequest :: Bool,
+    serviceRequest :: Bool,
     createdAt :: UTCTime
   }
 
