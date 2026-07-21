@@ -94,7 +94,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig)
+import Simplex.Messaging.Client (pattern NRMBackground, pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -368,6 +368,14 @@ functionalAPITests ps = do
     withSmpServer ps testRejectContactRequestDR
   it "should communicate rejection reason via double ratchet (async)" $
     withSmpServer ps testRejectContactRequestDRAsync
+  it "should send a service request and receive the response" $
+    withSmpServer ps testServiceRequestResponse
+  it "should send a service request and receive the response (async reply)" $
+    withSmpServer ps testServiceRequestResponseAsync
+  it "should reject a service request with a reason" $
+    withSmpServer ps testServiceRequestRejected
+  it "should deliver a service response across server outages" $
+    testServiceRequestResilient ps
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
@@ -1309,6 +1317,69 @@ testRejectContactRequestDRAsync =
     rejectContactAsync alice "1" 1 invId (Just "not now")
     ("", _, A.RJCT "not now") <- get bob
     pure ()
+
+serviceUserLinkData :: UserConnLinkData 'CMContact
+serviceUserLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+
+testServiceRequestResponse :: HasCallStack => IO ()
+testServiceRequestResponse =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq "service request")
+      (runRight_ $ do
+        ("", _, SREQ invId "service request") <- get service
+        sendServiceReply service NRMInteractive 1 invId "service response")
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testServiceRequestResponseAsync :: HasCallStack => IO ()
+testServiceRequestResponseAsync =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq "service request")
+      (runRight_ $ do
+        ("", _, SREQ invId "service request") <- get service
+        sendServiceReplyAsync service "1" 1 invId "service response")
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testServiceRequestRejected :: HasCallStack => IO ()
+testServiceRequestRejected =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    resp <- liftIO $ fst <$> concurrently
+      (runExceptT $ sendServiceRequest client NRMInteractive 1 connReq "service request")
+      (runRight_ $ do
+        ("", _, SREQ invId "service request") <- get service
+        rejectServiceRequest service NRMInteractive 1 invId (Just "not allowed"))
+    liftIO $ resp `shouldBe` Left (AGENT (A_SERVICE (ASERejected "not allowed")))
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+-- server down, send, up, receive, down, reply, up, receive response.
+-- The request send retries through the outage (NRMBackground); the reply is queued while the server is
+-- down and delivered on reconnect (async reply via ICReplyDel); the requester's blocking call receives it.
+testServiceRequestResilient :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
+  -- server up: create the service address
+  connReq <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    (_, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    pure connReq
+  ("", "", DOWN _ _) <- nGet service
+  -- server down: the client sends the request; NRMBackground retries the send until the server is back
+  reqAsync <- async $ runExceptT $ sendServiceRequest client NRMBackground 1 connReq "resilient request"
+  -- server up: the request is delivered and the service receives it
+  invId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    ("", "", UP _ _) <- nGet service
+    ("", _, SREQ invId "resilient request") <- get service
+    pure invId :: ExceptT AgentErrorType IO InvitationId
+  ("", "", DOWN _ _) <- nGet service
+  -- server down: the service replies; the async reply is enqueued and retried until the server is back
+  runRight_ $ sendServiceReplyAsync service "1" 1 invId "resilient response"
+  -- server up: the reply is delivered and the requester's blocking call returns the response
+  resp <- withSmpServerStoreLogOn ps testPort $ \_ -> wait reqAsync
+  resp `shouldBe` Right "resilient response"
 
 testUpdateConnectionUserId :: HasCallStack => IO ()
 testUpdateConnectionUserId =

@@ -161,6 +161,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionErrorType (..),
     BrokerErrorType (..),
     SMPAgentError (..),
+    AgentServiceError (..),
     DroppedMsg (..),
     AgentCryptoError (..),
     cryptoErrToSyncState,
@@ -415,7 +416,7 @@ data AEvent (e :: AEntity) where
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
-  SREQ :: ConnId -> MsgBody -> AEvent AEConn
+  SREQ :: InvitationId -> MsgBody -> AEvent AEConn
   RJCT :: ConnInfo -> AEvent AEConn
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
@@ -923,8 +924,8 @@ data AgentMessage
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
   | AgentServiceRequest (NonEmpty SMPQueueInfo) MsgBody
-  | AgentServiceResponse APrivHeader Bool (NonEmpty MsgBody)
-  | AgentRejection APrivHeader ByteString
+  | AgentServiceResponse MsgBody
+  | AgentRejection ByteString
   deriving (Show)
 
 instance Encoding AgentMessage where
@@ -934,8 +935,8 @@ instance Encoding AgentMessage where
     AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
     AgentServiceRequest qs body -> smpEncode ('A', qs, Tail body)
-    AgentServiceResponse hdr final bodies -> smpEncode ('P', hdr, final, fmap Large bodies)
-    AgentRejection hdr reason -> smpEncode ('J', hdr, Tail reason)
+    AgentServiceResponse body -> smpEncode ('P', Tail body)
+    AgentRejection reason -> smpEncode ('J', Tail reason)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
@@ -943,8 +944,8 @@ instance Encoding AgentMessage where
       'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       'A' -> AgentServiceRequest <$> smpP <*> (unTail <$> smpP)
-      'P' -> AgentServiceResponse <$> smpP <*> smpP <*> (fmap unLarge <$> smpP)
-      'J' -> AgentRejection <$> smpP <*> (unTail <$> smpP)
+      'P' -> AgentServiceResponse . unTail <$> smpP
+      'J' -> AgentRejection . unTail <$> smpP
       _ -> fail "bad AgentMessage"
 
 -- internal type for storing message type in the database
@@ -2197,7 +2198,18 @@ data SMPAgentError
     A_DUPLICATE {droppedMsg_ :: Maybe DroppedMsg}
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
+  | -- | service (RPC) request error
+    A_SERVICE {serviceError :: AgentServiceError}
   deriving (Eq, Show, Exception)
+
+data AgentServiceError
+  = -- | the service refused the request, with the reason (bytes as latin1 String)
+    ASERejected {rejectReason :: String}
+  | -- | no response to the request within the configured timeout
+    ASETimeout
+  | -- | response with no pending request (e.g. after a restart)
+    ASENoRequest
+  deriving (Eq, Show)
 
 data AgentCryptoError
   = -- | AES decryption error
@@ -2316,6 +2328,8 @@ $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
+
+$(J.deriveJSON (sumTypeJSON id) ''AgentServiceError)
 
 $(J.deriveJSON defaultJSON ''DroppedMsg)
 

@@ -72,8 +72,11 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
+    setConnServiceReply,
     updateNewConnJoin,
     getDeletedConnIds,
+    getExpiredServiceReplyConnIds,
+    deleteExpiredServiceRequests,
     getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
     addProcessedRatchetKeyHash,
@@ -875,15 +878,15 @@ removeConfirmations db connId =
     (Only connId)
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
-createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
+createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo, isServiceRequest} =
   createWithRandomId db gVar $ \invitationId ->
     DB.execute
       db
       [sql|
         INSERT INTO conn_invitations
-        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted, is_service_request) VALUES (?, ?, ?, ?, 0, ?);
       |]
-      (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo)
+      (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo, BI isServiceRequest)
 
 getInvitation :: DB.Connection -> String -> InvitationId -> IO (Either StoreError Invitation)
 getInvitation db cxt invitationId =
@@ -891,15 +894,15 @@ getInvitation db cxt invitationId =
     DB.query
       db
       [sql|
-        SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
+        SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted, is_service_request, created_at
         FROM conn_invitations
         WHERE invitation_id = ?
           AND accepted = 0
       |]
       (Only (Binary invitationId))
   where
-    invitation (contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
-      Invitation {invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted}
+    invitation (contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted, BI isServiceRequest, createdAt) =
+      Invitation {invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted, isServiceRequest, createdAt}
 
 acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
 acceptInvitation db invitationId ownConnInfo =
@@ -2663,7 +2666,8 @@ getConnData deleted' forUpdate db connId' =
       db
       ( [sql|
           SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
+            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support,
+            CASE WHEN created_at IS NULL THEN 0 ELSE 1 END
           FROM connections
           WHERE conn_id = ? AND deleted = ?
         |]
@@ -2680,9 +2684,9 @@ lockConnForUpdate db connId = do
 #endif
   pure ()
 
-rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport) -> (ConnData, ConnectionMode)
-rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport) =
-  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
+rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport, BoolInt) -> (ConnData, ConnectionMode)
+rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport, BI serviceReply) =
+  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport, serviceReply}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
@@ -2704,12 +2708,26 @@ setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
 setConnPQSupport db connId pqSupport =
   DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
 
+setConnServiceReply :: DB.Connection -> ConnId -> UTCTime -> IO ()
+setConnServiceReply db connId ts =
+  DB.execute db "UPDATE connections SET created_at = ? WHERE conn_id = ?" (ts, connId)
+
 updateNewConnJoin :: DB.Connection -> ConnId -> VersionSMPA -> PQSupport -> Bool -> IO ()
 updateNewConnJoin db connId aVersion pqSupport enableNtfs =
   DB.execute db "UPDATE connections SET smp_agent_version = ?, pq_support = ?, enable_ntfs = ? WHERE conn_id = ?" (aVersion, pqSupport, BI enableNtfs, connId)
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only (BI True))
+
+-- | Client RPC reply-queue connections older than the timeout that were never torn down (e.g. after a restart).
+getExpiredServiceReplyConnIds :: DB.Connection -> UTCTime -> IO [ConnId]
+getExpiredServiceReplyConnIds db expireTs =
+  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE created_at IS NOT NULL AND created_at < ? AND deleted = 0" (Only expireTs)
+
+-- | Service (RPC) requests that were never answered within the timeout.
+deleteExpiredServiceRequests :: DB.Connection -> UTCTime -> IO ()
+deleteExpiredServiceRequests db expireTs =
+  DB.execute db "DELETE FROM conn_invitations WHERE is_service_request = 1 AND created_at < ?" (Only expireTs)
 
 getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =

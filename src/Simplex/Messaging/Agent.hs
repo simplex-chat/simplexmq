@@ -77,6 +77,11 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     rejectContactAsync,
+    sendServiceRequest,
+    sendServiceReply,
+    sendServiceReplyAsync,
+    rejectServiceRequest,
+    rejectServiceRequestAsync,
     DatabaseDiff (..),
     compareConnections,
     syncConnections,
@@ -508,6 +513,29 @@ rejectContactAsync :: AgentClient -> ACorrId -> UserId -> ConfirmationId -> Mayb
 rejectContactAsync c corrId userId invId reason = withAgentEnv c $ rejectContactAsync' c corrId userId invId reason
 {-# INLINE rejectContactAsync #-}
 
+-- | Send the single response to a service (RPC) request (SREQ command)
+sendServiceReply :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AE ()
+sendServiceReply c nm userId invId payload = withAgentEnv c $ sendServiceReply' c nm userId invId payload
+{-# INLINE sendServiceReply #-}
+
+sendServiceReplyAsync :: AgentClient -> ACorrId -> UserId -> InvitationId -> MsgBody -> AE ()
+sendServiceReplyAsync c corrId userId invId payload = withAgentEnv c $ sendServiceReplyAsync' c corrId userId invId payload
+{-# INLINE sendServiceReplyAsync #-}
+
+-- | Refuse a service (RPC) request
+rejectServiceRequest :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AE ()
+rejectServiceRequest c nm userId invId reason = withAgentEnv c $ rejectServiceRequest' c nm userId invId reason
+{-# INLINE rejectServiceRequest #-}
+
+rejectServiceRequestAsync :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AE ()
+rejectServiceRequestAsync c corrId userId invId reason = withAgentEnv c $ rejectServiceRequestAsync' c corrId userId invId reason
+{-# INLINE rejectServiceRequestAsync #-}
+
+-- | Send a service (RPC) request to an address and wait for the single response
+sendServiceRequest :: AgentClient -> NetworkRequestMode -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AE MsgBody
+sendServiceRequest c nm userId cReqUri payload = withAgentEnv c $ sendServiceRequest' c nm userId cReqUri payload
+{-# INLINE sendServiceRequest #-}
+
 data DatabaseDiff a = DatabaseDiff
   { missingIds :: [a],
     extraIds :: [a]
@@ -866,7 +894,7 @@ newConnNoQueues :: AgentClient -> UserId -> Bool -> SConnectionMode c -> PQSuppo
 newConnNoQueues c userId enableNtfs cMode pqSupport = do
   g <- asks random
   connAgentVersion <- asks $ maxVersion . smpAgentVRange . config
-  let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+  let cData = ConnData {userId, connId = "", connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceReply = False}
   withStore c $ \db -> createNewConn db g cData cMode
 
 -- TODO [short links] TBC, but probably we will need async join for contact addresses as the contact will be created after user confirming the connection,
@@ -1116,7 +1144,8 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
                 lastExternalSndId = 0,
                 deleted = False,
                 ratchetSyncState = RSOk,
-                pqSupport = PQSupportOff
+                pqSupport = PQSupportOff,
+                serviceReply = False
               }
       createNewConn db g cData SCMInvitation
 
@@ -1353,7 +1382,7 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
     create (Compatible connAgentVersion) e2eV_ = do
       g <- asks random
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion e2eV_
-          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceReply = False}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
 newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
@@ -1363,7 +1392,7 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs cReq pqSup
     CRInvitationDR DRInvitation {agentVersion, pqSupport} -> do
       g <- asks random
-      let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+      let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceReply = False}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
 joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
@@ -1383,7 +1412,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion (Just v)
       g <- asks random
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
-      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport}
+      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceReply = False}
       case sq_ of
         Just sq@SndQueue {e2ePubKey = Just _k} -> do
           e2eSndParams <- withStore c $ \db -> do
@@ -1470,7 +1499,11 @@ addrKeysE2EVersion :: (RatchetKeyId, Compatible (CR.RcvE2ERatchetParams 'C.X448)
 addrKeysE2EVersion (_, Compatible (CR.E2ERatchetParams e2eV _ _ _)) = e2eV
 
 joinConnSrv :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
-joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv =
+joinConnSrv c nm userId connId enableNtfs cReq cInfo pqSup subMode srv =
+  joinConnSrv' c nm userId connId enableNtfs cReq cInfo pqSup subMode srv $ \replyQInfo -> AgentConnInfoReply (replyQInfo :| []) cInfo
+
+joinConnSrv' :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> SMPServerWithAuth -> (SMPQueueInfo -> AgentMessage) -> AM SndQueueSecured
+joinConnSrv' c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup subMode srv _mkInner =
   withInvLock c (strEncode inv) "joinConnSrv" $ do
     SomeConn cType conn <- withStore c (`getConn` connId)
     case conn of
@@ -1485,7 +1518,7 @@ joinConnSrv c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup sub
       ((cData, sq), e2eSndParams, lnkId_) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
       secureConfirmQueue c nm cData rq_ sq srv cInfo e2eSndParams subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
-joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv =
+joinConnSrv' c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv mkInner =
   lift (compatibleContactUri cReqUri) >>= \case
     Just (qInfo, ratchet_, Compatible v) ->
       withInvLock c (strEncode cReqUri) "joinConnSrv" $ do
@@ -1512,7 +1545,7 @@ joinConnSrv c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup su
             let RcvQueue {smpClientVersion = rqV} = rq
                 cData = (toConnData conn) {pqSupport} :: ConnData
                 replyQInfo = SMPQueueInfo rqV (rcvSMPQueueAddress rq)
-                sndReply = AgentConnInfoReply (replyQInfo :| []) cInfo
+                sndReply = mkInner replyQInfo
             (e2eSndParams, encConnInfo) <- withStore c $ \db -> runExceptT $ do
               liftIO $ lockConnForUpdate db connId
               e2eSndParams <- liftIO (getSndRatchet db connId e2eV) >>= either (const $ createRatchet_ db g connId maxV pqSupport e2eParams) (pure . snd)
@@ -1609,30 +1642,83 @@ acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode
 
 rejectContact' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
 rejectContact' c nm userId invId reason_ = do
-  forM_ reason_ $ \reason -> do
-    (connId, cData, sq) <- prepareRejection c userId invId reason
-    void $ agentSecureSndQueue c nm cData sq
-    lift $ submitPendingMsg c sq
-    deleteConnectionAsync' c True connId
+  forM_ reason_ $ \reason -> sendReplySync c nm =<< prepareReply c userId invId False (AgentRejection reason)
   withStore' c $ \db -> deleteInvitation db invId
 
 rejectContactAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AM ()
 rejectContactAsync' c corrId userId invId reason_ = do
-  forM_ reason_ $ \reason -> do
-    (connId, _, sq) <- prepareRejection c userId invId reason
-    enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReject
+  forM_ reason_ $ \reason -> sendReplyAsync c corrId =<< prepareReply c userId invId False (AgentRejection reason)
   withStore' c $ \db -> deleteInvitation db invId
 
-prepareRejection :: AgentClient -> UserId -> InvitationId -> ByteString -> AM (ConnId, ConnData, SndQueue)
-prepareRejection c userId invId reason = do
-  Invitation {connReq} <- withStore c $ \db -> getInvitation db "prepareRejection" invId
+rejectServiceRequest' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
+rejectServiceRequest' c nm userId invId reason_ = do
+  forM_ reason_ $ \reason -> sendReplySync c nm =<< prepareReply c userId invId True (AgentRejection reason)
+  withStore' c $ \db -> deleteInvitation db invId
+
+rejectServiceRequestAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AM ()
+rejectServiceRequestAsync' c corrId userId invId reason_ = do
+  forM_ reason_ $ \reason -> sendReplyAsync c corrId =<< prepareReply c userId invId True (AgentRejection reason)
+  withStore' c $ \db -> deleteInvitation db invId
+
+sendServiceReply' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AM ()
+sendServiceReply' c nm userId invId payload = do
+  sendReplySync c nm =<< prepareReply c userId invId True (AgentServiceResponse payload)
+  withStore' c $ \db -> deleteInvitation db invId
+
+sendServiceReplyAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> MsgBody -> AM ()
+sendServiceReplyAsync' c corrId userId invId payload = do
+  sendReplyAsync c corrId =<< prepareReply c userId invId True (AgentServiceResponse payload)
+  withStore' c $ \db -> deleteInvitation db invId
+
+sendReplySync :: AgentClient -> NetworkRequestMode -> (ConnId, ConnData, SndQueue) -> AM ()
+sendReplySync c nm (connId, cData, sq) = do
+  void $ agentSecureSndQueue c nm cData sq
+  lift $ submitPendingMsg c sq
+  deleteConnectionAsync' c True connId
+
+sendReplyAsync :: AgentClient -> ACorrId -> (ConnId, ConnData, SndQueue) -> AM ()
+sendReplyAsync c corrId (connId, _, sq) = enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReplyDel
+
+prepareReply :: AgentClient -> UserId -> InvitationId -> Bool -> AgentMessage -> AM (ConnId, ConnData, SndQueue)
+prepareReply c userId invId expectedServiceRequest innerMsg = do
+  Invitation {connReq, isServiceRequest, createdAt} <- withStore c $ \db -> getInvitation db "prepareReply" invId
+  when (isServiceRequest /= expectedServiceRequest) $ throwE $ CMD PROHIBITED kindErr
+  when expectedServiceRequest $ do
+    now <- liftIO getCurrentTime
+    replyTimeout <- asks $ serviceReplyTimeout . config
+    when (diffUTCTime now createdAt > replyTimeout) $ do
+      withStore' c $ \db -> deleteInvitation db invId
+      throwE $ AGENT $ A_SERVICE ASETimeout
   case connReq of
-    CRInvitation _ -> throwE $ CMD PROHIBITED "rejectContact: connection has no double ratchet to send rejection"
+    CRInvitation _ -> throwE $ CMD PROHIBITED "prepareReply: connection has no double ratchet to send reply"
     CRInvitationDR dr@DRInvitation {pqSupport} -> do
       connId <- newConnToAccept c userId "" True invId pqSupport
       (cData, sq) <- startJoinInvitationDR c userId connId Nothing dr
-      storeConfirmation c cData sq Nothing $ AgentRejection (APrivHeader 1 "") reason
+      storeConfirmation c cData sq Nothing innerMsg
       pure (connId, cData, sq)
+  where
+    kindErr
+      | expectedServiceRequest = "reply: not a service request, use rejectContact"
+      | otherwise = "rejectContact: service request, use rejectServiceRequest"
+
+-- | Send a service (RPC) request to a DR-advertising address, wait for the single response up to the config timeout.
+sendServiceRequest' :: AgentClient -> NetworkRequestMode -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AM MsgBody
+sendServiceRequest' c nm userId cReqUri@(CRContactUri crData _) payload = do
+  connId <- newConnToJoin c userId "" False cReqUri PQSupportOn
+  ts <- liftIO getCurrentTime
+  withStore' c $ \db -> setConnServiceReply db connId ts
+  var <- atomically newEmptyTMVar
+  atomically $ TM.insert connId var (serviceRequests c)
+  srv <- getNextSMPServer c userId [qServer $ L.head $ crSmpQueues crData]
+  reqTimeout <- asks $ serviceRequestTimeout . config
+  r <- tryError $ do
+    void $ joinConnSrv' c nm userId connId False cReqUri "" PQSupportOn SMSubscribe srv $ \replyQInfo -> AgentServiceRequest (replyQInfo :| []) payload
+    liftIO $ do
+      expired <- registerDelay $ round (reqTimeout * 1000000)
+      atomically $ takeTMVar var `orElse` (readTVar expired >>= \e -> if e then pure (Left $ AGENT $ A_SERVICE ASETimeout) else retry)
+  atomically $ TM.delete connId (serviceRequests c)
+  deleteConnectionAsync' c True connId
+  liftEither $ join r
 
 syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
 syncConnections' c userIds connIds = do
@@ -2097,13 +2183,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         ICDuplexSecure _rId senderKey -> withServer' . tryWithLock "ICDuplexSecure" . withDuplexConn $ \(DuplexConnection cData (rq :| _) (sq :| _)) -> do
           secure rq senderKey
           void $ enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
-        ICReject -> withServer' . tryWithLock "ICReject" $
+        ICReplyDel -> withServer' . tryWithLock "ICReplyDel" $
           withStore c (`getConn` connId) >>= \case
             SomeConn _ (SndConnection cData sq) -> do
               void $ agentSecureSndQueue c NRMBackground cData sq
               lift $ submitPendingMsg c sq
               deleteConnectionAsync' c True connId
-            _ -> throwE $ INTERNAL "ICReject: incorrect connection type"
+            _ -> throwE $ INTERNAL "ICReplyDel: incorrect connection type"
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
         ICDeleteRcvQueue rId -> withServer $ \srv -> tryWithLock "ICDeleteRcvQueue" $ do
@@ -2344,6 +2430,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
             AM_CONN_INFO -> sendConfirmation c NRMBackground sq msgBody
             AM_CONN_INFO_REPLY -> sendConfirmation c NRMBackground sq msgBody
             AM_RJCT -> sendConfirmation c NRMBackground sq msgBody
+            AM_SRV_RESP -> sendConfirmation c NRMBackground sq msgBody
             _ -> case pendingMsgPrepData_ of
               Nothing -> sendAgentMessage c sq msgFlags msgBody
               Just PendingMsgPrepData {encryptKey, paddedLen, sndMsgBody} -> do
@@ -3177,8 +3264,15 @@ cleanupManager c@AgentClient {subQ} = do
     run SFERR deleteSndFilesDeleted
     run SFERR deleteSndFilesPrefixPaths
     run SFERR deleteExpiredReplicasForDeletion
+    run ERR deleteExpiredServiceReqs
     liftIO $ threadDelay' int
   where
+    deleteExpiredServiceReqs = do
+      replyTimeout <- asks $ serviceReplyTimeout . config
+      expireTs <- addUTCTime (negate replyTimeout) <$> liftIO getCurrentTime
+      withStore' c $ \db -> deleteExpiredServiceRequests db expireTs
+      expiredConns <- withStore' c $ \db -> getExpiredServiceReplyConnIds db expireTs
+      deleteConnectionsAsync' c False expiredConns
     run :: forall e. AEntityI e => (AgentErrorType -> AEvent e) -> AM () -> AM' ()
     run err a = do
       waitActive . runExceptT $ a `catchAllErrors` (notify "" . err)
@@ -3353,7 +3447,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                       (SMP.PHEmpty, AgentInvitation {connReq, connInfo}) ->
                         smpInvitation srvMsgId conn connReq connInfo >> ack
                       (SMP.PHEmpty, AgentContactRequest {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}) ->
-                        smpInvitationDR srvMsgId conn agentVersion e2eSndParams ratchetKeyId encConnInfo phVer >> ack
+                        smpContactRequest srvMsgId conn agentVersion e2eSndParams ratchetKeyId encConnInfo phVer >> ack
                       _ -> prohibited "handshake: incorrect state" >> ack
                   (Just e2eDh, Nothing) -> do
                     decryptClientMessage e2eDh clientMsg >>= \case
@@ -3573,7 +3667,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
           smpConfirmation srvMsgId conn' senderKey e2ePubKey e2eEncryption encConnInfo phVer agentVersion = do
             logServer "<--" c srv rId $ "MSG <CONF>:" <> logSecret' srvMsgId
             checkConfVersions agentVersion phVer
-            let ConnData {pqSupport} = toConnData conn'
+            let ConnData {pqSupport, serviceReply} = toConnData conn'
             case status of
               New -> case conn' of
                 -- party initiating connection
@@ -3595,10 +3689,18 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                           AgentConnInfoReply smpQueues connInfo -> do
                             processConf rc' connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
                             withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
-                          AgentRejection _ reason -> notify $ RJCT reason
+                          AgentServiceResponse payload | serviceReply -> dispatchServiceReply $ Right payload
+                          AgentRejection reason
+                            | serviceReply -> dispatchServiceReply $ Left $ AGENT $ A_SERVICE $ ASERejected $ B.unpack reason
+                            | otherwise -> notify $ RJCT reason
                           _ -> prohibited "conf: not AgentConnInfoReply" -- including AgentConnInfo, that is prohibited here in v2
                         Left _ -> prohibited "conf: decrypt error"
                       where
+                        dispatchServiceReply result = do
+                          found <- atomically $ TM.lookup connId (serviceRequests c) >>= \case
+                            Just var -> tryPutTMVar var result
+                            Nothing -> pure False
+                          unless found $ notify $ ERR $ AGENT $ A_SERVICE ASENoRequest
                         processConf rc' connInfo senderConf = do
                           let newConfirmation = NewConfirmation {connId, senderConf, ratchetState = rc'}
                           g <- asks random
@@ -3810,7 +3912,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 -- show connection request even if invitaion via contact address is not compatible.
                 -- in case invitation not compatible, assume there is no PQ encryption support.
                 pqSupport <- lift $ maybe PQSupportOff pqSupported <$> compatibleInvitationUri connReq
-                invId <- storeInvitation (CRInvitation connReq) cInfo
+                invId <- storeInvitation (CRInvitation connReq) cInfo False
                 let srvs = L.map qServer $ crSmpQueues crData
                 notify $ REQ invId pqSupport srvs cInfo
               _ -> prohibited "inv: sent to message conn"
@@ -3818,14 +3920,14 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               pqSupported (_, Compatible (CR.E2ERatchetParams v _ _ _), Compatible agentVersion) =
                 PQSupportOn `CR.pqSupportAnd` versionPQSupport_ agentVersion (Just v)
 
-          storeInvitation :: ContactRequest -> ConnInfo -> AM InvitationId
-          storeInvitation connReq recipientConnInfo = do
+          storeInvitation :: ContactRequest -> ConnInfo -> Bool -> AM InvitationId
+          storeInvitation connReq recipientConnInfo isServiceRequest = do
             g <- asks random
-            let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo}
+            let newInv = NewInvitation {contactConnId = connId, connReq, recipientConnInfo, isServiceRequest}
             withStore c $ \db -> createInvitation db g newInv
 
-          smpInvitationDR :: SMP.MsgId -> Connection c -> VersionSMPA -> CR.SndE2ERatchetParams 'C.X448 -> RatchetKeyId -> ByteString -> VersionSMPC -> AM ()
-          smpInvitationDR srvMsgId conn' agentVersion e2eSndParams ratchetKeyId encConnInfo phVer = do
+          smpContactRequest :: SMP.MsgId -> Connection c -> VersionSMPA -> CR.SndE2ERatchetParams 'C.X448 -> RatchetKeyId -> ByteString -> VersionSMPC -> AM ()
+          smpContactRequest srvMsgId conn' agentVersion e2eSndParams ratchetKeyId encConnInfo phVer = do
             logServer "<--" c srv rId $ "MSG <KEY>:" <> logSecret' srvMsgId
             case conn' of
               ContactConnection {} -> do
@@ -3836,13 +3938,16 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     (rc, connPQSupport) <- initRcvRatchet_ agentVersion pqSupport (pk1, pk2, pKem) e2eSndParams
                     (agentMsgBody_, ratchetState) <- decryptConnInfo rc encConnInfo
                     case agentMsgBody_ of
-                      Right agentMsgBody ->
+                      Right agentMsgBody -> do
+                        let mkDR replyQueue = DRInvitation {ratchetState, replyQueue, agentVersion, pqSupport = connPQSupport}
                         parseMessage agentMsgBody >>= \case
                           AgentConnInfoReply (replyQueue :| _) cInfo -> do
-                            let dr = DRInvitation {ratchetState, replyQueue, agentVersion, pqSupport = connPQSupport}
-                            invId <- storeInvitation (CRInvitationDR dr) cInfo
+                            invId <- storeInvitation (CRInvitationDR $ mkDR replyQueue) cInfo False
                             notify $ REQ invId pqSupported (qServer replyQueue :| []) cInfo
-                          _ -> prohibited "addr inv: not AgentConnInfoReply"
+                          AgentServiceRequest (replyQueue :| _) payload -> do
+                            invId <- storeInvitation (CRInvitationDR $ mkDR replyQueue) payload True
+                            notify $ SREQ invId payload
+                          _ -> prohibited "addr inv: not a contact request"
                       Left _ -> prohibited "addr inv: decrypt error"
                   Left _ -> prohibited "addr inv: unknown ratchetKeyId"
               _ -> prohibited "inv: sent to message conn"

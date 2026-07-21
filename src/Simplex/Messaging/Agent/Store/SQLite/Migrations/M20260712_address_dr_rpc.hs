@@ -1,12 +1,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr_rpc where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20260712_address_dr :: Query
-m20260712_address_dr =
+m20260712_address_dr_rpc :: Query
+m20260712_address_dr_rpc =
   [sql|
 CREATE TABLE address_ratchet_keys(
   address_ratchet_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,11 +19,16 @@ CREATE TABLE address_ratchet_keys(
 ) STRICT;
 
 CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ratchet_key_id);
+
+ALTER TABLE conn_invitations ADD COLUMN is_service_request INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN created_at TEXT;
   |]
 
-down_m20260712_address_dr :: Query
-down_m20260712_address_dr =
+down_m20260712_address_dr_rpc :: Query
+down_m20260712_address_dr_rpc =
   [sql|
+ALTER TABLE connections DROP COLUMN created_at;
+ALTER TABLE conn_invitations DROP COLUMN is_service_request;
 DROP INDEX idx_address_ratchet_keys;
 DROP TABLE address_ratchet_keys;
   |]

@@ -465,7 +465,8 @@ data ConnData = ConnData
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
-    pqSupport :: PQSupport
+    pqSupport :: PQSupport,
+    serviceReply :: Bool
   }
   deriving (Eq, Show)
 
@@ -537,7 +538,7 @@ data InternalCommand
   | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICQDelete SMP.RecipientId
-  | ICReject
+  | ICReplyDel
 
 data InternalCommandTag
   = ICAck_
@@ -548,7 +549,7 @@ data InternalCommandTag
   | ICDeleteRcvQueue_
   | ICQSecure_
   | ICQDelete_
-  | ICReject_
+  | ICReplyDel_
   deriving (Show)
 
 instance StrEncoding InternalCommand where
@@ -561,7 +562,7 @@ instance StrEncoding InternalCommand where
     ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
-    ICReject -> strEncode ICReject_
+    ICReplyDel -> strEncode ICReplyDel_
   strP =
     strP >>= \case
       ICAck_ -> ICAck <$> _strP <*> _strP
@@ -572,7 +573,7 @@ instance StrEncoding InternalCommand where
       ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
-      ICReject_ -> pure ICReject
+      ICReplyDel_ -> pure ICReplyDel
 
 instance StrEncoding InternalCommandTag where
   strEncode = \case
@@ -584,7 +585,7 @@ instance StrEncoding InternalCommandTag where
     ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
-    ICReject_ -> "REJECT"
+    ICReplyDel_ -> "REPLY_DEL"
   strP =
     A.takeTill (== ' ') >>= \case
       "ACK" -> pure ICAck_
@@ -595,7 +596,7 @@ instance StrEncoding InternalCommandTag where
       "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
-      "REJECT" -> pure ICReject_
+      "REPLY_DEL" -> pure ICReplyDel_
       _ -> fail "bad InternalCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
@@ -613,7 +614,7 @@ internalCmdTag = \case
   ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
-  ICReject -> ICReject_
+  ICReplyDel -> ICReplyDel_
 
 -- * Confirmation types
 
@@ -636,7 +637,8 @@ data AcceptedConfirmation = AcceptedConfirmation
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
     connReq :: ContactRequest,
-    recipientConnInfo :: ConnInfo
+    recipientConnInfo :: ConnInfo,
+    isServiceRequest :: Bool
   }
 
 data Invitation = Invitation
@@ -645,7 +647,9 @@ data Invitation = Invitation
     connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
-    accepted :: Bool
+    accepted :: Bool,
+    isServiceRequest :: Bool,
+    createdAt :: UTCTime
   }
 
 data ContactRequest

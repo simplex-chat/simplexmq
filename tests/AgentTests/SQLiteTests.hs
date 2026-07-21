@@ -198,7 +198,8 @@ cData1 =
       lastExternalSndId = 0,
       deleted = False,
       ratchetSyncState = RSOk,
-      pqSupport = CR.PQSupportOn
+      pqSupport = CR.PQSupportOn,
+      serviceReply = False
     }
 
 testPrivateAuthKey :: C.APrivateAuthKey

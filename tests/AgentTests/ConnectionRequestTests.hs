@@ -355,11 +355,9 @@ connectionRequestTests =
       restoreShortLink [presetSrv] inv' `shouldBe` inv
     it "should serialize and parse service RPC agent messages" $ do
       let qInfo = SMPQueueInfo currentSMPClientVersion queueAddr
-          hdr = APrivHeader 3 "previous-message-hash"
       roundtripAgentMsg $ AgentServiceRequest [qInfo] "service request payload"
-      roundtripAgentMsg $ AgentServiceResponse hdr False ["first response"]
-      roundtripAgentMsg $ AgentServiceResponse hdr True ["r1", "r2", "r3"]
-      roundtripAgentMsg $ AgentRejection hdr "rejected: not allowed"
+      roundtripAgentMsg $ AgentServiceResponse "service response payload"
+      roundtripAgentMsg $ AgentRejection "rejected: not allowed"
   where
     smpEncodingTest :: (Encoding a, Eq a, Show a, HasCallStack) => a -> Expectation
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a
