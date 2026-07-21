@@ -1889,6 +1889,7 @@ data DRInvitation = DRInvitation
 data JoinRequest
   = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
   | JRInvitationDR DRInvitation
+  | JRServiceRequest {joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
   deriving (Show)
 
 data UserContactData = UserContactData
@@ -2238,8 +2239,10 @@ instance StrEncoding JoinRequest where
   strEncode = \case
     JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
+    JRServiceRequest cReq pqSup -> "S " <> strEncode (cReq, pqSup)
   strP =
-    (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
+    ("S " *> (JRServiceRequest <$> strP <*> (_strP <|> pure PQSupportOff)))
+      <|> (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
       <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))))
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)

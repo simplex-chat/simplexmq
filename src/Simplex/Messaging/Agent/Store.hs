@@ -466,7 +466,7 @@ data ConnData = ConnData
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
     pqSupport :: PQSupport,
-    serviceRequest :: Bool
+    serviceResponse :: Bool
   }
   deriving (Eq, Show)
 

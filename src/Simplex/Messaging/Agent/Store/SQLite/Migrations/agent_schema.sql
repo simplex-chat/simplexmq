@@ -29,7 +29,7 @@ CREATE TABLE connections(
   deleted_at_wait_delivery TEXT,
   pq_support INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT('1970-01-01 00:00:00'),
-  service_request INTEGER NOT NULL DEFAULT 0
+  service_response INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,

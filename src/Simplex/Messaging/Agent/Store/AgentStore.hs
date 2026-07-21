@@ -72,7 +72,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
-    setConnServiceRequest,
+    setConnServiceResponse,
     updateNewConnJoin,
     getDeletedConnIds,
     getExpiredServiceConns,
@@ -2667,7 +2667,7 @@ getConnData deleted' forUpdate db connId' =
       db
       ( [sql|
           SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_request
+            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_response
           FROM connections
           WHERE conn_id = ? AND deleted = ?
         |]
@@ -2685,8 +2685,8 @@ lockConnForUpdate db connId = do
   pure ()
 
 rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport, BoolInt) -> (ConnData, ConnectionMode)
-rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport, BI serviceRequest) =
-  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport, serviceRequest}, cMode)
+rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport, BI serviceResponse) =
+  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport, serviceResponse}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
@@ -2708,9 +2708,9 @@ setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
 setConnPQSupport db connId pqSupport =
   DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
 
-setConnServiceRequest :: DB.Connection -> ConnId -> IO ()
-setConnServiceRequest db connId =
-  DB.execute db "UPDATE connections SET service_request = 1 WHERE conn_id = ?" (Only connId)
+setConnServiceResponse :: DB.Connection -> ConnId -> IO ()
+setConnServiceResponse db connId =
+  DB.execute db "UPDATE connections SET service_response = 1 WHERE conn_id = ?" (Only connId)
 
 updateNewConnJoin :: DB.Connection -> ConnId -> VersionSMPA -> PQSupport -> Bool -> IO ()
 updateNewConnJoin db connId aVersion pqSupport enableNtfs =
@@ -2721,7 +2721,7 @@ getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connect
 
 getExpiredServiceConns :: DB.Connection -> UTCTime -> IO [ConnId]
 getExpiredServiceConns db expireTs =
-  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE service_request = 1 AND created_at < ? AND deleted = 0 AND deleted_at_wait_delivery IS NULL" (Only expireTs)
+  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE service_response = 1 AND created_at < ? AND deleted = 0 AND deleted_at_wait_delivery IS NULL" (Only expireTs)
 
 deleteExpiredServiceRequests :: DB.Connection -> UTCTime -> IO ()
 deleteExpiredServiceRequests db expireTs =

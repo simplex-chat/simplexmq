@@ -23,13 +23,13 @@ CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ra
 
 ALTER TABLE conn_invitations ADD COLUMN service_request SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE connections ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00';
-ALTER TABLE connections ADD COLUMN service_request SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN service_response SMALLINT NOT NULL DEFAULT 0;
   |]
 
 down_m20260712_address_dr_rpc :: Text
 down_m20260712_address_dr_rpc =
   [r|
-ALTER TABLE connections DROP COLUMN service_request;
+ALTER TABLE connections DROP COLUMN service_response;
 ALTER TABLE connections DROP COLUMN created_at;
 ALTER TABLE conn_invitations DROP COLUMN service_request;
 DROP INDEX idx_address_ratchet_keys;
