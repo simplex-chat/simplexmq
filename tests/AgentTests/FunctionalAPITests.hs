@@ -1358,8 +1358,8 @@ testServiceRequestRejected =
     liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
 
 -- server down, send, up, receive, down, reply, up, receive response.
--- The request send retries through the outage (NRMBackground); the reply is queued while the server is
--- down and delivered on reconnect (async reply via ICReplyDel); the requester's blocking call receives it.
+-- The request send retries the outage (bounded by serviceRequestTimeout) until the server is back; the reply is
+-- queued while the server is down and delivered on reconnect (async reply via ICReplyDel); the blocking call receives it.
 testServiceRequestResilient :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
   -- server up: create the service address
@@ -1367,8 +1367,9 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
     (_, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
     pure connReq
   ("", "", DOWN _ _) <- nGet service
-  -- server down: the client sends the request; NRMBackground retries the send until the server is back
-  reqAsync <- async $ runExceptT $ sendServiceRequest client NRMBackground 1 connReq "resilient request"
+  -- server down: the async send is enqueued as a retried JOIN command and blocks for the response
+  reqAsync <- async $ runExceptT $ sendServiceRequestAsync client 1 connReq "resilient request"
+  threadDelay 500000 -- let the enqueued send retry against the down server before bringing it up
   -- server up: the request is delivered and the service receives it
   invId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
     ("", "", UP _ _) <- nGet service

@@ -78,6 +78,7 @@ module Simplex.Messaging.Agent
     rejectContact,
     rejectContactAsync,
     sendServiceRequest,
+    sendServiceRequestAsync,
     sendServiceReply,
     sendServiceReplyAsync,
     rejectServiceRequest,
@@ -531,10 +532,15 @@ rejectServiceRequestAsync :: AgentClient -> ACorrId -> UserId -> InvitationId ->
 rejectServiceRequestAsync c corrId userId invId reason = withAgentEnv c $ rejectServiceRequestAsync' c corrId userId invId reason
 {-# INLINE rejectServiceRequestAsync #-}
 
--- | Send a service (RPC) request to an address and wait for the single response
+-- | Send a service (RPC) request to an address and wait for the single response.
+-- Sync fails fast if the server is down; async enqueues a retried send but still returns the response synchronously.
 sendServiceRequest :: AgentClient -> NetworkRequestMode -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AE MsgBody
 sendServiceRequest c nm userId cReqUri payload = withAgentEnv c $ sendServiceRequest' c nm userId cReqUri payload
 {-# INLINE sendServiceRequest #-}
+
+sendServiceRequestAsync :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AE MsgBody
+sendServiceRequestAsync c userId cReqUri payload = withAgentEnv c $ sendServiceRequestAsync' c userId cReqUri payload
+{-# INLINE sendServiceRequestAsync #-}
 
 data DatabaseDiff a = DatabaseDiff
   { missingIds :: [a],
@@ -1702,17 +1708,29 @@ prepareReply c userId invId expectedServiceRequest innerMsg = do
       | otherwise = "rejectContact: service request, use rejectServiceRequest"
 
 -- | Send a service (RPC) request to a DR-advertising address, wait for the single response up to the config timeout.
+-- Sync: the send fails fast on a down server. Async: the send is enqueued as a JOIN command retried by the worker.
+-- Both block on the reply TMVar and return the response synchronously.
 sendServiceRequest' :: AgentClient -> NetworkRequestMode -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AM MsgBody
-sendServiceRequest' c nm userId cReqUri@(CRContactUri crData _) payload = do
+sendServiceRequest' c nm userId cReqUri payload =
+  serviceRequest_ c userId cReqUri $ \connId srv ->
+    void $ joinConnSrv' c nm userId connId False cReqUri payload PQSupportOn SMSubscribe srv $ \replyQInfo -> AgentServiceRequest (replyQInfo :| []) payload
+
+sendServiceRequestAsync' :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AM MsgBody
+sendServiceRequestAsync' c userId cReqUri payload =
+  serviceRequest_ c userId cReqUri $ \connId _srv ->
+    enqueueCommand c "" connId Nothing $ AClientCommand $ JOIN (JRConnReq False (ACR SCMContact cReqUri) PQSupportOn) SMSubscribe payload
+
+serviceRequest_ :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> (ConnId -> SMPServerWithAuth -> AM ()) -> AM MsgBody
+serviceRequest_ c userId cReqUri@(CRContactUri crData _) doSend = do
   connId <- newConnToJoin c userId "" False cReqUri PQSupportOn
   ts <- liftIO getCurrentTime
-  withStore' c $ \db -> setConnServiceReply db connId ts
+  withStore' c $ \db -> setConnServiceReply db connId ts -- created_at marks the reply queue; the JOIN worker uses it to send AgentServiceRequest
   var <- atomically newEmptyTMVar
   atomically $ TM.insert connId var (serviceRequests c)
   srv <- getNextSMPServer c userId [qServer $ L.head $ crSmpQueues crData]
   reqTimeout <- asks $ serviceRequestTimeout . config
   r <- tryError $ do
-    void $ joinConnSrv' c nm userId connId False cReqUri "" PQSupportOn SMSubscribe srv $ \replyQInfo -> AgentServiceRequest (replyQInfo :| []) payload
+    doSend connId srv
     liftIO $ do
       expired <- registerDelay $ round (reqTimeout * 1000000)
       atomically $ takeTMVar var `orElse` (readTVar expired >>= \e -> if e then pure (Left $ AGENT $ A_SERVICE ASETimeout) else retry)
@@ -2139,8 +2157,11 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
-            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv
-            notify $ JOINED sqSecured
+            SomeConn _ conn <- withStore c (`getConn` connId)
+            -- a service (RPC) request reuses this JOIN command; the reply queue's created_at marks it (serviceReply)
+            if serviceReply (toConnData conn)
+              then void $ joinConnSrv' c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv $ \replyQInfo -> AgentServiceRequest (replyQInfo :| []) connInfo
+              else joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv >>= notify . JOINED
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
