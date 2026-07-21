@@ -568,15 +568,16 @@ createSndConn db gVar cData q@SndQueue {server} =
       insertSndQueue_ db connId q serverKeyHash_
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
-createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport} cMode =
+createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport} cMode = do
+  createdAt <- getCurrentTime
   DB.execute
     db
     [sql|
       INSERT INTO connections
         (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, duplex_handshake, created_at)
-        VALUES (?,?,?,?,?,?,?, CURRENT_TIMESTAMP)
+        VALUES (?,?,?,?,?,?,?,?)
     |]
-    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True)
+    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True, createdAt)
 
 deleteConnRecord :: DB.Connection -> ConnId -> IO ()
 deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
@@ -2629,7 +2630,7 @@ getConnsData_ deleted' db connIds =
       db
       [sql|
         SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
+          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_response
         FROM connections
         WHERE conn_id IN ? AND deleted = ?
       |]
