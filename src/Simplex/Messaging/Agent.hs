@@ -1715,7 +1715,8 @@ sendServiceRequestAsync' c userId cReqUri payload =
     enqueueCommand c "" connId Nothing $ AClientCommand $ JOIN (JRServiceRequest (ACR SCMContact cReqUri) PQSupportOn) SMSubscribe payload
 
 serviceRequest_ :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> (ConnId -> AM ()) -> AM MsgBody
-serviceRequest_ c userId cReqUri doSend = do
+serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) doSend = do
+  when (isNothing addrKeys_) $ throwE $ AGENT $ A_SERVICE ASENotDRAddress
   connId <- newConnToJoin c userId "" False cReqUri PQSupportOn
   withStore' c $ \db -> setConnServiceResponse db connId
   var <- atomically newEmptyTMVar
@@ -2206,10 +2207,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           void $ enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
         ICReplyDel -> withServer' . tryWithLock "ICReplyDel" $
           withStore c (`getConn` connId) >>= \case
-            SomeConn _ (SndConnection cData sq) -> do
-              void $ agentSecureSndQueue c NRMBackground cData sq
-              lift $ submitPendingMsg c sq
-              deleteConnectionAsync' c True connId
+            SomeConn _ (SndConnection cData sq) -> sendReplySync c NRMBackground (connId, cData, sq)
             _ -> throwE $ INTERNAL "ICReplyDel: incorrect connection type"
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)

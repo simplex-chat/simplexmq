@@ -2206,6 +2206,7 @@ data AgentServiceError
   = ASERejected {rejectReason :: String}
   | ASETimeout
   | ASENoPendingRequest
+  | ASENotDRAddress
   deriving (Eq, Show)
 
 data AgentCryptoError
