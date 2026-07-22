@@ -347,35 +347,36 @@ functionalAPITests ps = do
     testRatchetMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix3 ps $ runAgentClientContactTestPQ3 True
-  describe "Establish duplex connection via contact address with DR" $
-    testContactDRMatrix ps
-  describe "Establish duplex connection creating contact address with DR" $ do
-    it "createConnection, IKPQOn" $ runCreateConnectionDRTest_ False IKPQOn PQSupportOn ps
-    it "createConnection, IKUsePQ" $ runCreateConnectionDRTest_ False IKUsePQ PQSupportOn ps
-    it "createConnectionAsync, IKPQOn" $ runCreateConnectionDRTest_ True IKPQOn PQSupportOn ps
-    it "createConnectionAsync, IKUsePQ" $ runCreateConnectionDRTest_ True IKUsePQ PQSupportOn ps
-  it "should preserve address DR keys when the link data is updated" $
-    testAddressUpdatePreservesDRKeys ps
-  it "should rotate address DR keys, keeping old keys for stale requesters until pruned" $
-    testAddressKeyRotation ps
-  it "should add DR keys to an existing address via setConnShortLink" $
-    testAddDRViaSetConnShortLink ps
-  it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
-    testAcceptContactDRResumeAfterOffline ps
-  it "should support rejecting contact request" $
-    withSmpServer ps testRejectContactRequest
-  it "should communicate rejection reason via double ratchet" $
-    withSmpServer ps testRejectContactRequestDR
-  it "should communicate rejection reason via double ratchet (async)" $
-    withSmpServer ps testRejectContactRequestDRAsync
-  it "should send a service request and receive the response" $
-    withSmpServer ps testServiceRequestResponse
-  it "should send a service request and receive the response (async reply)" $
-    withSmpServer ps testServiceRequestResponseAsync
-  it "should reject a service request with a reason" $
-    withSmpServer ps testServiceRequestRejected
-  it "should deliver a service response across server outages" $
-    testServiceRequestResilient ps
+  describe "contact address with DR" $ do
+    describe "Establish duplex connection via contact address with DR" $
+      testContactDRMatrix ps
+    describe "Establish duplex connection creating contact address with DR" $ do
+      it "createConnection, IKPQOn" $ runCreateConnectionDRTest_ False IKPQOn PQSupportOn ps
+      it "createConnection, IKUsePQ" $ runCreateConnectionDRTest_ False IKUsePQ PQSupportOn ps
+      it "createConnectionAsync, IKPQOn" $ runCreateConnectionDRTest_ True IKPQOn PQSupportOn ps
+      it "createConnectionAsync, IKUsePQ" $ runCreateConnectionDRTest_ True IKUsePQ PQSupportOn ps
+    it "should preserve address DR keys when the link data is updated" $
+      testAddressUpdatePreservesDRKeys ps
+    it "should rotate address DR keys, keeping old keys for stale requesters until pruned" $
+      testAddressKeyRotation ps
+    it "should add DR keys to an existing address via setConnShortLink" $
+      testAddDRViaSetConnShortLink ps
+    it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
+      testAcceptContactDRResumeAfterOffline ps
+    it "should support rejecting contact request" $
+      withSmpServer ps testRejectContactRequest
+    it "should communicate rejection reason via double ratchet" $
+      withSmpServer ps testRejectContactRequestDR
+    it "should communicate rejection reason via double ratchet (async)" $
+      withSmpServer ps testRejectContactRequestDRAsync
+    it "should send a service request and receive the response" $
+      withSmpServer ps testServiceRequestResponse
+    it "should send a service request and receive the response (async reply)" $
+      withSmpServer ps testServiceRequestResponseAsync
+    it "should reject a service request with a reason" $
+      withSmpServer ps testServiceRequestRejected
+    it "should deliver a service response across server outages" $
+      testServiceRequestResilient ps
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId

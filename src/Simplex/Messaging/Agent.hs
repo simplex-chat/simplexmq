@@ -1643,34 +1643,32 @@ acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode
   pure r
 
 rejectContact' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
-rejectContact' c nm userId invId reason_ = do
-  forM_ reason_ $ \reason -> sendReplySync c nm =<< prepareReply c userId invId False (AgentRejection reason)
-  withStore' c $ \db -> deleteInvitation db invId
+rejectContact' c = rejectRequest_ c False . sendReplySync c
 
 rejectContactAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AM ()
-rejectContactAsync' c corrId userId invId reason_ = do
-  forM_ reason_ $ \reason -> sendReplyAsync c corrId =<< prepareReply c userId invId False (AgentRejection reason)
-  withStore' c $ \db -> deleteInvitation db invId
+rejectContactAsync' c = rejectRequest_ c False . sendReplyAsync c
 
 rejectServiceRequest' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
-rejectServiceRequest' c nm userId invId reason_ = do
-  forM_ reason_ $ \reason -> sendReplySync c nm =<< prepareReply c userId invId True (AgentRejection reason)
-  withStore' c $ \db -> deleteInvitation db invId
+rejectServiceRequest' c = rejectRequest_ c True . sendReplySync c
 
 rejectServiceRequestAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AM ()
-rejectServiceRequestAsync' c corrId userId invId reason_ = do
-  forM_ reason_ $ \reason -> sendReplyAsync c corrId =<< prepareReply c userId invId True (AgentRejection reason)
-  withStore' c $ \db -> deleteInvitation db invId
+rejectServiceRequestAsync' c = rejectRequest_ c True . sendReplyAsync c
+
+rejectRequest_ :: AgentClient -> Bool -> ((ConnId, ConnData, SndQueue) -> AM ()) -> UserId -> InvitationId -> Maybe ByteString -> AM ()
+rejectRequest_ c serviceRequest sendReply userId invId reason_ = do
+  mapM_ ((sendReply =<<) . prepareReply c userId invId serviceRequest . AgentRejection) reason_
+  withStore' c (`deleteInvitation` invId)
 
 sendServiceReply' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AM ()
-sendServiceReply' c nm userId invId payload = do
-  sendReplySync c nm =<< prepareReply c userId invId True (AgentServiceResponse payload)
-  withStore' c $ \db -> deleteInvitation db invId
+sendServiceReply' c = replyRequest_ c . sendReplySync c
 
 sendServiceReplyAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> MsgBody -> AM ()
-sendServiceReplyAsync' c corrId userId invId payload = do
-  sendReplyAsync c corrId =<< prepareReply c userId invId True (AgentServiceResponse payload)
-  withStore' c $ \db -> deleteInvitation db invId
+sendServiceReplyAsync' c = replyRequest_ c . sendReplyAsync c
+
+replyRequest_ :: AgentClient -> ((ConnId, ConnData, SndQueue) -> AM ()) -> UserId -> InvitationId -> MsgBody -> AM ()
+replyRequest_ c sendReply userId invId resp = do
+  sendReply =<< prepareReply c userId invId True (AgentServiceResponse resp)
+  withStore' c (`deleteInvitation` invId)
 
 sendReplySync :: AgentClient -> NetworkRequestMode -> (ConnId, ConnData, SndQueue) -> AM ()
 sendReplySync c nm (connId, cData, sq) = do
@@ -1682,10 +1680,10 @@ sendReplyAsync :: AgentClient -> ACorrId -> (ConnId, ConnData, SndQueue) -> AM (
 sendReplyAsync c corrId (connId, _, sq) = enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReplyDel
 
 prepareReply :: AgentClient -> UserId -> InvitationId -> Bool -> AgentMessage -> AM (ConnId, ConnData, SndQueue)
-prepareReply c userId invId expectedServiceRequest innerMsg = do
+prepareReply c userId invId serviceRequest' innerMsg = do
   Invitation {connReq, serviceRequest, createdAt} <- withStore c $ \db -> getInvitation db "prepareReply" invId
-  when (serviceRequest /= expectedServiceRequest) $ throwE $ CMD PROHIBITED kindErr
-  when expectedServiceRequest $ do
+  when (serviceRequest /= serviceRequest') $ throwE $ CMD PROHIBITED kindErr
+  when serviceRequest' $ do
     now <- liftIO getCurrentTime
     responseTimeout <- asks $ serviceResponseTimeout . config
     when (diffUTCTime now createdAt > responseTimeout) $ do
@@ -1700,7 +1698,7 @@ prepareReply c userId invId expectedServiceRequest innerMsg = do
       pure (connId, cData, sq)
   where
     kindErr
-      | expectedServiceRequest = "reply: not a service request, use rejectContact"
+      | serviceRequest' = "reply: not a service request, use rejectContact"
       | otherwise = "rejectContact: service request, use rejectServiceRequest"
 
 sendServiceRequest' :: AgentClient -> NetworkRequestMode -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AM MsgBody
@@ -2148,19 +2146,20 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         -- Currently joinConnSrv is used because even joinConnSrvAsync for invitation URIs creates receive queue synchronously.
         JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
-          tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv ->
-            joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv >>= notify . JOINED
+          tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
+            sqSecured <- joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv
+            notify $ JOINED sqSecured
         JOIN (JRServiceReq cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv ->
             atomically (TM.lookup connId (serviceRequests c)) >>= \case
               Nothing -> pure ()
-              Just var ->
-                tryError (void $ joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv $ \replyQInfo -> AgentServiceRequest (replyQInfo :| []) connInfo) >>= \case
-                  Right () -> pure ()
-                  Left e
-                    | temporaryOrHostError e -> throwE e
-                    | otherwise -> atomically $ void $ tryPutTMVar var $ Left e
+              Just v ->
+                void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv $ \replyQInfo -> AgentServiceRequest (replyQInfo :| []) connInfo)
+                  `catchAllErrors` \e ->
+                    if temporaryOrHostError e
+                      then throwE e
+                      else atomically $ void $ tryPutTMVar v $ Left e -- will not overwrite existing result
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->
