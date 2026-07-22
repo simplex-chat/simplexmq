@@ -482,7 +482,7 @@ changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConne
 -- Instead of it we could send confirmation asynchronously, but then it would be harder to report
 -- "link deleted" (SMP AUTH) interactively, so this approach is simpler overall.
 prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE ConnId
-prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs
+prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs False
 {-# INLINE prepareConnectionToJoin #-}
 
 -- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
@@ -1369,8 +1369,8 @@ newQueueNtfSubscription c RcvQueue {userId, connId, server, clientNtfCreds} ntfS
   ns <- asks ntfSupervisor
   liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
 
-newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> PQSupport -> AM ConnId
-newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
+newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Bool -> ConnectionRequestUri c -> PQSupport -> AM ConnId
+newConnToJoin c userId connId enableNtfs serviceResponse cReq pqSup = case cReq of
   CRInvitationUri {} ->
     lift (compatibleInvitationUri cReq) >>= \case
       Just (_, Compatible (CR.E2ERatchetParams v _ _ _), aVersion) -> create aVersion (Just v)
@@ -1384,14 +1384,14 @@ newConnToJoin c userId connId enableNtfs cReq pqSup = case cReq of
     create (Compatible connAgentVersion) e2eV_ = do
       g <- asks random
       let pqSupport = pqSup `CR.pqSupportAnd` versionPQSupport_ connAgentVersion e2eV_
-          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceResponse = False}
+          cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceResponse}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
 newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
 newConnToAccept c userId connId enableNtfs invId pqSup = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   case connReq of
-    CRInvitation cReq -> newConnToJoin c userId connId enableNtfs cReq pqSup
+    CRInvitation cReq -> newConnToJoin c userId connId enableNtfs False cReq pqSup
     CRInvitationDR DRInvitation {agentVersion, pqSupport} -> do
       g <- asks random
       let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceResponse = False}
@@ -1717,8 +1717,7 @@ sendServiceRequestAsync' c userId cReqUri payload =
 serviceRequest_ :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> (ConnId -> AM ()) -> AM MsgBody
 serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) doSend = do
   when (isNothing addrKeys_) $ throwE $ AGENT $ A_SERVICE ASENotDRAddress
-  connId <- newConnToJoin c userId "" False cReqUri PQSupportOn
-  withStore' c $ \db -> setConnServiceResponse db connId
+  connId <- newConnToJoin c userId "" False True cReqUri PQSupportOn
   var <- atomically newEmptyTMVar
   atomically $ TM.insert connId var (serviceRequests c)
   reqTimeout <- asks $ serviceRequestTimeout . config

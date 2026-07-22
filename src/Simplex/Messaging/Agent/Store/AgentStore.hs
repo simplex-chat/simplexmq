@@ -72,7 +72,6 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setConnUserId,
     setConnAgentVersion,
     setConnPQSupport,
-    setConnServiceResponse,
     updateNewConnJoin,
     getDeletedConnIds,
     getExpiredServiceConns,
@@ -568,16 +567,16 @@ createSndConn db gVar cData q@SndQueue {server} =
       insertSndQueue_ db connId q serverKeyHash_
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
-createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport} cMode = do
+createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport, serviceResponse} cMode = do
   createdAt <- getCurrentTime
   DB.execute
     db
     [sql|
       INSERT INTO connections
-        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, duplex_handshake, created_at)
-        VALUES (?,?,?,?,?,?,?,?)
+        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, service_response, duplex_handshake, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
     |]
-    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True, createdAt)
+    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI serviceResponse, BI True, createdAt)
 
 deleteConnRecord :: DB.Connection -> ConnId -> IO ()
 deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
@@ -2708,10 +2707,6 @@ setConnAgentVersion db connId aVersion =
 setConnPQSupport :: DB.Connection -> ConnId -> PQSupport -> IO ()
 setConnPQSupport db connId pqSupport =
   DB.execute db "UPDATE connections SET pq_support = ? WHERE conn_id = ?" (pqSupport, connId)
-
-setConnServiceResponse :: DB.Connection -> ConnId -> IO ()
-setConnServiceResponse db connId =
-  DB.execute db "UPDATE connections SET service_response = 1 WHERE conn_id = ?" (Only connId)
 
 updateNewConnJoin :: DB.Connection -> ConnId -> VersionSMPA -> PQSupport -> Bool -> IO ()
 updateNewConnJoin db connId aVersion pqSupport enableNtfs =
