@@ -1712,7 +1712,7 @@ sendServiceRequest' c nm userId cReqUri@(CRContactUri crData _) payload =
 sendServiceRequestAsync' :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> MsgBody -> AM MsgBody
 sendServiceRequestAsync' c userId cReqUri payload =
   serviceRequest_ c userId cReqUri $ \connId ->
-    enqueueCommand c "" connId Nothing $ AClientCommand $ JOIN (JRServiceRequest (ACR SCMContact cReqUri) PQSupportOn) SMSubscribe payload
+    enqueueCommand c "" connId Nothing $ AClientCommand $ JOIN (JRServiceReq cReqUri PQSupportOn) SMSubscribe payload
 
 serviceRequest_ :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> (ConnId -> AM ()) -> AM MsgBody
 serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) doSend = do
@@ -2150,7 +2150,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv ->
             joinConnSrv c NRMBackground userId connId enableNtfs cReq connInfo pqEnc subMode srv >>= notify . JOINED
-        JOIN (JRServiceRequest (ACR _ cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
+        JOIN (JRServiceReq cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv ->
             atomically (TM.lookup connId (serviceRequests c)) >>= \case
@@ -2161,7 +2161,6 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                   Left e
                     | temporaryOrHostError e -> throwE e
                     | otherwise -> atomically $ void $ tryPutTMVar var $ Left e
-        JOIN (JRServiceRequest (ACR _ (CRInvitationUri _ _)) _) _ _ -> internalErr "JOIN: service request requires contact address"
         LET confId ownCInfo -> withServer' . tryCommand $ allowConnection' c connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryCommand $ ackMessage' c connId msgId rcptInfo_ >> notify OK
         SWCH ->

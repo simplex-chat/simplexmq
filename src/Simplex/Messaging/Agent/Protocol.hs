@@ -1888,8 +1888,8 @@ data DRInvitation = DRInvitation
 
 data JoinRequest
   = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
+  | JRServiceReq {conntactReq :: ConnectionRequestUri 'CMContact, joinPQSupport :: PQSupport}
   | JRInvitationDR DRInvitation
-  | JRServiceRequest {joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
   deriving (Show)
 
 data UserContactData = UserContactData
@@ -2239,10 +2239,10 @@ $(J.deriveJSON defaultJSON ''DRInvitation)
 instance StrEncoding JoinRequest where
   strEncode = \case
     JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
+    JRServiceReq cReq pqSup -> strEncode ('S', cReq, pqSup)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
-    JRServiceRequest cReq pqSup -> "S " <> strEncode (cReq, pqSup)
   strP =
-    ("S " *> (JRServiceRequest <$> strP <*> (_strP <|> pure PQSupportOff)))
+    (A.char 'S' *> (JRServiceReq <$> _strP <*> _strP))
       <|> (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
       <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))))
 
