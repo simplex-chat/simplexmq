@@ -384,11 +384,11 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     proxySessTs :: TVar UTCTime,
+    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody)),
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
     ntfServersStats :: TMap (UserId, NtfServer) AgentNtfServerStats,
-    srvStatsStartedAt :: TVar UTCTime,
-    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody))
+    srvStatsStartedAt :: TVar UTCTime
   }
 
 data SMPConnectedClient = SMPConnectedClient
@@ -548,11 +548,11 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
   invLocks <- TM.emptyIO
   deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
+  serviceRequests <- TM.emptyIO
   smpServersStats <- TM.emptyIO
   xftpServersStats <- TM.emptyIO
   ntfServersStats <- TM.emptyIO
   srvStatsStartedAt <- newTVarIO currentTs
-  serviceRequests <- TM.emptyIO
   return
     AgentClient
       { acThread,
@@ -594,11 +594,11 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
         clientId,
         agentEnv,
         proxySessTs,
+        serviceRequests,
         smpServersStats,
         xftpServersStats,
         ntfServersStats,
-        srvStatsStartedAt,
-        serviceRequests
+        srvStatsStartedAt
       }
 
 slowNetworkConfig :: NetworkConfig -> NetworkConfig
