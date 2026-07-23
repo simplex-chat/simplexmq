@@ -415,7 +415,7 @@ data AEvent (e :: AEntity) where
   LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
-  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
+  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
   SREQ :: InvitationId -> MsgBody -> AEvent AEConn
   RJCT :: ConnInfo -> AEvent AEConn
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn

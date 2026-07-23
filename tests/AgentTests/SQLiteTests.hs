@@ -199,7 +199,7 @@ cData1 =
       deleted = False,
       ratchetSyncState = RSOk,
       pqSupport = CR.PQSupportOn,
-      serviceResponse = False
+      serviceRequestExpiresAt = Nothing
     }
 
 testPrivateAuthKey :: C.APrivateAuthKey

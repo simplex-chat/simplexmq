@@ -466,7 +466,8 @@ data ConnData = ConnData
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
     pqSupport :: PQSupport,
-    serviceResponse :: Bool
+    -- client side: set on the requester's connection for a service request; Nothing otherwise. The time the client stops waiting for the response (created + serviceRequestTimeout or per-call override).
+    serviceRequestExpiresAt :: Maybe UTCTime
   }
   deriving (Eq, Show)
 
@@ -638,6 +639,7 @@ data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
     connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
+    -- service side: the received request is a service request (SREQ) not a contact request (REQ)
     serviceRequest :: Bool
   }
 
@@ -648,6 +650,7 @@ data Invitation = Invitation
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
     accepted :: Bool,
+    -- service side: the received request is a service request (SREQ) not a contact request (REQ)
     serviceRequest :: Bool,
     createdAt :: UTCTime
   }

@@ -21,15 +21,15 @@ CREATE TABLE address_ratchet_keys(
 
 CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(conn_id, ratchet_key_id);
 
-ALTER TABLE conn_invitations ADD COLUMN service_request SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE conn_invitations ADD COLUMN service_request SMALLINT NOT NULL DEFAULT 0; -- service side: received request is a service request (SREQ) not a contact request (REQ)
 ALTER TABLE connections ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00';
-ALTER TABLE connections ADD COLUMN service_response SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE connections ADD COLUMN service_request_expires_at TIMESTAMPTZ; -- client side: requester's outstanding service request; the time the client stops waiting for the response
   |]
 
 down_m20260712_address_dr_rpc :: Text
 down_m20260712_address_dr_rpc =
   [r|
-ALTER TABLE connections DROP COLUMN service_response;
+ALTER TABLE connections DROP COLUMN service_request_expires_at;
 ALTER TABLE connections DROP COLUMN created_at;
 ALTER TABLE conn_invitations DROP COLUMN service_request;
 DROP INDEX idx_address_ratchet_keys;

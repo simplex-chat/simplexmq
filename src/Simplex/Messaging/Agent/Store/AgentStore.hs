@@ -567,16 +567,16 @@ createSndConn db gVar cData q@SndQueue {server} =
       insertSndQueue_ db connId q serverKeyHash_
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
-createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport, serviceResponse} cMode = do
+createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport, serviceRequestExpiresAt} cMode = do
   createdAt <- getCurrentTime
   DB.execute
     db
     [sql|
       INSERT INTO connections
-        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, service_response, duplex_handshake, created_at)
+        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, service_request_expires_at, duplex_handshake, created_at)
         VALUES (?,?,?,?,?,?,?,?,?)
     |]
-    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI serviceResponse, BI True, createdAt)
+    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, serviceRequestExpiresAt, BI True, createdAt)
 
 deleteConnRecord :: DB.Connection -> ConnId -> IO ()
 deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
@@ -2629,7 +2629,7 @@ getConnsData_ deleted' db connIds =
       db
       [sql|
         SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_response
+          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_request_expires_at
         FROM connections
         WHERE conn_id IN ? AND deleted = ?
       |]
@@ -2667,7 +2667,7 @@ getConnData deleted' forUpdate db connId' =
       db
       ( [sql|
           SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_response
+            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_request_expires_at
           FROM connections
           WHERE conn_id = ? AND deleted = ?
         |]
@@ -2684,9 +2684,9 @@ lockConnForUpdate db connId = do
 #endif
   pure ()
 
-rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport, BoolInt) -> (ConnData, ConnectionMode)
-rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport, BI serviceResponse) =
-  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport, serviceResponse}, cMode)
+rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport, Maybe UTCTime) -> (ConnData, ConnectionMode)
+rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport, serviceRequestExpiresAt) =
+  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport, serviceRequestExpiresAt}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
@@ -2716,8 +2716,8 @@ getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only (BI True))
 
 getExpiredServiceConns :: DB.Connection -> UTCTime -> IO [ConnId]
-getExpiredServiceConns db expireTs =
-  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE service_response = 1 AND created_at < ? AND deleted = 0 AND deleted_at_wait_delivery IS NULL" (Only expireTs)
+getExpiredServiceConns db now =
+  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE service_request_expires_at < ? AND deleted = 0 AND deleted_at_wait_delivery IS NULL" (Only now)
 
 deleteExpiredServiceRequests :: DB.Connection -> UTCTime -> IO ()
 deleteExpiredServiceRequests db expireTs =

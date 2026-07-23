@@ -243,7 +243,7 @@ CREATE TABLE smp_agent_test_protocol_schema.connections (
     deleted_at_wait_delivery timestamp with time zone,
     pq_support smallint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+01'::timestamp with time zone NOT NULL,
-    service_response smallint DEFAULT 0 NOT NULL
+    service_request_expires_at timestamp with time zone
 );
 
 
