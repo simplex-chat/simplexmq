@@ -1330,7 +1330,9 @@ testServiceRequestResponse =
       (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing "service request")
       (runRight_ $ do
         ("", _, SREQ invId "service request") <- get service
-        sendServiceReply service NRMInteractive 1 invId "service response")
+        replyConnId <- sendServiceReply service NRMInteractive 1 invId "service response"
+        ("", sentConnId, A.SENT _ _) <- get service
+        liftIO $ sentConnId `shouldBe` replyConnId)
     liftIO $ resp `shouldBe` "service response"
     liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
 
@@ -1342,7 +1344,9 @@ testServiceRequestResponseAsync =
       (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing "service request")
       (runRight_ $ do
         ("", _, SREQ invId "service request") <- get service
-        sendServiceReplyAsync service "1" 1 invId "service response")
+        replyConnId <- sendServiceReplyAsync service "1" 1 invId "service response"
+        ("", sentConnId, A.SENT _ _) <- get service
+        liftIO $ sentConnId `shouldBe` replyConnId)
     liftIO $ resp `shouldBe` "service response"
     liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
 
@@ -1378,9 +1382,13 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
     pure invId :: ExceptT AgentErrorType IO InvitationId
   ("", "", DOWN _ _) <- nGet service
   -- server down: the service replies; the async reply is enqueued and retried until the server is back
-  runRight_ $ sendServiceReplyAsync service "1" 1 invId "resilient response"
-  -- server up: the reply is delivered and the requester's blocking call returns the response
-  resp <- withSmpServerStoreLogOn ps testPort $ \_ -> wait reqAsync
+  replyConnId <- runRight $ sendServiceReplyAsync service "1" 1 invId "resilient response"
+  -- server up: the reply is delivered, the requester's blocking call returns the response, the service gets SENT
+  resp <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+    ("", "", UP _ _) <- nGet service
+    ("", sentConnId, A.SENT _ _) <- get service
+    sentConnId `shouldBe` replyConnId
+    wait reqAsync
   resp `shouldBe` Right "resilient response"
 
 testUpdateConnectionUserId :: HasCallStack => IO ()

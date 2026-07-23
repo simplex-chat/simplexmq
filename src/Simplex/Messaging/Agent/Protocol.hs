@@ -2203,7 +2203,7 @@ data SMPAgentError
   deriving (Eq, Show, Exception)
 
 data AgentServiceError
-  = ASERejected {rejectReason :: String}
+  = ASERejected {rejectReason :: Text}
   | ASETimeout
   | ASENoPendingRequest
   | ASENotDRAddress
