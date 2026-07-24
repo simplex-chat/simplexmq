@@ -342,8 +342,11 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
--- Do not enable, to avoid leaking key data
--- instance StrEncoding (PrivateKey Ed25519) where
+instance StrEncoding (PrivateKey Ed25519) where
+  strEncode = strEncode . encodePrivKey
+  {-# INLINE strEncode #-}
+  strDecode = decodePrivKey
+  {-# INLINE strDecode #-}
 
 -- Used in notification store log
 instance StrEncoding (PrivateKey X25519) where

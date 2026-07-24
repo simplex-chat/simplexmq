@@ -355,7 +355,7 @@ connectionRequestTests =
       restoreShortLink [presetSrv] inv' `shouldBe` inv
     it "should serialize and parse service RPC agent messages" $ do
       let qInfo = SMPQueueInfo currentSMPClientVersion queueAddr
-      smpEncodingTest $ AgentServiceRequest [qInfo] "service request payload"
+      smpEncodingTest $ AgentServiceRequest [qInfo] Nothing "service request payload"
       smpEncodingTest $ AgentServiceResponse "service response payload"
       smpEncodingTest $ AgentRejection "rejected: not allowed"
   where

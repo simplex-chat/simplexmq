@@ -375,6 +375,10 @@ functionalAPITests ps = do
       withSmpServer ps testServiceRequestResponseAsync
     it "should reject a service request with a reason" $
       withSmpServer ps testServiceRequestRejected
+    it "should verify a signed service request" $
+      withSmpServer ps testSignedServiceRequest
+    it "should verify a signed service request (async)" $
+      withSmpServer ps testSignedServiceRequestAsync
     it "should deliver a service response across server outages" $
       testServiceRequestResilient ps
   describe "Changing connection user id" $ do
@@ -1327,9 +1331,9 @@ testServiceRequestResponse =
   withAgentClients2 $ \service client -> runRight_ $ do
     (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
     resp <- liftIO $ fst <$> concurrently
-      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing "service request")
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing Nothing "service request")
       (runRight_ $ do
-        ("", _, SREQ invId "service request") <- get service
+        ("", _, SREQ invId _ "service request") <- get service
         replyConnId <- sendServiceReply service NRMInteractive 1 invId "service response"
         ("", sentConnId, A.SSENT _ _) <- get service
         liftIO $ sentConnId `shouldBe` replyConnId)
@@ -1341,9 +1345,9 @@ testServiceRequestResponseAsync =
   withAgentClients2 $ \service client -> runRight_ $ do
     (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
     resp <- liftIO $ fst <$> concurrently
-      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing "service request")
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing Nothing "service request")
       (runRight_ $ do
-        ("", _, SREQ invId "service request") <- get service
+        ("", _, SREQ invId _ "service request") <- get service
         replyConnId <- sendServiceReplyAsync service "1" 1 invId "service response"
         ("", sentConnId, A.SSENT _ _) <- get service
         liftIO $ sentConnId `shouldBe` replyConnId)
@@ -1355,11 +1359,41 @@ testServiceRequestRejected =
   withAgentClients2 $ \service client -> runRight_ $ do
     (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
     resp <- liftIO $ fst <$> concurrently
-      (runExceptT $ sendServiceRequest client NRMInteractive 1 connReq Nothing "service request")
+      (runExceptT $ sendServiceRequest client NRMInteractive 1 connReq Nothing Nothing "service request")
       (runRight_ $ do
-        ("", _, SREQ invId "service request") <- get service
+        ("", _, SREQ invId _ "service request") <- get service
         rejectServiceRequest service NRMInteractive 1 invId (Just "not allowed"))
     liftIO $ resp `shouldBe` Left (AGENT (A_SERVICE (ASERejected "not allowed")))
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testSignedServiceRequest :: HasCallStack => IO ()
+testSignedServiceRequest =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    g <- liftIO C.newRandom
+    (signPub, signPriv) <- liftIO $ atomically $ C.generateKeyPair g
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing (Just signPriv) "signed request")
+      (runRight_ $ do
+        ("", _, SREQ invId sigKey_ "signed request") <- get service
+        liftIO $ sigKey_ `shouldBe` Just signPub
+        void $ sendServiceReply service NRMInteractive 1 invId "service response")
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testSignedServiceRequestAsync :: HasCallStack => IO ()
+testSignedServiceRequestAsync =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    g <- liftIO C.newRandom
+    (signPub, signPriv) <- liftIO $ atomically $ C.generateKeyPair g
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequestAsync client 1 connReq Nothing (Just signPriv) "signed request")
+      (runRight_ $ do
+        ("", _, SREQ invId sigKey_ "signed request") <- get service
+        liftIO $ sigKey_ `shouldBe` Just signPub
+        void $ sendServiceReply service NRMInteractive 1 invId "service response")
+    liftIO $ resp `shouldBe` "service response"
     liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
 
 -- server down, send, up, receive, down, reply, up, receive response.
@@ -1373,12 +1407,12 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
     pure connReq
   ("", "", DOWN _ _) <- nGet service
   -- server down: the async send is enqueued as a retried JOIN command and blocks for the response
-  reqAsync <- async $ runExceptT $ sendServiceRequestAsync client 1 connReq Nothing "resilient request"
+  reqAsync <- async $ runExceptT $ sendServiceRequestAsync client 1 connReq Nothing Nothing "resilient request"
   threadDelay 500000 -- let the enqueued send retry against the down server before bringing it up
   -- server up: the request is delivered and the service receives it
   invId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
     ("", "", UP _ _) <- nGet service
-    ("", _, SREQ invId "resilient request") <- get service
+    ("", _, SREQ invId _ "resilient request") <- get service
     pure invId :: ExceptT AgentErrorType IO InvitationId
   ("", "", DOWN _ _) <- nGet service
   -- server down: the service replies; the async reply is enqueued and retried until the server is back

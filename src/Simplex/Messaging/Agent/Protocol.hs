@@ -83,6 +83,7 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
+    RequestSignature (..),
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
@@ -416,7 +417,7 @@ data AEvent (e :: AEntity) where
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
-  SREQ :: InvitationId -> MsgBody -> AEvent AEConn
+  SREQ :: InvitationId -> Maybe C.PublicKeyEd25519 -> MsgBody -> AEvent AEConn
   SSENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
   RJCT :: ConnInfo -> AEvent AEConn
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
@@ -915,6 +916,13 @@ instance Encoding AgentMsgEnvelope where
         pure AgentRatchetKey {agentVersion, e2eEncryption, info}
       _ -> fail "bad AgentMsgEnvelope"
 
+data RequestSignature = RequestSignature C.PublicKeyEd25519 (C.Signature 'C.Ed25519)
+  deriving (Eq, Show)
+
+instance Encoding RequestSignature where
+  smpEncode (RequestSignature k sig) = smpEncode (k, sig)
+  smpP = RequestSignature <$> smpP <*> smpP
+
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
 -- AgentRatchetInfo is not encrypted with double ratchet, but with per-queue E2E encryption
@@ -926,7 +934,7 @@ data AgentMessage
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
-  | AgentServiceRequest (NonEmpty SMPQueueInfo) MsgBody
+  | AgentServiceRequest (NonEmpty SMPQueueInfo) (Maybe RequestSignature) MsgBody
   | AgentServiceResponse MsgBody
   | AgentRejection ByteString
   deriving (Show)
@@ -937,7 +945,7 @@ instance Encoding AgentMessage where
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
     AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
-    AgentServiceRequest qs body -> smpEncode ('A', qs, Tail body)
+    AgentServiceRequest qs sig_ body -> smpEncode ('A', qs, sig_, Tail body)
     AgentServiceResponse body -> smpEncode ('P', Tail body)
     AgentRejection reason -> smpEncode ('J', Tail reason)
   smpP =
@@ -946,7 +954,7 @@ instance Encoding AgentMessage where
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
       'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
-      'A' -> AgentServiceRequest <$> smpP <*> (unTail <$> smpP)
+      'A' -> AgentServiceRequest <$> smpP <*> smpP <*> (unTail <$> smpP)
       'P' -> AgentServiceResponse . unTail <$> smpP
       'J' -> AgentRejection . unTail <$> smpP
       _ -> fail "bad AgentMessage"
@@ -1891,7 +1899,7 @@ data DRInvitation = DRInvitation
 
 data JoinRequest
   = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
-  | JRServiceReq {contactReq :: ConnectionRequestUri 'CMContact, joinPQSupport :: PQSupport}
+  | JRServiceReq {contactReq :: ConnectionRequestUri 'CMContact, joinPQSupport :: PQSupport, requestKey :: Maybe C.PrivateKeyEd25519}
   | JRInvitationDR DRInvitation
   deriving (Show)
 
@@ -2242,10 +2250,10 @@ $(J.deriveJSON defaultJSON ''DRInvitation)
 instance StrEncoding JoinRequest where
   strEncode = \case
     JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
-    JRServiceReq cReq pqSup -> strEncode ('S', cReq, pqSup)
+    JRServiceReq cReq pqSup signKey -> strEncode ('S', cReq, pqSup, signKey)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    (A.char 'S' *> (JRServiceReq <$> _strP <*> _strP))
+    (A.char 'S' *> (JRServiceReq <$> _strP <*> _strP <*> _strP))
       <|> (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
       <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))))
 
