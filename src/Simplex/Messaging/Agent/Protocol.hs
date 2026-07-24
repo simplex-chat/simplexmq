@@ -2332,7 +2332,7 @@ $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
 
-$(J.deriveJSON (sumTypeJSON id) ''AgentServiceError)
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "ASE") ''AgentServiceError)
 
 $(J.deriveJSON defaultJSON ''DroppedMsg)
 
