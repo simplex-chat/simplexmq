@@ -417,6 +417,7 @@ data AEvent (e :: AEntity) where
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
   REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
   SREQ :: InvitationId -> MsgBody -> AEvent AEConn
+  SSENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
   RJCT :: ConnInfo -> AEvent AEConn
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
@@ -500,6 +501,7 @@ data AEventTag (e :: AEntity) where
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
   SREQ_ :: AEventTag AEConn
+  SSENT_ :: AEventTag AEConn
   RJCT_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
   CON_ :: AEventTag AEConn
@@ -565,6 +567,7 @@ aEventTag = \case
   CONF {} -> CONF_
   REQ {} -> REQ_
   SREQ {} -> SREQ_
+  SSENT {} -> SSENT_
   RJCT {} -> RJCT_
   INFO {} -> INFO_
   CON _ -> CON_

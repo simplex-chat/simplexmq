@@ -1331,7 +1331,7 @@ testServiceRequestResponse =
       (runRight_ $ do
         ("", _, SREQ invId "service request") <- get service
         replyConnId <- sendServiceReply service NRMInteractive 1 invId "service response"
-        ("", sentConnId, A.SENT _ _) <- get service
+        ("", sentConnId, A.SSENT _ _) <- get service
         liftIO $ sentConnId `shouldBe` replyConnId)
     liftIO $ resp `shouldBe` "service response"
     liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
@@ -1345,7 +1345,7 @@ testServiceRequestResponseAsync =
       (runRight_ $ do
         ("", _, SREQ invId "service request") <- get service
         replyConnId <- sendServiceReplyAsync service "1" 1 invId "service response"
-        ("", sentConnId, A.SENT _ _) <- get service
+        ("", sentConnId, A.SSENT _ _) <- get service
         liftIO $ sentConnId `shouldBe` replyConnId)
     liftIO $ resp `shouldBe` "service response"
     liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
@@ -1386,7 +1386,7 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
   -- server up: the reply is delivered, the requester's blocking call returns the response, the service gets SENT
   resp <- withSmpServerStoreLogOn ps testPort $ \_ -> do
     ("", "", UP _ _) <- nGet service
-    ("", sentConnId, A.SENT _ _) <- get service
+    ("", sentConnId, A.SSENT _ _) <- get service
     sentConnId `shouldBe` replyConnId
     wait reqAsync
   resp `shouldBe` Right "resilient response"

@@ -2594,7 +2594,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                     _ -> internalErr msgId "QTEST sent not in duplex connection"
                 AM_EREADY_ -> pure ()
                 AM_SRV_REQ -> logError "AM_SRV_REQ: unexpected stored message"
-                AM_SRV_RESP -> notify $ SENT mId proxySrv_
+                AM_SRV_RESP -> notify $ SSENT mId proxySrv_
                 AM_RJCT -> pure ()
               delMsgKeep (msgType == AM_A_MSG_) msgId
               where
