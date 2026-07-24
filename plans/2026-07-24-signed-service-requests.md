@@ -9,7 +9,7 @@ Extend the existing `'A'` inner message; `Maybe` absent = unsigned, so the unsig
 ```haskell
 AgentServiceRequest (NonEmpty SMPQueueInfo) (Maybe RequestSignature) MsgBody
 
-data RequestSignature = RequestSignature C.PublicKeyEd25519 C.Signature
+data RequestSignature = RequestSignature C.PublicKeyEd25519 (C.Signature 'C.Ed25519)
 ```
 
 ## Binding
@@ -29,35 +29,31 @@ The service recomputes `binding` from its own `rcAD` and verifies.
 ## Sign (requester) — `Simplex.Messaging.Agent`
 
 - `sendServiceRequest` / `sendServiceRequestAsync` gain a `Maybe` Ed25519 signing key.
-- `joinConnSrv'` DR path takes the ratchet straight from the `createRatchet_`/`getSndRatchet` line (both now yield `(RatchetX448, params)`) and computes `serviceReqBinding` from its `rcAD`; the `mkInner :: SMPQueueInfo -> ByteString -> AgentMessage` closure signs the transcript when a key is given and emits `AgentServiceRequest … (Just (RequestSignature pub sig)) payload`, else `Nothing`.
+- `joinConnSrv'` DR path takes the ratchet straight from the `createRatchet_`/`getSndRatchet` line (both now yield `(RatchetX448, params)`) and computes `serviceReqBinding` from its `rcAD`; the `mkInner :: SMPQueueInfo -> ByteString -> AgentMessage` closure calls `signServiceReq signKey_ binding payload` — `RequestSignature pub (sign' pk (binding <> payload))` when a key is given, `Nothing` otherwise.
 - Async carries the key in `JRServiceReq {requestKey :: Maybe C.PrivateKeyEd25519}` (enabled `StrEncoding (PrivateKey Ed25519)`); the JOIN worker deserializes it and signs after building the ratchet.
 
-**Status:** implemented and tested in simplexmq-3 (sync + async); invalid signature → `prohibited` (logs + `ERR` event), no invitation.
+**Status:** implemented and tested in simplexmq-3 (sync + async); invalid signature → `A_SERVICE ASEBadSignature` (logs + `ERR` event), no invitation.
 
 ## Verify (service) — `smpContactRequest`
 
-After `initRcvRatchet_` + decrypt, on `AgentServiceRequest _ sig_ payload`:
+After `initRcvRatchet_` + decrypt, on `AgentServiceRequest (replyQueue :| _) sig_ payload`, one helper does the check:
 
-- `Just (RequestSignature key sig)`: verify over `serviceReqSignatureDomain <> rcRK <> payload`.
-  - valid → `storeInvitation` + `notify $ SREQ invId (Just key) payload`.
-  - invalid → log + `notify $ ERR …`, no invitation.
-- `Nothing` → `notify $ SREQ invId Nothing payload`.
+`verifyServiceReq rc payload sig_ :: Either String (Maybe C.PublicKeyEd25519)`
+- `Nothing` → `Right Nothing` (unsigned).
+- `Just (RequestSignature key sig)` → recompute `serviceReqBinding rc` and `C.verify' key sig (binding <> payload)`; `Right (Just key)` if valid, else `Left err`.
+
+Then:
+- `Right key_` → `storeInvitation … True` + `notify $ SREQ invId key_ payload`.
+- `Left err` → `logError` + `notify (ERR (AGENT (A_SERVICE ASEBadSignature)))`, no invitation.
 
 Dedup unchanged.
 
 ## Event / API
 
-- `SREQ :: InvitationId -> Maybe C.PublicKeyEd25519 -> MsgBody`.
-
-## Chat — `simplex-chat`
-
-- `APISendServiceRequest` gains an optional signer key.
-- `CEvtServiceRequest {…, signerKey :: Maybe C.PublicKeyEd25519}` (base64 field).
-- Docs.
+- `SREQ :: InvitationId -> Maybe C.PublicKeyEd25519 -> MsgBody -> AEvent AEConn`.
+- `StrEncoding (PrivateKey Ed25519)` enabled so a caller (e.g. via `JRServiceReq`) can carry the signing key.
 
 ## Tests
 
-- Signed round-trip → verified key delivered on `SREQ`.
-- Tampered payload/signature → `ERR`, no invitation.
-- Relay/replay under a different ratchet → signature fails.
-- Unsigned path unchanged.
+- `testSignedServiceRequest` (sync) + `testSignedServiceRequestAsync` — signed round-trip delivers the exact signer key on `SREQ` (`sigKey_ == Just signPub`).
+- Unsigned path unchanged (existing service tests carry `Nothing` for the new field).
