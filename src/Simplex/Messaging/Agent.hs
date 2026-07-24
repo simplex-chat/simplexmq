@@ -3993,7 +3993,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                               notify $ REQ invId pqSupported (qServer replyQueue :| []) cInfo True
                             AgentServiceRequest (replyQueue :| _) sig_ payload ->
                               case verifyServiceReq rc payload sig_ of
-                                Left err -> prohibited $ "service request: " <> T.pack err
+                                Left err -> logError ("service request: " <> T.pack err) >> notify (ERR $ AGENT $ A_SERVICE ASEBadSignature)
                                 Right key_ -> do
                                   invId <- storeInvitation (CRInvitationDR $ mkDR replyQueue) payload True
                                   notify $ SREQ invId key_ payload

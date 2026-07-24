@@ -2218,6 +2218,7 @@ data AgentServiceError
   | ASETimeout
   | ASENoPendingRequest
   | ASENotDRAddress
+  | ASEBadSignature
   deriving (Eq, Show)
 
 data AgentCryptoError
