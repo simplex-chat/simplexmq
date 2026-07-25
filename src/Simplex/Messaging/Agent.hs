@@ -486,7 +486,7 @@ prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c 
 {-# INLINE prepareConnectionToJoin #-}
 
 -- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
-prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> ConfirmationId -> PQSupport -> AE ConnId
+prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> InvitationId -> PQSupport -> AE ConnId
 prepareConnectionToAccept c userId enableNtfs = withAgentEnv c .: newConnToAccept c userId "" enableNtfs
 {-# INLINE prepareConnectionToAccept #-}
 
@@ -1387,15 +1387,18 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSup = ca
           cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
 
-newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> ConfirmationId -> PQSupport -> AM ConnId
+newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> PQSupport -> AM ConnId
 newConnToAccept c userId connId enableNtfs invId pqSup = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   case connReq of
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs Nothing cReq pqSup
-    CRInvitationDR DRInvitation {agentVersion, pqSupport} -> do
-      g <- asks random
-      let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt = Nothing}
-      withStore c $ \db -> createNewConn db g cData SCMInvitation
+    CRInvitationDR dr -> newConnToAcceptDR c userId connId dr enableNtfs
+      
+newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnId
+newConnToAcceptDR c userId connId DRInvitation {agentVersion, pqSupport} enableNtfs = do
+  g <- asks random
+  let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt = Nothing}
+  withStore c $ \db -> createNewConn db g cData SCMInvitation
 
 joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c nm userId connId enableNtfs cReq cInfo pqSupport subMode = do
@@ -1654,18 +1657,19 @@ rejectServiceRequest' c = rejectRequest_ c True . sendReplySync c
 rejectServiceRequestAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AM ()
 rejectServiceRequestAsync' c = rejectRequest_ c True . sendReplyAsync c
 
-rejectRequest_ :: AgentClient -> Bool -> ((ConnId, ConnData, SndQueue) -> AM ()) -> UserId -> InvitationId -> Maybe ByteString -> AM ()
+rejectRequest_ :: AgentClient -> Bool -> ((ConnData, SndQueue) -> AM ()) -> UserId -> InvitationId -> Maybe ByteString -> AM ()
 rejectRequest_ c serviceRequest sendReply userId invId reason_ = do
-  case reason_ of
-    Just reason -> sendReply =<< prepareReply c userId invId serviceRequest (AgentRejection reason)
-    Nothing -> do
-      Invitation {serviceRequest = isServiceRequest} <- withStore c $ \db -> getInvitation db "rejectRequest_" invId
-      when (isServiceRequest /= serviceRequest) $ throwE $ CMD PROHIBITED kindErr
+  inv <- getRequestInvitation c serviceRequest invId
+  mapM_ ((sendReply =<<) . prepareReply c userId inv . AgentRejection) reason_
   withStore' c (`deleteInvitation` invId)
+
+getRequestInvitation :: AgentClient -> Bool -> InvitationId -> AM Invitation
+getRequestInvitation c serviceRequest' invId = do
+  inv@Invitation {serviceRequest} <- withStore c $ \db -> getInvitation db "getRequestInvitation" invId
+  when (serviceRequest' /= serviceRequest) $ throwE $ CMD PROHIBITED err
+  pure inv
   where
-    kindErr
-      | serviceRequest = "rejectServiceRequest: not a service request, use rejectContact"
-      | otherwise = "rejectContact: service request, use rejectServiceRequest"
+    err = if serviceRequest' then "not a service request" else "unexpected service request"
 
 sendServiceReply' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AM ConnId
 sendServiceReply' c = replyRequest_ c . sendReplySync c
@@ -1673,43 +1677,38 @@ sendServiceReply' c = replyRequest_ c . sendReplySync c
 sendServiceReplyAsync' :: AgentClient -> ACorrId -> UserId -> InvitationId -> MsgBody -> AM ConnId
 sendServiceReplyAsync' c = replyRequest_ c . sendReplyAsync c
 
-replyRequest_ :: AgentClient -> ((ConnId, ConnData, SndQueue) -> AM ()) -> UserId -> InvitationId -> MsgBody -> AM ConnId
+replyRequest_ :: AgentClient -> ((ConnData, SndQueue) -> AM ()) -> UserId -> InvitationId -> MsgBody -> AM ConnId
 replyRequest_ c sendReply userId invId resp = do
-  reply@(connId, _, _) <- prepareReply c userId invId True (AgentServiceResponse resp)
+  inv <- getRequestInvitation c True invId
+  reply@(ConnData {connId}, _) <- prepareReply c userId inv $ AgentServiceResponse resp
   sendReply reply
   withStore' c (`deleteInvitation` invId)
   pure connId
 
-sendReplySync :: AgentClient -> NetworkRequestMode -> (ConnId, ConnData, SndQueue) -> AM ()
-sendReplySync c nm (connId, cData, sq) = do
+sendReplySync :: AgentClient -> NetworkRequestMode -> (ConnData, SndQueue) -> AM ()
+sendReplySync c nm (cData@ConnData {connId}, sq) = do
   (void (agentSecureSndQueue c nm cData sq) >> lift (submitPendingMsg c sq))
     `catchAllErrors` \e -> deleteConnectionAsync' c True connId >> throwE e
   deleteConnectionAsync' c True connId
 
-sendReplyAsync :: AgentClient -> ACorrId -> (ConnId, ConnData, SndQueue) -> AM ()
-sendReplyAsync c corrId (connId, _, sq) = enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReplyDel
+sendReplyAsync :: AgentClient -> ACorrId -> (ConnData, SndQueue) -> AM ()
+sendReplyAsync c corrId (ConnData {connId}, sq) = enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReplyDel
 
-prepareReply :: AgentClient -> UserId -> InvitationId -> Bool -> AgentMessage -> AM (ConnId, ConnData, SndQueue)
-prepareReply c userId invId serviceRequest' innerMsg = do
-  Invitation {connReq, serviceRequest, createdAt} <- withStore c $ \db -> getInvitation db "prepareReply" invId
-  when (serviceRequest /= serviceRequest') $ throwE $ CMD PROHIBITED kindErr
-  when serviceRequest' $ do
+prepareReply :: AgentClient -> UserId -> Invitation -> AgentMessage -> AM (ConnData, SndQueue)
+prepareReply c userId Invitation {invitationId, connReq, serviceRequest, createdAt} innerMsg = do
+  when serviceRequest $ do
     now <- liftIO getCurrentTime
     responseTimeout <- asks $ serviceResponseTimeout . config
     when (diffUTCTime now createdAt > responseTimeout) $ do
-      withStore' c $ \db -> deleteInvitation db invId
+      withStore' c (`deleteInvitation` invitationId)
       throwE $ AGENT $ A_SERVICE ASETimeout
   case connReq of
     CRInvitation _ -> throwE $ CMD PROHIBITED "prepareReply: connection has no double ratchet to send reply"
-    CRInvitationDR dr@DRInvitation {pqSupport} -> do
-      connId <- newConnToAccept c userId "" True invId pqSupport
+    CRInvitationDR dr -> do
+      connId <- newConnToAcceptDR c userId "" dr False
       (cData, sq) <- startJoinInvitationDR c userId connId Nothing dr
       storeConfirmation c cData sq Nothing innerMsg
-      pure (connId, cData, sq)
-  where
-    kindErr
-      | serviceRequest' = "reply: not a service request, use rejectContact"
-      | otherwise = "rejectContact: service request, use rejectServiceRequest"
+      pure (cData, sq)
 
 serviceReqBinding :: CR.Ratchet a -> ByteString
 serviceReqBinding CR.Ratchet {rcAD = Str ad} = C.sha3_256 $ "SimpleXService" <> ad
@@ -2231,7 +2230,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           void $ enqueueMessage c cData sq SMP.MsgFlags {notification = True} HELLO
         ICReplyDel -> withServer' . tryWithLock "ICReplyDel" $
           withStore c (`getConn` connId) >>= \case
-            SomeConn _ (SndConnection cData sq) -> sendReplySync c NRMBackground (connId, cData, sq)
+            SomeConn _ (SndConnection cData sq) -> sendReplySync c NRMBackground (cData, sq)
             _ -> throwE $ INTERNAL "ICReplyDel: incorrect connection type"
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
