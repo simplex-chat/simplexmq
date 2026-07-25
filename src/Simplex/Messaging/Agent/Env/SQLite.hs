@@ -155,7 +155,6 @@ data AgentConfig = AgentConfig
     messageTimeout :: NominalDiffTime,
     serviceRequestTimeout :: NominalDiffTime, -- client side: default time the client waits for a service response (overridable per request)
     serviceResponseTimeout :: NominalDiffTime, -- service side: time a received service request is valid to respond to
-
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
