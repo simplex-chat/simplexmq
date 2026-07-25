@@ -66,7 +66,6 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getConnSubs,
     getDeletedConns,
     getConnsData,
-    getConnectionData,
     lockConnForUpdate,
     setConnDeleted,
     setConnUserId,
@@ -2656,9 +2655,6 @@ getConnsData db connIds = forM connIds $ E.handle handleDBError . fmap Right . g
 handleDBError :: E.SomeException -> IO (Either StoreError a)
 handleDBError = pure . Left . SEInternal . bshow
 #endif
-
-getConnectionData :: DB.Connection -> ConnId -> IO (Either StoreError ConnData)
-getConnectionData db connId = maybe (Left SEConnNotFound) (Right . fst) <$> getConnData False False db connId
 
 getConnData :: Bool -> Bool -> DB.Connection -> ConnId -> IO (Maybe (ConnData, ConnectionMode))
 getConnData deleted' forUpdate db connId' =

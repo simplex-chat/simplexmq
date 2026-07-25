@@ -1899,7 +1899,7 @@ data DRInvitation = DRInvitation
 
 data JoinRequest
   = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
-  | JRServiceReq {contactReq :: ConnectionRequestUri 'CMContact, joinPQSupport :: PQSupport, requestKey :: Maybe C.PrivateKeyEd25519}
+  | JRServiceReq {contactReq :: ConnectionRequestUri 'CMContact, joinPQSupport :: PQSupport, requestKey :: Maybe (C.StoredPrivateKey C.Ed25519)}
   | JRInvitationDR DRInvitation
   deriving (Show)
 

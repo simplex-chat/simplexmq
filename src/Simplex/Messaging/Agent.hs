@@ -1392,13 +1392,14 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   case connReq of
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs Nothing cReq pqSup
-    CRInvitationDR dr -> newConnToAcceptDR c userId connId dr enableNtfs
+    CRInvitationDR dr -> (\ConnData {connId = connId'} -> connId') <$> newConnToAcceptDR c userId connId dr enableNtfs
       
-newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnId
+newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnData
 newConnToAcceptDR c userId connId DRInvitation {agentVersion, pqSupport} enableNtfs = do
   g <- asks random
   let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt = Nothing}
-  withStore c $ \db -> createNewConn db g cData SCMInvitation
+  connId' <- withStore c $ \db -> createNewConn db g cData SCMInvitation
+  pure (cData {connId = connId'} :: ConnData)
 
 joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
 joinConn c nm userId connId enableNtfs cReq cInfo pqSupport subMode = do
@@ -1408,7 +1409,7 @@ joinConn c nm userId connId enableNtfs cReq cInfo pqSupport subMode = do
   srv <- getNextSMPServer c userId [qServer $ L.head $ crSmpQueues crData]
   joinConnSrv c nm userId connId enableNtfs cReq cInfo pqSupport subMode srv
 
-startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM ((ConnData, SndQueue), Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)
+startJoinInvitation :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> Bool -> ConnectionRequestUri 'CMInvitation -> PQSupport -> AM ((ConnData, SndQueue), (Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId))
 startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
   lift (compatibleInvitationUri cReqUri) >>= \case
     Just (qInfo, Compatible e2eRcvParams@(CR.E2ERatchetParams v _ _ _), Compatible connAgentVersion) -> do
@@ -1427,7 +1428,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
               Left e -> do
                 nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
                 runExceptT $ snd <$> createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
-          pure ((cData, sq), Just e2eSndParams, Nothing)
+          pure ((cData, sq), (Just e2eSndParams, Nothing))
         _ -> do
           let Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {smpServer, senderId}} = qInfo
           invLink_ <- withStore' c $ \db -> getInvShortLinkKeys db smpServer senderId
@@ -1438,7 +1439,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSup =
             liftIO $ lockConnForUpdate db connId
             e2eSndParams <- snd <$> createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
-            pure ((cData, sq'), Just e2eSndParams, lnkId_)
+            pure ((cData, sq'), (Just e2eSndParams, lnkId_))
     Nothing -> throwE $ AGENT A_VERSION
 
 createRatchet_ :: DB.Connection -> TVar ChaChaDRG -> ConnId -> CR.VersionE2E -> PQSupport -> CR.RcvE2ERatchetParams 'C.X448 -> ExceptT StoreError IO (CR.RatchetX448, CR.SndE2ERatchetParams 'C.X448)
@@ -1451,18 +1452,15 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   liftIO $ createSndRatchet db connId rc e2eSndParams
   pure (rc, e2eSndParams)
 
-startJoinInvitationDR :: AgentClient -> UserId -> ConnId -> Maybe SndQueue -> DRInvitation -> AM (ConnData, SndQueue)
-startJoinInvitationDR c userId connId sq_ DRInvitation {ratchetState, replyQueue} = case sq_ of
-  Just sq -> (,sq) <$> withStore c (`getConnectionData` connId)
-  Nothing -> do
-    clientVRange <- asks $ smpClientVRange . config
-    qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
-    (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
-    withStore c $ \db -> runExceptT $ do
-      liftIO $ lockConnForUpdate db connId
-      liftIO $ createRatchet db connId ratchetState
-      sq <- ExceptT $ updateNewConnSnd db connId q
-      (,sq) <$> ExceptT (getConnectionData db connId)
+startJoinInvitationDR :: AgentClient -> UserId -> ConnData -> DRInvitation -> AM SndQueue
+startJoinInvitationDR c userId ConnData {connId} DRInvitation {ratchetState, replyQueue} = do
+  clientVRange <- asks $ smpClientVRange . config
+  qInfo <- maybe (throwE $ AGENT A_VERSION) pure $ replyQueue `proveCompatible` clientVRange
+  (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
+  withStore c $ \db -> runExceptT $ do
+    liftIO $ lockConnForUpdate db connId
+    liftIO $ createRatchet db connId ratchetState
+    ExceptT $ updateNewConnSnd db connId q
 
 connRequestPQSupport :: AgentClient -> PQSupport -> ConnectionRequestUri c -> IO (Maybe (VersionSMPA, PQSupport))
 connRequestPQSupport c pqSup cReq = withAgentEnv' c $ case cReq of
@@ -1520,7 +1518,7 @@ joinConnSrv' c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup su
   where
     doJoin :: Maybe RcvQueue -> Maybe SndQueue -> AM SndQueueSecured
     doJoin rq_ sq_ = do
-      ((cData, sq), e2eSndParams, lnkId_) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
+      ((cData, sq), (e2eSndParams, lnkId_)) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
       secureConfirmQueue c nm cData rq_ sq srv cInfo e2eSndParams subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 joinConnSrv' c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSup subMode srv mkInner =
@@ -1585,21 +1583,22 @@ delInvSL c connId srv lnkId =
   withStore' c (\db -> deleteInvShortLink db (protoServer srv) lnkId) `catchE` \e ->
     liftIO $ nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "error deleting short link " <> show e))
 
-joinConnSrvAsync :: AgentClient -> ConnId -> (Maybe SndQueue -> AM ((ConnData, SndQueue), Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId)) -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
+joinConnSrvAsync :: AgentClient -> ConnId -> (ConnData -> Maybe SndQueue -> AM (SndQueue, (Maybe (CR.SndE2ERatchetParams 'C.X448), Maybe SMP.LinkId))) -> ConnInfo -> SubscriptionMode -> SMPServerWithAuth -> AM SndQueueSecured
 joinConnSrvAsync c connId startJoin cInfo subMode srv = do
   SomeConn cType conn <- withStore c (`getConn` connId)
+  let cData = toConnData conn
   case conn of
-    NewConnection _ -> doJoin Nothing Nothing
-    SndConnection _ sq -> doJoin Nothing (Just sq)
+    NewConnection _ -> doJoin cData Nothing Nothing
+    SndConnection _ sq -> doJoin cData Nothing (Just sq)
     -- this branch should never be reached with async flow because once receive queue is created,
     -- there are not more failure points (sending confirmation is asynchronous)
     DuplexConnection _ (rq@RcvQueue {status = New} :| _) (sq@SndQueue {status = sqStatus} :| _)
-      | sqStatus == New || sqStatus == Secured -> doJoin (Just rq) (Just sq)
+      | sqStatus == New || sqStatus == Secured -> doJoin cData (Just rq) (Just sq)
     _ -> throwE $ CMD PROHIBITED $ "joinConnSrvAsync: bad connection " <> show cType
   where
-    doJoin :: Maybe RcvQueue -> Maybe SndQueue -> AM SndQueueSecured
-    doJoin rq_ sq_ = do
-      ((cData, sq), e2eSndParams, lnkId_) <- startJoin sq_
+    doJoin :: ConnData -> Maybe RcvQueue -> Maybe SndQueue -> AM SndQueueSecured
+    doJoin cData rq_ sq_ = do
+      (sq, (e2eSndParams, lnkId_)) <- startJoin cData sq_
       secureConfirmQueueAsync c cData rq_ sq srv cInfo e2eSndParams subMode
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 
@@ -1633,8 +1632,9 @@ acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode
     CRInvitationDR dr@DRInvitation {replyQueue} -> do
       srv <- getNextSMPServer c userId [qServer replyQueue]
       SomeConn cType conn <- withStore c (`getConn` connId)
-      let doJoin rq_ sq_ = do
-            (cData, sq) <- startJoinInvitationDR c userId connId sq_ dr
+      let cData = toConnData conn
+          doJoin rq_ sq_ = do
+            sq <- maybe (startJoinInvitationDR c userId cData dr) pure sq_
             secureConfirmQueue c nm cData rq_ sq srv ownConnInfo Nothing subMode
       case conn of
         NewConnection _ -> doJoin Nothing Nothing
@@ -1686,10 +1686,9 @@ replyRequest_ c sendReply userId invId resp = do
   pure connId
 
 sendReplySync :: AgentClient -> NetworkRequestMode -> (ConnData, SndQueue) -> AM ()
-sendReplySync c nm (cData@ConnData {connId}, sq) = do
+sendReplySync c nm (cData@ConnData {connId}, sq) =
   (void (agentSecureSndQueue c nm cData sq) >> lift (submitPendingMsg c sq))
-    `catchAllErrors` \e -> deleteConnectionAsync' c True connId >> throwE e
-  deleteConnectionAsync' c True connId
+    `allFinally` deleteConnectionAsync' c True connId
 
 sendReplyAsync :: AgentClient -> ACorrId -> (ConnData, SndQueue) -> AM ()
 sendReplyAsync c corrId (ConnData {connId}, sq) = enqueueCommand c corrId connId (Just $ qServer sq) $ AInternalCommand ICReplyDel
@@ -1705,8 +1704,8 @@ prepareReply c userId Invitation {invitationId, connReq, serviceRequest, created
   case connReq of
     CRInvitation _ -> throwE $ CMD PROHIBITED "prepareReply: connection has no double ratchet to send reply"
     CRInvitationDR dr -> do
-      connId <- newConnToAcceptDR c userId "" dr False
-      (cData, sq) <- startJoinInvitationDR c userId connId Nothing dr
+      cData <- newConnToAcceptDR c userId "" dr False
+      sq <- startJoinInvitationDR c userId cData dr
       storeConfirmation c cData sq Nothing innerMsg
       pure (cData, sq)
 
@@ -1733,7 +1732,7 @@ sendServiceRequest' c nm userId cReqUri@(CRContactUri crData _) timeout_ signKey
 sendServiceRequestAsync' :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> Maybe NominalDiffTime -> Maybe C.PrivateKeyEd25519 -> MsgBody -> AM MsgBody
 sendServiceRequestAsync' c userId cReqUri timeout_ signKey_ payload =
   serviceRequest_ c userId cReqUri timeout_ $ \connId ->
-    enqueueCommand c "" connId Nothing $ AClientCommand $ JOIN (JRServiceReq cReqUri PQSupportOn signKey_) SMSubscribe payload
+    enqueueCommand c "" connId Nothing $ AClientCommand $ JOIN (JRServiceReq cReqUri PQSupportOn (C.StoredPrivateKey <$> signKey_)) SMSubscribe payload
 
 serviceRequest_ :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> Maybe NominalDiffTime -> (ConnId -> AM ()) -> AM MsgBody
 serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) timeout_ doSend = do
@@ -2158,13 +2157,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRInvitationDR dr@DRInvitation {replyQueue}) subMode ownCInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer replyQueue] $ \srv -> do
-            let startJoin sq_ = (,Nothing,Nothing) <$> startJoinInvitationDR c userId connId sq_ dr
+            let startJoin cData sq_ = (,(Nothing, Nothing)) <$> maybe (startJoinInvitationDR c userId cData dr) pure sq_
             sqSecured <- joinConnSrvAsync c connId startJoin ownCInfo subMode srv
             notify $ JOINED sqSecured
         JOIN (JRConnReq enableNtfs (ACR _ cReq@(CRInvitationUri ConnReqUriData {crSmpQueues = q :| _} _)) pqEnc) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv -> do
-            let startJoin sq_ = startJoinInvitation c userId connId sq_ enableNtfs cReq pqEnc
+            let startJoin _ sq_ = first snd <$> startJoinInvitation c userId connId sq_ enableNtfs cReq pqEnc
             sqSecured <- joinConnSrvAsync c connId startJoin connInfo subMode srv
             notify $ JOINED sqSecured
         -- TODO TBC using joinConnSrvAsync for contact URIs, with receive queue created asynchronously.
@@ -2180,8 +2179,9 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             withConnLock c connId "JOIN service request" $
               atomically (TM.lookup connId (serviceRequests c)) >>= \case
                 Nothing -> pure ()
-                Just v ->
-                  void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv $ \replyQInfo binding -> AgentServiceRequest (replyQInfo :| []) (signServiceReq signKey_ binding connInfo) connInfo)
+                Just v -> do
+                  let mkInner replyQInfo binding = AgentServiceRequest (replyQInfo :| []) (signServiceReq (C.unStored <$> signKey_) binding connInfo) connInfo
+                  void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv mkInner)
                     `catchAllErrors` \e ->
                       if temporaryOrHostError e
                         then throwE e
