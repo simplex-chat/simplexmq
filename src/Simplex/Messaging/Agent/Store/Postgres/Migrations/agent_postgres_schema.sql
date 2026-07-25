@@ -1097,6 +1097,14 @@ CREATE INDEX idx_conn_invitations_contact_conn_id ON smp_agent_test_protocol_sch
 
 
 
+CREATE INDEX idx_connections_deleted ON smp_agent_test_protocol_schema.connections USING btree (deleted);
+
+
+
+CREATE INDEX idx_connections_service_request_expires_at ON smp_agent_test_protocol_schema.connections USING btree (service_request_expires_at);
+
+
+
 CREATE INDEX idx_connections_user ON smp_agent_test_protocol_schema.connections USING btree (user_id);
 
 

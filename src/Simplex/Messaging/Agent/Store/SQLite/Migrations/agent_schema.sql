@@ -632,6 +632,10 @@ CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(
   conn_id,
   ratchet_key_id
 );
+CREATE INDEX idx_connections_deleted ON connections(deleted);
+CREATE INDEX idx_connections_service_request_expires_at ON connections(
+  service_request_expires_at
+);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW
