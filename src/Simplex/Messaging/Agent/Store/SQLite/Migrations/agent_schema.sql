@@ -27,7 +27,9 @@ CREATE TABLE connections(
   REFERENCES users ON DELETE CASCADE,
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
   deleted_at_wait_delivery TEXT,
-  pq_support INTEGER NOT NULL DEFAULT 0
+  pq_support INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT('1970-01-01 00:00:00'),
+  service_request_expires_at TEXT
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -164,6 +166,8 @@ CREATE TABLE conn_invitations(
   accepted INTEGER NOT NULL DEFAULT 0,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  service_request INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE ratchets(
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections

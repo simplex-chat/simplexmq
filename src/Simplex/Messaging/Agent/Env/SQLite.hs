@@ -153,6 +153,8 @@ data AgentConfig = AgentConfig
     userNetworkInterval :: Int,
     userOfflineDelay :: NominalDiffTime,
     messageTimeout :: NominalDiffTime,
+    serviceRequestTimeout :: NominalDiffTime, -- client side: default time the client waits for a service response (overridable per request)
+    serviceResponseTimeout :: NominalDiffTime, -- service side: time a received service request is valid to respond to
     connDeleteDeliveryTimeout :: NominalDiffTime,
     helloTimeout :: NominalDiffTime,
     quotaExceededTimeout :: NominalDiffTime,
@@ -229,6 +231,8 @@ defaultAgentConfig =
       userNetworkInterval = 1800_000000, -- 30 minutes, should be less than Int32 max value
       userOfflineDelay = 2, -- if network offline event happens in less than 2 seconds after it was set online, it is ignored
       messageTimeout = 2 * nominalDay,
+      serviceRequestTimeout = 30,
+      serviceResponseTimeout = 180,
       connDeleteDeliveryTimeout = 2 * nominalDay,
       helloTimeout = 2 * nominalDay,
       quotaExceededTimeout = 7 * nominalDay,

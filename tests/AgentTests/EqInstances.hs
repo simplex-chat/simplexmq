@@ -5,7 +5,7 @@
 module AgentTests.EqInstances where
 
 import Data.Type.Equality
-import Simplex.Messaging.Agent.Protocol (ABinaryConnectionRequestUri (..), ShortLinkCreds (..))
+import Simplex.Messaging.Agent.Protocol (ABinaryConnectionRequestUri (..), AMessage (..), AMessageReceipt (..), AgentMessage (..), APrivHeader (..), ShortLinkCreds (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client (ProxiedRelay (..))
 
@@ -38,3 +38,11 @@ instance Eq ABinaryConnectionRequestUri where
     _ -> False
 
 deriving instance Show ABinaryConnectionRequestUri
+
+deriving instance Eq APrivHeader
+
+deriving instance Eq AMessageReceipt
+
+deriving instance Eq AMessage
+
+deriving instance Eq AgentMessage

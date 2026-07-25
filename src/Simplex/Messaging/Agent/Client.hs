@@ -384,6 +384,7 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     proxySessTs :: TVar UTCTime,
+    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody)),
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
     ntfServersStats :: TMap (UserId, NtfServer) AgentNtfServerStats,
@@ -547,6 +548,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
   invLocks <- TM.emptyIO
   deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
+  serviceRequests <- TM.emptyIO
   smpServersStats <- TM.emptyIO
   xftpServersStats <- TM.emptyIO
   ntfServersStats <- TM.emptyIO
@@ -592,6 +594,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
         clientId,
         agentEnv,
         proxySessTs,
+        serviceRequests,
         smpServersStats,
         xftpServersStats,
         ntfServersStats,

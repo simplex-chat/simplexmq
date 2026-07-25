@@ -61,6 +61,7 @@ module Simplex.Messaging.Crypto
     APublicAuthKey (..),
     CryptoPublicKey (..),
     CryptoPrivateKey (..),
+    StoredPrivateKey (..),
     AAuthKeyPair,
     KeyPair,
     KeyPairX25519,
@@ -342,8 +343,17 @@ deriving instance Eq (PrivateKey a)
 
 deriving instance Show (PrivateKey a)
 
--- Do not enable, to avoid leaking key data
--- instance StrEncoding (PrivateKey Ed25519) where
+-- Do not enable, to avoid leaking key data, use StoredPrivateKey instead
+-- instance StrEncoding (PrivateKey a) where
+
+newtype StoredPrivateKey a = StoredPrivateKey {unStored :: PrivateKey a}
+  deriving (Show)
+
+instance AlgorithmI a => StrEncoding (StoredPrivateKey a) where
+  strEncode = strEncode . encodePrivKey . unStored
+  {-# INLINE strEncode #-}
+  strDecode = fmap StoredPrivateKey . decodePrivKey
+  {-# INLINE strDecode #-}
 
 -- Used in notification store log
 instance StrEncoding (PrivateKey X25519) where

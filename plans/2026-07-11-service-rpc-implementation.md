@@ -2,204 +2,134 @@
 
 RFC: [../rfcs/2026-07-11-service-rpc.md](../rfcs/2026-07-11-service-rpc.md)
 
-Depends on: [2026-07-12-address-dr-implementation.md](2026-07-12-address-dr-implementation.md). RPC establishes the double ratchet from the service address exactly as the address-DR plan does; this plan is the RPC layer on top of it. Steps named R2'/O2'/O3' below are from that plan. Constructor, event, table and function names are provisional.
+Depends on: [2026-07-12-address-dr-implementation.md](2026-07-12-address-dr-implementation.md). RPC establishes the double ratchet from the address exactly as address-DR does; this is the RPC layer on top of it.
 
-RPC is a one-directional short-lived DR exchange: the client establishes the ratchet from the address (address-DR requester), sends one request, receives one or more responses on its reply queue, and both sides tear the ratchet down after the final response. Unlike a connection, the service does not send a reply queue back and no persistent connection remains.
+**Status: implemented and tested in this repo.** Service-side idempotency (single execution by request hash) is deferred. The `simplex-chat` integration is a separate repo.
 
-## Versions
+**Scope.** One request, one response — no continuation, no streaming.
 
-- `VersionSMPA` (agent protocol): the new `AgentServiceRequest`/`AgentServiceResponse` messages and the service address subtype. RPC requires the address-DR agent version, whose ratchet establishment it reuses.
-
-`SSND` (SMP protocol) and the hybrid queue header (SMP client) are not used here - they are separate RFCs (combined secure-send; queue-layer PQ). The ratchet provides post-quantum encryption, and the reply queue is secured with `SKEY` as in the address-DR owner path (O3').
-
-## Service address
-
-A service address is a DR-advertising contact address (address-DR plan: `linkRatchetKey` in fixed data, `RatchetKeys` in mutable data) with a service subtype. There is no separate `ServiceKeyBundle` - requests are encrypted by establishing the ratchet against the advertised keys.
-
-The subtype distinguishes RPC from a normal connection and drives the owner's handling. Reuse the `ContactConnType` char slot:
-
-```haskell
-data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay | CCTService
-ctTypeChar CCTService = 'S' -- 's' in links
-ctTypeP 'S' = pure CCTService
-```
-
-Stored on the address receive queue as `link_contact_type` (NULL means the current contact type). A service address rejects `AgentInvitation` and connection `AgentConfirmation`; a non-service address rejects service requests.
+One DR-advertising contact address serves both flows: the owner branches per incoming request on the decrypted inner message — `AgentConnInfoReply` opens a connection (`REQ`), `AgentServiceRequest` answers an RPC (`SREQ`). A request gets exactly one reply, a response or a rejection; both are the single confirming message on the requester's reply queue Q_A, after which the ephemeral reply connection is torn down. Response and rejection are the same operation parameterized by the inner message (`AgentServiceResponse` payload vs `AgentRejection` reason) and outcome (the call returns the payload vs throws an agent error).
 
 ## RPC messages
 
-RPC adds two `AgentMessage` variants (Protocol.hs:883-889, parsed by `parseMessage`), parallel to `AgentConnInfoReply`, not new top-level envelopes. They are the decrypted content of the existing per-queue-e2e envelopes: the request is the `encConnInfo` of the address-DR `AgentConfirmation`; each response is the `encConnInfo` of an `AgentConfirmation` (first message to the reply queue) or the `encAgentMessage` of an `AgentMsgEnvelope` (later messages), all double-ratchet-encrypted. Their tags `Q`/`P` are the RFC's `agentRequest`/`agentResponse`.
+No new outer envelope: the request reuses `AgentContactRequest` (tag `'A'`); the reply reuses `AgentConfirmation` (the only message on Q_A).
+
+Inner `AgentMessage` (ratchet-encrypted, parsed by `parseMessage`), siblings of `AgentConnInfoReply`:
 
 ```haskell
-data AgentMessage
-  = ... -- AgentConnInfo 'I', AgentConnInfoReply 'D', AgentRatchetInfo 'R', AgentMessage 'M'
-  | AgentServiceRequest (NonEmpty SMPQueueInfo) MsgBody       -- 'Q': reply queue(s) + opaque request payload
-  | AgentServiceResponse Bool (NonEmpty MsgBody)              -- 'P': final flag + one or more response payloads
-
--- encoding (extends AgentMessage Encoding)
-AgentServiceRequest qs body -> smpEncode ('Q', qs, Tail body)
-AgentServiceResponse final bodies -> smpEncode ('P', final) <> smpEncodeList (map Large (L.toList bodies))
+  | AgentServiceRequest (NonEmpty SMPQueueInfo) MsgBody  -- 'A': reply queue Q_A + opaque payload
+  | AgentServiceResponse MsgBody                         -- 'P': response payload (single, terminal)
+  | AgentRejection ByteString                            -- 'J': refusal reason (single, terminal)
 ```
 
-One response message carries one or more response payloads, so responses known together are one message; responses over time are separate messages, each with `final = False` until the last. There is no signature and no previous-message hash: the ratchet, established against the `linkRatchetKey` committed by the link hash (address-DR authentication), authenticates each message and its message numbering detects dropping and reordering. The request payload is opaque application bytes (the chat command); the reply queue fields are outside it.
+`AgentServiceRequest` carries Q_A (as `AgentConnInfoReply` does); its constructor is the only thing that distinguishes `REQ` from `SREQ`. Delivery `msgType`: `AM_SRV_RESP` routes to `sendConfirmation` (the reply is the confirming first message on Q_A). `AM_SRV_REQ` is never stored — the request is sent synchronously inside `joinConnSrv'` via `sendInvitation`, so its arms in the delivery worker are unreachable and assert (`logError`).
 
-The request hash used for idempotency is `SHA3-256` of the decrypted request payload (the `MsgBody` in `AgentServiceRequest`).
+## Ratchet establishment — reuse of the address-DR flow
 
-The `AgentMsgEnvelope` receive path (`agentClientMsg`, Agent.hs:3289) today expects only `AgentMessage APrivHeader aMessage`; it is extended to accept `AgentServiceResponse` for the stream after the first response.
+`joinConnSrv'` takes `mkInner :: SMPQueueInfo -> AgentMessage`; `joinConnSrv` is the one-line wrapper passing `AgentConnInfoReply`. `sendServiceRequest'` passes `AgentServiceRequest`.
 
-## Ratchet establishment - reuse of the address-DR flow
+**Request (client).** `serviceRequest_` fails fast with `A_SERVICE ASENotDRAddress` if the address carries no ratchet keys, then creates the client connection via `newConnToJoin` with `serviceRequestExpiresAt = Just (now + reqTimeout)` (the persisted per-request deadline), registers a one-shot `TMVar` in `serviceRequests`, sends the request, and blocks on the `TMVar` up to `reqTimeout`. The connection is `RcvConnection` (Q_A) with the send ratchet.
 
-Request (client), reusing the address-DR requester path (R2'/R3'):
+**Request (service).** `smpContactRequest` decrypts `encConnInfo` and branches on the inner message; both branches call the same `storeInvitation` → `conn_invitations`, differing only in the kind column and event:
 
-- Retrieve link data, reconstruct and negotiate the advertised `RcvE2ERatchetParamsUri`, create the reply queue Q_A (messaging mode, subscribed), establish the send ratchet (`generateSndE2EParams`, `pqX3dhSnd`, `initSndRatchet`, `createSndRatchet`).
-- Send `AgentConfirmation {e2eEncryption_ = Just sndParams, ratchetKeyId = Just ratchetKeyId, encConnInfo = ratchetEncrypt(AgentServiceRequest (Q_A :| []) payload)}` to the address queue, unauthenticated (`agentCbEncryptOnce`). The client connection is `RcvConnection` (Q_A) with the send ratchet.
+- `AgentConnInfoReply` → `REQ` (`service_request = 0`).
+- `AgentServiceRequest _ payload` → `SREQ invId payload` (`service_request = 1`).
 
-Request (service), reusing the address-DR owner path (O1'/O2'):
+Before storing, it **deduplicates** by the sender's ratchet-key hash (`checkRatchetKeyHashExists`/`addProcessedRatchetKeyHash`, the mechanism `newRatchetKey` uses): a redelivered/retried request reuses the same Q_A and the same `e2eSndParams`, so the hash matches and the duplicate is dropped — one invitation and one `REQ`/`SREQ` per request. Receive-time establishment on unauthenticated input — the address-DR abuse bound applies.
 
-- `smpAddressConfirmation` selects the private keys by `ratchetKeyId`, `pqX3dhRcv`, `initRcvRatchet`, and `rcDecrypt` of `encConnInfo`, which also gives the connection its send side. The decrypted message is `AgentServiceRequest` (not `AgentConnInfoReply`), so the owner takes the RPC branch: create a `SndConnection` to Q_A (no Q_B, unidirectional) holding the ratchet, run idempotency (below), and either deliver `SREQ` or replay stored responses. This is receive-time establishment on unauthenticated input - the abuse bound of the address-DR plan ("Receive-time establishment, state, and abuse") applies unchanged.
+**The reply (service).** `prepareReply` fetches the invitation, enforces the kind (`CMD PROHIBITED` on the wrong one), and rejects a stale request (`A_SERVICE ASETimeout` + delete) older than `serviceResponseTimeout`; then `newConnToAccept` + `startJoinInvitationDR` build the one-directional `SndQueue` to Q_A (no reply queue back), and `storeConfirmation` queues the inner message. `sendReplySync` secures Q_A, submits the message, and deletes the connection with wait-for-delivery — **deleting the connection on failure too** (`catchAllErrors`), so a failed secure/submit does not orphan it. `sendServiceReplyAsync` defers secure+deliver+delete to the `ICReplyDel` command (retried, survives a down server). `sendServiceReply`/`Async` and `replyRequest_` return the reply `ConnId` so the caller can correlate the `SENT` event on that throwaway connection.
 
-Response (service): send each response to Q_A under the ratchet. The first message to Q_A is `AgentConfirmation {e2eEncryption_ = Nothing, encConnInfo = ratchetEncrypt(AgentServiceResponse final bodies)}` (per-queue e2e is unestablished on Q_A - the address-DR first-message constraint), securing Q_A with `SKEY` using the service's own key (`agentSecureSndQueue`, Q_A is messaging mode); later messages are `AgentMsgEnvelope {encAgentMessage = ratchetEncrypt(AgentServiceResponse …)}`. After the `final = True` message, delete the send connection and its ratchet.
+**The response (client).** The single `AgentConfirmation` on Q_A reaches `processConnInfo` (the `RcvConnection … New` branch). Dispatch is gated on `serviceRequestExpiresAt` and the kinds are mutually exclusive:
 
-Response (client): a message on Q_A (its `snd_service_requests` row marks it an RPC reply queue). The first is `AgentConfirmation … Nothing` and takes the address-DR `RcvConnection … Nothing` branch (R5'), extended to accept `AgentServiceResponse`; later ones are `AgentMsgEnvelope` and take the standard message path, extended to accept `AgentServiceResponse`. Each `agentRatchetDecrypt` advances the ratchet. The first response returns from the call; later responses go to the callback. On `final`, the deadline, or `cancelServiceRequest`, delete Q_A (`DEL`) and the reply connection.
+- `AgentConnInfoReply` **only when `isNothing serviceRequestExpiresAt`** (a contact connection) → `processConf`.
+- `AgentServiceResponse` only when `isJust` → the request `TMVar` gets `Right payload`.
+- `AgentRejection` when `isJust` → `Left (A_SERVICE (ASERejected reason))`; when `isNothing` → contact `RJCT`.
+- anything else → `prohibited`.
 
-## Reply queue - the requester's DR connection
+The `isNothing` guard on `AgentConnInfoReply` is a security boundary: without it a malicious service could send `AgentConnInfoReply` on an RPC reply queue and drive it into the contact-`CONF` path. `dispatchServiceReply` puts the result into the `serviceRequests` `TMVar`; a reply with no pending request (e.g. post-restart) is `ERR (A_SERVICE ASENoPendingRequest)`.
 
-The reply queue is the address-DR requester connection: an `RcvConnection` whose receive queue is Q_A, with a ratchet. No `reply_kem_priv_key`/`reply_secret` columns (those were the queue-layer hybrid secret, not used here). A `snd_service_requests` row referencing this connection marks it an RPC reply queue for dispatch and cleanup; there is no new connection type.
+## Rejection
+
+A rejection is `AgentRejection reason` — the same single confirming message on Q_A as a response.
+
+- **Kind guard.** `rejectContact` only on a contact invitation, `rejectServiceRequest`/`sendServiceReply` only on a request; wrong kind is `CMD PROHIBITED`. `rejectRequest_` enforces the kind **even on a `Nothing` (silent-drop) reject** — it fetches the invitation and checks before deleting, so `rejectContact … Nothing` cannot delete a service request (or vice versa).
+- `reject*` take `Maybe ByteString`: `Nothing` → delete the invitation, send nothing (the requester times out); `Just reason` → the reply path with `AgentRejection`.
+- Requester side: `AgentRejection` on a contact reply queue → `RJCT`; on an RPC reply queue → a thrown `A_SERVICE (ASERejected reason)`.
+
+## Reply connections and cleanup
+
+No reply-queue table and no new connection type.
+
+- **Requester reply queue** (`RcvConnection` on Q_A): `connections.service_request_expires_at` is non-null only here; it is the persisted request deadline, used both to gate CONF dispatch and to reap the connection. In-memory routing is `serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType MsgBody))`.
+- **Timeout race.** The async `JOIN` worker holds `withConnLock c connId` around `joinConnSrv'`, and `serviceRequest_`'s cleanup holds the same lock around `TM.delete` + `deleteConnectionAsync'`. This serializes the send with the timeout teardown, so a timing-out call cannot delete the connection mid-send; after cleanup the worker's re-check of `serviceRequests` finds nothing and skips.
+- **Service reply connection** (`SndConnection` to Q_A): ephemeral — created, sends the one reply, deleted with wait-for-delivery in the same operation.
+- **Cleanup** (`cleanupManager`, `deleteExpiredServiceReqs`): `deleteExpiredServiceRequests` reaps unanswered `conn_invitations` (service side) older than `serviceResponseTimeout`; `getExpiredServiceConns` (`service_request_expires_at < now`) → `deleteConnectionsAsync'` reaps orphaned requester reply queues.
 
 ## Database schema
 
-One migration (`M20260712_service_rpc`), on top of the address-DR migration. SQLite shown, PostgreSQL mirrors it.
+`M20260712_address_dr_rpc` (SQLite + PostgreSQL) creates `address_ratchet_keys` (address-DR) and adds:
 
 ```sql
--- service subtype on the address receive queue (address-DR adds the ratchet key columns)
-ALTER TABLE rcv_queues ADD COLUMN link_contact_type TEXT; -- NULL = current contact type
-
--- client side: one pending request per reply queue connection.
-CREATE TABLE snd_service_requests(
-  snd_service_request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- reply queue (RcvConnection) with the ratchet
-  deadline TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
--- service side: one record per distinct request hash on a service address.
-CREATE TABLE rcv_service_requests(
-  rcv_service_request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  address_conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- the service address connection
-  request_hash BLOB NOT NULL,
-  ended INTEGER NOT NULL DEFAULT 0, -- a response with final = True was produced
-  expires_at TEXT NOT NULL, -- created + retention
-  created_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX idx_rcv_service_requests ON rcv_service_requests(address_conn_id, request_hash);
-
--- service side: ordered response payloads (plaintext) for a request; re-encrypted per reply
--- connection because each request establishes its own ratchet, so ciphertext is not reusable.
-CREATE TABLE rcv_service_responses(
-  rcv_service_response_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  rcv_service_request_id INTEGER NOT NULL REFERENCES rcv_service_requests ON DELETE CASCADE,
-  response_seq INTEGER NOT NULL,
-  final INTEGER NOT NULL,
-  response_bodies BLOB NOT NULL -- plaintext response payloads for this message (encoded NonEmpty MsgBody)
-);
-CREATE UNIQUE INDEX idx_rcv_service_responses ON rcv_service_responses(rcv_service_request_id, response_seq);
-
--- service side: reply connections subscribed under a request (the first, and any repeat while pending
--- or after completion). Each is a SndConnection to a reply queue with its own ratchet (in ratchets table).
-CREATE TABLE rcv_service_reply_conns(
-  rcv_service_reply_conn_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  rcv_service_request_id INTEGER NOT NULL REFERENCES rcv_service_requests ON DELETE CASCADE,
-  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE, -- SndConnection to the reply queue, holds the ratchet
-  last_sent_seq INTEGER NOT NULL DEFAULT 0
-);
+ALTER TABLE conn_invitations ADD COLUMN service_request INTEGER NOT NULL DEFAULT 0; -- service side: 1 = RPC request
+ALTER TABLE connections ADD COLUMN service_request_expires_at TEXT;                 -- client side: request deadline; gating + cleanup (nullable)
 ```
 
-The service's address ratchet keys are the address-DR `address_ratchet_keys` table - not duplicated here.
+The down migration drops the columns then the table/index. Schema dump tests pass (up, down, STRICT).
 
-## Agent API - `Simplex.Messaging.Agent`
-
-Service side:
+## Agent API — `Simplex.Messaging.Agent`
 
 ```haskell
--- Creates a DR-advertising contact address with CCTService subtype (address-DR createServiceAddress
--- plus the subtype), generating the link ratchet key and the first RatchetKeys row.
-createServiceAddress :: AgentClient -> UserId -> UserLinkData -> AE (ConnId, ConnShortLink 'CMContact)
+-- service: send the one response, return the reply ConnId, then tear the reply connection down.
+sendServiceReply      :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AE ConnId
+sendServiceReplyAsync :: AgentClient -> ACorrId -> UserId -> InvitationId -> MsgBody -> AE ConnId
 
--- Sends one response message with one or more payloads (final = True ends the exchange). The first
--- message to each reply connection secures the reply queue with SKEY; later ones use SEND. Appends to
--- rcv_service_responses.
-sendServiceReply :: AgentClient -> ServiceRequestRef -> Bool -> NonEmpty MsgBody -> AE ()
+-- refuse a request (Just reason = AgentRejection; Nothing = silent drop). PROHIBITED on wrong kind.
+rejectServiceRequest      :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AE ()
+rejectServiceRequestAsync :: AgentClient -> ACorrId -> UserId -> InvitationId -> Maybe ByteString -> AE ()
+rejectContact      :: AgentClient -> NetworkRequestMode -> UserId -> ConfirmationId -> Maybe ByteString -> AE ()
+rejectContactAsync :: AgentClient -> ACorrId -> UserId -> ConfirmationId -> Maybe ByteString -> AE ()
+
+-- client: establish the ratchet from the address, send the request, block on the reply TMVar up to the timeout
+-- (Nothing = serviceRequestTimeout; Just t overrides per request), returning the payload. Sync fails fast if the
+-- server is down; async enqueues a retried JOIN command that survives an outage.
+sendServiceRequest      :: AgentClient -> NetworkRequestMode -> UserId -> ConnectionRequestUri 'CMContact -> Maybe NominalDiffTime -> MsgBody -> AE MsgBody
+sendServiceRequestAsync :: AgentClient -> UserId -> ConnectionRequestUri 'CMContact -> Maybe NominalDiffTime -> MsgBody -> AE MsgBody
 ```
 
-Key rotation and update use the address-DR `rotateRatchetKeys`/link-data update; address deletion is `deleteConnection`.
+Both client calls share `serviceRequest_`; the async `JOIN` worker branches on the `JRServiceReq` command to send `AgentServiceRequest`. The call blocks on the `TMVar` and returns synchronously — no events, no correlation for the app.
 
-Client side (name resolution to a link is an existing API; the link must be a `CCTService` DR-advertising address):
+Events (`AEvent`, entity is the address connection):
 
 ```haskell
--- Establishes the ratchet from the address, creates the reply queue, sends the request, and waits for
--- the first response up to the deadline. The callback receives later responses while the process runs.
-sendServiceRequest ::
-  AgentClient -> UserId -> ConnShortLink 'CMContact -> UTCTime ->
-  MsgBody -> (ServiceResponse -> IO ()) -> AE ServiceResponse
-
-cancelServiceRequest :: AgentClient -> ConnId -> AE ()
-
-data ServiceResponse = ServiceResponse {bodies :: NonEmpty MsgBody, final :: Bool}
+SREQ :: InvitationId -> MsgBody -> AEvent AEConn  -- payload = the request; mirrors REQ.
+RJCT :: ConnInfo -> AEvent AEConn                 -- contact-request rejection reason.
 ```
 
-The waiting call and the callback are held in an in-memory map in `AgentClient`, keyed by the reply queue connection, filled by the receive path; they do not survive a restart.
-
-Service side event (`AEvent`, entity is the service address connection):
+Errors (`SMPAgentError`):
 
 ```haskell
-SREQ :: ServiceRequestRef -> MsgBody -> AEvent AEConn -- request payload for the bot
+| A_SERVICE {serviceError :: AgentServiceError}
+
+data AgentServiceError
+  = ASERejected {rejectReason :: Text}  -- service refused (Text: JSON-serializable, UTF-8-decoded from the reason bytes)
+  | ASETimeout                          -- no reply within the timeout
+  | ASENoPendingRequest                 -- a reply arrived with no pending request (e.g. post-restart)
+  | ASENotDRAddress                     -- the target address advertises no ratchet keys (fail fast, no send)
 ```
 
-`ServiceRequestRef` identifies the `rcv_service_requests` record; the bot passes it to `sendServiceReply`.
+Config (`AgentConfig`): `serviceRequestTimeout` (30 s, client wait, overridable per request) and `serviceResponseTimeout` (180 s, service reply window and cleanup TTL; must exceed `serviceRequestTimeout`).
 
-Rejection reuses `AgentRejection` (communicating-rejection RFC) as an `AgentServiceResponse`-level refusal or a dedicated variant - decided with that RFC.
+## Idempotency (deferred)
 
-## Agent processing
-
-Client side:
-
-- `sendServiceRequest`: retrieve link data per request (proxied per config); establish the ratchet and create Q_A (address-DR R2'); write the `snd_service_requests` row; send the `AgentServiceRequest` confirmation (proxied per config); wait on the in-memory sink for the first response until the deadline.
-- Response processing in `processSMPTransmissions`: a message on a queue with a `snd_service_requests` row is a response; `agentRatchetDecrypt` (advancing the ratchet), parse `AgentServiceResponse`, deliver to the waiting call or the callback. On `final`/deadline/cancel, delete Q_A and the reply connection.
-- `cleanupManager`: delete `snd_service_requests` past the deadline and mark their reply connections deleted; the existing deleted-connections step sends `DEL`. After a restart every row is stale, so this removes reply queues left behind.
-
-Service side:
-
-- Address-queue dispatch on `link_contact_type`: a service address routes `AgentConfirmation` with `ratchetKeyId` to the RPC handler (address-DR `smpAddressConfirmation` producing `AgentServiceRequest`); it rejects `AgentInvitation` and connection confirmations.
-- On `AgentServiceRequest`: establish the ratchet (address-DR O2'), create the `SndConnection` to Q_A, compute the request hash, look up `rcv_service_requests` by (address conn, hash):
-  - new: insert the request, insert a `rcv_service_reply_conns` row, deliver `SREQ` to the bot.
-  - existing: insert a `rcv_service_reply_conns` row and send it every stored `rcv_service_responses` in order, each `AgentServiceResponse` re-encrypted under this connection's ratchet.
-- `sendServiceReply`: append a `rcv_service_responses` row, then send `AgentServiceResponse` to every reply connection of the request under its ratchet (`SKEY`+`SEND` for the first message to a connection, `SEND` after); set `ended` on `final`.
-- `cleanupManager`: delete `rcv_service_requests` past `expires_at` (cascading to responses and reply connections, and their ratchets/queues).
-
-Configuration (`AgentConfig`): default request deadline, request retention period (1 to 24 hours). Ratchet key rotation interval is the address-DR config.
-
-Errors reuse `AgentErrorType` (e.g. `CMD PROHIBITED` for a link that is not a service address).
-
-## Idempotency
-
-The service identifies a request by its hash and keeps, for the retention period (config, not in link data), the ordered response payloads (`rcv_service_responses`) and the reply connections under that hash (`rcv_service_reply_conns`). A repeat request (same payload, therefore same hash) establishes its own ratchet and reply connection and does not reach the bot: while pending it is added and receives the responses so far and each later one; after completion it receives the whole stored sequence. Responses are stored as plaintext and re-encrypted per reply connection because each request has its own ratchet. This gives single execution over at-least-once delivery, bounded by the retention period.
-
-## Correlation and chat
-
-A response is connected to its request by the reply queue (one request, one reply queue, one ratchet). The request hash is only the idempotency key. The application ID is content inside the request payload, used only by the application to make two requests equal or different; the agent does not read it.
-
-Both ends are chat bots on the chat library, which serializes a service command into the request payload and deserializes the responses; the agent transports them and correlates by reply queue. The chat framework's `chatServiceCalls` correlation is not used.
+Not built. When built, the service will key a request by hash and cache the one response for a retention period, answering a repeat from storage without reaching the bot — single execution over at-least-once delivery, with its own tables.
 
 ## Tests
 
-- Encoding roundtrips: `AgentServiceRequest`, `AgentServiceResponse` in `AgentMessage` (one and several response bodies); the service subtype in `UserContactData`/link.
-- End to end (on the address-DR machinery): a request with one response; several responses streamed to the callback; `pqEncryption` on (hybrid) and off (X448-only) per the advertised keys; the request payload never travels under per-queue-only encryption.
-- Idempotency: a repeat while pending coalesces onto the same operation; a repeat after completion receives the stored responses without a second `SREQ`; both under fresh ratchets.
-- Lifecycle: the reply connection and the service ratchet are deleted after `final`; deadline; cancellation; a restart deletes client reply queues.
-- Rejection and rejection of the wrong envelope on a service vs non-service address.
+In `FunctionalAPITests` (plus the encoding roundtrip in `ConnectionRequestTests`), passing with `-O0`:
 
-## Phases
+- Request → one response, sync (`sendServiceReply`) and async (`sendServiceReplyAsync`).
+- Request → rejection (`rejectServiceRequest (Just reason)` → thrown `A_SERVICE (ASERejected …)`).
+- Resilience: `server down → send → up → receive → down → reply → up → receive response`.
+- No regression: the contact rejection and DR-join suites still pass.
 
-1. Service address subtype and dispatch on top of the address-DR flow; `AgentServiceRequest`/`AgentServiceResponse` messages; `createServiceAddress`.
-2. Client: `sendServiceRequest`, reply-queue reception and callback, cleanup.
-3. Service: request store, `sendServiceReply`, idempotency (coalescing and repeats under fresh ratchets), end-to-end and idempotency tests.
+The `simplex-chat` end-to-end tests (happy path, drop-when-off, non-DR fail-fast) live in that repo.

@@ -94,7 +94,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig)
+import Simplex.Messaging.Client (pattern NRMBackground, pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -201,7 +201,7 @@ pattern INFO :: ConnInfo -> AEvent 'AEConn
 pattern INFO connInfo = A.INFO PQSupportOn connInfo
 
 pattern REQ :: InvitationId -> NonEmpty SMPServer -> ConnInfo -> AEvent e
-pattern REQ invId srvs connInfo <- A.REQ invId PQSupportOn srvs connInfo
+pattern REQ invId srvs connInfo <- A.REQ invId PQSupportOn srvs connInfo _
 
 pattern CON :: AEvent 'AEConn
 pattern CON = A.CON PQEncOn
@@ -347,23 +347,40 @@ functionalAPITests ps = do
     testRatchetMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix3 ps $ runAgentClientContactTestPQ3 True
-  describe "Establish duplex connection via contact address with DR" $
-    testContactDRMatrix ps
-  describe "Establish duplex connection creating contact address with DR" $ do
-    it "createConnection, IKPQOn" $ runCreateConnectionDRTest_ False IKPQOn PQSupportOn ps
-    it "createConnection, IKUsePQ" $ runCreateConnectionDRTest_ False IKUsePQ PQSupportOn ps
-    it "createConnectionAsync, IKPQOn" $ runCreateConnectionDRTest_ True IKPQOn PQSupportOn ps
-    it "createConnectionAsync, IKUsePQ" $ runCreateConnectionDRTest_ True IKUsePQ PQSupportOn ps
-  it "should preserve address DR keys when the link data is updated" $
-    testAddressUpdatePreservesDRKeys ps
-  it "should rotate address DR keys, keeping old keys for stale requesters until pruned" $
-    testAddressKeyRotation ps
-  it "should add DR keys to an existing address via setConnShortLink" $
-    testAddDRViaSetConnShortLink ps
-  it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
-    testAcceptContactDRResumeAfterOffline ps
-  it "should support rejecting contact request" $
-    withSmpServer ps testRejectContactRequest
+  describe "contact address with DR" $ do
+    describe "Establish duplex connection via contact address with DR" $
+      testContactDRMatrix ps
+    describe "Establish duplex connection creating contact address with DR" $ do
+      it "createConnection, IKPQOn" $ runCreateConnectionDRTest_ False IKPQOn PQSupportOn ps
+      it "createConnection, IKUsePQ" $ runCreateConnectionDRTest_ False IKUsePQ PQSupportOn ps
+      it "createConnectionAsync, IKPQOn" $ runCreateConnectionDRTest_ True IKPQOn PQSupportOn ps
+      it "createConnectionAsync, IKUsePQ" $ runCreateConnectionDRTest_ True IKUsePQ PQSupportOn ps
+    it "should preserve address DR keys when the link data is updated" $
+      testAddressUpdatePreservesDRKeys ps
+    it "should rotate address DR keys, keeping old keys for stale requesters until pruned" $
+      testAddressKeyRotation ps
+    it "should add DR keys to an existing address via setConnShortLink" $
+      testAddDRViaSetConnShortLink ps
+    it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
+      testAcceptContactDRResumeAfterOffline ps
+    it "should support rejecting contact request" $
+      withSmpServer ps testRejectContactRequest
+    it "should communicate rejection reason via double ratchet" $
+      withSmpServer ps testRejectContactRequestDR
+    it "should communicate rejection reason via double ratchet (async)" $
+      withSmpServer ps testRejectContactRequestDRAsync
+    it "should send a service request and receive the response" $
+      withSmpServer ps testServiceRequestResponse
+    it "should send a service request and receive the response (async reply)" $
+      withSmpServer ps testServiceRequestResponseAsync
+    it "should reject a service request with a reason" $
+      withSmpServer ps testServiceRequestRejected
+    it "should verify a signed service request" $
+      withSmpServer ps testSignedServiceRequest
+    it "should verify a signed service request (async)" $
+      withSmpServer ps testSignedServiceRequestAsync
+    it "should deliver a service response across server outages" $
+      testServiceRequestResilient ps
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
@@ -971,7 +988,7 @@ runAgentClientContactTestPQ sqSecured viaProxy reqPQSupport (alice, aPQ) (bob, b
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo bPQ
     sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
-    ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId pqSup' _ "bob's connInfo" _) <- get alice
     liftIO $ pqSup' `shouldBe` reqPQSupport
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
     sqSecured' <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
@@ -1045,7 +1062,7 @@ runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmp
       else do
         sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReqJoin "bob's connInfo" bPQ SMSubscribe
         liftIO $ sqSecuredJoin `shouldBe` False
-    ("", _, A.REQ invId reqPQ _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId reqPQ _ "bob's connInfo" _) <- get alice
     liftIO $ reqPQ `shouldBe` PQSupportOn
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     if asyncAccept
@@ -1079,7 +1096,7 @@ runCreateConnectionDRTest_ asyncNew addrIK bPQ ps = withSmpServer ps $ withAgent
       Nothing -> expectationFailure "createConnection must advertise DR ratchet keys"
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq bPQ
     void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" bPQ SMSubscribe
-    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId _ _ "bob's connInfo" _) <- get alice
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     void $ acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
@@ -1104,7 +1121,7 @@ joinContactDR :: HasCallStack => AgentClient -> AgentClient -> ConnectionRequest
 joinContactDR alice requester connReq addrIK pqEnc = do
   aliceId <- A.prepareConnectionToJoin requester 1 True connReq PQSupportOn
   void $ A.joinConnection requester NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
-  ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+  ("", _, A.REQ invId _ _ "bob's connInfo" _) <- get alice
   reqId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
   void $ acceptContact alice 1 reqId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
   ("", _, A.CONF confId _ _ "alice's connInfo") <- get requester
@@ -1179,7 +1196,7 @@ testAddressUpdatePreservesDRKeys ps = withSmpServer ps $ withAgentClients2 $ \al
     aliceId <- A.prepareConnectionToJoin bob 1 True connReq' bPQ
     sqSecuredJoin <- A.joinConnection bob NRMInteractive 1 aliceId True connReq' "bob's connInfo" bPQ SMSubscribe
     liftIO $ sqSecuredJoin `shouldBe` False
-    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId _ _ "bob's connInfo" _) <- get alice
     bobId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
@@ -1202,7 +1219,7 @@ testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
     (_, _, connReq') <- getConnShortLink bob 1 shortLink
     aId <- A.prepareConnectionToJoin bob 1 True connReq' PQSupportOn
     _ <- A.joinConnection bob NRMInteractive 1 aId True connReq' "bob's connInfo" PQSupportOn SMSubscribe
-    ("", _, A.REQ invId _ _ "bob's connInfo") <- get alice
+    ("", _, A.REQ invId _ _ "bob's connInfo" _) <- get alice
     bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption addrIK)
     pure (bId, invId, aId)
   ("", "", DOWN _ _) <- nGet alice
@@ -1231,7 +1248,7 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
       aId <- A.prepareConnectionToJoin b 1 True qInfo pq
       sqSecuredJoin <- A.joinConnection b NRMInteractive 1 aId True qInfo "bob's connInfo" pq SMSubscribe
       liftIO $ sqSecuredJoin `shouldBe` False -- joining via contact address connection
-      ("", _, A.REQ invId pqSup' _ "bob's connInfo") <- get alice
+      ("", _, A.REQ invId pqSup' _ "bob's connInfo" _) <- get alice
       liftIO $ pqSup' `shouldBe` PQSupportOn
       bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
       sqSecuredAccept <- acceptContact alice 1 bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
@@ -1277,9 +1294,136 @@ testRejectContactRequest =
     aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ sqSecured `shouldBe` False -- joining via contact address connection
-    ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get alice
-    rejectContact alice invId
+    ("", _, A.REQ invId PQSupportOn _ "bob's connInfo" _) <- get alice
+    Left (A.CMD PROHIBITED _) <- tryError $ rejectContact alice NRMInteractive 1 invId (Just "no rejection without double ratchet")
+    rejectContact alice NRMInteractive 1 invId Nothing
     liftIO $ noMessages bob "nothing delivered to bob"
+
+testRejectContactRequestDR :: HasCallStack => IO ()
+testRejectContactRequestDR =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+    (_addrConnId, CCLink connReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing IKPQOn True SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo" _) <- get alice
+    rejectContact alice NRMInteractive 1 invId (Just "not now")
+    ("", _, A.RJCT "not now") <- get bob
+    pure ()
+
+testRejectContactRequestDRAsync :: HasCallStack => IO ()
+testRejectContactRequestDRAsync =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+    (_addrConnId, CCLink connReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing IKPQOn True SMSubscribe
+    aliceId <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo" _) <- get alice
+    rejectContactAsync alice "1" 1 invId (Just "not now")
+    ("", _, A.RJCT "not now") <- get bob
+    pure ()
+
+serviceUserLinkData :: UserConnLinkData 'CMContact
+serviceUserLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+
+testServiceRequestResponse :: HasCallStack => IO ()
+testServiceRequestResponse =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing Nothing "service request")
+      (runRight_ $ do
+        ("", _, SREQ invId _ "service request") <- get service
+        replyConnId <- sendServiceReply service NRMInteractive 1 invId "service response"
+        ("", sentConnId, A.SSENT _ _) <- get service
+        liftIO $ sentConnId `shouldBe` replyConnId)
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testServiceRequestResponseAsync :: HasCallStack => IO ()
+testServiceRequestResponseAsync =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing Nothing "service request")
+      (runRight_ $ do
+        ("", _, SREQ invId _ "service request") <- get service
+        replyConnId <- sendServiceReplyAsync service "1" 1 invId "service response"
+        ("", sentConnId, A.SSENT _ _) <- get service
+        liftIO $ sentConnId `shouldBe` replyConnId)
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testServiceRequestRejected :: HasCallStack => IO ()
+testServiceRequestRejected =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    resp <- liftIO $ fst <$> concurrently
+      (runExceptT $ sendServiceRequest client NRMInteractive 1 connReq Nothing Nothing "service request")
+      (runRight_ $ do
+        ("", _, SREQ invId _ "service request") <- get service
+        rejectServiceRequest service NRMInteractive 1 invId (Just "not allowed"))
+    liftIO $ resp `shouldBe` Left (AGENT (A_SERVICE (ASERejected "not allowed")))
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testSignedServiceRequest :: HasCallStack => IO ()
+testSignedServiceRequest =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    g <- liftIO C.newRandom
+    (signPub, signPriv) <- liftIO $ atomically $ C.generateKeyPair g
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequest client NRMInteractive 1 connReq Nothing (Just signPriv) "signed request")
+      (runRight_ $ do
+        ("", _, SREQ invId sigKey_ "signed request") <- get service
+        liftIO $ sigKey_ `shouldBe` Just signPub
+        void $ sendServiceReply service NRMInteractive 1 invId "service response")
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+testSignedServiceRequestAsync :: HasCallStack => IO ()
+testSignedServiceRequestAsync =
+  withAgentClients2 $ \service client -> runRight_ $ do
+    (_addrConnId, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    g <- liftIO C.newRandom
+    (signPub, signPriv) <- liftIO $ atomically $ C.generateKeyPair g
+    resp <- liftIO $ fst <$> concurrently
+      (runRight $ sendServiceRequestAsync client 1 connReq Nothing (Just signPriv) "signed request")
+      (runRight_ $ do
+        ("", _, SREQ invId sigKey_ "signed request") <- get service
+        liftIO $ sigKey_ `shouldBe` Just signPub
+        void $ sendServiceReply service NRMInteractive 1 invId "service response")
+    liftIO $ resp `shouldBe` "service response"
+    liftIO $ threadDelay 250000 -- let the async teardown of the reply queues settle before dispose
+
+-- server down, send, up, receive, down, reply, up, receive response.
+-- The request send retries the outage (bounded by serviceRequestTimeout) until the server is back; the reply is
+-- queued while the server is down and delivered on reconnect (async reply via ICReplyDel); the blocking call receives it.
+testServiceRequestResilient :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
+  -- server up: create the service address
+  connReq <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    (_, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+    pure connReq
+  ("", "", DOWN _ _) <- nGet service
+  -- server down: the async send is enqueued as a retried JOIN command and blocks for the response
+  reqAsync <- async $ runExceptT $ sendServiceRequestAsync client 1 connReq Nothing Nothing "resilient request"
+  threadDelay 500000 -- let the enqueued send retry against the down server before bringing it up
+  -- server up: the request is delivered and the service receives it
+  invId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+    ("", "", UP _ _) <- nGet service
+    ("", _, SREQ invId _ "resilient request") <- get service
+    pure invId :: ExceptT AgentErrorType IO InvitationId
+  ("", "", DOWN _ _) <- nGet service
+  -- server down: the service replies; the async reply is enqueued and retried until the server is back
+  replyConnId <- runRight $ sendServiceReplyAsync service "1" 1 invId "resilient response"
+  -- server up: the reply is delivered, the requester's blocking call returns the response, the service gets SENT
+  resp <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+    ("", "", UP _ _) <- nGet service
+    ("", sentConnId, A.SSENT _ _) <- get service
+    sentConnId `shouldBe` replyConnId
+    wait reqAsync
+  resp `shouldBe` Right "resilient response"
 
 testUpdateConnectionUserId :: HasCallStack => IO ()
 testUpdateConnectionUserId =
@@ -1538,7 +1682,7 @@ testContactErrors ps restart = do
             Right r -> error $ "unexpected result " <> show r
             Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
     loopSend
-    ("", _, A.REQ invId PQSupportOn _ "bob's connInfo") <- get a
+    ("", _, A.REQ invId PQSupportOn _ "bob's connInfo" _) <- get a
     pure invId
   ("", "", DOWN _ [_]) <- nGet a
   bId <- runRight $ A.prepareConnectionToAccept a 1 True invId PQSupportOn

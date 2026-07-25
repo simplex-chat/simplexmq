@@ -83,6 +83,7 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
+    RequestSignature (..),
     AgentMessageType (..),
     APrivHeader (..),
     AMessage (..),
@@ -161,6 +162,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnectionErrorType (..),
     BrokerErrorType (..),
     SMPAgentError (..),
+    AgentServiceError (..),
     DroppedMsg (..),
     AgentCryptoError (..),
     cryptoErrToSyncState,
@@ -414,7 +416,10 @@ data AEvent (e :: AEntity) where
   LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
-  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender
+  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
+  SREQ :: InvitationId -> Maybe C.PublicKeyEd25519 -> MsgBody -> AEvent AEConn
+  SSENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
+  RJCT :: ConnInfo -> AEvent AEConn
   INFO :: PQSupport -> ConnInfo -> AEvent AEConn
   CON :: PQEncryption -> AEvent AEConn -- notification that connection is established
   END :: AEvent AEConn
@@ -496,6 +501,9 @@ data AEventTag (e :: AEntity) where
   LDATA_ :: AEventTag AEConn
   CONF_ :: AEventTag AEConn
   REQ_ :: AEventTag AEConn
+  SREQ_ :: AEventTag AEConn
+  SSENT_ :: AEventTag AEConn
+  RJCT_ :: AEventTag AEConn
   INFO_ :: AEventTag AEConn
   CON_ :: AEventTag AEConn
   END_ :: AEventTag AEConn
@@ -559,6 +567,9 @@ aEventTag = \case
   LDATA {} -> LDATA_
   CONF {} -> CONF_
   REQ {} -> REQ_
+  SREQ {} -> SREQ_
+  SSENT {} -> SSENT_
+  RJCT {} -> RJCT_
   INFO {} -> INFO_
   CON _ -> CON_
   END -> END_
@@ -858,7 +869,7 @@ data AgentMsgEnvelope
         connReq :: ConnectionRequestUri 'CMInvitation,
         connInfo :: ByteString -- this message is only encrypted with per-queue E2E, not with double ratchet,
       }
-  | AgentInvitationDR -- invitation establishing double ratchet e2e with the contact address that included DR keys
+  | AgentContactRequest -- DR request to a contact address that published DR keys: a contact invitation or a service (RPC) request
       { agentVersion :: VersionSMPA,
         e2eSndParams :: SndE2ERatchetParams 'C.X448,
         ratchetKeyId :: RatchetKeyId,
@@ -879,8 +890,8 @@ instance Encoding AgentMsgEnvelope where
       smpEncode (agentVersion, 'M', Tail encAgentMessage)
     AgentInvitation {agentVersion, connReq, connInfo} ->
       smpEncode (agentVersion, 'I', Large $ strEncode connReq, Tail connInfo)
-    AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo} ->
-      smpEncode (agentVersion, 'J', e2eSndParams, ratchetKeyId, Tail encConnInfo)
+    AgentContactRequest {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo} ->
+      smpEncode (agentVersion, 'A', e2eSndParams, ratchetKeyId, Tail encConnInfo)
     AgentRatchetKey {agentVersion, e2eEncryption, info} ->
       smpEncode (agentVersion, 'R', e2eEncryption, Tail info)
   smpP = do
@@ -896,14 +907,21 @@ instance Encoding AgentMsgEnvelope where
         connReq <- strDecode . unLarge <$?> smpP
         Tail connInfo <- smpP
         pure AgentInvitation {agentVersion, connReq, connInfo}
-      'J' -> do
+      'A' -> do
         (e2eSndParams, ratchetKeyId, Tail encConnInfo) <- smpP
-        pure AgentInvitationDR {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}
+        pure AgentContactRequest {agentVersion, e2eSndParams, ratchetKeyId, encConnInfo}
       'R' -> do
         e2eEncryption <- smpP
         Tail info <- smpP
         pure AgentRatchetKey {agentVersion, e2eEncryption, info}
       _ -> fail "bad AgentMsgEnvelope"
+
+data RequestSignature = RequestSignature C.PublicKeyEd25519 (C.Signature 'C.Ed25519)
+  deriving (Eq, Show)
+
+instance Encoding RequestSignature where
+  smpEncode (RequestSignature k sig) = smpEncode (k, sig)
+  smpP = RequestSignature <$> smpP <*> smpP
 
 -- SMP agent message formats (after double ratchet decryption,
 -- or in case of AgentInvitation - in plain text body)
@@ -916,6 +934,9 @@ data AgentMessage
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
   | AgentRatchetInfo ByteString
   | AgentMessage APrivHeader AMessage
+  | AgentServiceRequest (NonEmpty SMPQueueInfo) (Maybe RequestSignature) MsgBody
+  | AgentServiceResponse MsgBody
+  | AgentRejection ByteString
   deriving (Show)
 
 instance Encoding AgentMessage where
@@ -924,12 +945,18 @@ instance Encoding AgentMessage where
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
     AgentRatchetInfo info -> smpEncode ('R', Tail info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
+    AgentServiceRequest qs sig_ body -> smpEncode ('A', qs, sig_, Tail body)
+    AgentServiceResponse body -> smpEncode ('P', Tail body)
+    AgentRejection reason -> smpEncode ('J', Tail reason)
   smpP =
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
       'R' -> AgentRatchetInfo . unTail <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
+      'A' -> AgentServiceRequest <$> smpP <*> smpP <*> (unTail <$> smpP)
+      'P' -> AgentServiceResponse . unTail <$> smpP
+      'J' -> AgentRejection . unTail <$> smpP
       _ -> fail "bad AgentMessage"
 
 -- internal type for storing message type in the database
@@ -946,6 +973,9 @@ data AgentMessageType
   | AM_QUSE_
   | AM_QTEST_
   | AM_EREADY_
+  | AM_SRV_REQ
+  | AM_SRV_RESP
+  | AM_RJCT
   deriving (Eq, Show)
 
 instance Encoding AgentMessageType where
@@ -962,6 +992,9 @@ instance Encoding AgentMessageType where
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
     AM_EREADY_ -> "E"
+    AM_SRV_REQ -> "A"
+    AM_SRV_RESP -> "P"
+    AM_RJCT -> "J"
   smpP =
     A.anyChar >>= \case
       'C' -> pure AM_CONN_INFO
@@ -979,6 +1012,9 @@ instance Encoding AgentMessageType where
           'T' -> pure AM_QTEST_
           _ -> fail "bad AgentMessageType"
       'E' -> pure AM_EREADY_
+      'A' -> pure AM_SRV_REQ
+      'P' -> pure AM_SRV_RESP
+      'J' -> pure AM_RJCT
       _ -> fail "bad AgentMessageType"
 
 agentMessageType :: AgentMessage -> AgentMessageType
@@ -987,6 +1023,9 @@ agentMessageType = \case
   AgentConnInfoReply {} -> AM_CONN_INFO_REPLY
   AgentRatchetInfo _ -> AM_RATCHET_INFO
   AgentMessage _ aMsg -> aMessageType aMsg
+  AgentServiceRequest {} -> AM_SRV_REQ
+  AgentServiceResponse {} -> AM_SRV_RESP
+  AgentRejection {} -> AM_RJCT
 
 data APrivHeader = APrivHeader
   { -- | sequential ID assigned by the sending agent
@@ -1860,6 +1899,7 @@ data DRInvitation = DRInvitation
 
 data JoinRequest
   = JRConnReq {enableNtfs :: Bool, joinConnReq :: AConnectionRequestUri, joinPQSupport :: PQSupport}
+  | JRServiceReq {contactReq :: ConnectionRequestUri 'CMContact, joinPQSupport :: PQSupport, requestKey :: Maybe (C.StoredPrivateKey C.Ed25519)}
   | JRInvitationDR DRInvitation
   deriving (Show)
 
@@ -2170,7 +2210,16 @@ data SMPAgentError
     A_DUPLICATE {droppedMsg_ :: Maybe DroppedMsg}
   | -- | error in the message to add/delete/etc queue in connection
     A_QUEUE {queueErr :: String}
+  | A_SERVICE {serviceError :: AgentServiceError}
   deriving (Eq, Show, Exception)
+
+data AgentServiceError
+  = ASERejected {rejectReason :: Text}
+  | ASETimeout
+  | ASENoPendingRequest
+  | ASENotDRAddress
+  | ASEBadSignature
+  deriving (Eq, Show)
 
 data AgentCryptoError
   = -- | AES decryption error
@@ -2202,9 +2251,11 @@ $(J.deriveJSON defaultJSON ''DRInvitation)
 instance StrEncoding JoinRequest where
   strEncode = \case
     JRConnReq ntfs cReq pqSup -> strEncode (ntfs, cReq, pqSup)
+    JRServiceReq cReq pqSup signKey -> strEncode ('S', cReq, pqSup, signKey)
     JRInvitationDR dr -> serializeBinary $ LB.toStrict (J'.encode dr)
   strP =
-    (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
+    (A.char 'S' *> (JRServiceReq <$> _strP <*> _strP <*> _strP))
+      <|> (JRConnReq <$> strP <*> _strP <*> (_strP <|> pure PQSupportOff))
       <|> (JRInvitationDR <$> (J'.eitherDecodeStrict' <$?> (A.take =<< (A.decimal <* "\n"))))
 
 -- | SMP agent command and response parser for commands stored in db (fully parses binary bodies)
@@ -2289,6 +2340,8 @@ $(J.deriveJSON (sumTypeJSON id) ''CommandErrorType)
 $(J.deriveJSON (sumTypeJSON id) ''ConnectionErrorType)
 
 $(J.deriveJSON (sumTypeJSON id) ''AgentCryptoError)
+
+$(J.deriveJSON (sumTypeJSON $ dropPrefix "ASE") ''AgentServiceError)
 
 $(J.deriveJSON defaultJSON ''DroppedMsg)
 

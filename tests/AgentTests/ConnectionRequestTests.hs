@@ -353,6 +353,11 @@ connectionRequestTests =
       Right (inv' :: ConnShortLink 'CMInvitation) <- pure $ strDecode "https://localhost/i#tnUaHYp8saREmyEHR93SBpl8ySHBchOt/LJ1ZQUzxH9Udb0jw5wmJACv5o6oe8e7BsX_hUCUMTSY"
       shortenShortLink [presetSrv] inv `shouldBe` inv'
       restoreShortLink [presetSrv] inv' `shouldBe` inv
+    it "should serialize and parse service RPC agent messages" $ do
+      let qInfo = SMPQueueInfo currentSMPClientVersion queueAddr
+      smpEncodingTest $ AgentServiceRequest [qInfo] Nothing "service request payload"
+      smpEncodingTest $ AgentServiceResponse "service response payload"
+      smpEncodingTest $ AgentRejection "rejected: not allowed"
   where
     smpEncodingTest :: (Encoding a, Eq a, Show a, HasCallStack) => a -> Expectation
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a
