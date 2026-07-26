@@ -206,7 +206,6 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Bifunctor (bimap, first, second)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -310,7 +309,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfoBytes), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -1286,7 +1285,7 @@ data ProtocolTestFailure = ProtocolTestFailure
   }
   deriving (Eq, Show)
 
-runSMPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> SMPServerWithAuth -> AM' (Either ProtocolTestFailure (Either String ServerPublicInfo))
+runSMPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> SMPServerWithAuth -> AM' (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
   C.AuthAlg ra <- asks $ rcvAuthAlg . config
@@ -1297,9 +1296,6 @@ runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
     ts <- readTVarIO $ proxySessTs c
     getProtocolClient g nm tSess cfg presetDomains Nothing ts (\_ -> pure ()) >>= \case
       Right smp -> do
-        let serverInfo = case serverInfoBytes (thParams smp) of
-              Nothing -> Left "No server info received"
-              Just bs -> J.eitherDecodeStrict bs
         rKeys@(_, rpKey) <- atomically $ C.generateAuthKeyPair ra g
         (sKey, spKey) <- atomically $ C.generateAuthKeyPair sa g
         (dhKey, _) <- atomically $ C.generateKeyPair g
@@ -1311,9 +1307,7 @@ runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
               _ -> secureSMPQueue smp nm rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp nm rpKey rcvId
         ok <- netTimeoutInt (tcpTimeout $ networkConfig cfg) nm `timeout` closeProtocolClient smp
-        pure $ case either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok of
-          Just failErr -> Left failErr
-          Nothing -> Right serverInfo
+        pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (thParams smp)) ok
       Left e -> pure $ Left (testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv

@@ -230,7 +230,7 @@ smpClientStub g sessionId thVersion thAuth = do
               implySessId = True,
               encryptBlock = Nothing,
               serviceAuth = thVersion >= serviceCertsSMPVersion,
-              serverInfoBytes = Nothing
+              serverInfo = Nothing
             },
         sessionTs = ts,
         client_ =

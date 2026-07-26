@@ -103,12 +103,13 @@ module Simplex.Messaging.Transport
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative (optional)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except (throwE)
+import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -134,9 +135,10 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
+import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith)
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -466,7 +468,7 @@ data THandleParams v p = THandleParams
     -- | include service signature (or '0' if it is absent), based on protocol version
     serviceAuth :: Bool,
     -- | JSON-encoded ServerPublicInfo from handshake, present when server version >= serverInfoSMPVersion
-    serverInfoBytes :: Maybe ByteString
+    serverInfo :: Maybe (Either String ServerPublicInfo)
   }
 
 data THandleAuth (p :: TransportPeer) where
@@ -520,7 +522,7 @@ data SMPServerHandshake = SMPServerHandshake
     -- todo C.PublicKeyX25519
     authPubKey :: CertChainPubKey,
     -- | optional server public information (JSON-encoded ServerPublicInfo), sent when version >= serverInfoSMPVersion
-    serverInfo :: Maybe ByteString
+    serverInfoBytes :: Maybe ByteString
   }
 
 -- This is the third handshake message that SMP server sends to services
@@ -610,14 +612,14 @@ ifHasServerInfo :: VersionSMP -> a -> a -> a
 ifHasServerInfo v a b = if v >= serverInfoSMPVersion then a else b
 
 instance Encoding SMPServerHandshake where
-  smpEncode SMPServerHandshake {smpVersionRange, sessionId, authPubKey, serverInfo} =
+  smpEncode SMPServerHandshake {smpVersionRange, sessionId, authPubKey, serverInfoBytes} =
     smpEncode (smpVersionRange, sessionId, authPubKey) <> info
     where
-      info = ifHasServerInfo (maxVersion smpVersionRange) (smpEncode (Large <$> serverInfo)) ""
+      info = ifHasServerInfo (maxVersion smpVersionRange) (smpEncode (Large <$> serverInfoBytes)) ""
   smpP = do
     (smpVersionRange, sessionId, authPubKey) <- smpP
-    serverInfo <- ifHasServerInfo (maxVersion smpVersionRange) ((fmap unLarge <$> smpP) <|> pure Nothing) (pure Nothing)
-    pure SMPServerHandshake {smpVersionRange, sessionId, authPubKey, serverInfo}
+    serverInfoBytes <- ifHasServerInfo (maxVersion smpVersionRange) (unLarge <$$> smpP) (pure Nothing)
+    pure SMPServerHandshake {smpVersionRange, sessionId, authPubKey, serverInfoBytes}
 
 -- newtype for CertificateChain and a session key signed with this certificate
 data CertChainPubKey = CertChainPubKey
@@ -728,9 +730,9 @@ smpServerHandshake ::
   Maybe ByteString ->
   (SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId) ->
   ExceptT TransportError IO (THandleSMP c 'TServer)
-smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfo getService = do
+smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfoBytes getService = do
   let sk = C.signX509 srvSignKey $ C.publicToX509 k
-  sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = CertChainPubKey srvCert sk, serverInfo}
+  sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = CertChainPubKey srvCert sk, serverInfoBytes}
   SMPClientHandshake {smpVersion = v, keyHash, authPubKey = k', proxyServer, clientService} <- getHandshake th
   when (keyHash /= kh) $ throwE $ TEHandshake IDENTITY
   case compatibleVRange' smpVersionRange v of
@@ -763,7 +765,7 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfo ge
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleSMP c 'TClient)
 smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange proxyServer serviceKeys_ = do
-  SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey = certKey@(CertChainPubKey chain exact), serverInfo} <- getHandshake th
+  SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey = certKey@(CertChainPubKey chain exact), serverInfoBytes} <- getHandshake th
   when (sessionId /= sessId) $ throwE TEBadSession
   case smpVersionRange `compatibleVRange` smpVRange of
     Just (Compatible vr) -> do
@@ -782,7 +784,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange proxyServer serviceKey
           hs = SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService}
       sendHandshake th hs
       service <- mapM getClientService serviceKeys
-      liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck proxyServer service serverInfo
+      liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck proxyServer service serverInfoBytes
     Nothing -> throwE TEVersion
   where
     th@THandle {params = THandleParams {sessionId}} = smpTHandle c
@@ -838,7 +840,7 @@ smpTHandle_ th@THandle {params} v vr thAuth encryptBlock serverInfoBytes =
             thAuth,
             encryptBlock,
             serviceAuth = v >= serviceCertsSMPVersion, -- optional service signature will be encoded for all commands and responses
-            serverInfoBytes
+            serverInfo = J.eitherDecodeStrict' <$> serverInfoBytes
           }
    in (th :: THandleSMP c p) {params = params'}
 
@@ -877,7 +879,7 @@ smpTHandle c = THandle {connection = c, params}
           implySessId = True,
           encryptBlock = Nothing,
           serviceAuth = False,
-          serverInfoBytes = Nothing
+          serverInfo = Nothing
         }
 
 $(J.deriveJSON (sumTypeJSON id) ''HandshakeError)
