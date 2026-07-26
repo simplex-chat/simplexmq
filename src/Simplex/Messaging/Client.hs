@@ -231,7 +231,7 @@ smpClientStub g sessionId thVersion thAuth = do
               encryptBlock = Nothing,
               batch = True,
               serviceAuth = thVersion >= serviceCertsSMPVersion,
-              serverInfoBytes = Nothing
+              serverInfo = Nothing
             },
         sessionTs = ts,
         client_ =

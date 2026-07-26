@@ -8,6 +8,7 @@ import Data.Type.Equality
 import Simplex.Messaging.Agent.Protocol (ShortLinkCreds (..))
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Client (ProxiedRelay (..))
+import Simplex.Messaging.Server.Information
 
 instance (Eq rq, Eq sq) => Eq (SomeConn' rq sq) where
   SomeConn d c == SomeConn d' c' = case testEquality d d' of
@@ -31,3 +32,15 @@ deriving instance Eq ShortLinkCreds
 deriving instance Show ProxiedRelay
 
 deriving instance Eq ProxiedRelay
+
+deriving instance Eq Entity
+
+deriving instance Eq HostingType
+
+deriving instance Eq PGPKey
+
+deriving instance Eq ServerConditions
+
+deriving instance Eq ServerContactAddress
+
+deriving instance Eq ServerPublicInfo

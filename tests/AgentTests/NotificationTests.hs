@@ -82,6 +82,7 @@ import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ErrorType (AUTH), NetworkError (..), MsgFlags (MsgFlags), NMsgMeta (..), NtfServer, ProtocolServer (..), SMPMsgMeta (..), SubscriptionMode (..))
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
+import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Transport (ASrvTransport)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import System.Process (callCommand)
@@ -134,10 +135,10 @@ notificationTests ps@(t, _) = do
       withAPNSMockServer $ \apns ->
         testNtfTokenReRegisterInvalidOnCheck t apns
   describe "notification server tests" $ do
-    it "should pass" $ testRunNTFServerTests t testNtfServer `shouldReturn` Nothing
+    it "should pass" $ testRunNTFServerTests t testNtfServer `shouldReturn` Right Nothing
     let srv1 = testNtfServer {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testRunNTFServerTests t srv1 `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
+      testRunNTFServerTests t srv1 `shouldReturn` Left (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
   describe "Managing notification subscriptions" $ do
     describe "should create notification subscription for existing connection" $
       testNtfMatrix ps testNotificationSubscriptionExistingConnection
@@ -536,11 +537,11 @@ testNtfTokenReRegisterInvalidOnCheck t apns = do
       NTActive <- checkNtfToken a tkn1
       pure ()
 
-testRunNTFServerTests :: ASrvTransport -> NtfServer -> IO (Maybe ProtocolTestFailure)
+testRunNTFServerTests :: ASrvTransport -> NtfServer -> IO (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 testRunNTFServerTests t srv =
   withNtfServer t $
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      either Just (const Nothing) <$> testProtocolServer a NRMInteractive 1 (ProtoServerWithAuth srv Nothing)
+      testProtocolServer a NRMInteractive 1 (ProtoServerWithAuth srv Nothing)
 
 testNotificationSubscriptionExistingConnection :: APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
 testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {agentEnv = Env {config = aliceCfg, store}} bob = do
