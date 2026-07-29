@@ -93,8 +93,10 @@ Nothing -> do
 
 Pass `sentCommands` and the request's `corrId` into `getResponse`. Double delete is harmless.
 
-Same leak with no timeout at `Client.hs:1366` and `1368`, where the request is inserted before
-an early error return.
+Two more entry points leak with no timeout involved. `mkTransmission_` inserts the request
+before it is sent (`Client.hs:1361`), and `sendRecv` then returns early at `Client.hs:1366`
+(transport error) and `Client.hs:1368` (block over `blockSize - 2`) without sending or deleting.
+Both need the same delete.
 
 ---
 
@@ -102,8 +104,14 @@ an early error return.
 
 ### Issue
 
-A failed connect is cached in `smpClients` as `Left (error, expiry)`, removed only on a later
-lookup of the same server (`Client/Agent.hs:250`, `:411`). Nothing sweeps on a timer.
+A failed connect is cached in `smpClients` as `Left (error, expiry)` (`Client/Agent.hs:275`),
+removed only on a later lookup of the same server (`Client/Agent.hs:250`, `:411`). Nothing sweeps
+on a timer. Verified by listing every `smpClients` site: the only other removals are
+`clientDisconnected` (`:311`, connected clients only) and shutdown (`:427`).
+
+Conditional on `persistErrorInterval > 0`. At 0 the entry is removed immediately
+(`Client/Agent.hs:269-272`) and there is no leak, but production sets 30
+(`Server/Main.hs:607`).
 
 The address comes from the client via `PRXY`. Host, port and key hash are arbitrary, so distinct
 keys are effectively unlimited.
@@ -183,26 +191,6 @@ atomically $ modifyTVar' endThreads $ IM.adjust (const (Just w)) tId
 
 ---
 
-## Clean
-
-200 connections opened at once, closed, then measured again:
-
-| test                                  | peak per conn | after 25s |
-| ------------------------------------- | ------------- | --------- |
-| TCP connect, never start TLS          | 48.2 KiB      | 0.31 KiB  |
-| TLS done, no SMP handshake            | 203.1 KiB     | 0.71 KiB  |
-| Handshake done, one byte, then quiet  | 264.6 KiB     | 0.87 KiB  |
-
-All recovered. Also clean: 400 connect/disconnect rounds, and steady forwarding at 50ms each way.
-
-At +5s the middle two still read ~120 KiB per connection, which looks like a 24 MiB leak but is
-`gracefulClose` waiting up to 5s per connection. Falling means reclaimed, flat above baseline
-means leaked.
-
-Peaks still matter. 200 abandoned half open connections hold ~40 MiB for ~25s, unauthenticated.
-A client that finishes the handshake then sends one byte holds ~265 KiB for as long as it stays
-connected: no read timeout, `transportTimeout` is hardcoded `Nothing` (`Transport/Server.hs:104`).
-
 ## Bug 5: socketsLeaked over-reports during teardown
 
 ### Issue
@@ -232,6 +220,26 @@ after `gracefulClose` returns. Either ordering keeps the invariant.
 
 ---
 
+## Clean
+
+200 connections opened at once, closed, then measured again:
+
+| test                                  | peak per conn | after 25s |
+| ------------------------------------- | ------------- | --------- |
+| TCP connect, never start TLS          | 48.2 KiB      | 0.31 KiB  |
+| TLS done, no SMP handshake            | 203.1 KiB     | 0.71 KiB  |
+| Handshake done, one byte, then quiet  | 264.6 KiB     | 0.87 KiB  |
+
+All recovered. Also clean: 400 connect/disconnect rounds, and steady forwarding at 50ms each way.
+
+At +5s the middle two still read ~120 KiB per connection, which looks like a 24 MiB leak but is
+`gracefulClose` waiting up to 5s per connection. Falling means reclaimed, flat above baseline
+means leaked.
+
+Peaks still matter. 200 abandoned half open connections hold ~40 MiB for ~25s, unauthenticated.
+A client that finishes the handshake then sends one byte holds ~265 KiB for as long as it stays
+connected: no read timeout, `transportTimeout` is hardcoded `Nothing` (`Transport/Server.hs:104`).
+
 ## Connectivity and sockets under latency
 
 Latency swept with `BENCHLAG_MS` on `proxyfwd` (one way, so a request/response pair costs twice
@@ -257,10 +265,22 @@ Forwards work up to 16s each way and fail at 40s. The governing limit is the 30s
 The exact cutoff is not pinned down: the test transport adds delay per read/write cycle rather
 than per message, so configured lag does not map exactly onto observed round trip.
 
-## Not reproduced
+## Already fixed: the empty session variable leak
 
-Empty session variable leak. After 100 rounds `proxysess` ends with `proxy_smpClients=0` and
-`proxy_smpSessions=0`, checked before and after the 45 second connect timeout. `bracketOnError`
-in `withGetSessVar` drops the empty entry.
+Worth recording because an earlier version of this report listed it as "not reproduced", which
+was the wrong conclusion. It is not reproducible because it is fixed.
 
-The ~108 KiB per round it shows is harness overhead, not a server finding.
+`withGetSessVar'` (`Session.hs:65`) wraps the session var in `bracketOnError` with
+`dropEmptySessVar`, so an interrupted connect drops the empty var instead of leaving it to
+poison every later request. Fixed in `c9ebf72e` ("smp: fix proxy reconnection to relay after
+restart").
+
+`SMPProxyTests` already covers both the proxy and the agent variants, and both pass:
+
+```
+recovers when unresponsive relay restarts (control, no disconnect) [OK]
+reconnects to relay after sender disconnects mid-connection       [OK]
+reconnects after a connect is cancelled mid-flight                [OK]
+```
+
+A load phase cannot reproduce a fixed race, so the bench does not try.
