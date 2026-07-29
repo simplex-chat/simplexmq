@@ -100,7 +100,6 @@ import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQ
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
 import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
@@ -230,8 +229,8 @@ pattern Rcvd' aMsgId rcvdMsgId <- RCVD MsgMeta {integrity = MsgOk, recipient = (
 smpCfgVPrev :: ProtocolClientConfig SMPVersion
 smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
 
-ntfCfgVPrev :: ProtocolClientConfig NTFVersion
-ntfCfgVPrev = (ntfCfg agentCfg) {clientALPN = Nothing, serverVRange = V.mkVersionRange (VersionNTF 1) (VersionNTF 1)}
+-- ntfCfgVPrev :: ProtocolClientConfig NTFVersion
+-- ntfCfgVPrev = (ntfCfg agentCfg) {clientALPN = Nothing, serverVRange = V.mkVersionRange (VersionNTF 1) (VersionNTF 1)}
 
 agentCfgVPrev :: AgentConfig
 agentCfgVPrev = agentCfgVPrevPQ {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
@@ -242,8 +241,8 @@ agentCfgVPrevPQ =
     { sndAuthAlg = C.AuthAlg C.SEd25519,
       smpAgentVRange = prevRange $ smpAgentVRange agentCfg,
       smpClientVRange = prevRange $ smpClientVRange agentCfg,
-      smpCfg = smpCfgVPrev,
-      ntfCfg = ntfCfgVPrev
+      smpCfg = smpCfgVPrev
+      -- ntfCfg = ntfCfgVPrev -- previous version is not supported
     }
 
 agentCfgRatchetVPrev :: AgentConfig
