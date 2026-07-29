@@ -153,6 +153,31 @@ Peaks still matter. 200 abandoned half open connections hold ~40 MiB for ~25s, u
 A client that finishes the handshake then sends one byte holds ~265 KiB for as long as it stays
 connected: no read timeout, `transportTimeout` is hardcoded `Nothing` (`Transport/Server.hs:104`).
 
+## Connectivity and sockets under latency
+
+Latency swept with `BENCHLAG_MS` on `proxyfwd` (one way, so a request/response pair costs twice
+this). Sockets counted from `/proc/<pid>/fd` during the run.
+
+| lag each way | delivered | sockets | relay connects | reconnects | timeouts |
+| ------------ | --------- | ------- | -------------- | ---------- | -------- |
+| 0ms          | 12/12     | 8       | 1              | 0          | 0        |
+| 500ms        | 10/10     | 8       | 1              | 0          | 0        |
+| 5s           | 6/6       | 8       | 1              | 0          | 0        |
+| 16s          | 4/4       | 8       | 1              | 0          | 0        |
+| 40s          | 0/2       | 8       | 1              | 0          | 1        |
+
+Nothing accumulates. The socket count is the same whether forwards succeed or time out, the
+proxy to relay session is opened once and reused, and there are no reconnects at any latency.
+`proxy_smpClients` and `proxy_smpSessions` stay at 1 throughout.
+
+This is the bad news for Leak 1. The session holding the stuck `sentCommands` entries never
+drops, so nothing ever frees them. A connection that broke under latency would at least bound
+the damage.
+
+Forwards work up to 16s each way and fail at 40s. The governing limit is the 30s RFWD timeout.
+The exact cutoff is not pinned down: the test transport adds delay per read/write cycle rather
+than per message, so configured lag does not map exactly onto observed round trip.
+
 ## Not reproduced
 
 Empty session variable leak. After 100 rounds `proxysess` ends with `proxy_smpClients=0` and
