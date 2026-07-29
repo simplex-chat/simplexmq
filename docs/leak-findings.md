@@ -3,7 +3,7 @@
 From `bench/MemBench.hs` extended with a proxy plus relay topology and a transport that adds
 latency and drops replies.
 
-Two leaks on the proxy path, both client reachable. Three related bugs. TLS/TCP stack clean.
+Two leaks on the proxy path, both client reachable. Two related bugs. TLS/TCP stack clean.
 
 Measured on both the journal store and the PostgreSQL queue and message store, which is the
 production configuration. Results are the same on both.
@@ -73,6 +73,10 @@ Measured with `subtmo 200`, which drives the same batched subscribe path on a be
 so the count can be read directly: 200 queues, 200 timed out, `sentCommands` went from 0 to 200.
 One entry per queue, at about 1.76 KiB each. At the ntf server's batch size that is roughly
 2.3 MiB per unanswered batch.
+
+`subscribeSMPQueues` (measured) and `subscribeSMPQueuesNtfs` (the ntf server's call) are the
+same function bar the command constructor: both are `enablePings` followed by
+`sendProtocolCommands c NRMBackground cs`. So the measurement transfers directly.
 
 Cost per entry is far lower than the proxy case, a subscribe payload rather than a 16226 byte
 `RFWD`, but the retention rule is identical.
@@ -191,35 +195,6 @@ atomically $ modifyTVar' endThreads $ IM.adjust (const (Just w)) tId
 
 ---
 
-## Bug 5: socketsLeaked over-reports during teardown
-
-### Issue
-
-`closeConn` (`Transport/Server.hs:179`) removes the connection from `active`, then calls
-`gracefulClose conn 5000`, then increments `closed`:
-
-```haskell
-atomically $ writeTVar closed True >> modifyTVar' clients (IM.delete cId)
-gracefulClose conn 5000 `catchAll_` pure ()
-atomically $ modifyTVar' gracefullyClosed (+ 1)
-```
-
-`socketsLeaked = accepted - closed - active` (`Transport/Server.hs:225`). For up to 5 seconds a
-closing connection is in neither `closed` nor `active`, so it counts as leaked.
-
-### Impact
-
-No memory cost. Under connection churn `socketsLeaked` shows a steady nonzero value that is not
-a leak, which makes the metric unusable for the thing it is named after. This is the same 5
-second teardown window that made the TLS tests look like they leaked 24 MiB.
-
-### Fix
-
-Count the connection as closed before starting `gracefulClose`, or drop it from `active` only
-after `gracefulClose` returns. Either ordering keeps the invariant.
-
----
-
 ## Clean
 
 200 connections opened at once, closed, then measured again:
@@ -233,8 +208,7 @@ after `gracefulClose` returns. Either ordering keeps the invariant.
 All recovered. Also clean: 400 connect/disconnect rounds, and steady forwarding at 50ms each way.
 
 At +5s the middle two still read ~120 KiB per connection, which looks like a 24 MiB leak but is
-`gracefulClose` waiting up to 5s per connection. Falling means reclaimed, flat above baseline
-means leaked.
+teardown still in progress. Falling means reclaimed, flat above baseline means leaked.
 
 Peaks still matter. 200 abandoned half open connections hold ~40 MiB for ~25s, unauthenticated.
 A client that finishes the handshake then sends one byte holds ~265 KiB for as long as it stays
@@ -264,6 +238,39 @@ the damage.
 Forwards work up to 16s each way and fail at 40s. The governing limit is the 30s RFWD timeout.
 The exact cutoff is not pinned down: the test transport adds delay per read/write cycle rather
 than per message, so configured lag does not map exactly onto observed round trip.
+
+## Checked and not a problem: socketsLeaked accounting
+
+Recorded because an earlier version of this report listed it as a bug on the strength of code
+reading alone, and measuring it did not bear that out.
+
+`closeConn` (`Transport/Server.hs:179`) removes the connection from `active`, then calls
+`gracefulClose conn 5000`, then increments `closed`, and
+`socketsLeaked = accepted - closed - active`. That ordering does leave a window where a closing
+connection is counted in neither bucket.
+
+In practice the window never opened. Read over the control port during 600 sequential
+connect/disconnect cycles, and again across 200 simultaneous teardowns:
+
+```
+during churn:        accepted: 587  closed: 586  active: 1  leaked: 0
+after settling:      accepted: 600  closed: 600  active: 0  leaked: 0
+before mass release: accepted: 200  closed: 0    active: 200  leaked: 0
+after mass release:  accepted: 200  closed: 200  active: 0    leaked: 0
+```
+
+The 5000 in `gracefulClose conn 5000` is a timeout, not a delay: it returns as soon as the peer's
+close is processed, which for a clean disconnect is immediate. A peer that vanishes without
+closing could in principle widen the window, but that was not produced here, so it is not
+claimed.
+
+## Note on running the suite
+
+`should have similar time for auth error, whether queue exists or not` compares wall clock
+timings with a 30% tolerance (45% on Postgres), and it fails intermittently when the machine is
+busy. Observed twice in four runs while benches were running concurrently, then 4 of 4 and 5 of 5
+clean on an idle machine with and without the changes here. It is load sensitivity in the test,
+not a regression. Run the suite on an otherwise idle machine.
 
 ## Already fixed: the empty session variable leak
 

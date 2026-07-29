@@ -57,7 +57,7 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (maxJournalMsgCount, msgQueueQuota, notificationExpiration))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (controlPort, controlPortAdminAuth, maxJournalMsgCount, msgQueueQuota, notificationExpiration))
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport
@@ -65,6 +65,7 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTr
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Environment (getArgs, lookupEnv, setEnv)
+import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Text.Printf (printf)
@@ -726,6 +727,29 @@ heldConns phase iters
       printf "%s: capping held connections at %d (requested %d) to stay within the fd limit\n" phase maxHeldConns iters
       pure maxHeldConns
 
+-- Query the server control port for socket accounting. Used to check Bug 5 directly rather
+-- than inferring it: socketsLeaked = accepted - closed - active, and closeConn removes a
+-- connection from `active` before gracefulClose (up to 5s) and before it increments `closed`,
+-- so a connection in teardown is counted in neither and shows up as leaked.
+cpSockets :: N.ServiceName -> IO [String]
+cpSockets port = do
+  sock <- rawConnect port
+  h <- N.socketToHandle sock ReadWriteMode
+  hSetBuffering h LineBuffering
+  hSetNewlineMode h universalNewlineMode
+  r <- timeout 5000000 $ do
+    _ <- hGetLine h -- banner line 1
+    _ <- hGetLine h -- banner line 2
+    hPutStrLn h "auth bench"
+    _ <- hGetLine h
+    hPutStrLn h "sockets"
+    replicateM 5 (hGetLine h) -- "Sockets for port N:" + accepted/closed/active/leaked
+  hClose h `E.catch` \(_ :: E.SomeException) -> pure ()
+  pure $ fromMaybe [] r
+
+cpPort :: N.ServiceName
+cpPort = "5010"
+
 rawConnect :: N.ServiceName -> IO N.Socket
 rawConnect port = do
   let hints = N.defaultHints {N.addrSocketType = N.Stream}
@@ -753,8 +777,14 @@ holdRelease phase n conn = do
     atomically $ readTVar connected >>= \c -> when (c < n) retry
     peak <- liveBytesMiB
     report phase n base peak
+    beforeRel <- cpSockets cpPort
+    putStrLn $ phase <> ": sockets before release: " <> unwords (map (dropWhile (== ' ')) beforeRel)
     atomically $ writeTVar release True
     wait as
+    -- immediately after n simultaneous teardowns: the widest possible window for the
+    -- accounting gap in closeConn (active decremented before closed is incremented)
+    afterRel <- cpSockets cpPort
+    putStrLn $ phase <> ": sockets right after release: " <> unwords (map (dropWhile (== ' ')) afterRel)
     printf "%s: peak=%.1f MiB (%+.2f KiB/conn)\n" phase peak ((peak - base) * 1024 / fromIntegral n)
     -- Sample recovery repeatedly rather than once. A single early sample cannot tell a leak
     -- from state the server has not reaped yet: the relevant server windows are 60s
@@ -811,9 +841,23 @@ runTlsChurn :: Int -> Int -> IO ()
 runTlsChurn iters cp = do
   base <- liveBytesMiB
   report "tlschurn" 0 base base
-  forM_ ([1 .. iters] :: [Int]) $ \i -> do
-    testSMPClient @TLS $ \(_h :: THandleSMP TLS 'TClient) -> pure ()
-    when (i `mod` cp == 0) $ liveBytesMiB >>= report "tlschurn" i base
+  -- sample the server's own socket accounting while churn is in flight, then again once it
+  -- has quiesced, to see whether socketsLeaked is a real leak or a teardown artefact
+  churning <- newTVarIO True
+  let sampler = do
+        threadDelay 1500000
+        readTVarIO churning >>= \go -> when go $ do
+          ls <- cpSockets cpPort
+          putStrLn $ "tlschurn: during churn: " <> unwords (map (dropWhile (== ' ')) ls)
+          sampler
+  withAsync sampler $ \_ -> forM_ ([1 .. iters] :: [Int]) $ \i -> do
+      testSMPClient @TLS $ \(_h :: THandleSMP TLS 'TClient) -> pure ()
+      when (i `mod` cp == 0) $ liveBytesMiB >>= report "tlschurn" i base
+  atomically $ writeTVar churning False
+  -- gracefulClose holds each connection up to 5s, so wait past that before the settled sample
+  threadDelay 8000000
+  ls <- cpSockets cpPort
+  putStrLn $ "tlschurn: after settling: " <> unwords (map (dropWhile (== ' ')) ls)
 
 -- post-handshake, send a partial block and idle. The server's transportTimeout is hardcoded
 -- Nothing, so its receive thread blocks in cGet indefinitely; only inactive-client expiry
@@ -855,6 +899,9 @@ main = do
   -- ntfexp uses a short notification-expiration so deleteExpiredNtfs fires within the run
   let srvCfg = case phase of
         "ntfexp" -> updateCfg (srvStoreCfg storeEnv) $ \c -> c {notificationExpiration = ExpirationConfig {ttl = 2, checkInterval = 3}}
+        -- tlschurn reads the server's own socket counters over the control port
+        p | p `elem` (["tlschurn", "tlsstall", "tlshalf", "tlspartial"] :: [String]) ->
+              updateCfg (srvStoreCfg storeEnv) $ \c -> c {controlPort = Just cpPort, controlPortAdminAuth = Just "bench"}
         _ -> srvStoreCfg storeEnv
   -- LEAKDIAG counters are the only per-server signal in multi-server topologies, so sample
   -- them often enough to be useful over a bench run
