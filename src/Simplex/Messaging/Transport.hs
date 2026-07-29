@@ -454,7 +454,7 @@ data THandleParams v p = THandleParams
     thAuth :: Maybe (THandleAuth p),
     -- | do NOT send session ID in transmission, but include it into signed message
     -- based on protocol version
-    -- This is always True for SMP servers, but not for XFTP/NTF servers
+    -- This is True for SMP and NTF servers, and False for XFTP
     implySessId :: Bool,
     -- | keys for additional transport encryption
     encryptBlock :: Maybe TSbChainKeys,
