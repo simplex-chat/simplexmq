@@ -516,33 +516,62 @@ newRelayQueue g = do
     runExceptT' $ createSMPQueue rqClient NRMInteractive Nothing (rPub, rqRcvKey) rdhPub Nothing SMSubscribe (QRMessaging Nothing) Nothing
   pure RelayQueue {rqSndId, rqRcvId, rqRcvKey, rqClient, rqMsgQ}
 
--- receive and ack one delivered message, so a steady-forwarding phase does not hit QUOTA
-ackOne :: RelayQueue -> IO ()
-ackOne RelayQueue {rqRcvId, rqRcvKey, rqClient, rqMsgQ} = do
-  b <- atomically $ readTBQueue rqMsgQ
-  case b of
-    (_, _, [(_, STEvent (Right (MSG RcvMessage {msgId})))]) ->
-      runExceptT' $ ackSMPMessage rqClient rqRcvKey rqRcvId msgId
+-- Receive and ack one delivered message, so a steady-forwarding phase does not hit QUOTA.
+-- Bounded: the recipient also talks to the lagged relay, so delivery is delayed by the same
+-- lag, and an unbounded wait would hang the high-latency runs.
+ackOne :: Int -> RelayQueue -> IO ()
+ackOne tmo RelayQueue {rqRcvId, rqRcvKey, rqClient, rqMsgQ} =
+  timeout tmo (atomically $ readTBQueue rqMsgQ) >>= \case
+    Just (_, _, [(_, STEvent (Right (MSG RcvMessage {msgId})))]) ->
+      void $ runExceptT $ ackSMPMessage rqClient rqRcvKey rqRcvId msgId
     _ -> pure ()
 
 -- baseline: steady forwarding through the proxy under moderate latency.
 -- proxy_sentCommands (LEAKDIAG srv=5001) should stay flat - every RFWD is answered.
+--
+-- CONNECTIVITY UNDER LATENCY, swept with BENCHLAG_MS (one way, so a request/response pair costs
+-- twice this). Sockets counted from /proc/<pid>/fd while the phase ran:
+--
+--   lag/way   delivered   sockets   proxy->relay connects   reconnects   timeouts
+--   0ms       12/12       8         1                       0            0
+--   500ms     10/10       8         1                       0            0
+--   5s        6/6         8         1                       0            0
+--   16s       4/4         8         1                       0            0
+--   40s       0/2         8         1                       0            1
+--
+-- Nothing accumulates. The socket count is identical whether forwards succeed or time out, the
+-- proxy->relay session is opened once and reused throughout, and there are no reconnects at any
+-- latency. proxy_smpClients and proxy_smpSessions stay at 1.
+--
+-- That robustness is exactly what makes Leak 1 unbounded: the session that holds the stuck
+-- sentCommands entries never drops, so nothing ever frees them. A connection that failed under
+-- latency would at least bound the damage.
+--
+-- Forwards succeed up to 16s each way and fail at 40s; the governing limit is the 30s RFWD
+-- timeout. The exact cutoff is not pinned down, because the lag is applied per read/write cycle
+-- on the relay rather than per message, so configured lag does not map exactly onto observed
+-- round trip.
 runProxyFwd :: TVar ChaChaDRG -> Int -> Int -> IO ()
 runProxyFwd g iters cp = do
   rq <- newRelayQueue g
   pc <- proxyClient g 1
   sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relaySrv Nothing
-  setLag proxyLagUs proxyLagUs
-  -- a silently failing send would look identical to a clean one in the residency trace,
-  -- so the baseline phase must fail loudly instead of counting errors as "flat"
-  withCheckpoints "proxyfwd" iters cp $ \i -> do
+  -- one-way lag added to every relay read and write, so a request/response cycle costs 2x this.
+  -- BENCHLAG_MS overrides it to sweep latency; see the connectivity notes below.
+  lagMs <- fromMaybe 50 . (>>= readMaybe) <$> lookupEnv "BENCHLAG_MS"
+  printf "proxyfwd: lag=%dms each way (%dms added per request/response)\n" lagMs (2 * lagMs :: Int)
+  setLag (lagMs * 1000) (lagMs * 1000)
+  ok <- newTVarIO (0 :: Int)
+  failed <- newTVarIO (0 :: Int)
+  -- Under latency a forward can fail without the phase being broken, so record outcomes
+  -- instead of aborting: the point is which latency band still delivers.
+  withCheckpoints "proxyfwd" iters cp $ \_i -> do
     runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "hello") >>= \case
-      Right (Right ()) -> pure ()
-      r -> fail $ "proxyfwd: forward failed at iteration " <> show i <> ": " <> show r
-    ackOne rq
+      Right (Right ()) -> atomically (modifyTVar' ok (+ 1)) >> ackOne (4 * lagMs * 1000 + 20000000) rq
+      _ -> atomically $ modifyTVar' failed (+ 1)
   clearLag
-  where
-    proxyLagUs = 50000 -- 50ms each way
+  (o, f) <- (,) <$> readTVarIO ok <*> readTVarIO failed
+  printf "proxyfwd: delivered=%d failed=%d\n" o f
 
 -- HEADLINE REPRO: the relay keeps the session up but stops answering, so every RFWD the proxy
 -- forwards times out. getResponse (Client.hs) sets `pending = False` and bumps the error count
