@@ -67,7 +67,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, isPrefixOf, isSuffixOf, nub)
+import Data.List (find, isPrefixOf, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -101,7 +101,7 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Transport (NTFVersion, pattern VersionNTF)
-import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), initialSMPClientVersion, srvHostnamesSMPClientVersion, supportedSMPClientVRange)
+import Simplex.Messaging.Protocol (BasicAuth, ErrorType (..), MsgBody, NetworkError (..), ProtocolServer (..), SubscriptionMode (..), supportedSMPClientVRange)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
@@ -109,7 +109,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, authCmdsSMPVersion, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, sendingProxySMPVersion, sndAuthKeySMPVersion, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
@@ -422,8 +422,6 @@ functionalAPITests ps = do
         testRatchetSyncSimultaneous ps
 #endif
     describe "Subscription mode OnlyCreate" $ do
-      it "messages delivered only when polled (v8 - slow handshake)" $
-        withSmpServer ps testOnlyCreatePullSlowHandshake
       it "messages delivered only when polled" $
         withSmpServer ps testOnlyCreatePull
   describe "Inactive client disconnection" $ do
@@ -466,8 +464,6 @@ functionalAPITests ps = do
       testBasicMatrix2 ps testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync ps
-    it "join connection when reply queue creation fails (v8 - slow handshake)" $
-      testJoinConnectionAsyncReplyErrorV8 ps
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError ps
     describe "delete connection waiting for delivery" $ do
@@ -515,9 +511,9 @@ functionalAPITests ps = do
     describe "should switch two connections simultaneously, abort one" $
       testServerMatrix2 ps testSwitch2ConnectionsAbort1
   describe "SMP basic auth" $ do
-    forM_ (nub [prevVersion authCmdsSMPVersion, authCmdsSMPVersion, currentServerSMPRelayVersion]) $ \v -> do
-      let baseId = if v >= sndAuthKeySMPVersion then 1 else 3
-          sqSecured = if v >= sndAuthKeySMPVersion then True else False
+    forM_ ([prevVersion currentServerSMPRelayVersion, currentServerSMPRelayVersion] :: [VersionSMP]) $ \v -> do
+      let baseId = 1
+          sqSecured = True
       describe ("v" <> show v <> ": with server auth") $ do
         --                                       allow NEW | server auth, v | clnt1 auth, v  | clnt2 auth, v    |  2 - success, 1 - JOIN fail, 0 - NEW fail
         it "success                " $ testBasicAuth ps True (Just "abcd", v) (Just "abcd", v) (Just "abcd", v) sqSecured baseId `shouldReturn` 2
@@ -573,7 +569,7 @@ testBasicAuth (t, msType) allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 s
         | canCreate1 && canCreate2 = 2
         | canCreate1 = 1
         | otherwise = 0
-  created <- withSmpServerConfigOn t testCfg testPort $ \_ -> testCreateQueueAuth srvVersion clnt1 clnt2 sqSecured baseId
+  created <- withSmpServerConfigOn t testCfg testPort $ \_ -> testCreateQueueAuth clnt1 clnt2 sqSecured baseId
   created `shouldBe` expected
   pure created
 
@@ -584,7 +580,6 @@ canCreateQueue allowNew (srvAuth, _) (clntAuth, _) =
 testMatrix2 :: HasCallStack => (ASrvTransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2 ps runTest = do
   it "current, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 agentCfg agentCfg initAgentServersProxy 1 $ runTest PQSupportOn True True
-  it "v8, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 initAgentServersProxy 3 $ runTest PQSupportOn False True
   it "current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
   it "prev" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfgVPrev 1 $ runTest PQSupportOff False False
   it "prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgVPrev agentCfg 1 $ runTest PQSupportOff False False
@@ -593,14 +588,12 @@ testMatrix2 ps runTest = do
 testMatrix2Stress :: HasCallStack => (ASrvTransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testMatrix2Stress ps runTest = do
   it "current, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 aCfg aCfg initAgentServersProxy 1 $ runTest PQSupportOn True True
-  it "v8, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 aProxyCfgV8 aProxyCfgV8 initAgentServersProxy 1 $ runTest PQSupportOn False True
   it "current" $ withSmpServer ps $ runTestCfg2 aCfg aCfg 1 $ runTest PQSupportOn True False
   it "prev" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfgVPrev 1 $ runTest PQSupportOff False False
   it "prev to current" $ withSmpServer ps $ runTestCfg2 aCfgVPrev aCfg 1 $ runTest PQSupportOff False False
   it "current to prev" $ withSmpServer ps $ runTestCfg2 aCfg aCfgVPrev 1 $ runTest PQSupportOff False False
   where
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
-    aProxyCfgV8 = agentProxyCfgV8 {messageRetryInterval = fastMessageRetryInterval}
     aCfgVPrev = agentCfgVPrev {messageRetryInterval = fastMessageRetryInterval}
 
 testBasicMatrix2 :: HasCallStack => (ASrvTransport, AStoreType) -> (SndQueueSecured -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
@@ -613,7 +606,6 @@ testBasicMatrix2 ps runTest = do
 testRatchetMatrix2 :: HasCallStack => (ASrvTransport, AStoreType) -> (PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> Spec
 testRatchetMatrix2 ps runTest = do
   it "current, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 agentCfg agentCfg initAgentServersProxy 1 $ runTest PQSupportOn True True
-  it "v8, via proxy" $ withSmpServerProxy ps $ runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 initAgentServersProxy 3 $ runTest PQSupportOn False True
   it "ratchet current" $ withSmpServer ps $ runTestCfg2 agentCfg agentCfg 1 $ runTest PQSupportOn True False
   it "ratchet prev" $ withSmpServer ps $ runTestCfg2 agentCfgRatchetVPrev agentCfgRatchetVPrev 1 $ runTest PQSupportOff True False
   it "ratchets prev to current" $ withSmpServer ps $ runTestCfg2 agentCfgRatchetVPrev agentCfg 1 $ runTest PQSupportOff True False
@@ -658,7 +650,7 @@ pqMatrix2_ pqInv ps test = do
     it "pq-inv/dh handshake" $ runTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOff)
     it "pq-inv/pq handshake" $ runTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOn)
   where
-    runTest = withSmpServerProxy ps . runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 initAgentServersProxy 3
+    runTest = withSmpServerProxy ps . runTestCfgServers2 agentCfg agentCfg initAgentServersProxy 3
 
 testPQMatrix3 ::
   HasCallStack =>
@@ -677,8 +669,8 @@ testPQMatrix3 ps test = do
   where
     runTest test' =
       withSmpServerProxy ps $
-        runTestCfgServers2 agentProxyCfgV8 agentProxyCfgV8 servers 3 $ \a b baseMsgId ->
-          withAgent 3 agentProxyCfgV8 servers testDB3 $ \c -> test' a b c baseMsgId
+        runTestCfgServers2 agentCfg agentCfg servers 3 $ \a b baseMsgId ->
+          withAgent 3 agentCfg servers testDB3 $ \c -> test' a b c baseMsgId
     servers = initAgentServersProxy
 
 runTestCfg2 :: HasCallStack => AgentConfig -> AgentConfig -> AgentMsgId -> (HasCallStack => AgentClient -> AgentClient -> AgentMsgId -> IO ()) -> IO ()
@@ -2321,42 +2313,6 @@ testRatchetSyncSimultaneous ps = do
   disposeAgentClient bob
   disposeAgentClient bob2
 
-testOnlyCreatePullSlowHandshake :: IO ()
-testOnlyCreatePullSlowHandshake = withAgentClientsCfg2 agentProxyCfgV8 agentProxyCfgV8 $ \alice bob -> runRight_ $ do
-  (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMOnlyCreate
-  (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMOnlyCreate
-  liftIO $ sqSecured `shouldBe` False
-  Just ("", _, CONF confId _ "bob's connInfo") <- getMsg alice bobId $ timeout 5_000000 $ get alice
-  getMSGNTF alice bobId
-  allowConnection alice bobId confId "alice's connInfo"
-  liftIO $ threadDelay 1_000000
-  getMsg bob aliceId $
-    get bob ##> ("", aliceId, INFO "alice's connInfo")
-  getMSGNTF bob aliceId
-  liftIO $ threadDelay 1_000000
-  getMsg alice bobId $ pure ()
-  inAnyOrder
-    (get alice)
-    [ \case ("", c, CON) -> c == bobId; _ -> False,
-      \case ("", c, MSGNTF {}) -> c == bobId; _ -> False
-    ]
-  getMsg bob aliceId $
-    get bob ##> ("", aliceId, CON)
-  getMSGNTF bob aliceId
-  -- exchange messages
-  4 <- sendMessage alice bobId SMP.noMsgFlags "hello"
-  get alice ##> ("", bobId, SENT 4)
-  getMsg bob aliceId $
-    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
-  ackMessage bob aliceId 4 Nothing
-  getMSGNTF bob aliceId
-  5 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
-  get bob ##> ("", aliceId, SENT 5)
-  getMsg alice bobId $
-    get alice =##> \case ("", c, Msg "hello too") -> c == bobId; _ -> False
-  ackMessage alice bobId 5 Nothing
-  getMSGNTF alice bobId
-
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
@@ -3084,53 +3040,6 @@ networkOrTimeoutError = \case
   NETWORK _ -> True
   _ -> False
 
-testJoinConnectionAsyncReplyErrorV8 :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
-testJoinConnectionAsyncReplyErrorV8 ps@(t, ASType qsType _) = do
-  let initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
-  withAgent 1 cfg' initAgentServers testDB $ \a ->
-    withAgent 2 cfg' initAgentServersSrv2 testDB2 $ \b -> do
-      (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-        bId <- prepareConnectionToCreate a 1 True SCMInvitation PQSupportOn
-        createConnectionAsync a "1" bId True SCMInvitation IKPQOn SMSubscribe
-        ("1", bId', INV (ACR _ qInfo)) <- get a
-        liftIO $ bId' `shouldBe` bId
-        aId <- prepareConnectionToJoin b 1 True qInfo PQSupportOn
-        joinConnectionAsync b "2" False aId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
-        liftIO $ threadDelay 500000
-        ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
-        pure (aId, bId)
-      nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-      withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ -> do
-        get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && not sqSecured; _ -> False
-        confId <- withSmpServerStoreLogOn ps testPort $ \_ -> do
-          pGet a >>= \case
-            ("", "", AEvt _ (UP _ [_])) -> do
-              ("", _, CONF confId _ "bob's connInfo") <- get a
-              pure confId
-            ("", _, AEvt _ (CONF confId _ "bob's connInfo")) -> do
-              ("", "", UP _ [_]) <- nGet a
-              pure confId
-            r -> error $ "unexpected response " <> show r
-        nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-        runRight_ $ do
-          allowConnectionAsync a "3" bId confId "alice's connInfo"
-          get a ##> ("3", bId, OK)
-          liftIO $ threadDelay 500000
-          ConnectionStats {rcvQueuesInfo = [RcvQueueInfo {}], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
-          pure ()
-        withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
-          nGet a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
-          get a ##> ("", bId, CON)
-          get b ##> ("", aId, INFO "alice's connInfo")
-          get b ##> ("", aId, CON)
-          exchangeGreetingsMsgId 4 a bId b aId
-  where
-    cfg' =
-      agentCfgVPrevPQ
-        { smpClientVRange = V.mkVersionRange initialSMPClientVersion srvHostnamesSMPClientVersion, -- before SKEY
-          smpCfg = smpCfgVPrev {serverVRange = V.mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion}  -- before SKEY
-        }
-
 testJoinConnectionAsyncReplyError :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
   let initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
@@ -3603,8 +3512,8 @@ testSwitch2ConnectionsAbort1 servers = do
     withB :: (AgentClient -> IO a) -> IO a
     withB = withAgent 2 agentCfg servers testDB2
 
-testCreateQueueAuth :: HasCallStack => VersionSMP -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
-testCreateQueueAuth srvVersion clnt1 clnt2 sqSecured baseId = do
+testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
+testCreateQueueAuth clnt1 clnt2 sqSecured baseId = do
   a <- getClient 1 clnt1 testDB
   b <- getClient 2 clnt2 testDB2
   r <- runRight $ do
@@ -3630,9 +3539,9 @@ testCreateQueueAuth srvVersion clnt1 clnt2 sqSecured baseId = do
   where
     getClient clientId (clntAuth, clntVersion) db =
       let servers = initAgentServers {smp = userServers' [ProtoServerWithAuth testSMPServer clntAuth]}
-          alpn_ = if clntVersion >= authCmdsSMPVersion then Just alpnSupportedSMPHandshakes else Nothing
+          alpn_ = Just alpnSupportedSMPHandshakes
           smpCfg = defaultClientConfig alpn_ False $ V.mkVersionRange minClientSMPRelayVersion clntVersion
-          sndAuthAlg = if srvVersion >= authCmdsSMPVersion && clntVersion >= authCmdsSMPVersion then C.AuthAlg C.SX25519 else C.AuthAlg C.SEd25519
+          sndAuthAlg = C.AuthAlg C.SX25519
        in getSMPAgentClient' clientId agentCfg {smpCfg, sndAuthAlg} servers db
 
 testSMPServerConnectionTest :: (ASrvTransport, AStoreType) -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)

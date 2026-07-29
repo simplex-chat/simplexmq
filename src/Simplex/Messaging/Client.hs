@@ -227,7 +227,7 @@ smpClientStub g sessionId thVersion thAuth = do
               thServerVRange = supportedServerSMPRelayVRange,
               thAuth,
               blockSize = smpBlockSize,
-              implySessId = thVersion >= authCmdsSMPVersion,
+              implySessId = True,
               encryptBlock = Nothing,
               batch = True,
               serviceAuth = thVersion >= serviceCertsSMPVersion
@@ -1110,17 +1110,15 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth
-  | thVersion (thParams c) >= sendingProxySMPVersion =
-      sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
-        PKEY sId vr (CertChainPubKey chain key) ->
-          case supportedClientSMPRelayVRange `compatibleVersion` vr of
-            Nothing -> throwE $ transportErr TEVersion
-            Just (Compatible v) -> do
-              relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
-              pure $ ProxiedRelay sId v proxyAuth relayKey
-        r -> throwE $ unexpectedResponse r
-  | otherwise = throwE $ PCETransportError TEVersion
+connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
+  sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
+    PKEY sId vr (CertChainPubKey chain key) ->
+      case supportedClientSMPRelayVRange `compatibleVersion` vr of
+        Nothing -> throwE $ transportErr TEVersion
+        Just (Compatible v) -> do
+          relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
+          pure $ ProxiedRelay sId v proxyAuth relayKey
+    r -> throwE $ unexpectedResponse r
   where
     tOut = Just $ netTimeoutInt tcpConnectTimeout nm + netTimeoutInt tcpTimeout nm
     transportErr = PCEProtocolError . PROXY . BROKER . TRANSPORT

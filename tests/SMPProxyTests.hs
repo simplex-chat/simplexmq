@@ -77,7 +77,7 @@ smpProxyTests = do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
     describe "client API" $ do
-      let maxLen = maxMessageLength encryptedBlockSMPVersion
+      let maxLen = maxMessageLength
       describe "one server" $ do
         it "deliver via proxy" . oneServer $ do
           deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"
@@ -137,10 +137,6 @@ smpProxyTests = do
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
         it "first via proxy for unknown" . twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
-        it "without proxy with fallback" . twoServers_ proxyCfg cfgV7 $
-          agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 3
-        it "fails when fallback is prohibited" . twoServers_ proxyCfg cfgV7 $
-          agentViaProxyVersionError
         it "retries sending when destination or proxy relay is offline" $ \_ ->
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
@@ -218,7 +214,7 @@ proxyConnectDeadRelay n d proxyServ = do
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion} [] Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session
@@ -334,18 +330,6 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
     servers srvs = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers srvs}
 
-agentViaProxyVersionError :: IO ()
-agentViaProxyVersionError =
-  withAgent 1 agentCfg (servers [SMPServer testHost testPort testKeyHash]) testDB $ \alice -> do
-    Left (A.BROKER _ (TRANSPORT TEVersion)) <-
-      withAgent 2 agentCfg (servers [SMPServer testHost2 testPort2 testKeyHash]) testDB2 $ \bob -> runExceptT $ do
-        (_bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe
-        aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
-        A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
-    pure ()
-  where
-    servers srvs = (initAgentServersProxy_ SPMUnknown SPFProhibit) {smp = userServers srvs}
-
 agentViaProxyRetryOffline :: IO ()
 agentViaProxyRetryOffline = do
   let srv1 = SMPServer testHost testPort testKeyHash
@@ -442,14 +426,14 @@ agentViaProxyRetryNoSession = do
 testNoProxy :: AStoreType -> IO ()
 testNoProxy msType = do
   withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ -> do
-    testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+    testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer Nothing)
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
 testProxyAuth :: AStoreType -> IO ()
 testProxyAuth msType = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
-    testSMPClient_ "127.0.0.1" testPort proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+    testSMPClient_ "127.0.0.1" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer2 $ Just "wrong")
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
@@ -459,7 +443,7 @@ testProxyAuth msType = do
 -- On success the reply is PKEY; otherwise it is the proxy error for the relay connection.
 requestRelaySession :: IO (Either SMP.ErrorType SMP.BrokerMsg)
 requestRelaySession =
-  testSMPClient_ "localhost" testPort proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) ->
+  testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) ->
     (\(_, _, reply) -> reply) <$> sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
@@ -468,7 +452,7 @@ requestRelaySession =
 requireProxyReconnect :: IO ()
 requireProxyReconnect =
   withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2 $ \_ -> do
-    testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+    testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
       reply `shouldBe` Right SMP.PONG
     threadDelay 1500000 -- > persistErrorInterval (1s), so the stored connection error has expired
@@ -524,7 +508,7 @@ testAgentClientReconnectAfterCancel =
       threadDelay 1000000 -- let the connect to the stalling relay start, then kill it mid-flight
       cancel t
     withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ -> do
-      testSMPClient_ "127.0.0.1" testPort2 proxyVRangeV8 Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+      testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
         reply `shouldBe` Right SMP.PONG -- the relay is up and reachable, so a timeout can only be the poisoned var
       r <- timeout 8000000 $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn SMSubscribe

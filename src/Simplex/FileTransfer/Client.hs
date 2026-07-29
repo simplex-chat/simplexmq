@@ -109,12 +109,6 @@ data XFTPClientConfig = XFTPClientConfig
     clientALPN :: Maybe [ALPN]
   }
 
-data XFTPChunkBody = XFTPChunkBody
-  { chunkSize :: Int,
-    chunkPart :: Int -> IO ByteString,
-    http2Body :: HTTP2Body
-  }
-
 data XFTPChunkSpec = XFTPChunkSpec
   { filePath :: FilePath,
     chunkOffset :: Int64,

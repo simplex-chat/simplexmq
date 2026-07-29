@@ -56,7 +56,6 @@ import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util (whenM)
-import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
@@ -261,12 +260,12 @@ testCreateSecure =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -308,12 +307,12 @@ testCreateSndSecure =
       Resp "dabc" _ err5 <- sendRecv s ("", "dabc", sId, _SEND "hello")
       (err5, ERR AUTH) #== "rejects unsigned SEND"
 
-      let maxAllowedMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion) '-'
+      let maxAllowedMessage = B.replicate maxMessageLength '-'
       Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND maxAllowedMessage)
       Resp "" _ (Msg mId3 msg3) <- tGet1 r
       (dec mId3 msg3, Right maxAllowedMessage) #== "delivers message of max size"
 
-      let biggerMessage = B.replicate (maxMessageLength currentClientSMPRelayVersion + 1) '-'
+      let biggerMessage = B.replicate (maxMessageLength + 1) '-'
       Resp "bcda" _ (ERR LARGE_MSG) <- signSendRecv s sKey ("bcda", sId, _SEND biggerMessage)
       pure ()
 
@@ -1272,7 +1271,7 @@ testTiming =
   describe "should have similar time for auth error, whether queue exists or not, for all key types" $
     forM_ timingTests $ \tst ->
       it (testName tst) $ \(ATransport t, msType) ->
-        smpTest2Cfg (cfgMS msType) (mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion) t $ \rh sh ->
+        smpTest2Cfg (cfgMS msType) supportedServerSMPRelayVRange t $ \rh sh ->
           testSameTiming rh sh tst msType
   where
     testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
