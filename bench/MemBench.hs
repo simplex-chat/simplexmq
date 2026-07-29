@@ -26,7 +26,7 @@
 --   tlsstall | tlshalf | tlschurn | tlspartial  -- TLS/TCP stack
 --
 -- Two-server phases (proxy on testPort, lagged destination relay on testPort2):
---   proxyfwd | proxytmo | proxychurn | proxysess
+--   proxyfwd | proxytmo | proxychurn | proxysess | subtmo
 --
 -- Env: BENCHSTORE selects the store (see srvStoreCfg); SMP_LEAKDIAG_SEC sets the LEAKDIAG
 -- interval (defaulted to 10s here). In two-server phases each LEAKDIAG line is tagged with the
@@ -45,7 +45,8 @@ import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.Foldable (toList)
+import Data.List.NonEmpty (NonEmpty (..), fromList)
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509.Validation as XV
@@ -655,6 +656,44 @@ runProxyTmo g iters _cp = do
     nClients = 8
     batch = 64
 
+-- The batched-subscribe leak, which is how the ntf server is exposed to the same bug as the
+-- proxy. subscribeSMPQueues/subscribeSMPQueuesNtfs go through sendBatch, which calls getResponse
+-- once per request (Client.hs:1344), so every queue in an unanswered batch leaves its own
+-- sentCommands entry. The ntf server batches 1360 at a time (agentSubsBatchSize).
+--
+-- Measured on a bench-owned client so the count can be read directly with
+-- pClientSentCommandsCount, rather than needing a full ntf server and its Postgres store: the
+-- code path under test is identical.
+runSubTmo :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runSubTmo g iters _cp = do
+  ts <- getCurrentTime
+  rc <-
+    getProtocolClient g NRMInteractive (7, relaySrv, Nothing) benchClientCfg [] Nothing ts (\_ -> pure ())
+      >>= either (fail . show) pure
+  -- create the queues while the relay still answers
+  qs <- forM ([1 .. iters] :: [Int]) $ \_ -> do
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _dh :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    QIK {rcvId} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMOnlyCreate (QRMessaging Nothing) Nothing
+    pure (rcvId, rKey)
+  before <- pClientSentCommandsCount rc
+  base <- liveBytesMiB
+  report "subtmo" 0 base base
+  setDropSnd True
+  rs <- subscribeSMPQueues rc (fromList qs)
+  let timedOut = length [() | Left PCEResponseTimeout <- toList rs]
+  stuck <- pClientSentCommandsCount rc
+  cur <- liveBytesMiB
+  report "subtmo" iters base cur
+  printf
+    "subtmo: queues=%d timedOut=%d sentCommands before=%d after=%d (%+.3f KiB/entry)\n"
+    iters
+    timedOut
+    before
+    stuck
+    (if stuck > before then (cur - base) * 1024 / fromIntegral (stuck - before) else 0)
+  setDropSnd False
+
 -- PRXY to many distinct relay addresses that refuse the connection. Each failure stores
 -- `Left (err, Just expiry)` in the agent's smpClients map; removal is lazy (only on a later
 -- lookup of the same server), so addresses never requested again are retained.
@@ -852,6 +891,7 @@ main = do
         "proxytmo" -> runProxyTmo g iters cp
         "proxychurn" -> runProxyChurn g iters cp
         "proxysess" -> runProxySess g iters cp
+        "subtmo" -> runSubTmo g iters cp
         _ -> error $ "unknown proxy phase: " <> phase
       else withSmpServerConfigOn (transport @TLS) srvCfg testPort $ \_ -> settle leakDiagSec $ do
         threadDelay 250000
@@ -874,7 +914,7 @@ main = do
           _ -> error $ "unknown phase: " <> phase
 
 proxyPhases :: [String]
-proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "proxysess"]
+proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "proxysess", "subtmo"]
 
 -- Hold the servers up past one LEAKDIAG interval after the phase finishes, so the end state is
 -- always sampled at least once. Short phases would otherwise exit before any line is emitted,
