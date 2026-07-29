@@ -1577,7 +1577,7 @@ data ErrorType
     STORE {storeErr :: Text}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 16088 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16048 bytes)
     LARGE_MSG
   | -- | relay public key is expired
     EXPIRED
