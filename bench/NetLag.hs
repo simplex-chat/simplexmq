@@ -29,6 +29,7 @@ module NetLag
   ( LagTLS,
     setLag,
     setDropSnd,
+    setDropEvery,
     clearLag,
   )
 where
@@ -45,13 +46,20 @@ newtype LagTLS (p :: TransportPeer) = LagTLS (TLS p)
 data LagCtl = LagCtl
   { rcvDelayUs :: TVar Int,
     sndDelayUs :: TVar Int,
-    dropSnd :: TVar Bool
+    dropSnd :: TVar Bool,
+    -- drop every nth write, 0 disables. Distinct from dropSnd: dropping everything makes the
+    -- peer's monitor eventually tear the session down, while dropping a fraction keeps the
+    -- session healthy indefinitely because any reply resets its counters.
+    dropEvery :: TVar Int,
+    sndSeq :: TVar Int
   }
 
 -- A single process-wide control: getTransportConnection has nowhere to thread per-listener
 -- state through, and the bench runs one lagged relay at a time.
 lagCtl :: LagCtl
-lagCtl = unsafePerformIO $ LagCtl <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO False
+lagCtl =
+  unsafePerformIO $
+    LagCtl <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO False <*> newTVarIO 0 <*> newTVarIO 0
 {-# NOINLINE lagCtl #-}
 
 -- | One-way delays in microseconds: inbound (peer -> this transport) and outbound.
@@ -64,8 +72,12 @@ setLag rcv snd' = atomically $ do
 setDropSnd :: Bool -> IO ()
 setDropSnd b = atomically $ writeTVar (dropSnd lagCtl) b
 
+-- | Silently discard every nth write, passing the rest. 0 disables.
+setDropEvery :: Int -> IO ()
+setDropEvery n = atomically $ writeTVar (dropEvery lagCtl) n
+
 clearLag :: IO ()
-clearLag = setLag 0 0 >> setDropSnd False
+clearLag = setLag 0 0 >> setDropSnd False >> setDropEvery 0
 
 delayBy :: TVar Int -> IO ()
 delayBy v = do
@@ -88,7 +100,11 @@ instance Transport LagTLS where
   cPut :: LagTLS p -> ByteString -> IO ()
   cPut (LagTLS t) s = do
     delayBy (sndDelayUs lagCtl)
-    drop' <- readTVarIO (dropSnd lagCtl)
+    drop' <- atomically $ do
+      always <- readTVar (dropSnd lagCtl)
+      every <- readTVar (dropEvery lagCtl)
+      i <- stateTVar (sndSeq lagCtl) $ \n -> let n' = n + 1 in (n', n')
+      pure $ always || (every > 0 && i `mod` every == 0)
     unless drop' $ cPut t s
 
   getLn :: LagTLS p -> IO ByteString
