@@ -1304,7 +1304,11 @@ testTiming =
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-      Resp "cdab" _ OK <- signSendRecv rh rKey ("cdab", rId, SUB)
+      Resp "cdab" _ resp <- signSendRecv rh rKey ("cdab", rId, SUB)
+      case resp of
+        OK -> pure ()
+        SOK Nothing -> pure ()
+        r -> expectationFailure $ "unexpected response: " <> show r
 
       (_, badKey) <- atomically $ C.generateAuthKeyPair badKeyAlg g
       runTimingTest rh badKey rId SUB

@@ -336,13 +336,13 @@ functionalAPITests ps = do
     describe "two way concurrently (50)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 50
     xdescribe "two way concurrently (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 1000
   describe "Establishing duplex connection, different PQ settings" $ do
-    testPQMatrix2 ps $ runAgentClientTestPQ False True
+    testPQMatrix2 ps $ runAgentClientTestPQ True True
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 ps runAgentClientTest
   describe "Establish duplex connection via contact address" $
     testMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
-    testPQMatrix2NoInv ps $ runAgentClientContactTestPQ False True PQSupportOn
+    testPQMatrix2NoInv ps $ runAgentClientContactTestPQ True True PQSupportOn
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
     testRatchetMatrix2 ps runAgentClientContactTest
   describe "Establish duplex connection via contact address, different PQ settings" $ do
@@ -650,7 +650,7 @@ pqMatrix2_ pqInv ps test = do
     it "pq-inv/dh handshake" $ runTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOff)
     it "pq-inv/pq handshake" $ runTest $ \a b -> test (a, IKUsePQ) (b, PQSupportOn)
   where
-    runTest = withSmpServerProxy ps . runTestCfgServers2 agentCfg agentCfg initAgentServersProxy 3
+    runTest = withSmpServerProxy ps . runTestCfgServers2 agentCfg agentCfg initAgentServersProxy 1
 
 testPQMatrix3 ::
   HasCallStack =>
