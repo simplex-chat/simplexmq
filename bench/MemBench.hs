@@ -20,32 +20,54 @@
 -- iteration count is leaking; a flat path is clean.
 --
 -- Usage: smp-mem-bench <phase> <iterations>
---   phases: plain | svc | svcrace | ntf
+--
+-- Single-server phases (server on testPort):
+--   plain | svc | svcrace | ntf | conc | svcsubs | getp | stuck | certchurn | link | ntfexp
+--   tlsstall | tlshalf | tlschurn | tlspartial  -- TLS/TCP stack
+--
+-- Two-server phases (proxy on testPort, lagged destination relay on testPort2):
+--   proxyfwd | proxytmo | proxychurn | proxysess
+--
+-- Env: BENCHSTORE selects the store (see srvStoreCfg); SMP_LEAKDIAG_SEC sets the LEAKDIAG
+-- interval (defaulted to 10s here). In two-server phases each LEAKDIAG line is tagged with the
+-- listening port - "srv=5001" is the proxy, "srv=5002" the relay - because process-wide RTS
+-- residency cannot attribute growth to one server.
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (concurrently_, mapConcurrently_, withAsync)
+import Control.Concurrent.Async (concurrently_, forConcurrently_, mapConcurrently_, wait, withAsync)
 import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
+import qualified Control.Exception as E
 import Control.Concurrent.STM
 import Control.Monad
+import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Char8 (ByteString)
+import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Maybe (fromMaybe)
+import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509.Validation as XV
 import GHC.Stats
+import qualified Network.Socket as N
+import NetLag (LagTLS, clearLag, setDropSnd, setLag)
 import SMPClient
+import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (notificationExpiration))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (maxJournalMsgCount, msgQueueQuota, notificationExpiration))
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
-import System.Environment (getArgs, lookupEnv)
+import Simplex.Messaging.Version (mkVersionRange)
+import System.Environment (getArgs, lookupEnv, setEnv)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Text.Printf (printf)
+import Text.Read (readMaybe)
 
 type H = THandleSMP TLS 'TClient
 
@@ -408,6 +430,330 @@ runNtfExp g iters _cp =
       -- hold while notifications expire; LEAKDIAG samples ntfStore_keys over this window
       forM_ ([1 .. 12] :: [Int]) $ \k -> threadDelay 5000000 >> (liveBytesMiB >>= report "ntfexp" (iters * 10 + k) base)
 
+-- two-server topology: proxy + lagged relay ---------------------------------
+--
+-- The destination relay listens on LagTLS (see bench/NetLag.hs), so proxy->relay latency and
+-- response-dropping are controlled from the bench without touching production code. The proxy
+-- and all clients use plain TLS - LagTLS is wire-identical, only the local read/write path
+-- differs.
+--
+-- Both servers log LEAKDIAG lines tagged with their listening port ("srv=5001" is the proxy,
+-- "srv=5002" the relay), which is how per-server counters are attributed: process-wide RTS
+-- residency conflates both servers with the bench clients.
+
+proxySrv :: SMPServer
+proxySrv = SMPServer testHost testPort testKeyHash
+
+relaySrv :: SMPServer
+relaySrv = SMPServer testHost2 testPort2 testKeyHash
+
+-- an address with nothing listening, for connect-failure churn
+deadSrv :: Int -> SMPServer
+deadSrv i = SMPServer testHost2 (show (20000 + i)) testKeyHash
+
+withProxyTopology :: Maybe String -> IO a -> IO a
+withProxyTopology storeEnv action =
+  withSmpServerConfigOn (transport @TLS) (proxySrvCfg storeEnv) testPort $ \_ ->
+    withSmpServerConfigOn (transport @LagTLS) (relaySrvCfg storeEnv) testPort2 $ \_ ->
+      threadDelay 250000 >> action
+
+proxySrvCfg :: Maybe String -> AServerConfig
+proxySrvCfg = \case
+#if defined(dbServerPostgres)
+  Just "pgjournal" -> proxyCfgMS (ASType SQSPostgres SMSJournal)
+  Just "journal" -> proxyCfgMS (ASType SQSMemory SMSJournal)
+  _ -> proxyCfgMS (ASType SQSPostgres SMSPostgres)
+#else
+  _ -> proxyCfg
+#endif
+
+-- second store paths/db, so the relay does not collide with the proxy in one process.
+-- Quota is raised (as SMPProxyTests does) so that forwarding under latency is not cut short by
+-- QUOTA before the phase has run long enough to show a trend.
+relaySrvCfg :: Maybe String -> AServerConfig
+relaySrvCfg storeEnv = updateCfg (baseCfg storeEnv) $ \c -> c {msgQueueQuota = 128, maxJournalMsgCount = 256}
+  where
+    baseCfg = \case
+#if defined(dbServerPostgres)
+      Just "journal" -> cfgJ2QS SQSMemory
+      _ -> cfgJ2QS SQSPostgres
+#else
+      _ -> cfgJ2
+#endif
+
+-- a client connected to the proxy, able to issue PRXY/PFWD
+proxyClient :: TVar ChaChaDRG -> Int64 -> IO SMPClient
+proxyClient g n = do
+  ts <- getCurrentTime
+  getProtocolClient g NRMInteractive (n, proxySrv, Nothing) benchClientCfg [] Nothing ts (\_ -> pure ())
+    >>= either (fail . show) pure
+
+benchClientCfg :: ProtocolClientConfig SMPVersion
+benchClientCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
+
+runExceptT' :: Show e => ExceptT e IO a -> IO a
+runExceptT' a = runExceptT a >>= either (fail . show) pure
+
+-- a subscribed queue on the destination relay, with everything needed to drain it
+data RelayQueue = RelayQueue
+  { rqSndId :: SenderId,
+    rqRcvId :: RecipientId,
+    rqRcvKey :: C.APrivateAuthKey,
+    rqClient :: SMPClient,
+    rqMsgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg)
+  }
+
+newRelayQueue :: TVar ChaChaDRG -> IO RelayQueue
+newRelayQueue g = do
+  ts <- getCurrentTime
+  rqMsgQ <- newTBQueueIO 4096
+  rqClient <-
+    getProtocolClient g NRMInteractive (99, relaySrv, Nothing) benchClientCfg [] (Just rqMsgQ) ts (\_ -> pure ())
+      >>= either (fail . show) pure
+  (rPub, rqRcvKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rdhPub, _rdhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  QIK {sndId = rqSndId, rcvId = rqRcvId} <-
+    runExceptT' $ createSMPQueue rqClient NRMInteractive Nothing (rPub, rqRcvKey) rdhPub Nothing SMSubscribe (QRMessaging Nothing) Nothing
+  pure RelayQueue {rqSndId, rqRcvId, rqRcvKey, rqClient, rqMsgQ}
+
+-- receive and ack one delivered message, so a steady-forwarding phase does not hit QUOTA
+ackOne :: RelayQueue -> IO ()
+ackOne RelayQueue {rqRcvId, rqRcvKey, rqClient, rqMsgQ} = do
+  b <- atomically $ readTBQueue rqMsgQ
+  case b of
+    (_, _, [(_, STEvent (Right (MSG RcvMessage {msgId})))]) ->
+      runExceptT' $ ackSMPMessage rqClient rqRcvKey rqRcvId msgId
+    _ -> pure ()
+
+-- baseline: steady forwarding through the proxy under moderate latency.
+-- proxy_sentCommands (LEAKDIAG srv=5001) should stay flat - every RFWD is answered.
+runProxyFwd :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runProxyFwd g iters cp = do
+  rq <- newRelayQueue g
+  pc <- proxyClient g 1
+  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relaySrv Nothing
+  setLag proxyLagUs proxyLagUs
+  -- a silently failing send would look identical to a clean one in the residency trace,
+  -- so the baseline phase must fail loudly instead of counting errors as "flat"
+  withCheckpoints "proxyfwd" iters cp $ \i -> do
+    runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "hello") >>= \case
+      Right (Right ()) -> pure ()
+      r -> fail $ "proxyfwd: forward failed at iteration " <> show i <> ": " <> show r
+    ackOne rq
+  clearLag
+  where
+    proxyLagUs = 50000 -- 50ms each way
+
+-- HEADLINE REPRO: the relay keeps the session up but stops answering, so every RFWD the proxy
+-- forwards times out. getResponse (Client.hs) sets `pending = False` and bumps the error count
+-- but never deletes from `sentCommands` - the only removal is in processMsg when a response
+-- actually arrives. Each stuck entry retains its RFWD command payload (EncFwdTransmission,
+-- paddedProxiedTLength = 16226 bytes), and the session is never torn down because dropping the
+-- client needs timeoutErrorCount >= smpPingCount AND 15 minutes of total silence, while the
+-- proxy (party SSender) never pings.
+--
+-- Expect LEAKDIAG srv=5001 proxy_sentCommands to climb by `concurrency` per round and stay
+-- there, with residency growing ~16 KiB per stuck command.
+runProxyTmo :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runProxyTmo g iters _cp = do
+  rq <- newRelayQueue g
+  -- establish the proxy->relay session and prove it works before breaking it
+  pcs <- mapM (proxyClient g . fromIntegral) [1 .. nClients]
+  sess <- runExceptT' $ connectSMPProxiedRelay (head pcs) NRMInteractive relaySrv Nothing
+  -- prove forwarding works before breaking it, so a setup failure cannot masquerade as the leak
+  runExceptT (proxySMPMessage (head pcs) NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "warmup") >>= \case
+    Right (Right ()) -> pure ()
+    r -> fail $ "proxytmo: warmup forward failed, topology is broken: " <> show r
+  base <- liveBytesMiB
+  report "proxytmo" 0 base base
+  setDropSnd True
+  timeouts <- newTVarIO (0 :: Int)
+  let rounds = max 1 (iters `div` batch)
+  forM_ ([1 .. rounds] :: [Int]) $ \r -> do
+    -- all of these time out together; each leaves one entry in the proxy's sentCommands
+    forConcurrently_ ([1 .. batch] :: [Int]) $ \k -> do
+      let pc = pcs !! (k `mod` nClients)
+      r' <- runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "stuck")
+      -- only a response timeout leaves a stuck sentCommands entry; anything else means the
+      -- phase is measuring something other than the leak it claims to reproduce
+      case r' of
+        Left PCEResponseTimeout -> atomically $ modifyTVar' timeouts (+ 1)
+        _ -> pure ()
+    n <- readTVarIO timeouts
+    cur <- liveBytesMiB
+    report "proxytmo" (r * batch) base cur
+    -- Measured, not assumed: this stays flat at one batch rather than accumulating. The
+    -- bench clients give up at 20s (2 * interactive tcpTimeout) but the proxy still answers
+    -- them with PROXY (BROKER TIMEOUT) once its own RFWD expires at 30s, and that late
+    -- response deletes their entries in processMsg. Only the proxy->relay side leaks, so
+    -- process residency is NOT a doubled count of the payload.
+    clientStuck <- sum <$> mapM pClientSentCommandsCount pcs
+    printf "proxytmo timeouts=%d of %d attempted, benchClient_sentCommands=%d\n" n (r * batch) clientStuck
+  setDropSnd False
+  where
+    nClients = 8
+    batch = 64
+
+-- PRXY to many distinct relay addresses that refuse the connection. Each failure stores
+-- `Left (err, Just expiry)` in the agent's smpClients map; removal is lazy (only on a later
+-- lookup of the same server), so addresses never requested again are retained.
+-- Expect LEAKDIAG srv=5001 proxy_smpClients to grow monotonically.
+runProxyChurn :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runProxyChurn g iters cp = do
+  pc <- proxyClient g 1
+  withCheckpoints "proxychurn" iters cp $ \i ->
+    void $ runExceptT (connectSMPProxiedRelay pc NRMInteractive (deadSrv i) Nothing)
+
+-- PRXY against a relay that accepts TCP but never completes TLS, with the requesting client
+-- disconnecting mid-connect.
+--
+-- NOT A CONFIRMED REPRO. This was written to probe the empty-SessionVar path in
+-- getSMPServerClient'', and it does not reach it: measured over 100 iterations, the proxy ends
+-- with proxy_smpClients=0, proxy_smpSessions=0, clients=0 and a thread count at baseline, both
+-- 5s and 55s after the loop (i.e. before and after the 45s tcpConnectTimeout expires). The
+-- withGetSessVar bracketOnError in Session.hs drops the empty var on the async exception, so
+-- the race stays closed on this path.
+--
+-- Residency does climb ~108 KiB/iter, but with every server-side counter flat that growth is
+-- bench-harness retention, not a server leak - do not read it as one. The phase is kept as
+-- connect-abort churn coverage; reproducing the empty-SessionVar leak still needs the
+-- deterministic unit-test-style race, as bench/MemBench.hs already noted for the proxy leaks.
+runProxySess :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runProxySess g iters cp =
+  withStallingServerOn stallPort $ do
+    base <- liveBytesMiB
+    report "proxysess" 0 base base
+    forM_ ([1 .. iters] :: [Int]) $ \i -> do
+      pc <- proxyClient g (1000 + fromIntegral i)
+      -- start the relay connect, then drop the requesting client before it can finish
+      withAsync (void $ runExceptT (connectSMPProxiedRelay pc NRMInteractive stallSrv Nothing)) $ \_ ->
+        threadDelay 50000
+      closeProtocolClient pc
+      when (i `mod` cp == 0) $ liveBytesMiB >>= report "proxysess" i base
+  where
+    stallPort = "5009"
+    stallSrv = SMPServer testHost2 stallPort testKeyHash
+
+-- TLS/TCP stack --------------------------------------------------------------
+
+-- These phases hold every connection open at once, so they are bounded by file descriptors
+-- rather than by memory. Cap and say so - a silent truncation would read as "20000 connections
+-- were fine" when only a fraction were ever opened.
+maxHeldConns :: Int
+maxHeldConns = 512
+
+heldConns :: String -> Int -> IO Int
+heldConns phase iters
+  | iters <= maxHeldConns = pure iters
+  | otherwise = do
+      printf "%s: capping held connections at %d (requested %d) to stay within the fd limit\n" phase maxHeldConns iters
+      pure maxHeldConns
+
+rawConnect :: N.ServiceName -> IO N.Socket
+rawConnect port = do
+  let hints = N.defaultHints {N.addrSocketType = N.Stream}
+  addr : _ <- N.getAddrInfo (Just hints) (Just "127.0.0.1") (Just port)
+  sock <- N.socket (N.addrFamily addr) (N.addrSocketType addr) (N.addrProtocol addr)
+  N.connect sock (N.addrAddress addr)
+  pure sock
+
+-- Occupancy or leak? Hold `n` connections open at once, measure peak residency, then release
+-- them all and measure again once the server has had time to drop its per-connection state.
+-- Recovery to baseline means the phase measured the legitimate cost of a held connection; a
+-- residency that stays elevated is a leak. Without this second measurement the two are
+-- indistinguishable - the first version of these phases reported peak occupancy alone, which
+-- reads like a leak and is not one.
+holdRelease :: String -> Int -> (IO () -> Int -> IO ()) -> IO ()
+holdRelease phase n conn = do
+  base <- liveBytesMiB
+  report phase 0 base base
+  release <- newTVarIO False
+  connected <- newTVarIO (0 :: Int)
+  let held = do
+        atomically $ modifyTVar' connected (+ 1)
+        atomically $ readTVar release >>= \r -> unless r retry
+  withAsync (forConcurrently_ ([1 .. n] :: [Int]) (conn held)) $ \as -> do
+    atomically $ readTVar connected >>= \c -> when (c < n) retry
+    peak <- liveBytesMiB
+    report phase n base peak
+    atomically $ writeTVar release True
+    wait as
+    printf "%s: peak=%.1f MiB (%+.2f KiB/conn)\n" phase peak ((peak - base) * 1024 / fromIntegral n)
+    -- Sample recovery repeatedly rather than once. A single early sample cannot tell a leak
+    -- from state the server has not reaped yet: the relevant server windows are 60s
+    -- (tlsSetupTimeout) and 60s (test smpHandshakeTimeout). Retention that keeps falling is
+    -- slow reaping; retention that plateaus above baseline is a leak.
+    foldM_
+      ( \prev afterSec -> do
+          threadDelay $ (afterSec - prev) * 1000000
+          cur <- liveBytesMiB
+          printf
+            "%s: +%3ds recovered=%.1f MiB retained=%+.2f MiB (%+.3f KiB/conn)\n"
+            phase
+            afterSec
+            cur
+            (cur - base)
+            ((cur - base) * 1024 / fromIntegral n)
+          pure afterSec
+      )
+      (0 :: Int)
+      ([5, 25, 60, 120] :: [Int])
+
+-- TCP connections that never send a ClientHello. Each occupies a server thread, an fd and a
+-- SocketState entry until tlsSetupTimeout (60s) or until the peer closes.
+--
+-- RESULT (200 conns): peak 48.2 KiB/conn, 0.31 KiB/conn retained from +25s onwards. Clean.
+runTlsStall :: Int -> Int -> IO ()
+runTlsStall iters0 _cp = do
+  iters <- heldConns "tlsstall" iters0
+  holdRelease "tlsstall" iters $ \held _ ->
+    E.bracket (rawConnect testPort) N.close $ \_ -> held
+
+-- TLS completes but the SMP handshake never starts: held until smpHandshakeTimeout (60s in the
+-- test config) with no Client record ever allocated, so it is invisible to the LEAKDIAG client
+-- counters - watch threads and CPSockets instead.
+--
+-- RESULT (200 conns): peak 203.1 KiB/conn, but 0.71 KiB/conn retained from +25s onwards. Clean.
+-- Note the shape of the recovery curve: at +5s it still reads 124.6 KiB/conn, so a single early
+-- sample reports this as a 24 MiB leak when it is teardown latency (gracefulClose holds each
+-- connection up to 5s). The occupancy is still worth knowing - 200 abandoned half-open
+-- connections pin ~40 MiB for ~25s with no authentication required.
+runTlsHalf :: Int -> Int -> IO ()
+runTlsHalf iters0 _cp = do
+  iters <- heldConns "tlshalf" iters0
+  holdRelease "tlshalf" iters $ \held _ ->
+    runTransportClient tcConfig Nothing (head' testHost) testPort (Just testKeyHash) $
+      \(_h :: TLS 'TClient) -> held
+  where
+    tcConfig = defaultTransportClientConfig {clientALPN = Just alpnSupportedSMPHandshakes} :: TransportClientConfig
+    head' (h :| _) = h
+
+-- full connect + SMP handshake + disconnect churn. Exercises the accept path, per-connection
+-- TBuffer allocation and the gracefulClose teardown residue.
+runTlsChurn :: Int -> Int -> IO ()
+runTlsChurn iters cp = do
+  base <- liveBytesMiB
+  report "tlschurn" 0 base base
+  forM_ ([1 .. iters] :: [Int]) $ \i -> do
+    testSMPClient @TLS $ \(_h :: THandleSMP TLS 'TClient) -> pure ()
+    when (i `mod` cp == 0) $ liveBytesMiB >>= report "tlschurn" i base
+
+-- post-handshake, send a partial block and idle. The server's transportTimeout is hardcoded
+-- Nothing, so its receive thread blocks in cGet indefinitely; only inactive-client expiry
+-- (6h by default, and only without subscriptions) would ever reap it.
+-- RESULT (200 conns): peak 264.6 KiB/conn, 0.87 KiB/conn retained from +25s onwards. Clean -
+-- the server has no read timeout here (transportTimeout is hardcoded Nothing at
+-- Transport/Server.hs:104) so it never reaps these itself, but it does release everything
+-- promptly once the peer disconnects. The exposure is occupancy while the peer stays connected:
+-- a client that completes the SMP handshake and then sends one byte pins ~265 KiB indefinitely,
+-- reapable only by inactive-client expiry (6h default, and only for clients with no
+-- subscriptions).
+runTlsPartial :: Int -> Int -> IO ()
+runTlsPartial iters0 _cp = do
+  iters <- heldConns "tlspartial" iters0
+  holdRelease "tlspartial" iters $ \held _ ->
+    testSMPClient @TLS $ \h -> cPut (connection h) "partial" >> held
+
 -- store config selectable via BENCHSTORE env: pgmsg (default, useCache=False) | pgjournal (useCache=True) | journal
 srvStoreCfg :: Maybe String -> AServerConfig
 srvStoreCfg = \case
@@ -433,20 +779,47 @@ main = do
   let srvCfg = case phase of
         "ntfexp" -> updateCfg (srvStoreCfg storeEnv) $ \c -> c {notificationExpiration = ExpirationConfig {ttl = 2, checkInterval = 3}}
         _ -> srvStoreCfg storeEnv
+  -- LEAKDIAG counters are the only per-server signal in multi-server topologies, so sample
+  -- them often enough to be useful over a bench run
+  leakDiagSec <- fromMaybe 10 . (>>= readMaybe) <$> lookupEnv "SMP_LEAKDIAG_SEC"
+  setEnv "SMP_LEAKDIAG_SEC" (show leakDiagSec)
   setLogLevel LogInfo
   withGlobalLogging LogConfig {lc_file = Nothing, lc_stderr = True} $
-    withSmpServerConfigOn (transport @TLS) srvCfg testPort $ \_ -> do
-    threadDelay 250000
-    case phase of
-      "plain" -> runPlain g iters cp
-      "svc" -> runSvc g iters cp
-      "svcrace" -> runSvcRace g iters cp
-      "ntf" -> runNtf g iters cp
-      "conc" -> runConc g iters cp
-      "svcsubs" -> runSvcSubs g iters cp
-      "getp" -> runGet g iters cp
-      "stuck" -> runStuck g iters cp
-      "certchurn" -> runCertChurn g iters cp
-      "link" -> runLink g iters cp
-      "ntfexp" -> runNtfExp g iters cp
-      _ -> error $ "unknown phase: " <> phase
+    if phase `elem` proxyPhases
+      then withProxyTopology storeEnv $ settle leakDiagSec $ case phase of
+        "proxyfwd" -> runProxyFwd g iters cp
+        "proxytmo" -> runProxyTmo g iters cp
+        "proxychurn" -> runProxyChurn g iters cp
+        "proxysess" -> runProxySess g iters cp
+        _ -> error $ "unknown proxy phase: " <> phase
+      else withSmpServerConfigOn (transport @TLS) srvCfg testPort $ \_ -> settle leakDiagSec $ do
+        threadDelay 250000
+        case phase of
+          "plain" -> runPlain g iters cp
+          "svc" -> runSvc g iters cp
+          "svcrace" -> runSvcRace g iters cp
+          "ntf" -> runNtf g iters cp
+          "conc" -> runConc g iters cp
+          "svcsubs" -> runSvcSubs g iters cp
+          "getp" -> runGet g iters cp
+          "stuck" -> runStuck g iters cp
+          "certchurn" -> runCertChurn g iters cp
+          "link" -> runLink g iters cp
+          "ntfexp" -> runNtfExp g iters cp
+          "tlsstall" -> runTlsStall iters cp
+          "tlshalf" -> runTlsHalf iters cp
+          "tlschurn" -> runTlsChurn iters cp
+          "tlspartial" -> runTlsPartial iters cp
+          _ -> error $ "unknown phase: " <> phase
+
+proxyPhases :: [String]
+proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "proxysess"]
+
+-- Hold the servers up past one LEAKDIAG interval after the phase finishes, so the end state is
+-- always sampled at least once. Short phases would otherwise exit before any line is emitted,
+-- leaving the per-server counters - the only attribution in a two-server topology - unobservable.
+settle :: Int -> IO a -> IO a
+settle leakDiagSec run = do
+  r <- run
+  threadDelay $ (leakDiagSec + 2) * 1000000
+  pure r
