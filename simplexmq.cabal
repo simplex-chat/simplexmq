@@ -658,6 +658,7 @@ executable smp-mem-bench
       buildable: False
   main-is: MemBench.hs
   other-modules:
+      NetLag
       SMPClient
       Util
   hs-source-dirs:
