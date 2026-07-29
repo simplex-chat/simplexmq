@@ -46,9 +46,6 @@ testBatchSubscriptions = do
   sessId <- atomically . C.randomBytes 32 =<< C.newRandom
   subs <- replicateM 300 $ randomSUB sessId
   let thParams = testTHandleParams sessId
-      batches1 = batchTransmissions thParams {batch = False} $ L.fromList subs
-  all lenOk1 batches1 `shouldBe` True
-  length batches1 `shouldBe` 300
   let batches = batchTransmissions thParams $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 _, TBTransmissions s2 n2 _, TBTransmissions s3 n3 _] <- pure batches
@@ -63,9 +60,6 @@ testBatchWithMessage = do
   subs2 <- replicateM 40 $ randomSUB sessId
   let thParams = testTHandleParams sessId
       cmds = subs1 <> [send] <> subs2
-      batches1 = batchTransmissions thParams {batch = False} $ L.fromList cmds
-  all lenOk1 batches1 `shouldBe` True
-  length batches1 `shouldBe` 101
   let batches = batchTransmissions thParams $ L.fromList cmds
   length batches `shouldBe` 2
   [TBTransmissions s1 n1 _, TBTransmissions s2 n2 _] <- pure batches
@@ -80,12 +74,6 @@ testBatchWithLargeMessage = do
   subs2 <- replicateM 150 $ randomSUB sessId
   let thParams = testTHandleParams sessId
       cmds = subs1 <> [send] <> subs2
-      batches1 = batchTransmissions thParams {batch = False} $ L.fromList cmds
-  all lenOk1 batches1 `shouldBe` False
-  length batches1 `shouldBe` 211
-  let batches1' = take 60 batches1 <> drop 61 batches1
-  all lenOk1 batches1' `shouldBe` True
-  length batches1' `shouldBe` 210
   let batches = batchTransmissions thParams $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions s1 n1 _, TBError TELargeMsg _, TBTransmissions s2 n2 _, TBTransmissions s3 n3 _] <- pure batches
@@ -96,8 +84,6 @@ testClientBatchSubscriptions :: IO ()
 testClientBatchSubscriptions = do
   client <- testClientStub
   subs <- replicateM 300 $ randomSUBCmd client
-  let batches1 = batchTransmissions' (thParams client) {batch = False} $ L.fromList subs
-  all lenOk1 batches1 `shouldBe` True
   let batches = batchTransmissions' (thParams client) $ L.fromList subs
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
@@ -110,8 +96,6 @@ testClientBatchENDs = do
   client <- testClientStub
   ends <- replicateM 300 randomENDCmd
   let ends' = map (\t -> Right (Nothing, encodeTransmission (thParams client) t)) ends
-      batches1 = batchTransmissions (thParams client) {batch = False} $ L.fromList ends'
-  all lenOk1 batches1 `shouldBe` True
   let batches = batchTransmissions (thParams client) $ L.fromList ends'
   length batches `shouldBe` 2
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2] <- pure batches
@@ -125,8 +109,6 @@ testClientBatchNMSGs = do
   ts <- getSystemTime
   ntfs <- replicateM 200 $ randomNMSGCmd ts
   let ntfs' = map (\t -> Right (Nothing, encodeTransmission (thParams client) t)) ntfs
-      batches1 = batchTransmissions (thParams client) {batch = False} $ L.fromList ntfs'
-  all lenOk1 batches1 `shouldBe` True
   let batches = batchTransmissions (thParams client) $ L.fromList ntfs'
   length batches `shouldBe` 3
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
@@ -155,10 +137,7 @@ testClientBatchWithMessage = do
   send <- randomSENDCmd client 8000
   subs2 <- replicateM 40 $ randomSUBCmd client
   let cmds = subs1 <> [send] <> subs2
-      batches1 = batchTransmissions' (thParams client) {batch = False} $ L.fromList cmds
-  all lenOk1 batches1 `shouldBe` True
-  length batches1 `shouldBe` 101
-  let batches = batchTransmissions' (thParams client) $ L.fromList cmds
+      batches = batchTransmissions' (thParams client) $ L.fromList cmds
   length batches `shouldBe` 2
   [TBTransmissions s1 n1 rs1, TBTransmissions s2 n2 rs2] <- pure batches
   (n1, n2) `shouldBe` (33, 68)
@@ -172,14 +151,7 @@ testClientBatchWithLargeMessage = do
   send <- randomSENDCmd client 17000
   subs2 <- replicateM 150 $ randomSUBCmd client
   let cmds = subs1 <> [send] <> subs2
-      batches1 = batchTransmissions' (thParams client) {batch = False} $ L.fromList cmds
-  all lenOk1 batches1 `shouldBe` False
-  length batches1 `shouldBe` 211
-  let batches1' = take 60 batches1 <> drop 61 batches1
-  all lenOk1 batches1' `shouldBe` True
-  length batches1' `shouldBe` 210
-  --
-  let batches = batchTransmissions' (thParams client) $ L.fromList cmds
+      batches = batchTransmissions' (thParams client) $ L.fromList cmds
   length batches `shouldBe` 4
   [TBTransmissions s1 n1 rs1, TBError TELargeMsg _, TBTransmissions s2 n2 rs2, TBTransmissions s3 n3 rs3] <- pure batches
   (n1, n2, n3) `shouldBe` (60, 15, 135)
@@ -275,7 +247,6 @@ testTHandleParams sessionId =
       thAuth = Nothing,
       implySessId = True,
       encryptBlock = Nothing,
-      batch = True,
       serviceAuth = True
     }
 
@@ -301,8 +272,3 @@ randomSENDCmd c len = do
 
 lenOk :: ByteString -> Bool
 lenOk s = 0 < B.length s && B.length s <= smpBlockSize - 2
-
-lenOk1 :: TransportBatch r -> Bool
-lenOk1 = \case
-  TBTransmission s _ -> lenOk s
-  _ -> False
