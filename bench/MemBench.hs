@@ -26,7 +26,7 @@
 --   tlsstall | tlshalf | tlschurn | tlspartial  -- TLS/TCP stack
 --
 -- Two-server phases (proxy on testPort, lagged destination relay on testPort2):
---   proxyfwd | proxytmo | proxychurn | proxysess | subtmo
+--   proxyfwd | proxytmo | proxychurn | subtmo
 --
 -- Env: BENCHSTORE selects the store (see srvStoreCfg); SMP_LEAKDIAG_SEC sets the LEAKDIAG
 -- interval (defaulted to 10s here). In two-server phases each LEAKDIAG line is tagged with the
@@ -704,35 +704,12 @@ runProxyChurn g iters cp = do
   withCheckpoints "proxychurn" iters cp $ \i ->
     void $ runExceptT (connectSMPProxiedRelay pc NRMInteractive (deadSrv i) Nothing)
 
--- PRXY against a relay that accepts TCP but never completes TLS, with the requesting client
--- disconnecting mid-connect.
---
--- NOT A CONFIRMED REPRO. This was written to probe the empty-SessionVar path in
--- getSMPServerClient'', and it does not reach it: measured over 100 iterations, the proxy ends
--- with proxy_smpClients=0, proxy_smpSessions=0, clients=0 and a thread count at baseline, both
--- 5s and 55s after the loop (i.e. before and after the 45s tcpConnectTimeout expires). The
--- withGetSessVar bracketOnError in Session.hs drops the empty var on the async exception, so
--- the race stays closed on this path.
---
--- Residency does climb ~108 KiB/iter, but with every server-side counter flat that growth is
--- bench-harness retention, not a server leak - do not read it as one. The phase is kept as
--- connect-abort churn coverage; reproducing the empty-SessionVar leak still needs the
--- deterministic unit-test-style race, as bench/MemBench.hs already noted for the proxy leaks.
-runProxySess :: TVar ChaChaDRG -> Int -> Int -> IO ()
-runProxySess g iters cp =
-  withStallingServerOn stallPort $ do
-    base <- liveBytesMiB
-    report "proxysess" 0 base base
-    forM_ ([1 .. iters] :: [Int]) $ \i -> do
-      pc <- proxyClient g (1000 + fromIntegral i)
-      -- start the relay connect, then drop the requesting client before it can finish
-      withAsync (void $ runExceptT (connectSMPProxiedRelay pc NRMInteractive stallSrv Nothing)) $ \_ ->
-        threadDelay 50000
-      closeProtocolClient pc
-      when (i `mod` cp == 0) $ liveBytesMiB >>= report "proxysess" i base
-  where
-    stallPort = "5009"
-    stallSrv = SMPServer testHost2 stallPort testKeyHash
+-- Note: the empty-SessionVar leak is NOT covered here. It was fixed in c9ebf72e by the
+-- bracketOnError/dropEmptySessVar in Session.hs withGetSessVar', and SMPProxyTests already has
+-- deterministic regression tests for it ("reconnects to relay after sender disconnects
+-- mid-connection" and "reconnects after a connect is cancelled mid-flight"). A load phase
+-- cannot reproduce a fixed race, and an earlier attempt here only measured harness growth.
+
 
 -- TLS/TCP stack --------------------------------------------------------------
 
@@ -890,7 +867,6 @@ main = do
         "proxyfwd" -> runProxyFwd g iters cp
         "proxytmo" -> runProxyTmo g iters cp
         "proxychurn" -> runProxyChurn g iters cp
-        "proxysess" -> runProxySess g iters cp
         "subtmo" -> runSubTmo g iters cp
         _ -> error $ "unknown proxy phase: " <> phase
       else withSmpServerConfigOn (transport @TLS) srvCfg testPort $ \_ -> settle leakDiagSec $ do
@@ -914,7 +890,7 @@ main = do
           _ -> error $ "unknown phase: " <> phase
 
 proxyPhases :: [String]
-proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "proxysess", "subtmo"]
+proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo"]
 
 -- Hold the servers up past one LEAKDIAG interval after the phase finishes, so the end state is
 -- always sampled at least once. Short phases would otherwise exit before any line is emitted,
