@@ -75,7 +75,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Semigroup (Sum (..))
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -526,14 +526,16 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ms <- asks msgStore
       ns <- asks ntfStore
       ProxyAgent {smpAgent} <- asks proxyAgent
+      -- listening port identifies the server when several run in one process (bench topologies)
+      let srvPort = maybe "?" (\(p, _, _) -> p) $ listToMaybe transports
       labelMyThread "leakDiagnosticsThread"
       -- never let a diagnostics error crash the server (this thread is in raceAny_)
       liftIO $ forever $ do
         threadDelay $ sec * 1000000
-        tryAny (logLeakStats srv ms ns smpAgent) >>= either (logError . ("LEAKDIAG error: " <>) . tshow) (const $ pure ())
+        tryAny (logLeakStats srvPort srv ms ns smpAgent) >>= either (logError . ("LEAKDIAG error: " <>) . tshow) (const $ pure ())
 
-    logLeakStats :: Server s -> s -> NtfStore -> SMPClientAgent 'Sender -> IO ()
-    logLeakStats srv ms (NtfStore nsv) smpAgent = do
+    logLeakStats :: ServiceName -> Server s -> s -> NtfStore -> SMPClientAgent 'Sender -> IO ()
+    logLeakStats srvPort srv ms (NtfStore nsv) smpAgent = do
 #if MIN_VERSION_base(4,18,0)
       nThreads <- length <$> listThreads
 #else
@@ -551,6 +553,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       logNote $
         T.concat
           [ "LEAKDIAG",
+            " srv=" <> T.pack srvPort,
             f "threads" nThreads, f "clients" (length cls),
             f "endThreads" (aggEndThreads cc), f "endThreadSeq" (aggEndThreadSeq cc), f "procThreads" (aggProcThreads cc),
             f "subs" (aggSubs cc), f "subs_nosub" (aggNoSub cc), f "subs_pending" (aggPending cc), f "subs_thread" (aggThread cc), f "subs_prohibit" (aggProhibit cc),
