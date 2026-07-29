@@ -33,6 +33,19 @@ requests and dropping others keeps the session alive, since any reply resets the
 
 Also fires with no attacker: any round trip above 30 seconds.
 
+The ntf server uses the same client code, so it is exposed too, but less. Analysis only, not
+measured here, since it needs Postgres:
+
+- Reachable through unanswered `NSUB`. `subscribeSMPQueuesNtfs` (`Client.hs:912`) batches, and
+  `sendBatch` calls `getResponse` once per request, so an unanswered batch leaks one entry per
+  queue. Batch size is 1360 (`Client/Agent.hs:131`).
+- Much cheaper per entry: an `NSUB` payload rather than a 16226 byte `RFWD`.
+- Partly self limiting. Every subscribe path calls `enablePings` (`Client.hs:854, 861, 907, 914,
+  934`), so a fully silent server is eventually dropped and the map goes with it. The proxy
+  never subscribes, so it never pings, which is why only the proxy is unbounded.
+- Still leaks against a server that answers pings but not subscribes, since any reply resets the
+  counters.
+
 ### Fix
 
 ```haskell
@@ -152,6 +165,35 @@ means leaked.
 Peaks still matter. 200 abandoned half open connections hold ~40 MiB for ~25s, unauthenticated.
 A client that finishes the handshake then sends one byte holds ~265 KiB for as long as it stays
 connected: no read timeout, `transportTimeout` is hardcoded `Nothing` (`Transport/Server.hs:104`).
+
+## Bug 5: socketsLeaked over-reports during teardown
+
+### Issue
+
+`closeConn` (`Transport/Server.hs:179`) removes the connection from `active`, then calls
+`gracefulClose conn 5000`, then increments `closed`:
+
+```haskell
+atomically $ writeTVar closed True >> modifyTVar' clients (IM.delete cId)
+gracefulClose conn 5000 `catchAll_` pure ()
+atomically $ modifyTVar' gracefullyClosed (+ 1)
+```
+
+`socketsLeaked = accepted - closed - active` (`Transport/Server.hs:225`). For up to 5 seconds a
+closing connection is in neither `closed` nor `active`, so it counts as leaked.
+
+### Impact
+
+No memory cost. Under connection churn `socketsLeaked` shows a steady nonzero value that is not
+a leak, which makes the metric unusable for the thing it is named after. This is the same 5
+second teardown window that made the TLS tests look like they leaked 24 MiB.
+
+### Fix
+
+Count the connection as closed before starting `gracefulClose`, or drop it from `active` only
+after `gracefulClose` returns. Either ordering keeps the invariant.
+
+---
 
 ## Connectivity and sockets under latency
 
