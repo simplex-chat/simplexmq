@@ -3,7 +3,10 @@
 From `bench/MemBench.hs` extended with a proxy plus relay topology and a transport that adds
 latency and drops replies.
 
-Two leaks on the proxy path, both client reachable. Two related bugs. TLS/TCP stack clean.
+Two leaks on the proxy path, both client reachable. Three related bugs. TLS/TCP stack clean.
+
+Measured on both the journal store and the PostgreSQL queue and message store, which is the
+production configuration. Results are the same on both.
 
 ---
 
@@ -61,18 +64,24 @@ coming, which is cheap but not free.
 arbitrary destination, so a client can point the proxy at exactly such a relay. No rate cap, see
 Bug 3.
 
-The ntf server uses the same client code, so it is exposed too, but less. Analysis only, not
-measured here, since it needs Postgres:
+The ntf server uses the same client code, so it has the same exposure. Reachable through
+unanswered `NSUB`: `subscribeSMPQueuesNtfs` (`Client.hs:912`) batches, and `sendBatch` calls
+`getResponse` once per request, so an unanswered batch leaks one entry per queue. Batch size is
+1360 (`Client/Agent.hs:131`).
 
-- Reachable through unanswered `NSUB`. `subscribeSMPQueuesNtfs` (`Client.hs:912`) batches, and
-  `sendBatch` calls `getResponse` once per request, so an unanswered batch leaks one entry per
-  queue. Batch size is 1360 (`Client/Agent.hs:131`).
-- Much cheaper per entry: an `NSUB` payload rather than a 16226 byte `RFWD`.
-- Partly self limiting. Every subscribe path calls `enablePings` (`Client.hs:854, 861, 907, 914,
-  934`), so a fully silent server is eventually dropped and the map goes with it. The proxy
-  never subscribes, so it never pings, which is why only the proxy is unbounded.
-- Still leaks against a server that answers pings but not subscribes, since any reply resets the
-  counters.
+Measured with `subtmo 200`, which drives the same batched subscribe path on a bench owned client
+so the count can be read directly: 200 queues, 200 timed out, `sentCommands` went from 0 to 200.
+One entry per queue, at about 1.76 KiB each. At the ntf server's batch size that is roughly
+2.3 MiB per unanswered batch.
+
+Cost per entry is far lower than the proxy case, a subscribe payload rather than a 16226 byte
+`RFWD`, but the retention rule is identical.
+
+Pings are not the mitigation they look like. Subscribe paths call `enablePings` (`Client.hs:854,
+861, 907, 914, 934`) and the proxy's send path does not, but that only changes liveness detection
+on an otherwise idle connection. It does not bound the leak: in the unbounded case there is
+sustained traffic and some replies do arrive, and every arrival resets `lastReceived` and
+`timeoutErrorCount` whether or not pings are enabled.
 
 ### Fix
 
