@@ -344,7 +344,7 @@ functionalAPITests ps = do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ True True PQSupportOn
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
     testRatchetMatrix2 ps runAgentClientContactTest
-  describe "Establish duplex connection via contact address, different PQ settings" $ do
+  describe "Establish duplex connection via contact address, different PQ settings (3 clients)" $ do
     testPQMatrix3 ps $ runAgentClientContactTestPQ3 True
   it "should support rejecting contact request" $
     withSmpServer ps testRejectContactRequest
@@ -668,7 +668,7 @@ testPQMatrix3 ps test = do
   where
     runTest test' =
       withSmpServerProxy ps $
-        runTestCfgServers2 agentCfg agentCfg servers 3 $ \a b baseMsgId ->
+        runTestCfgServers2 agentCfg agentCfg servers 1 $ \a b baseMsgId ->
           withAgent 3 agentCfg servers testDB3 $ \c -> test' a b c baseMsgId
     servers = initAgentServersProxy
 
@@ -1002,7 +1002,7 @@ runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId 
       liftIO $ pqSup' `shouldBe` PQSupportOn
       bId <- A.prepareConnectionToAccept alice 1 True invId (CR.connPQEncryption aPQ)
       sqSecuredAccept <- acceptContact alice 1 bId True invId "alice's connInfo" (CR.connPQEncryption aPQ) SMSubscribe
-      liftIO $ sqSecuredAccept `shouldBe` False -- agent cfg is v8
+      liftIO $ sqSecuredAccept `shouldBe` True
       ("", _, A.CONF confId pqSup'' _ "alice's connInfo") <- get b
       liftIO $ pqSup'' `shouldBe` pq
       allowConnection b aId confId "bob's connInfo"
