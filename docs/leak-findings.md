@@ -15,23 +15,51 @@ Entries go into `sentCommands` in `mkTransmission_` (`Client.hs:1418`). The only
 `processMsg` (`Client.hs:706`), which runs when a reply arrives. `getResponse` (`Client.hs:1383`)
 handles the timeout but does not receive the map, so it cannot delete.
 
-The session does not drop either: that needs 15 minutes of total silence, and the proxy never
-pings. Each entry holds the forwarded command, 16226 bytes.
+Each entry holds the forwarded command, 16226 bytes.
+
+The session survives too. `monitor` (`Client.hs:668`) only tears the client down when
+`timeoutErrorCount >= smpPingCount` and nothing has arrived for `recoverWindow` (900s), and
+`receive` (`Client.hs:663`) resets both on every inbound transmission. A relay that answers some
+requests and drops others therefore keeps the session healthy forever while the dropped ones
+accumulate.
 
 `proxytmo 448`: `proxy_sentCommands` goes 64, 128, 192, 256, 320, 384, 448. Monotonic.
 About 20 KiB per entry.
 
 ### Impact
 
-20 KiB per unanswered forward, held for the life of the relay session (days).
+20 KiB per unanswered forward. How long it is held depends entirely on how the relay
+misbehaves, and the three cases differ a lot.
+
+**Slow relay that still replies: transient, not a leak.** A late reply removes the entry, since
+`processMsg` deletes on any `corrId` match whether or not the request already timed out.
+Measured at 16s each way, where forwards exceed the 30s timeout: `proxy_sentCommands` oscillates
+1, 0, 1, 0 and ends at 0. Growth is bounded by in-flight commands. Latency on its own does not
+leak.
+
+**Relay that goes fully silent: bounded at about 20 minutes.** `monitor` (`Client.hs:668`) exits
+when `timeoutErrorCount >= smpPingCount` and nothing has arrived for `recoverWindow` (900s),
+checked on a 600s loop. It runs inside `raceAny_ ... \`finally\` disconnected`
+(`Client.hs:649`), so exiting tears the client down and the map goes with it. Measured:
+`proxy_sentCommands` sat at 128 for 20 minutes then went to 0, with one disconnect logged.
+
+**Sustained traffic with some replies dropped: unbounded.** `receive` (`Client.hs:665`) resets
+both `lastReceived` and `timeoutErrorCount` on every inbound transmission, so as long as traffic
+continues and some of it is answered, the drop condition is never met. Measured with 1 in 3
+relay writes dropped and forwarding running continuously: `proxy_sentCommands` climbed 64, 128,
+192 ... 1280 over 20 minutes, linear at 64 per minute, with zero disconnects. It goes straight
+through the 20 minute point where both idle cases collapsed to 0.
+
+At that modest rate, 64 stuck commands per minute is about 1.3 MiB per minute, or 77 MiB per
+hour, on a single proxy to relay session.
+
+Note the traffic has to be ongoing. An attacker who floods and then stops gets their memory
+reclaimed after 20 minutes. Holding it requires staying connected and keeping the requests
+coming, which is cheap but not free.
 
 `PRXY` is unauthenticated unless `newQueueBasicAuth` is set (`Server.hs:1534`), and it names an
-arbitrary destination. A client can supply a relay that accepts and stays silent. Answering some
-requests and dropping others keeps the session alive, since any reply resets the drop counters.
-
-100k stuck commands is 2 GiB. No rate cap, see Bug 3.
-
-Also fires with no attacker: any round trip above 30 seconds.
+arbitrary destination, so a client can point the proxy at exactly such a relay. No rate cap, see
+Bug 3.
 
 The ntf server uses the same client code, so it is exposed too, but less. Analysis only, not
 measured here, since it needs Postgres:

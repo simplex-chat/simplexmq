@@ -51,7 +51,7 @@ import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509.Validation as XV
 import GHC.Stats
 import qualified Network.Socket as N
-import NetLag (LagTLS, clearLag, setDropSnd, setLag)
+import NetLag (LagTLS, clearLag, setDropEvery, setDropSnd, setLag)
 import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
@@ -582,7 +582,21 @@ runProxyFwd g iters cp = do
 -- proxy (party SSender) never pings.
 --
 -- Expect LEAKDIAG srv=5001 proxy_sentCommands to climb by `concurrency` per round and stay
--- there, with residency growing ~16 KiB per stuck command.
+-- there, with residency growing ~20 KiB per stuck command.
+--
+-- MEASURED, three cases, and only the last one is a real leak:
+--
+--  1. Relay slow but still replying (proxyfwd BENCHLAG_MS=16000): the late reply deletes the
+--     entry, so the counter oscillates 1,0,1,0 and ends at 0. Latency alone does not leak.
+--  2. Relay stops replying, then traffic stops (BENCHHOLD_SEC, with or without BENCHDROP_EVERY):
+--     counter holds, then goes to 0 at ~20 minutes with a disconnect. monitor (Client.hs:668)
+--     exits once timeoutErrorCount >= smpPingCount and nothing has arrived for 900s, and it sits
+--     in raceAny_ ... `finally` disconnected (Client.hs:649), so the client is torn down and the
+--     map goes with it. Bounded.
+--  3. Sustained traffic with some replies dropped (BENCHDROP_EVERY=3, large iters so the phase
+--     keeps sending): counter climbs 64,128,...,1280 over 20 minutes, linear, zero disconnects.
+--     Received transmissions keep resetting lastReceived and timeoutErrorCount, so the drop
+--     condition is never reached. Unbounded.
 runProxyTmo :: TVar ChaChaDRG -> Int -> Int -> IO ()
 runProxyTmo g iters _cp = do
   rq <- newRelayQueue g
@@ -595,7 +609,12 @@ runProxyTmo g iters _cp = do
     r -> fail $ "proxytmo: warmup forward failed, topology is broken: " <> show r
   base <- liveBytesMiB
   report "proxytmo" 0 base base
-  setDropSnd True
+  -- BENCHDROP_EVERY=n drops only every nth relay write instead of all of them. The replies that
+  -- do get through reset timeoutErrorCount and lastReceived on the proxy's client, so monitor
+  -- never reaches its drop condition and the session stays healthy while the unanswered
+  -- commands accumulate. This is the unbounded case; dropping everything is not.
+  dropEvery <- fromMaybe 0 . (>>= readMaybe) <$> lookupEnv "BENCHDROP_EVERY"
+  if dropEvery > 0 then setDropEvery dropEvery else setDropSnd True
   timeouts <- newTVarIO (0 :: Int)
   let rounds = max 1 (iters `div` batch)
   forM_ ([1 .. rounds] :: [Int]) $ \r -> do
@@ -618,6 +637,19 @@ runProxyTmo g iters _cp = do
     -- process residency is NOT a doubled count of the payload.
     clientStuck <- sum <$> mapM pClientSentCommandsCount pcs
     printf "proxytmo timeouts=%d of %d attempted, benchClient_sentCommands=%d\n" n (r * batch) clientStuck
+  -- BENCHHOLD_SEC keeps the relay silent afterwards to see whether the proxy ever drops the
+  -- session and frees the map. monitor (Client.hs:668) exits, and so tears the client down, when
+  -- timeoutErrorCount >= smpPingCount and nothing has been received for recoverWindow (900s),
+  -- checked on a 600s loop. So a fully silent relay should be dropped at about 20 minutes.
+  -- Anything received resets both, which is why a relay that answers selectively is the
+  -- unbounded case rather than a silent one.
+  holdSec <- fromMaybe 0 . (>>= readMaybe) <$> lookupEnv "BENCHHOLD_SEC"
+  when (holdSec > 0) $ do
+    printf "proxytmo: holding relay silent for %ds to test session drop\n" (holdSec :: Int)
+    forM_ ([1 .. holdSec `div` 60] :: [Int]) $ \m -> do
+      threadDelay 60000000
+      cur <- liveBytesMiB
+      printf "proxytmo: hold +%dmin live=%.1f MiB\n" m cur
   setDropSnd False
   where
     nClients = 8
