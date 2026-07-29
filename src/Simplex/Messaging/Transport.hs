@@ -222,7 +222,6 @@ proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 20
 
 -- minimal supported protocol version is 14
--- TODO remove code that supports sending commands without batching
 supportedClientSMPRelayVRange :: VersionRangeSMP
 supportedClientSMPRelayVRange = mkVersionRange minClientSMPRelayVersion currentClientSMPRelayVersion
 
@@ -459,10 +458,6 @@ data THandleParams v p = THandleParams
     implySessId :: Bool,
     -- | keys for additional transport encryption
     encryptBlock :: Maybe TSbChainKeys,
-    -- | send multiple transmissions in a single block
-    -- based on protocol version
-    -- TODO remove sending without batching
-    batch :: Bool,
     -- | include service signature (or '0' if it is absent), based on protocol version
     serviceAuth :: Bool
   }
@@ -864,7 +859,6 @@ smpTHandle c = THandle {connection = c, params}
           thAuth = Nothing,
           implySessId = True,
           encryptBlock = Nothing,
-          batch = True,
           serviceAuth = False
         }
 

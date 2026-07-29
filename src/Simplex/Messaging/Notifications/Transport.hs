@@ -144,7 +144,7 @@ ntfThHandleClient th v vr ck_ =
 ntfThHandle_ :: forall c p. THandleNTF c p -> VersionNTF -> VersionRangeNTF -> Maybe (THandleAuth p) -> THandleNTF c p
 ntfThHandle_ th@THandle {params} v vr thAuth =
   -- TODO drop SMP v6: make thAuth non-optional
-  let params' = params {thVersion = v, thServerVRange = vr, thAuth, batch = True}
+  let params' = params {thVersion = v, thServerVRange = vr, thAuth}
    in (th :: THandleNTF c p) {params = params'}
 
 ntfTHandle :: Transport c => c p -> THandleNTF c p
@@ -160,6 +160,5 @@ ntfTHandle c = THandle {connection = c, params}
           thAuth = Nothing,
           implySessId = False,
           encryptBlock = Nothing,
-          batch = True,
           serviceAuth = False
         }

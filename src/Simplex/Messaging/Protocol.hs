@@ -2276,19 +2276,8 @@ batchTransmissions params = batchTransmissions' params . L.map (,())
 
 -- | encodes and batches transmissions into blocks
 batchTransmissions' :: forall v p r. THandleParams v p -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
-batchTransmissions' THandleParams {batch, blockSize = bSize, serviceAuth} ts
-  | batch = batchTransmissions_ bSize $ L.map (first $ fmap $ tEncodeForBatch serviceAuth) ts
-  | otherwise = map mkBatch1 $ L.toList ts
-  where
-    mkBatch1 :: (Either TransportError SentRawTransmission, r) -> TransportBatch r
-    mkBatch1 (t_, r) = case t_ of
-      Left e -> TBError e r
-      Right t
-        -- 2 bytes are reserved for pad size
-        | B.length s <= bSize - 2 -> TBTransmission s r
-        | otherwise -> TBError TELargeMsg r
-        where
-          s = tEncode serviceAuth t
+batchTransmissions' THandleParams {blockSize, serviceAuth} ts =
+  batchTransmissions_ blockSize $ L.map (first $ fmap $ tEncodeForBatch serviceAuth) ts
 
 -- | Pack encoded transmissions into batches
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
@@ -2352,9 +2341,8 @@ tGetParse th@THandle {params} = eitherList (tParse params) <$> tGetBlock th
 {-# INLINE tGetParse #-}
 
 tParse :: THandleParams v p -> ByteString -> NonEmpty (Either TransportError RawTransmission)
-tParse thParams@THandleParams {batch} s
-  | batch = eitherList (L.map (\(Large t) -> tParse1 t)) ts
-  | otherwise = [tParse1 s]
+tParse thParams s =
+  eitherList (L.map (tParse1 . unLarge)) ts
   where
     tParse1 = parse (transmissionP thParams) TEBadBlock
     ts = parse smpP TEBadBlock s
