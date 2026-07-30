@@ -50,7 +50,6 @@ import Data.Bits (xor)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
 import Data.Functor (($>))
 import Data.IORef
 import Data.Maybe (fromMaybe)

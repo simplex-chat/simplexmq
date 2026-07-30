@@ -107,7 +107,7 @@ data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: ProtocolClientConfig SMPVersion,
     reconnectInterval :: RetryInterval,
     persistErrorInterval :: NominalDiffTime,
-    msgQSize :: Natural,
+    msgQSize :: Maybe Natural,
     agentQSize :: Natural,
     agentSubsBatchSize :: Int,
     ownServerDomains :: [ByteString]
@@ -124,7 +124,7 @@ defaultSMPClientAgentConfig =
             maxInterval = 10 * second
           },
       persistErrorInterval = 30, -- seconds
-      msgQSize = 2048,
+      msgQSize = Just 2048,
       agentQSize = 2048,
       agentSubsBatchSize = 1360,
       ownServerDomains = []
@@ -162,9 +162,8 @@ newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> Maybe DBService -> TVar
 newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} dbService randomDrg = do
   active <- newTVarIO True
   startedAt <- getCurrentTime
-  -- Only subscribing agents receive server transmissions. A queue nobody reads fills with late
-  -- responses (Client.hs, processMsg) until the client's `process` thread blocks writing to it.
-  msgQ <- forM (serviceParty agentParty) $ \_ -> newTBQueueIO msgQSize
+  -- Only subscribing agents receive server transmissions, should not be created until processed to prevent deadlock.
+  msgQ <- mapM newTBQueueIO msgQSize
   agentQ <- newTBQueueIO agentQSize
   smpClients <- TM.emptyIO
   smpSessions <- TM.emptyIO
