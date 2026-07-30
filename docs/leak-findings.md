@@ -3,7 +3,7 @@
 From `bench/MemBench.hs` extended with a proxy plus relay topology and a transport that adds
 latency and drops replies.
 
-Two leaks on the proxy path, both client reachable. Two related bugs. TLS/TCP stack clean.
+Three leaks on the proxy path, all client reachable. Two related bugs. TLS/TCP stack clean.
 
 Measured on both the journal store and the PostgreSQL queue and message store, which is the
 production configuration. Results are the same on both.
@@ -89,18 +89,27 @@ sustained traffic and some replies do arrive, and every arrival resets `lastRece
 
 ### Fix
 
-```haskell
-Nothing -> do
-  TM.delete corrId sentCommands                              -- new
-  modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
-```
+**Do not simply delete on timeout.** I had that here and it is wrong.
 
-Pass `sentCommands` and the request's `corrId` into `getResponse`. Double delete is harmless.
+Late responses are load bearing for the agent. When a reply arrives for a request that already
+timed out, `processMsg` takes the `wasPending == False` branch and forwards it as `STResponse`
+(`Client.hs:713`). `Agent.hs:3093` acts on those: a late `OK`/`SOK` to a `SUB` calls
+`processSubOk`, which is what brings the connection back UP, and a late `MSG` is processed as a
+real message. Deleting the entry on timeout turns both into `STUnexpectedError`
+(`Client.hs:702`), so the agent would report an error instead of recovering the subscription,
+and would drop the message. The ntf server ignores `STResponse` (`Notifications/Server.hs:540`)
+so it would only gain log noise, but the agent regression is real.
 
-Two more entry points leak with no timeout involved. `mkTransmission_` inserts the request
-before it is sent (`Client.hs:1361`), and `sendRecv` then returns early at `Client.hs:1366`
-(transport error) and `Client.hs:1368` (block over `blockSize - 2`) without sending or deleting.
-Both need the same delete.
+So the entry has to stay reachable for as long as a late reply is still useful, which rules out
+deleting it at the timeout. The fix has to bound the map by age instead: stamp `Request` on
+insert and sweep entries whose `pending` is `False` and whose stamp is older than the window in
+which a late reply could still matter. That needs a window chosen against the agent's
+subscription recovery behaviour, which I have not measured, so I am not proposing a number here.
+
+Two entry points do leak with no timeout involved and can be fixed as written, because no reply
+is ever coming. `mkTransmission_` inserts the request before it is sent (`Client.hs:1361`) and
+`sendRecv` then returns early at `Client.hs:1366` (transport error) and `Client.hs:1368` (block
+over `blockSize - 2`) without sending or deleting. Both should delete.
 
 ---
 
@@ -135,6 +144,64 @@ Same unauthenticated `PRXY` as Leak 1.
 ### Fix
 
 Sweep the map on a timer, dropping entries past their expiry. The timestamp is already stored.
+
+---
+
+## Leak 3: the proxy's relay message queue has no reader
+
+### Issue
+
+`newSMPClientAgent` creates one `msgQ` (`Client/Agent.hs:194`) and `connectClient` hands that
+same queue to every relay client it opens (`:296`). The ntf server drains its copy
+(`Notifications/Server.hs:537`). The SMP server never drains its own:
+`receiveFromProxyAgent` reads `agentQ` only (`Server.hs:475`). Grepping every `readTBQueue` on a
+`msgQ` in `src/` returns three sites, and none of them is the proxy's.
+
+What fills it: `processMsg` routes a response to `msgQ` when the request is still in
+`sentCommands` but `pending` is already `False` (`Client.hs:713`), meaning the reply arrived
+after the proxy's own RFWD timeout. So every late reply from a relay deposits one entry that is
+never taken out.
+
+When the queue is full, `processMsgs` blocks in `writeTBQueue` (`Client.hs:694`). That is the
+`process` thread, and it is the only reader of `rcvQ`, so once it blocks the proxy stops
+handling responses entirely and every subsequent forward times out.
+
+### Impact
+
+Measured with the `msgqfill` phase, 4 forwards at 40s each way so the replies land after the
+proxy's 30s timeout, then the lag is cleared and 3 more forwards are attempted. Only
+`msgQSize` differs between the runs.
+
+| `msgQSize` | `proxy_msgQ` at end | `proxy_sentCommands` at end | recovery forwards |
+|---|---|---|---|
+| 2 | 2 (at cap) | 4 and climbing | **0 of 3** |
+| 2048 (production) | 4 | 0 | 3 of 3 |
+
+Two separate things are shown. The queue never drains: at production size it holds the 4 late
+replies for the rest of the run. And when it does fill, the stall is permanent, not a slowdown:
+the recovery forwards ran with no latency at all and still got nothing back.
+
+The queue is shared, not per relay. There is one `msgQ` per `SMPClientAgent` and one
+`ProxyAgent` per server, so a single relay that answers slowly can stall the proxy's response
+handling for every relay it talks to. This part is from the code, not measured: the bench
+topology has one relay.
+
+Reachable the same way as Leak 1. `PRXY` is unauthenticated unless `newQueueBasicAuth` is set,
+and names an arbitrary destination, so a client can point the proxy at a relay it controls that
+answers just late enough. 2048 late replies is a cheap budget for that.
+
+Note this is the same relay behaviour I recorded under Leak 1 as "slow relay that still replies:
+transient, not a leak". That verdict was right about `sentCommands` and wrong about the session:
+the late replies that clear `sentCommands` are exactly the ones that accumulate here.
+
+### Fix
+
+Drain it, or do not create it. The SMP server has no use for these transmissions, so the honest
+options are to give `ProxyAgent` a reader that discards them, or to make `msgQ` optional in
+`SMPClientAgent` and pass `Nothing` for the proxy, which is already supported
+(`getProtocolClient` takes `Maybe`, and `sendMsg` logs instead when it is `Nothing`).
+
+The second is better: a discarding reader would still allocate and copy every batch.
 
 ---
 

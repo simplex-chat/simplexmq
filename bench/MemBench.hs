@@ -57,7 +57,8 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (controlPort, controlPortAdminAuth, maxJournalMsgCount, msgQueueQuota, notificationExpiration, serverClientConcurrency))
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (msgQSize))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (controlPort, controlPortAdminAuth, maxJournalMsgCount, msgQueueQuota, notificationExpiration, serverClientConcurrency, smpAgentCfg))
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport
@@ -981,13 +982,18 @@ main = do
   -- them often enough to be useful over a bench run
   leakDiagSec <- fromMaybe 10 . (>>= readMaybe) <$> lookupEnv "SMP_LEAKDIAG_SEC"
   setEnv "SMP_LEAKDIAG_SEC" (show leakDiagSec)
+  -- msgqfill: proxy agent msgQ size. Default 2 so the bound is reachable; set it to the
+  -- production 2048 to run the same phase as a control that must not stall.
+  msgQSz <- fromMaybe 2 . (>>= readMaybe) <$> lookupEnv "BENCHMSGQ"
   setLogLevel LogInfo
   withGlobalLogging LogConfig {lc_file = Nothing, lc_stderr = True} $
     if phase `elem` proxyPhases
       then
-        ( if phase == "conclimit"
-            then withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {serverClientConcurrency = 1}) storeEnv
-            else withProxyTopology storeEnv
+        ( case phase of
+            "conclimit" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {serverClientConcurrency = 1}) storeEnv
+            -- shrink the proxy agent's msgQ so its bound is reachable in one run
+            "msgqfill" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {smpAgentCfg = (smpAgentCfg c) {msgQSize = msgQSz}}) storeEnv
+            _ -> withProxyTopology storeEnv
         )
           $ settle leakDiagSec
           $ case phase of
@@ -997,6 +1003,7 @@ main = do
         "subtmo" -> runSubTmo g iters cp
         "conclimit" -> runConcLimit g iters cp
         "fastfwd" -> runFastFwd g iters cp
+        "msgqfill" -> runMsgQFill g iters cp
         _ -> error $ "unknown proxy phase: " <> phase
       else withSmpServerConfigOn (transport @TLS) srvCfg testPort $ \_ -> settle leakDiagSec $ do
         threadDelay 250000
@@ -1018,8 +1025,50 @@ main = do
           "tlspartial" -> runTlsPartial iters cp
           _ -> error $ "unknown phase: " <> phase
 
+-- Leak 3: the proxy agent's msgQ has no reader.
+--
+-- newSMPClientAgent creates one msgQ (Client/Agent.hs:194) and connectClient passes that same
+-- queue to every relay client (:296). The ntf server drains its copy (Notifications/Server.hs:537);
+-- the SMP server does not - receiveFromProxyAgent reads agentQ only (Server.hs:475). So on a
+-- proxy the queue only ever fills.
+--
+-- What fills it: processMsg routes a response to msgQ when the request is found but `pending` is
+-- already False (Client.hs:713), i.e. the reply arrived after the proxy's own RFWD timeout. A
+-- relay that answers late therefore deposits one entry per late reply, permanently.
+--
+-- Once full, `process` blocks in writeTBQueue (Client.hs:694). It is the only reader of rcvQ, so
+-- every later response from that relay goes unprocessed and every forward times out. msgQ is
+-- shared across relays, so this is not confined to the relay that caused it.
+--
+-- Phase: force late replies until the queue is full, then clear the lag and try to forward again.
+-- A healthy proxy answers; a stalled one cannot. Run with BENCHMSGQ=2048 as the control.
+runMsgQFill :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runMsgQFill g iters _cp = do
+  rq <- newRelayQueue g
+  pc <- proxyClient g 1
+  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relaySrv Nothing
+  -- must exceed the proxy's 30s RFWD timeout each way, or the reply is matched while still
+  -- pending and never reaches msgQ (measured: 20s each way is too little, 40s is enough)
+  lagMs <- fromMaybe 40000 . (>>= readMaybe) <$> lookupEnv "BENCHLAG_MS"
+  printf "msgqfill: lag=%dms each way, %d forwards to strand\n" lagMs iters
+  setLag (lagMs * 1000) (lagMs * 1000)
+  forM_ ([1 .. iters] :: [Int]) $ \_ ->
+    void $ runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "late")
+  clearLag
+  -- let the stranded replies arrive and land in msgQ
+  printf "msgqfill: lag cleared, waiting %ds for late replies\n" (3 * lagMs `div` 1000)
+  threadDelay $ 3 * lagMs * 1000
+  -- recovery probe: no lag now, so a proxy whose process thread still runs must answer
+  ok <- newTVarIO (0 :: Int)
+  forM_ ([1 .. 3] :: [Int]) $ \_ ->
+    runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "probe") >>= \case
+      Right (Right ()) -> atomically $ modifyTVar' ok (+ 1)
+      _ -> pure ()
+  o <- readTVarIO ok
+  printf "msgqfill: recovery forwards succeeded=%d/3 (0 means the proxy stalled)\n" o
+
 proxyPhases :: [String]
-proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo", "conclimit", "fastfwd"]
+proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo", "conclimit", "fastfwd", "msgqfill"]
 
 -- Hold the servers up past one LEAKDIAG interval after the phase finishes, so the end state is
 -- always sampled at least once. Short phases would otherwise exit before any line is emitted,
