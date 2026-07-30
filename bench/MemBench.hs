@@ -35,7 +35,7 @@
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (concurrently_, forConcurrently_, mapConcurrently_, wait, withAsync)
+import Control.Concurrent.Async (concurrently_, forConcurrently, forConcurrently_, mapConcurrently_, wait, withAsync)
 import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import qualified Control.Exception as E
 import Control.Concurrent.STM
@@ -48,7 +48,7 @@ import Data.Int (Int64)
 import Data.Foldable (toList)
 import Data.List.NonEmpty (NonEmpty (..), fromList)
 import Data.Maybe (fromMaybe)
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import qualified Data.X509.Validation as XV
 import GHC.Stats
 import qualified Network.Socket as N
@@ -57,7 +57,7 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (controlPort, controlPortAdminAuth, maxJournalMsgCount, msgQueueQuota, notificationExpiration))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (controlPort, controlPortAdminAuth, maxJournalMsgCount, msgQueueQuota, notificationExpiration, serverClientConcurrency))
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport
@@ -454,8 +454,11 @@ deadSrv :: Int -> SMPServer
 deadSrv i = SMPServer testHost2 (show (20000 + i)) testKeyHash
 
 withProxyTopology :: Maybe String -> IO a -> IO a
-withProxyTopology storeEnv action =
-  withSmpServerConfigOn (transport @TLS) (proxySrvCfg storeEnv) testPort $ \_ ->
+withProxyTopology storeEnv = withProxyTopologyCfg (proxySrvCfg storeEnv) storeEnv
+
+withProxyTopologyCfg :: AServerConfig -> Maybe String -> IO a -> IO a
+withProxyTopologyCfg pCfg storeEnv action =
+  withSmpServerConfigOn (transport @TLS) pCfg testPort $ \_ ->
     withSmpServerConfigOn (transport @LagTLS) (relaySrvCfg storeEnv) testPort2 $ \_ ->
       threadDelay 250000 >> action
 
@@ -695,6 +698,77 @@ runSubTmo g iters _cp = do
     (if stuck > before then (cur - base) * 1024 / fromIntegral (stuck - before) else 0)
   setDropSnd False
 
+-- Bug 4 reachability: forkClient registers the thread in endThreads AFTER forkIO, so an action
+-- that finishes before the parent's insert leaves a permanently stale entry. Every ordinary
+-- forked command (PFWD, PRXY, RSLV) blocks on the network, and a standalone reproduction of the
+-- same registration order showed 0% staleness for any action that blocks even 1ms.
+--
+-- This phase probed the fast path I expected to reach it: a PFWD whose encBlock is large enough
+-- that re-wrapping it as RFWD exceeds blockSize, so sendProtocolCommand_ would return TELargeMsg
+-- at Client.hs:1368 without any IO.
+--
+-- RESULT: that path is NOT reachable. The client's own transmission limit caps encBlock before
+-- the server's re-wrap can overflow. Largest block the client will send is ~16270 bytes (16275
+-- is rejected by tPut), and at 16270 the proxy still forwards successfully - the relay answers
+-- PROXY (PROTOCOL CRYPTO) on the garbage payload, which means the command did full IO. So no
+-- size both fits the client and overflows the server. Kept as a boundary check in case block
+-- sizes change; BENCHFWD_SZ sets the payload size.
+runFastFwd :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runFastFwd g iters _cp =
+  testSMPClient @TLS $ \h -> do
+    (kPub, _kPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    r <- sendRecv h (Nothing, "prxy", NoEntity, PRXY relaySrv Nothing)
+    sessId <- case r of
+      Resp _ _ (PKEY sId _ _) -> pure sId
+      _ -> fail $ "fastfwd: PRXY did not return PKEY: " <> show r
+    -- oversized: the proxy re-wraps this into RFWD, which then exceeds blockSize
+    sz <- fromMaybe 16200 . (>>= readMaybe) <$> lookupEnv "BENCHFWD_SZ"
+    let big = EncTransmission $ B.replicate sz 'x'
+    base <- liveBytesMiB
+    report "fastfwd" 0 base base
+    oks <- forM ([1 .. iters] :: [Int]) $ \i -> do
+      r' <- E.try @E.SomeException $ sendRecv h (Nothing, B.pack ('f' : show i), EntityId sessId, PFWD currentClientSMPRelayVersion kPub big)
+      pure $ case r' of
+        Right (_, _, Right (ERR e)) -> Right (show e)
+        Right (_, _, resp) -> Right (take 40 $ show resp)
+        Left e -> Left (take 60 $ show e)
+    let sent = length [() | Right _ <- oks]
+    printf "fastfwd: size=%d sent=%d clientRejected=%d sample=%s\n" sz sent (iters - sent) (show $ take 1 oks)
+    liveBytesMiB >>= report "fastfwd" iters base
+    -- hold the connection open so LEAKDIAG can sample this client's endThreads
+    threadDelay 20000000
+
+-- Bug 3: serverClientConcurrency is meant to cap concurrent proxied commands per connection,
+-- but forkCmd is written `bracket_ wait signal . forkClient clnt label $ action`, which releases
+-- the slot as soon as the thread is forked rather than when the work finishes.
+--
+-- With the cap set to 1 and the relay silent, N concurrent PFWDs on ONE connection would have to
+-- serialise if the cap worked: each would hold the slot for the 30s RFWD timeout, and `wait`
+-- blocks the client's whole command loop, so command k+1 could not even be read until k finished.
+-- Completion times clustered together instead of spread ~30s apart mean the cap does nothing.
+runConcLimit :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runConcLimit g iters _cp = do
+  rq <- newRelayQueue g
+  pc <- proxyClient g 1
+  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relaySrv Nothing
+  runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "warmup") >>= \case
+    Right (Right ()) -> pure ()
+    r -> fail $ "conclimit: warmup failed, topology broken: " <> show r
+  setDropSnd True
+  t0 <- getCurrentTime
+  ends <- forConcurrently ([1 .. iters] :: [Int]) $ \_ -> do
+    _ <- runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (rqSndId rq) noMsgFlags "x")
+    getCurrentTime
+  setDropSnd False
+  let secs = map (\t -> realToFrac (diffUTCTime t t0) :: Double) ends
+  printf
+    "conclimit: n=%d cap=1 completions first=%.1fs last=%.1fs spread=%.1fs\n"
+    iters
+    (minimum secs)
+    (maximum secs)
+    (maximum secs - minimum secs)
+  printf "conclimit: serialised would need ~%.0fs; clustered means the cap is not enforced\n" (fromIntegral iters * 30 :: Double)
+
 -- PRXY to many distinct relay addresses that refuse the connection. Each failure stores
 -- `Left (err, Just expiry)` in the agent's smpClients map; removal is lazy (only on a later
 -- lookup of the same server), so addresses never requested again are retained.
@@ -910,11 +984,19 @@ main = do
   setLogLevel LogInfo
   withGlobalLogging LogConfig {lc_file = Nothing, lc_stderr = True} $
     if phase `elem` proxyPhases
-      then withProxyTopology storeEnv $ settle leakDiagSec $ case phase of
+      then
+        ( if phase == "conclimit"
+            then withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {serverClientConcurrency = 1}) storeEnv
+            else withProxyTopology storeEnv
+        )
+          $ settle leakDiagSec
+          $ case phase of
         "proxyfwd" -> runProxyFwd g iters cp
         "proxytmo" -> runProxyTmo g iters cp
         "proxychurn" -> runProxyChurn g iters cp
         "subtmo" -> runSubTmo g iters cp
+        "conclimit" -> runConcLimit g iters cp
+        "fastfwd" -> runFastFwd g iters cp
         _ -> error $ "unknown proxy phase: " <> phase
       else withSmpServerConfigOn (transport @TLS) srvCfg testPort $ \_ -> settle leakDiagSec $ do
         threadDelay 250000
@@ -937,7 +1019,7 @@ main = do
           _ -> error $ "unknown phase: " <> phase
 
 proxyPhases :: [String]
-proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo"]
+proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo", "conclimit", "fastfwd"]
 
 -- Hold the servers up past one LEAKDIAG interval after the phase finishes, so the end state is
 -- always sampled at least once. Short phases would otherwise exit before any line is emitted,
