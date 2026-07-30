@@ -549,7 +549,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ntfMsgs <- foldM (\ !a v -> (a +) . length <$> readTVarIO v) (0 :: Int) (M.elems ntfMap)
       EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <- getEntityCounts @(StoreQueue s) (queueStore ms)
       LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount, queueLockCount, notifierLockCount} <- loadedQueueCounts ms
-      AgentLeakStats {alSmpClients, alSmpSessions, alActiveServiceSubs, alActiveQueueSubs, alPendingServiceSubs, alPendingQueueSubs, alSmpSubWorkers, alSentCommands} <- getAgentLeakStats smpAgent
+      AgentLeakStats {alSmpClients, alSmpSessions, alActiveServiceSubs, alActiveQueueSubs, alPendingServiceSubs, alPendingQueueSubs, alSmpSubWorkers, alSentCommands, alMsgQ} <- getAgentLeakStats smpAgent
       logNote $
         T.concat
           [ "LEAKDIAG",
@@ -564,7 +564,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             f "ntfStore_keys" (M.size ntfMap), f "ntfStore_msgs" ntfMsgs,
             f "store_queues" queueCount, f "store_notifiers" notifierCount, f "store_rcvServices" rcvServiceCount, f "store_ntfServices" ntfServiceCount, f "store_rcvSvcQueues" rcvServiceQueuesCount, f "store_ntfSvcQueues" ntfServiceQueuesCount,
             f "loaded_queues" loadedQueueCount, f "loaded_notifiers" loadedNotifierCount, f "open_journals" openJournalCount, f "queue_locks" queueLockCount, f "notifier_locks" notifierLockCount,
-            f "proxy_smpClients" alSmpClients, f "proxy_smpSessions" alSmpSessions, f "proxy_activeSvcSubs" alActiveServiceSubs, f "proxy_activeQSubs" alActiveQueueSubs, f "proxy_pendingSvcSubs" alPendingServiceSubs, f "proxy_pendingQSubs" alPendingQueueSubs, f "proxy_subWorkers" alSmpSubWorkers, f "proxy_sentCommands" alSentCommands
+            f "proxy_smpClients" alSmpClients, f "proxy_smpSessions" alSmpSessions, f "proxy_activeSvcSubs" alActiveServiceSubs, f "proxy_activeQSubs" alActiveQueueSubs, f "proxy_pendingSvcSubs" alPendingServiceSubs, f "proxy_pendingQSubs" alPendingQueueSubs, f "proxy_subWorkers" alSmpSubWorkers, f "proxy_sentCommands" alSentCommands, f "proxy_msgQ" alMsgQ
           ]
       where
         f :: Show a => Text -> a -> Text

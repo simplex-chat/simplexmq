@@ -170,11 +170,12 @@ data AgentLeakStats = AgentLeakStats
     alPendingServiceSubs :: Int,
     alPendingQueueSubs :: Int,
     alSmpSubWorkers :: Int,
-    alSentCommands :: Int
+    alSentCommands :: Int,
+    alMsgQ :: Int
   }
 
 getAgentLeakStats :: SMPClientAgent p -> IO AgentLeakStats
-getAgentLeakStats SMPClientAgent {smpClients, smpSessions, activeServiceSubs, activeQueueSubs, pendingServiceSubs, pendingQueueSubs, smpSubWorkers} = do
+getAgentLeakStats SMPClientAgent {smpClients, smpSessions, activeServiceSubs, activeQueueSubs, pendingServiceSubs, pendingQueueSubs, smpSubWorkers, msgQ} = do
   alSmpClients <- msize smpClients
   sess <- readTVarIO smpSessions
   alActiveServiceSubs <- msize activeServiceSubs
@@ -183,7 +184,8 @@ getAgentLeakStats SMPClientAgent {smpClients, smpSessions, activeServiceSubs, ac
   alPendingQueueSubs <- msize pendingQueueSubs
   alSmpSubWorkers <- msize smpSubWorkers
   alSentCommands <- foldM (\ !a (_, c) -> (a +) <$> pClientSentCommandsCount c) 0 (M.elems sess)
-  pure AgentLeakStats {alSmpClients, alSmpSessions = M.size sess, alActiveServiceSubs, alActiveQueueSubs, alPendingServiceSubs, alPendingQueueSubs, alSmpSubWorkers, alSentCommands}
+  alMsgQ <- fromIntegral <$> atomically (lengthTBQueue msgQ)
+  pure AgentLeakStats {alSmpClients, alSmpSessions = M.size sess, alActiveServiceSubs, alActiveQueueSubs, alPendingServiceSubs, alPendingQueueSubs, alSmpSubWorkers, alSentCommands, alMsgQ}
   where
     msize m = M.size <$> readTVarIO m
 
