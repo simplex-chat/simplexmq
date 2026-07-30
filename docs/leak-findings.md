@@ -185,28 +185,70 @@ command loop when hit, so check the value first.
 `forkClient` (`Server.hs:1480`) registers the thread after `forkIO`. If the action finishes
 first, its delete misses and the insert is never undone.
 
-Reproduced in isolation with a verbatim copy of the registration order, 100k forks: 20% stale at
-`-N1`, 12% at `-N4`, and 0% when the action blocks even 1ms. About 320 bytes per stale entry,
-measured against the zero stale baseline. `deRefWeak` returns `Nothing` for all of them, so no
-thread is retained.
+Reproduced in isolation with a verbatim copy of the registration order, including the
+`labelMyThread` the child runs before the action. 100k forks: 20% stale at `-N1`, 13% at `-N4`.
+About 320 bytes per stale entry. `deRefWeak` returns `Nothing` for all of them, so no thread is
+retained.
 
-**No reachable trigger was found in the running server.** Every real forked command blocks on the
-network (`PFWD`, `PRXY`, `RSLV`), which the 0% row rules out. The fast path I expected to work
-does not exist: an oversized `PFWD` cannot make the proxy's re-wrap exceed `blockSize`, because
-the client's own transmission limit caps `encBlock` first. Probed directly, largest block the
-client will send is about 16270 bytes, and at that size the proxy still forwards successfully
-(the relay answers `PROXY (PROTOCOL CRYPTO)`), so the no-IO return at `Client.hs:1368` is never
-taken.
+### What decides the race
 
-Two forked paths remain untested as possible fast returns: the `sendPendingEvtsThread` write
-when the send queue has drained (`Server.hs:463`), and `deliverServiceMessages` over an empty
-store (`Server.hs:1974`). Neither is client controlled in an obvious way.
+Not how long the child takes. How long was the obvious guess and it is wrong. Measured over
+20k forks, varying only the work the child does before its delete:
+
+| child does | -N1 | -N4 |
+|---|---|---|
+| nothing | 17.5% | 10.7% |
+| spins 1us | 19.2% | 9.7% |
+| spins 10us | 17.3% | 9.7% |
+| spins 100us | 17.8% | 9.8% |
+| one failing `connect()` | **0%** | **0.1%** |
+
+A spinning child does not lose the race, it *starves* the parent. What closes the window is the
+child giving up the capability: a syscall, a safe FFI call, or an STM retry. So the rule is
+"does the child yield before its delete", not "is the child fast".
+
+### Which paths yield
+
+There are exactly three `forkClient` call sites.
+
+- **`forkCmd`** (`Server.hs:1593`), used by `PFWD`/`PRXY` (`:1540`, `:1577`) and `RSLV`
+  (`:1639`, `:2269`). All do network IO, so all yield. `RSLV` was worth checking separately
+  because it is client driven at command rate, but `resolveName` has no cache
+  (`Server/Names.hs:62`): every call goes to `resolveHttp`. Safe.
+- **`deliverServiceMessages`** (`Server.hs:1977`). Guarded by `unless hasSub`, and
+  `clientServiceSubscribed` is a one-way latch set at `Server.hs:2031` that is never reset
+  within a session. Fires at most once per connection. Safe by rate.
+- **`sendPendingEvtsThread.queueEvts`** (`Server.hs:463`). This is the one that does not yield.
+  The child is `atomically (writeTBQueue sndQ ...)` plus three `IORef` bumps. If the queue is
+  still full it retries and yields, but if space appeared it commits straight through, which is
+  the "nothing" row above.
+
+The earlier oversized-`PFWD` idea does not work: the client's own transmission limit caps
+`encBlock` first. Largest block the client will send is about 16270 bytes, and at that size the
+proxy still forwards successfully (the relay answers `PROXY (PROTOCOL CRYPTO)`), so the no-IO
+return at `Client.hs:1368` is never taken.
 
 ### Impact
 
-Latent. The defect is real and cheap to fix, but on current evidence it is not reachable from
-the network. If a fast forked path does exist, the cost is about 320 bytes per occurrence,
-freed on disconnect, and a misleading `endThreads` counter.
+Small and self-limiting, and I have not driven it live.
+
+The one non-yielding path is rate capped by construction: `sendPending` runs once per
+`pendingENDInterval` (15s in production, `Server/Main.hs:581`) for each of two subscriber sets,
+and forks at most once per client per run. So at most 2 forks per client per 15s, and only for a
+client whose `sndQ` was full at the check and had drained by the time the child ran. At the
+measured 18% that is well under one stale entry per client per 15s, about 320 bytes each.
+
+Everything in `endThreads` is dropped by `clientDisconnected` (`Server.hs:1237`), so nothing
+survives the session.
+
+A client can influence both preconditions by stalling and resuming its socket reads, so I am no
+longer claiming this is unreachable. I am also not claiming it is reachable: that needs winning
+a sub-millisecond window at two attempts per 15s, and I did not build the repro, because a
+session-scoped few hundred bytes does not justify it. The honest status is a real ordering
+defect with one candidate trigger and a hard ceiling.
+
+The practical cost is the misleading `endThreads` counter, which conflates stale entries with
+genuinely running forked commands.
 
 ### Fix
 
