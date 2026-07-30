@@ -151,6 +151,17 @@ bracket_ wait signal . forkClient clnt label $ action
 `.` binds tighter than `$`, so `signal` runs when the thread starts, not when it finishes. Only
 forking is limited.
 
+Measured with `conclimit 8` and `serverClientConcurrency = 1`: eight concurrent PFWDs on one
+connection, relay silent.
+
+```
+conclimit: n=8 cap=1 completions first=20.0s last=20.0s spread=0.0s
+```
+
+All eight ran concurrently. If the cap were enforced each would hold the slot for the 30s RFWD
+timeout and they would need ~240s, and because `wait` blocks the client's command loop the next
+command could not even be read until the previous finished.
+
 ### Impact
 
 No memory cost. Removes the cap on how fast Leak 1 grows, and `procThreads` reads near zero at
@@ -174,15 +185,28 @@ command loop when hit, so check the value first.
 `forkClient` (`Server.hs:1480`) registers the thread after `forkIO`. If the action finishes
 first, its delete misses and the insert is never undone.
 
-100k forks: 20% stale at `-N1`, 12% at `-N4`, 0% when the action blocks 1ms. Real callers
-(`PFWD`, `PRXY`, `RSLV`) wait on the network. Reachable at speed via an oversized `PFWD` that
-fails the block size check without IO.
+Reproduced in isolation with a verbatim copy of the registration order, 100k forks: 20% stale at
+`-N1`, 12% at `-N4`, and 0% when the action blocks even 1ms. About 320 bytes per stale entry,
+measured against the zero stale baseline. `deRefWeak` returns `Nothing` for all of them, so no
+thread is retained.
+
+**No reachable trigger was found in the running server.** Every real forked command blocks on the
+network (`PFWD`, `PRXY`, `RSLV`), which the 0% row rules out. The fast path I expected to work
+does not exist: an oversized `PFWD` cannot make the proxy's re-wrap exceed `blockSize`, because
+the client's own transmission limit caps `encBlock` first. Probed directly, largest block the
+client will send is about 16270 bytes, and at that size the proxy still forwards successfully
+(the relay answers `PROXY (PROTOCOL CRYPTO)`), so the no-IO return at `Client.hs:1368` is never
+taken.
+
+Two forked paths remain untested as possible fast returns: the `sendPendingEvtsThread` write
+when the send queue has drained (`Server.hs:463`), and `deliverServiceMessages` over an empty
+store (`Server.hs:1974`). Neither is client controlled in an obvious way.
 
 ### Impact
 
-About 320 bytes per entry, freed on disconnect. 10k fast failing commands on one connection is
-roughly 640 KB. Minor. The real cost is that `endThreads` no longer distinguishes stuck commands
-from counter error.
+Latent. The defect is real and cheap to fix, but on current evidence it is not reachable from
+the network. If a fast forked path does exist, the cost is about 320 bytes per occurrence,
+freed on disconnect, and a misleading `endThreads` counter.
 
 ### Fix
 
