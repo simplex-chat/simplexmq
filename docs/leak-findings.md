@@ -281,28 +281,3 @@ This is why Leak 1 has no upper bound: the session holding the stuck entries nev
 
 Forwards work to 16s each way and fail at 40s, because of the 30s RFWD timeout. The exact cutoff is
 not measured, since the test transport adds its delay per read/write rather than per message.
-
-## Checked, not a problem: socketsLeaked accounting
-
-`closeConn` (`Transport/Server.hs:179`) removes from `active`, calls `gracefulClose conn 5000`,
-then increments `closed`, and `socketsLeaked = accepted - closed - active`. In that order there is
-a moment where a closing connection is counted in neither number.
-
-It never happened in practice. Over 600 sequential cycles and 200 connections closed at once, read
-from the control port, `leaked` was 0 every time. The 5000 is a timeout, not a delay.
-
-Listed because an earlier version of this report called it a bug based only on reading the code.
-
-## Already fixed: empty session variable
-
-`withGetSessVar'` (`Session.hs:65`) wraps the session var in `bracketOnError` with
-`dropEmptySessVar`, so an interrupted connect removes the empty var. Fixed in `c9ebf72e`.
-`SMPProxyTests` covers the proxy and agent cases and both pass. It cannot be reproduced because it
-is already fixed, not because it never happened.
-
-## Running the suite
-
-`should have similar time for auth error, whether queue exists or not` compares wall clock with a
-30% tolerance (45% on Postgres) and fails intermittently on a busy machine. Seen twice in four
-runs under concurrent bench load, then 4/4 and 5/5 clean when idle, with and without these
-changes. Run the suite on an idle machine.
