@@ -138,7 +138,7 @@ data SMPClientAgent p = SMPClientAgent
     dbService :: Maybe DBService,
     active :: TVar Bool,
     startedAt :: UTCTime,
-    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
+    msgQ :: Maybe (TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg)),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
@@ -162,7 +162,9 @@ newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> Maybe DBService -> TVar
 newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} dbService randomDrg = do
   active <- newTVarIO True
   startedAt <- getCurrentTime
-  msgQ <- newTBQueueIO msgQSize
+  -- Only subscribing agents receive server transmissions. A queue nobody reads fills with late
+  -- responses (Client.hs, processMsg) until the client's `process` thread blocks writing to it.
+  msgQ <- forM (serviceParty agentParty) $ \_ -> newTBQueueIO msgQSize
   agentQ <- newTBQueueIO agentQSize
   smpClients <- TM.emptyIO
   smpSessions <- TM.emptyIO
@@ -264,7 +266,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
   Nothing -> getClient cfg
   where
     cfg = smpCfg agentCfg
-    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] (Just msgQ) startedAt clientDisconnected
+    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] msgQ startedAt clientDisconnected
 
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do
