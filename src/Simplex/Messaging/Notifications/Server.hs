@@ -526,10 +526,10 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       subscribeQueuesNtfs ca smpServer' [sub]
 
 ntfSubscriber :: NtfSubscriber -> M ()
-ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ, agentQ}} =
+ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}} =
   race_ receiveSMP receiveAgent
   where
-    receiveSMP = do
+    receiveSMP = forM_ msgQ_ $ \msgQ -> do
       st <- asks store
       ps <- asks pushServer
       stats <- asks serverStats

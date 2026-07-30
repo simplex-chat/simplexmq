@@ -275,7 +275,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = mkTransportServerConfig True (Just alpnSupportedSMPHandshakes) True,
       controlPort = Nothing,
-      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1, msgQSize = Nothing}, -- seconds
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       serverResolverConcurrency = defaultNameResolverConcurrency,

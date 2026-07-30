@@ -107,7 +107,7 @@ data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: ProtocolClientConfig SMPVersion,
     reconnectInterval :: RetryInterval,
     persistErrorInterval :: NominalDiffTime,
-    msgQSize :: Natural,
+    msgQSize :: Maybe Natural,
     agentQSize :: Natural,
     agentSubsBatchSize :: Int,
     ownServerDomains :: [ByteString]
@@ -124,7 +124,7 @@ defaultSMPClientAgentConfig =
             maxInterval = 10 * second
           },
       persistErrorInterval = 30, -- seconds
-      msgQSize = 2048,
+      msgQSize = Just 2048,
       agentQSize = 2048,
       agentSubsBatchSize = 1360,
       ownServerDomains = []
@@ -138,7 +138,7 @@ data SMPClientAgent p = SMPClientAgent
     dbService :: Maybe DBService,
     active :: TVar Bool,
     startedAt :: UTCTime,
-    msgQ :: TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg),
+    msgQ :: Maybe (TBQueue (ServerTransmissionBatch SMPVersion ErrorType BrokerMsg)),
     agentQ :: TBQueue SMPClientAgentEvent,
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
@@ -162,7 +162,8 @@ newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> Maybe DBService -> TVar
 newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} dbService randomDrg = do
   active <- newTVarIO True
   startedAt <- getCurrentTime
-  msgQ <- newTBQueueIO msgQSize
+  -- Only subscribing agents receive server transmissions, should not be created until processed to prevent deadlock.
+  msgQ <- mapM newTBQueueIO msgQSize
   agentQ <- newTBQueueIO agentQSize
   smpClients <- TM.emptyIO
   smpSessions <- TM.emptyIO
@@ -264,7 +265,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
   Nothing -> getClient cfg
   where
     cfg = smpCfg agentCfg
-    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] (Just msgQ) startedAt clientDisconnected
+    getClient cfg' = getProtocolClient randomDrg NRMBackground (1, srv, Nothing) cfg' [] msgQ startedAt clientDisconnected
 
     clientDisconnected :: SMPClient -> IO ()
     clientDisconnected smp = do
