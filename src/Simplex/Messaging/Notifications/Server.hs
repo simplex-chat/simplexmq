@@ -644,8 +644,10 @@ pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> P
 pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(DeviceToken pp _)} ntf =
   ifM
     (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp, pushWorkerShard ntfTknId) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
+  where
+    pushWorkersPerServer = 8
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
@@ -657,13 +659,6 @@ guardPushProvider token action =
     (pushProviderAllowed token)
     action
     (pure $ NRErr $ CMD SMP.PROHIBITED)
-
-pushWorkersPerServer :: Int
-pushWorkersPerServer = 8
-
--- Token IDs are random: tokens are spread evenly, and each token is delivered by one worker, in order.
-pushWorkerShard :: NtfTokenId -> Int
-pushWorkerShard (EntityId tId) = hash tId `mod` pushWorkersPerServer
 
 getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider, Int) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
 getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _, _) isOwn = do

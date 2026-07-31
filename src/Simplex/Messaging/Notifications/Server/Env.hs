@@ -174,7 +174,7 @@ data SMPSubscriber = SMPSubscriber
   }
 
 data NtfPushServer = NtfPushServer
-  { pushWorkers :: TMap (Maybe T.Text, PushProvider, Int) PushWorkerVar, -- Int is the worker shard, see pushWorkerShard
+  { pushWorkers :: TMap (Maybe T.Text, PushProvider, Int) PushWorkerVar, -- Int is the worker shard
     pushWorkerSeq :: TVar Int,
     pushQSize :: Natural,
     pushClients :: TMap PushProvider PushClientVar,
