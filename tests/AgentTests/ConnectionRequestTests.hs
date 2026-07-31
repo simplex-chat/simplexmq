@@ -26,7 +26,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), SubscriptionMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version

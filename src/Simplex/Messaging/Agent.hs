@@ -1742,7 +1742,7 @@ serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) timeout_ doSend = do
   connId <- newConnToJoin c userId "" False (Just expiresAt) cReqUri PQSupportOn
   var <- atomically newEmptyTMVar
   atomically $ TM.insert connId var (serviceRequests c)
-  r <- tryError $ do
+  r <- tryAllErrors $ do
     doSend connId
     liftIO $ do
       expired <- registerDelay $ round (reqTimeout * 1000000)
@@ -2265,7 +2265,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                 | primary -> internalErr "ICQDelete: cannot delete primary rcv queue"
                 | otherwise -> do
                     checkRQSwchStatus rq' RSReceivedMessage
-                    tryError (deleteQueue c NRMBackground rq') >>= \case
+                    tryAllErrors (deleteQueue c NRMBackground rq') >>= \case
                       Right () -> finalizeSwitch
                       Left e
                         | temporaryOrHostError e -> throwE e
@@ -3171,7 +3171,7 @@ withToken c nm tkn@NtfToken {deviceToken, ntfMode} from_ (toStatus, toAction_) f
   forM_ from_ $ \(status, action) -> do
     withStore' c $ \db -> updateNtfToken db tkn status (Just action)
     atomically $ nsUpdateToken ns tkn {ntfTknStatus = status, ntfTknAction = Just action}
-  tryError f >>= \case
+  tryAllErrors f >>= \case
     Right _ -> do
       withStore' c $ \db -> updateNtfToken db tkn toStatus toAction_
       let updatedToken = tkn {ntfTknStatus = toStatus, ntfTknAction = toAction_}
