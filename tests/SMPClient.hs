@@ -179,9 +179,7 @@ testSMPClient_ host port vr serviceCreds_ client = do
       Right th -> client th
       Left e -> error $ show e
   where
-    clientALPN
-      | authCmdsSMPVersion `isCompatible` vr = Just alpnSupportedSMPHandshakes
-      | otherwise = Nothing
+    clientALPN = Just alpnSupportedSMPHandshakes
 
 runSMPClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
 runSMPClient _ test' = testSMPClient test'
@@ -275,7 +273,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       smpServerVRange = supportedServerSMPRelayVRange,
       transportConfig = mkTransportServerConfig True (Just alpnSupportedSMPHandshakes) True,
       controlPort = Nothing,
-      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1}, -- seconds
+      smpAgentCfg = defaultSMPClientAgentConfig {persistErrorInterval = 1, msgQSize = Nothing}, -- seconds
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       serverResolverConcurrency = defaultNameResolverConcurrency,
@@ -308,9 +306,6 @@ serverStoreConfig_ useDbStoreLog = \case
   where
     dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
     storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
-
-cfgV7 :: AServerConfig
-cfgV7 = updateCfg cfg $ \cfg' -> cfg' {smpServerVRange = mkVersionRange minServerSMPRelayVersion authCmdsSMPVersion}
 
 cfgVPrev :: AStoreType -> AServerConfig
 cfgVPrev msType = updateCfg (cfgMS msType) $ \cfg' -> cfg' {smpServerVRange = prevRange $ smpServerVRange cfg'}
@@ -350,9 +345,6 @@ proxyCfgShortTimeout =
         cCfg = smpCfg aCfg
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
-
-proxyVRangeV8 :: VersionRangeSMP
-proxyVRangeV8 = mkVersionRange minServerSMPRelayVersion sendingProxySMPVersion
 
 withSmpServerStoreMsgLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =

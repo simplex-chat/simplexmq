@@ -61,7 +61,7 @@ import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextF
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Transport (NTFVersion, invalidReasonNTFVersion, ntfClientHandshake)
+import Simplex.Messaging.Notifications.Transport (NTFVersion, ntfClientHandshake)
 import Simplex.Messaging.Protocol hiding (Command (..), CommandTag (..))
 import Simplex.Messaging.Util (eitherToMaybe, (<$?>))
 
@@ -329,18 +329,12 @@ data NtfResponse
 
 instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
   type Tag NtfResponse = NtfResponseTag
-  encodeProtocol v = \case
+  encodeProtocol _v = \case
     NRTknId entId dhKey -> e (NRTknId_, ' ', entId, dhKey)
     NRSubId entId -> e (NRSubId_, ' ', entId)
     NROk -> e NROk_
     NRErr err -> e (NRErr_, ' ', err)
-    NRTkn stat -> e (NRTkn_, ' ', stat')
-      where
-        stat'
-          | v >= invalidReasonNTFVersion = stat
-          | otherwise = case stat of
-              NTInvalid _ -> NTInvalid Nothing
-              _ -> stat
+    NRTkn stat -> e (NRTkn_, ' ', stat)
     NRSub stat -> e (NRSub_, ' ', stat)
     NRPong -> e NRPong_
     where

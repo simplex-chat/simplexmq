@@ -308,7 +308,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), sndAuthKeySMPVersion, shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -1507,9 +1507,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
           if sndId == sndId' && lnkId == lnkId'
             then pure $ Just $ ShortLinkCreds lnkId linkKey privSigKey Nothing (fst d)
             else newErr "different sender or link IDs"
-      (_, Nothing) -> case linkId of
-        Nothing | v < sndAuthKeySMPVersion -> pure Nothing
-        _ -> newErr "unexpected link ID"
+      (_, Nothing) -> newErr "unexpected link ID"
       _ -> newErr "unexpected queue mode"
       where
         v = thVersion thParams'
