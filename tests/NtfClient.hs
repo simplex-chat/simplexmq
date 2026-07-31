@@ -160,16 +160,16 @@ ntfServerCfg =
       startOptions = defaultStartOptions
     }
 
-ntfServerCfgVPrev :: NtfServerConfig
-ntfServerCfgVPrev =
-  ntfServerCfg
-    { ntfServerVRange = prevRange $ ntfServerVRange ntfServerCfg,
-      smpAgentCfg = smpAgentCfg' {smpCfg = smpCfg' {serverVRange = prevRange serverVRange'}}
-    }
-  where
-    smpAgentCfg' = smpAgentCfg ntfServerCfg
-    smpCfg' = smpCfg smpAgentCfg'
-    serverVRange' = serverVRange smpCfg'
+-- ntfServerCfgVPrev :: NtfServerConfig
+-- ntfServerCfgVPrev =
+--   ntfServerCfg
+--     { ntfServerVRange = prevRange $ ntfServerVRange ntfServerCfg,
+--       smpAgentCfg = smpAgentCfg' {smpCfg = smpCfg' {serverVRange = prevRange serverVRange'}}
+--     }
+--   where
+--     smpAgentCfg' = smpAgentCfg ntfServerCfg
+--     smpCfg' = smpCfg smpAgentCfg'
+--     serverVRange' = serverVRange smpCfg'
 
 withNtfServerThreadOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' dbStoreConfig =

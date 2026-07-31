@@ -312,18 +312,13 @@ currentSMPClientVersion = VersionSMPC 4
 supportedSMPClientVRange :: VersionRangeSMPC
 supportedSMPClientVRange = mkVersionRange initialSMPClientVersion currentSMPClientVersion
 
--- TODO v6.0 remove dependency on version
-maxMessageLength :: VersionSMP -> Int
-maxMessageLength v
-  | v >= encryptedBlockSMPVersion = 16048 -- max 16048
-  | v >= sendingProxySMPVersion = 16064 -- max 16067
-  | otherwise = 16088 -- 16048 - always use this size to determine allowed ranges
+maxMessageLength :: Int
+maxMessageLength = 16048 -- max 16048
 
 paddedProxiedTLength :: Int
 paddedProxiedTLength = 16226 -- 16225 .. 16227
 
--- TODO v7.0 change to 16048
-type MaxMessageLen = 16088
+type MaxMessageLen = 16048
 
 -- 16 extra bytes: 8 for timestamp and 8 for flags (7 flags and the space, only 1 flag is currently used)
 type MaxRcvMessageLen = MaxMessageLen + 16 -- 16104, the padded size is 16106
@@ -1582,7 +1577,7 @@ data ErrorType
     STORE {storeErr :: Text}
   | -- | ACK command is sent without message to be acknowledged
     NO_MSG
-  | -- | sent message is too large (> maxMessageLength = 16088 bytes)
+  | -- | sent message is too large (> maxMessageLength = 16048 bytes)
     LARGE_MSG
   | -- | relay public key is expired
     EXPIRED
@@ -1795,13 +1790,11 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   type Tag (Command p) = CommandTag p
   encodeProtocol v = \case
     NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueReqData, ntfCreds}
-      | v >= newNtfCredsSMPVersion -> new <> e (auth_, subMode, queueReqData, ntfCreds)
-      | v >= shortLinksSMPVersion -> new <> e (auth_, subMode, queueReqData)
-      | v >= sndAuthKeySMPVersion -> new <> e (auth_, subMode, senderCanSecure (queueReqMode <$> queueReqData))
-      | otherwise -> new <> auth <> e subMode
+      | v >= newNtfCredsSMPVersion -> new <> e (subMode, queueReqData, ntfCreds)
+      | v >= shortLinksSMPVersion -> new <> e (subMode, queueReqData)
+      | otherwise -> new <> e (subMode, senderCanSecure (queueReqMode <$> queueReqData))
       where
-        new = e (NEW_, ' ', rKey, dhKey)
-        auth = maybe "" (e . ('A',)) auth_
+        new = e (NEW_, ' ', rKey, dhKey, auth_)
     SUB -> e SUB_
     SUBS n idsHash
       | v >= rcvServiceSMPVersion -> e (SUBS_, ' ', n, idsHash)
@@ -1886,21 +1879,19 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SCreator NEW_ -> Cmd SCreator <$> newCmd
       where
         newCmd
-          | v >= newNtfCredsSMPVersion = new smpP smpP smpP
-          | v >= shortLinksSMPVersion = new smpP smpP nothing
-          | v >= sndAuthKeySMPVersion = new smpP (qReq <$> smpP) nothing
-          | otherwise = new auth nothing nothing
+          | v >= newNtfCredsSMPVersion = new smpP smpP
+          | v >= shortLinksSMPVersion = new smpP nothing
+          | otherwise = new (qReq <$> smpP) nothing
           where
             nothing = pure Nothing
-            new p1 p2 p3 = NEW <$> do
+            new p2 p3 = NEW <$> do
               rcvAuthKey <- _smpP
               rcvDhKey <- smpP
-              auth_ <- p1
+              auth_ <- smpP
               subMode <- smpP
               queueReqData <- p2
               ntfCreds <- p3
               pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData, ntfCreds}
-            auth = optional (A.char 'A' *> smpP)
             qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
@@ -1950,11 +1941,10 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
   type Tag BrokerMsg = BrokerMsgTag
   encodeProtocol v = \case
     IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId, serviceId, serverNtfCreds}
-      | v >= newNtfCredsSMPVersion -> ids <> e queueMode <> e linkId <> e serviceId <> e serverNtfCreds
-      | v >= serviceCertsSMPVersion -> ids <> e queueMode <> e linkId <> e serviceId
-      | v >= shortLinksSMPVersion -> ids <> e queueMode <> e linkId
-      | v >= sndAuthKeySMPVersion -> ids <> e (senderCanSecure queueMode)
-      | otherwise -> ids
+      | v >= newNtfCredsSMPVersion -> ids <> e (queueMode, linkId, serviceId, serverNtfCreds)
+      | v >= serviceCertsSMPVersion -> ids <> e (queueMode, linkId, serviceId)
+      | v >= shortLinksSMPVersion -> ids <> e (queueMode, linkId)
+      | otherwise -> ids <> e (senderCanSecure queueMode)
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     LNK sId d -> e (LNK_, ' ', sId, d)
@@ -1972,16 +1962,13 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
     END -> e END_
     ENDS n idsHash -> serviceResp ENDS_ n idsHash
-    DELD
-      | v >= deletedEventSMPVersion -> e DELD_
-      | otherwise -> e END_
+    DELD -> e DELD_
     INFO info -> e (INFO_, ' ', info)
     OK -> e OK_
     ERR err -> e (ERR_, ' ', err')
       where
         err' = case err of
           BLOCKED info
-            | v < blockedEntitySMPVersion -> AUTH
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
@@ -2004,8 +1991,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | v >= newNtfCredsSMPVersion -> ids smpP smpP smpP smpP
       | v >= serviceCertsSMPVersion -> ids smpP smpP smpP nothing
       | v >= shortLinksSMPVersion -> ids smpP smpP nothing nothing
-      | v >= sndAuthKeySMPVersion -> ids (qm <$> smpP) nothing nothing nothing
-      | otherwise -> ids nothing nothing nothing nothing
+      | otherwise -> ids (qm <$> smpP) nothing nothing nothing
       where
         qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
         nothing = pure Nothing
@@ -2290,19 +2276,8 @@ batchTransmissions params = batchTransmissions' params . L.map (,())
 
 -- | encodes and batches transmissions into blocks
 batchTransmissions' :: forall v p r. THandleParams v p -> NonEmpty (Either TransportError SentRawTransmission, r) -> [TransportBatch r]
-batchTransmissions' THandleParams {batch, blockSize = bSize, serviceAuth} ts
-  | batch = batchTransmissions_ bSize $ L.map (first $ fmap $ tEncodeForBatch serviceAuth) ts
-  | otherwise = map mkBatch1 $ L.toList ts
-  where
-    mkBatch1 :: (Either TransportError SentRawTransmission, r) -> TransportBatch r
-    mkBatch1 (t_, r) = case t_ of
-      Left e -> TBError e r
-      Right t
-        -- 2 bytes are reserved for pad size
-        | B.length s <= bSize - 2 -> TBTransmission s r
-        | otherwise -> TBError TELargeMsg r
-        where
-          s = tEncode serviceAuth t
+batchTransmissions' THandleParams {blockSize, serviceAuth} ts =
+  batchTransmissions_ blockSize $ L.map (first $ fmap $ tEncodeForBatch serviceAuth) ts
 
 -- | Pack encoded transmissions into batches
 batchTransmissions_ :: Int -> NonEmpty (Either TransportError ByteString, r) -> [TransportBatch r]
@@ -2366,9 +2341,8 @@ tGetParse th@THandle {params} = eitherList (tParse params) <$> tGetBlock th
 {-# INLINE tGetParse #-}
 
 tParse :: THandleParams v p -> ByteString -> NonEmpty (Either TransportError RawTransmission)
-tParse thParams@THandleParams {batch} s
-  | batch = eitherList (L.map (\(Large t) -> tParse1 t)) ts
-  | otherwise = [tParse1 s]
+tParse thParams s =
+  eitherList (L.map (tParse1 . unLarge)) ts
   where
     tParse1 = parse (transmissionP thParams) TEBadBlock
     ts = parse smpP TEBadBlock s

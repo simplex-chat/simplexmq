@@ -227,9 +227,8 @@ smpClientStub g sessionId thVersion thAuth = do
               thServerVRange = supportedServerSMPRelayVRange,
               thAuth,
               blockSize = smpBlockSize,
-              implySessId = thVersion >= authCmdsSMPVersion,
+              implySessId = True,
               encryptBlock = Nothing,
-              batch = True,
               serviceAuth = thVersion >= serviceCertsSMPVersion
             },
         sessionTs = ts,
@@ -1110,17 +1109,15 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth
-  | thVersion (thParams c) >= sendingProxySMPVersion =
-      sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
-        PKEY sId vr (CertChainPubKey chain key) ->
-          case supportedClientSMPRelayVRange `compatibleVersion` vr of
-            Nothing -> throwE $ transportErr TEVersion
-            Just (Compatible v) -> do
-              relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
-              pure $ ProxiedRelay sId v proxyAuth relayKey
-        r -> throwE $ unexpectedResponse r
-  | otherwise = throwE $ PCETransportError TEVersion
+connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
+  sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
+    PKEY sId vr (CertChainPubKey chain key) ->
+      case supportedClientSMPRelayVRange `compatibleVersion` vr of
+        Nothing -> throwE $ transportErr TEVersion
+        Just (Compatible v) -> do
+          relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
+          pure $ ProxiedRelay sId v proxyAuth relayKey
+    r -> throwE $ unexpectedResponse r
   where
     tOut = Just $ netTimeoutInt tcpConnectTimeout nm + netTimeoutInt tcpTimeout nm
     transportErr = PCEProtocolError . PROXY . BROKER . TRANSPORT
@@ -1351,7 +1348,7 @@ sendProtocolCommand c nm = sendProtocolCommand_ c nm Nothing Nothing
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {batch, blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
@@ -1364,9 +1361,7 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
             nonBlockingWriteTBQueue sndQ (Just r, s)
             response <$> getResponse c nm tOut r
         where
-          s
-            | batch = tEncodeBatch1 serviceAuth t
-            | otherwise = tEncode serviceAuth t
+          s = tEncodeBatch1 serviceAuth t
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do

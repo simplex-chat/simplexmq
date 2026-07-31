@@ -109,12 +109,6 @@ data XFTPClientConfig = XFTPClientConfig
     clientALPN :: Maybe [ALPN]
   }
 
-data XFTPChunkBody = XFTPChunkBody
-  { chunkSize :: Int,
-    chunkPart :: Int -> IO ByteString,
-    http2Body :: HTTP2Body
-  }
-
 data XFTPChunkSpec = XFTPChunkSpec
   { filePath :: FilePath,
     chunkOffset :: Int64,
@@ -147,7 +141,7 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   let HTTP2Client {sessionId, sessionALPN} = http2Client
       v = VersionXFTP 1
       thServerVRange = versionToRange v
-      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, batch = True, serviceAuth = False}
+      thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False}
   logDebug $ "Client negotiated handshake protocol: " <> tshow sessionALPN
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just alpn
