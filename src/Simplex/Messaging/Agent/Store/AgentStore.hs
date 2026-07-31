@@ -73,6 +73,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setConnPQSupport,
     updateNewConnJoin,
     getDeletedConnIds,
+    getExpiredServiceConns,
+    deleteExpiredServiceRequests,
     getDeletedWaitingDeliveryConnIds,
     setConnRatchetSync,
     addProcessedRatchetKeyHash,
@@ -152,6 +154,10 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchetX3dhKeys,
     getRatchetX3dhKeys,
     setRatchetX3dhKeys,
+    createAddressRatchetKeys,
+    getCurrentAddressRatchetKeys,
+    getAddressRatchetKeys,
+    deleteOldAddressRatchetKeys,
     createSndRatchet,
     getSndRatchet,
     createRatchet,
@@ -278,9 +284,11 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
+import qualified Data.Aeson as J
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy as LB
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortBy)
@@ -558,14 +566,16 @@ createSndConn db gVar cData q@SndQueue {server} =
       insertSndQueue_ db connId q serverKeyHash_
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
-createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport} cMode =
+createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport, serviceRequestExpiresAt} cMode = do
+  createdAt <- getCurrentTime
   DB.execute
     db
     [sql|
       INSERT INTO connections
-        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, duplex_handshake) VALUES (?,?,?,?,?,?,?)
+        (user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs, pq_support, service_request_expires_at, duplex_handshake, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
     |]
-    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, BI True)
+    (userId, connId, cMode, connAgentVersion, BI enableNtfs, pqSupport, serviceRequestExpiresAt, BI True, createdAt)
 
 deleteConnRecord :: DB.Connection -> ConnId -> IO ()
 deleteConnRecord db connId = DB.execute db "DELETE FROM connections WHERE conn_id = ?" (Only connId)
@@ -868,15 +878,15 @@ removeConfirmations db connId =
     (Only connId)
 
 createInvitation :: DB.Connection -> TVar ChaChaDRG -> NewInvitation -> IO (Either StoreError InvitationId)
-createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo} =
+createInvitation db gVar NewInvitation {contactConnId, connReq, recipientConnInfo, serviceRequest} =
   createWithRandomId db gVar $ \invitationId ->
     DB.execute
       db
       [sql|
         INSERT INTO conn_invitations
-        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted) VALUES (?, ?, ?, ?, 0);
+        (invitation_id, contact_conn_id, cr_invitation, recipient_conn_info, accepted, service_request) VALUES (?, ?, ?, ?, 0, ?);
       |]
-      (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo)
+      (Binary invitationId, contactConnId, connReq, Binary recipientConnInfo, BI serviceRequest)
 
 getInvitation :: DB.Connection -> String -> InvitationId -> IO (Either StoreError Invitation)
 getInvitation db cxt invitationId =
@@ -884,15 +894,15 @@ getInvitation db cxt invitationId =
     DB.query
       db
       [sql|
-        SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted
+        SELECT contact_conn_id, cr_invitation, recipient_conn_info, own_conn_info, accepted, service_request, created_at
         FROM conn_invitations
         WHERE invitation_id = ?
           AND accepted = 0
       |]
       (Only (Binary invitationId))
   where
-    invitation (contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted) =
-      Invitation {invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted}
+    invitation (contactConnId_, connReq, recipientConnInfo, ownConnInfo, BI accepted, BI serviceRequest, createdAt) =
+      Invitation {invitationId, contactConnId_, connReq, recipientConnInfo, ownConnInfo, accepted, serviceRequest, createdAt}
 
 acceptInvitation :: DB.Connection -> InvitationId -> ConnInfo -> IO ()
 acceptInvitation db invitationId ownConnInfo =
@@ -1383,6 +1393,60 @@ setRatchetX3dhKeys db connId (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem) =
       WHERE conn_id = ?
     |]
     (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem, connId)
+
+createAddressRatchetKeys :: DB.Connection -> ConnId -> (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448) -> IO ()
+createAddressRatchetKeys db connId (ratchetKeyId, (x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)) =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO address_ratchet_keys
+        (conn_id, ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem)
+      VALUES (?, ?, ?, ?, ?)
+    |]
+    (connId, ratchetKeyId, x3dhPrivKey1, x3dhPrivKey2, pqPrivKem)
+
+getCurrentAddressRatchetKeys :: DB.Connection -> ConnId -> IO (Either StoreError (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
+getCurrentAddressRatchetKeys db connId =
+  firstRow (\(Only rkId :. pks) -> (rkId, pks)) SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT ratchet_key_id, x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ?
+        ORDER BY address_ratchet_key_id DESC
+        LIMIT 1
+      |]
+      (Only connId)
+
+getAddressRatchetKeys :: DB.Connection -> ConnId -> RatchetKeyId -> IO (Either StoreError (CR.RcvE2EPrivRatchetParams 'C.X448))
+getAddressRatchetKeys db connId ratchetKeyId =
+  firstRow id SEX3dhKeysNotFound $
+    DB.query
+      db
+      [sql|
+        SELECT x3dh_priv_key_1, x3dh_priv_key_2, pq_priv_kem
+        FROM address_ratchet_keys
+        WHERE conn_id = ? AND ratchet_key_id = ?
+      |]
+      (connId, ratchetKeyId)
+
+deleteOldAddressRatchetKeys :: DB.Connection -> ConnId -> Int -> IO ()
+deleteOldAddressRatchetKeys db connId keep =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM address_ratchet_keys
+      WHERE conn_id = ?
+        AND address_ratchet_key_id NOT IN (
+          SELECT address_ratchet_key_id
+          FROM address_ratchet_keys
+          WHERE conn_id = ?
+          ORDER BY address_ratchet_key_id DESC
+          LIMIT ?
+        )
+    |]
+    (connId, connId, keep)
 
 createSndRatchet :: DB.Connection -> ConnId -> RatchetX448 -> CR.AE2ERatchetParams 'C.X448 -> IO ()
 createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetParams _ x3dhPubKey1 x3dhPubKey2 pqPubKem)) =
@@ -2075,6 +2139,21 @@ instance ConnectionModeI c => ToField (ConnectionRequestUri c) where toField = t
 
 instance (E.Typeable c, ConnectionModeI c) => FromField (ConnectionRequestUri c) where fromField = blobFieldDecoder strDecode
 
+instance ToField RatchetKeyId where toField (RatchetKeyId s) = toField $ Binary s
+
+instance FromField RatchetKeyId where fromField = blobFieldDecoder $ Right . RatchetKeyId
+
+instance ToField ContactRequest where
+  toField = toField . Binary . \case
+    CRInvitation cr -> strEncode cr
+    CRInvitationDR dr -> LB.toStrict $ J.encode dr
+
+instance FromField ContactRequest where
+  fromField = blobFieldDecoder $ \bs ->
+    if "{" `B.isPrefixOf` bs
+      then CRInvitationDR <$> J.eitherDecodeStrict' bs
+      else CRInvitation <$> strDecode bs
+
 instance ToField ConnectionMode where toField = toField . decodeLatin1 . strEncode
 
 instance FromField ConnectionMode where fromField = fromTextField_ connModeT
@@ -2549,7 +2628,7 @@ getConnsData_ deleted' db connIds =
       db
       [sql|
         SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
+          last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_request_expires_at
         FROM connections
         WHERE conn_id IN ? AND deleted = ?
       |]
@@ -2584,7 +2663,7 @@ getConnData deleted' forUpdate db connId' =
       db
       ( [sql|
           SELECT user_id, conn_id, conn_mode, smp_agent_version, enable_ntfs,
-            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support
+            last_external_snd_msg_id, deleted, ratchet_sync_state, pq_support, service_request_expires_at
           FROM connections
           WHERE conn_id = ? AND deleted = ?
         |]
@@ -2601,9 +2680,9 @@ lockConnForUpdate db connId = do
 #endif
   pure ()
 
-rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport) -> (ConnData, ConnectionMode)
-rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport) =
-  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport}, cMode)
+rowToConnData :: (UserId, ConnId, ConnectionMode, VersionSMPA, Maybe BoolInt, PrevExternalSndId, BoolInt, RatchetSyncState, PQSupport, Maybe UTCTime) -> (ConnData, ConnectionMode)
+rowToConnData (userId, connId, cMode, connAgentVersion, enableNtfs_, lastExternalSndId, BI deleted, ratchetSyncState, pqSupport, serviceRequestExpiresAt) =
+  (ConnData {userId, connId, connAgentVersion, enableNtfs = maybe True unBI enableNtfs_, lastExternalSndId, deleted, ratchetSyncState, pqSupport, serviceRequestExpiresAt}, cMode)
 
 setConnDeleted :: DB.Connection -> Bool -> ConnId -> IO ()
 setConnDeleted db waitDelivery connId
@@ -2631,6 +2710,14 @@ updateNewConnJoin db connId aVersion pqSupport enableNtfs =
 
 getDeletedConnIds :: DB.Connection -> IO [ConnId]
 getDeletedConnIds db = map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE deleted = ?" (Only (BI True))
+
+getExpiredServiceConns :: DB.Connection -> UTCTime -> IO [ConnId]
+getExpiredServiceConns db now =
+  map fromOnly <$> DB.query db "SELECT conn_id FROM connections WHERE service_request_expires_at < ? AND deleted = 0 AND deleted_at_wait_delivery IS NULL" (Only now)
+
+deleteExpiredServiceRequests :: DB.Connection -> UTCTime -> IO ()
+deleteExpiredServiceRequests db expireTs =
+  DB.execute db "DELETE FROM conn_invitations WHERE service_request = 1 AND created_at < ?" (Only expireTs)
 
 getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =

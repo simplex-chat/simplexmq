@@ -104,6 +104,31 @@ CREATE AGGREGATE smp_agent_test_protocol_schema.xor_aggregate(bytea) (
 SET default_table_access_method = heap;
 
 
+CREATE TABLE smp_agent_test_protocol_schema.address_ratchet_keys (
+    address_ratchet_key_id bigint NOT NULL,
+    conn_id bytea NOT NULL,
+    ratchet_key_id bytea NOT NULL,
+    x3dh_priv_key_1 bytea NOT NULL,
+    x3dh_priv_key_2 bytea NOT NULL,
+    pq_priv_kem bytea,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+
+CREATE SEQUENCE smp_agent_test_protocol_schema.address_ratchet_keys_address_ratchet_key_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+
+ALTER SEQUENCE smp_agent_test_protocol_schema.address_ratchet_keys_address_ratchet_key_id_seq OWNED BY smp_agent_test_protocol_schema.address_ratchet_keys.address_ratchet_key_id;
+
+
+
 CREATE TABLE smp_agent_test_protocol_schema.client_notices (
     client_notice_id bigint NOT NULL,
     protocol text NOT NULL,
@@ -194,7 +219,8 @@ CREATE TABLE smp_agent_test_protocol_schema.conn_invitations (
     recipient_conn_info bytea NOT NULL,
     accepted smallint DEFAULT 0 NOT NULL,
     own_conn_info bytea,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    service_request smallint DEFAULT 0 NOT NULL
 );
 
 
@@ -215,7 +241,9 @@ CREATE TABLE smp_agent_test_protocol_schema.connections (
     user_id bigint NOT NULL,
     ratchet_sync_state text DEFAULT 'ok'::text NOT NULL,
     deleted_at_wait_delivery timestamp with time zone,
-    pq_support smallint DEFAULT 0 NOT NULL
+    pq_support smallint DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+01'::timestamp with time zone NOT NULL,
+    service_request_expires_at timestamp with time zone
 );
 
 
@@ -847,6 +875,15 @@ ALTER TABLE smp_agent_test_protocol_schema.xftp_servers ALTER COLUMN xftp_server
 
 
 
+ALTER TABLE ONLY smp_agent_test_protocol_schema.address_ratchet_keys ALTER COLUMN address_ratchet_key_id SET DEFAULT nextval('smp_agent_test_protocol_schema.address_ratchet_keys_address_ratchet_key_id_seq'::regclass);
+
+
+
+ALTER TABLE ONLY smp_agent_test_protocol_schema.address_ratchet_keys
+    ADD CONSTRAINT address_ratchet_keys_pkey PRIMARY KEY (address_ratchet_key_id);
+
+
+
 ALTER TABLE ONLY smp_agent_test_protocol_schema.client_notices
     ADD CONSTRAINT client_notices_pkey PRIMARY KEY (client_notice_id);
 
@@ -1032,6 +1069,10 @@ ALTER TABLE ONLY smp_agent_test_protocol_schema.xftp_servers
 
 
 
+CREATE UNIQUE INDEX idx_address_ratchet_keys ON smp_agent_test_protocol_schema.address_ratchet_keys USING btree (conn_id, ratchet_key_id);
+
+
+
 CREATE UNIQUE INDEX idx_client_notices_entity ON smp_agent_test_protocol_schema.client_notices USING btree (protocol, host, port, entity_id);
 
 
@@ -1053,6 +1094,14 @@ CREATE INDEX idx_conn_confirmations_conn_id ON smp_agent_test_protocol_schema.co
 
 
 CREATE INDEX idx_conn_invitations_contact_conn_id ON smp_agent_test_protocol_schema.conn_invitations USING btree (contact_conn_id);
+
+
+
+CREATE INDEX idx_connections_deleted ON smp_agent_test_protocol_schema.connections USING btree (deleted);
+
+
+
+CREATE INDEX idx_connections_service_request_expires_at ON smp_agent_test_protocol_schema.connections USING btree (service_request_expires_at);
 
 
 
@@ -1265,6 +1314,11 @@ CREATE TRIGGER tr_rcv_queue_insert AFTER INSERT ON smp_agent_test_protocol_schem
 
 
 CREATE TRIGGER tr_rcv_queue_update AFTER UPDATE ON smp_agent_test_protocol_schema.rcv_queues FOR EACH ROW EXECUTE FUNCTION smp_agent_test_protocol_schema.on_rcv_queue_update();
+
+
+
+ALTER TABLE ONLY smp_agent_test_protocol_schema.address_ratchet_keys
+    ADD CONSTRAINT address_ratchet_keys_conn_id_fkey FOREIGN KEY (conn_id) REFERENCES smp_agent_test_protocol_schema.connections(conn_id) ON DELETE CASCADE;
 
 
 

@@ -45,6 +45,8 @@ module Simplex.Messaging.Agent.Store
     AcceptedConfirmation (..),
     NewInvitation (..),
     Invitation (..),
+    ContactRequest (..),
+    DRInvitation (..),
     PrevExternalSndId,
     PrevRcvMsgHash,
     PrevSndMsgHash,
@@ -463,7 +465,9 @@ data ConnData = ConnData
     lastExternalSndId :: PrevExternalSndId,
     deleted :: Bool,
     ratchetSyncState :: RatchetSyncState,
-    pqSupport :: PQSupport
+    pqSupport :: PQSupport,
+    -- client side: set on the requester's connection for a service request; Nothing otherwise. The time the client stops waiting for the response (created + serviceRequestTimeout or per-call override).
+    serviceRequestExpiresAt :: Maybe UTCTime
   }
   deriving (Eq, Show)
 
@@ -535,6 +539,7 @@ data InternalCommand
   | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICQDelete SMP.RecipientId
+  | ICReplyDel
 
 data InternalCommandTag
   = ICAck_
@@ -545,6 +550,7 @@ data InternalCommandTag
   | ICDeleteRcvQueue_
   | ICQSecure_
   | ICQDelete_
+  | ICReplyDel_
   deriving (Show)
 
 instance StrEncoding InternalCommand where
@@ -557,6 +563,7 @@ instance StrEncoding InternalCommand where
     ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
+    ICReplyDel -> strEncode ICReplyDel_
   strP =
     strP >>= \case
       ICAck_ -> ICAck <$> _strP <*> _strP
@@ -567,6 +574,7 @@ instance StrEncoding InternalCommand where
       ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
+      ICReplyDel_ -> pure ICReplyDel
 
 instance StrEncoding InternalCommandTag where
   strEncode = \case
@@ -578,6 +586,7 @@ instance StrEncoding InternalCommandTag where
     ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
+    ICReplyDel_ -> "REPLY_DEL"
   strP =
     A.takeTill (== ' ') >>= \case
       "ACK" -> pure ICAck_
@@ -588,6 +597,7 @@ instance StrEncoding InternalCommandTag where
       "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
+      "REPLY_DEL" -> pure ICReplyDel_
       _ -> fail "bad InternalCommandTag"
 
 agentCommandTag :: AgentCommand -> AgentCommandTag
@@ -605,6 +615,7 @@ internalCmdTag = \case
   ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
+  ICReplyDel -> ICReplyDel_
 
 -- * Confirmation types
 
@@ -626,18 +637,27 @@ data AcceptedConfirmation = AcceptedConfirmation
 
 data NewInvitation = NewInvitation
   { contactConnId :: ConnId,
-    connReq :: ConnectionRequestUri 'CMInvitation,
-    recipientConnInfo :: ConnInfo
+    connReq :: ContactRequest,
+    recipientConnInfo :: ConnInfo,
+    -- service side: the received request is a service request (SREQ) not a contact request (REQ)
+    serviceRequest :: Bool
   }
 
 data Invitation = Invitation
   { invitationId :: InvitationId,
     contactConnId_ :: Maybe ConnId,
-    connReq :: ConnectionRequestUri 'CMInvitation,
+    connReq :: ContactRequest,
     recipientConnInfo :: ConnInfo,
     ownConnInfo :: Maybe ConnInfo,
-    accepted :: Bool
+    accepted :: Bool,
+    -- service side: the received request is a service request (SREQ) not a contact request (REQ)
+    serviceRequest :: Bool,
+    createdAt :: UTCTime
   }
+
+data ContactRequest
+  = CRInvitation (ConnectionRequestUri 'CMInvitation)
+  | CRInvitationDR DRInvitation
 
 -- * Message integrity validation types
 

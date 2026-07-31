@@ -198,7 +198,8 @@ cData1 =
       lastExternalSndId = 0,
       deleted = False,
       ratchetSyncState = RSOk,
-      pqSupport = CR.PQSupportOn
+      pqSupport = CR.PQSupportOn,
+      serviceRequestExpiresAt = Nothing
     }
 
 testPrivateAuthKey :: C.APrivateAuthKey
@@ -696,7 +697,7 @@ testGetPendingServerCommand st = do
     Right (Just PendingCommand {corrId = corrId'}) <- getPendingServerCommand db connId (Just smpServer1)
     corrId' `shouldBe` "4"
   where
-    command = AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe
+    command = AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False
     corruptCmd :: DB.Connection -> ByteString -> ConnId -> IO ()
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 

@@ -27,7 +27,9 @@ CREATE TABLE connections(
   REFERENCES users ON DELETE CASCADE,
   ratchet_sync_state TEXT NOT NULL DEFAULT 'ok',
   deleted_at_wait_delivery TEXT,
-  pq_support INTEGER NOT NULL DEFAULT 0
+  pq_support INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT('1970-01-01 00:00:00'),
+  service_request_expires_at TEXT
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE rcv_queues(
   host TEXT NOT NULL,
@@ -164,6 +166,8 @@ CREATE TABLE conn_invitations(
   accepted INTEGER NOT NULL DEFAULT 0,
   own_conn_info BLOB,
   created_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  service_request INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE ratchets(
   conn_id BLOB NOT NULL PRIMARY KEY REFERENCES connections
@@ -465,6 +469,15 @@ CREATE TABLE client_services(
   service_queue_ids_hash BLOB NOT NULL DEFAULT x'00000000000000000000000000000000',
   FOREIGN KEY(host, port) REFERENCES servers ON UPDATE CASCADE ON DELETE RESTRICT
 ) STRICT;
+CREATE TABLE address_ratchet_keys(
+  address_ratchet_key_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
+  ratchet_key_id BLOB NOT NULL,
+  x3dh_priv_key_1 BLOB NOT NULL,
+  x3dh_priv_key_2 BLOB NOT NULL,
+  pq_priv_kem BLOB,
+  created_at TEXT NOT NULL DEFAULT(datetime('now'))
+) STRICT;
 CREATE UNIQUE INDEX idx_rcv_queues_ntf ON rcv_queues(host, port, ntf_id);
 CREATE UNIQUE INDEX idx_rcv_queue_id ON rcv_queues(conn_id, rcv_queue_id);
 CREATE UNIQUE INDEX idx_snd_queue_id ON snd_queues(conn_id, snd_queue_id);
@@ -615,6 +628,14 @@ CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON client_services(
   server_key_hash
 );
 CREATE INDEX idx_server_certs_host_port ON client_services(host, port);
+CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(
+  conn_id,
+  ratchet_key_id
+);
+CREATE INDEX idx_connections_deleted ON connections(deleted);
+CREATE INDEX idx_connections_service_request_expires_at ON connections(
+  service_request_expires_at
+);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW
