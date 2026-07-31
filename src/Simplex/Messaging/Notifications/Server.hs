@@ -34,6 +34,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
+import Data.Hashable (hash)
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntSet as IS
@@ -640,11 +641,13 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
+pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(DeviceToken pp _)} ntf =
   ifM
     (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
+  where
+    pushWorkersPerServer = 8
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
@@ -657,8 +660,8 @@ guardPushProvider token action =
     action
     (pure $ NRErr $ CMD SMP.PROHIBITED)
 
-getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
-getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _) isOwn = do
+getOrCreatePushWorker :: NtfPushServer -> (Maybe T.Text, PushProvider, Int) -> OwnServer -> M (TBQueue (NtfTknRec, PushNotification))
+getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} key@(srvHost_, _, _) isOwn = do
   ts <- liftIO getCurrentTime
   withGetSessVar' pushWorkerSeq key pushWorkers ts createWorker existingWorker
   where
@@ -731,7 +734,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
               _ -> err e
         err e = logError ("Push provider error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e) $> Left e
 
-pushWorkersQLength :: TMap (Maybe T.Text, PushProvider) PushWorkerVar -> IO Natural
+pushWorkersQLength :: TMap (Maybe T.Text, PushProvider, Int) PushWorkerVar -> IO Natural
 pushWorkersQLength workers = do
   ws <- readTVarIO workers
   foldM addQLength 0 ws
