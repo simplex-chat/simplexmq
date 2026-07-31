@@ -3312,12 +3312,6 @@ cleanupManager c@AgentClient {subQ} = do
     run ERR deleteExpiredServiceReqs
     liftIO $ threadDelay' int
   where
-    deleteExpiredServiceReqs = do
-      serviceResponseTimeout <- asks $ serviceResponseTimeout . config
-      now <- liftIO getCurrentTime
-      withStore' c $ \db -> deleteExpiredServiceRequests db $ addUTCTime (negate serviceResponseTimeout) now
-      expiredConns <- withStore' c $ \db -> getExpiredServiceConns db now
-      deleteConnectionsAsync' c False expiredConns
     run :: forall e. AEntityI e => (AgentErrorType -> AEvent e) -> AM () -> AM' ()
     run err a = do
       waitActive . runExceptT $ a `catchAllErrors` (notify "" . err)
@@ -3366,6 +3360,13 @@ cleanupManager c@AgentClient {subQ} = do
     deleteExpiredReplicasForDeletion = do
       rcvFilesTTL <- asks $ rcvFilesTTL . config
       withStore' c (`deleteDeletedSndChunkReplicasExpired` rcvFilesTTL)
+    deleteExpiredServiceReqs = do
+      serviceResponseTimeout <- asks $ serviceResponseTimeout . config
+      now <- liftIO getCurrentTime
+      expiredConns <- withStore' c $ \db -> do
+        deleteExpiredServiceRequests db $ addUTCTime (negate serviceResponseTimeout) now
+        getExpiredServiceConns db now
+      deleteConnectionsAsync' c False expiredConns
     notify :: forall e. AEntityI e => AEntityId -> AEvent e -> AM ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, AEvt (sAEntity @e) cmd)
 
