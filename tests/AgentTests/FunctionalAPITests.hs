@@ -232,8 +232,9 @@ smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCf
 -- ntfCfgVPrev :: ProtocolClientConfig NTFVersion
 -- ntfCfgVPrev = (ntfCfg agentCfg) {clientALPN = Nothing, serverVRange = V.mkVersionRange (VersionNTF 1) (VersionNTF 1)}
 
+-- currently, previous e2e version is not supported
 agentCfgVPrev :: AgentConfig
-agentCfgVPrev = agentCfgVPrevPQ {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
+agentCfgVPrev = agentCfgVPrevPQ -- {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
 
 agentCfgVPrevPQ :: AgentConfig
 agentCfgVPrevPQ =

@@ -2183,7 +2183,7 @@ data ConnectionErrorType
 -- | Errors of another SMP agent.
 data SMPAgentError
   = -- | client or agent message that failed to parse
-    A_MESSAGE
+    A_MESSAGE {messageErr :: String}
   | -- | prohibited SMP/agent message
     A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols

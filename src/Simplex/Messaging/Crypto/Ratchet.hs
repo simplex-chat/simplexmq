@@ -98,7 +98,6 @@ import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
-import Data.Attoparsec.ByteString (Parser, peekWord8')
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
@@ -750,9 +749,9 @@ data EncRatchetMessage = EncRatchetMessage
 
 instance Encoding EncRatchetMessage where
   smpEncode EncRatchetMessage {emHeader, emBody, emAuthTag} =
-    smpEncode (emHeader, emAuthTag, Tail emBody)
+    smpEncode (Large emHeader, emAuthTag, Tail emBody)
   smpP = do
-    (emHeader, emAuthTag, Tail emBody) <- smpP
+    (Large emHeader, emAuthTag, Tail emBody) <- smpP
     pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
 newtype PQEncryption = PQEncryption {enablePQ :: Bool}

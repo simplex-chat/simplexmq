@@ -1937,7 +1937,7 @@ getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
-  liftEither $ parse SMP.clientRcvMsgBodyP (AGENT A_MESSAGE) =<< decrypt body
+  liftEither $ parse SMP.clientRcvMsgBodyP (AGENT $ A_MESSAGE "decrypt message") =<< decrypt body
   where
     decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
 
@@ -2241,7 +2241,7 @@ agentCbDecrypt dhSecret nonce msg =
 cryptoError :: C.CryptoError -> AgentErrorType
 cryptoError = \case
   C.CryptoLargeMsgError -> CMD LARGE "CryptoLargeMsgError"
-  C.CryptoHeaderError _ -> AGENT A_MESSAGE -- parsing error
+  C.CryptoHeaderError e -> AGENT $ A_MESSAGE $ "parse msg header " <> e
   C.CERatchetDuplicateMessage -> AGENT $ A_DUPLICATE Nothing
   C.AESDecryptError -> c DECRYPT_AES
   C.CBDecryptError -> c DECRYPT_CB

@@ -3464,7 +3464,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 _ -> pure ()
               processClientMsg srvTs msgFlags msgBody = do
                 clientMsg@SMP.ClientMsgEnvelope {cmHeader = SMP.PubHeader phVer e2ePubKey_} <-
-                  parseMessage msgBody
+                  parseMessage "4" msgBody
                 clientVRange <- asks $ smpClientVRange . config
                 unless (phVer `isCompatible` clientVRange || phVer <= agreedClientVerion) . throwE $ AGENT A_VERSION
                 case (e2eDhSecret, e2ePubKey_) of
@@ -3552,7 +3552,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                                         notify $ ERR (AGENT $ A_DUPLICATE $ Just DroppedMsg {brokerTs, attempts})
                                         ackDel internalId
                                       else
-                                        liftEither (parse smpP (AGENT A_MESSAGE) agentMsgBody) >>= \case
+                                        liftEither (parse smpP (AGENT $ A_MESSAGE "parse msg body 1") agentMsgBody) >>= \case
                                           AgentMessage _ (A_MSG body) -> do
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' srvMsgId
                                             notify $ MSG msgMeta msgFlags body
@@ -3587,7 +3587,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                             liftIO $ lockConnForUpdate db connId
                             rc <- ExceptT $ getRatchetForUpdate db connId -- ratchet state pre-decryption - required for processing EREADY
                             (agentMsgBody, pqEncryption) <- agentRatchetDecrypt' g db connId rc encAgentMessage
-                            liftEither (parse smpP (SEAgentError $ AGENT A_MESSAGE) agentMsgBody) >>= \case
+                            liftEither (parse smpP (SEAgentError $ AGENT $ A_MESSAGE "parse msg body 2") agentMsgBody) >>= \case
                               agentMsg@(AgentMessage APrivHeader {sndMsgId, prevMsgHash} aMessage) -> do
                                 let msgType = agentMessageType agentMsg
                                     internalHash = C.sha256Hash agentMsgBody
@@ -3673,8 +3673,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
           decryptClientMessage :: C.DhSecretX25519 -> SMP.ClientMsgEnvelope -> AM (SMP.PrivHeader, AgentMsgEnvelope)
           decryptClientMessage e2eDh SMP.ClientMsgEnvelope {cmNonce, cmEncBody} = do
             clientMsg <- liftEither $ agentCbDecrypt e2eDh cmNonce cmEncBody
-            SMP.ClientMessage privHeader clientBody <- parseMessage clientMsg
-            agentEnvelope <- parseMessage clientBody
+            SMP.ClientMessage privHeader clientBody <- parseMessage "5" clientMsg
+            agentEnvelope <- parseMessage "6" clientBody
             -- Version check is removed here, because when connecting via v1 contact address the agent still sends v2 message,
             -- to allow duplexHandshake mode, in case the receiving agent was updated to v2 after the address was created.
             -- aVRange <- asks $ smpAgentVRange . config
@@ -3683,8 +3683,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             --   else throwE $ AGENT A_VERSION
             pure (privHeader, agentEnvelope)
 
-          parseMessage :: Encoding a => ByteString -> AM a
-          parseMessage = liftEither . parse smpP (AGENT A_MESSAGE)
+          parseMessage :: Encoding a => String -> ByteString -> AM a
+          parseMessage cxt = liftEither . parse smpP (AGENT $ A_MESSAGE $ "parse message " <> cxt)
 
           -- checking agreed versions to continue connection in case of client/agent version downgrades
           checkConfVersions :: VersionSMPA -> VersionSMPC -> AM ()
@@ -3717,7 +3717,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     processConnInfo (rc, pqSupport') = do
                       (agentMsgBody_, rc') <- decryptConnInfo rc encConnInfo
                       case agentMsgBody_ of
-                        Right agentMsgBody -> parseMessage agentMsgBody >>= \case
+                        Right agentMsgBody -> parseMessage "1" agentMsgBody >>= \case
                           AgentConnInfoReply smpQueues connInfo | isNothing serviceRequestExpiresAt -> do
                             processConf rc' connInfo SMPConfirmation {senderKey, e2ePubKey, connInfo, smpReplyQueues = L.toList smpQueues, smpClientVersion = phVer}
                             withStore' c $ \db -> updateRcvMsgHash db connId 1 (InternalRcvId 0) (C.sha256Hash agentMsgBody)
@@ -3758,7 +3758,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 DuplexConnection _ (rq'@RcvQueue {smpClientVersion = v'} :| _) _ | isNothing e2eEncryption -> do
                   g <- asks random
                   (agentMsgBody, pqEncryption) <- withStore c $ \db -> runExceptT $ agentRatchetDecrypt g db connId encConnInfo
-                  parseMessage agentMsgBody >>= \case
+                  parseMessage "2" agentMsgBody >>= \case
                     AgentConnInfo connInfo -> do
                       notify $ INFO pqSupport connInfo
                       let dhSecret = C.dh' e2ePubKey e2ePrivKey
@@ -3969,7 +3969,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                       case agentMsgBody_ of
                         Right agentMsgBody -> do
                           let mkDR replyQueue = DRInvitation {ratchetState, replyQueue, agentVersion, pqSupport = connPQSupport}
-                          parseMessage agentMsgBody >>= \case
+                          parseMessage "3" agentMsgBody >>= \case
                             AgentConnInfoReply (replyQueue :| _) cInfo -> do
                               invId <- storeInvitation (CRInvitationDR $ mkDR replyQueue) cInfo False
                               notify $ REQ invId PQSupportOn (qServer replyQueue :| []) cInfo True
