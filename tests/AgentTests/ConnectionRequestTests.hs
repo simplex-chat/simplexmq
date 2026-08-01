@@ -146,8 +146,8 @@ connReqData1 = connReqData {crSmpQueues = [queue1]}
 connReqDataV1 :: ConnReqUriData
 connReqDataV1 = connReqData {crAgentVRange = mkVersionRange (VersionSMPA 1) (VersionSMPA 1)}
 
-connReqDataV2 :: ConnReqUriData
-connReqDataV2 = connReqData {crAgentVRange = mkVersionRange (VersionSMPA 2) (VersionSMPA 2)}
+connReqDataV6 :: ConnReqUriData
+connReqDataV6 = connReqData {crAgentVRange = mkVersionRange (VersionSMPA 6) (VersionSMPA 6)}
 
 connReqDataNew :: ConnReqUriData
 connReqDataNew = connReqData {crSmpQueues = [queueNew]}
@@ -200,8 +200,8 @@ contactConnRequest = CRContactUri connReqData Nothing
 contactAddressDR :: AConnectionRequestUri
 contactAddressDR = ACR SCMContact $ CRContactUri connReqData (Just (RatchetKeyId "0123456789abcdef", testE2ERatchetParams))
 
-contactAddressV2 :: AConnectionRequestUri
-contactAddressV2 = ACR SCMContact $ CRContactUri connReqDataV2 Nothing
+contactAddressV6 :: AConnectionRequestUri
+contactAddressV6 = ACR SCMContact $ CRContactUri connReqDataV6 Nothing
 
 contactAddressNew :: AConnectionRequestUri
 contactAddressNew = ACR SCMContact $ CRContactUri connReqDataNew Nothing
@@ -264,27 +264,27 @@ connectionRequestTests =
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im/3456-w==#/?v=1-1&dh=" <> url testDhKeyStr <> "&srv=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion")
       queueV1NoPort #== ("smp://1234-w==@smp.simplex.im,jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion/3456-w==#" <> testDhKeyStr)
     it "should serialize and parse connection invitations and contact addresses" $ do
-      connectionRequest #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest #== ("https://simplex.chat/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestNoQM #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStrNoQM <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest1 #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queue1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest2queues #==# ("simplex:/invitation#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestNew #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueNewStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestNew1 #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueNew1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequest2queuesNew #==# ("simplex:/invitation#/?v=2-7&smp=" <> url (queueNewStr <> ";" <> queueNewStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest #==# ("simplex:/invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest #== ("https://simplex.chat/invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNoQM #==# ("simplex:/invitation#/?v=6-8&smp=" <> url queueStrNoQM <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest1 #==# ("simplex:/invitation#/?v=6-8&smp=" <> url queue1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest2queues #==# ("simplex:/invitation#/?v=6-8&smp=" <> url (queueStr <> ";" <> queueStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNew #==# ("simplex:/invitation#/?v=6-8&smp=" <> url queueNewStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequestNew1 #==# ("simplex:/invitation#/?v=6-8&smp=" <> url queueNew1Str <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      connectionRequest2queuesNew #==# ("simplex:/invitation#/?v=6-8&smp=" <> url (queueNewStr <> ";" <> queueNewStr) <> "&e2e=" <> testE2ERatchetParamsStrUri)
       connectionRequestV1 #== ("https://simplex.chat/invitation#/?v=1&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
-      connectionRequestClientDataEmpty #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&data=" <> url "{}")
-      contactAddress #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr)
-      contactAddressDR #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&rk=MDEyMzQ1Njc4OWFiY2RlZg%3D%3D")
-      contactAddress #== ("https://simplex.chat/contact#/?v=2-7&smp=" <> url queueStr)
-      contactAddress2queues #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr))
-      contactAddressNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueNewStr)
-      contactAddress2queuesNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
-      contactAddressV2 #==# ("simplex:/contact#/?v=2&smp=" <> url queueStr)
-      contactAddressV2 #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
-      contactAddressV2 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
-      contactAddressV2 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
-      contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
+      connectionRequestClientDataEmpty #==# ("simplex:/invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&data=" <> url "{}")
+      contactAddress #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueStr)
+      contactAddressDR #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&rk=MDEyMzQ1Njc4OWFiY2RlZg%3D%3D")
+      contactAddress #== ("https://simplex.chat/contact#/?v=6-8&smp=" <> url queueStr)
+      contactAddress2queues #==# ("simplex:/contact#/?v=6-8&smp=" <> url (queueStr <> ";" <> queueStr))
+      contactAddressNew #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueNewStr)
+      contactAddress2queuesNew #==# ("simplex:/contact#/?v=6-8&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
+      contactAddressV6 #==# ("simplex:/contact#/?v=6&smp=" <> url queueStr)
+      contactAddressV6 #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
+      contactAddressV6 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
+      contactAddressV6 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
+      contactAddressClientData #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
       smpEncodingTest queue
       smpEncodingTest queueNoQM -- this passes, no queue mode patch in SMPQueueUri encoding
@@ -309,7 +309,7 @@ connectionRequestTests =
       smpEncodingTest (aBinaryConnReq contactAddress2queues)
       smpEncodingTest (aBinaryConnReq contactAddressNew)
       smpEncodingTest (aBinaryConnReq contactAddress2queuesNew)
-      smpEncodingTest (aBinaryConnReq contactAddressV2)
+      smpEncodingTest (aBinaryConnReq contactAddressV6)
       smpEncodingTest (aBinaryConnReq contactAddressClientData)
     it "should serialize / parse short links" $ do
       CSLContact SLSServer CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"

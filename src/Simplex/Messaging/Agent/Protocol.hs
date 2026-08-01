@@ -41,12 +41,8 @@ module Simplex.Messaging.Agent.Protocol
     VersionSMPA,
     VersionRangeSMPA,
     pattern VersionSMPA,
-    duplexHandshakeSMPAgentVersion,
-    ratchetSyncSMPAgentVersion,
-    deliveryRcptsSMPAgentVersion,
-    pqdrSMPAgentVersion,
-    sndAuthKeySMPAgentVersion,
     ratchetOnConfSMPAgentVersion,
+    rpcAddressSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -304,6 +300,7 @@ import UnliftIO.Exception (Exception)
 -- 5 - post-quantum double ratchet (3/14/2024)
 -- 6 - secure reply queues with provided keys (6/14/2024)
 -- 7 - initialize ratchet on processing confirmation (7/18/2024)
+-- 8 - agent RPC and double ratchet PQ encryption from first message to contact address (8/01/2026)   
 
 data SMPAgentVersion
 
@@ -316,29 +313,20 @@ type VersionRangeSMPA = VersionRange SMPAgentVersion
 pattern VersionSMPA :: Word16 -> VersionSMPA
 pattern VersionSMPA v = Version v
 
-duplexHandshakeSMPAgentVersion :: VersionSMPA
-duplexHandshakeSMPAgentVersion = VersionSMPA 2
-
-ratchetSyncSMPAgentVersion :: VersionSMPA
-ratchetSyncSMPAgentVersion = VersionSMPA 3
-
-deliveryRcptsSMPAgentVersion :: VersionSMPA
-deliveryRcptsSMPAgentVersion = VersionSMPA 4
-
-pqdrSMPAgentVersion :: VersionSMPA
-pqdrSMPAgentVersion = VersionSMPA 5
-
-sndAuthKeySMPAgentVersion :: VersionSMPA
-sndAuthKeySMPAgentVersion = VersionSMPA 6
+_sndAuthKeySMPAgentVersion :: VersionSMPA
+_sndAuthKeySMPAgentVersion = VersionSMPA 6
 
 ratchetOnConfSMPAgentVersion :: VersionSMPA
 ratchetOnConfSMPAgentVersion = VersionSMPA 7
 
+rpcAddressSMPAgentVersion :: VersionSMPA
+rpcAddressSMPAgentVersion = VersionSMPA 8
+
 minSupportedSMPAgentVersion :: VersionSMPA
-minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
+minSupportedSMPAgentVersion = _sndAuthKeySMPAgentVersion
 
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 7
+currentSMPAgentVersion = VersionSMPA 8
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
@@ -346,17 +334,17 @@ supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPA
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
-e2eEncConnInfoLength :: VersionSMPA -> PQSupport -> Int
-e2eEncConnInfoLength v = \case
+e2eEncConnInfoLength :: PQSupport -> Int
+e2eEncConnInfoLength = \case
   -- reduced by 3726 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 11106
-  _ -> 14832
+  PQSupportOn -> 11106
+  PQSupportOff -> 14832
 
-e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
-e2eEncAgentMsgLength v = \case
+e2eEncAgentMsgLength :: PQSupport -> Int
+e2eEncAgentMsgLength = \case
   -- reduced by 2222 (the increase of message ratchet header size)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 13618
-  _ -> 15840
+  PQSupportOn -> 13618
+  PQSupportOff -> 15840
 
 -- | SMP agent event
 type ATransmission = (ACorrId, AEntityId, AEvt)

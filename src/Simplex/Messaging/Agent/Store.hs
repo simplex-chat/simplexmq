@@ -475,8 +475,8 @@ type NoticeId = Int64
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
-ratchetSyncAllowed ConnData {ratchetSyncState, connAgentVersion} =
-  connAgentVersion >= ratchetSyncSMPAgentVersion && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
+ratchetSyncAllowed ConnData {ratchetSyncState} =
+  ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState])
 
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool
