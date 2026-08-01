@@ -1,4 +1,4 @@
-Version 3, 2025-01-24
+Version 4, 2026-08-08
 
 # SimpleX File Transfer Protocol
 
@@ -50,11 +50,12 @@ The objective of SimpleX File Transfer Protocol (XFTP) is to facilitate the secu
 
 XFTP is implemented as an application level protocol on top of HTTP2 and TLS.
 
-This document describes XFTP protocol version 3. The version history:
+This document describes XFTP protocol version 4. The version history:
 
 - v1: initial version
 - v2: authenticated commands - added basic auth support for commands
 - v3: blocked files - added BLOCKED error type for policy violations
+- v4: server public information in handshake
 
 The protocol describes the set of commands that senders and recipients can send to XFTP routers to create, upload, download and delete data packets of several pre-defined sizes. XFTP routers SHOULD support packets of 4 sizes: 64KB, 256KB, 1MB and 4MB (1KB = 1024 bytes, 1MB = 1024KB).
 
