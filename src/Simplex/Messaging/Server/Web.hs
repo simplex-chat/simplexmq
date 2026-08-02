@@ -270,14 +270,14 @@ serverInfoSubsts simplexmqSource information =
       ]
     admin ServerContactAddress {simplex, email, pgp} =
       [ ("admin", Just ""),
-        ("adminSimplex", strEncode <$> simplex),
+        ("adminSimplex", encodeUtf8 <$> simplex),
         ("adminEmail", encodeUtf8 <$> email),
         ("adminPGP", encodeUtf8 . pkURI <$> pgp),
         ("adminPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)
       ]
     complaints ServerContactAddress {simplex, email, pgp} =
       [ ("complaints", Just ""),
-        ("complaintsSimplex", strEncode <$> simplex),
+        ("complaintsSimplex", encodeUtf8 <$> simplex),
         ("complaintsEmail", encodeUtf8 <$> email),
         ("complaintsPGP", encodeUtf8 . pkURI <$> pgp),
         ("complaintsPGPFingerprint", encodeUtf8 . pkFingerprint <$> pgp)

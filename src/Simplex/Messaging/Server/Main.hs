@@ -59,7 +59,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
 import Options.Applicative
-import Simplex.Messaging.Agent.Protocol (ConnectionLink (..), connReqUriP')
+import Simplex.Messaging.Agent.Protocol (ConnectionLink (..), ConnectionMode (..), connReqUriP')
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (HostMode (..), NetworkConfig (..), ProtocolClientConfig (..), SMPWebPortServers (..), SocksMode (..), defaultNetworkConfig, textToHostMode)
@@ -85,7 +85,7 @@ import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupp
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
-import Simplex.Messaging.Util (eitherToMaybe, ifM)
+import Simplex.Messaging.Util (eitherToMaybe, ifM, safeDecodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
 import System.FilePath (combine)
@@ -787,12 +787,13 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
         <$!> infoValue nameField
     countryValue field = (either error id . validCountryValue (T.unpack field) . T.unpack) <$!> infoValue field
     iniContacts simplexField emailField pgpKeyUriField pgpKeyFingerprintField =
-      let simplex = either error id . parseAll linkP . encodeUtf8 <$!> eitherToMaybe (lookupValue "INFORMATION" simplexField ini)
+      let addr :: Maybe (ConnectionLink 'CMContact) = either error id . parseAll linkP . encodeUtf8 <$!> eitherToMaybe (lookupValue "INFORMATION" simplexField ini)
+          simplex = safeDecodeUtf8 . strEncode <$> addr
           linkP = CLFull <$> connReqUriP' Nothing <|> CLShort <$> strP
           email = infoValue emailField
           pkURI_ = infoValue pgpKeyUriField
           pkFingerprint_ = infoValue pgpKeyFingerprintField
-       in case (simplex, email, pkURI_, pkFingerprint_) of
+       in case (addr, email, pkURI_, pkFingerprint_) of
             (Nothing, Nothing, Nothing, _) -> Nothing
             (Nothing, Nothing, _, Nothing) -> Nothing
             (_, _, pkURI, pkFingerprint) -> Just ServerContactAddress {simplex, email, pgp = PGPKey <$> pkURI <*> pkFingerprint}

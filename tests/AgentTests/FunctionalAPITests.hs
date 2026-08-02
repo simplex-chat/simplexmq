@@ -105,6 +105,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
@@ -561,17 +562,17 @@ functionalAPITests ps = do
         it "auth both   " $ testBasicAuth ps True (Nothing, v) (Just "abcd", v) (Just "abcd", v) sqSecured baseId `shouldReturn` 2
         it "auth, disabled" $ testBasicAuth ps False (Nothing, v) (Just "abcd", v) (Just "abcd", v) sqSecured baseId `shouldReturn` 0
   describe "SMP server test via agent API" $ do
-    it "should pass without basic auth" $ testSMPServerConnectionTest ps Nothing (noAuthSrv testSMPServer2) `shouldReturn` Nothing
+    it "should pass without basic auth" $ testSMPServerConnectionTest ps Nothing (noAuthSrv testSMPServer2) `shouldReturn` Right (Just (Right testServerInformation))
     let srv1 = testSMPServer2 {keyHash = "1234"}
     it "should fail with incorrect fingerprint" $ do
-      testSMPServerConnectionTest ps Nothing (noAuthSrv srv1) `shouldReturn` Just (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
+      testSMPServerConnectionTest ps Nothing (noAuthSrv srv1) `shouldReturn` Left (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
     describe "server with password" $ do
       let auth = Just "abcd"
           srv = ProtoServerWithAuth testSMPServer2
-          authErr = Just (ProtocolTestFailure TSCreateQueue $ SMP (B.unpack $ strEncode testSMPServer2) AUTH)
-      it "should pass with correct password" $ testSMPServerConnectionTest ps auth (srv auth) `shouldReturn` Nothing
-      it "should fail without password" $ testSMPServerConnectionTest ps auth (srv Nothing) `shouldReturn` authErr
-      it "should fail with incorrect password" $ testSMPServerConnectionTest ps auth (srv $ Just "wrong") `shouldReturn` authErr
+          authErr = ProtocolTestFailure TSCreateQueue $ SMP (B.unpack $ strEncode testSMPServer2) AUTH
+      it "should pass with correct password" $ testSMPServerConnectionTest ps auth (srv auth) `shouldReturn` Right (Just (Right testServerInformation))
+      it "should fail without password" $ testSMPServerConnectionTest ps auth (srv Nothing) `shouldReturn` Left authErr
+      it "should fail with incorrect password" $ testSMPServerConnectionTest ps auth (srv $ Just "wrong") `shouldReturn` Left authErr
   describe "getRatchetAdHash" $
     it "should return the same data for both peers" $
       withSmpServer ps testRatchetAdHash
@@ -3326,8 +3327,8 @@ testWaitDeliveryAUTHErr ps =
     msgId = subtract baseId
 
 testWaitDeliveryTimeout :: (ASrvTransport, AStoreType) -> IO ()
-testWaitDeliveryTimeout ps =
-  withAgent 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB $ \alice ->
+testWaitDeliveryTimeout ps = do
+  aliceId <- withAgent 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB $ \alice ->
     withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> do
       (aliceId, bobId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
         (aliceId, bobId) <- makeConnection alice bob
@@ -3356,8 +3357,13 @@ testWaitDeliveryTimeout ps =
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
       liftIO $ threadDelay 100000
+      pure aliceId
 
-      withSmpServerStoreLogOn ps testPort $ \_ -> do
+  withAgent 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB $ \alice ->
+    withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> do
+      withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+        subscribeAllConnections alice False Nothing
+        subscribeAllConnections bob False Nothing
         nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
@@ -3921,14 +3927,28 @@ testCreateQueueAuth clnt1 clnt2 sqSecured baseId = do
           sndAuthAlg = C.AuthAlg C.SX25519
        in getSMPAgentClient' clientId agentCfg {smpCfg, sndAuthAlg} servers db
 
-testSMPServerConnectionTest :: (ASrvTransport, AStoreType) -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Maybe ProtocolTestFailure)
+testSMPServerConnectionTest :: (ASrvTransport, AStoreType) -> Maybe BasicAuth -> SMPServerWithAuth -> IO (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 testSMPServerConnectionTest (t, msType) newQueueBasicAuth srv =
   withSmpServerConfigOn t cfg' testPort2 $ \_ -> do
     -- initially passed server is not running
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
       testProtocolServer a NRMInteractive 1 srv
   where
-    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth}
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth, information = Just testServerInformation}
+
+testServerInformation :: ServerPublicInfo
+testServerInformation =
+  ServerPublicInfo
+    { sourceCode = "https://github.com/simplex-chat/simplexmq",
+      usageConditions = Nothing,
+      operator = Nothing,
+      website = Nothing,
+      adminContacts = Nothing,
+      complaintsContacts = Nothing,
+      hosting = Nothing,
+      hostingType = Nothing,
+      serverCountry = Nothing
+    }
 
 testRatchetAdHash :: HasCallStack => IO ()
 testRatchetAdHash =

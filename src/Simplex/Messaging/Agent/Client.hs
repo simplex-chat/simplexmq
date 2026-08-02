@@ -304,11 +304,12 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -1284,7 +1285,7 @@ data ProtocolTestFailure = ProtocolTestFailure
   }
   deriving (Eq, Show)
 
-runSMPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> SMPServerWithAuth -> AM' (Maybe ProtocolTestFailure)
+runSMPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> SMPServerWithAuth -> AM' (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
   C.AuthAlg ra <- asks $ rcvAuthAlg . config
@@ -1306,8 +1307,8 @@ runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
               _ -> secureSMPQueue smp nm rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp nm rpKey rcvId
         ok <- netTimeoutInt (tcpTimeout $ networkConfig cfg) nm `timeout` closeProtocolClient smp
-        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
-      Left e -> pure (Just $ testErr TSConnect e)
+        pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (thParams smp)) ok
+      Left e -> pure $ Left (testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
     testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
