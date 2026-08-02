@@ -3327,8 +3327,8 @@ testWaitDeliveryAUTHErr ps =
     msgId = subtract baseId
 
 testWaitDeliveryTimeout :: (ASrvTransport, AStoreType) -> IO ()
-testWaitDeliveryTimeout ps =
-  withAgent 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB $ \alice ->
+testWaitDeliveryTimeout ps = do
+  aliceId <- withAgent 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB $ \alice ->
     withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> do
       (aliceId, bobId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
         (aliceId, bobId) <- makeConnection alice bob
@@ -3357,8 +3357,13 @@ testWaitDeliveryTimeout ps =
         liftIO $ noMessages bob "nothing else should be delivered to bob"
 
       liftIO $ threadDelay 100000
+      pure aliceId
 
-      withSmpServerStoreLogOn ps testPort $ \_ -> do
+  withAgent 1 agentCfg {connDeleteDeliveryTimeout = 1, initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3} initAgentServers testDB $ \alice ->
+    withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> do
+      withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+        subscribeAllConnections alice False Nothing
+        subscribeAllConnections bob False Nothing
         nGet bob =##> \case ("", "", UP _ [cId]) -> cId == aliceId; _ -> False
         liftIO $ noMessages alice "nothing else should be delivered to alice"
         liftIO $ noMessages bob "nothing else should be delivered to bob"
