@@ -710,7 +710,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     newProxiedRelay (SMPConnectedClient smp prs) proxyAuth rv =
-      tryAllErrors (liftClient SMP (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
+      tryAllErrors (liftClient proxyRelayError (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
         Right sess -> do
           atomically $ putTMVar (sessionVar rv) (Right sess)
           pure $ Right sess
@@ -721,6 +721,18 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
               TM.delete destSess smpProxiedRelays
             putTMVar (sessionVar rv) (Left e)
             pure $ Left e
+      where
+        -- proxy reports BROKER errors about the relay, not about its own connection,
+        -- so they include both addresses, same as PFWD errors.
+        proxyRelayError :: HostName -> ErrorType -> AgentErrorType
+        proxyRelayError proxyHost = \case
+          e@(SMP.PROXY (SMP.BROKER _)) ->
+            PROXY
+              { proxyServer = protocolClientServer smp,
+                relayServer = B.unpack $ strEncode destSrv,
+                proxyErr = ProxyProtocolError e
+              }
+          e -> SMP proxyHost e
     waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     waitForProxiedRelay (_, srv, _) rv = do
       NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
