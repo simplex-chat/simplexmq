@@ -219,7 +219,7 @@ this workstream sits.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 100 examples. Everything is checked against
+`tests/CoreTests/EthCryptoTests.hs`, 98 examples. Everything is checked against
 published vectors rather than our own output:
 
 - **BIP-39** — all 24 official English vectors from
