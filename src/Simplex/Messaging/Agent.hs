@@ -3941,11 +3941,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             case conn' of
               ContactConnection {} -> do
                 -- show connection request even if invitaion via contact address is not compatible.
-                -- in case invitation not compatible, assume there is no PQ encryption support.
-                pqSupport <- lift $ PQSupportOn <$ compatibleInvitationUri connReq
                 invId <- storeInvitation (CRInvitation connReq) cInfo False
                 let srvs = L.map qServer $ crSmpQueues crData
-                notify $ REQ invId pqSupport srvs cInfo False
+                notify $ REQ invId PQSupportOn srvs cInfo False
               _ -> prohibited "inv: sent to message conn"
 
           storeInvitation :: ContactRequest -> ConnInfo -> Bool -> AM InvitationId

@@ -300,7 +300,7 @@ import UnliftIO.Exception (Exception)
 -- 5 - post-quantum double ratchet (3/14/2024)
 -- 6 - secure reply queues with provided keys (6/14/2024)
 -- 7 - initialize ratchet on processing confirmation (7/18/2024)
--- 8 - agent RPC and double ratchet PQ encryption from first message to contact address (8/01/2026)   
+-- 8 - agent RPC and double ratchet PQ encryption from first message to contact address (8/01/2026)
 
 data SMPAgentVersion
 

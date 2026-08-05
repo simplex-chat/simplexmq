@@ -47,7 +47,7 @@ agentTests ps = do
 #else
   do
 #endif
-    fdescribe "Functional API" $ functionalAPITests ps
+    describe "Functional API" $ functionalAPITests ps
     describe "Chosen servers" serverChoiceTests
 #if defined(dbServerPostgres)
     around_ (postgressBracket ntfTestServerDBConnectInfo) $

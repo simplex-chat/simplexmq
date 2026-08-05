@@ -26,7 +26,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), SubscriptionMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
+import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Version
 import Test.Hspec hiding (fit, it)
@@ -159,10 +159,10 @@ testDhPubKey :: C.PublicKeyX448
 testDhPubKey = "MEIwBQYDK2VvAzkAmKuSYeQ/m0SixPDS8Wq8VBaTS1cW+Lp0n0h4Diu+kUpR+qXx4SDJ32YGEFoGFGSbGPry5Ychr6U="
 
 testE2ERatchetParams :: RcvE2ERatchetParamsUri 'C.X448
-testE2ERatchetParams = E2ERatchetParamsUri (mkVersionRange (VersionE2E 1) (VersionE2E 1)) testDhPubKey testDhPubKey Nothing
+testE2ERatchetParams = E2ERatchetParamsUri (mkVersionRange (VersionE2E 3) (VersionE2E 3)) testDhPubKey testDhPubKey Nothing
 
 testE2ERatchetParamsStrUri :: ByteString
-testE2ERatchetParamsStrUri = "v%3D1%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+testE2ERatchetParamsStrUri = "v%3D3%26x3dh%3DMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
 
 testE2ERatchetParams12 :: RcvE2ERatchetParamsUri 'C.X448
 testE2ERatchetParams12 = E2ERatchetParamsUri supportedE2EEncryptVRange testDhPubKey testDhPubKey Nothing
@@ -281,8 +281,8 @@ connectionRequestTests =
       contactAddressNew #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueNewStr)
       contactAddress2queuesNew #==# ("simplex:/contact#/?v=6-8&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
       contactAddressV6 #==# ("simplex:/contact#/?v=6&smp=" <> url queueStr)
-      contactAddressV6 #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
-      contactAddressV6 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
+      contactAddressV6 #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v6
+      contactAddressV6 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v6
       contactAddressV6 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
       contactAddressClientData #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
