@@ -1,3 +1,12 @@
+# Unreleased
+
+Crypto:
+- Ethereum primitives for SimpleX names: secp256k1 with public key
+  recovery (vendored libsecp256k1), BIP-39 mnemonics, BIP-32 key derivation,
+  Keccak-256, EIP-55 addresses and EIP-712 typed data hashing. Client-side
+  signing only - no transaction construction and no chain writes; the resolver
+  path remains read-only. See `plans/2026-08-05-eth-crypto-bindings.md`.
+
 # 6.5.1
 
 Version 6.5.1.0
