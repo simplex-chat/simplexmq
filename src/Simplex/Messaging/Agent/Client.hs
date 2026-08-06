@@ -730,7 +730,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
             PROXY
               { proxyServer = protocolClientServer smp,
                 relayServer = B.unpack $ strEncode destSrv,
-                proxyErr = ProxyResponseError e
+                proxyErr = ProxyProtocolError e
               }
           e -> SMP proxyHost e
     waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
