@@ -212,10 +212,44 @@ there only force `packages.simplexmq.components.library.libs` (external
 libraries, i.e. openssl for `extra-libraries: crypto`) and flags. Vendored
 `c-sources` need no nix entry, which is why blst and libbbs have none either.
 
-**Cross-compilation is unproven.** This has been built and tested on x86-64
-Linux only. iOS arm64 and the simulator, the Android ABIs, and the Windows
-desktop build all still need proving, and that is where the remaining risk in
-this workstream sits.
+### Cross-compilation status
+
+Verified by building simplex-chat through its flake:
+
+| Target | Result |
+|---|---|
+| `x86_64-linux` (native, nix) | compiles and links |
+| `aarch64-android` | **compiles and links** into the final shared object |
+| `armv7a-android` | libsecp256k1 compiles; final link not reached (see below) |
+| `x86_64-windows` (mingw) | blocked before our code — see below |
+| `aarch64-darwin-ios` | not yet run (needs a darwin host) |
+
+`aarch64-android` is the meaningful pass: it proves the C both cross-compiles
+and links into the artifact the app actually ships.
+
+`armv7a-android` gets far enough to prove the 32-bit path compiles — that is,
+libsecp256k1's `SECP256K1_WIDEMUL_INT64` fallback builds under the NDK — but the
+build then dies in simplex-chat's own `Simplex.Chat.Operators`, on the
+`$(embedFile "PRIVACY.md")` splice. Cross-compiled Template Haskell runs the
+splice on the target via `iserv-proxy` under `qemu-arm`, and that interpreter
+fails to resolve `realpath` out of `libHSdirectory` and segfaults. It is
+unrelated to this work: none of these modules use Template Haskell, and
+simplexmq (which does) builds for armv7a fine. So 32-bit *linking* remains
+unproven, though there is no plausible mechanism by which it would fail given
+aarch64 links and the 32-bit objects compile.
+
+`x86_64-windows` fails while bootstrapping the mingw cross-GHC, long before any
+of our code is considered: haskell.nix applies
+`ghc-9.6-fix-code-symbol-jumps.patch` to `rts/linker/PEi386.c` twice from the
+same store path, and the second application aborts. That is a duplicate entry in
+the patch list of the pinned haskell.nix branch
+(`github:input-output-hk/haskell.nix/armv7a`), not something this change can
+influence.
+
+Both gaps can be closed without GHC by compiling the three C files with the
+cross toolchain directly and linking a program that calls into both the core and
+the recovery module — that isolates the C question from the Haskell build
+entirely.
 
 ## Tests
 
