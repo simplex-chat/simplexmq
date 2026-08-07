@@ -341,8 +341,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   secureQueue st sq sKey =
     withQueueRec sq "secureQueue" $ \q -> do
       verify q
-      -- `verify` checks a snapshot of the queue record that a concurrent command may have
-      -- invalidated, so the update repeats the check atomically - the loser matches no rows.
       assertUpdated $ withDB' "secureQueue" st $ \db ->
         DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR sender_key = ?)" (sKey, rId, sKey)
       atomically $ writeTVar (queueRec sq) $ Just q {senderKey = Just sKey}
