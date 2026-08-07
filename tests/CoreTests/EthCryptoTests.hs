@@ -26,6 +26,7 @@ import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Eth.Address
 import Simplex.Messaging.Eth.EIP712
 import Simplex.Messaging.Eth.Keccak (keccak256)
+import Simplex.Messaging.Eth.Stealth
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -38,6 +39,7 @@ ethCryptoTests = do
   describe "BIP-44 derivation" derivationTests
   describe "EIP-55 addresses" eip55Tests
   describe "EIP-712 typed data" eip712Tests
+  describe "ERC-5564 stealth addresses" stealthTests
 
 -- helpers
 
@@ -396,3 +398,105 @@ bip39Vectors =
       "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold",
       "01f5bced59dec48e362f2c45b5de68b9fd6c92c6634f44d6d40aab69056506f0e35524a518034ddc1192e1dacd32c1ed3eaa3c3b131c88ed8e7e54c49a5d0998" )
   ]
+
+-- ERC-5564 stealth addresses.
+--
+-- The EIP fixes the algebra but not the serialization or the hash, so the
+-- pinned vector below is the interoperability contract: it follows the EIP
+-- author's reference implementation (keccak256 over the shared secret point as
+-- x||y, view tag = first byte). Anything that changes it breaks compatibility
+-- with every other ERC-5564 wallet, which is why it is pinned rather than
+-- computed.
+stealthTests :: Spec
+stealthTests = do
+  it "sender and recipient derive the same address" $ do
+    let d = right $ stealthDestination ephemeralKey aliceMeta
+    right (stealthMatch aliceView (smaSpend aliceMeta) (sdEphemeralPubKey d) (sdViewTag d))
+      `shouldBe` Just (sdAddress d)
+
+  it "the recipient's derived key controls that address" $ do
+    let d = right $ stealthDestination ephemeralKey aliceMeta
+        sk = right $ stealthPrivateKey aliceSpend aliceView (sdEphemeralPubKey d)
+    addressFromPrivateKey sk `shouldBe` sdAddress d
+
+  it "the derived key actually signs for it" $ do
+    let d = right $ stealthDestination ephemeralKey aliceMeta
+        sk = right $ stealthPrivateKey aliceSpend aliceView (sdEphemeralPubKey d)
+        digest = keccak256 "transfer"
+        sig = right $ S.signRecoverable sk digest
+    addressFromPublicKey (right $ S.recoverPublicKey sig digest) `shouldBe` sdAddress d
+
+  it "the view tag is the first byte of the hashed shared secret" $ do
+    let d = right $ stealthDestination ephemeralKey aliceMeta
+        sh = right $ sharedSecretHash aliceView (right . S.parsePublicKey $ sdEphemeralPubKey d)
+    sdViewTag d `shouldBe` B.head sh
+
+  it "a different ephemeral key gives an unrelated address" $ do
+    let d1 = right $ stealthDestination ephemeralKey aliceMeta
+        d2 = right $ stealthDestination ephemeralKey2 aliceMeta
+    sdAddress d1 `shouldNotBe` sdAddress d2
+
+  it "the viewing key alone does not spend" $ do
+    -- Using the viewing key where the spending key belongs must not produce the
+    -- address: this is what makes delegated scanning safe.
+    let d = right $ stealthDestination ephemeralKey aliceMeta
+        wrong = right $ stealthPrivateKey aliceView aliceView (sdEphemeralPubKey d)
+    addressFromPrivateKey wrong `shouldNotBe` sdAddress d
+
+  it "another recipient never matches, over a batch of announcements" $ do
+    -- Bob scans 512 announcements addressed to Alice. About two will pass the
+    -- one-byte view tag by chance; none may yield an address Bob controls.
+    let ds = [right $ stealthDestination (ephemeralN i) aliceMeta | i <- [1 .. 512 :: Int]]
+        matches =
+          [ a
+            | d <- ds,
+              Just a <- [right $ stealthMatch bobView (smaSpend bobMeta) (sdEphemeralPubKey d) (sdViewTag d)]
+          ]
+    filter (`elem` map sdAddress ds) matches `shouldBe` []
+
+  it "the recipient finds their own in the same batch" $ do
+    let ds = [right $ stealthDestination (ephemeralN i) aliceMeta | i <- [1 .. 64 :: Int]]
+        found =
+          [ a
+            | d <- ds,
+              Just a <- [right $ stealthMatch aliceView (smaSpend aliceMeta) (sdEphemeralPubKey d) (sdViewTag d)]
+          ]
+    found `shouldBe` map sdAddress ds
+
+  it "agrees with an independent implementation of the scheme" $ do
+    -- Cross-checked against a from-scratch pure-Python secp256k1 implementing
+    -- the reference algorithm directly (scratchpad @stealth_ref.py@), sharing
+    -- no code with libsecp256k1. Agreement here is what makes this an
+    -- interoperability vector rather than a record of our own output.
+    let d = right $ stealthDestination ephemeralKey aliceMeta
+    checksumAddress (sdAddress d) `shouldBe` "0xbC287a4f0345cD7Fea8d523fBa25Aec4f0B29a6c"
+    toHex (sdEphemeralPubKey d) `shouldBe` "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b"
+    sdViewTag d `shouldBe` 224
+
+  describe "meta-address encoding" $ do
+    it "round-trips" $
+      parseMetaAddress (metaAddressBytes aliceMeta) `shouldBe` Right aliceMeta
+    it "is 66 bytes, spending key first" $ do
+      let bs = metaAddressBytes aliceMeta
+      B.length bs `shouldBe` 66
+      B.take 33 bs `shouldBe` S.serializePublicKey S.Compressed (smaSpend aliceMeta)
+    it "rejects a wrong length" $
+      parseMetaAddress (B.take 65 $ metaAddressBytes aliceMeta) `shouldSatisfy` isLeft
+    it "rejects points not on the curve" $
+      parseMetaAddress (B.replicate 66 0xAA) `shouldSatisfy` isLeft
+
+aliceSpend, aliceView, bobSpend, bobView, ephemeralKey, ephemeralKey2 :: S.PrivateKey
+aliceSpend = right $ S.mkPrivateKey (hx "1111111111111111111111111111111111111111111111111111111111111111")
+aliceView = right $ S.mkPrivateKey (hx "2222222222222222222222222222222222222222222222222222222222222222")
+bobSpend = right $ S.mkPrivateKey (hx "3333333333333333333333333333333333333333333333333333333333333333")
+bobView = right $ S.mkPrivateKey (hx "4444444444444444444444444444444444444444444444444444444444444444")
+ephemeralKey = right $ S.mkPrivateKey (hx "5555555555555555555555555555555555555555555555555555555555555555")
+ephemeralKey2 = right $ S.mkPrivateKey (hx "6666666666666666666666666666666666666666666666666666666666666666")
+
+aliceMeta, bobMeta :: StealthMetaAddress
+aliceMeta = metaAddress aliceSpend aliceView
+bobMeta = metaAddress bobSpend bobView
+
+-- Distinct ephemeral keys for batch tests.
+ephemeralN :: Int -> S.PrivateKey
+ephemeralN i = right . S.mkPrivateKey . keccak256 . BC.pack $ "ephemeral " <> show i

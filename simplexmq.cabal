@@ -152,6 +152,7 @@ library
       Simplex.Messaging.Eth.Address
       Simplex.Messaging.Eth.EIP712
       Simplex.Messaging.Eth.Keccak
+      Simplex.Messaging.Eth.Stealth
       Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol

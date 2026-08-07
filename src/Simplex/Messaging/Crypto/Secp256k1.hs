@@ -28,6 +28,8 @@ module Simplex.Messaging.Crypto.Secp256k1
     parsePublicKey,
     serializePublicKey,
     privateKeyTweakAdd,
+    publicKeyTweakMul,
+    publicKeyTweakAdd,
     signRecoverable,
     recoverPublicKey,
     isLowS,
@@ -146,6 +148,11 @@ foreign import ccall "secp256k1_ec_pubkey_serialize"
 
 foreign import ccall "secp256k1_ec_seckey_tweak_add"
   c_ec_seckey_tweak_add :: Ptr Ctx -> Ptr Word8 -> Ptr Word8 -> IO CInt
+
+foreign import ccall "secp256k1_ec_pubkey_tweak_mul"
+  c_ec_pubkey_tweak_mul :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
+foreign import ccall "secp256k1_ec_pubkey_tweak_add"
+  c_ec_pubkey_tweak_add :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
 
 foreign import ccall "secp256k1_ecdsa_sign_recoverable"
   c_ecdsa_sign_recoverable :: Ptr Ctx -> Ptr RecSigRaw -> Ptr Word8 -> Ptr Word8 -> Ptr () -> Ptr () -> IO CInt
@@ -278,6 +285,36 @@ privateKeyTweakAdd (PrivateKey sk) tweak
           rc <- c_ec_seckey_tweak_add secp256k1Ctx skPtr twPtr
           if rc == 1
             then Just . PrivateKey <$> packPtr skPtr privateKeySize
+            else pure Nothing
+
+-- | @tweak * P@. The scalar multiplication behind an ECDH shared secret.
+--
+-- Deliberately exposed instead of @secp256k1_ecdh@: that function hashes the
+-- resulting point with SHA-256, while ERC-5564 hashes it with keccak256 over
+-- the uncompressed coordinates. Returning the point leaves the hash to the
+-- caller.
+--
+-- 'Nothing' when the tweak is zero or out of range.
+publicKeyTweakMul :: PublicKey -> ByteString -> Maybe PublicKey
+publicKeyTweakMul = tweakPubKey c_ec_pubkey_tweak_mul
+
+-- | @P + tweak * G@, the point addition stealth address derivation needs.
+--
+-- 'Nothing' when the tweak is out of range or the result is the point at
+-- infinity.
+publicKeyTweakAdd :: PublicKey -> ByteString -> Maybe PublicKey
+publicKeyTweakAdd = tweakPubKey c_ec_pubkey_tweak_add
+
+tweakPubKey :: (Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt) -> PublicKey -> ByteString -> Maybe PublicKey
+tweakPubKey f pk tweak
+  | B.length tweak /= privateKeySize = Nothing
+  | otherwise = unsafePerformIO $
+      allocaBytes pubKeyInternalSize $ \pkPtr ->
+        withBS tweak $ \twPtr -> do
+          withPubKeyRaw pk $ \src -> copyBytes (castPtr pkPtr) (castPtr src) pubKeyInternalSize
+          rc <- f secp256k1Ctx pkPtr twPtr
+          if rc == 1
+            then Just . PublicKey <$> packPtr (castPtr pkPtr) pubKeyInternalSize
             else pure Nothing
 
 -- | Sign a 32-byte digest. Deterministic (RFC 6979) and always low-@s@.

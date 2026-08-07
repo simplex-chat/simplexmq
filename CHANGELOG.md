@@ -6,6 +6,10 @@ Crypto:
   Keccak-256, EIP-55 addresses and EIP-712 typed data hashing. Client-side
   signing only - no transaction construction and no chain writes; the resolver
   path remains read-only. See `plans/2026-08-05-eth-crypto-bindings.md`.
+- ERC-5564 stealth addresses (`Simplex.Messaging.Eth.Stealth`): a recipient
+  publishes a spend/view meta-address, a sender derives a one-time address from
+  it non-interactively, and only the recipient can find or spend from it. Adds
+  `publicKeyTweakMul` and `publicKeyTweakAdd` to the secp256k1 bindings.
 
 # 6.5.1
 

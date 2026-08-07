@@ -275,3 +275,51 @@ published vectors rather than our own output:
 The EIP-712 and BIP-44 expectations were additionally reproduced by an
 independent pure-Python secp256k1 reference written for the purpose, so they are
 not just our implementation agreeing with itself.
+
+## Addendum: ERC-5564 stealth addresses
+
+`Simplex.Messaging.Eth.Stealth`, added for the names v2 gifting flow (rc3 §7.4).
+A recipient publishes a meta-address — a spending public key and a viewing
+public key — and a sender derives a one-time destination from it with no
+handshake. Only the viewing key finds those destinations; only the spending key
+spends from them.
+
+### Why not `secp256k1_ecdh`
+
+The ECDH module hashes the shared secret point with SHA-256 and offers no way to
+substitute a hash without a C callback. ERC-5564 hashes with keccak256. So the
+module stays disabled and the two core-API point operations are bound instead:
+
+- `secp256k1_ec_pubkey_tweak_mul` → `publicKeyTweakMul`, for `r · P_view`
+- `secp256k1_ec_pubkey_tweak_add` → `publicKeyTweakAdd`, for `P_spend + s_h · G`
+
+Both are in `secp256k1.h`, so no build flag changed. The recipient's key,
+`p_spend + s_h`, reuses the existing `privateKeyTweakAdd`.
+
+### The parts the EIP does not specify
+
+ERC-5564 fixes the algebra but not the encoding, and getting either wrong
+produces a wallet that is self-consistent and interoperable with nothing. From
+the EIP author's reference implementation
+(`Nerolation/EIP-Stealth-Address-ERC`, `minimal_poc.ipynb`):
+
+- the shared secret point is serialized **uncompressed with the SEC1 prefix
+  removed**, `x || y`, 64 bytes;
+- it is hashed with **keccak256**;
+- the **view tag is the first byte** of that hash.
+
+That is the same encoding Ethereum uses to turn a public key into an address, so
+`addressFromPublicKey` performs the final step unchanged.
+
+### Tests
+
+13 examples in `CoreTests.EthCryptoTests`, 111 in the module overall. Beyond the
+round-trip and negative cases, two carry the weight:
+
+- **Batch scanning.** A recipient scans 512 announcements addressed to someone
+  else; about two pass the one-byte view tag by chance and none yields an address
+  they control. The complementary test confirms they find all 64 of their own.
+  This exercises the scan loop rather than a single derivation.
+- **Independent agreement.** The pinned vector was reproduced by a from-scratch
+  pure-Python secp256k1 implementing the reference algorithm directly, sharing no
+  code with libsecp256k1. Without that, a pin only records our own output.
