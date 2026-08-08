@@ -23,6 +23,7 @@ async function main() {
     })
   }
   await wasmReady
+// Allow parent elements/document to listen for readiness event via event bubbling
   app?.dispatchEvent(new CustomEvent('xftp:ready', {bubbles: true}))
 }
 
@@ -42,7 +43,7 @@ function initApp() {
     initUpload(app)
   }
 }
-
+// Expose manual init hook for embedded/widget-based integrations
 ;(window as any).__xftp_initApp = async () => { await wasmReady; initApp() }
 
 main().catch(err => {
