@@ -45,9 +45,9 @@ WORKDIR /project
 ARG APP
 RUN if [ -z "$APP" ]; then printf "Please spcify \$APP build-arg.\n"; exit 1; fi
 
-# Compile app
+# Compile app (optimized for release images)
 RUN cabal update
-RUN cabal build exe:$APP
+RUN cabal build exe:$APP -foptimize
 
 # Copy scripts
 COPY scripts /project/scripts/
