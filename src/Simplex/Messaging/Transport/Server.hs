@@ -139,6 +139,7 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
       sniUsed <- newTVarIO False
       let srvParams = supportedTLSServerParams srvSupported srvCreds sniUsed $ serverALPN cfg
       h <- setupTLS_ srvParams
+      logWarn $ "ALPN: server negotiated " <> tshow (getSessionALPN h)
       sni <- readTVarIO sniUsed
       pure (sni, h)
       where
@@ -266,7 +267,13 @@ supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCre
               Just sniCred -> \case
                 Nothing -> pure $ T.Credentials [credential]
                 Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True),
-            T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
+            T.onALPNClientSuggest =
+              ( \alpn protos -> do
+                  let proto = fromMaybe "" $ find (`elem` alpn) protos
+                  logWarn $ "ALPN: client offered " <> tshow protos <> ", server selected " <> tshow proto
+                  pure proto
+              )
+                <$> alpn_
           },
       T.serverSupported = serverSupported
     }

@@ -29,7 +29,7 @@ module Simplex.Messaging.Transport.Client
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Logger.Simple (logError)
+import Control.Logger.Simple (logError, logWarn)
 import Control.Monad
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -181,7 +181,9 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     tls <- set CHContext $ connectTLS (Just hostName) tCfg clientParams sock
     chain <- takePeerCertChain serverCert
     sent <- readIORef clientCredsSent
-    client =<< set CHTransport (getTransportConnection tCfg sent chain tls)
+    c <- set CHTransport (getTransportConnection tCfg sent chain tls)
+    logWarn $ "ALPN: client negotiated " <> tshow (getSessionALPN c)
+    client c
   where
     closeConn = readIORef >=> mapM_ (\c -> E.uninterruptibleMask_ $ closeConn_ c `catchAll_` pure ())
     closeConn_ = \case
@@ -294,7 +296,7 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ clientCredsSen
         def
           { T.onServerCertificate = onServerCert,
             T.onCertificateRequest = onCertRequest,
-            T.onSuggestALPN = pure alpn_
+            T.onSuggestALPN = alpn_ <$ logWarn ("ALPN: client offering " <> tshow alpn_)
           },
       T.clientSupported = supported
     }
