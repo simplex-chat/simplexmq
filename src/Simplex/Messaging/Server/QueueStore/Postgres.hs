@@ -342,7 +342,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     withQueueRec sq "secureQueue" $ \q -> do
       verify q
       assertUpdated $ withDB' "secureQueue" st $ \db ->
-        DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL" (sKey, rId)
+        DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR sender_key = ?)" (sKey, rId, sKey)
       atomically $ writeTVar (queueRec sq) $ Just q {senderKey = Just sKey}
       withLog "secureQueue" st $ \s -> logSecureQueue s rId sKey
     where

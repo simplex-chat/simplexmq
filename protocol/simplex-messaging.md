@@ -1,4 +1,4 @@
-Version 20, 2026-05-25
+Version 21, 2026-07-05
 
 # Simplex Messaging Protocol (SMP)
 
@@ -107,6 +107,7 @@ This document describes SMP protocol version 20. Versions 1-5 are discontinued. 
 - v18: support client notices in BLOCKED error
 - v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
 - v20: public namespaces resolver (RSLV command, RNAME response) — direct or forwarded via PFWD
+- v21: server public information in handshake
 
 ## Introduction
 

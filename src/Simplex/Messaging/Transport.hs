@@ -169,7 +169,8 @@ smpBlockSize = 16384
 -- 17 - create notification credentials with NEW (7/12/2025)
 -- 18 - support client notices (10/10/2025)
 -- 19 - service subscriptions to messages (10/20/2025)
--- 20 - server public information in handshake (7/5/2026)
+-- 20 - public namespaces resolver, RSLV command (6/20/2026)
+-- 21 - server public information in handshake (7/5/2026)
 
 data SMPVersion
 
@@ -204,7 +205,7 @@ namesSMPVersion :: VersionSMP
 namesSMPVersion = VersionSMP 20
 
 serverInfoSMPVersion :: VersionSMP
-serverInfoSMPVersion = VersionSMP 20
+serverInfoSMPVersion = VersionSMP 21
 
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
@@ -213,10 +214,10 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 20
+currentClientSMPRelayVersion = VersionSMP 21
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 20
+currentServerSMPRelayVersion = VersionSMP 21
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
