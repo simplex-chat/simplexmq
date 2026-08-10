@@ -641,13 +641,15 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(DeviceToken pp _)} ntf =
+pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
   ifM
     (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (getOrCreatePushWorker s (srvHost_, pp, pushTokenShardId 8 tkn) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
-  where
-    pushWorkersPerServer = 8
+
+pushTokenShardId :: Int -> NtfTknRec -> Int
+pushTokenShardId pushWorkersPerServer NtfTknRec {ntfTknId} =
+  hash (unEntityId ntfTknId) `mod` pushWorkersPerServer
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
@@ -707,7 +709,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
     deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf' = do
-      (deliver, clientVar) <- getPushClient s pp
+      (deliver, clientVar) <- getPushClient s pp tokenShardId
       runExceptT (deliver tkn ntf') >>= \case
         Right _ -> pure $ Right ()
         Left e -> case e of
@@ -720,11 +722,12 @@ runPushWorker s srvHost_ isOwn q = forever $ do
             err e
           PPPermanentError -> err e
       where
+        tokenShardId = pushTokenShardId 8 tkn
         retryDeliver :: PushClientVar -> Text -> IO (Either PushProviderError ())
         retryDeliver oldVar reason = do
           logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
-          atomically $ removeSessVar oldVar pp (pushClients s)
-          (deliver, _) <- getPushClient s pp
+          atomically $ removeSessVar oldVar (pp, tokenShardId) (pushClients s)
+          (deliver, _) <- getPushClient s pp tokenShardId
           runExceptT (deliver tkn ntf') >>= \case
             Right _ -> pure $ Right ()
             Left e -> case e of
