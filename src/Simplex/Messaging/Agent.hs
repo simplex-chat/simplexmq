@@ -207,6 +207,7 @@ import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
 import Simplex.Messaging.Agent.Store.Shared (UpMigration (..), upMigration)
+import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client (NetworkRequestMode (..), ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
@@ -675,11 +676,11 @@ getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 {-# INLINE getConnectionRatchetAdHash #-}
 
 -- | Test protocol server
-testProtocolServer :: forall p. ProtocolTypeI p => AgentClient -> NetworkRequestMode -> UserId -> ProtoServerWithAuth p -> IO (Maybe ProtocolTestFailure)
+testProtocolServer :: forall p. ProtocolTypeI p => AgentClient -> NetworkRequestMode -> UserId -> ProtoServerWithAuth p -> IO (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPSMP -> runSMPServerTest c nm userId srv
-  SPXFTP -> runXFTPServerTest c nm userId srv
-  SPNTF -> runNTFServerTest c nm userId srv
+  SPXFTP -> maybe (Right Nothing) Left <$> runXFTPServerTest c nm userId srv
+  SPNTF -> maybe (Right Nothing) Left <$> runNTFServerTest c nm userId srv
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network
 setNetworkConfig :: AgentClient -> NetworkConfig -> AE ()

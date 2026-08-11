@@ -56,6 +56,7 @@ import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first, second)
+import qualified Data.Aeson as J
 import Data.ByteString.Base64 (encode)
 import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
@@ -739,9 +740,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       idSize <- asks $ queueIdBytes . config
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
-      ServerConfig {smpServerVRange, smpHandshakeTimeout} <- asks config
+      ServerConfig {smpServerVRange, smpHandshakeTimeout, information} <- asks config
+      let serverInfo = LB.toStrict . J.encode <$> information
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange $ getClientService ms g idSize) >>= \case
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
         Just (Right th) -> runClientTransport th
         _ -> pure ()
 

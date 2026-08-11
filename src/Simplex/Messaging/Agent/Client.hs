@@ -304,11 +304,12 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -713,7 +714,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     newProxiedRelay (SMPConnectedClient smp prs) proxyAuth rv =
-      tryAllErrors (liftClient SMP (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
+      tryAllErrors (liftClient proxyRelayError (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
         Right sess -> do
           atomically $ putTMVar (sessionVar rv) (Right sess)
           pure $ Right sess
@@ -724,6 +725,18 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
               TM.delete destSess smpProxiedRelays
             putTMVar (sessionVar rv) (Left e)
             pure $ Left e
+      where
+        -- proxy reports BROKER errors about the relay, not about its own connection,
+        -- so they include both addresses, same as PFWD errors.
+        proxyRelayError :: HostName -> ErrorType -> AgentErrorType
+        proxyRelayError proxyHost = \case
+          e@(SMP.PROXY (SMP.BROKER _)) ->
+            PROXY
+              { proxyServer = protocolClientServer smp,
+                relayServer = B.unpack $ strEncode destSrv,
+                proxyErr = ProxyProtocolError e
+              }
+          e -> SMP proxyHost e
     waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     waitForProxiedRelay (_, srv, _) rv = do
       NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
@@ -1284,7 +1297,7 @@ data ProtocolTestFailure = ProtocolTestFailure
   }
   deriving (Eq, Show)
 
-runSMPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> SMPServerWithAuth -> AM' (Maybe ProtocolTestFailure)
+runSMPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> SMPServerWithAuth -> AM' (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth srv auth) = do
   cfg <- getClientConfig c smpCfg
   C.AuthAlg ra <- asks $ rcvAuthAlg . config
@@ -1306,8 +1319,8 @@ runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
               _ -> secureSMPQueue smp nm rpKey rcvId sKey
           liftError (testErr TSDeleteQueue) $ deleteSMPQueue smp nm rpKey rcvId
         ok <- netTimeoutInt (tcpTimeout $ networkConfig cfg) nm `timeout` closeProtocolClient smp
-        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
-      Left e -> pure (Just $ testErr TSConnect e)
+        pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (thParams smp)) ok
+      Left e -> pure $ Left (testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
     testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
