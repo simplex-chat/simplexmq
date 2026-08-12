@@ -9,10 +9,11 @@ import Simplex.FileTransfer.Client.Main
     xftpClientDeprecationNotice,
   )
 import Simplex.FileTransfer.Description (kb, mb)
+import Simplex.FileTransfer.Util (safeFileNameStr, uniqueCombine)
 import System.Directory (createDirectoryIfMissing, getFileSize, listDirectory, removeDirectoryRecursive)
 import System.Environment (withArgs)
 import System.Exit (ExitCode (ExitSuccess))
-import System.FilePath ((</>))
+import System.FilePath (takeFileName, (</>))
 import System.IO.Silently (capture, capture_)
 import Test.Hspec hiding (fit, it)
 import Util
@@ -29,6 +30,18 @@ xftpCLIFileTests = around_ testBracket $ do
   it "should delete file from 2 servers" $ \fsType ->
     withXFTPServerConfigOn (cfgFS fsType) $ \_ -> withXFTPServerConfigOn (cfgFS2 fsType) $ \_ -> testXFTPCLIDelete_
   it "prepareChunkSizes should use 2 chunk sizes" $ \_ -> testPrepareChunkSizes
+  describe "received file name" $ do
+    it "sanitizes any name to a real file name" $ \_ ->
+      filter (not . sanitized) fileNames `shouldBe` []
+    it "sanitizes to a name with no directory components" $ \_ ->
+      filter (not . bareName) fileNames `shouldBe` []
+    it "combines a sanitized name inside the destination folder" $ \_ ->
+      testReceivedFileNameCombine
+  where
+    fileNames :: [FilePath]
+    fileNames = ["", ".", "..", "...", "../x", "../../etc/passwd", "/etc/cron.d/x", "a/b", "x/", "test.pdf", ".hidden", "a b.tar.gz"]
+    sanitized n = let n' = safeFileNameStr n in n' /= "" && n' /= "." && n' /= ".."
+    bareName n = let n' = safeFileNameStr n in n' == takeFileName n'
 
 testBracket :: IO () -> IO ()
 testBracket =
@@ -161,6 +174,10 @@ testXFTPCLIDelete_ = do
   listDirectory xftpServerFiles2 >>= (`shouldBe` [])
   xftpCLI ["recv", fdRcv2, recipientFiles, "--tmp=tests/tmp"]
     `shouldThrow` anyException
+
+testReceivedFileNameCombine :: IO ()
+testReceivedFileNameCombine =
+  uniqueCombine recipientFiles "../../escaped.txt" `shouldReturn` (recipientFiles </> "escaped.txt")
 
 testPrepareChunkSizes :: IO ()
 testPrepareChunkSizes = do
