@@ -15,7 +15,7 @@ Roles: A initiates (its receive queue rotates; A receives on R'). B sends to A a
 ## Why redundant delivery removes the hard parts
 
 - No boundary, no drain, no last-message id. A never decides how much of old to read.
-- A dead old server loses nothing: every undelivered message is scheduled on R' as well.
+- A dead old server loses nothing B still holds: every undelivered message is scheduled on R' as well.
 - A dead new server does not suspend delivery: old keeps delivering until R' is secured.
 - The double ratchet already drops duplicates (`AGENT A_DUPLICATE`) and tolerates bounded reordering,
   and the delivery schema already writes one message to several send queues (`enqueueMessageB` +
@@ -106,16 +106,18 @@ was secured with B's own key) leaves both queues and surfaces `A_QUEUE`.
 `QEND` sent — new `AM_QEND_` arm in `runSmpQueueMsgDelivery`, modelled on `AM_QTEST_` (`Agent.hs:2567`):
 on a successful send of `QEND addr`, remove the named send queue (`TM.delete` its worker,
 `deleteConnSndQueue addr`), make the remaining queue the sole primary (`setSndQueuePrimary`, which
-clears its `replace_snd_queue_id`), and notify `SWITCH QDSnd SPCompleted` (as `AM_QTEST_` does, line 2591). The handler is idempotent — a
-second `QEND` send finds the named queue already gone and does nothing. `QEND` is sent on both queues;
-removing old's send queue also drops any `QEND` still pending on old. The R' copy reliably removes old
+clears its `replace_snd_queue_id`), and notify `SWITCH QDSnd SPCompleted` (as `AM_QTEST_` does, line
+2591). This re-primary is a no-op on the send side — step 4 already made R' primary before `QEND` was
+enqueued. The handler is idempotent — a second `QEND` send finds the named queue already gone and does
+nothing. `QEND` is sent on both queues; removing old's send queue also drops any `QEND` still pending
+on old. The R' copy reliably removes old
 and reaches A even when old is dead; the old copy is best effort. Once old's send queue is gone, `SEND`
 schedules to R' only.
 
 ## Recipient A
 
-A is subscribed to old (primary) and R' (created at rotation start, `dbReplaceQueueId = old`,
-`RSSendingQADD`).
+A is subscribed to old (primary, `RSSendingQADD`) and R' (created at rotation start,
+`dbReplaceQueueId = old`).
 
 - **Confirmation on R'.** In `processClientMsg`, `(Nothing, Just e2ePubKey)` case, add an arm before the
   `senderCanSecure` arm (`Agent.hs:3476`), guarded by `isJust (dbReplaceQueueId rq)`. In one
@@ -138,9 +140,13 @@ A is subscribed to old (primary) and R' (created at rotation start, `dbReplaceQu
   bound it with the same persisted `rcv_queues.delete_errors`/`deleteErrorCount` mechanism `deleteQueueRec`
   uses (2884): on a temporary error `incRcvDeleteErrors`, and at the limit `deleteConnRcvQueue` and
   stop. The count is in the database, so the bound survives restarts, and its only other caller
-  (`abortConnectionSwitch'`, 2739) deletes an alive queue that succeeds well before the limit. If the removed
-  queue was primary, make the remaining one primary (`setRcvQueuePrimary`); re-create the notification
-  subscription (`when enableNtfs $ sendNtfSubCommand ns (NSCCreate, [connId])`); notify
+  (`abortConnectionSwitch'`, 2739) deletes an alive queue that succeeds well before the limit. `qEndMsg`
+  does **not** re-primary R' — the confirmation arm (above) owns R''s primary flag and replace
+  reference. `QEND` on old and the confirmation on R' travel on different queues with no order between
+  them, so `QEND` on old can be processed first (it sits only behind old's tail); re-primarying then
+  would clear R''s `dbReplaceQueueId` and the later confirmation would miss the rotation arm and never
+  secure R'. So `qEndMsg` only removes the named queue. Re-create the notification subscription
+  (`when enableNtfs $ sendNtfSubCommand ns (NSCCreate, [connId])`); notify
   `SWITCH QDRcv SPCompleted`; `ackDel` the `QEND`. Received on both queues, the second finds it already
   marked deleted and is a no-op.
 
@@ -164,8 +170,9 @@ No drain, no boundary, no finalize command. Old is removed when `QEND` arrives, 
   empty if old was already down (a down server accepted nothing).
 - Duplicates: the double ratchet drops them (`A_DUPLICATE`); `checkMsgIntegrity`'s `MsgDuplicate` is
   only a flag, not the mechanism.
-- The 512 skip bound (`Crypto/Ratchet.hs:953`) does not bite: each queue delivers in order and every
-  message is on R', so A reads a contiguous stream with only small cross-queue reordering.
+- The 512 skip bound (`Crypto/Ratchet.hs:953`) does not bite on the rotation: each queue delivers in
+  order and every message B still holds is on R', so A reads a contiguous stream with only small
+  cross-queue reordering. A store-and-forward residual (above) is an ordinary loss, not introduced here.
 
 ## Tests
 
@@ -176,3 +183,5 @@ No drain, no boundary, no finalize command. Old is removed when `QEND` arrives, 
 - crash during securing: restart does not start R''s worker; `ICQSndSecure` resumes, secures R',
   starts the worker, sends `QEND`.
 - `QEND` received on both queues: old removed once, the second receipt is a no-op.
+- `QEND` on old processed before the confirmation on R': R' still secures, because `qEndMsg` does not
+  clear R''s replace reference; rotation completes.
