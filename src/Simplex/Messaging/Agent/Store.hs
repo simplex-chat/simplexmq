@@ -207,12 +207,13 @@ rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
   SMPQueueAddress server sndId (C.publicKey e2ePrivKey) queueMode
 
-canAbortRcvSwitch :: RcvQueue -> Bool
-canAbortRcvSwitch = maybe False canAbort . rcvSwchStatus
+canAbortRcvSwitch :: VersionSMPA -> RcvQueue -> Bool
+canAbortRcvSwitch connAgentVersion = maybe False canAbort . rcvSwchStatus
   where
     canAbort = \case
       RSSwitchStarted -> True
-      RSSendingQADD -> True
+      -- at agent version 8 and above the peer always chooses fast rotation, so a sent QADD is committed
+      RSSendingQADD -> connAgentVersion < rpcAddressSMPAgentVersion
       -- if switch is in RSSendingQUSE, a race condition with sender deleting the original queue is possible
       RSSendingQUSE -> False
       -- if switch is in RSReceivedMessage status, aborting switch (deleting new queue)
@@ -539,6 +540,7 @@ data InternalCommand
   | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
   | ICQDelete SMP.RecipientId
+  | ICQSndSecure SMP.SenderId
   | ICReplyDel
 
 data InternalCommandTag
@@ -550,6 +552,7 @@ data InternalCommandTag
   | ICDeleteRcvQueue_
   | ICQSecure_
   | ICQDelete_
+  | ICQSndSecure_
   | ICReplyDel_
   deriving (Show)
 
@@ -563,6 +566,7 @@ instance StrEncoding InternalCommand where
     ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
+    ICQSndSecure sId -> strEncode (ICQSndSecure_, sId)
     ICReplyDel -> strEncode ICReplyDel_
   strP =
     strP >>= \case
@@ -574,6 +578,7 @@ instance StrEncoding InternalCommand where
       ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
       ICQDelete_ -> ICQDelete <$> _strP
+      ICQSndSecure_ -> ICQSndSecure <$> _strP
       ICReplyDel_ -> pure ICReplyDel
 
 instance StrEncoding InternalCommandTag where
@@ -586,6 +591,7 @@ instance StrEncoding InternalCommandTag where
     ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
     ICQDelete_ -> "QDELETE"
+    ICQSndSecure_ -> "QSND_SECURE"
     ICReplyDel_ -> "REPLY_DEL"
   strP =
     A.takeTill (== ' ') >>= \case
@@ -597,6 +603,7 @@ instance StrEncoding InternalCommandTag where
       "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
       "QDELETE" -> pure ICQDelete_
+      "QSND_SECURE" -> pure ICQSndSecure_
       "REPLY_DEL" -> pure ICReplyDel_
       _ -> fail "bad InternalCommandTag"
 
@@ -615,6 +622,7 @@ internalCmdTag = \case
   ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
   ICQDelete _ -> ICQDelete_
+  ICQSndSecure {} -> ICQSndSecure_
   ICReplyDel -> ICReplyDel_
 
 -- * Confirmation types

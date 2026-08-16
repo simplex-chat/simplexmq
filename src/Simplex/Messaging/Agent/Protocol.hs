@@ -639,16 +639,22 @@ instance FromJSON RcvSwitchStatus where
 data SndSwitchStatus
   = SSSendingQKEY
   | SSSendingQTEST
+  | SSSecuringQueue
+  | SSSendingQEND
   deriving (Eq, Show)
 
 instance StrEncoding SndSwitchStatus where
   strEncode = \case
     SSSendingQKEY -> "sending_qkey"
     SSSendingQTEST -> "sending_qtest"
+    SSSecuringQueue -> "securing_queue"
+    SSSendingQEND -> "sending_qend"
   strP =
     A.takeTill (== ' ') >>= \case
       "sending_qkey" -> pure SSSendingQKEY
       "sending_qtest" -> pure SSSendingQTEST
+      "securing_queue" -> pure SSSecuringQueue
+      "sending_qend" -> pure SSSendingQEND
       _ -> fail "bad SndSwitchStatus"
 
 instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode
@@ -960,6 +966,7 @@ data AgentMessageType
   | AM_QKEY_
   | AM_QUSE_
   | AM_QTEST_
+  | AM_QEND_
   | AM_EREADY_
   | AM_SRV_REQ
   | AM_SRV_RESP
@@ -979,6 +986,7 @@ instance Encoding AgentMessageType where
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
+    AM_QEND_ -> "QE"
     AM_EREADY_ -> "E"
     AM_SRV_REQ -> "A"
     AM_SRV_RESP -> "P"
@@ -998,6 +1006,7 @@ instance Encoding AgentMessageType where
           'K' -> pure AM_QKEY_
           'U' -> pure AM_QUSE_
           'T' -> pure AM_QTEST_
+          'E' -> pure AM_QEND_
           _ -> fail "bad AgentMessageType"
       'E' -> pure AM_EREADY_
       'A' -> pure AM_SRV_REQ
@@ -1037,6 +1046,7 @@ data AMsgType
   | QKEY_
   | QUSE_
   | QTEST_
+  | QEND_
   | EREADY_
   deriving (Eq)
 
@@ -1050,6 +1060,7 @@ instance Encoding AMsgType where
     QKEY_ -> "QK"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
+    QEND_ -> "QE"
     EREADY_ -> "E"
   smpP =
     A.anyChar >>= \case
@@ -1063,6 +1074,7 @@ instance Encoding AMsgType where
           'K' -> pure QKEY_
           'U' -> pure QUSE_
           'T' -> pure QTEST_
+          'E' -> pure QEND_
           _ -> fail "bad AMsgType"
       'E' -> pure EREADY_
       _ -> fail "bad AMsgType"
@@ -1087,6 +1099,8 @@ data AMessage
     QUSE (NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
     QTEST (NonEmpty SndQAddr)
+  | -- sent by the sender to remove a queue from the connection (fast rotation, v8)
+    QEND SndQAddr
   | -- ratchet re-synchronization is complete, with last decrypted sender message id (recipient's `last_external_snd_msg_id`)
     EREADY AgentMsgId
   deriving (Show)
@@ -1105,6 +1119,7 @@ aMessageType = \case
   QKEY _ -> AM_QKEY_
   QUSE _ -> AM_QUSE_
   QTEST _ -> AM_QTEST_
+  QEND _ -> AM_QEND_
   EREADY _ -> AM_EREADY_
 
 -- | this type is used to send as part of the protocol between different clients
@@ -1157,6 +1172,7 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
+    QEND addr -> smpEncode (QEND_, addr)
     EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
   smpP =
     smpP
@@ -1169,6 +1185,7 @@ instance Encoding AMessage where
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
+        QEND_ -> QEND <$> smpP
         EREADY_ -> EREADY <$> smpP
 
 instance ToField AMessage where toField = toField . Binary . smpEncode

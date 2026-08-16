@@ -52,6 +52,7 @@ module AgentTests.FunctionalAPITests
     pattern Msg',
     pattern SENT,
     agentCfgVPrevPQ,
+    agentCfgV7,
   )
 where
 
@@ -527,6 +528,8 @@ functionalAPITests ps = do
     it "should handle service unavailable on startup" $ testServiceUnavailableOnStartup ps
     it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
+    describe "should switch delivery to the new queue with fast rotation" $
+      testServerMatrix2 ps testFastSwitchConnection
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -3517,9 +3520,13 @@ testUsersNoServer ps = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
   where
     aCfg = agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3}
 
+-- fast rotation runs at agent version 8+; these tests pin to v7 to exercise the QKEY/QUSE slow path and switch abort
+agentCfgV7 :: AgentConfig
+agentCfgV7 = agentCfg {smpAgentVRange = mkVersionRange 6 7}
+
 testSwitchConnection :: InitialAgentServers -> IO ()
 testSwitchConnection servers =
-  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+  withAgentClientsCfgServers2 agentCfgV7 agentCfgV7 servers $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
     testFullSwitch a bId b aId 8
@@ -3542,6 +3549,25 @@ switchComplete a bId b aId = do
   phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
   phaseSnd b aId SPCompleted [Nothing]
   phaseRcv a bId SPCompleted [Nothing]
+
+testFastSwitchConnection :: InitialAgentServers -> IO ()
+testFastSwitchConnection servers =
+  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetings a bId b aId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
+    fastSwitchComplete a bId b aId
+    exchangeGreetingsMsgId 6 a bId b aId
+
+fastSwitchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
+fastSwitchComplete a bId b aId = do
+  phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+  phaseSnd b aId SPStarted [Just SSSecuringQueue, Nothing]
+  phaseSnd b aId SPSecured [Just SSSendingQEND, Nothing]
+  phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+  phaseRcv a bId SPCompleted [Nothing]
+  phaseSnd b aId SPCompleted [Nothing]
 
 phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
 phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
@@ -3599,9 +3625,9 @@ testSwitchAsync servers = do
     testFullSwitch a bId b aId 14
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 withAgent :: HasCallStack => Int -> AgentConfig -> InitialAgentServers -> String -> (HasCallStack => AgentClient -> IO a) -> IO a
 withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) (\a -> disposeAgentClient a >> threadDelay 100000)
@@ -3617,7 +3643,7 @@ sessionSubscribe withC connIds a =
 
 testSwitchDelete :: InitialAgentServers -> IO ()
 testSwitchDelete servers =
-  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+  withAgentClientsCfgServers2 agentCfgV7 agentCfgV7 servers $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
     liftIO $ disposeAgentClient b
@@ -3675,9 +3701,9 @@ testAbortSwitchStarted servers = do
     testFullSwitch a bId b aId 16
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testAbortSwitchStartedReinitiate :: HasCallStack => InitialAgentServers -> IO ()
 testAbortSwitchStartedReinitiate servers = do
@@ -3726,9 +3752,9 @@ testAbortSwitchStartedReinitiate servers = do
     testFullSwitch a bId b aId 16
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 switchPhaseRcvP :: ConnId -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ATransmission -> Bool
 switchPhaseRcvP cId sphase swchStatuses = switchPhaseP cId QDRcv sphase (\stats -> rcvSwchStatuses' stats == swchStatuses)
@@ -3780,9 +3806,9 @@ testCannotAbortSwitchSecured servers = do
     testFullSwitch a bId b aId 14
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testSwitch2Connections :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2Connections servers = do
@@ -3838,9 +3864,9 @@ testSwitch2Connections servers = do
     testFullSwitch a bId2 b aId2 14
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testSwitch2ConnectionsAbort1 :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2ConnectionsAbort1 servers = do
@@ -3891,9 +3917,9 @@ testSwitch2ConnectionsAbort1 servers = do
     testFullSwitch a bId2 b aId2 12
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
 testCreateQueueAuth clnt1 clnt2 sqSecured baseId = do

@@ -131,6 +131,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createSndMsg,
     updateSndMsgHash,
     createSndMsgDelivery,
+    getPendingSndDeliveries,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
     getPendingQueueMsg,
@@ -1040,6 +1041,19 @@ createSndMsg db connId sndMsgData@SndMsgData {internalSndId, internalHash} = do
 createSndMsgDelivery :: DB.Connection -> SndQueue -> InternalId -> IO ()
 createSndMsgDelivery db SndQueue {connId, dbQueueId} msgId =
   DB.execute db "INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id) VALUES (?, ?, ?)" (connId, dbQueueId, msgId)
+
+getPendingSndDeliveries :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
+getPendingSndDeliveries db connId SndQueue {dbQueueId} =
+  map fromOnly
+    <$> DB.query
+      db
+      [sql|
+        SELECT internal_id
+        FROM snd_message_deliveries
+        WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
+        ORDER BY internal_id ASC
+      |]
+      (connId, dbQueueId)
 
 getSndMsgViaRcpt :: DB.Connection -> ConnId -> InternalSndId -> IO (Either StoreError SndMsg)
 getSndMsgViaRcpt db connId sndMsgId =

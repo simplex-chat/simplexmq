@@ -17,7 +17,8 @@ module AgentTests.NotificationTests where
 
 -- import Control.Logger.Simple (LogConfig (..), LogLevel (..), setLogLevel, withGlobalLogging)
 import AgentTests.FunctionalAPITests
-  ( agentCfgVPrevPQ,
+  ( agentCfgV7,
+    agentCfgVPrevPQ,
     createConnection,
     exchangeGreetings,
     get,
@@ -870,7 +871,7 @@ testNotificationsSMPRestartBatch n ps@(t, ASType qsType _) apns =
 
 testSwitchNotifications :: InitialAgentServers -> APNSMockServer -> IO ()
 testSwitchNotifications servers apns =
-  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+  withAgentClientsCfgServers2 agentCfgV7 agentCfgV7 servers $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
     _ <- registerTestToken a "abcd" NMInstant apns
