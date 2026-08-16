@@ -191,7 +191,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               | B.null bodyHead -> pure Nothing
               | sniUsed -> do
                   body <- liftHS $ C.unPad bodyHead
-                  XFTPClientHello {webChallenge} <- liftHS $ first show (smpDecode body)
+                  XFTPClientHello {webChallenge} <- liftHS $ first show (decodeHandshake body)
                   pure webChallenge
               | otherwise -> throwE HANDSHAKE
           rng <- asks random
@@ -212,7 +212,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         processClientHandshake pk = do
           unless (B.length bodyHead == xftpBlockSize) $ throwE HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
-          XFTPClientHandshake {xftpVersion = v, keyHash} <- liftHS $ smpDecode body
+          XFTPClientHandshake {xftpVersion = v, keyHash} <- liftHS $ decodeHandshake body
           kh <- asks serverIdentity
           unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of

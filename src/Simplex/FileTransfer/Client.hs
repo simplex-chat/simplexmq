@@ -73,7 +73,7 @@ import Simplex.Messaging.Client
   )
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
-import Simplex.Messaging.Encoding (smpDecode, smpEncode)
+import Simplex.Messaging.Encoding (smpEncode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( BasicAuth,
@@ -167,7 +167,7 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
       let helloReq = H.requestNoBody "POST" "/" []
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
         liftError' xftpClientError $ sendRequest c helloReq Nothing
-      liftTransportErr (TEHandshake PARSE) . smpDecode =<< liftTransportErr TEBadBlock (C.unPad shsBody)
+      liftTransportErr (TEHandshake PARSE) . decodeHandshake =<< liftTransportErr TEBadBlock (C.unPad shsBody)
     processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionRangeXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
       unless (sessionId == serverSessId) $ throwE $ PCETransportError TEBadSession

@@ -20,6 +20,7 @@ module Simplex.FileTransfer.Transport
     XFTPServerHandshake (..),
     -- xftpServerHandshake,
     XFTPClientHello (..),
+    decodeHandshake,
     THandleXFTP,
     THandleParamsXFTP,
     VersionXFTP,
@@ -139,7 +140,6 @@ instance Encoding XFTPClientHello where
   smpP = do
     webChallenge <- smpP
     forM_ webChallenge $ \challenge -> unless (B.length challenge == 32) $ fail "bad XFTPClientHello webChallenge"
-    Tail _compat <- smpP
     pure XFTPClientHello {webChallenge}
 
 instance Encoding XFTPClientHandshake where
@@ -147,7 +147,6 @@ instance Encoding XFTPClientHandshake where
     smpEncode (xftpVersion, keyHash)
   smpP = do
     (xftpVersion, keyHash) <- smpP
-    Tail _compat <- smpP
     pure XFTPClientHandshake {xftpVersion, keyHash}
 
 instance Encoding XFTPServerHandshake where
@@ -156,8 +155,11 @@ instance Encoding XFTPServerHandshake where
   smpP = do
     (xftpVersionRange, sessionId, authPubKey) <- smpP
     webIdentityProof <- optional $ C.decodeSignature <$?> smpP
-    Tail _compat <- smpP
     pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof}
+
+-- Decodes handshake block ignoring any trailing bytes, to allow adding fields in future versions (as SMP handshake does).
+decodeHandshake :: Encoding a => ByteString -> Either String a
+decodeHandshake = A.parseOnly smpP
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go

@@ -32,7 +32,7 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), decodeHandshake, pattern VersionXFTP)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -85,6 +85,7 @@ xftpServerTests =
       it "should upload and receive file chunk through SNI-enabled server" testFileChunkDeliverySNI
       it "should complete web handshake with challenge-response" testWebHandshake
       it "should re-handshake on same connection with xftp-web-hello header" testWebReHandshake
+      it "should ignore trailing handshake bytes (forward compatibility)" testHandshakeIgnoresTrailingBytes
       it "should return padded SESSION error for stale web session" testStaleWebSession
 
 chSize :: Integral a => a
@@ -578,6 +579,36 @@ testWebReHandshake =
       -- Complete re-handshake
       resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
       B.length (bodyHead (HC.respBody resp2b)) `shouldBe` 0
+
+-- Simulates a future protocol version appending extra fields to handshake messages:
+-- both client and server must ignore the trailing bytes (as SMP handshake does).
+testHandshakeIgnoresTrailingBytes :: Expectation
+testHandshakeIgnoresTrailingBytes =
+  withXFTPServerSNI $ \_ -> do
+    Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+    Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
+    let webCaHash = C.KeyHash fpWeb
+        keyHash = C.KeyHash fpXFTP
+        cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+        extra = "\1\2\3\4\5" :: ByteString
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+      g <- C.newRandom
+      challenge <- atomically $ C.randomBytes 32 g
+      helloBody <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge})) xftpBlockSize
+      let helloReq = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000)
+      serverHsDecoded <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
+      -- client decodes the real server handshake and the same handshake with extra trailing bytes to the same result
+      XFTPServerHandshake {sessionId} <- either error pure $ decodeHandshake serverHsDecoded
+      XFTPServerHandshake {sessionId = sessionId'} <- either error pure $ decodeHandshake (serverHsDecoded <> extra)
+      sessionId' `shouldBe` sessionId
+      -- server accepts a client handshake with extra trailing bytes
+      let clientHs = XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash}
+      clientHsPadded <- either (error . show) pure $ C.pad (smpEncode clientHs <> extra) xftpBlockSize
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      B.length (bodyHead (HC.respBody resp2)) `shouldBe` 0
 
 testStaleWebSession :: Expectation
 testStaleWebSession =
