@@ -69,7 +69,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (find, isPrefixOf, isSuffixOf)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
@@ -530,6 +530,8 @@ functionalAPITests ps = do
   describe "Connection switch" $ do
     describe "should switch delivery to the new queue with fast rotation" $
       testServerMatrix2 ps testFastSwitchConnection
+    it "should switch delivery to the new queue when the old server is down" $
+      testFastSwitchDeadOldServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -3568,6 +3570,36 @@ fastSwitchComplete a bId b aId = do
   phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
   phaseRcv a bId SPCompleted [Nothing]
   phaseSnd b aId SPCompleted [Nothing]
+
+-- A's old receive queue is on server1 (stopped after the connection is set up); B's queue and the new queue are on server2.
+-- Fast rotation completes over the live server: B secures the new queue and sends the confirmation and QEND on it,
+-- so the recipient moves to it and removes the old queue without the old server.
+testFastSwitchDeadOldServer :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
+  let bServers = initAgentServers {smp = userServers [testSMPServer2]}
+  withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ ->
+    withAgent 1 agentCfg initAgentServers testDB $ \a ->
+      withAgent 2 agentCfg bServers testDB2 $ \b -> do
+        (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+          (aId, bId) <- makeConnection a b
+          exchangeGreetings a bId b aId
+          -- create the rotated queue on the live server
+          liftIO $ setProtocolServers a 1 (noAuthSrvCfg testSMPServer2 :| [])
+          pure (aId, bId)
+        nGet a =##> \case ("", "", DOWN _ cs) -> bId `elem` cs; _ -> False
+        runRight_ $ do
+          _ <- switchConnectionAsync a "" bId
+          switchCompleted a bId QDRcv
+          switchCompleted b aId QDSnd
+          exchangeGreetingsMsgId 6 a bId b aId
+
+-- drains switch and network events until the connection reports SPCompleted in the given direction,
+-- tolerating DOWN/UP and intermediate phases (the old server is stopped mid-rotation)
+switchCompleted :: AgentClient -> ByteString -> QueueDirection -> ExceptT AgentErrorType IO ()
+switchCompleted c connId d =
+  pGet c >>= \case
+    (_, connId', AEvt SAEConn (SWITCH d' SPCompleted _)) | connId' == connId && d' == d -> pure ()
+    _ -> switchCompleted c connId d
 
 phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
 phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
