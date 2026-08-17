@@ -132,7 +132,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateSndMsgHash,
     createSndMsgDelivery,
     copyPendingSndDeliveries,
-    countPendingSndDeliveries,
+    countSndQueueDeliveries,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
     getPendingQueueMsg,
@@ -1056,14 +1056,10 @@ copyPendingSndDeliveries db SndQueue {connId, dbQueueId = fromQueueId} SndQueue 
     |]
     (toQueueId, connId, fromQueueId)
 
-countPendingSndDeliveries :: DB.Connection -> SndQueue -> IO Int
-countPendingSndDeliveries db SndQueue {connId, dbQueueId} = do
-  (Only cnt : _) <-
-    DB.query
-      db
-      "SELECT count(1) FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0"
-      (connId, dbQueueId)
-  pure cnt
+countSndQueueDeliveries :: DB.Connection -> SndQueue -> IO Int
+countSndQueueDeliveries db SndQueue {connId, dbQueueId} =
+  maybeFirstRow' 0 fromOnly $
+    DB.query db "SELECT count(1) FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0" (connId, dbQueueId)
 
 getSndMsgViaRcpt :: DB.Connection -> ConnId -> InternalSndId -> IO (Either StoreError SndMsg)
 getSndMsgViaRcpt db connId sndMsgId =

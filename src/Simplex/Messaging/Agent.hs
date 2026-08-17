@@ -2280,7 +2280,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               Nothing -> internalErr "ICQSndSecure: queue address not found in connection"
               Just sq'@SndQueue {dbReplaceQueueId} ->
                 case dbReplaceQueueId >>= \replaceQId -> find ((replaceQId ==) . dbQId) sqs of
-                  Nothing -> pure ()
+                  -- R' is already secured; if a crash landed between securing and enqueuing QEND, old still awaits it
+                  Nothing ->
+                    forM_ (find (\q -> sndSwchStatus q == Just SSSendingQEND) sqs) $ \oldSq ->
+                      void $ enqueueMessages c cData [oldSq, sq'] SMP.noMsgFlags $ QEND [qAddress oldSq]
                   Just oldSq@SndQueue {server = oldServer, sndId = oldSndId} -> do
                     secureSndQueue c NRMBackground sq'
                     let confMsg = smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_ = Nothing, encConnInfo = ""}
@@ -2292,7 +2295,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                     let sq'' = (sq' :: SndQueue) {status = Active, primary = True, dbReplaceQueueId = Nothing}
                     -- R''s worker was stopped while securing, so its accumulated deliveries were not counted in
                     -- msgDeliveryOp; add their count as it starts, since it subtracts one per delivery.
-                    pending <- withStore' c $ \db -> countPendingSndDeliveries db sq''
+                    pending <- withStore' c $ \db -> countSndQueueDeliveries db sq''
                     atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + pending}
                     lift $ resumeMsgDelivery c sq''
                     void $ enqueueMessages c cData [oldSq, sq''] SMP.noMsgFlags $ QEND [(oldServer, oldSndId)]
@@ -2645,6 +2648,8 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                   SomeConn _ conn <- withStore c (`getConn` connId)
                   case conn of
                     DuplexConnection cData' rqs sqs ->
+                      -- the queue to remove is identified by SSSendingQEND, not the QEND payload (not parsed in the send loop);
+                      -- a rotation removes one queue, so a multi-queue QEND would only remove that one here
                       case removeQP (\sq' -> sndSwchStatus sq' == Just SSSendingQEND) sqs of
                         Nothing -> pure Nothing
                         Just (oldSq, sq'' : sqs') -> do

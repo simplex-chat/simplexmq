@@ -3592,22 +3592,22 @@ testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
           -- a message queued while the old server is down must survive the rotation and arrive on the new queue
           _ <- sendMessage b aId SMP.noMsgFlags "queued while down"
           _ <- switchConnectionAsync a "" bId
-          queuedReceived <- switchCompletedRcvMsg a bId "queued while down"
+          queuedReceived <- drainSwitchCompletedRcvMsg a bId "queued while down"
           liftIO $ queuedReceived `shouldBe` True
-          switchCompleted b aId QDSnd
+          drainSwitchCompleted b aId QDSnd
           exchangeGreetingsMsgId 7 a bId b aId
 
 -- drains switch and network events until the connection reports SPCompleted in the given direction,
 -- tolerating DOWN/UP and intermediate phases (the old server is stopped mid-rotation)
-switchCompleted :: AgentClient -> ByteString -> QueueDirection -> ExceptT AgentErrorType IO ()
-switchCompleted c connId d =
+drainSwitchCompleted :: AgentClient -> ByteString -> QueueDirection -> ExceptT AgentErrorType IO ()
+drainSwitchCompleted c connId d =
   pGet c >>= \case
     (_, connId', AEvt SAEConn (SWITCH d' SPCompleted _)) | connId' == connId && d' == d -> pure ()
-    _ -> switchCompleted c connId d
+    _ -> drainSwitchCompleted c connId d
 
--- like switchCompleted for QDRcv, additionally acking and reporting a message matching the body seen while draining
-switchCompletedRcvMsg :: AgentClient -> ByteString -> MsgBody -> ExceptT AgentErrorType IO Bool
-switchCompletedRcvMsg c connId body = go False
+-- like drainSwitchCompleted for QDRcv, additionally acking and reporting a message matching the body seen while draining
+drainSwitchCompletedRcvMsg :: AgentClient -> ByteString -> MsgBody -> ExceptT AgentErrorType IO Bool
+drainSwitchCompletedRcvMsg c connId body = go False
   where
     go seen =
       pGet c >>= \case
