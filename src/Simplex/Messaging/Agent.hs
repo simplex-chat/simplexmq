@@ -2287,7 +2287,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                       setSndQueuePrimary db connId sq'
                       void $ setSndSwitchStatus db oldSq $ Just SSSendingQEND
                     let sq'' = (sq' :: SndQueue) {status = Active, primary = True, dbReplaceQueueId = Nothing}
-                    resumeSecuredSndDelivery c sq''
+                    -- count R''s deliveries held while securing into msgDeliveryOp before starting its worker (it subtracts one per delivery)
+                    pending <- withStore' c $ \db -> countSndQueueDeliveries db sq''
+                    atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + pending}
+                    lift $ resumeMsgDelivery c sq''
                     void $ enqueueMessages c cData [oldSq, sq''] SMP.noMsgFlags $ QEND [qAddress oldSq]
                     SomeConn _ conn' <- withStore c (`getConn` connId)
                     cStats <- connectionStats c conn'
@@ -2457,12 +2460,10 @@ resumeMsgDelivery :: AgentClient -> SndQueue -> AM' ()
 -- hasWork is passed as False to avoid unnecessary write to TMVar:
 -- - new worker is always created by "some work to do".
 -- - if the worker already exists, there is no need to "push" it again.
-resumeMsgDelivery c sq
-  | securingSndQueue sq = pure ()
-  | otherwise = void $ getDeliveryWorker False c sq
+resumeMsgDelivery c sq = unless (securingSndQueue sq) $ void $ getDeliveryWorker False c sq
 {-# INLINE resumeMsgDelivery #-}
 
--- a replacement queue holds its worker until it is secured and its confirmation is sent
+-- a replacement queue not yet secured (New, still referencing the queue it replaces)
 securingSndQueue :: SndQueue -> Bool
 securingSndQueue SndQueue {status, dbReplaceQueueId} = status == New && isJust dbReplaceQueueId
 {-# INLINE securingSndQueue #-}
@@ -2476,19 +2477,9 @@ getDeliveryWorker hasWork c sq =
       pure (w, retryLock)
 
 submitPendingMsg :: AgentClient -> SndQueue -> AM' ()
-submitPendingMsg c sq
-  | securingSndQueue sq = pure ()
-  | otherwise = do
-      atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
-      void $ getDeliveryWorker True c sq
-
--- starts the worker of a queue whose delivery was held while it was securing: its accumulated deliveries were not
--- counted in msgDeliveryOp, so add them before the worker starts, as it subtracts one per delivery.
-resumeSecuredSndDelivery :: AgentClient -> SndQueue -> AM ()
-resumeSecuredSndDelivery c sq = do
-  pending <- withStore' c $ \db -> countSndQueueDeliveries db sq
-  atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + pending}
-  lift $ resumeMsgDelivery c sq
+submitPendingMsg c sq = unless (securingSndQueue sq) $ do
+  atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
+  void $ getDeliveryWorker True c sq
 
 runSmpQueueMsgDelivery :: AgentClient -> SndQueue -> (Worker, TMVar ()) -> AM ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server, queueMode} (Worker {doWork}, qLock) = do
