@@ -29,6 +29,7 @@ import AgentTests.FunctionalAPITests
     runRight_,
     sendMessage,
     switchComplete,
+    fastSwitchComplete,
     testServerMatrix2,
     withAgent,
     withAgentClients2,
@@ -165,10 +166,14 @@ notificationTests ps@(t, _) = do
     it "should resume batched subscriptions after SMP server is restarted" $
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testNotificationsSMPRestartBatch 50 ps apns
-  describe "should switch notifications to the new queue" $
+  describe "should switch notifications to the new queue (slow rotation)" $
     testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
-        withNtfServer t $ testSwitchNotifications servers apns
+        withNtfServer t $ testSwitchNotifications agentCfgV7 switchComplete servers apns
+  describe "should switch notifications to the new queue (fast rotation)" $
+    testServerMatrix2 ps $ \servers ->
+      withAPNSMockServer $ \apns ->
+        withNtfServer t $ testSwitchNotifications agentCfg fastSwitchComplete servers apns
   it "should keep sending notifications for old token" $
     withSmpServer ps $
       withAPNSMockServer $ \apns ->
@@ -869,9 +874,9 @@ testNotificationsSMPRestartBatch n ps@(t, ASType qsType _) apns =
         killThread t1
         pure res
 
-testSwitchNotifications :: InitialAgentServers -> APNSMockServer -> IO ()
-testSwitchNotifications servers apns =
-  withAgentClientsCfgServers2 agentCfgV7 agentCfgV7 servers $ \a b -> runRight_ $ do
+testSwitchNotifications :: AgentConfig -> (AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()) -> InitialAgentServers -> APNSMockServer -> IO ()
+testSwitchNotifications cfg completeSwitch servers apns =
+  withAgentClientsCfgServers2 cfg cfg servers $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
     _ <- registerTestToken a "abcd" NMInstant apns
@@ -884,7 +889,7 @@ testSwitchNotifications servers apns =
           ackMessage a bId msgId Nothing
     testMessage "hello"
     _ <- switchConnectionAsync a "" bId
-    switchComplete a bId b aId
+    completeSwitch a bId b aId
     liftIO $ threadDelay 500000
     testMessage "hello again"
 

@@ -30,6 +30,7 @@ module AgentTests.FunctionalAPITests
     makeConnection,
     exchangeGreetings,
     switchComplete,
+    fastSwitchComplete,
     createConnection,
     joinConnection,
     sendMessage,
