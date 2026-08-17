@@ -2226,12 +2226,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           rq <- withStore c (\db -> getDeletedRcvQueue db connId srv rId)
           maxErrs <- asks $ deleteErrorCount . config
           tryAllErrors (deleteQueue c NRMBackground rq) >>= \case
-            Right () -> withStore' c (`deleteConnRcvQueue` rq)
-            Left e
-              | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> do
-                  withStore' c (`incRcvDeleteErrors` rq)
-                  throwE e
-              | otherwise -> withStore' c (`deleteConnRcvQueue` rq)
+            Left e | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> do
+              withStore' c (`incRcvDeleteErrors` rq)
+              throwE e
+            _ -> withStore' c (`deleteConnRcvQueue` rq)
         ICQSecure rId senderKey ->
           withServer $ \srv -> tryWithLock "ICQSecure" . withDuplexConn $ \(DuplexConnection cData rqs sqs) ->
             case find (sameQueue (srv, rId)) rqs of
