@@ -131,7 +131,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createSndMsg,
     updateSndMsgHash,
     createSndMsgDelivery,
-    getPendingSndDeliveries,
+    copyPendingSndDeliveries,
     getSndMsgViaRcpt,
     updateSndMsgRcpt,
     getPendingQueueMsg,
@@ -1042,18 +1042,18 @@ createSndMsgDelivery :: DB.Connection -> SndQueue -> InternalId -> IO ()
 createSndMsgDelivery db SndQueue {connId, dbQueueId} msgId =
   DB.execute db "INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id) VALUES (?, ?, ?)" (connId, dbQueueId, msgId)
 
-getPendingSndDeliveries :: DB.Connection -> ConnId -> SndQueue -> IO [InternalId]
-getPendingSndDeliveries db connId SndQueue {dbQueueId} =
-  map fromOnly
-    <$> DB.query
-      db
-      [sql|
-        SELECT internal_id
-        FROM snd_message_deliveries
-        WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
-        ORDER BY internal_id ASC
-      |]
-      (connId, dbQueueId)
+-- copies every undelivered (failed = 0) delivery from one snd queue to another, for redundant delivery during fast rotation
+copyPendingSndDeliveries :: DB.Connection -> SndQueue -> SndQueue -> IO ()
+copyPendingSndDeliveries db SndQueue {connId, dbQueueId = fromQueueId} SndQueue {dbQueueId = toQueueId} =
+  DB.execute
+    db
+    [sql|
+      INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id)
+      SELECT conn_id, ?, internal_id
+      FROM snd_message_deliveries
+      WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
+    |]
+    (toQueueId, connId, fromQueueId)
 
 getSndMsgViaRcpt :: DB.Connection -> ConnId -> InternalSndId -> IO (Either StoreError SndMsg)
 getSndMsgViaRcpt db connId sndMsgId =

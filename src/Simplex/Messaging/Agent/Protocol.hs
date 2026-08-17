@@ -1099,8 +1099,8 @@ data AMessage
     QUSE (NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
     QTEST (NonEmpty SndQAddr)
-  | -- sent by the sender to remove a queue from the connection (fast rotation, v8)
-    QEND SndQAddr
+  | -- sent by the sender to remove queues from the connection (fast rotation, v8)
+    QEND (NonEmpty SndQAddr)
   | -- ratchet re-synchronization is complete, with last decrypted sender message id (recipient's `last_external_snd_msg_id`)
     EREADY AgentMsgId
   deriving (Show)
@@ -1172,7 +1172,7 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
-    QEND addr -> smpEncode (QEND_, addr)
+    QEND addrs -> smpEncode (QEND_, addrs)
     EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
   smpP =
     smpP

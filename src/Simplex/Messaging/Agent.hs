@@ -2291,7 +2291,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                       void $ setSndSwitchStatus db oldSq $ Just SSSendingQEND
                     let sq'' = (sq' :: SndQueue) {status = Active, primary = True, dbReplaceQueueId = Nothing}
                     lift $ submitPendingMsg c sq''
-                    void $ enqueueMessages c cData (oldSq :| [sq'']) SMP.noMsgFlags $ QEND (oldServer, oldSndId)
+                    void $ enqueueMessages c cData [oldSq, sq''] SMP.noMsgFlags $ QEND [(oldServer, oldSndId)]
                     SomeConn _ conn' <- withStore c (`getConn` connId)
                     cStats <- connectionStats c conn'
                     notify $ SWITCH QDSnd SPSecured cStats
@@ -3592,7 +3592,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
                               QTEST _ -> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' srvMsgId) >> ackDel msgId
-                              QEND addr -> qDuplexAckDel conn'' "QEND" $ qEndMsg srvMsgId addr
+                              QEND addrs -> qDuplexAckDel conn'' "QEND" $ qEndMsg srvMsgId addrs
                               EREADY _ -> qDuplexAckDel conn'' "EREADY" $ ereadyMsg rcPrev
                             where
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> AM ()) -> AM ACKd
@@ -3944,9 +3944,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                         swchStatus <-
                           if connAgentVersion >= rpcAddressSMPAgentVersion
                             then do
-                              withStore' c $ \db -> do
-                                pending <- getPendingSndDeliveries db connId sq
-                                mapM_ (createSndMsgDelivery db sq2) pending
+                              withStore' c $ \db -> copyPendingSndDeliveries db sq sq2
                               enqueueCommand c "" connId (Just $ qServer sq2) $ AInternalCommand $ ICQSndSecure (snd $ qAddress sq2)
                               pure SSSecuringQueue
                             else do
@@ -4007,20 +4005,22 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   _ -> qError "QUSE: switching SndQueue not found in connection"
               _ -> qError "QUSE: switched queue address not found in connection"
 
-          -- processed by queue recipient: remove the queue named by QEND
-          qEndMsg :: SMP.MsgId -> SndQAddr -> Connection 'CDuplex -> AM ()
-          qEndMsg srvMsgId addr (DuplexConnection cData'@ConnData {enableNtfs} rqs sqs) =
-            case removeQP (\rq' -> sameQAddress addr (sndAddress rq')) rqs of
-              Just (rq'@RcvQueue {server = rmServer, rcvId}, rq'' : rqs') -> do
-                logServer "<--" c srv rId $ "MSG <QEND>:" <> logSecret' srvMsgId <> " " <> logSecret (snd addr)
-                withStore' c $ \db -> setRcvQueueDeleted db rq'
-                enqueueCommand c "" connId (Just rmServer) $ AInternalCommand $ ICDeleteRcvQueue rcvId
+          -- processed by queue recipient: remove the queues named by QEND
+          qEndMsg :: SMP.MsgId -> NonEmpty SndQAddr -> Connection 'CDuplex -> AM ()
+          qEndMsg srvMsgId addrs (DuplexConnection cData'@ConnData {enableNtfs} rqs sqs) =
+            case L.partition (\rq' -> any (`sameQAddress` sndAddress rq') addrs) rqs of
+              (removed@(_ : _), keptRq : keptRqs) -> do
+                logServer "<--" c srv rId $ "MSG <QEND>:" <> logSecret' srvMsgId
+                forM_ removed $ \rq'@RcvQueue {server = rmServer, rcvId} -> do
+                  withStore' c $ \db -> setRcvQueueDeleted db rq'
+                  enqueueCommand c "" connId (Just rmServer) $ AInternalCommand $ ICDeleteRcvQueue rcvId
                 when enableNtfs $ do
                   ns <- asks ntfSupervisor
                   liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
-                let conn' = DuplexConnection cData' (rq'' :| rqs') sqs
+                let conn' = DuplexConnection cData' (keptRq :| keptRqs) sqs
                 cStats <- connectionStats c conn'
                 notify $ SWITCH QDRcv SPCompleted cStats
+              -- named queues already removed, or none would remain
               _ -> pure ()
 
           qError :: String -> AM a

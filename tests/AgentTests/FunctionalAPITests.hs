@@ -69,7 +69,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (find, isPrefixOf, isSuffixOf)
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
@@ -3584,14 +3584,17 @@ testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
           (aId, bId) <- makeConnection a b
           exchangeGreetings a bId b aId
           -- create the rotated queue on the live server
-          liftIO $ setProtocolServers a 1 (noAuthSrvCfg testSMPServer2 :| [])
+          liftIO $ setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
           pure (aId, bId)
         nGet a =##> \case ("", "", DOWN _ cs) -> bId `elem` cs; _ -> False
         runRight_ $ do
+          -- a message queued while the old server is down must survive the rotation and arrive on the new queue
+          _ <- sendMessage b aId SMP.noMsgFlags "queued while down"
           _ <- switchConnectionAsync a "" bId
-          switchCompleted a bId QDRcv
+          queuedReceived <- switchCompletedRcvMsg a bId "queued while down"
+          liftIO $ queuedReceived `shouldBe` True
           switchCompleted b aId QDSnd
-          exchangeGreetingsMsgId 6 a bId b aId
+          exchangeGreetingsMsgId 7 a bId b aId
 
 -- drains switch and network events until the connection reports SPCompleted in the given direction,
 -- tolerating DOWN/UP and intermediate phases (the old server is stopped mid-rotation)
@@ -3600,6 +3603,16 @@ switchCompleted c connId d =
   pGet c >>= \case
     (_, connId', AEvt SAEConn (SWITCH d' SPCompleted _)) | connId' == connId && d' == d -> pure ()
     _ -> switchCompleted c connId d
+
+-- like switchCompleted for QDRcv, additionally acking and reporting a message matching the body seen while draining
+switchCompletedRcvMsg :: AgentClient -> ByteString -> MsgBody -> ExceptT AgentErrorType IO Bool
+switchCompletedRcvMsg c connId body = go False
+  where
+    go seen =
+      pGet c >>= \case
+        (_, connId', AEvt SAEConn (SWITCH QDRcv SPCompleted _)) | connId' == connId -> pure seen
+        (_, connId', AEvt SAEConn (Msg' mId _ body')) | connId' == connId && body' == body -> ackMessage c connId' mId Nothing >> go True
+        _ -> go seen
 
 phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
 phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
