@@ -1172,7 +1172,7 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
-    QEND addrs -> smpEncode (QEND_, addrs)
+    QEND qs -> smpEncode (QEND_, qs)
     EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
   smpP =
     smpP
