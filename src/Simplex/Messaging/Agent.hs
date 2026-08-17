@@ -2278,11 +2278,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               Nothing -> internalErr "ICQSndSecure: queue address not found in connection"
               Just sq'@SndQueue {dbReplaceQueueId} ->
                 case dbReplaceQueueId >>= \replaceQId -> find ((replaceQId ==) . dbQId) sqs of
-                  -- R' is already secured; if a crash landed between securing and enqueuing QEND, old still awaits it
-                  Nothing ->
-                    forM_ (find (\q -> sndSwchStatus q == Just SSSendingQEND) sqs) $ \oldSq ->
-                      void $ enqueueMessages c cData [oldSq, sq'] SMP.noMsgFlags $ QEND [qAddress oldSq]
-                  Just oldSq@SndQueue {server = oldServer, sndId = oldSndId} -> do
+                  Just oldSq -> do
                     secureSndQueue c NRMBackground sq'
                     let confMsg = smpEncode $ AgentConfirmation {agentVersion = connAgentVersion, e2eEncryption_ = Nothing, encConnInfo = ""}
                     void $ sendConfirmation c NRMBackground sq' confMsg
@@ -2291,15 +2287,15 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                       setSndQueuePrimary db connId sq'
                       void $ setSndSwitchStatus db oldSq $ Just SSSendingQEND
                     let sq'' = (sq' :: SndQueue) {status = Active, primary = True, dbReplaceQueueId = Nothing}
-                    -- R''s worker was stopped while securing, so its accumulated deliveries were not counted in
-                    -- msgDeliveryOp; add their count as it starts, since it subtracts one per delivery.
-                    pending <- withStore' c $ \db -> countSndQueueDeliveries db sq''
-                    atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + pending}
-                    lift $ resumeMsgDelivery c sq''
-                    void $ enqueueMessages c cData [oldSq, sq''] SMP.noMsgFlags $ QEND [(oldServer, oldSndId)]
+                    resumeSecuredSndDelivery c sq''
+                    void $ enqueueMessages c cData [oldSq, sq''] SMP.noMsgFlags $ QEND [qAddress oldSq]
                     SomeConn _ conn' <- withStore c (`getConn` connId)
                     cStats <- connectionStats c conn'
                     notify $ SWITCH QDSnd SPSecured cStats
+                  -- R' is already secured; re-enqueue QEND if a crash landed before it, so old (still SSSendingQEND) is removed
+                  Nothing ->
+                    forM_ (find (\q -> sndSwchStatus q == Just SSSendingQEND) sqs) $ \oldSq ->
+                      void $ enqueueMessages c cData [oldSq, sq'] SMP.noMsgFlags $ QEND [qAddress oldSq]
         where
           ack srv rId srvMsgId =
             withStore' c (\db -> getRcvQueue db connId srv rId) >>= \case
@@ -2485,6 +2481,14 @@ submitPendingMsg c sq
   | otherwise = do
       atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
       void $ getDeliveryWorker True c sq
+
+-- starts the worker of a queue whose delivery was held while it was securing: its accumulated deliveries were not
+-- counted in msgDeliveryOp, so add them before the worker starts, as it subtracts one per delivery.
+resumeSecuredSndDelivery :: AgentClient -> SndQueue -> AM ()
+resumeSecuredSndDelivery c sq = do
+  pending <- withStore' c $ \db -> countSndQueueDeliveries db sq
+  atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + pending}
+  lift $ resumeMsgDelivery c sq
 
 runSmpQueueMsgDelivery :: AgentClient -> SndQueue -> (Worker, TMVar ()) -> AM ()
 runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server, queueMode} (Worker {doWork}, qLock) = do
