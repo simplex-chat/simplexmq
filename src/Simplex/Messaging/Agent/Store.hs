@@ -207,8 +207,8 @@ rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
   SMPQueueAddress server sndId (C.publicKey e2ePrivKey) queueMode
 
-canAbortRcvSwitch :: VersionSMPA -> RcvQueue -> Bool
-canAbortRcvSwitch connAgentVersion = maybe False canAbort . rcvSwchStatus
+canAbortRcvSwitch :: ConnData -> RcvQueue -> Bool
+canAbortRcvSwitch ConnData {connAgentVersion} = maybe False canAbort . rcvSwchStatus
   where
     canAbort = \case
       RSSwitchStarted -> True
