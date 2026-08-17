@@ -2290,7 +2290,11 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                       setSndQueuePrimary db connId sq'
                       void $ setSndSwitchStatus db oldSq $ Just SSSendingQEND
                     let sq'' = (sq' :: SndQueue) {status = Active, primary = True, dbReplaceQueueId = Nothing}
-                    lift $ submitPendingMsg c sq''
+                    -- R''s worker was stopped while securing, so its accumulated deliveries were not counted in
+                    -- msgDeliveryOp; add their count as it starts, since it subtracts one per delivery.
+                    pending <- withStore' c $ \db -> countPendingSndDeliveries db sq''
+                    atomically $ modifyTVar' (msgDeliveryOp c) $ \s -> s {opsInProgress = opsInProgress s + pending}
+                    lift $ resumeMsgDelivery c sq''
                     void $ enqueueMessages c cData [oldSq, sq''] SMP.noMsgFlags $ QEND [(oldServer, oldSndId)]
                     SomeConn _ conn' <- withStore c (`getConn` connId)
                     cStats <- connectionStats c conn'
@@ -2376,9 +2380,9 @@ enqueueMessageB c reqs = do
     pure ((msgId, pqSecr), if null sqs' then Nothing else Just (sqs', msgId))
   where
     sndDeliverTo :: ConnData -> SndQueue -> Bool
-    sndDeliverTo ConnData {connAgentVersion} sq@SndQueue {status, sndSwchStatus} =
+    sndDeliverTo ConnData {connAgentVersion} sq@SndQueue {sndSwchStatus} =
       sndSwchStatus /= Just SSSendingQEND
-        && (isActiveSndQ sq || (connAgentVersion >= rpcAddressSMPAgentVersion && status == New && isJust (dbReplaceQId sq)))
+        && (isActiveSndQ sq || (connAgentVersion >= rpcAddressSMPAgentVersion && securingSndQueue sq))
     storeSentMsg ::
       DB.Connection ->
       AgentConfig ->
