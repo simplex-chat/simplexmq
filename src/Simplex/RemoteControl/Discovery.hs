@@ -35,7 +35,7 @@ import qualified Network.UDP as UDP
 import Simplex.Messaging.Transport (TransportPeer (..), defaultSupportedParams)
 import qualified Simplex.Messaging.Transport as Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
-import Simplex.Messaging.Transport.Server (mkTransportServerConfig, runTransportServerSocket, startTCPServer)
+import Simplex.Messaging.Transport.Server (mkTransportServerConfig, runTransportServerSocket, startTCPServerConfigured)
 import Simplex.Messaging.Util (ifM, tshow)
 import Simplex.RemoteControl.Discovery.Multicast (setMembership)
 import Simplex.RemoteControl.Types
@@ -80,7 +80,7 @@ preferAddress RCCtrlAddress {address, interface} addrs =
 startTLSServer :: Maybe Word16 -> TMVar (Maybe N.PortNumber) -> TLS.Credential -> TLS.ServerHooks -> (Transport.TLS 'TServer -> IO ()) -> IO (Async ())
 startTLSServer port_ startedOnPort credentials hooks server = async . liftIO $ do
   started <- newEmptyTMVarIO
-  bracketOnError (startTCPServer started Nothing $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
+  bracketOnError (startTCPServerConfigured started Nothing $ maybe "0" show port_) (\_e -> setPort Nothing) $ \socket ->
     ifM
       (atomically $ readTMVar started)
       (runServer started socket)
