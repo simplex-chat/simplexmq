@@ -16,6 +16,8 @@ module Simplex.Messaging.Eth.Address
   )
 where
 
+import Data.Aeson (FromJSON (..), ToJSON (..))
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -24,6 +26,7 @@ import Data.Char (isDigit, isHexDigit, isLower, isUpper, toLower)
 import Data.Word (Word32, Word8)
 import Simplex.Messaging.Crypto.BIP32 (hardened)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Eth.Keccak (keccak256)
 
 -- | A 20-byte Ethereum address. 'Show' renders the EIP-55 checksummed form,
@@ -33,6 +36,21 @@ newtype Address = Address ByteString
 
 instance Show Address where
   show = BC.unpack . checksumAddress
+
+-- | EIP-55 checksummed hex, the form shown in explorers and pasted by users.
+-- Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
+instance StrEncoding Address where
+  strEncode = checksumAddress
+  strP = either fail pure . parseAddress =<< A.takeWhile1 isHexOr0x
+    where
+      isHexOr0x c = isHexDigit c || c == 'x' || c == 'X'
+
+instance ToJSON Address where
+  toEncoding = strToJEncoding
+  toJSON = strToJSON
+
+instance FromJSON Address where
+  parseJSON = strParseJSON "Address"
 
 addressSize :: Int
 addressSize = 20
