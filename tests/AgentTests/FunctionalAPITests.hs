@@ -30,6 +30,7 @@ module AgentTests.FunctionalAPITests
     makeConnection,
     exchangeGreetings,
     switchComplete,
+    fastSwitchComplete,
     createConnection,
     joinConnection,
     sendMessage,
@@ -52,6 +53,7 @@ module AgentTests.FunctionalAPITests
     pattern Msg',
     pattern SENT,
     agentCfgVPrevPQ,
+    agentCfgV7,
   )
 where
 
@@ -527,6 +529,10 @@ functionalAPITests ps = do
     it "should handle service unavailable on startup" $ testServiceUnavailableOnStartup ps
     it "migrate connections to and from service" $ testMigrateConnectionsToService ps
   describe "Connection switch" $ do
+    describe "should switch delivery to the new queue with fast rotation" $
+      testServerMatrix2 ps testFastSwitchConnection
+    it "should switch delivery to the new queue when the old server is down" $
+      testFastSwitchDeadOldServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -3517,9 +3523,13 @@ testUsersNoServer ps = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
   where
     aCfg = agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3}
 
+-- fast rotation runs at agent version 8+; these tests pin to v7 to exercise the QKEY/QUSE slow path and switch abort
+agentCfgV7 :: AgentConfig
+agentCfgV7 = agentCfg {smpAgentVRange = mkVersionRange 6 7}
+
 testSwitchConnection :: InitialAgentServers -> IO ()
 testSwitchConnection servers =
-  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+  withAgentClientsCfgServers2 agentCfgV7 agentCfgV7 servers $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
     testFullSwitch a bId b aId 8
@@ -3542,6 +3552,68 @@ switchComplete a bId b aId = do
   phaseSnd b aId SPSecured [Just SSSendingQTEST, Nothing]
   phaseSnd b aId SPCompleted [Nothing]
   phaseRcv a bId SPCompleted [Nothing]
+
+testFastSwitchConnection :: InitialAgentServers -> IO ()
+testFastSwitchConnection servers =
+  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetings a bId b aId
+    stats <- switchConnectionAsync a "" bId
+    liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Just RSSwitchStarted]
+    fastSwitchComplete a bId b aId
+    exchangeGreetingsMsgId 6 a bId b aId
+
+fastSwitchComplete :: AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()
+fastSwitchComplete a bId b aId = do
+  phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+  phaseSnd b aId SPStarted [Just SSSecuringQueue, Nothing]
+  phaseSnd b aId SPSecured [Just SSSendingQEND, Nothing]
+  phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+  phaseRcv a bId SPCompleted [Nothing]
+  phaseSnd b aId SPCompleted [Nothing]
+
+-- A's old receive queue is on server1 (stopped after the connection is set up); B's queue and the new queue are on server2.
+-- Fast rotation completes over the live server: B secures the new queue and sends the confirmation and QEND on it,
+-- so the recipient moves to it and removes the old queue without the old server.
+testFastSwitchDeadOldServer :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
+  let bServers = initAgentServers {smp = userServers [testSMPServer2]}
+  withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ ->
+    withAgent 1 agentCfg initAgentServers testDB $ \a ->
+      withAgent 2 agentCfg bServers testDB2 $ \b -> do
+        (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+          (aId, bId) <- makeConnection a b
+          exchangeGreetings a bId b aId
+          -- create the rotated queue on the live server
+          liftIO $ setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
+          pure (aId, bId)
+        nGet a =##> \case ("", "", DOWN _ cs) -> bId `elem` cs; _ -> False
+        runRight_ $ do
+          -- a message queued while the old server is down must survive the rotation and arrive on the new queue
+          _ <- sendMessage b aId SMP.noMsgFlags "queued while down"
+          _ <- switchConnectionAsync a "" bId
+          queuedReceived <- drainSwitchCompletedRcvMsg a bId "queued while down"
+          liftIO $ queuedReceived `shouldBe` True
+          drainSwitchCompleted b aId QDSnd
+          exchangeGreetingsMsgId 7 a bId b aId
+
+-- drains switch and network events until the connection reports SPCompleted in the given direction,
+-- tolerating DOWN/UP and intermediate phases (the old server is stopped mid-rotation)
+drainSwitchCompleted :: AgentClient -> ByteString -> QueueDirection -> ExceptT AgentErrorType IO ()
+drainSwitchCompleted c connId d =
+  pGet c >>= \case
+    (_, connId', AEvt SAEConn (SWITCH d' SPCompleted _)) | connId' == connId && d' == d -> pure ()
+    _ -> drainSwitchCompleted c connId d
+
+-- like drainSwitchCompleted for QDRcv, additionally acking and reporting a message matching the body seen while draining
+drainSwitchCompletedRcvMsg :: AgentClient -> ByteString -> MsgBody -> ExceptT AgentErrorType IO Bool
+drainSwitchCompletedRcvMsg c connId body = go False
+  where
+    go seen =
+      pGet c >>= \case
+        (_, connId', AEvt SAEConn (SWITCH QDRcv SPCompleted _)) | connId' == connId -> pure seen
+        (_, connId', AEvt SAEConn (Msg' mId _ body')) | connId' == connId && body' == body -> ackMessage c connId' mId Nothing >> go True
+        _ -> go seen
 
 phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
 phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
@@ -3599,9 +3671,9 @@ testSwitchAsync servers = do
     testFullSwitch a bId b aId 14
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 withAgent :: HasCallStack => Int -> AgentConfig -> InitialAgentServers -> String -> (HasCallStack => AgentClient -> IO a) -> IO a
 withAgent clientId cfg' servers dbPath = bracket (getSMPAgentClient' clientId cfg' servers dbPath) (\a -> disposeAgentClient a >> threadDelay 100000)
@@ -3617,7 +3689,7 @@ sessionSubscribe withC connIds a =
 
 testSwitchDelete :: InitialAgentServers -> IO ()
 testSwitchDelete servers =
-  withAgentClientsCfgServers2 agentCfg agentCfg servers $ \a b -> runRight_ $ do
+  withAgentClientsCfgServers2 agentCfgV7 agentCfgV7 servers $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
     exchangeGreetings a bId b aId
     liftIO $ disposeAgentClient b
@@ -3675,9 +3747,9 @@ testAbortSwitchStarted servers = do
     testFullSwitch a bId b aId 16
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testAbortSwitchStartedReinitiate :: HasCallStack => InitialAgentServers -> IO ()
 testAbortSwitchStartedReinitiate servers = do
@@ -3726,9 +3798,9 @@ testAbortSwitchStartedReinitiate servers = do
     testFullSwitch a bId b aId 16
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 switchPhaseRcvP :: ConnId -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ATransmission -> Bool
 switchPhaseRcvP cId sphase swchStatuses = switchPhaseP cId QDRcv sphase (\stats -> rcvSwchStatuses' stats == swchStatuses)
@@ -3780,9 +3852,9 @@ testCannotAbortSwitchSecured servers = do
     testFullSwitch a bId b aId 14
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testSwitch2Connections :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2Connections servers = do
@@ -3838,9 +3910,9 @@ testSwitch2Connections servers = do
     testFullSwitch a bId2 b aId2 14
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testSwitch2ConnectionsAbort1 :: HasCallStack => InitialAgentServers -> IO ()
 testSwitch2ConnectionsAbort1 servers = do
@@ -3891,9 +3963,9 @@ testSwitch2ConnectionsAbort1 servers = do
     testFullSwitch a bId2 b aId2 12
   where
     withA :: (AgentClient -> IO a) -> IO a
-    withA = withAgent 1 agentCfg servers testDB
+    withA = withAgent 1 agentCfgV7 servers testDB
     withB :: (AgentClient -> IO a) -> IO a
-    withB = withAgent 2 agentCfg servers testDB2
+    withB = withAgent 2 agentCfgV7 servers testDB2
 
 testCreateQueueAuth :: HasCallStack => (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
 testCreateQueueAuth clnt1 clnt2 sqSecured baseId = do
