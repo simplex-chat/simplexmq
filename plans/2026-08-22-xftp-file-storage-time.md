@@ -6,9 +6,34 @@ Proposal: `../rfcs/2026-08-22-xftp-file-storage-time.md`.
 
 New module `Simplex.Messaging.Crypto.Entitlement`, over `Simplex.Messaging.Crypto.BBS`:
 
-- `Entitlement {level :: Text, expiresAt :: UTCTime, extraInfo :: Text}`
-- `EntitlementCredential` (issuer key index, holder secret, BBS signature, entitlement)
-- `EntitlementProof` (issuer key index, presentation header, BBS proof, entitlement)
+Types:
+
+```
+newtype EntitlementSecret = EntitlementSecret ByteString
+
+data Entitlement = Entitlement
+  { level :: Text,
+    expiresAt :: UTCTime,
+    extraInfo :: Text
+  }
+
+data EntitlementCredential = EntitlementCredential
+  { issuerKeyIdx :: Int,
+    holderSecret :: EntitlementSecret,
+    signature :: BBSSignature,
+    entitlement :: Entitlement
+  }
+
+data EntitlementProof = EntitlementProof
+  { issuerKeyIdx :: Int,
+    presHeader :: BBSPresHeader,
+    proof :: BBSProof,
+    entitlement :: Entitlement
+  }
+```
+
+Functions and constants:
+
 - the disclosed-message encoding: the holder secret is message 0 and stays undisclosed; `expiresAt`, `level`, and `extraInfo` are messages 1 to 3 and are disclosed
 - the BBS header string `"SimpleX entitlement v1"`, the message count, and the disclosed indexes
 - `generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)`
@@ -23,7 +48,12 @@ In `Simplex.FileTransfer.Transport`:
 
 In `Simplex.FileTransfer.Protocol`:
 
-- add `FileStorageTime` and its encoding
+- add `FileStorageTime` and its encoding:
+
+```
+data FileStorageTime = FSTMax | FSTFor Word32   -- FSTMax may resolve to permanent; FSTFor: hours
+```
+
 - add the `FileStorageTime` and `Maybe EntitlementProof` fields to `FNEW`, and add `FTTL`
 - add the expiration to `FRSndIds`, and add a new response for `FTTL`
 - build the presentation header for FNEW and for FTTL
@@ -36,7 +66,7 @@ In `Simplex.FileTransfer.Server`:
 
 In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
-- read a maximum storage time for each entitlement level, and a default maximum, from the INI file
+- read a maximum storage time for each entitlement level, and a default maximum, from the INI file, where each maximum is a number of hours or permanent
 - exit at startup if any level maximum is below the default
 - read the issuer public keys from the shared constant
 
@@ -44,24 +74,24 @@ In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
 Common to both stores, in `Simplex.FileTransfer.Server.Store`:
 
-- add `expiresAt` to `FileRec`
-- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, resolve the maximum from the level, set `expiresAt = now + min(requested, maximum)`, and return the expiration
-- add the FTTL handler, which verifies the proof against `sessionId <> senderId`, sets `expiresAt = now + min(requested, maximum)`, and returns the expiration
+- add `expiresAt :: Maybe RoundedFileTime` to `FileRec`, where `Nothing` is permanent storage
+- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, resolve the requested time against the level maximum (a permanent maximum is unbounded), set `expiresAt` to the resolved expiration or `Nothing` when the result is permanent, and return it
+- add the FTTL handler, which verifies the proof against `sessionId <> senderId`, sets `expiresAt` by the same resolution, and returns it
 - retain `created_at` for statistics and export
 
 STM store:
 
-- in `expiredFiles`, select files where `expiresAt < now`
+- in `expiredFiles`, select files where `expiresAt` is `Just t` and `t < now`
 
 PostgreSQL store, in `Simplex.FileTransfer.Server.Store.Postgres` and its migrations:
 
-- add the column `expires_at BIGINT NOT NULL`
+- add the nullable column `expires_at BIGINT`, where `NULL` is permanent storage
 - add a migration for the column and the index `idx_files_expires_at`
-- change the `expiredFiles` query to `WHERE expires_at < ? ORDER BY expires_at LIMIT ?`
+- change the `expiredFiles` query to `WHERE expires_at < ? ORDER BY expires_at LIMIT ?` (a `NULL` expiration is excluded by the comparison)
 
 Store log, in `Simplex.FileTransfer.Server.StoreLog`:
 
-- add `expiresAt` to the `AddFile` record
+- add the optional expiration to the `AddFile` record, encoding permanent storage
 - for older records without an expiration, default `expiresAt` to `createdAt + default storage time`
 
 ## simplexmq: agent

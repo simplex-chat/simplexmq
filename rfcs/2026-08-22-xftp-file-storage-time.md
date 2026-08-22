@@ -6,59 +6,87 @@ The server stores a storage time for each file. The sender sets it in the FNEW c
 
 ## Entitlement
 
-An entitlement is a level, an expiration, and an extra string:
+An entitlement is a level, an expiration, and an extra string. It is the disclosed content of a BBS proof: the holder's secret remains undisclosed, and the three fields are revealed. The server reads `entLevel` to select a maximum storage time, checks `entExpires`, and ignores `entExtra`; the interpretation of `entExtra` is out of scope here. The protocol references only the entitlement, never a badge; chat maps its own badge to an entitlement before it asks the agent to send.
+
+The proof discloses the entitlement and includes the issuer key index and the BBS proof. The holder's secret and the BBS signature remain with the sender and are never transmitted. The origin of the sender's signed entitlement, from the entitlement service, is out of scope here.
 
 ```
-data Entitlement = Entitlement
-  { level :: Text,
-    expiresAt :: UTCTime,
-    extraInfo :: Text
-  }
+entitlement = entLevel entExpires entExtra
+entLevel = shortString       ; e.g. "supporter", "legend"
+entExpires = shortString     ; expiration, encoded as signed
+entExtra = shortString       ; opaque, interpretation out of scope
+
+entitlementProof = issuerKeyIndex bbsProof entitlement
+issuerKeyIndex = 2*2 OCTET   ; Word16, network byte order
+bbsProof = largeString       ; BBS proof bytes
 ```
 
-The entitlement is the disclosed content of a BBS proof: the holder's secret remains undisclosed, and the three fields are revealed. The server interprets `level` to select a maximum storage time and ignores `extraInfo`; interpretation of `extraInfo` is out of scope here.
-
-The protocol layers know only the entitlement, never a badge. Chat maps its own badge to an entitlement before it asks the agent to send.
-
-simplexmq defines the entitlement, its BBS proof generation and verification, the disclosed-message encoding, and the issuer public keys, in `Simplex.Messaging.Crypto.Entitlement`. The protocol form is `EntitlementProof` (the issuer key index, the presentation header, the BBS proof, and the entitlement). The signing form is `EntitlementCredential` (the issuer key index, the holder secret, the BBS signature, and the entitlement); the server never receives it.
+The presentation header that the BBS proof is generated over is not transmitted; the server reconstructs it from the command context (see [Binding](#binding)), which is what binds the proof.
 
 ## Storage time
 
 ```
-data FileStorageTime = FSTMax | FSTFor Word32   -- hours
+fileStorageTime = storageMax / storageFor
+storageMax = %s"M"
+storageFor = %s"F" storageHours
+storageHours = 4*4 OCTET     ; Word32, network byte order
 ```
 
-`FSTFor` requests a specific number of hours. `FSTMax` requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present.
+`storageMax` requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present; this maximum may be permanent. `storageFor` requests a specific number of hours.
 
 ## Commands, new XFTP version
 
-FNEW gains a storage time and an optional entitlement proof:
+The new protocol version extends FNEW and adds FTTL.
 
 ```
-FNEW FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) FileStorageTime (Maybe EntitlementProof)
+fnew = %s"FNEW " fileInfo rcvKeys optBasicAuth fileStorageTime optEntitlementProof
+fttl = %s"FTTL " fileStorageTime optEntitlementProof
+optEntitlementProof = %s"0" / (%s"1" entitlementProof)
 ```
 
-FTTL is a new `FileCommand FSender`, authorized with the sender key of `senderId`:
+FTTL is authorized with the sender key of the file, as the other sender commands are. It sets the expiration to the resolved storage time (see [Maximum storage time](#maximum-storage-time)) and may reduce the current expiration, since the sender can also delete the file.
+
+`fileInfo`, `rcvKeys`, and `optBasicAuth` are defined by the current XFTP protocol. Version 3 and earlier encode neither `fileStorageTime` nor the proof, and the server applies the default storage time.
+
+## Responses
+
+FNEW extends the SIDS response with the granted storage, and FTTL adds a response.
 
 ```
-FTTL FileStorageTime (Maybe EntitlementProof)
+sndIds = %s"SIDS " senderId rcvIds grantedStorage
+fileTime = %s"TTL " grantedStorage
+grantedStorage = grantedExpires / grantedPerm
+grantedExpires = %s"F" expiresSeconds
+grantedPerm = %s"P"
+expiresSeconds = 8*8 OCTET   ; Int64 seconds since epoch, network byte order
 ```
 
-FTTL sets the expiration to `now + min(requested, maximum)`. It may reduce the current expiration, since the sender can also delete the file.
-
-Each command binds its proof to a presentation header:
-
-- FNEW: `sessionId <> sndKey <> digest`
-- FTTL: `sessionId <> senderId`
-
-Both commands return the granted expiration: FNEW extends the `FRSndIds` response with it, and FTTL uses a new response that returns it.
-
-Version 3 and earlier encode neither the storage time nor the proof, and the server applies the default storage time. `currentXFTPVersion` becomes 4.
-
-## Maximum storage time
-
-The server configures a maximum storage time for each entitlement level, and a default maximum for requests with no proof. The server exits at startup if any level maximum is below the default, so a proof never reduces the allowed time. The server treats an entitlement whose `expiresAt` has passed as no proof.
+`grantedExpires` returns the absolute expiration, and `grantedPerm` indicates permanent storage. `senderId` and `rcvIds` are defined by the current XFTP protocol.
 
 ## Binding
 
-The presentation header binds each proof to the TLS session and to the specific chunk. On FNEW the chunk is identified by the sender key and the digest, which the server already verifies for every later command on the file. On FTTL the chunk is identified by `senderId`, which the server has assigned by then. A proof generated for one session and chunk verifies for no other, which prevents reuse.
+The presentation header binds each proof to the TLS session and to the specific chunk. The server reconstructs it and rejects a proof generated for any other session or chunk.
+
+```
+fnewPresHeader = sessionId sndKey digest
+fttlPresHeader = sessionId senderId
+```
+
+On FNEW the chunk is identified by the sender key and the digest, which the server verifies for every later command on the file. On FTTL the chunk is identified by `senderId`, which the server has assigned by then. `sessionId` is the TLS session identifier; `sndKey` and `digest` are the fields of `fileInfo`.
+
+## Maximum storage time
+
+The server configures a maximum storage time for each entitlement level, and a default maximum for requests with no proof. Each maximum is a number of hours or permanent. The server exits at startup if any level maximum is below the default, so a proof never reduces the allowed time. The server treats an entitlement whose expiration has passed as no proof.
+
+If the requested time exceeds the maximum, the server stores the file for the maximum and does not reject the request. `storageMax` yields permanent storage when the level maximum is permanent, and the finite maximum otherwise.
+
+## Encoding primitives
+
+```
+shortString = length *OCTET   ; 0-255 bytes
+largeString = length2 *OCTET
+length = 1*1 OCTET
+length2 = 2*2 OCTET           ; Word16, network byte order
+```
+
+`senderId`, `rcvIds`, `fileInfo`, `sndKey`, `digest`, `rcvKeys`, `optBasicAuth`, and `sessionId` are defined by the current XFTP and SMP protocols.
