@@ -41,12 +41,8 @@ module Simplex.Messaging.Agent.Protocol
     VersionSMPA,
     VersionRangeSMPA,
     pattern VersionSMPA,
-    duplexHandshakeSMPAgentVersion,
-    ratchetSyncSMPAgentVersion,
-    deliveryRcptsSMPAgentVersion,
-    pqdrSMPAgentVersion,
-    sndAuthKeySMPAgentVersion,
     ratchetOnConfSMPAgentVersion,
+    rpcAddressSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
     e2eEncConnInfoLength,
@@ -304,6 +300,7 @@ import UnliftIO.Exception (Exception)
 -- 5 - post-quantum double ratchet (3/14/2024)
 -- 6 - secure reply queues with provided keys (6/14/2024)
 -- 7 - initialize ratchet on processing confirmation (7/18/2024)
+-- 8 - agent RPC and double ratchet PQ encryption from first message to contact address (8/01/2026)
 
 data SMPAgentVersion
 
@@ -316,29 +313,20 @@ type VersionRangeSMPA = VersionRange SMPAgentVersion
 pattern VersionSMPA :: Word16 -> VersionSMPA
 pattern VersionSMPA v = Version v
 
-duplexHandshakeSMPAgentVersion :: VersionSMPA
-duplexHandshakeSMPAgentVersion = VersionSMPA 2
-
-ratchetSyncSMPAgentVersion :: VersionSMPA
-ratchetSyncSMPAgentVersion = VersionSMPA 3
-
-deliveryRcptsSMPAgentVersion :: VersionSMPA
-deliveryRcptsSMPAgentVersion = VersionSMPA 4
-
-pqdrSMPAgentVersion :: VersionSMPA
-pqdrSMPAgentVersion = VersionSMPA 5
-
-sndAuthKeySMPAgentVersion :: VersionSMPA
-sndAuthKeySMPAgentVersion = VersionSMPA 6
+_sndAuthKeySMPAgentVersion :: VersionSMPA
+_sndAuthKeySMPAgentVersion = VersionSMPA 6
 
 ratchetOnConfSMPAgentVersion :: VersionSMPA
 ratchetOnConfSMPAgentVersion = VersionSMPA 7
 
+rpcAddressSMPAgentVersion :: VersionSMPA
+rpcAddressSMPAgentVersion = VersionSMPA 8
+
 minSupportedSMPAgentVersion :: VersionSMPA
-minSupportedSMPAgentVersion = duplexHandshakeSMPAgentVersion
+minSupportedSMPAgentVersion = _sndAuthKeySMPAgentVersion
 
 currentSMPAgentVersion :: VersionSMPA
-currentSMPAgentVersion = VersionSMPA 7
+currentSMPAgentVersion = VersionSMPA 8
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
@@ -346,17 +334,17 @@ supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPA
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
 -- signing key of the sender for the server
-e2eEncConnInfoLength :: VersionSMPA -> PQSupport -> Int
-e2eEncConnInfoLength v = \case
+e2eEncConnInfoLength :: PQSupport -> Int
+e2eEncConnInfoLength = \case
   -- reduced by 3726 (roughly the increase of message ratchet header size + key and ciphertext in reply link)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 11106
-  _ -> 14832
+  PQSupportOn -> 11106
+  PQSupportOff -> 14832
 
-e2eEncAgentMsgLength :: VersionSMPA -> PQSupport -> Int
-e2eEncAgentMsgLength v = \case
+e2eEncAgentMsgLength :: PQSupport -> Int
+e2eEncAgentMsgLength = \case
   -- reduced by 2222 (the increase of message ratchet header size)
-  PQSupportOn | v >= pqdrSMPAgentVersion -> 13618
-  _ -> 15840
+  PQSupportOn -> 13618
+  PQSupportOff -> 15840
 
 -- | SMP agent event
 type ATransmission = (ACorrId, AEntityId, AEvt)
@@ -651,16 +639,22 @@ instance FromJSON RcvSwitchStatus where
 data SndSwitchStatus
   = SSSendingQKEY
   | SSSendingQTEST
+  | SSSecuringQueue
+  | SSSendingQEND
   deriving (Eq, Show)
 
 instance StrEncoding SndSwitchStatus where
   strEncode = \case
     SSSendingQKEY -> "sending_qkey"
     SSSendingQTEST -> "sending_qtest"
+    SSSecuringQueue -> "securing_queue"
+    SSSendingQEND -> "sending_qend"
   strP =
     A.takeTill (== ' ') >>= \case
       "sending_qkey" -> pure SSSendingQKEY
       "sending_qtest" -> pure SSSendingQTEST
+      "securing_queue" -> pure SSSecuringQueue
+      "sending_qend" -> pure SSSendingQEND
       _ -> fail "bad SndSwitchStatus"
 
 instance ToField SndSwitchStatus where toField = toField . decodeLatin1 . strEncode
@@ -972,6 +966,7 @@ data AgentMessageType
   | AM_QKEY_
   | AM_QUSE_
   | AM_QTEST_
+  | AM_QEND_
   | AM_EREADY_
   | AM_SRV_REQ
   | AM_SRV_RESP
@@ -991,6 +986,7 @@ instance Encoding AgentMessageType where
     AM_QKEY_ -> "QK"
     AM_QUSE_ -> "QU"
     AM_QTEST_ -> "QT"
+    AM_QEND_ -> "QE"
     AM_EREADY_ -> "E"
     AM_SRV_REQ -> "A"
     AM_SRV_RESP -> "P"
@@ -1010,6 +1006,7 @@ instance Encoding AgentMessageType where
           'K' -> pure AM_QKEY_
           'U' -> pure AM_QUSE_
           'T' -> pure AM_QTEST_
+          'E' -> pure AM_QEND_
           _ -> fail "bad AgentMessageType"
       'E' -> pure AM_EREADY_
       'A' -> pure AM_SRV_REQ
@@ -1049,6 +1046,7 @@ data AMsgType
   | QKEY_
   | QUSE_
   | QTEST_
+  | QEND_
   | EREADY_
   deriving (Eq)
 
@@ -1062,6 +1060,7 @@ instance Encoding AMsgType where
     QKEY_ -> "QK"
     QUSE_ -> "QU"
     QTEST_ -> "QT"
+    QEND_ -> "QE"
     EREADY_ -> "E"
   smpP =
     A.anyChar >>= \case
@@ -1075,6 +1074,7 @@ instance Encoding AMsgType where
           'K' -> pure QKEY_
           'U' -> pure QUSE_
           'T' -> pure QTEST_
+          'E' -> pure QEND_
           _ -> fail "bad AMsgType"
       'E' -> pure EREADY_
       _ -> fail "bad AMsgType"
@@ -1099,6 +1099,8 @@ data AMessage
     QUSE (NonEmpty (SndQAddr, Bool))
   | -- sent by the sender to test new queues and to complete switching
     QTEST (NonEmpty SndQAddr)
+  | -- sent by the sender to remove queues from the connection (fast rotation, v8)
+    QEND (NonEmpty SndQAddr)
   | -- ratchet re-synchronization is complete, with last decrypted sender message id (recipient's `last_external_snd_msg_id`)
     EREADY AgentMsgId
   deriving (Show)
@@ -1117,6 +1119,7 @@ aMessageType = \case
   QKEY _ -> AM_QKEY_
   QUSE _ -> AM_QUSE_
   QTEST _ -> AM_QTEST_
+  QEND _ -> AM_QEND_
   EREADY _ -> AM_EREADY_
 
 -- | this type is used to send as part of the protocol between different clients
@@ -1169,6 +1172,7 @@ instance Encoding AMessage where
     QKEY qs -> smpEncode (QKEY_, qs)
     QUSE qs -> smpEncode (QUSE_, qs)
     QTEST qs -> smpEncode (QTEST_, qs)
+    QEND qs -> smpEncode (QEND_, qs)
     EREADY lastDecryptedMsgId -> smpEncode (EREADY_, lastDecryptedMsgId)
   smpP =
     smpP
@@ -1181,6 +1185,7 @@ instance Encoding AMessage where
         QKEY_ -> QKEY <$> smpP
         QUSE_ -> QUSE <$> smpP
         QTEST_ -> QTEST <$> smpP
+        QEND_ -> QEND <$> smpP
         EREADY_ -> EREADY <$> smpP
 
 instance ToField AMessage where toField = toField . Binary . smpEncode
@@ -2195,7 +2200,7 @@ data ConnectionErrorType
 -- | Errors of another SMP agent.
 data SMPAgentError
   = -- | client or agent message that failed to parse
-    A_MESSAGE
+    A_MESSAGE {messageErr :: String}
   | -- | prohibited SMP/agent message
     A_PROHIBITED {prohibitedErr :: String}
   | -- | incompatible version of SMP client, agent or encryption protocols

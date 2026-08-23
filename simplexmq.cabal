@@ -1,7 +1,7 @@
 cabal-version: 3.0
 
 name:           simplexmq
-version:        7.1.0.0
+version:        7.1.0.4
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -152,6 +152,7 @@ library
       Simplex.Messaging.Protocol
       Simplex.Messaging.Protocol.Types
       Simplex.Messaging.Server.Expiration
+      Simplex.Messaging.Server.Information
       Simplex.Messaging.Server.QueueStore.Postgres.Config
       Simplex.Messaging.Server.QueueStore.QueueInfo
       Simplex.Messaging.ServiceScheme
@@ -268,7 +269,6 @@ library
           Simplex.Messaging.Server.CLI
           Simplex.Messaging.Server.Control
           Simplex.Messaging.Server.Env.STM
-          Simplex.Messaging.Server.Information
           Simplex.Messaging.Server.Main
           Simplex.Messaging.Server.Main.GitCommit
           Simplex.Messaging.Server.Main.Init
