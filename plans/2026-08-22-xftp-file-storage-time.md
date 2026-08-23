@@ -9,24 +9,23 @@ New module `Simplex.Messaging.Crypto.Entitlement`, over `Simplex.Messaging.Crypt
 Types:
 
 ```
-newtype EntitlementSecret = EntitlementSecret ByteString
+newtype MasterKey = MasterKey ByteString
 
 data Entitlement = Entitlement
-  { level :: Text,
+  { entitlementName :: Text,
     expiresAt :: UTCTime,
     extraInfo :: Text
   }
 
 data EntitlementCredential = EntitlementCredential
   { issuerKeyIdx :: Int,
-    holderSecret :: EntitlementSecret,
-    signature :: BBSSignature,
+    masterKey :: MasterKey,
+    issuerSignature :: BBSSignature,
     entitlement :: Entitlement
   }
 
 data EntitlementProof = EntitlementProof
   { issuerKeyIdx :: Int,
-    presHeader :: BBSPresHeader,
     proof :: BBSProof,
     entitlement :: Entitlement
   }
@@ -34,10 +33,10 @@ data EntitlementProof = EntitlementProof
 
 Functions and constants:
 
-- the disclosed-message encoding: the holder secret is message 0 and stays undisclosed; `expiresAt`, `level`, and `extraInfo` are messages 1 to 3 and are disclosed
+- the disclosed-message encoding: the master key is message 0 and stays undisclosed; `expiresAt`, `entitlementName`, and `extraInfo` are messages 1 to 3 and are disclosed
 - the BBS header string `"SimpleX entitlement v1"`, the message count, and the disclosed indexes
 - `generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)`
-- `verifyEntitlement :: Map Int BBSPublicKey -> EntitlementProof -> IO (Maybe Bool)`
+- `verifyEntitlement :: Map Int BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)` (the caller supplies the presentation header; the server reconstructs it, the proof never includes it)
 - the issuer public keys constant `Map Int BBSPublicKey`
 
 ## simplexmq: protocol, new XFTP version
@@ -66,8 +65,8 @@ In `Simplex.FileTransfer.Server`:
 
 In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
-- read a maximum storage time for each entitlement level, and a default maximum, from the INI file, where each maximum is a number of hours or permanent
-- exit at startup if any level maximum is below the default
+- read a maximum storage time for each entitlement name, and a default maximum, from the INI file, where each maximum is a number of hours or permanent
+- exit at startup if any name's maximum is below the default
 - read the issuer public keys from the shared constant
 
 ## simplexmq: server store and expiration
@@ -75,8 +74,8 @@ In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 Common to both stores, in `Simplex.FileTransfer.Server.Store`:
 
 - add `expiresAt :: Maybe RoundedFileTime` to `FileRec`, where `Nothing` is permanent storage
-- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, resolve the requested time against the level maximum (a permanent maximum is unbounded), set `expiresAt` to the resolved expiration or `Nothing` when the result is permanent, and return it
-- add the FTTL handler, which verifies the proof against `sessionId <> senderId`, sets `expiresAt` by the same resolution, and returns it
+- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, resolve the requested time against the entitlement's maximum (a permanent maximum is unbounded), set `expiresAt` to the resolved expiration or `Nothing` when the result is permanent, and return it
+- add the FTTL handler, which verifies the proof against `sessionId <> sndKey <> digest`, sets `expiresAt` by the same resolution, and returns it
 - retain `created_at` for statistics and export
 
 STM store:
@@ -115,12 +114,12 @@ Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 
 Set-time:
 
-- for a completed file, generate a per-chunk proof bound to `sessionId <> senderId` and send FTTL, authorized with the sender key
+- for a completed file, generate a per-chunk proof bound to `sessionId <> sndKey <> digest` and send FTTL, authorized with the sender key
 
 ## simplex-chat
 
 - remove lifetime badges: make `badgeExpiry` a `UTCTime`, drop the `"lifetime"` encoding, and remove the lifetime option from the UI and the CLI
-- map `BadgeInfo` to `Entitlement` (`level = textEncode badgeType`, `expiresAt = badgeExpiry`, `extraInfo = badgeExtra`) when calling the agent
+- map `BadgeInfo` to `Entitlement` (`entitlementName = textEncode badgeType`, `expiresAt = badgeExpiry`, `extraInfo = badgeExtra`) when calling the agent
 - pass the user's credential and `FSTMax` to `xftpSendFile`
 - retain the `maxXFTPFileSize` size limit
 - reuse `verifyEntitlement` for peer-badge verification

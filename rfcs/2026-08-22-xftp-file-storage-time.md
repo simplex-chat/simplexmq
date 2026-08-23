@@ -6,13 +6,13 @@ The server stores a storage time for each file. The sender sets it in the FNEW c
 
 ## Entitlement
 
-An entitlement is a level, an expiration, and an extra string. It is the disclosed content of a BBS proof: the holder's secret remains undisclosed, and the three fields are revealed. The server reads `entLevel` to select a maximum storage time, checks `entExpires`, and ignores `entExtra`; the interpretation of `entExtra` is out of scope here. The protocol references only the entitlement, never a badge; chat maps its own badge to an entitlement before it asks the agent to send.
+An entitlement is a name, an expiration, and an extra string. It is the disclosed content of a BBS proof: the holder's secret remains undisclosed, and the three fields are revealed. The server reads `entName` to select a maximum storage time, checks `entExpires`, and ignores `entExtra`; the interpretation of `entExtra` is out of scope here. The protocol references only the entitlement, never a badge; chat maps its own badge to an entitlement before it asks the agent to send.
 
 The proof discloses the entitlement and includes the issuer key index and the BBS proof. The holder's secret and the BBS signature remain with the sender and are never transmitted. The origin of the sender's signed entitlement, from the entitlement service, is out of scope here.
 
 ```
-entitlement = entLevel entExpires entExtra
-entLevel = shortString       ; e.g. "supporter", "legend"
+entitlement = entName entExpires entExtra
+entName = shortString        ; e.g. "supporter", "legend"
 entExpires = shortString     ; expiration, encoded as signed
 entExtra = shortString       ; opaque, interpretation out of scope
 
@@ -56,29 +56,28 @@ FNEW extends the SIDS response with the granted storage, and FTTL adds a respons
 sndIds = %s"SIDS " senderId rcvIds grantedStorage
 fileTime = %s"TTL " grantedStorage
 grantedStorage = grantedExpires / grantedPerm
-grantedExpires = %s"F" expiresSeconds
+grantedExpires = %s"F" expiresAt
 grantedPerm = %s"P"
-expiresSeconds = 8*8 OCTET   ; Int64 seconds since epoch, network byte order
+expiresAt = 8*8 OCTET        ; Int64, seconds since epoch (absolute UTC instant), network byte order
 ```
 
 `grantedExpires` returns the absolute expiration, and `grantedPerm` indicates permanent storage. `senderId` and `rcvIds` are defined by the current XFTP protocol.
 
 ## Binding
 
-The presentation header binds each proof to the TLS session and to the specific chunk. The server reconstructs it and rejects a proof generated for any other session or chunk.
+The presentation header binds each proof to the TLS session and to the specific chunk. The server reconstructs it and rejects a proof generated for any other session or chunk. FNEW and FTTL use the same header.
 
 ```
-fnewPresHeader = sessionId sndKey digest
-fttlPresHeader = sessionId senderId
+presHeader = sessionId sndKey digest
 ```
 
-On FNEW the chunk is identified by the sender key and the digest, which the server verifies for every later command on the file. On FTTL the chunk is identified by `senderId`, which the server has assigned by then. `sessionId` is the TLS session identifier; `sndKey` and `digest` are the fields of `fileInfo`.
+The chunk is identified by the sender key and the digest, which the server verifies for every command on the file. `sessionId` is the TLS session identifier; `sndKey` and `digest` are the fields of `fileInfo`.
 
 ## Maximum storage time
 
-The server configures a maximum storage time for each entitlement level, and a default maximum for requests with no proof. Each maximum is a number of hours or permanent. The server exits at startup if any level maximum is below the default, so a proof never reduces the allowed time. The server treats an entitlement whose expiration has passed as no proof.
+The server configures a maximum storage time for each entitlement name, and a default maximum for requests with no proof. Each maximum is a number of hours or permanent. The server exits at startup if any name's maximum is below the default, so a proof never reduces the allowed time. The server treats an entitlement whose expiration has passed as no proof.
 
-If the requested time exceeds the maximum, the server stores the file for the maximum and does not reject the request. `storageMax` yields permanent storage when the level maximum is permanent, and the finite maximum otherwise.
+If the requested time exceeds the maximum, the server stores the file for the maximum and does not reject the request. `storageMax` yields permanent storage when the entitlement's maximum is permanent, and the finite maximum otherwise.
 
 ## Encoding primitives
 
