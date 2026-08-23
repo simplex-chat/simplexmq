@@ -105,6 +105,7 @@ where
 
 import Control.Applicative (optional)
 import Control.Concurrent.STM
+import Control.Logger.Simple (logWarn)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -340,12 +341,15 @@ type ALPN = ByteString
 
 connectTLS :: T.TLSParams p => Maybe HostName -> TransportConfig -> p -> Socket -> IO T.Context
 connectTLS host_ TransportConfig {logTLSErrors} params sock =
-  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx ->
-    logHandshakeErrors (T.handshake ctx) $> ctx
+  E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx -> do
+    logWarn $ "TLS: " <> peer <> " handshake starting"
+    logHandshakeErrors (T.handshake ctx)
+    logWarn ("TLS: " <> peer <> " handshake complete") $> ctx
   where
     logHandshakeErrors = if logTLSErrors then (`catchAll` logThrow) else id
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
+    peer = maybe "server" (const "client") host_
 
 getTLS :: forall p. TransportPeerI p => TransportConfig -> Bool -> X.CertificateChain -> T.Context -> IO (TLS p)
 getTLS cfg tlsCertSent tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS

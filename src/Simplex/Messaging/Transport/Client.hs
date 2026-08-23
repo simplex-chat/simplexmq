@@ -303,12 +303,15 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ clientCredsSen
   where
     p = B.pack port
     onServerCert _ _ _ cc = do
+      logWarn "TLS: client received server certificate"
       errs <- maybe def (\ca -> validateCertificateChain ca host p cc) cafp_
       atomically $ putTMVar serverCerts $ if null errs then Just cc else Nothing
       pure errs
-    onCertRequest = case clientCreds_ of
-      Just _ -> \_ -> clientCreds_ <$ writeIORef clientCredsSent True
-      Nothing -> \_ -> pure Nothing
+    onCertRequest _ = do
+      logWarn "TLS: client received certificate request"
+      case clientCreds_ of
+        Just _ -> clientCreds_ <$ writeIORef clientCredsSent True
+        Nothing -> pure Nothing
 
 validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.CertificateChain -> IO [XV.FailedReason]
 validateCertificateChain (C.KeyHash kh) host port cc = case chainIdCaCerts cc of

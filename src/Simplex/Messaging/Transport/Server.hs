@@ -262,11 +262,13 @@ supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCre
     { T.serverWantClientCert = False,
       T.serverHooks =
         def
-          { T.onServerNameIndication = case sniCredential of
-              Nothing -> \_ -> pure $ T.Credentials [credential]
-              Just sniCred -> \case
+          { T.onServerNameIndication = \sni -> do
+              logWarn $ "TLS: server received SNI " <> tshow sni
+              case sniCredential of
                 Nothing -> pure $ T.Credentials [credential]
-                Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True),
+                Just sniCred -> case sni of
+                  Nothing -> pure $ T.Credentials [credential]
+                  Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True),
             T.onALPNClientSuggest =
               ( \alpn protos -> do
                   let proto = fromMaybe "" $ find (`elem` alpn) protos
@@ -284,7 +286,8 @@ paramsAskClientCert clientCert params =
     { T.serverWantClientCert = True,
       T.serverHooks =
         (T.serverHooks params)
-          { T.onClientCertificate = \cc ->
+          { T.onClientCertificate = \cc -> do
+              logWarn "TLS: server received client certificate"
               validateClientCertificate cc >>= \case
                 Just reason -> T.CertificateUsageReject reason <$ atomically (tryPutTMVar clientCert Nothing)
                 Nothing -> T.CertificateUsageAccept <$ atomically (tryPutTMVar clientCert $ Just cc)
