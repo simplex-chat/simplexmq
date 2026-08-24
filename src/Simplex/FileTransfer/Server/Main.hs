@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Simplex.FileTransfer.Server.Main
@@ -16,11 +17,13 @@ module Simplex.FileTransfer.Server.Main
 import Control.Monad (unless, when)
 import Data.Either (fromRight)
 import Data.Functor (($>))
-import Data.Ini (lookupValue, readIniFile)
+import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.Int (Int64)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.List (find)
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -291,6 +294,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                   defaultFileExpiration
                     { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
                     },
+              fileStorageEntitlements = iniEntitlements ini,
               fileTimeout = 5 * 60 * 1000000, -- 5 mins to send 4mb chunk
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
@@ -437,3 +441,12 @@ cliCommandP cfgPath logPath iniFile =
         ( command "import" (info (pure SCImport) (progDesc "Import store log file into PostgreSQL database"))
             <> command "export" (info (pure SCExport) (progDesc "Export PostgreSQL database to store log file"))
         )
+
+iniEntitlements :: Ini -> Map T.Text (Maybe Int64)
+iniEntitlements ini =
+  M.fromList $ mapMaybe readEntitlement [("supporter", "supporter_storage_hours"), ("legend", "legend_storage_hours"), ("investor", "investor_storage_hours")]
+  where
+    readEntitlement (name, key) = (name,) <$> (parseMax =<< eitherToMaybe (lookupValue "STORE_LOG" key ini))
+    parseMax t = case T.strip t of
+      "permanent" -> Just Nothing
+      s -> Just . (3600 *) <$> (readMaybe (T.unpack s) :: Maybe Int64)

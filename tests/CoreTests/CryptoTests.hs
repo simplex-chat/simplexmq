@@ -13,7 +13,10 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isLeft, isRight)
 import Data.Int (Int64)
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime (..))
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
@@ -25,6 +28,7 @@ import qualified SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Crypto.BBS
+import Simplex.Messaging.Crypto.Entitlement
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Encoding (Large (..), smpDecode, smpEncode)
@@ -119,6 +123,8 @@ cryptoTests = do
     it "should produce unlinkable proofs" testBBSUnlinkable
     it "should produce proof of expected size" testBBSProofSize
     it "should roundtrip JSON and reject wrong-length input" testBBSJSON
+  describe "Entitlement" $ do
+    it "should sign, prove and verify, bound to the presentation header" testEntitlementRoundtrip
 
 instance Eq C.APublicKey where
   C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
@@ -444,3 +450,21 @@ testBBSJSON = do
   -- FromJSON must reject wrong-length input (regression: StrJSON length validation)
   (J.decode (J.encode (BBSSecretKey (B.replicate 16 '\0'))) :: Maybe BBSSecretKey) `shouldBe` Nothing
   (J.decode (J.encode (BBSSignature (B.replicate 10 '\0'))) :: Maybe BBSSignature) `shouldBe` Nothing
+
+testEntitlementRoundtrip :: IO ()
+testEntitlementRoundtrip = do
+  Right (pk, sk) <- bbsKeyGen
+  let keys = M.singleton 1 pk
+      mk = MasterKey (B.replicate 32 '\7')
+      ent = Entitlement {entitlementName = "supporter", expiresAt = UTCTime (fromGregorian 2030 1 1) 0, extraInfo = ""}
+      ph = BBSPresHeader "session-id + snd-key + digest"
+  Right cred <- signEntitlement sk 1 mk ent
+  verifyCredential pk cred `shouldReturn` True
+  Right proof <- generateEntitlementProof pk cred ph
+  verifyEntitlement keys ph proof `shouldReturn` Just True
+  -- a different presentation header does not verify (session/chunk binding)
+  verifyEntitlement keys (BBSPresHeader "other") proof `shouldReturn` Just False
+  -- an unknown issuer key index yields Nothing
+  verifyEntitlement (M.singleton 2 pk) ph proof `shouldReturn` Nothing
+  -- the protocol encoding of the proof roundtrips
+  smpDecode (smpEncode proof) `shouldBe` Right proof

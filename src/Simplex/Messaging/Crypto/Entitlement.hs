@@ -34,7 +34,9 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (UTCTime)
+import Data.Word (Word16)
 import Simplex.Messaging.Crypto.BBS
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON)
 
@@ -67,6 +69,21 @@ data EntitlementProof = EntitlementProof
     entitlement :: Entitlement
   }
   deriving (Eq, Show)
+
+instance Encoding Entitlement where
+  smpEncode Entitlement {entitlementName, expiresAt, extraInfo} =
+    smpEncode (entitlementName, strEncode expiresAt, extraInfo)
+  smpP = do
+    (name, expBs, extra) <- smpP
+    expiresAt <- either fail pure $ strDecode (expBs :: ByteString)
+    pure Entitlement {entitlementName = name, expiresAt, extraInfo = extra}
+
+instance Encoding EntitlementProof where
+  smpEncode EntitlementProof {issuerKeyIdx, proof, entitlement} =
+    smpEncode (fromIntegral issuerKeyIdx :: Word16, proof, entitlement)
+  smpP = do
+    (idx, proof, entitlement) <- smpP
+    pure EntitlementProof {issuerKeyIdx = fromIntegral (idx :: Word16), proof, entitlement}
 
 entitlementBBSHeader :: BBSHeader
 entitlementBBSHeader = BBSHeader "SimpleX entitlement v1"

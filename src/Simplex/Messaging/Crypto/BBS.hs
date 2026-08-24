@@ -33,6 +33,7 @@ import Data.Proxy (Proxy (..))
 import Foreign
 import Foreign.C
 import GHC.TypeLits (KnownNat, KnownSymbol, Nat, Symbol, natVal, symbolVal)
+import Simplex.Messaging.Encoding (Encoding (..), Large (..))
 import Simplex.Messaging.Encoding.String
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -105,6 +106,10 @@ instance StrEncoding BBSProof where
     if len >= bbsProofBaseLen && (len - bbsProofBaseLen) `mod` bbsProofUdElemLen == 0
       then pure (BBSProof bs)
       else fail $ "BBS: invalid proof length " <> show len
+
+instance Encoding BBSProof where
+  smpEncode (BBSProof p) = smpEncode (Large p)
+  smpP = (\(Large p) -> BBSProof p) <$> smpP
 
 -- FFI
 

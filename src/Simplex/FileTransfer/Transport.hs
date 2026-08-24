@@ -12,6 +12,7 @@ module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
     authCmdsXFTPVersion,
     blockedFilesXFTPVersion,
+    fileStorageTimeXFTPVersion,
     xftpClientHandshakeStub,
     alpnSupportedXFTPhandshakes,
     xftpALPNv1,
@@ -97,8 +98,11 @@ authCmdsXFTPVersion = VersionXFTP 2
 blockedFilesXFTPVersion :: VersionXFTP
 blockedFilesXFTPVersion = VersionXFTP 3
 
+fileStorageTimeXFTPVersion :: VersionXFTP
+fileStorageTimeXFTPVersion = VersionXFTP 4
+
 currentXFTPVersion :: VersionXFTP
-currentXFTPVersion = VersionXFTP 3
+currentXFTPVersion = VersionXFTP 4
 
 supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion

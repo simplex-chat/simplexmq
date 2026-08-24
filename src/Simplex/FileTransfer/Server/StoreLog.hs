@@ -12,6 +12,7 @@ module Simplex.FileTransfer.Server.StoreLog
     readWriteFileStore,
     writeFileStore,
     logAddFile,
+    logSetFileExpiration,
     logPutFile,
     logAddRecipients,
     logDeleteFile,
@@ -26,7 +27,7 @@ import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Composition ((.:), (.::))
+import Data.Composition ((.:))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -38,41 +39,58 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import Simplex.Messaging.Util (bshow)
 import System.IO
 
 data FileStoreLogRecord
-  = AddFile SenderId FileInfo RoundedFileTime ServerEntityStatus
+  = AddFile SenderId FileInfo RoundedFileTime (Maybe RoundedFileTime) ServerEntityStatus
   | PutFile SenderId FilePath
   | AddRecipients SenderId (NonEmpty FileRecipient)
   | DeleteFile SenderId
   | BlockFile SenderId BlockingInfo
   | AckFile RecipientId -- TODO add senderId as well?
+  | SetFileExpiration SenderId (Maybe RoundedFileTime)
   deriving (Show)
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case
-    AddFile sId file createdAt status -> strEncode (Str "FNEW", sId, file, createdAt, status)
+    AddFile sId file createdAt expiresAt status -> strEncode (Str "FNEW", sId, file, createdAt, status) <> " " <> maybe "P" strEncode expiresAt
     PutFile sId path -> strEncode (Str "FPUT", sId, path)
     AddRecipients sId rcps -> strEncode (Str "FADD", sId, rcps)
     DeleteFile sId -> strEncode (Str "FDEL", sId)
     BlockFile sId info -> strEncode (Str "FBLK", sId, info)
     AckFile rId -> strEncode (Str "FACK", rId)
+    SetFileExpiration sId expiresAt -> strEncode (Str "FTTL", sId) <> " " <> maybe "P" strEncode expiresAt
   strP =
     A.choice
-      [ "FNEW " *> (AddFile <$> strP_ <*> strP_ <*> strP <*> (_strP <|> pure EntityActive)),
+      [ "FNEW " *> addFileP,
         "FPUT " *> (PutFile <$> strP_ <*> strP),
         "FADD " *> (AddRecipients <$> strP_ <*> strP),
         "FDEL " *> (DeleteFile <$> strP),
         "FBLK " *> (BlockFile <$> strP_ <*> strP),
-        "FACK " *> (AckFile <$> strP)
+        "FACK " *> (AckFile <$> strP),
+        "FTTL " *> (SetFileExpiration <$> strP_ <*> expiryP)
       ]
+    where
+      addFileP = do
+        sId <- strP_
+        file <- strP_
+        createdAt <- strP
+        status <- _strP <|> pure EntityActive
+        expiresAt <- (A.space *> expiryP) <|> pure (Just $ legacyExpiry createdAt)
+        pure $ AddFile sId file createdAt expiresAt status
+      expiryP = (Nothing <$ A.char 'P') <|> (Just <$> strP)
+      legacyExpiry (RoundedSystemTime c) = RoundedSystemTime (c + defFileExpirationHours * 3600)
 
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
 
-logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> IO ()
-logAddFile s = logFileStoreRecord s .:: AddFile
+logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO ()
+logAddFile s sId file createdAt expiresAt status = logFileStoreRecord s $ AddFile sId file createdAt expiresAt status
+
+logSetFileExpiration :: StoreLog 'WriteMode -> SenderId -> Maybe RoundedFileTime -> IO ()
+logSetFileExpiration s sId expiresAt = logFileStoreRecord s $ SetFileExpiration sId expiresAt
 
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()
 logPutFile s = logFileStoreRecord s .: PutFile
@@ -102,14 +120,15 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
           Left e -> B.putStrLn $ "Log processing error (" <> bshow e <> "): " <> B.take 100 s
           _ -> pure ()
     addToStore = \case
-      AddFile sId file createdAt status
-        | size file > 0 -> addFile st sId file createdAt status
+      AddFile sId file createdAt expiresAt status
+        | size file > 0 -> addFile st sId file createdAt expiresAt status
         | otherwise -> pure $ Left SIZE
       PutFile qId path -> setFilePath st qId path
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
       BlockFile sId info -> blockFile st sId info True
       AckFile rId -> ackFile st rId
+      SetFileExpiration sId expiresAt -> setFileExpiration st sId expiresAt
     addRecipients sId rcps = mapM_ (ExceptT . addRecipient st sId) rcps
 
 writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()
@@ -118,9 +137,9 @@ writeFileStore s STMFileStore {files, recipients} = do
   readTVarIO files >>= mapM_ (logFile allRcps)
   where
     logFile :: Map RecipientId (SenderId, RcvPublicAuthKey) -> FileRec -> IO ()
-    logFile allRcps FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus} = do
+    logFile allRcps FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, fileStatus} = do
       status <- readTVarIO fileStatus
-      logAddFile s senderId fileInfo createdAt status
+      logAddFile s senderId fileInfo createdAt expiresAt status
       (rcpErrs, rcps) <- M.mapEither getRcp . M.fromSet id <$> readTVarIO recipientIds
       mapM_ (logAddRecipients s senderId) $ L.nonEmpty $ M.elems rcps
       mapM_ (B.putStrLn . ("Error storing log: " <>)) rcpErrs

@@ -29,16 +29,21 @@ module Simplex.FileTransfer.Types
     sndChunkSize,
   ) where
 
+import qualified Data.Aeson as JD
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word32)
+import Text.Read (readMaybe)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol (FileStorageTime (..))
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
@@ -167,7 +172,9 @@ data SndFile = SndFile
     prefixPath :: Maybe FilePath,
     status :: SndFileStatus,
     deleted :: Bool,
-    redirect :: Maybe RedirectFileInfo
+    redirect :: Maybe RedirectFileInfo,
+    entitlementCredential :: Maybe EntitlementCredential,
+    storageTime :: FileStorageTime
   }
   deriving (Show)
 
@@ -186,6 +193,25 @@ data SndFileStatus
 instance FromField SndFileStatus where fromField = fromTextField_ textDecode
 
 instance ToField SndFileStatus where toField = toField . textEncode
+
+fileStorageTimeText :: FileStorageTime -> Text
+fileStorageTimeText = \case
+  FSTMax -> "max"
+  FSTFor h -> "for " <> T.pack (show h)
+
+fileStorageTimeParse :: Text -> Maybe FileStorageTime
+fileStorageTimeParse s = case T.words s of
+  ["max"] -> Just FSTMax
+  ["for", h] -> FSTFor <$> readMaybe (T.unpack h)
+  _ -> Nothing
+
+instance ToField FileStorageTime where toField = toField . fileStorageTimeText
+
+instance FromField FileStorageTime where fromField = fromTextField_ fileStorageTimeParse
+
+instance ToField EntitlementCredential where toField = toField . decodeUtf8 . LB.toStrict . JD.encode
+
+instance FromField EntitlementCredential where fromField = fromTextField_ (JD.decode . LB.fromStrict . encodeUtf8)
 
 instance TextEncoding SndFileStatus where
   textDecode = \case
