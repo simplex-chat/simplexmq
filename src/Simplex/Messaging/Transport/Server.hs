@@ -31,6 +31,7 @@ module Simplex.Messaging.Transport.Server
   )
 where
 
+import Debug.Trace
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
@@ -275,7 +276,15 @@ supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCre
                   logWarn $ "ALPN: client offered " <> tshow protos <> ", server selected " <> tshow proto
                   pure proto
               )
-                <$> alpn_
+                <$> alpn_,
+            T.onCipherChoosing = \v cs ->
+              traceShow "TLS: server hook onCipherChoosing" $ (T.onCipherChoosing def) v cs,
+            T.onNewHandshake = \m -> do
+              logWarn "TLS: server hook onNewHandshake"
+              (T.onNewHandshake def) m,
+            T.onEncryptedExtensionsCreating = \es -> do
+              logWarn "TLS: server hook onEncryptedExtensionsCreating"
+              (T.onEncryptedExtensionsCreating def) es
           },
       T.serverSupported = serverSupported
     }
