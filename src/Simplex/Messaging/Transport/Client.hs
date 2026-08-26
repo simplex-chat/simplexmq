@@ -296,7 +296,10 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ clientCredsSen
         def
           { T.onServerCertificate = onServerCert,
             T.onCertificateRequest = onCertRequest,
-            T.onSuggestALPN = alpn_ <$ logWarn ("ALPN: client offering " <> tshow alpn_)
+            T.onSuggestALPN = alpn_ <$ logWarn ("ALPN: client offering " <> tshow alpn_),
+            T.onCustomFFDHEGroup = \dh pub -> do
+              logWarn "TLS client hook onCustomFFDHEGroup"
+              (T.onCustomFFDHEGroup def) dh pub
           },
       T.clientSupported = supported
     }
