@@ -82,27 +82,27 @@ instance FileStoreClass PostgresFileStore where
     closeDBStore dbStore
     mapM_ closeStoreLog dbStoreLog
 
-  addFile st sId fileInfo@FileInfo {sndKey, size, digest} createdAt expiresAt status =
+  addFile st sId fileInfo@FileInfo {sndKey, size, digest} createdAt expiresAt permanent status =
     E.uninterruptibleMask_ $ runExceptT $ do
       void $ withDB "addFile" st $ \db ->
         E.try
           ( DB.execute
               db
-              "INSERT INTO files (sender_id, file_size, file_digest, sender_key, created_at, expires_at, status) VALUES (?,?,?,?,?,?,?)"
-              (sId, (fromIntegral size :: Int32), Binary digest, Binary (C.encodePubKey sndKey), createdAt, expiresAt, status)
+              "INSERT INTO files (sender_id, file_size, file_digest, sender_key, created_at, expires_at, permanent, status) VALUES (?,?,?,?,?,?,?,?)"
+              (sId, (fromIntegral size :: Int32), Binary digest, Binary (C.encodePubKey sndKey), createdAt, expiresAt, permanent, status)
           )
           >>= either handleDuplicate (pure . Right)
-      withLog "addFile" st $ \s -> logAddFile s sId fileInfo createdAt expiresAt status
+      withLog "addFile" st $ \s -> logAddFile s sId fileInfo createdAt expiresAt permanent status
 
   setFilePath st sId fPath = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "setFilePath" st $ \db ->
       DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
     withLog "setFilePath" st $ \s -> logPutFile s sId fPath
 
-  setFileExpiration st sId expiresAt = E.uninterruptibleMask_ $ runExceptT $ do
+  setFileExpiration st sId expiresAt permanent = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "setFileExpiration" st $ \db ->
-      DB.execute db "UPDATE files SET expires_at = ? WHERE sender_id = ?" (expiresAt, sId)
-    withLog "setFileExpiration" st $ \s -> logSetFileExpiration s sId expiresAt
+      DB.execute db "UPDATE files SET expires_at = ?, permanent = ? WHERE sender_id = ?" (expiresAt, permanent, sId)
+    withLog "setFileExpiration" st $ \s -> logSetFileExpiration s sId expiresAt permanent
 
   addRecipient st senderId (FileRecipient rId rKey) = E.uninterruptibleMask_ $ runExceptT $ do
     void $ withDB "addRecipient" st $ \db ->
@@ -136,13 +136,13 @@ instance FileStoreClass PostgresFileStore where
 
   getFile st party fId = runExceptT $ case party of
     SFSender -> do
-      row <- loadFileRow "SELECT sender_id, file_size, file_digest, sender_key, file_path, created_at, expires_at, status FROM files WHERE sender_id = ?"
+      row <- loadFileRow "SELECT sender_id, file_size, file_digest, sender_key, file_path, created_at, expires_at, permanent, status FROM files WHERE sender_id = ?"
       fr <- ExceptT $ rowToFileRec row
       pure (fr, sndKey (fileInfo fr))
     SFRecipient -> do
       row :. Only rcpKeyBs <-
         loadFileRow
-          "SELECT f.sender_id, f.file_size, f.file_digest, f.sender_key, f.file_path, f.created_at, f.expires_at, f.status, r.recipient_key FROM files f JOIN recipients r ON r.sender_id = f.sender_id WHERE r.recipient_id = ?"
+          "SELECT f.sender_id, f.file_size, f.file_digest, f.sender_key, f.file_path, f.created_at, f.expires_at, f.permanent, f.status, r.recipient_key FROM files f JOIN recipients r ON r.sender_id = f.sender_id WHERE r.recipient_id = ?"
       fr <- ExceptT $ rowToFileRec row
       rcpKey <- either (const $ throwE INTERNAL) pure $ C.decodePubKey rcpKeyBs
       pure (fr, rcpKey)
@@ -157,12 +157,12 @@ instance FileStoreClass PostgresFileStore where
       DB.execute db "DELETE FROM recipients WHERE recipient_id = ?" (Only rId)
     withLog "ackFile" st $ \s -> logAckFile s rId
 
-  expiredFiles st now limit =
+  expiredFiles st now defaultTtl limit =
     fmap toResult $ withTransaction (dbStore st) $ \db ->
       DB.query
         db
-        "SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? ORDER BY expires_at LIMIT ?"
-        (now, limit)
+        "SELECT sender_id, file_path, file_size FROM files WHERE (NOT permanent AND expires_at < ?) OR (NOT permanent AND expires_at IS NULL AND created_at < ?) LIMIT ?"
+        (now, now - defaultTtl, limit)
     where
       toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
       toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))
@@ -179,21 +179,21 @@ instance FileStoreClass PostgresFileStore where
 
 -- Internal helpers
 
-mkFileRec :: SenderId -> FileInfo -> Maybe FilePath -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO FileRec
-mkFileRec senderId fileInfo path createdAt expiresAt status = do
+mkFileRec :: SenderId -> FileInfo -> Maybe FilePath -> RoundedFileTime -> Maybe RoundedFileTime -> Bool -> ServerEntityStatus -> IO FileRec
+mkFileRec senderId fileInfo path createdAt expiresAt permanent status = do
   filePath <- newTVarIO path
   recipientIds <- newTVarIO S.empty
   fileStatus <- newTVarIO status
-  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, fileStatus}
+  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, permanent, fileStatus}
 
-type FileRecRow = (SenderId, Int32, ByteString, ByteString, Maybe FilePath, RoundedFileTime, Maybe RoundedFileTime, ServerEntityStatus)
+type FileRecRow = (SenderId, Int32, ByteString, ByteString, Maybe FilePath, RoundedFileTime, Maybe RoundedFileTime, Bool, ServerEntityStatus)
 
 rowToFileRec :: FileRecRow -> IO (Either XFTPErrorType FileRec)
-rowToFileRec (sId, size, digest, sndKeyBs, path, createdAt, expiresAt, status) =
+rowToFileRec (sId, size, digest, sndKeyBs, path, createdAt, expiresAt, permanent, status) =
   case C.decodePubKey sndKeyBs of
     Right sndKey -> do
       let fileInfo = FileInfo {sndKey, size = fromIntegral size, digest}
-      Right <$> mkFileRec sId fileInfo path createdAt expiresAt status
+      Right <$> mkFileRec sId fileInfo path createdAt expiresAt permanent status
     Left _ -> pure $ Left INTERNAL
 
 -- DB helpers
@@ -248,7 +248,7 @@ importFileStore storeLogFilePath dbCfg = do
   fCnt <- withTransaction (dbStore pgStore) $ \db -> do
     DB.copy_
       db
-      "COPY files (sender_id, file_size, file_digest, sender_key, file_path, created_at, expires_at, status) FROM STDIN WITH (FORMAT csv)"
+      "COPY files (sender_id, file_size, file_digest, sender_key, file_path, created_at, expires_at, permanent, status) FROM STDIN WITH (FORMAT csv)"
     iforM_ (M.toList allFiles) $ \i (sId, fr) -> do
       DB.putCopyData db =<< fileRecToCSV sId fr
       when (i > 0 && i `mod` 10000 == 0) $ putStr ("  " <> show i <> " files\r") >> hFlush stdout
@@ -287,13 +287,13 @@ exportFileStore storeLogFilePath dbCfg = do
   !fCnt <- withTransaction (dbStore pgStore) $ \db ->
     DB.fold_
       db
-      "SELECT sender_id, file_size, file_digest, sender_key, file_path, created_at, expires_at, status FROM files ORDER BY created_at"
+      "SELECT sender_id, file_size, file_digest, sender_key, file_path, created_at, expires_at, permanent, status FROM files ORDER BY created_at"
       (0 :: Int)
-      ( \(!fc) (sId, size :: Int32, digest :: ByteString, sndKeyBs :: ByteString, path :: Maybe String, createdAt, expiresAt, status) ->
+      ( \(!fc) (sId, size :: Int32, digest :: ByteString, sndKeyBs :: ByteString, path :: Maybe String, createdAt, expiresAt, permanent, status) ->
           case C.decodePubKey sndKeyBs of
             Right sndKey -> do
               let fileInfo = FileInfo {sndKey, size = fromIntegral size, digest}
-              logAddFile sl sId fileInfo createdAt expiresAt status
+              logAddFile sl sId fileInfo createdAt expiresAt permanent status
               forM_ path $ logPutFile sl sId
               pure (fc + 1)
             Left _ -> do
@@ -331,7 +331,7 @@ iforM_ :: Monad m => [a] -> (Int -> a -> m ()) -> m ()
 iforM_ xs f = zipWithM_ f [0 ..] xs
 
 fileRecToCSV :: SenderId -> FileRec -> IO ByteString
-fileRecToCSV sId FileRec {fileInfo = FileInfo {sndKey, size, digest}, filePath, createdAt, expiresAt, fileStatus} = do
+fileRecToCSV sId FileRec {fileInfo = FileInfo {sndKey, size, digest}, filePath, createdAt, expiresAt, permanent, fileStatus} = do
   path <- readTVarIO filePath
   status <- readTVarIO fileStatus
   pure $ LB.toStrict $ BB.toLazyByteString $ mconcat (BB.char7 ',' `intersperse` fields path status) <> BB.char7 '\n'
@@ -344,6 +344,7 @@ fileRecToCSV sId FileRec {fileInfo = FileInfo {sndKey, size, digest}, filePath, 
         nullable (toField <$> path),
         renderField (toField createdAt),
         nullable (toField <$> expiresAt),
+        renderField (toField permanent),
         quotedField (toField status)
       ]
 

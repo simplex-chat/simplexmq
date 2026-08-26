@@ -32,7 +32,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -495,12 +495,12 @@ processXFTPRequest sessionId HTTP2Body {bodyPart} = \case
         unless (size file `elem` sizes) $ throwE SIZE
         ts <- liftIO getFileTime
         maxSeconds <- lift $ storageMaxSeconds (xftpNewProofHeader sessionId sndKey digest) ep
-        let (expiresAt, granted) = resolveStorage (roundedSeconds ts) maxSeconds storageTime
+        let (expiresAt, permanent, granted) = resolveStorage (roundedSeconds ts) maxSeconds storageTime
         -- TODO validate body empty
-        sId <- ExceptT $ addFileRetry st file 3 ts expiresAt
+        sId <- ExceptT $ addFileRetry st file 3 ts expiresAt permanent
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> do
-          logAddFile sl sId file ts expiresAt EntityActive
+          logAddFile sl sId file ts expiresAt permanent EntityActive
           logAddRecipients sl sId rcps
         stats <- asks serverStats
         lift $ incFileStat filesCreated
@@ -513,10 +513,10 @@ processXFTPRequest sessionId HTTP2Body {bodyPart} = \case
       st <- asks fileStore
       maxSeconds <- storageMaxSeconds (xftpTimeProofHeader sessionId sId) ep
       now <- liftIO $ roundedSeconds <$> getSystemSeconds
-      let (expiresAt, granted) = resolveStorage now maxSeconds storageTime
-      liftIO (setFileExpiration st sId expiresAt) >>= \case
+      let (expiresAt, permanent, granted) = resolveStorage now maxSeconds storageTime
+      liftIO (setFileExpiration st sId expiresAt permanent) >>= \case
         Right () -> do
-          withFileLog $ \sl -> logSetFileExpiration sl sId expiresAt
+          withFileLog $ \sl -> logSetFileExpiration sl sId expiresAt permanent
           pure $ FRFileTime granted
         Left e -> pure $ FRErr e
     storageMaxSeconds :: BBSPresHeader -> Maybe EntitlementProof -> M s (Maybe Int64)
@@ -529,10 +529,10 @@ processXFTPRequest sessionId HTTP2Body {bodyPart} = \case
       liftIO (verifyEntitlement entitlementIssuerKeys ph proof) >>= \case
         Just True | expiresAt > now -> pure $ fromMaybe defaultMax $ M.lookup entitlementName entCfg
         _ -> pure defaultMax
-    addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> Maybe RoundedFileTime -> M s (Either XFTPErrorType XFTPFileId)
-    addFileRetry st file n ts expiresAt =
+    addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> Maybe RoundedFileTime -> Bool -> M s (Either XFTPErrorType XFTPFileId)
+    addFileRetry st file n ts expiresAt permanent =
       retryAdd n $ \sId -> runExceptT $ do
-        ExceptT $ addFile st sId file ts expiresAt EntityActive
+        ExceptT $ addFile st sId file ts expiresAt permanent EntityActive
         pure sId
     addRecipientRetry :: s -> Int -> XFTPFileId -> RcvPublicAuthKey -> M s (Either XFTPErrorType FileRecipient)
     addRecipientRetry st n sId rpk =
@@ -670,30 +670,34 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
 getFileTime :: IO RoundedFileTime
 getFileTime = getRoundedSystemTime
 
-resolveStorage :: Int64 -> Maybe Int64 -> FileStorageTime -> (Maybe RoundedFileTime, GrantedStorage)
-resolveStorage base maxSeconds storageTime = (expiresAt, granted)
+resolveStorage :: Int64 -> Maybe Int64 -> FileStorageTime -> (Maybe RoundedFileTime, Bool, GrantedStorage)
+resolveStorage base maxSeconds storageTime = (expiresAt, permanent, granted)
   where
     reqSeconds = case storageTime of
       FSTMax -> maxSeconds
       FSTFor hours -> Just $ let hSec = fromIntegral hours * 3600 in maybe hSec (min hSec) maxSeconds
+    permanent = isNothing reqSeconds
     expiresAt = (\s -> RoundedSystemTime (base + s)) <$> reqSeconds
-    granted = maybe GrantedPermanent (\(RoundedSystemTime t) -> GrantedExpires t) expiresAt
+    granted = maybe GrantedPermanent (\s -> GrantedExpires (base + s)) reqSeconds
 
 expireServerFiles :: FileStoreClass s => Maybe Int -> M s ()
-expireServerFiles itemDelay = do
-  st <- asks fileStore
-  us <- asks usedStorage
-  usedStart <- readTVarIO us
-  now <- liftIO $ roundedSeconds <$> getSystemSeconds
-  filesCount <- liftIO $ getFileCount st
-  logNote $ "Expiration check: " <> tshow filesCount <> " files"
-  expireLoop st us now
-  usedEnd <- readTVarIO us
-  logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
+expireServerFiles itemDelay =
+  asks (fileExpiration . config) >>= \case
+    Nothing -> pure ()
+    Just ExpirationConfig {ttl = defaultTtl} -> do
+      st <- asks fileStore
+      us <- asks usedStorage
+      usedStart <- readTVarIO us
+      now <- liftIO $ roundedSeconds <$> getSystemSeconds
+      filesCount <- liftIO $ getFileCount st
+      logNote $ "Expiration check: " <> tshow filesCount <> " files"
+      expireLoop st us now defaultTtl
+      usedEnd <- readTVarIO us
+      logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
-    expireLoop st us now = do
-      expired <- liftIO $ expiredFiles st now 10000
+    expireLoop st us now defaultTtl = do
+      expired <- liftIO $ expiredFiles st now defaultTtl 10000
       forM_ expired $ \(sId, filePath_, fileSize) -> do
         mapM_ threadDelay itemDelay
         forM_ filePath_ $ \fp ->
@@ -706,7 +710,7 @@ expireServerFiles itemDelay = do
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
-        expireLoop st us now
+        expireLoop st us now defaultTtl
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random

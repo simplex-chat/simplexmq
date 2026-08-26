@@ -51,13 +51,14 @@ m20260823_file_expiration :: Text
 m20260823_file_expiration =
   [r|
 ALTER TABLE files ADD COLUMN expires_at BIGINT;
-UPDATE files SET expires_at = created_at + 48 * 3600;
-CREATE INDEX idx_files_expires_at ON files (expires_at);
+ALTER TABLE files ADD COLUMN permanent BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX idx_files_expiry ON files (permanent, expires_at, created_at);
 |]
 
 down_m20260823_file_expiration :: Text
 down_m20260823_file_expiration =
   [r|
-DROP INDEX idx_files_expires_at;
+DROP INDEX idx_files_expiry;
+ALTER TABLE files DROP COLUMN permanent;
 ALTER TABLE files DROP COLUMN expires_at;
 |]
