@@ -54,21 +54,18 @@ data Entitlement = Entitlement
   }
   deriving (Eq, Show)
 
--- | The signing form, held by the entitlement holder; never transmitted.
 data EntitlementCredential = EntitlementCredential
-  { issuerKeyIdx :: Int,
+  { issuerKeyIdx :: Word16,
     masterKey :: MasterKey,
     entitlement :: Entitlement,
     issuerSignature :: BBSSignature
   }
   deriving (Eq, Show)
 
--- | The proof form. The presentation header is not part of the proof: the
--- verifier supplies it, so a proof cannot claim its own binding.
 data EntitlementProof = EntitlementProof
-  { issuerKeyIdx :: Int,
+  { issuerKeyIdx :: Word16,
     entitlement :: Entitlement,
-    proof :: BBSProof
+    entProof :: BBSProof
   }
   deriving (Eq, Show)
 
@@ -81,11 +78,11 @@ instance Encoding Entitlement where
     pure Entitlement {entitlementName, expiresAt, extraInfo}
 
 instance Encoding EntitlementProof where
-  smpEncode EntitlementProof {issuerKeyIdx, proof, entitlement} =
-    smpEncode (fromIntegral issuerKeyIdx :: Word16, proof, entitlement)
+  smpEncode EntitlementProof {issuerKeyIdx, entProof, entitlement} =
+    smpEncode (issuerKeyIdx, entProof, entitlement)
   smpP = do
-    (idx, proof, entitlement) <- smpP
-    pure EntitlementProof {issuerKeyIdx = fromIntegral (idx :: Word16), proof, entitlement}
+    (issuerKeyIdx, entProof, entitlement) <- smpP
+    pure EntitlementProof {issuerKeyIdx, entProof, entitlement}
 
 entitlementBBSHeader :: BBSHeader
 entitlementBBSHeader = BBSHeader "SimpleX entitlement v1"
@@ -104,7 +101,7 @@ disclosedMessages Entitlement {entitlementName, expiresAt, extraInfo} =
   [strEncode expiresAt, encodeUtf8 entitlementName, encodeUtf8 extraInfo]
 
 -- | Issuer side: sign an entitlement for a holder master key.
-signEntitlement :: BBSSecretKey -> Int -> MasterKey -> Entitlement -> IO (Either String EntitlementCredential)
+signEntitlement :: BBSSecretKey -> Word16 -> MasterKey -> Entitlement -> IO (Either String EntitlementCredential)
 signEntitlement sk keyIdx mk ent =
   EntitlementCredential keyIdx mk ent <$$> bbsSign sk entitlementBBSHeader (entitlementMessages mk ent)
 
@@ -118,15 +115,13 @@ generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHead
 generateEntitlementProof pk EntitlementCredential {issuerKeyIdx, masterKey, issuerSignature, entitlement} ph =
   EntitlementProof issuerKeyIdx entitlement <$$> bbsProofGen pk issuerSignature entitlementBBSHeader ph entitlementDisclosedIndexes (entitlementMessages masterKey entitlement)
 
--- | Verifier side: verify the proof with the configured key its index points to,
--- against the supplied presentation header. Nothing means the key index is not
--- among the configured keys.
-verifyEntitlement :: Map Int BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)
-verifyEntitlement keys ph EntitlementProof {issuerKeyIdx, proof, entitlement} =
+-- | Verifier side: verify the proof with the configured key.
+verifyEntitlement :: Map Word16 BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)
+verifyEntitlement keys ph EntitlementProof {issuerKeyIdx, entProof, entitlement} =
   forM (M.lookup issuerKeyIdx keys) $ \pk ->
-    bbsProofVerify pk proof entitlementBBSHeader ph entitlementDisclosedIndexes entitlementMessageCount (disclosedMessages entitlement)
+    bbsProofVerify pk entProof entitlementBBSHeader ph entitlementDisclosedIndexes entitlementMessageCount (disclosedMessages entitlement)
 
-entitlementIssuerKeys :: Map Int BBSPublicKey
+entitlementIssuerKeys :: Map Word16 BBSPublicKey
 entitlementIssuerKeys =
   M.fromList
     [ (1, key "mW_5Zp1wHnXDF56wOZwFcRjGrf0GLLsfyymIQDqYoWfjfvS7oQWSfi7hH65N8JhuE9x8wbKXHidnQLO4GnOSMP_bRKUMH1qIzv5SQKFHNM8G4PaWcTcri8iZLc-3xhSI"),
@@ -139,7 +134,7 @@ entitlementIssuerKeys =
       (8, key "joM3Bnt7JPt5JiwQwERHGjro2iVZ0mPD_clUh4hzkhxvbjuFrWuTmfSNA8PWBqGKEGNl13aRi1pMf6yY14E27c5C71JxWm7T-rZaBrGPEUWifhD-qidWuf3PU7KJCCWd")
     ]
   where
-    key = fromRight (error "bad base64 in entitlement issuer key") . strDecode . B.pack
+    key = fromRight (error "bad base64 in BBSPublicKey") . strDecode . B.pack
 
 $(JQ.deriveJSON defaultJSON ''Entitlement)
 
