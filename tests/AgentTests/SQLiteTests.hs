@@ -798,7 +798,8 @@ newSndChunkReplica1 =
     { server = xftpServer1,
       replicaId = ChunkReplicaId $ EntityId "abc",
       replicaKey = testFileReplicaKey,
-      rcvIdsKeys = [(ChunkReplicaId $ EntityId "abc", testFileReplicaKey)]
+      rcvIdsKeys = [(ChunkReplicaId $ EntityId "abc", testFileReplicaKey)],
+      expiresAt = Nothing
     }
 
 testGetNextSndChunkToUpload :: DBStore -> Expectation

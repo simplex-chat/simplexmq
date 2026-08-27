@@ -54,7 +54,7 @@ import Simplex.FileTransfer.Chunks (toKB)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), getChunkDigest, prepareChunkSizes, prepareChunkSpecs, singleChunkSize)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime, SFileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
@@ -544,7 +544,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
       notify c sndFileEntityId $ SFPROG uploaded total
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
-        notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs
+        notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs (sndFileExpiresAt chunks)
         lift . forM_ prefixPath $ removePath <=< toFSFilePath
         withStore' c $ \db -> updateSndFileComplete db sndFileId
       where
@@ -578,6 +578,10 @@ runXFTPSndWorker c srv Worker {doWork} = do
           let chunkSize = FileSize $ sndChunkSize ch
               replicas = [FileChunkReplica {server, replicaId, replicaKey}]
           pure FileChunk {chunkNo, digest = chDigest, chunkSize, replicas}
+        sndFileExpiresAt :: [SndFileChunk] -> Maybe GrantedStorageTime
+        sndFileExpiresAt = fmap minimum . mapM chunkExpiresAt
+          where
+            chunkExpiresAt SndFileChunk {replicas} = maximum <$> L.nonEmpty (mapMaybe (\SndFileChunkReplica {expiresAt} -> expiresAt) replicas)
         createRcvFileDescriptions :: FileDescription 'FRecipient -> [SndFileChunk] -> [FileDescription 'FRecipient]
         createRcvFileDescriptions fd sndChunks = map (\chunks -> (fd :: (FileDescription 'FRecipient)) {chunks}) rcvChunks
           where

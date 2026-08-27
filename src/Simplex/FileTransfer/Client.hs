@@ -256,10 +256,10 @@ createXFTPChunk ::
   Maybe BasicAuth ->
   Maybe Int64 ->
   Maybe EntitlementProof ->
-  ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
+  ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId, Maybe GrantedStorageTime)
 createXFTPChunk c spKey file rcps auth_ storageTime proof =
   sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageTime proof) Nothing >>= \case
-    (FRSndIds sId rIds _, body) -> noFile body (sId, rIds)
+    (FRSndIds sId rIds gs, body) -> noFile body (sId, rIds, gs)
     (r, _) -> throwE $ unexpectedResponse r
 
 addXFTPRecipients :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> NonEmpty C.APublicAuthKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)

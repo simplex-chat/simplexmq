@@ -1346,7 +1346,7 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
         let file = FileInfo {sndKey, size = chSize, digest}
             chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
         r <- runExceptT $ do
-          (sId, [rId]) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth Nothing Nothing
+          (sId, [rId], _) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth Nothing Nothing
           liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
           liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
           rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
@@ -2194,11 +2194,11 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
   logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
-  (sndId, rIds) <- withClient c NRMBackground tSess $ \xftp -> do
+  (sndId, rIds, expiresAt) <- withClient c NRMBackground tSess $ \xftp -> do
     proof <- liftIO $ mkEntitlementProof (sessionId $ X.thParams xftp) sndKey
     X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageTime proof
   logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
-  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
+  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys, expiresAt}
   where
     mkEntitlementProof sessId sndKey =
       pure credential

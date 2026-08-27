@@ -13,7 +13,7 @@ The proof discloses the entitlement and includes the issuer key index and the BB
 ```
 entitlement = entName entExpires entExtra
 entName = shortString        ; e.g. "supporter", "legend"
-entExpires = shortString     ; expiration, encoded as signed
+entExpires = shortString     ; expiration as a UTCTime ISO8601 string
 entExtra = shortString       ; opaque, interpretation out of scope
 
 entitlementProof = issuerKeyIndex bbsProof entitlement

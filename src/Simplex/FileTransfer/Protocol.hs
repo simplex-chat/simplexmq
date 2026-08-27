@@ -202,7 +202,7 @@ data FileInfo = FileInfo
   deriving (Show)
 
 data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 xftpNewProofHeader :: SessionId -> SndPublicAuthKey -> ByteString -> BBSPresHeader
 xftpNewProofHeader sessionId sndKey digest = BBSPresHeader $ sessionId <> smpEncode sndKey <> digest

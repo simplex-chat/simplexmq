@@ -309,7 +309,7 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..), SFileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Agent.Protocol
@@ -3511,7 +3511,7 @@ getSndFile db sndFileId = runExceptT $ do
             db
             [sql|
               SELECT
-                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries,
+                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries, r.replica_expires_at,
                 s.xftp_host, s.xftp_port, s.xftp_key_hash
               FROM snd_file_chunk_replicas r
               JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -3522,10 +3522,10 @@ getSndFile db sndFileId = runExceptT $ do
         rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
         pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
       where
-        toReplica :: (Int64, ChunkReplicaId, C.APrivateAuthKey, SndFileReplicaStatus, Maybe Int64, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> SndFileChunkReplica
-        toReplica (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries, host, port, keyHash) =
+        toReplica :: (Int64, ChunkReplicaId, C.APrivateAuthKey, SndFileReplicaStatus, Maybe Int64, Int, Maybe Int64, NonEmpty TransportHost, ServiceName, C.KeyHash) -> SndFileChunkReplica
+        toReplica (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries, expiresAtSec, host, port, keyHash) =
           let server = XFTPServer host port keyHash
-           in SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}
+           in SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, expiresAt = GSTExpires <$> expiresAtSec, rcvIdsKeys = []}
 
 getChunkReplicaRecipients_ :: DB.Connection -> Int64 -> IO [(ChunkReplicaId, C.APrivateAuthKey)]
 getChunkReplicaRecipients_ db replicaId =
@@ -3606,16 +3606,16 @@ createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> I
 createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica_ db sndChunkId
 
 createSndFileReplica_ :: DB.Connection -> Int64 -> NewSndChunkReplica -> IO ()
-createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
+createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys, expiresAt} = do
   srvId <- createXFTPServer_ db server
   DB.execute
     db
     [sql|
       INSERT INTO snd_file_chunk_replicas
-        (snd_file_chunk_id, replica_number, xftp_server_id, replica_id, replica_key, replica_status)
-      VALUES (?,?,?,?,?,?)
+        (snd_file_chunk_id, replica_number, xftp_server_id, replica_id, replica_key, replica_status, replica_expires_at)
+      VALUES (?,?,?,?,?,?,?)
     |]
-    (sndChunkId, 1 :: Int, srvId, replicaId, replicaKey, SFRSCreated)
+    (sndChunkId, 1 :: Int, srvId, replicaId, replicaKey, SFRSCreated, epochSeconds <$> expiresAt)
   rId <- insertedRowId db
   forM_ rcvIdsKeys $ \(rcvId, rcvKey) -> do
     DB.execute
@@ -3688,7 +3688,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
                   chunkSpec,
                   digest,
                   filePrefixPath,
-                  replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}]
+                  replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, expiresAt = Nothing, rcvIdsKeys = []}]
                 }
 
 updateSndChunkReplicaDelay :: DB.Connection -> Int64 -> Int64 -> IO ()

@@ -33,7 +33,8 @@ import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpStartWorkers)
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
-import Simplex.Messaging.Agent.Protocol (AEvent (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
+import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
+import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Client (pattern NRMInteractive)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
@@ -55,6 +56,9 @@ import XFTPClient
 import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
+
+pattern SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> AEvent 'AESndFile
+pattern SFDONE sndDescr rcvDescrs <- A.SFDONE sndDescr rcvDescrs _
 
 xftpAgentTests :: SpecWith AFStoreType
 xftpAgentTests =

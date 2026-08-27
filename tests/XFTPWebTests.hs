@@ -49,7 +49,8 @@ import Simplex.FileTransfer.Server.Store (STMFileStore)
 import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpSendFile, xftpTestPort)
 import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAgent)
 import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpStartWorkers)
-import Simplex.Messaging.Agent.Protocol (AEvent (..))
+import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
+import qualified Simplex.Messaging.Agent.Protocol as A
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import XFTPCLI (recipientFiles, senderFiles, testBracket)
 import qualified Simplex.Messaging.Crypto.File as CF
@@ -167,6 +168,9 @@ impAddr = "import * as Addr from './dist/protocol/address.js';"
 -- | Wrap expression in process.stdout.write(Buffer.from(...)).
 jsOut :: String -> String
 jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
+
+pattern SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> AEvent 'AESndFile
+pattern SFDONE sndDescr rcvDescrs <- A.SFDONE sndDescr rcvDescrs _
 
 xftpWebTests :: IO () -> Spec
 xftpWebTests dbCleanup = do

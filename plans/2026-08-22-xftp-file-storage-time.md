@@ -112,7 +112,14 @@ Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 
 - in `agentXFTPNewChunk`, read the credential, the storage time, and the digest from the send record
 - inside `withClient`, where `sessionId` is available, build the presentation header `sessionId <> sndKey <> digest`, generate the proof, and send FNEW with the storage time and the proof
-- discard the returned expiration for now
+- `createXFTPChunk` returns the granted expiry (epoch seconds); `agentXFTPNewChunk` stores it on `NewSndChunkReplica`
+
+Completion:
+
+- `createXFTPChunk` returns the granted expiry as `Maybe GrantedStorageTime`; `SndFileChunkReplica` and `NewSndChunkReplica` carry `expiresAt :: Maybe GrantedStorageTime`
+- persist it in a nullable `replica_expires_at` column on `snd_file_chunk_replicas` (added to the entitlement migration): `createSndFileReplica` stores `epochSeconds`, `getSndFile` reads it back into `GSTExpires`
+- on `SFDONE`, report the file expiry: a chunk expires when its last replica expires (`max` over replicas, absent replicas ignored, `Nothing` only if none report); the file expires when its first chunk expires (`min` over chunks, `Nothing` if any chunk is unknown). `GrantedStorageTime` derives `Ord`
+- `SFDONE` gains a trailing `Maybe GrantedStorageTime` (not str-encoded); chat consumes it (wired later)
 
 ## simplex-chat
 

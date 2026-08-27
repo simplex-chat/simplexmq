@@ -103,7 +103,7 @@ createTestChunk fp = do
   pure bytes
 
 createXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> FileInfo -> NonEmpty C.APublicAuthKey -> Maybe BasicAuth -> ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
-createXFTPChunk c spKey file rcps auth = A.createXFTPChunk c spKey file rcps auth Nothing Nothing
+createXFTPChunk c spKey file rcps auth = (\(sId, rIds, _) -> (sId, rIds)) <$> A.createXFTPChunk c spKey file rcps auth Nothing Nothing
 
 readChunk :: XFTPFileId -> IO ByteString
 readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))

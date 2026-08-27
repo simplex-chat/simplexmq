@@ -41,6 +41,7 @@ import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word32)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol (GrantedStorageTime (..))
 import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -234,7 +235,8 @@ data NewSndChunkReplica = NewSndChunkReplica
   { server :: XFTPServer,
     replicaId :: ChunkReplicaId,
     replicaKey :: C.APrivateAuthKey,
-    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateAuthKey)]
+    rcvIdsKeys :: [(ChunkReplicaId, C.APrivateAuthKey)],
+    expiresAt :: Maybe GrantedStorageTime
   }
   deriving (Show)
 
@@ -246,7 +248,8 @@ data SndFileChunkReplica = SndFileChunkReplica
     rcvIdsKeys :: [(ChunkReplicaId, C.APrivateAuthKey)],
     replicaStatus :: SndFileReplicaStatus,
     delay :: Maybe Int64,
-    retries :: Int
+    retries :: Int,
+    expiresAt :: Maybe GrantedStorageTime
   }
   deriving (Show)
 
