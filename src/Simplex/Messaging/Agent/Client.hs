@@ -2201,8 +2201,10 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
   where
     mkEntitlementProof sessId sndKey =
-      pure (credential >>= \cred@EntitlementCredential {issuerKeyIdx} -> (cred,) <$> M.lookup issuerKeyIdx entitlementIssuerKeys) $>>= \(cred, pk) ->
-        generateEntitlementProof pk cred (xftpNewProofHeader sessId sndKey chunkDigest) >>= \case
+      pure credential
+        $>>= \cred -> pure (M.lookup (issuerKeyIdx cred) entitlementIssuerKeys)
+        $>>= \pk -> generateEntitlementProof pk cred (xftpNewProofHeader sessId sndKey chunkDigest)
+        >>= \case
           Right p -> pure $ Just p
           Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
 
