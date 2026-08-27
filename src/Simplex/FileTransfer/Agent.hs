@@ -22,7 +22,6 @@ module Simplex.FileTransfer.Agent
     -- Sending files
     xftpSendFile',
     xftpSendDescription',
-    xftpSetFileTime',
     deleteSndFileInternal,
     deleteSndFilesInternal,
     deleteSndFileRemote,
@@ -55,7 +54,7 @@ import Simplex.FileTransfer.Chunks (toKB)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), getChunkDigest, prepareChunkSizes, prepareChunkSpecs, singleChunkSize)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..), GrantedStorage, SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..), SFileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
@@ -377,7 +376,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   liftError (FILE . FILE_IO . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce (Just RedirectFileInfo {size, digest}) Nothing FSTMax
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce (Just RedirectFileInfo {size, digest}) Nothing FSMaxTime
   lift . void $ getXFTPSndWorker True c Nothing
   pure fId
 
@@ -640,15 +639,6 @@ deleteSndFilesInternal c sndFileEntityIds = do
     fileComplete SndFile {status} = status == SFSComplete || status == SFSError
     batchFiles_ :: (DB.Connection -> DBSndFileId -> IO a) -> [SndFile] -> AM' ()
     batchFiles_ f sndFiles = void $ withStoreBatch' c $ \db -> map (\SndFile {sndFileId} -> f db sndFileId) sndFiles
-
-xftpSetFileTime' :: AgentClient -> UserId -> ValidFileDescription 'FSender -> FileStorageTime -> Maybe EntitlementCredential -> AM [GrantedStorage]
-xftpSetFileTime' c userId (ValidFileDescription FileDescription {chunks}) storageTime credential =
-  forM (mapMaybe chunkReplica chunks) $ \(server, replicaId, replicaKey, digest) ->
-    agentXFTPSetChunkTime c userId server replicaId replicaKey digest storageTime credential
-  where
-    chunkReplica = \case
-      FileChunk {digest, replicas = FileChunkReplica {server, replicaId, replicaKey} : _} -> Just (server, replicaId, replicaKey, digest)
-      _ -> Nothing
 
 deleteSndFileRemote :: AgentClient -> UserId -> SndFileId -> ValidFileDescription 'FSender -> AM' ()
 deleteSndFileRemote c userId sndFileEntityId sfd = deleteSndFilesRemote c userId [(sndFileEntityId, sfd)]

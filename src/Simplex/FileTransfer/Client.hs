@@ -21,7 +21,6 @@ module Simplex.FileTransfer.Client
     xftpTransportHost,
     createXFTPChunk,
     createXFTPChunkStorage,
-    setXFTPChunkTime,
     addXFTPRecipients,
     uploadXFTPChunk,
     downloadXFTPChunk,
@@ -257,7 +256,7 @@ createXFTPChunk ::
   NonEmpty C.APublicAuthKey ->
   Maybe BasicAuth ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
-createXFTPChunk c spKey file rcps auth_ = createXFTPChunkStorage c spKey file rcps auth_ FSTMax Nothing
+createXFTPChunk c spKey file rcps auth_ = createXFTPChunkStorage c spKey file rcps auth_ FSMaxTime Nothing
 
 createXFTPChunkStorage ::
   XFTPClient ->
@@ -271,12 +270,6 @@ createXFTPChunkStorage ::
 createXFTPChunkStorage c spKey file rcps auth_ storageTime proof =
   sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageTime proof) Nothing >>= \case
     (FRSndIds sId rIds _, body) -> noFile body (sId, rIds)
-    (r, _) -> throwE $ unexpectedResponse r
-
-setXFTPChunkTime :: XFTPClient -> C.APrivateAuthKey -> SenderId -> FileStorageTime -> Maybe EntitlementProof -> ExceptT XFTPClientError IO GrantedStorage
-setXFTPChunkTime c spKey sId storageTime proof =
-  sendXFTPCommand c spKey sId (FTTL storageTime proof) Nothing >>= \case
-    (FRFileTime gs, body) -> noFile body gs
     (r, _) -> throwE $ unexpectedResponse r
 
 addXFTPRecipients :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> NonEmpty C.APublicAuthKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)

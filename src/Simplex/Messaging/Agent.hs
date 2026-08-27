@@ -130,7 +130,6 @@ module Simplex.Messaging.Agent
     xftpSendFile,
     xftpSendFileStorage,
     xftpSendDescription,
-    xftpSetFileTime,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFilesInternal,
     xftpDeleteSndFileRemote,
@@ -190,9 +189,9 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile', xftpSetFileTime')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
-import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..), GrantedStorage)
+import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
@@ -777,7 +776,7 @@ xftpDeleteRcvFiles c = withAgentEnv' c . xftpDeleteRcvFiles' c
 
 -- | Send XFTP file
 xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> AE SndFileId
-xftpSendFile c userId file numRecipients = xftpSendFileStorage c userId file numRecipients Nothing FSTMax
+xftpSendFile c userId file numRecipients = xftpSendFileStorage c userId file numRecipients Nothing FSMaxTime
 {-# INLINE xftpSendFile #-}
 
 xftpSendFileStorage :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> FileStorageTime -> AE SndFileId
@@ -788,11 +787,6 @@ xftpSendFileStorage c userId file numRecipients credential storageTime = withAge
 xftpSendDescription :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AE SndFileId
 xftpSendDescription c = withAgentEnv c .:. xftpSendDescription' c
 {-# INLINE xftpSendDescription #-}
-
--- | Set XFTP file storage time on the server (all chunks in the sender description)
-xftpSetFileTime :: AgentClient -> UserId -> ValidFileDescription 'FSender -> FileStorageTime -> Maybe EntitlementCredential -> AE [GrantedStorage]
-xftpSetFileTime c userId vfd storageTime credential = withAgentEnv c $ xftpSetFileTime' c userId vfd storageTime credential
-{-# INLINE xftpSetFileTime #-}
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
 xftpDeleteSndFileInternal :: AgentClient -> SndFileId -> IO ()

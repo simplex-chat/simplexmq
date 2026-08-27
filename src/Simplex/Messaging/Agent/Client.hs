@@ -94,7 +94,6 @@ module Simplex.Messaging.Agent.Client
     agentXFTPUploadChunk,
     agentXFTPAddRecipients,
     agentXFTPDeleteChunk,
-    agentXFTPSetChunkTime,
     agentCbDecrypt,
     cryptoError,
     sendAck,
@@ -234,7 +233,7 @@ import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, FileStorageTime, GrantedStorage, xftpNewProofHeader, xftpTimeProofHeader)
+import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, FileStorageTime, xftpNewProofHeader)
 import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
@@ -2221,19 +2220,6 @@ agentXFTPAddRecipients c userId (FileDigest chunkDigest) SndFileChunkReplica {se
 agentXFTPDeleteChunk :: AgentClient -> UserId -> DeletedSndChunkReplica -> AM ()
 agentXFTPDeleteChunk c userId DeletedSndChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey, chunkDigest = FileDigest chunkDigest} =
   withXFTPClient c (userId, server, chunkDigest) "FDEL" $ \xftp -> X.deleteXFTPChunk xftp replicaKey fId
-
-agentXFTPSetChunkTime :: AgentClient -> UserId -> XFTPServer -> ChunkReplicaId -> C.APrivateAuthKey -> FileDigest -> FileStorageTime -> Maybe EntitlementCredential -> AM GrantedStorage
-agentXFTPSetChunkTime c userId server (ChunkReplicaId fId) replicaKey (FileDigest chunkDigest) storageTime credential =
-  withXFTPClient c (userId, server, chunkDigest) "FTTL" $ \xftp -> do
-    proof <- liftIO $ mkEntitlementTimeProof (sessionId $ X.thParams xftp) fId credential
-    X.setXFTPChunkTime xftp replicaKey fId storageTime proof
-
-mkEntitlementTimeProof :: SessionId -> SMP.SenderId -> Maybe EntitlementCredential -> IO (Maybe EntitlementProof)
-mkEntitlementTimeProof _ _ Nothing = pure Nothing
-mkEntitlementTimeProof sessId sId (Just cred@EntitlementCredential {issuerKeyIdx}) =
-  case M.lookup issuerKeyIdx entitlementIssuerKeys of
-    Nothing -> pure Nothing
-    Just pk -> either (const Nothing) Just <$> generateEntitlementProof pk cred (xftpTimeProofHeader sessId sId)
 
 xftpRcvKeys :: Int -> AM (NonEmpty C.AAuthKeyPair)
 xftpRcvKeys n = do

@@ -93,8 +93,8 @@ data XFTPServerConfig s = XFTPServerConfig
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the files can be removed and check interval, seconds
     fileExpiration :: Maybe ExpirationConfig,
-    -- | maximum storage time per entitlement name, seconds; Nothing value is permanent
-    fileStorageEntitlements :: Map Text (Maybe Int64),
+    -- | maximum storage time per entitlement name, seconds
+    fileStorageEntitlements :: Map Text Int64,
     -- | timeout to receive file
     fileTimeout :: Int,
     -- | time after which inactive clients can be disconnected and check interval, seconds
@@ -173,10 +173,9 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
-storageAtLeast :: Maybe Int64 -> Maybe Int64 -> Bool
-storageAtLeast Nothing _ = True
-storageAtLeast (Just _) Nothing = False
-storageAtLeast (Just a) (Just b) = a >= b
+storageAtLeast :: Int64 -> Maybe Int64 -> Bool
+storageAtLeast _ Nothing = True
+storageAtLeast a (Just b) = a >= b
 
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
 newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials} = do

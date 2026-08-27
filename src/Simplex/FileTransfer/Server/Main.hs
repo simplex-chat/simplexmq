@@ -442,11 +442,9 @@ cliCommandP cfgPath logPath iniFile =
             <> command "export" (info (pure SCExport) (progDesc "Export PostgreSQL database to store log file"))
         )
 
-iniEntitlements :: Ini -> Map T.Text (Maybe Int64)
+iniEntitlements :: Ini -> Map T.Text Int64
 iniEntitlements ini =
   M.fromList $ mapMaybe readEntitlement [("supporter", "supporter_storage_hours"), ("legend", "legend_storage_hours"), ("investor", "investor_storage_hours")]
   where
     readEntitlement (name, key) = (name,) <$> (parseMax =<< eitherToMaybe (lookupValue "STORE_LOG" key ini))
-    parseMax t = case T.strip t of
-      "permanent" -> Just Nothing
-      s -> Just . (3600 *) <$> (readMaybe (T.unpack s) :: Maybe Int64)
+    parseMax t = (3600 *) <$> (readMaybe (T.unpack (T.strip t)) :: Maybe Int64)

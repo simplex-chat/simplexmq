@@ -196,13 +196,13 @@ instance ToField SndFileStatus where toField = toField . textEncode
 
 fileStorageTimeText :: FileStorageTime -> Text
 fileStorageTimeText = \case
-  FSTMax -> "max"
-  FSTFor h -> "for " <> T.pack (show h)
+  FSMaxTime -> "max"
+  FSTime h -> "for " <> T.pack (show h)
 
 fileStorageTimeParse :: Text -> Maybe FileStorageTime
 fileStorageTimeParse s = case T.words s of
-  ["max"] -> Just FSTMax
-  ["for", h] -> FSTFor <$> readMaybe (T.unpack h)
+  ["max"] -> Just FSMaxTime
+  ["for", h] -> FSTime <$> readMaybe (T.unpack h)
   _ -> Nothing
 
 instance ToField FileStorageTime where toField = toField . fileStorageTimeText
