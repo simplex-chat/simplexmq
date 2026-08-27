@@ -40,6 +40,7 @@ import Simplex.Messaging.Crypto.BBS
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON)
+import Simplex.Messaging.Util ((<$$>))
 
 newtype MasterKey = MasterKey ByteString
   deriving newtype (Eq, Show, StrEncoding)
@@ -57,8 +58,8 @@ data Entitlement = Entitlement
 data EntitlementCredential = EntitlementCredential
   { issuerKeyIdx :: Int,
     masterKey :: MasterKey,
-    issuerSignature :: BBSSignature,
-    entitlement :: Entitlement
+    entitlement :: Entitlement,
+    issuerSignature :: BBSSignature
   }
   deriving (Eq, Show)
 
@@ -66,8 +67,8 @@ data EntitlementCredential = EntitlementCredential
 -- verifier supplies it, so a proof cannot claim its own binding.
 data EntitlementProof = EntitlementProof
   { issuerKeyIdx :: Int,
-    proof :: BBSProof,
-    entitlement :: Entitlement
+    entitlement :: Entitlement,
+    proof :: BBSProof
   }
   deriving (Eq, Show)
 
@@ -75,9 +76,9 @@ instance Encoding Entitlement where
   smpEncode Entitlement {entitlementName, expiresAt, extraInfo} =
     smpEncode (entitlementName, strEncode expiresAt, extraInfo)
   smpP = do
-    (name, expBs, extra) <- smpP
+    (entitlementName, expBs, extraInfo) <- smpP
     expiresAt <- either fail pure $ strDecode (expBs :: ByteString)
-    pure Entitlement {entitlementName = name, expiresAt, extraInfo = extra}
+    pure Entitlement {entitlementName, expiresAt, extraInfo}
 
 instance Encoding EntitlementProof where
   smpEncode EntitlementProof {issuerKeyIdx, proof, entitlement} =
@@ -105,7 +106,7 @@ disclosedMessages Entitlement {entitlementName, expiresAt, extraInfo} =
 -- | Issuer side: sign an entitlement for a holder master key.
 signEntitlement :: BBSSecretKey -> Int -> MasterKey -> Entitlement -> IO (Either String EntitlementCredential)
 signEntitlement sk keyIdx mk ent =
-  fmap (\sig -> EntitlementCredential keyIdx mk sig ent) <$> bbsSign sk entitlementBBSHeader (entitlementMessages mk ent)
+  EntitlementCredential keyIdx mk ent <$$> bbsSign sk entitlementBBSHeader (entitlementMessages mk ent)
 
 -- | Holder side: verify the credential received from the issuer.
 verifyCredential :: BBSPublicKey -> EntitlementCredential -> IO Bool
@@ -115,7 +116,7 @@ verifyCredential pk EntitlementCredential {masterKey, issuerSignature, entitleme
 -- | Holder side: generate a proof bound to the presentation header.
 generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)
 generateEntitlementProof pk EntitlementCredential {issuerKeyIdx, masterKey, issuerSignature, entitlement} ph =
-  fmap (\p -> EntitlementProof issuerKeyIdx p entitlement) <$> bbsProofGen pk issuerSignature entitlementBBSHeader ph entitlementDisclosedIndexes (entitlementMessages masterKey entitlement)
+  EntitlementProof issuerKeyIdx entitlement <$$> bbsProofGen pk issuerSignature entitlementBBSHeader ph entitlementDisclosedIndexes (entitlementMessages masterKey entitlement)
 
 -- | Verifier side: verify the proof with the configured key its index points to,
 -- against the supplied presentation header. Nothing means the key index is not
