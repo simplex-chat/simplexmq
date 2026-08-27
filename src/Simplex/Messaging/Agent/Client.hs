@@ -2195,14 +2195,16 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c NRMBackground tSess $ \xftp -> do
-    proof <- liftIO $ case credential of
-      Nothing -> pure Nothing
-      Just cred@EntitlementCredential {issuerKeyIdx} -> case M.lookup issuerKeyIdx entitlementIssuerKeys of
-        Nothing -> pure Nothing
-        Just pk -> either (const Nothing) Just <$> generateEntitlementProof pk cred (xftpNewProofHeader (sessionId $ X.thParams xftp) sndKey chunkDigest)
+    proof <- liftIO $ mkEntitlementProof (sessionId $ X.thParams xftp) sndKey
     X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageTime proof
   logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
+  where
+    mkEntitlementProof sessId sndKey =
+      pure (credential >>= \cred@EntitlementCredential {issuerKeyIdx} -> (cred,) <$> M.lookup issuerKeyIdx entitlementIssuerKeys) $>>= \(cred, pk) ->
+        generateEntitlementProof pk cred (xftpNewProofHeader sessId sndKey chunkDigest) >>= \case
+          Right p -> pure $ Just p
+          Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()
 agentXFTPUploadChunk c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =

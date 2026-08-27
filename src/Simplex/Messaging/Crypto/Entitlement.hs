@@ -24,6 +24,7 @@ module Simplex.Messaging.Crypto.Entitlement
   )
 where
 
+import Control.Monad (forM)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as JQ
 import Data.ByteString.Char8 (ByteString)
@@ -120,9 +121,9 @@ generateEntitlementProof pk EntitlementCredential {issuerKeyIdx, masterKey, issu
 -- against the supplied presentation header. Nothing means the key index is not
 -- among the configured keys.
 verifyEntitlement :: Map Int BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)
-verifyEntitlement keys ph EntitlementProof {issuerKeyIdx, proof, entitlement} = case M.lookup issuerKeyIdx keys of
-  Nothing -> pure Nothing
-  Just pk -> Just <$> bbsProofVerify pk proof entitlementBBSHeader ph entitlementDisclosedIndexes entitlementMessageCount (disclosedMessages entitlement)
+verifyEntitlement keys ph EntitlementProof {issuerKeyIdx, proof, entitlement} =
+  forM (M.lookup issuerKeyIdx keys) $ \pk ->
+    bbsProofVerify pk proof entitlementBBSHeader ph entitlementDisclosedIndexes entitlementMessageCount (disclosedMessages entitlement)
 
 entitlementIssuerKeys :: Map Int BBSPublicKey
 entitlementIssuerKeys =
