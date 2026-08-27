@@ -19,6 +19,7 @@ import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig (..), AFStoreType (..), defaultFileExpiration, defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Server.Store (FileStoreClass, SFSType (..), STMFileStore)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
+import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Protocol (XFTPServer)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server
@@ -31,6 +32,8 @@ import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 #endif
+
+xftpSendFile c userId file n = A.xftpSendFile c userId file n Nothing Nothing
 
 data AXFTPServerConfig = forall s. FileStoreClass s => AXFTPSrvCfg (XFTPServerConfig s)
 

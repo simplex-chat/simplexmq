@@ -109,7 +109,7 @@ instance StrEncoding BBSProof where
 
 instance Encoding BBSProof where
   smpEncode (BBSProof p) = smpEncode (Large p)
-  smpP = (\(Large p) -> BBSProof p) <$> smpP
+  smpP = BBSProof . unLarge <$> smpP
 
 -- FFI
 

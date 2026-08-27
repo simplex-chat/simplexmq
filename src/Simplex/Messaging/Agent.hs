@@ -128,7 +128,6 @@ module Simplex.Messaging.Agent
     xftpDeleteRcvFile,
     xftpDeleteRcvFiles,
     xftpSendFile,
-    xftpSendFileStorage,
     xftpSendDescription,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFilesInternal,
@@ -775,13 +774,9 @@ xftpDeleteRcvFiles c = withAgentEnv' c . xftpDeleteRcvFiles' c
 {-# INLINE xftpDeleteRcvFiles #-}
 
 -- | Send XFTP file
-xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> AE SndFileId
-xftpSendFile c userId file numRecipients = xftpSendFileStorage c userId file numRecipients Nothing Nothing
+xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> Maybe Int64 -> AE SndFileId
+xftpSendFile c = withAgentEnv c .::. xftpSendFile' c
 {-# INLINE xftpSendFile #-}
-
-xftpSendFileStorage :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> Maybe Int64 -> AE SndFileId
-xftpSendFileStorage c userId file numRecipients credential storageTime = withAgentEnv c $ xftpSendFile' c userId file numRecipients credential storageTime
-{-# INLINE xftpSendFileStorage #-}
 
 -- | Send XFTP file
 xftpSendDescription :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AE SndFileId
