@@ -6,11 +6,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
--- | A generic entitlement, proven with a BBS proof over the SHA-256 suite.
--- The holder secret (the master key) is the undisclosed message; the name, the
--- expiration, and the extra string are disclosed. The protocol and the server
--- reference the entitlement, never a badge; chat maps its own badge to an
--- entitlement.
 module Simplex.Messaging.Crypto.Entitlement
   ( Entitlement (..),
     EntitlementCredential (..),
@@ -46,7 +41,6 @@ newtype MasterKey = MasterKey ByteString
   deriving newtype (Eq, Show, StrEncoding)
   deriving (ToJSON, FromJSON) via (StrJSON "MasterKey" MasterKey)
 
--- | The disclosed content of an entitlement proof.
 data Entitlement = Entitlement
   { entitlementName :: Text,
     expiresAt :: UTCTime,
@@ -100,22 +94,18 @@ disclosedMessages :: Entitlement -> [ByteString]
 disclosedMessages Entitlement {entitlementName, expiresAt, extraInfo} =
   [strEncode expiresAt, encodeUtf8 entitlementName, encodeUtf8 extraInfo]
 
--- | Issuer side: sign an entitlement for a holder master key.
 signEntitlement :: BBSSecretKey -> Word16 -> MasterKey -> Entitlement -> IO (Either String EntitlementCredential)
 signEntitlement sk keyIdx mk ent =
   EntitlementCredential keyIdx mk ent <$$> bbsSign sk entitlementBBSHeader (entitlementMessages mk ent)
 
--- | Holder side: verify the credential received from the issuer.
 verifyCredential :: BBSPublicKey -> EntitlementCredential -> IO Bool
 verifyCredential pk EntitlementCredential {masterKey, issuerSignature, entitlement} =
   bbsVerify pk issuerSignature entitlementBBSHeader (entitlementMessages masterKey entitlement)
 
--- | Holder side: generate a proof bound to the presentation header.
 generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)
 generateEntitlementProof pk EntitlementCredential {issuerKeyIdx, masterKey, issuerSignature, entitlement} ph =
   EntitlementProof issuerKeyIdx entitlement <$$> bbsProofGen pk issuerSignature entitlementBBSHeader ph entitlementDisclosedIndexes (entitlementMessages masterKey entitlement)
 
--- | Verifier side: verify the proof with the configured key.
 verifyEntitlement :: Map Word16 BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)
 verifyEntitlement keys ph EntitlementProof {issuerKeyIdx, entProof, entitlement} =
   forM (M.lookup issuerKeyIdx keys) $ \pk ->
