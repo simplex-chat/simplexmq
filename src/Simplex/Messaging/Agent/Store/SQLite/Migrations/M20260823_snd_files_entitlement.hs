@@ -9,7 +9,7 @@ m20260823_snd_files_entitlement :: Query
 m20260823_snd_files_entitlement =
   [sql|
 ALTER TABLE snd_files ADD COLUMN entitlement_credential TEXT;
-ALTER TABLE snd_files ADD COLUMN storage_time TEXT NOT NULL DEFAULT 'max';
+ALTER TABLE snd_files ADD COLUMN storage_time INTEGER;
   |]
 
 down_m20260823_snd_files_entitlement :: Query

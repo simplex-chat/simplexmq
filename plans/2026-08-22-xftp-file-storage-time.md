@@ -47,20 +47,14 @@ In `Simplex.FileTransfer.Transport`:
 
 In `Simplex.FileTransfer.Protocol`:
 
-- add `FileStorageTime` and its encoding:
-
-```
-data FileStorageTime = FSMaxTime | FSTime {hours :: Word32}
-```
-
 - add `GrantedStorageTime` and its encoding; retain the one-character sum prefix for future variants:
 
 ```
 data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
 ```
 
-- add the `FileStorageTime` and `Maybe EntitlementProof` fields to `FNEW`
-- add the granted storage to `FRSndIds`
+- add the storage time (`Maybe Int64`: `Nothing` requests the server maximum, `Just` a number of hours) and `Maybe EntitlementProof` fields to `FNEW`
+- add the granted storage to `FRSndIds` as `Maybe GrantedStorageTime` (`Nothing` when decoding a response from a server below this version)
 - build the presentation header for FNEW
 
 In `Simplex.FileTransfer.Server`:
@@ -71,30 +65,32 @@ In `Simplex.FileTransfer.Server`:
 
 In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
-- read a maximum storage time for each entitlement name from the INI file, as a number of hours
+- make `fileExpiration` non-optional (`ExpirationConfig`, no longer `Maybe`); the server always expires files, so the server maximum is always a concrete number of seconds
+- read a maximum storage time (a number of hours) for each entitlement name from the `[STORE_LOG]` INI section, from the keys `expire_files_hours_for_supporter` and `expire_files_hours_for_legend`
 - exit at startup if any name's maximum is below the default file expiration
 - read the issuer public keys from the shared constant
 
 ## simplexmq: server store and expiration
 
-The `files` table gets a nullable `expires_at`. `expires_at IS NULL` means "no explicit expiry — apply the configured default" (`created_at + ttl`); this covers legacy rows, which the migration must not re-date, since it has no access to the operator's configured TTL.
+The `files` table gets a nullable `expires_at`. Every new file stores a concrete `expires_at`. It is NULL only for pre-feature rows, which the migration must not re-date (it has no access to the operator's configured TTL); those are expired at query time as `created_at + ttl`.
 
 Common to both stores, in `Simplex.FileTransfer.Server.Store`:
 
 - add `expiresAt :: Maybe RoundedFileTime` to `FileRec`
-- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, resolve the requested time against the entitlement's maximum, store `expiresAt` from the resolution, and return the granted storage
-- `expiredFiles` takes the configured default TTL and expires a file when `COALESCE(expiresAt, created_at + ttl) < now`
-- retain `created_at` for statistics, export, and the default-expiry fallback
+- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, cap the requested hours at the entitlement's maximum, round the expiry up to the hour, store it, and return that same value as the granted storage
+- a valid proof raises the maximum to the entitlement's configured value; a proof that fails verification, carries an unknown issuer key, or whose entitlement expired more than 24 hours ago falls back to the default maximum. The entitlement is honoured for 24 hours after its `expiresAt`.
+- `expiredFiles` receives `now` and `old` (= `now - ttl`). A stored expiry is deleted when `expires_at < now` (no grace — it is already rounded up); a legacy row (no `expires_at`) is deleted when `created_at + fileTimePrecision < old` (the grace covers `created_at` being floored to the hour)
+- retain `created_at` for statistics, export, and the legacy fallback
 
 STM store:
 
-- in `expiredFiles`, expire a file when `maybe (created_at + ttl) roundedSeconds expiresAt < now`
+- in `expiredFiles`, expire a new file when `roundedSeconds expiresAt < now`, and a legacy file (no `expiresAt`) when `created_at + fileTimePrecision < old`
 
 PostgreSQL store, in `Simplex.FileTransfer.Server.Store.Postgres` and its migrations:
 
 - add the nullable column `expires_at BIGINT` (no backfill)
 - add one composite index `idx_files_expiry ON files (expires_at, created_at)`
-- `expiredFiles` query: `WHERE (expires_at < ?) OR (expires_at IS NULL AND created_at < ?) LIMIT ?` with `(now, now - ttl)`. Keep the `OR` at the top level so each disjunct is independently indexable (BitmapOr on the composite index): `expires_at` covers arm 1's range and arm 2's `IS NULL` group, and `created_at` orders arm 2 within that group. A `COALESCE(expires_at, created_at + ttl)` predicate is avoided (not sargable, would force a sequential scan). No `ORDER BY` — the batch loop deletes all expired rows regardless of order.
+- `expiredFiles` query: `WHERE (expires_at < ?) OR (expires_at IS NULL AND created_at < ?) LIMIT ?` with `(now, old - fileTimePrecision)`. The first arm deletes stored (already rounded-up) expiries; the second drains legacy rows, with the grace folded into `old - fileTimePrecision` so the columns stay bare and sargable. Keep the `OR` at the top level so each disjunct is independently indexable (BitmapOr on the composite index): `expires_at` covers arm 1's range and arm 2's `IS NULL` group, and `created_at` orders arm 2 within that group. A `COALESCE(expires_at, created_at + ttl)` predicate is avoided (not sargable, would force a sequential scan). No `ORDER BY` — the batch loop deletes all expired rows regardless of order.
 
 Store log, in `Simplex.FileTransfer.Server.StoreLog`:
 
@@ -104,11 +100,11 @@ Store log, in `Simplex.FileTransfer.Server.StoreLog`:
 
 Public API in `Simplex.Messaging.Agent`:
 
-- add `Maybe EntitlementCredential` and `FileStorageTime` parameters to `xftpSendFile` and `xftpSendDescription`
+- add `Maybe EntitlementCredential` and storage time (`Maybe Int64` hours) parameters to `xftpSendFile`
 
 Store, in both the SQLite and PostgreSQL agent stores:
 
-- add a nullable entitlement credential column and a storage time column to `snd_files`
+- add a nullable entitlement credential column (JSON text) and a nullable storage time column (integer hours; NULL means the server maximum) to `snd_files`
 - add the migration to both stores
 - in `createSndFile`, store the credential and the storage time
 
@@ -130,7 +126,7 @@ Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 ## Order
 
 1. Add the entitlement crypto module; move chat's badge verification onto it and remove lifetime badges.
-2. Add `FileStorageTime`, the new XFTP version, the FNEW protocol change, and the response.
+2. Add the new XFTP version, the FNEW protocol change (storage time + proof), and the response.
 3. Change the server configuration, store, expiration, and store log.
 4. Change the agent store and add proof generation on upload.
 5. Wire chat to pass the credential and the storage time.

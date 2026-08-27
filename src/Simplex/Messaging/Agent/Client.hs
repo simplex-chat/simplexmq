@@ -233,7 +233,7 @@ import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, FileStorageTime, xftpNewProofHeader)
+import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, xftpNewProofHeader)
 import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
@@ -253,7 +253,7 @@ import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential (..), EntitlementProof, entitlementIssuerKeys, generateEntitlementProof)
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential (..), entitlementIssuerKeys, generateEntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
@@ -1346,7 +1346,7 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
         let file = FileInfo {sndKey, size = chSize, digest}
             chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
         r <- runExceptT $ do
-          (sId, [rId]) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth
+          (sId, [rId]) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth Nothing Nothing
           liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
           liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
           rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
@@ -2187,7 +2187,7 @@ agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {se
   g <- asks random
   withXFTPClient c (userId, server, chunkDigest) "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
 
-agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe EntitlementCredential -> FileStorageTime -> AM NewSndChunkReplica
+agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe EntitlementCredential -> Maybe Int64 -> AM NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) credential storageTime = do
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
@@ -2195,17 +2195,14 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
   (sndId, rIds) <- withClient c NRMBackground tSess $ \xftp -> do
-    proof <- liftIO $ mkEntitlementProof (sessionId $ X.thParams xftp) sndKey chunkDigest credential
-    X.createXFTPChunkStorage xftp replicaKey fileInfo (L.map fst rKeys) auth storageTime proof
+    proof <- liftIO $ case credential of
+      Nothing -> pure Nothing
+      Just cred@EntitlementCredential {issuerKeyIdx} -> case M.lookup issuerKeyIdx entitlementIssuerKeys of
+        Nothing -> pure Nothing
+        Just pk -> either (const Nothing) Just <$> generateEntitlementProof pk cred (xftpNewProofHeader (sessionId $ X.thParams xftp) sndKey chunkDigest)
+    X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageTime proof
   logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
-
-mkEntitlementProof :: SessionId -> C.APublicAuthKey -> ByteString -> Maybe EntitlementCredential -> IO (Maybe EntitlementProof)
-mkEntitlementProof _ _ _ Nothing = pure Nothing
-mkEntitlementProof sessId sndKey digest (Just cred@EntitlementCredential {issuerKeyIdx}) =
-  case M.lookup issuerKeyIdx entitlementIssuerKeys of
-    Nothing -> pure Nothing
-    Just pk -> either (const Nothing) Just <$> generateEntitlementProof pk cred (xftpNewProofHeader sessId sndKey digest)
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()
 agentXFTPUploadChunk c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =

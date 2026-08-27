@@ -26,13 +26,11 @@ The presentation header that the BBS proof is generated over is not transmitted;
 ## Storage time
 
 ```
-fileStorageTime = storageMax / storageFor
-storageMax = %s"M"
-storageFor = %s"F" storageHours
-storageHours = 4*4 OCTET     ; Word32, network byte order
+fileStorageTime = %s"0" / (%s"1" storageHours)
+storageHours = 8*8 OCTET     ; Int64, network byte order
 ```
 
-`storageMax` requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present. `storageFor` requests a specific number of hours.
+The storage time is an optional number of hours. Absent (`%s"0"`) requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present. A value (`%s"1"` with hours) requests a specific number of hours.
 
 ## Commands, new XFTP version
 
@@ -50,13 +48,14 @@ optEntitlementProof = %s"0" / (%s"1" entitlementProof)
 FNEW extends the SIDS response with the granted storage.
 
 ```
-sndIds = %s"SIDS " senderId rcvIds grantedStorageTime
+sndIds = %s"SIDS " senderId rcvIds optGrantedStorageTime
+optGrantedStorageTime = %s"0" / (%s"1" grantedStorageTime)
 grantedStorageTime = grantedExpires
-grantedExpires = %s"F" expiresAt
+grantedExpires = %s"T" expiresAt
 expiresAt = 8*8 OCTET        ; Int64, seconds since epoch (absolute UTC instant), network byte order
 ```
 
-`grantedExpires` returns the absolute expiration. The sum encoding retains a one-character prefix so further variants can be added. `senderId` and `rcvIds` are defined by the current XFTP protocol.
+`grantedExpires` returns the absolute expiration — the same value stored for the file. The sum encoding retains a one-character prefix so further variants can be added. Version 3 and earlier omit `optGrantedStorageTime` entirely; a client decoding such a response reads it as absent. `senderId` and `rcvIds` are defined by the current XFTP protocol.
 
 ## Binding
 
@@ -70,9 +69,9 @@ The chunk is identified by the sender key and the digest, which the server verif
 
 ## Maximum storage time
 
-The server configures a maximum storage time for each entitlement name, and a default maximum for requests with no proof. Each maximum is a number of hours. The server exits at startup if any name's maximum is below the default, so a proof never reduces the allowed time. The server treats an entitlement whose expiration has passed as no proof.
+The server configures a maximum storage time for each entitlement name, and a default maximum for requests with no proof. Each maximum is a number of hours. The server exits at startup if any name's maximum is below the default, so a proof never reduces the allowed time. The server honours an entitlement for 24 hours after its expiration; past that grace it is treated as no proof.
 
-If the requested time exceeds the maximum, the server stores the file for the maximum and does not reject the request.
+If the requested time exceeds the maximum, the server stores the file for the maximum and does not reject the request. The expiration is rounded up to the hour, stored, and returned as `grantedExpires`.
 
 ## Encoding primitives
 

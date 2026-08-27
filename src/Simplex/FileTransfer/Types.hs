@@ -39,10 +39,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Word (Word32)
-import Text.Read (readMaybe)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileStorageTime (..))
 import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
@@ -174,7 +172,7 @@ data SndFile = SndFile
     deleted :: Bool,
     redirect :: Maybe RedirectFileInfo,
     entitlementCredential :: Maybe EntitlementCredential,
-    storageTime :: FileStorageTime
+    storageTime :: Maybe Int64
   }
   deriving (Show)
 
@@ -193,21 +191,6 @@ data SndFileStatus
 instance FromField SndFileStatus where fromField = fromTextField_ textDecode
 
 instance ToField SndFileStatus where toField = toField . textEncode
-
-fileStorageTimeText :: FileStorageTime -> Text
-fileStorageTimeText = \case
-  FSMaxTime -> "max"
-  FSTime h -> "for " <> T.pack (show h)
-
-fileStorageTimeParse :: Text -> Maybe FileStorageTime
-fileStorageTimeParse s = case T.words s of
-  ["max"] -> Just FSMaxTime
-  ["for", h] -> FSTime <$> readMaybe (T.unpack h)
-  _ -> Nothing
-
-instance ToField FileStorageTime where toField = toField . fileStorageTimeText
-
-instance FromField FileStorageTime where fromField = fromTextField_ fileStorageTimeParse
 
 instance ToField EntitlementCredential where toField = toField . decodeUtf8 . LB.toStrict . JD.encode
 

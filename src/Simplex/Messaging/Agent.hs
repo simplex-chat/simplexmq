@@ -191,7 +191,7 @@ import Data.Traversable (mapAccumL)
 import Data.Word (Word16)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
-import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..))
+import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.FileTransfer.Util (removePath)
 import Simplex.Messaging.Agent.Client
@@ -776,10 +776,10 @@ xftpDeleteRcvFiles c = withAgentEnv' c . xftpDeleteRcvFiles' c
 
 -- | Send XFTP file
 xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> AE SndFileId
-xftpSendFile c userId file numRecipients = xftpSendFileStorage c userId file numRecipients Nothing FSMaxTime
+xftpSendFile c userId file numRecipients = xftpSendFileStorage c userId file numRecipients Nothing Nothing
 {-# INLINE xftpSendFile #-}
 
-xftpSendFileStorage :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> FileStorageTime -> AE SndFileId
+xftpSendFileStorage :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> Maybe Int64 -> AE SndFileId
 xftpSendFileStorage c userId file numRecipients credential storageTime = withAgentEnv c $ xftpSendFile' c userId file numRecipients credential storageTime
 {-# INLINE xftpSendFileStorage #-}
 

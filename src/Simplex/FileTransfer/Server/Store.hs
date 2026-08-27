@@ -16,7 +16,6 @@ module Simplex.FileTransfer.Server.Store
     STMFileStore (..),
     RoundedFileTime,
     fileTimePrecision,
-    defFileExpirationHours,
   )
 where
 
@@ -64,9 +63,6 @@ type RoundedFileTime = RoundedSystemTime 3600
 
 fileTimePrecision :: Int64
 fileTimePrecision = 3600
-
-defFileExpirationHours :: Int64
-defFileExpirationHours = 48
 
 data FileRecipient = FileRecipient RecipientId C.APublicAuthKey
   deriving (Show)
@@ -171,11 +167,13 @@ instance FileStoreClass STMFileStore where
           pure $ Right ()
       _ -> pure $ Left AUTH
 
-  expiredFiles STMFileStore {files} now defaultTtl _limit = do
+  expiredFiles STMFileStore {files} now old _limit = do
     fs <- readTVarIO files
     fmap catMaybes . forM (M.toList fs) $ \(sId, FileRec {fileInfo = FileInfo {size}, filePath, createdAt = RoundedSystemTime createdAt, expiresAt}) ->
-      let effExpiry = maybe (createdAt + defaultTtl) roundedSeconds expiresAt
-       in if effExpiry < now
+      let expired = case expiresAt of
+            Just e -> roundedSeconds e < now
+            Nothing -> createdAt + fileTimePrecision < old
+       in if expired
             then do
               path <- readTVarIO filePath
               pure $ Just (sId, path, size)

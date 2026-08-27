@@ -309,7 +309,7 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..), SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Agent.Protocol
@@ -3425,7 +3425,7 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> Maybe EntitlementCredential -> FileStorageTime -> IO (Either StoreError SndFileId)
+createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> Maybe EntitlementCredential -> Maybe Int64 -> IO (Either StoreError SndFileId)
 createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ entitlementCredential storageTime =
   createWithRandomId db gVar $ \sndFileEntityId ->
     DB.execute
@@ -3477,7 +3477,7 @@ getSndFile db sndFileId = runExceptT $ do
           )
           (Only sndFileId)
       where
-        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest, Maybe EntitlementCredential, FileStorageTime) -> SndFile
+        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest, Maybe EntitlementCredential, Maybe Int64) -> SndFile
         toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, BI deleted, redirectSize_, redirectDigest_, entitlementCredential, storageTime)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs

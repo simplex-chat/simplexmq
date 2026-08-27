@@ -45,7 +45,7 @@ import Data.Word (Word32)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), FileStorageTime, XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.FileTransfer.Server.Stats
 import Data.Either (fromRight)
@@ -92,7 +92,7 @@ data XFTPServerConfig s = XFTPServerConfig
     controlPortUserAuth :: Maybe BasicAuth,
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the files can be removed and check interval, seconds
-    fileExpiration :: Maybe ExpirationConfig,
+    fileExpiration :: ExpirationConfig,
     -- | maximum storage time per entitlement name, seconds
     fileStorageEntitlements :: Map Text Int64,
     -- | timeout to receive file
@@ -166,6 +166,9 @@ fromFileStore = \case
 #endif
 {-# INLINE fromFileStore #-}
 
+defFileExpirationHours :: Int64
+defFileExpirationHours = 48
+
 defaultFileExpiration :: ExpirationConfig
 defaultFileExpiration =
   ExpirationConfig
@@ -173,14 +176,10 @@ defaultFileExpiration =
       checkInterval = 2 * 3600 -- seconds, 2 hours
     }
 
-storageAtLeast :: Int64 -> Maybe Int64 -> Bool
-storageAtLeast _ Nothing = True
-storageAtLeast a (Just b) = a >= b
-
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
 newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials} = do
-  let defaultMax = ttl <$> fileExpiration
-  unless (all (`storageAtLeast` defaultMax) (M.elems fileStorageEntitlements)) $ do
+  let defaultMax = ttl fileExpiration
+  unless (all (>= defaultMax) (M.elems fileStorageEntitlements)) $ do
     logError "STORE: entitlement storage time is below the default file expiration"
     exitFailure
   random <- C.newRandom
@@ -207,7 +206,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
-  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) FileStorageTime (Maybe EntitlementProof)
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Int64) (Maybe EntitlementProof)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
 

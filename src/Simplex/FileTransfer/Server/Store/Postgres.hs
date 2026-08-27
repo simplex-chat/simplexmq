@@ -152,12 +152,12 @@ instance FileStoreClass PostgresFileStore where
       DB.execute db "DELETE FROM recipients WHERE recipient_id = ?" (Only rId)
     withLog "ackFile" st $ \s -> logAckFile s rId
 
-  expiredFiles st now defaultTtl limit =
+  expiredFiles st now old limit =
     fmap toResult $ withTransaction (dbStore st) $ \db ->
       DB.query
         db
         "SELECT sender_id, file_path, file_size FROM files WHERE (expires_at < ?) OR (expires_at IS NULL AND created_at < ?) LIMIT ?"
-        (now, now - defaultTtl, limit)
+        (now, old - fileTimePrecision, limit)
     where
       toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
       toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))

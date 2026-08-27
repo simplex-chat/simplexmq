@@ -328,7 +328,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           digest <- liftIO $ getChunkDigest chunkSpec
           let ch = FileInfo {sndKey, size = chunkSize, digest}
           c <- withRetry retryCount $ getXFTPServerClient a xftpServer
-          (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth
+          (sndId, rIds) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth Nothing Nothing
           withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
           logDebug $ "uploaded chunk " <> tshow chunkNo
           uploaded <- atomically . stateTVar uploadedChunks $ \cs ->

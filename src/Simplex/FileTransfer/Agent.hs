@@ -54,7 +54,7 @@ import Simplex.FileTransfer.Chunks (toKB)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), getChunkDigest, prepareChunkSizes, prepareChunkSpecs, singleChunkSize)
 import Simplex.FileTransfer.Crypto
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), FileStorageTime (..), SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
@@ -351,7 +351,7 @@ xftpDeleteRcvFiles' c rcvFileEntityIds = do
 notify :: forall m e. (MonadIO m, AEntityI e) => AgentClient -> AEntityId -> AEvent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, AEvt (sAEntity @e) cmd)
 
-xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> FileStorageTime -> AM SndFileId
+xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> Maybe Int64 -> AM SndFileId
 xftpSendFile' c userId file numRecipients credential storageTime = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "snd.xftp"
@@ -376,7 +376,7 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   liftError (FILE . FILE_IO . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce (Just RedirectFileInfo {size, digest}) Nothing FSMaxTime
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce (Just RedirectFileInfo {size, digest}) Nothing Nothing
   lift . void $ getXFTPSndWorker True c Nothing
   pure fId
 
@@ -455,7 +455,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
         srvOrPendingChunk ch@SndFileChunk {replicas} = case replicas of
           [] -> Left ch
           SndFileChunkReplica {server} : _ -> Right server
-        createChunk :: Int -> Maybe EntitlementCredential -> FileStorageTime -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
+        createChunk :: Int -> Maybe EntitlementCredential -> Maybe Int64 -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
         createChunk numRecipients' credential storageTime ch = do
           liftIO $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate

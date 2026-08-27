@@ -242,9 +242,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           putStrLn $ case storeLogFile of
             Just f -> "Store log: " <> f
             _ -> "Store log disabled."
-          putStrLn $ case fileExpiration of
-            Just ExpirationConfig {ttl} -> "expiring files after " <> showTTL ttl
-            _ -> "not expiring files"
+          putStrLn $ "expiring files after " <> showTTL (ttl fileExpiration)
           putStrLn $ case inactiveClientExpiration of
             Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
             _ -> "not expiring inactive clients"
@@ -290,10 +288,9 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
               controlPortAdminAuth = either error id <$> strDecodeIni "AUTH" "control_port_admin_password" ini,
               controlPortUserAuth = either error id <$> strDecodeIni "AUTH" "control_port_user_password" ini,
               fileExpiration =
-                Just
-                  defaultFileExpiration
-                    { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
-                    },
+                defaultFileExpiration
+                  { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
+                  },
               fileStorageEntitlements = iniEntitlements ini,
               fileTimeout = 5 * 60 * 1000000, -- 5 mins to send 4mb chunk
               inactiveClientExpiration =
@@ -444,7 +441,7 @@ cliCommandP cfgPath logPath iniFile =
 
 iniEntitlements :: Ini -> Map T.Text Int64
 iniEntitlements ini =
-  M.fromList $ mapMaybe readEntitlement [("supporter", "supporter_storage_hours"), ("legend", "legend_storage_hours"), ("investor", "investor_storage_hours")]
+  M.fromList $ mapMaybe readEntitlement [("supporter", "expire_files_hours_for_supporter"), ("legend", "expire_files_hours_for_legend")]
   where
     readEntitlement (name, key) = (name,) <$> (parseMax =<< eitherToMaybe (lookupValue "STORE_LOG" key ini))
     parseMax t = (3600 *) <$> (readMaybe (T.unpack (T.strip t)) :: Maybe Int64)

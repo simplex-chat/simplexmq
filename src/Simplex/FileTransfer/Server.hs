@@ -35,7 +35,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), addUTCTime, diffTimeToPicoseconds, getCurrentTime, nominalDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Data.X509 as X
@@ -128,12 +128,12 @@ data Handshake
 
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange} started = do
-  when (isJust fileExpiration) $ expireServerFiles Nothing
+  expireServerFiles Nothing fileExpiration
   restoreServerStats
   raceAny_
     ( runServer
-        : expireFilesThread_ cfg
-          <> serverStatsThread_ cfg
+        : expireFiles fileExpiration
+        : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
           <> controlPortThread_ cfg
     )
@@ -246,16 +246,12 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       saveServerStats
       logNote "Server stopped"
 
-    expireFilesThread_ :: XFTPServerConfig s -> [M s ()]
-    expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]
-    expireFilesThread_ _ = []
-
     expireFiles :: ExpirationConfig -> M s ()
     expireFiles expCfg = do
       let interval = checkInterval expCfg * 1000000
       forever $ do
         liftIO $ threadDelay' interval
-        expireServerFiles (Just 100000)
+        expireServerFiles (Just 100000) expCfg
 
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -486,36 +482,38 @@ processXFTPRequest sessionId HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> FileStorageTime -> Maybe EntitlementProof -> M s FileResponse
+    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Int64 -> Maybe EntitlementProof -> M s FileResponse
     createFile file@FileInfo {sndKey, digest} rks storageTime ep = do
       st <- asks fileStore
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
         unless (size file `elem` sizes) $ throwE SIZE
         ts <- liftIO getFileTime
+        now <- liftIO $ roundedSeconds <$> getSystemSeconds
         maxSeconds <- lift $ storageMaxSeconds (xftpNewProofHeader sessionId sndKey digest) ep
-        let (expiresAt, granted) = resolveStorage (roundedSeconds ts) maxSeconds storageTime
+        let secs = maybe maxSeconds (\hours -> min (hours * 3600) maxSeconds) storageTime
+            fileExpiresAt = RoundedSystemTime $ ((now + secs + fileTimePrecision - 1) `div` fileTimePrecision) * fileTimePrecision
         -- TODO validate body empty
-        sId <- ExceptT $ addFileRetry st file 3 ts expiresAt
+        sId <- ExceptT $ addFileRetry st file 3 ts (Just fileExpiresAt)
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> do
-          logAddFile sl sId file ts expiresAt EntityActive
+          logAddFile sl sId file ts (Just fileExpiresAt) EntityActive
           logAddRecipients sl sId rcps
         stats <- asks serverStats
         lift $ incFileStat filesCreated
         liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
-        pure $ FRSndIds sId rIds granted
+        pure $ FRSndIds sId rIds (Just (GSTExpires (roundedSeconds fileExpiresAt)))
       pure $ either FRErr id r
-    storageMaxSeconds :: BBSPresHeader -> Maybe EntitlementProof -> M s (Maybe Int64)
-    storageMaxSeconds _ Nothing = asks $ fmap ttl . fileExpiration . config
+    storageMaxSeconds :: BBSPresHeader -> Maybe EntitlementProof -> M s Int64
+    storageMaxSeconds _ Nothing = asks $ ttl . fileExpiration . config
     storageMaxSeconds ph (Just proof@EntitlementProof {entitlement = ent}) = do
       entCfg <- asks $ fileStorageEntitlements . config
-      defaultMax <- asks $ fmap ttl . fileExpiration . config
+      defaultMax <- asks $ ttl . fileExpiration . config
       now <- liftIO getCurrentTime
       let Entitlement {entitlementName, expiresAt} = ent
       liftIO (verifyEntitlement entitlementIssuerKeys ph proof) >>= \case
-        Just True | expiresAt > now -> pure $ maybe defaultMax Just (M.lookup entitlementName entCfg)
+        Just True | addUTCTime nominalDay expiresAt > now -> pure $ fromMaybe defaultMax (M.lookup entitlementName entCfg)
         _ -> pure defaultMax
     addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> Maybe RoundedFileTime -> M s (Either XFTPErrorType XFTPFileId)
     addFileRetry st file n ts expiresAt =
@@ -658,33 +656,22 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
 getFileTime :: IO RoundedFileTime
 getFileTime = getRoundedSystemTime
 
-resolveStorage :: Int64 -> Maybe Int64 -> FileStorageTime -> (Maybe RoundedFileTime, GrantedStorageTime)
-resolveStorage base maxSeconds storageTime = (expiresAt, granted)
-  where
-    reqSeconds = case storageTime of
-      FSMaxTime -> maxSeconds
-      FSTime hours -> Just $ let hSec = fromIntegral hours * 3600 in maybe hSec (min hSec) maxSeconds
-    expiresAt = (\s -> RoundedSystemTime (base + s)) <$> reqSeconds
-    granted = GSTExpires $ base + fromMaybe 0 reqSeconds
-
-expireServerFiles :: FileStoreClass s => Maybe Int -> M s ()
-expireServerFiles itemDelay =
-  asks (fileExpiration . config) >>= \case
-    Nothing -> pure ()
-    Just ExpirationConfig {ttl = defaultTtl} -> do
-      st <- asks fileStore
-      us <- asks usedStorage
-      usedStart <- readTVarIO us
-      now <- liftIO $ roundedSeconds <$> getSystemSeconds
-      filesCount <- liftIO $ getFileCount st
-      logNote $ "Expiration check: " <> tshow filesCount <> " files"
-      expireLoop st us now defaultTtl
-      usedEnd <- readTVarIO us
-      logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
+expireServerFiles :: FileStoreClass s => Maybe Int -> ExpirationConfig -> M s ()
+expireServerFiles itemDelay expCfg = do
+  st <- asks fileStore
+  us <- asks usedStorage
+  usedStart <- readTVarIO us
+  now <- liftIO $ roundedSeconds <$> getSystemSeconds
+  old <- liftIO $ expireBeforeEpoch expCfg
+  filesCount <- liftIO $ getFileCount st
+  logNote $ "Expiration check: " <> tshow filesCount <> " files"
+  expireLoop st us now old
+  usedEnd <- readTVarIO us
+  logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
-    expireLoop st us now defaultTtl = do
-      expired <- liftIO $ expiredFiles st now defaultTtl 10000
+    expireLoop st us now old = do
+      expired <- liftIO $ expiredFiles st now old 10000
       forM_ expired $ \(sId, filePath_, fileSize) -> do
         mapM_ threadDelay itemDelay
         forM_ filePath_ $ \fp ->
@@ -697,7 +684,7 @@ expireServerFiles itemDelay =
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
-        expireLoop st us now defaultTtl
+        expireLoop st us now old
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random

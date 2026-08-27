@@ -619,7 +619,7 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs . withXFTPServer te
 
 testXFTPAgentExpiredOnServer :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration = Just fastExpiration}) . const $ do
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration = fastExpiration}) . const $ do
     filePath1 <- createRandomFile' "testfile1"
 
     -- send file 1
