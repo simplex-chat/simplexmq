@@ -41,11 +41,12 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
-import Data.Word (Word32)
+import Data.Word (Word16, Word32)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
+import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
 import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.FileTransfer.Server.Stats
 import Data.Either (fromRight)
@@ -95,6 +96,7 @@ data XFTPServerConfig s = XFTPServerConfig
     fileExpiration :: ExpirationConfig,
     -- | maximum storage time per entitlement name, seconds
     fileStorageEntitlements :: Map Text Int64,
+    entitlementKeys :: Map Word16 BBSPublicKey,
     -- | timeout to receive file
     fileTimeout :: Int,
     -- | time after which inactive clients can be disconnected and check interval, seconds

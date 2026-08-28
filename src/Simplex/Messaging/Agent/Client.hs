@@ -253,7 +253,7 @@ import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential (..), entitlementIssuerKeys, generateEntitlementProof)
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential (..), generateEntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
@@ -2194,15 +2194,16 @@ agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize},
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
   logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
+  keys <- asks $ entitlementKeys . config
   (sndId, rIds, expiresAt) <- withClient c NRMBackground tSess $ \xftp -> do
-    proof <- liftIO $ mkEntitlementProof (sessionId $ X.thParams xftp) sndKey
+    proof <- liftIO $ mkEntitlementProof keys (sessionId $ X.thParams xftp) sndKey
     X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageTime proof
   logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys, expiresAt}
   where
-    mkEntitlementProof sessId sndKey =
+    mkEntitlementProof keys sessId sndKey =
       pure credential
-        $>>= \cred -> pure (M.lookup (issuerKeyIdx cred) entitlementIssuerKeys)
+        $>>= \cred -> pure (M.lookup (issuerKeyIdx cred) keys)
         $>>= \pk -> generateEntitlementProof pk cred (xftpNewProofHeader sessId sndKey chunkDigest)
         >>= \case
           Right p -> pure $ Just p

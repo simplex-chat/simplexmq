@@ -35,6 +35,7 @@ import Simplex.FileTransfer.Server (runXFTPServer)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, readFileStoreType, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (entitlementIssuerKeys)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), pattern XFTPServer)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
@@ -292,6 +293,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                   { ttl = 3600 * readIniDefault defFileExpirationHours "STORE_LOG" "expire_files_hours" ini
                   },
               fileStorageEntitlements = iniEntitlements ini,
+              entitlementKeys = entitlementIssuerKeys,
               fileTimeout = 5 * 60 * 1000000, -- 5 mins to send 4mb chunk
               inactiveClientExpiration =
                 settingIsOn "INACTIVE_CLIENTS" "disconnect" ini
@@ -443,5 +445,5 @@ iniEntitlements :: Ini -> Map T.Text Int64
 iniEntitlements ini =
   M.fromList $ mapMaybe readEntitlement [("supporter", "expire_files_hours_for_supporter"), ("legend", "expire_files_hours_for_legend")]
   where
-    readEntitlement (name, key) = (name,) <$> (parseMax =<< eitherToMaybe (lookupValue "STORE_LOG" key ini))
-    parseMax t = (3600 *) <$> (readMaybe (T.unpack (T.strip t)) :: Maybe Int64)
+    readEntitlement (name, key) = (name,) . parseHours key <$> eitherToMaybe (lookupValue "STORE_LOG" key ini)
+    parseHours key t = maybe (error $ "Error: invalid " <> T.unpack key <> " value: " <> T.unpack t) (3600 *) (readMaybe (T.unpack (T.strip t)) :: Maybe Int64)

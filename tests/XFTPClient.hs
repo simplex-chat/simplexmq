@@ -186,6 +186,7 @@ testXFTPServerConfig =
       controlPortUserAuth = Nothing,
       fileExpiration = defaultFileExpiration,
       fileStorageEntitlements = mempty,
+      entitlementKeys = mempty,
       fileTimeout = 10000000,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       xftpCredentials =

@@ -66,9 +66,9 @@ In `Simplex.FileTransfer.Server`:
 In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
 - make `fileExpiration` non-optional (`ExpirationConfig`, no longer `Maybe`); the server always expires files, so the server maximum is always a concrete number of seconds
-- read a maximum storage time (a number of hours) for each entitlement name from the `[STORE_LOG]` INI section, from the keys `expire_files_hours_for_supporter` and `expire_files_hours_for_legend`
+- read a maximum storage time (a number of hours) for each entitlement name from the `[STORE_LOG]` INI section, from the keys `expire_files_hours_for_supporter` and `expire_files_hours_for_legend`; an absent key is skipped (that name gets the default), a present but malformed value fails startup
 - exit at startup if any name's maximum is below the default file expiration
-- read the issuer public keys from the shared constant
+- add `entitlementKeys :: Map Word16 BBSPublicKey` to the server config (default = the shared constant, set from `Main`); `storageMaxSeconds` verifies the proof against it, so the trusted keys never come from the sender
 
 ## simplexmq: server store and expiration
 
@@ -110,6 +110,7 @@ Store, in both the SQLite and PostgreSQL agent stores:
 
 Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 
+- add `entitlementKeys :: Map Word16 BBSPublicKey` to `AgentConfig` (default = the shared constant); `mkEntitlementProof` looks up `issuerKeyIdx` there to get the issuer public key that proof generation needs
 - in `agentXFTPNewChunk`, read the credential, the storage time, and the digest from the send record
 - inside `withClient`, where `sessionId` is available, build the presentation header `sessionId <> sndKey <> digest`, generate the proof, and send FNEW with the storage time and the proof
 - `createXFTPChunk` returns the granted expiry (epoch seconds); `agentXFTPNewChunk` stores it on `NewSndChunkReplica`
@@ -120,6 +121,10 @@ Completion:
 - persist it in a nullable `replica_expires_at` column on `snd_file_chunk_replicas` (added to the entitlement migration): `createSndFileReplica` stores `epochSeconds`, `getSndFile` reads it back into `GSTExpires`
 - on `SFDONE`, report the file expiry: a chunk expires when its last replica expires (`max` over replicas, absent replicas ignored, `Nothing` only if none report); the file expires when its first chunk expires (`min` over chunks, `Nothing` if any chunk is unknown). `GrantedStorageTime` derives `Ord`
 - `SFDONE` gains a trailing `Maybe GrantedStorageTime` (not str-encoded); chat consumes it (wired later)
+
+Testing:
+
+- e2e test in `tests/XFTPAgent.hs`: generate a BBS keypair, sign a supporter credential (issuer key index 1), run the server with `entitlementKeys = {1: testPk}` and a supporter maximum above the default, run the sender agent with the same `entitlementKeys`, send a file with the credential requesting a number of hours below that maximum, and assert `SFDONE`'s granted expiry rounds up `now + requested` (proof of the entitlement raising the max above the default)
 
 ## simplex-chat
 

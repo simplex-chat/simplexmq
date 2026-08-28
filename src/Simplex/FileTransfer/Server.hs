@@ -56,7 +56,7 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPresHeader)
-import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof (..), entitlementIssuerKeys, verifyEntitlement)
+import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof (..), verifyEntitlement)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -509,10 +509,11 @@ processXFTPRequest sessionId HTTP2Body {bodyPart} = \case
     storageMaxSeconds _ Nothing = asks $ ttl . fileExpiration . config
     storageMaxSeconds ph (Just proof@EntitlementProof {entitlement = ent}) = do
       entCfg <- asks $ fileStorageEntitlements . config
+      keys <- asks $ entitlementKeys . config
       defaultMax <- asks $ ttl . fileExpiration . config
       now <- liftIO getCurrentTime
       let Entitlement {entitlementName, expiresAt} = ent
-      liftIO (verifyEntitlement entitlementIssuerKeys ph proof) >>= \case
+      liftIO (verifyEntitlement keys ph proof) >>= \case
         Just True | addUTCTime nominalDay expiresAt > now -> pure $ fromMaybe defaultMax (M.lookup entitlementName entCfg)
         _ -> pure defaultMax
     addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> Maybe RoundedFileTime -> M s (Either XFTPErrorType XFTPFileId)
