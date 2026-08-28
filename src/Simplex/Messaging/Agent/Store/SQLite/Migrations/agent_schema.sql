@@ -352,7 +352,9 @@ CREATE TABLE snd_files(
   src_file_nonce BLOB,
   failed INTEGER DEFAULT 0,
   redirect_size INTEGER,
-  redirect_digest BLOB
+  redirect_digest BLOB,
+  entitlement_credential TEXT,
+  storage_time INTEGER
 ) STRICT;
 CREATE TABLE snd_file_chunks(
   snd_file_chunk_id INTEGER PRIMARY KEY,

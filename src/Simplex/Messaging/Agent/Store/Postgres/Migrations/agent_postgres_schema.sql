@@ -741,7 +741,9 @@ CREATE TABLE smp_agent_test_protocol_schema.snd_files (
     src_file_nonce bytea,
     failed smallint DEFAULT 0,
     redirect_size bigint,
-    redirect_digest bytea
+    redirect_digest bytea,
+    entitlement_credential text,
+    storage_time bigint
 );
 
 
