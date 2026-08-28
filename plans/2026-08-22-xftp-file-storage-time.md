@@ -34,7 +34,7 @@ data EntitlementProof = EntitlementProof
 Functions and constants:
 
 - the disclosed-message encoding: the master key is message 0 and stays undisclosed; `expiresAt`, `entitlementName`, and `extraInfo` are messages 1 to 3 and are disclosed
-- the BBS header string `"SimpleX entitlement v1"`, the message count, and the disclosed indexes
+- the BBS header string `"SimpleX badges v1"` (shared with chat's badges, which sign under it), the message count, and the disclosed indexes
 - `generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)`
 - `verifyEntitlement :: Map Int BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)` (the caller supplies the presentation header; the server reconstructs it, the proof never includes it)
 - the issuer public keys constant `Map Int BBSPublicKey`

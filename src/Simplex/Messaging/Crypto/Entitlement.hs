@@ -11,6 +11,7 @@ module Simplex.Messaging.Crypto.Entitlement
     EntitlementCredential (..),
     EntitlementProof (..),
     MasterKey (..),
+    entitlementBBSHeader,
     entitlementIssuerKeys,
     signEntitlement,
     verifyCredential,
@@ -79,7 +80,7 @@ instance Encoding EntitlementProof where
     pure EntitlementProof {issuerKeyIdx, entProof, entitlement}
 
 entitlementBBSHeader :: BBSHeader
-entitlementBBSHeader = BBSHeader "SimpleX entitlement v1"
+entitlementBBSHeader = BBSHeader "SimpleX badges v1"
 
 entitlementMessageCount :: Int
 entitlementMessageCount = 4
