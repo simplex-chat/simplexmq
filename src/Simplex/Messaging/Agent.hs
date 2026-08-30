@@ -108,6 +108,7 @@ module Simplex.Messaging.Agent
     getConnectionServers,
     getConnectionRatchetAdHash,
     setProtocolServers,
+    setUserEntitlement,
     checkUserServers,
     testProtocolServer,
     setNtfServers,
@@ -774,8 +775,8 @@ xftpDeleteRcvFiles c = withAgentEnv' c . xftpDeleteRcvFiles' c
 {-# INLINE xftpDeleteRcvFiles #-}
 
 -- | Send XFTP file
-xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe EntitlementCredential -> Maybe Int64 -> AE SndFileId
-xftpSendFile c = withAgentEnv c .::. xftpSendFile' c
+xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Int64 -> AE SndFileId
+xftpSendFile c = withAgentEnv c .:: xftpSendFile' c
 {-# INLINE xftpSendFile #-}
 
 -- | Send XFTP file
@@ -3049,6 +3050,13 @@ setProtocolServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient
 setProtocolServers c userId srvs = do
   checkUserServers "setProtocolServers" srvs
   atomically $ TM.insert userId (mkUserServers srvs) (userServers c)
+
+-- | Change the entitlement credential presented to XFTP servers for the user.
+-- The credential is presented in the handshake, so the user's XFTP clients are closed to present the new one.
+setUserEntitlement :: AgentClient -> UserId -> Maybe EntitlementCredential -> IO ()
+setUserEntitlement c userId cred_ = do
+  atomically $ maybe (TM.delete userId) (TM.insert userId) cred_ $ userEntitlements c
+  closeUserXFTPClients c userId
 
 checkUserServers :: Text -> NonEmpty (ServerCfg p) -> IO ()
 checkUserServers name srvs =

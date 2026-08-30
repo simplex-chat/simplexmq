@@ -44,6 +44,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Server.Main (serverPublicInfo, printSourceCode)
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..))
+import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), mkTransportServerConfig)
@@ -441,9 +442,9 @@ cliCommandP cfgPath logPath iniFile =
             <> command "export" (info (pure SCExport) (progDesc "Export PostgreSQL database to store log file"))
         )
 
-iniEntitlements :: Ini -> Map T.Text Int64
+iniEntitlements :: Ini -> Map T.Text EntitlementConfig
 iniEntitlements ini =
   M.fromList $ mapMaybe readEntitlement [("supporter", "expire_files_hours_for_supporter"), ("legend", "expire_files_hours_for_legend")]
   where
-    readEntitlement (name, key) = (name,) . parseHours key <$> eitherToMaybe (lookupValue "STORE_LOG" key ini)
+    readEntitlement (name, key) = (name,) . EntitlementConfig . parseHours key <$> eitherToMaybe (lookupValue "STORE_LOG" key ini)
     parseHours key t = maybe (error $ "Error: invalid " <> T.unpack key <> " value: " <> T.unpack t) (3600 *) (readMaybe (T.unpack (T.strip t)) :: Maybe Int64)

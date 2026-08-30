@@ -50,6 +50,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, NetworkError (..), ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
@@ -346,13 +347,14 @@ testXFTPAgentEntitlement = do
   let ent = Entitlement {entitlementName = "supporter", expiresAt = addUTCTime (30 * nominalDay) now, extraInfo = ""}
       keys = M.fromList [(1, issuerPk)]
   Right credential <- signEntitlement issuerSk 1 (MasterKey "0123456789abcdef0123456789abcdef") ent
-  let srvCfg = testXFTPServerConfig {entitlementKeys = keys, fileStorageEntitlements = M.fromList [("supporter", 168 * 3600)]}
+  let srvCfg = testXFTPServerConfig {entitlementKeys = keys, fileStorageEntitlements = M.fromList [("supporter", EntitlementConfig (168 * 3600))]}
   withXFTPServerCfg srvCfg $ \_ -> do
     filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-    withAgent 1 (agentCfg {AEnv.entitlementKeys = keys}) initAgentServers testDB $ \sndr -> runRight_ $ do
+    let servers = initAgentServers {AEnv.entitlements = M.fromList [(1, credential)]}
+    withAgent 1 (agentCfg {AEnv.entitlementKeys = keys}) servers testDB $ \sndr -> runRight_ $ do
       xftpStartWorkers sndr (Just senderFiles)
       nowSec <- liftIO $ systemSeconds <$> getSystemTime
-      _ <- XA.xftpSendFile sndr 1 (CF.plain filePath) 1 (Just credential) (Just 100)
+      _ <- XA.xftpSendFile sndr 1 (CF.plain filePath) 1 (Just 100)
       gExpires <- waitSndDone sndr
       liftIO $ case gExpires of
         Just (GSTExpires t) -> do

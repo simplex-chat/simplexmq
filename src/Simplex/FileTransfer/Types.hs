@@ -172,7 +172,6 @@ data SndFile = SndFile
     status :: SndFileStatus,
     deleted :: Bool,
     redirect :: Maybe RedirectFileInfo,
-    entitlementCredential :: Maybe EntitlementCredential,
     storageTime :: Maybe Int64
   }
   deriving (Show)

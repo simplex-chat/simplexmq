@@ -36,6 +36,7 @@ import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
@@ -85,7 +86,7 @@ import Simplex.Messaging.Protocol
     SenderId,
     pattern NoEntity,
   )
-import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
+import Simplex.Messaging.Transport (ALPN, CertChainPubKey (..), HandshakeError (..), SessionId, THandleAuth (..), THandleParams (..), TransportError (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.Client
@@ -127,8 +128,8 @@ defaultXFTPClientConfig =
       clientALPN = Just alpnSupportedXFTPhandshakes
     }
 
-getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> [HostName] -> UTCTime -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
-getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} presetDomains proxySessTs disconnected = runExceptT $ do
+getXFTPClient :: TransportSession FileResponse -> XFTPClientConfig -> [HostName] -> UTCTime -> (SessionId -> IO (Maybe EntitlementProof)) -> (XFTPClient -> IO ()) -> IO (Either XFTPClientError XFTPClient)
+getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, xftpNetworkConfig, serverVRange} presetDomains proxySessTs mkEntitlementProof disconnected = runExceptT $ do
   let socksCreds = clientSocksCredentials xftpNetworkConfig proxySessTs transportSession
       ProtocolServer _ host port keyHash = srv
       useALPN = if useWebPort xftpNetworkConfig presetDomains srv then Just [httpALPN11] else clientALPN
@@ -147,19 +148,20 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just alpn
       | alpn == xftpALPNv1 || alpn == httpALPN11 ->
-          xftpClientHandshakeV1 serverVRange keyHash http2Client thParams0
+          xftpClientHandshakeV1 serverVRange keyHash http2Client mkEntitlementProof thParams0
     _ -> pure thParams0
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}
   atomically $ writeTVar clientVar $ Just c
   pure c
 
-xftpClientHandshakeV1 :: VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
-xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
+xftpClientHandshakeV1 :: VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> (SessionId -> IO (Maybe EntitlementProof)) -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
+xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} mkEntitlementProof thParams0 = do
   shs@XFTPServerHandshake {authPubKey = ck} <- getServerHandshake
   (vr, sk) <- processServerHandshake shs
   let v = maxVersion vr
-  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash}
+  ep <- if v >= fileStorageTimeXFTPVersion then liftIO (mkEntitlementProof sessionId) else pure Nothing
+  sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash, entitlementProof = ep}
   let thAuth = Just THAuthClient {peerServerPubKey = sk, peerServerCertKey = ck, clientService = Nothing, sessSecret = Nothing}
   pure thParams0 {thAuth, thVersion = v, thServerVRange = vr}
   where
@@ -255,10 +257,9 @@ createXFTPChunk ::
   NonEmpty C.APublicAuthKey ->
   Maybe BasicAuth ->
   Maybe Int64 ->
-  Maybe EntitlementProof ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId, Maybe GrantedStorageTime)
-createXFTPChunk c spKey file rcps auth_ storageTime proof =
-  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageTime proof) Nothing >>= \case
+createXFTPChunk c spKey file rcps auth_ storageTime =
+  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageTime) Nothing >>= \case
     (FRSndIds sId rIds gs, body) -> noFile body (sId, rIds, gs)
     (r, _) -> throwE $ unexpectedResponse r
 

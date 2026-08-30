@@ -84,6 +84,8 @@ module Simplex.Messaging.Transport
     THandle (..),
     THandleParams (..),
     THandleAuth (..),
+    SessionEntitlement (..),
+    EntitlementConfig (..),
     CertChainPubKey (..),
     ServiceCredentials (..),
     THClientService' (..),
@@ -119,6 +121,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Tuple (swap)
 import Data.Typeable (Typeable)
@@ -136,6 +139,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
 import Simplex.Messaging.Server.Information
+import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
 import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, (<$$>))
@@ -483,9 +487,14 @@ data THandleAuth (p :: TransportPeer) where
   THAuthServer ::
     { serverPrivKey :: C.PrivateKeyX25519, -- used by the server to combine with client's public per-queue key
       peerClientService :: Maybe THPeerClientService,
+      peerEntitlement :: Maybe SessionEntitlement, -- verified in the handshake, applies to the whole session
       sessSecret' :: Maybe C.DhSecretX25519 -- session secret (will be used in SMP proxy only)
     } ->
     THandleAuth 'TServer
+
+data SessionEntitlement = SessionEntitlement {expiresAt :: SystemSeconds, entConfig :: EntitlementConfig}
+
+newtype EntitlementConfig = EntitlementConfig {storageTime :: Int64}
 
 type THClientService = THClientService' C.PrivateKeyEd25519
 
@@ -801,7 +810,7 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange proxyServer serviceKey
 
 smpTHandleServer :: forall c. THandleSMP c 'TServer -> VersionSMP -> VersionRangeSMP -> C.PrivateKeyX25519 -> Maybe C.PublicKeyX25519 -> Bool -> Maybe THPeerClientService -> IO (THandleSMP c 'TServer)
 smpTHandleServer th v vr pk k_ proxyServer peerClientService = do
-  let thAuth = Just THAuthServer {serverPrivKey = pk, peerClientService, sessSecret' = (`C.dh'` pk) <$!> k_}
+  let thAuth = Just THAuthServer {serverPrivKey = pk, peerClientService, peerEntitlement = Nothing, sessSecret' = (`C.dh'` pk) <$!> k_}
   be <- blockEncryption th proxyServer thAuth
   pure $ smpTHandle_ th v vr thAuth (uncurry TSbChainKeys <$> be) Nothing
 

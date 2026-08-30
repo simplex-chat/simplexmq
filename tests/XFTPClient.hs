@@ -33,7 +33,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 #endif
 
-xftpSendFile c userId file n = A.xftpSendFile c userId file n Nothing Nothing
+xftpSendFile c userId file n = A.xftpSendFile c userId file n Nothing
 
 data AXFTPServerConfig = forall s. FileStoreClass s => AXFTPSrvCfg (XFTPServerConfig s)
 
@@ -220,7 +220,7 @@ testXFTPClient = testXFTPClientWith testXFTPClientConfig
 testXFTPClientWith :: HasCallStack => XFTPClientConfig -> (HasCallStack => XFTPClient -> IO a) -> IO a
 testXFTPClientWith cfg client = do
   ts <- getCurrentTime
-  getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure ()) >>= \case
+  getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure Nothing) (\_ -> pure ()) >>= \case
     Right c -> client c
     Left e -> error $ show e
 

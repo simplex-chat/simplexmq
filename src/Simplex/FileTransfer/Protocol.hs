@@ -23,7 +23,6 @@ module Simplex.FileTransfer.Protocol
     FileCmd (..),
     FileInfo (..),
     GrantedStorageTime (..),
-    xftpNewProofHeader,
     XFTPFileId,
     FileResponse (..),
     xftpBlockSize,
@@ -49,8 +48,6 @@ import Data.Word (Word32)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, blockedFilesXFTPVersion, fileStorageTimeXFTPVersion, xftpClientHandshakeStub)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..))
-import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -82,7 +79,7 @@ import Simplex.Messaging.Protocol
     tEncodeBatch1,
     tParse,
   )
-import Simplex.Messaging.Transport (SessionId, THandleParams (..), TransportError (..), TransportPeer (..))
+import Simplex.Messaging.Transport (THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Util ((<$?>))
 
 xftpBlockSize :: Int
@@ -180,7 +177,7 @@ instance Protocol XFTPVersion XFTPErrorType FileResponse where
   {-# INLINE protocolError #-}
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> Maybe Int64 -> Maybe EntitlementProof -> FileCommand FSender
+  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> Maybe Int64 -> FileCommand FSender
   FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
   FPUT :: FileCommand FSender
   FDEL :: FileCommand FSender
@@ -204,9 +201,6 @@ data FileInfo = FileInfo
 data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
   deriving (Eq, Ord, Show)
 
-xftpNewProofHeader :: SessionId -> SndPublicAuthKey -> ByteString -> BBSPresHeader
-xftpNewProofHeader sessionId sndKey digest = BBSPresHeader $ sessionId <> smpEncode sndKey <> digest
-
 instance Encoding GrantedStorageTime where
   smpEncode = \case
     GSTExpires t -> smpEncode ('T', t)
@@ -220,8 +214,8 @@ type XFTPFileId = EntityId
 instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
   encodeProtocol v = \case
-    FNEW file rKeys auth_ st ep
-      | v >= fileStorageTimeXFTPVersion -> fnew <> e (st, ep)
+    FNEW file rKeys auth_ st
+      | v >= fileStorageTimeXFTPVersion -> fnew <> e st
       | otherwise -> fnew
       where
         fnew = e (FNEW_, ' ', file, rKeys, auth_)
@@ -262,10 +256,10 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
     FCT SFSender tag ->
       FileCmd SFSender <$> case tag of
         FNEW_
-          | v >= fileStorageTimeXFTPVersion -> fnewP smpP smpP
-          | otherwise -> fnewP (pure Nothing) (pure Nothing)
+          | v >= fileStorageTimeXFTPVersion -> fnewP smpP
+          | otherwise -> fnewP (pure Nothing)
           where
-            fnewP stP epP = FNEW <$> _smpP <*> smpP <*> smpP <*> stP <*> epP
+            fnewP stP = FNEW <$> _smpP <*> smpP <*> smpP <*> stP
         FADD_ -> FADD <$> _smpP
         FPUT_ -> pure FPUT
         FDEL_ -> pure FDEL

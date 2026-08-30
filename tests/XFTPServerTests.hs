@@ -103,7 +103,7 @@ createTestChunk fp = do
   pure bytes
 
 createXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> FileInfo -> NonEmpty C.APublicAuthKey -> Maybe BasicAuth -> ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
-createXFTPChunk c spKey file rcps auth = (\(sId, rIds, _) -> (sId, rIds)) <$> A.createXFTPChunk c spKey file rcps auth Nothing Nothing
+createXFTPChunk c spKey file rcps auth = (\(sId, rIds, _) -> (sId, rIds)) <$> A.createXFTPChunk c spKey file rcps auth Nothing
 
 readChunk :: XFTPFileId -> IO ByteString
 readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
@@ -251,7 +251,7 @@ testInactiveClientExpiration :: AFStoreType -> Expectation
 testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
   ts <- liftIO getCurrentTime
-  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> atomically $ putTMVar disconnected ())
+  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
   pingXFTP c
   liftIO $ do
     threadDelay 100000
@@ -543,7 +543,7 @@ testWebHandshake =
       -- Verify signedPubKey (DH key auth)
       void $ either error pure $ C.verifyX509 leafPubKey signedPubKey
       -- Send client handshake with echoed challenge
-      let clientHs = XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash}
+      let clientHs = XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash, entitlementProof = Nothing}
       clientHsPadded <- either (error . show) pure $ C.pad (smpEncode clientHs) xftpBlockSize
       let clientHsReq = H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded
       resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000)
@@ -569,7 +569,7 @@ testWebReHandshake =
       resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000)
       serverHs1 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
       XFTPServerHandshake {sessionId = sid1} <- either error pure $ smpDecode serverHs1
-      clientHsPadded <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash})) xftpBlockSize
+      clientHsPadded <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash, entitlementProof = Nothing})) xftpBlockSize
       resp1b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
       B.length (bodyHead (HC.respBody resp1b)) `shouldBe` 0
       -- Re-handshake on same connection with xftp-web-hello header

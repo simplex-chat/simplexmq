@@ -69,6 +69,7 @@ import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
@@ -94,8 +95,8 @@ data XFTPServerConfig s = XFTPServerConfig
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the files can be removed and check interval, seconds
     fileExpiration :: ExpirationConfig,
-    -- | maximum storage time per entitlement name, seconds
-    fileStorageEntitlements :: Map Text Int64,
+    -- | what each entitlement name grants
+    fileStorageEntitlements :: Map Text EntitlementConfig,
     entitlementKeys :: Map Word16 BBSPublicKey,
     -- | timeout to receive file
     fileTimeout :: Int,
@@ -181,7 +182,7 @@ defaultFileExpiration =
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
 newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials} = do
   let defaultMax = ttl fileExpiration
-  unless (all (>= defaultMax) (M.elems fileStorageEntitlements)) $ do
+  unless (all ((>= defaultMax) . storageTime) (M.elems fileStorageEntitlements)) $ do
     logError "STORE: entitlement storage time is below the default file expiration"
     exitFailure
   random <- C.newRandom
@@ -208,7 +209,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
-  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Int64) (Maybe EntitlementProof)
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Int64)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
 

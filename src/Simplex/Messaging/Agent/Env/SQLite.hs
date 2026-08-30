@@ -68,7 +68,7 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationErro
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
-import Simplex.Messaging.Crypto.Entitlement (entitlementIssuerKeys)
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, entitlementIssuerKeys)
 import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
@@ -91,6 +91,7 @@ data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty (ServerCfg 'PSMP)),
     ntf :: [NtfServer],
     xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
+    entitlements :: Map UserId EntitlementCredential,
     netCfg :: NetworkConfig,
     useServices :: Map UserId Bool,
     presetDomains :: [HostName],

@@ -2,7 +2,9 @@
 
 ## Summary
 
-The server stores a storage time for each file. The sender sets it in the FNEW command. The sender may present a proof of an entitlement to raise the maximum storage time the server allows. Each proof is bound to the uploaded chunk and to the TLS session, so it cannot be reused for another chunk or another session.
+The server stores a storage time for each file. The sender sets it in the FNEW command. The client may present a proof of an entitlement in the handshake to raise the maximum storage time the server allows. The proof is bound to the TLS session, so it cannot be reused for another session.
+
+An entitlement belongs to the user, not to a file: the client presents it once per connection, and the server applies it to everything the client does in that session. The server can also vary other limits, such as throttling, by the entitlement.
 
 ## Entitlement
 
@@ -21,7 +23,7 @@ issuerKeyIndex = 2*2 OCTET   ; Word16, network byte order
 bbsProof = largeString       ; BBS proof bytes
 ```
 
-The presentation header that the BBS proof is generated over is not transmitted; the server reconstructs it from the command context (see [Binding](#binding)), which is what binds the proof.
+The presentation header that the BBS proof is generated over is not transmitted; the server takes it from the session (see [Binding](#binding)), which is what binds the proof.
 
 ## Storage time
 
@@ -32,16 +34,28 @@ storageHours = 8*8 OCTET     ; Int64, network byte order
 
 The storage time is an optional number of hours. Absent (`%s"0"`) requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present. A value (`%s"1"` with hours) requests a specific number of hours.
 
-## Commands, new XFTP version
+## Handshake, new XFTP version
 
-The new protocol version extends FNEW.
+The client handshake carries the entitlement proof.
 
 ```
-fnew = %s"FNEW " fileInfo rcvKeys optBasicAuth fileStorageTime optEntitlementProof
+clientHandshake = xftpVersion keyHash optEntitlementProof
 optEntitlementProof = %s"0" / (%s"1" entitlementProof)
 ```
 
-`fileInfo`, `rcvKeys`, and `optBasicAuth` are defined by the current XFTP protocol. Version 3 and earlier encode neither `fileStorageTime` nor the proof, and the server applies the default storage time.
+`xftpVersion` and `keyHash` are defined by the current XFTP protocol. Version 3 and earlier encode no proof.
+
+The server verifies the proof once, when it accepts the handshake, and keeps the resulting maximum storage time for the session. A proof that fails to verify, names an entitlement the server does not configure, or names one whose expiration passed more than 24 hours ago, is logged and ignored, and the session gets the default maximum. The client learns nothing about which entitlements the server accepts.
+
+## Commands
+
+The new protocol version extends FNEW with the storage time.
+
+```
+fnew = %s"FNEW " fileInfo rcvKeys optBasicAuth fileStorageTime
+```
+
+`fileInfo`, `rcvKeys`, and `optBasicAuth` are defined by the current XFTP protocol. Version 3 and earlier encode no `fileStorageTime`, and the server applies the default storage time.
 
 ## Responses
 
@@ -59,13 +73,15 @@ expiresAt = 8*8 OCTET        ; Int64, seconds since epoch (absolute UTC instant)
 
 ## Binding
 
-The presentation header binds each proof to the TLS session and to the specific chunk. The server reconstructs it and rejects a proof generated for any other session or chunk.
+The presentation header binds the proof to the TLS session, so a proof presented on any other session fails to verify.
 
 ```
-presHeader = sessionId sndKey digest
+presHeader = sessionId
 ```
 
-The chunk is identified by the sender key and the digest, which the server verifies for every command on the file. `sessionId` is the TLS session identifier; `sndKey` and `digest` are the fields of `fileInfo`.
+`sessionId` is the TLS session identifier, the TLS unique channel binding. Both sides take it from the connection: the client has it once TLS is established, and the client checks that the identifier the server sends in its handshake matches.
+
+Binding to the session is what stops a proof being replayed by another client. A proof is not bound to a file, because the entitlement belongs to the user and authorises everything the client does in that session.
 
 ## Maximum storage time
 

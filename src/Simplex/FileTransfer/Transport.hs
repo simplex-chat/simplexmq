@@ -37,7 +37,7 @@ module Simplex.FileTransfer.Transport
   )
 where
 
-import Control.Applicative (optional)
+import Control.Applicative (optional, (<|>))
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -57,6 +57,7 @@ import Data.Word (Word16, Word32)
 import Network.HTTP2.Client (HTTP2Error)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers
@@ -135,7 +136,9 @@ data XFTPClientHandshake = XFTPClientHandshake
   { -- | agreed XFTP server protocol version
     xftpVersion :: VersionXFTP,
     -- | server identity - CA certificate fingerprint
-    keyHash :: C.KeyHash
+    keyHash :: C.KeyHash,
+    -- | proof of the user entitlement bound to the session
+    entitlementProof :: Maybe EntitlementProof
   }
 
 instance Encoding XFTPClientHello where
@@ -147,12 +150,13 @@ instance Encoding XFTPClientHello where
     pure XFTPClientHello {webChallenge}
 
 instance Encoding XFTPClientHandshake where
-  smpEncode XFTPClientHandshake {xftpVersion, keyHash} =
-    smpEncode (xftpVersion, keyHash)
+  smpEncode XFTPClientHandshake {xftpVersion, keyHash, entitlementProof} =
+    smpEncode (xftpVersion, keyHash, entitlementProof)
   smpP = do
     (xftpVersion, keyHash) <- smpP
+    entitlementProof <- smpP <|> pure Nothing
     Tail _compat <- smpP
-    pure XFTPClientHandshake {xftpVersion, keyHash}
+    pure XFTPClientHandshake {xftpVersion, keyHash, entitlementProof}
 
 instance Encoding XFTPServerHandshake where
   smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof} =
