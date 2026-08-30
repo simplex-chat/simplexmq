@@ -20,9 +20,13 @@ import qualified Data.Map.Strict as M
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import SMPClient
+import Simplex.FileTransfer.Protocol (FileInfo (..))
+import Simplex.FileTransfer.Server.Store (FileRec (..), FileRecipient (..), FileStoreClass (..), RoundedFileTime, STMFileStore (..))
+import Simplex.FileTransfer.Server.StoreLog (FileStoreLogRecord (..), readWriteFileStore)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Protocol.Types (ClientNotice (..))
 import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.Types
@@ -191,3 +195,75 @@ testSMPStoreLog testSuite tests =
       compacted' `shouldBe` compacted
     storeState :: JournalMsgStore 'QSMemory -> IO (M.Map RecipientId QueueRec)
     storeState st = M.mapMaybe id <$> (readTVarIO (queues $ stmQueueStore st) >>= mapM (readTVarIO . queueRec))
+
+type FileRecState = (FileInfo, RoundedFileTime, Maybe RoundedFileTime, ServerEntityStatus)
+
+type XFTPStoreLogTestCase = StoreLogTestCase FileStoreLogRecord (M.Map SenderId FileRecState)
+
+deriving instance Eq FileInfo
+
+deriving instance Eq FileRecipient
+
+deriving instance Eq FileStoreLogRecord
+
+testFileStoreLogFile :: FilePath
+testFileStoreLogFile = "tests/tmp/xftp-server-store.log"
+
+fileStoreLogTests :: Spec
+fileStoreLogTests = do
+  g <- runIO C.newRandom
+  (sndKey, _) <- runIO $ atomically $ C.generateAuthKeyPair C.SEd25519 g
+  sId <- runIO $ atomically $ EntityId <$> C.randomBytes 24 g
+  let file = FileInfo {sndKey, size = 16384, digest = "12345678"}
+      createdAt = RoundedSystemTime 1600000000
+      expiresAt = RoundedSystemTime 1600172800
+      blocked = BlockingInfo {reason = BRSpam, notice = Nothing}
+      blockedWithNotice = BlockingInfo {reason = BRContent, notice = Just ClientNotice {ttl = Just 86400}}
+  testXFTPStoreLog
+    "XFTP server store log"
+    [ SLTC
+        { name = "create file",
+          saved = [AddFile sId file createdAt (Just expiresAt) EntityActive],
+          compacted = [AddFile sId file createdAt (Just expiresAt) EntityActive],
+          state = M.fromList [(sId, (file, createdAt, Just expiresAt, EntityActive))]
+        },
+      SLTC
+        { name = "create file without expiration",
+          saved = [AddFile sId file createdAt Nothing EntityActive],
+          compacted = [AddFile sId file createdAt Nothing EntityActive],
+          state = M.fromList [(sId, (file, createdAt, Nothing, EntityActive))]
+        },
+      SLTC
+        { name = "create and block file",
+          saved = [AddFile sId file createdAt (Just expiresAt) EntityActive, BlockFile sId blocked],
+          compacted = [AddFile sId file createdAt (Just expiresAt) (EntityBlocked blocked)],
+          state = M.fromList [(sId, (file, createdAt, Just expiresAt, EntityBlocked blocked))]
+        },
+      SLTC
+        { name = "create and block file with notice",
+          saved = [AddFile sId file createdAt (Just expiresAt) EntityActive, BlockFile sId blockedWithNotice],
+          compacted = [AddFile sId file createdAt (Just expiresAt) (EntityBlocked blockedWithNotice)],
+          state = M.fromList [(sId, (file, createdAt, Just expiresAt, EntityBlocked blockedWithNotice))]
+        }
+    ]
+
+testXFTPStoreLog :: String -> [XFTPStoreLogTestCase] -> Spec
+testXFTPStoreLog testSuite tests =
+  describe testSuite $ forM_ tests $ \t@SLTC {name, saved} -> it name $ do
+    l <- openWriteStoreLog False testFileStoreLogFile
+    mapM_ (writeStoreLogRecord l) saved
+    closeStoreLog l
+    replicateM_ 3 $ testReadWrite t
+  where
+    testReadWrite SLTC {compacted, state} = do
+      st <- newFileStore () :: IO STMFileStore
+      l <- readWriteFileStore testFileStoreLogFile st
+      storeState st `shouldReturn` state
+      closeStoreLog l
+      ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testFileStoreLogFile
+      compacted' `shouldBe` compacted
+    storeState :: STMFileStore -> IO (M.Map SenderId FileRecState)
+    storeState st = readTVarIO (files st) >>= mapM fileState
+    fileState FileRec {fileInfo, createdAt, expiresAt, fileStatus} = do
+      status <- readTVarIO fileStatus
+      pure (fileInfo, createdAt, expiresAt, status)

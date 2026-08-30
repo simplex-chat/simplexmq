@@ -97,6 +97,7 @@ main = do
 #else
           describe "Store log tests" storeLogTests
 #endif
+          describe "XFTP store log tests" fileStoreLogTests
           describe "TSessionSubs tests" tSessionSubsTests
           describe "Util tests" utilTests
           describe "Names resolver tests" smpNamesTests

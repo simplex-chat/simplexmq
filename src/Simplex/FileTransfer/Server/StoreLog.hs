@@ -20,7 +20,7 @@ module Simplex.FileTransfer.Server.StoreLog
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -52,7 +52,7 @@ data FileStoreLogRecord
 
 instance StrEncoding FileStoreLogRecord where
   strEncode = \case
-    AddFile sId file createdAt expiresAt status -> strEncode (Str "FNEW", sId, file, createdAt, status) <> expE expiresAt
+    AddFile sId file createdAt expiresAt status -> B.concat [strEncode (Str "FNEW", sId, file, createdAt), expE expiresAt, " ", strEncode status]
     PutFile sId path -> strEncode (Str "FPUT", sId, path)
     AddRecipients sId rcps -> strEncode (Str "FADD", sId, rcps)
     DeleteFile sId -> strEncode (Str "FDEL", sId)
@@ -74,8 +74,8 @@ instance StrEncoding FileStoreLogRecord where
         sId <- strP_
         file <- strP_
         createdAt <- strP
+        expiresAt <- optional _strP
         status <- _strP <|> pure EntityActive
-        expiresAt <- (A.space *> (Just <$> strP)) <|> pure Nothing
         pure $ AddFile sId file createdAt expiresAt status
 
 logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
