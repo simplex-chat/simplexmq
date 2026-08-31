@@ -19,10 +19,10 @@ import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
 import Data.Int (Int64)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Data.List (find)
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text as T

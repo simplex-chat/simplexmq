@@ -37,6 +37,7 @@ xftpStoreTests = do
     it "should block file and update status" testBlockFile
     it "should ack file reception" testAckFile
     it "should return expired files with limit" testExpiredFiles
+    it "should expire files by stored expiration" testExpiredFilesStoredExpiration
     it "should compute committed used storage and file count" testStorageAndCount
 
 xftpMigrationTests :: Spec
@@ -67,6 +68,9 @@ testFileInfo sndKey =
 
 testCreatedAt :: RoundedFileTime
 testCreatedAt = RoundedSystemTime 1000000
+
+testExpiresAt :: RoundedFileTime
+testExpiresAt = RoundedSystemTime 2000000
 
 -- Tests
 
@@ -202,6 +206,18 @@ testExpiredFiles = withPgStore $ \st -> do
       sz `shouldBe` 128000
     _ -> expectationFailure "expected 1 expired file"
 
+testExpiredFilesStoredExpiration :: Expectation
+testExpiredFilesStoredExpiration = withPgStore $ \st -> do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let fileInfo = testFileInfo sndKey
+      oldTime = RoundedSystemTime 100000
+  -- both files are created before the cutoff, the stored expiration decides
+  addFile st (EntityId "expired_file____") fileInfo oldTime (Just (RoundedSystemTime 400000)) EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "stored_file_____") fileInfo oldTime (Just (RoundedSystemTime 900000)) EntityActive `shouldReturn` Right ()
+  expired <- expiredFiles st 500000 0 100
+  map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
+
 testStorageAndCount :: Expectation
 testStorageAndCount = withPgStore $ \st -> do
   testStorageAndCountForStore st
@@ -248,7 +264,7 @@ testMigrationRoundTrip = do
       sId1 = EntityId "migration_file_1"
       sId2 = EntityId "migration_file_2"
       rId1 = EntityId "migration_rcp_1_"
-  addFile stmStore sId1 fileInfo1 testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addFile stmStore sId1 fileInfo1 testCreatedAt (Just testExpiresAt) EntityActive `shouldReturn` Right ()
   void $ setFilePath stmStore sId1 "/tmp/file1"
   addRecipient stmStore sId1 (FileRecipient rId1 rcpKey1) `shouldReturn` Right ()
   let testBlockInfo = BlockingInfo {reason = BRSpam, notice = Nothing}
@@ -271,9 +287,10 @@ testMigrationRoundTrip = do
   -- Verify file 1
   result1 <- getFile stmStore2 SFSender sId1
   case result1 of
-    Right (FileRec {fileInfo = fi, filePath, fileStatus}, _) -> do
+    Right (FileRec {fileInfo = fi, filePath, expiresAt, fileStatus}, _) -> do
       size fi `shouldBe` 128000
       readTVarIO filePath `shouldReturn` Just "/tmp/file1"
+      expiresAt `shouldBe` Just testExpiresAt
       readTVarIO fileStatus `shouldReturn` EntityActive
     Left e -> expectationFailure $ "getFile sId1 failed: " <> show e
   -- Verify recipient

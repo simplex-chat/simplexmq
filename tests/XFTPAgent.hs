@@ -30,7 +30,7 @@ import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..))
-import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.FileTransfer.Server.Store (STMFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
@@ -356,16 +356,26 @@ testXFTPAgentEntitlement = do
       nowSec <- liftIO $ systemSeconds <$> getSystemTime
       _ <- XA.xftpSendFile sndr 1 (CF.plain filePath) 1 (Just 100)
       gExpires <- waitSndDone sndr
-      liftIO $ case gExpires of
-        Just (GSTExpires t) -> do
-          t `shouldSatisfy` (>= nowSec + 100 * 3600)
-          t `shouldSatisfy` (< nowSec + 100 * 3600 + 7200)
-        Nothing -> expectationFailure "expected granted storage time in SFDONE"
+      liftIO $ expiresIn gExpires nowSec (100 * 3600)
+    -- the same request without the credential is capped at the default maximum
+    withAgent 2 (agentCfg {AEnv.entitlementKeys = keys}) initAgentServers testDB2 $ \sndr -> runRight_ $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      nowSec <- liftIO $ systemSeconds <$> getSystemTime
+      _ <- XA.xftpSendFile sndr 1 (CF.plain filePath) 1 (Just 100)
+      gExpires <- waitSndDone sndr
+      let ExpirationConfig {ttl} = defaultFileExpiration
+      liftIO $ expiresIn gExpires nowSec ttl
   where
+    expiresIn gExpires nowSec secs = case gExpires of
+      Just (GSTExpires t) -> do
+        t `shouldSatisfy` (>= nowSec + secs)
+        t `shouldSatisfy` (< nowSec + secs + 7200)
+      Nothing -> expectationFailure "expected granted storage time in SFDONE"
     waitSndDone sndr =
       sfGet sndr >>= \case
         ("", _, A.SFDONE _ _ g) -> pure g
-        _ -> waitSndDone sndr
+        ("", _, SFPROG _ _) -> waitSndDone sndr
+        r -> error $ "Expected SFDONE, got " <> show r
 
 testReceive :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceive rcp rfd = testReceiveCF rcp rfd Nothing

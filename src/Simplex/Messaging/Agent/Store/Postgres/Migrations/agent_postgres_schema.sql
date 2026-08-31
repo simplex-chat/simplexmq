@@ -682,7 +682,8 @@ CREATE TABLE smp_agent_test_protocol_schema.snd_file_chunk_replicas (
     delay bigint,
     retries bigint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    replica_expires_at bigint
 );
 
 

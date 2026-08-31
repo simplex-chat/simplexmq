@@ -26,7 +26,7 @@ import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
-import Data.Composition ((.:))
+import Data.Composition ((.:), (.::.))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -82,7 +82,7 @@ logFileStoreRecord :: StoreLog 'WriteMode -> FileStoreLogRecord -> IO ()
 logFileStoreRecord = writeStoreLogRecord
 
 logAddFile :: StoreLog 'WriteMode -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO ()
-logAddFile s sId file createdAt expiresAt status = logFileStoreRecord s $ AddFile sId file createdAt expiresAt status
+logAddFile s = logFileStoreRecord s .::. AddFile
 
 logPutFile :: StoreLog 'WriteMode -> SenderId -> FilePath -> IO ()
 logPutFile s = logFileStoreRecord s .: PutFile

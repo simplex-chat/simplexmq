@@ -22,6 +22,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.List (find, isInfixOf)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
@@ -38,7 +39,6 @@ import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
-import Data.List.NonEmpty (NonEmpty)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)

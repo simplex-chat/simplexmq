@@ -95,7 +95,7 @@ entitlementMessageCount :: Int
 entitlementMessageCount = 4
 
 entitlementDisclosedIndexes :: [Int]
-entitlementDisclosedIndexes = [1, 2, 3]
+entitlementDisclosedIndexes = [1 .. entitlementMessageCount - 1]
 
 entitlementMessages :: MasterKey -> Entitlement -> [ByteString]
 entitlementMessages (MasterKey mk) ent = mk : disclosedMessages ent

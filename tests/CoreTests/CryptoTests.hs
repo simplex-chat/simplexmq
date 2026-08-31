@@ -16,9 +16,9 @@ import Data.Either (isLeft, isRight)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..))
-import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
 import Data.Type.Equality

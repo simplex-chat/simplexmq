@@ -29,20 +29,17 @@ module Simplex.FileTransfer.Types
     sndChunkSize,
   ) where
 
-import qualified Data.Aeson as JD
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word32)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol (GrantedStorageTime (..))
-import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
@@ -191,10 +188,6 @@ data SndFileStatus
 instance FromField SndFileStatus where fromField = fromTextField_ textDecode
 
 instance ToField SndFileStatus where toField = toField . textEncode
-
-instance ToField EntitlementCredential where toField = toField . decodeUtf8 . LB.toStrict . JD.encode
-
-instance FromField EntitlementCredential where fromField = fromTextField_ (JD.decode . LB.fromStrict . encodeUtf8)
 
 instance TextEncoding SndFileStatus where
   textDecode = \case

@@ -51,7 +51,7 @@ optEntitlementProof = %s"0" / (%s"1" entitlementProof)
 
 `xftpVersion` and `keyHash` are defined by the current XFTP protocol. Version 3 and earlier encode no proof.
 
-The server verifies the proof once, when it accepts the handshake, and keeps the resulting maximum storage time for the session. A proof that fails to verify, names an entitlement the server does not configure, or names one whose expiration passed more than 24 hours ago, is logged and ignored, and the session gets the default maximum. The client learns nothing about which entitlements the server accepts.
+The server verifies the proof when it accepts the handshake and keeps the result for the session; a repeated handshake carrying the `xftp-handshake` header keeps that result and verifies nothing. A proof that names an entitlement the server does not configure, or one whose expiration passed 24 hours ago or more, is ignored without verification; a proof that fails to verify is logged. In each case the session gets the default maximum. The response is the same in every case, but only a configured, unlapsed name costs a verification, so the handshake latency tells the client which names the server configures.
 
 ## Commands
 
@@ -88,6 +88,8 @@ presHeader = sessionId
 `sessionId` is the TLS session identifier, the TLS unique channel binding. Both sides take it from the connection: the client has it once TLS is established, and the client checks that the identifier the server sends in its handshake matches.
 
 Binding to the session is what stops a proof being replayed by another client. A proof is not bound to a file, because the entitlement belongs to the user and authorises everything the client does in that session.
+
+BBS proofs of one credential are unlinkable, but every proof discloses the same `entExpires`, `entName` and `entExtra`, so a server can link the sessions of one holder by that triple, and two servers can correlate them. The issuing service decides how identifying it is: `entExpires` set to the same instant for everyone who buys in the same period, and an `entExtra` that carries nothing per-holder, make the holders of that period indistinguishable.
 
 ## Maximum storage time
 

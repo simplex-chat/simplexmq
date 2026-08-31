@@ -71,10 +71,10 @@ In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
 In `Simplex.FileTransfer.Server`:
 
-- `processClientHandshake` verifies the proof from the handshake, once per session, and resolves the maximum storage time for the entitlement name
-- verify only when the answer can change: the name is configured with a maximum above the default, and the entitlement expired less than 24 hours ago. A proof that fails these checks or fails to verify is logged, and the session gets the default maximum
+- `processClientHandshake` verifies the proof from the handshake, once per session, and resolves the maximum storage time for the entitlement name. It takes the resolution as a parameter: the first handshake verifies, a repeated handshake with the `xftp-handshake` header keeps the entitlement of the session and verifies nothing
+- verify only when the answer can change: the name is configured (startup rejects a maximum below the default), and the entitlement expired less than 24 hours ago. A proof that fails these checks gets no verification; a proof that fails to verify is logged. In both cases the session gets the default maximum
 - a verified proof becomes `peerEntitlement :: Maybe SessionEntitlement` in `THAuthServer`, where `data SessionEntitlement = SessionEntitlement {expiresAt :: SystemSeconds, entConfig :: EntitlementConfig}`; `processXFTPRequest` takes it from there, so no proof is verified while a command is processed
-- `createFile` caps the requested storage time by the session maximum, which is the entitlement's storage time when the entitlement is still valid and above the default, and the default otherwise
+- `createFile` caps the requested storage time by the session maximum, which is the entitlement's storage time when the entitlement is still valid, and the default otherwise
 
 ## simplexmq: server store and expiration
 

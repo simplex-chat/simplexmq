@@ -1053,12 +1053,10 @@ reconnectSMPServer c userId srv = do
 
 closeUserXFTPClients :: AgentClient -> UserId -> IO ()
 closeUserXFTPClients c userId = do
-  cs <- readTVarIO $ xftpClients c
-  mapM_ (forkIO . closeClient_ c) $ M.foldrWithKey userClient [] cs
-  where
-    userClient (userId', _, _) v
-      | userId == userId' = (v :)
-      | otherwise = id
+  vs <- atomically $ stateTVar (xftpClients c) $ \cs ->
+    let (userCs, cs') = M.partitionWithKey (\(userId', _, _) _ -> userId == userId') cs
+     in (M.elems userCs, cs')
+  mapM_ (forkIO . closeClient_ c) vs
 
 closeClient :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =

@@ -244,6 +244,12 @@ fileStoreLogTests = do
           saved = [AddFile sId file createdAt (Just expiresAt) EntityActive, BlockFile sId blockedWithNotice],
           compacted = [AddFile sId file createdAt (Just expiresAt) (EntityBlocked blockedWithNotice)],
           state = M.fromList [(sId, (file, createdAt, Just expiresAt, EntityBlocked blockedWithNotice))]
+        },
+      SLTC
+        { name = "block file without expiration",
+          saved = [AddFile sId file createdAt Nothing EntityActive, BlockFile sId blockedWithNotice],
+          compacted = [AddFile sId file createdAt Nothing (EntityBlocked blockedWithNotice)],
+          state = M.fromList [(sId, (file, createdAt, Nothing, EntityBlocked blockedWithNotice))]
         }
     ]
 

@@ -180,10 +180,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           | otherwise -> processHello Nothing
         Just (HandshakeSent pk)
           | webHello -> processHello (Just pk)
-          | otherwise -> processClientHandshake pk
+          | otherwise -> processClientHandshake pk verifiedEntitlement
         Just (HandshakeAccepted thParams)
           | webHello -> processHello (serverPrivKey <$> thAuth thParams)
-          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth)
+          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth) (const . pure $ peerEntitlement auth)
           | otherwise -> pure $ Just thParams
       either sendError pure r
       where
@@ -213,7 +213,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 #endif
           liftIO . sendResponse $ H.responseBuilder N.ok200 (corsHeaders addCORS) shs
           pure Nothing
-        processClientHandshake pk = do
+        processClientHandshake pk sessionEntitlement = do
           unless (B.length bodyHead == xftpBlockSize) $ throwE HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
           XFTPClientHandshake {xftpVersion = v, keyHash, entitlementProof} <- liftHS $ smpDecode body
@@ -221,7 +221,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
-              ent <- lift $ verifiedEntitlement entitlementProof
+              ent <- lift $ sessionEntitlement entitlementProof
               let auth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, peerEntitlement = ent, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
