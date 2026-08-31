@@ -71,6 +71,42 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
+**4. resolver distinguishes the three ways a name fails to resolve.** Names
+expire lazily, so the chain still holds the answer and the resolver reports it
+rather than returning a bare 404 for every case:
+```sh
+curl -s http://127.0.0.1:8000/resolve/never-taken.testing | jq
+# 404 → {"status":"unregistered", …}          never registered
+curl -s http://127.0.0.1:8000/resolve/lapsed.testing | jq
+# 410 → {"status":"expired","expires":1750…}  registered, then lapsed
+curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
+# 200 → {"status":"registered","expires":1780…, …}
+```
+A held name that points nowhere answers 404 with `"status":"noResolver"`, which
+is a different problem from either of the above. Status needs
+`SNRC_REGISTRAR_<TLD>` configured; without it the field reads `"unknown"` and
+the endpoint behaves as it did before.
+
+**5. resolver lists the names an address holds:**
+```sh
+curl -s http://127.0.0.1:8000/owned-by/0x69a6000000000000000000000000000000002d32 | jq
+# → {"address":"0x69a6…","names":[
+#      {"name":"foobar.testing","tld":"testing","labelhash":"0x…",
+#       "expires":1780…,"status":"registered"},
+#      {"name":"lapsed.testing","tld":"testing","labelhash":"0x…",
+#       "expires":1750…,"status":"expired"}],
+#    "truncated":false,"checkedTlds":["testing"]}
+```
+Read from the ERC-721 registrar (`balanceOf` / `tokenOfOwnerByIndex` /
+`labelOf`), so it reflects names acquired by transfer as well as by
+registration, and needs no log scan.
+
+**Expired names are listed, not filtered**, each carrying the same `status`
+vocabulary `/resolve` uses. A wallet scanning for the names a key holds is
+precisely the caller who needs to be told one has lapsed, so it can offer to
+renew it. Filter on `status == "registered"` for the live set only. Bounded by
+`SNRC_MAX_OWNED` (default 256), and the response says when it truncated.
+
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
 
@@ -82,7 +118,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 | reth p2p | `:30303` tcp/udp | Ethereum sync (open on firewall) |
 | nimbus p2p | `:9000` tcp/udp | beacon sync (open on firewall) |
 | nimbus REST | `127.0.0.1:5052` | beacon API |
-| **resolver** | `127.0.0.1:8000` | SNRC REST (`/resolve`, `/health`) |
+| **resolver** | `127.0.0.1:8000` | SNRC REST (`/resolve`, `/owned-by`, `/health`) |
 
 ## Caveats
 

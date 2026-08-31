@@ -29,6 +29,7 @@ Usage:
   ./snrc-resolve.py                    # serve on :8000
 
   curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
+  curl -s http://127.0.0.1:8000/owned-by/0x69a6...2d32 | jq .
   curl -s http://127.0.0.1:8000/health
 
 Environment:
@@ -61,6 +62,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -83,6 +85,21 @@ REGISTRIES = {
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
+
+# The BaseRegistrar (ERC-721) per TLD, used for owner -> names. Separate from
+# the registry above: the registry answers "who owns this node", the registrar
+# is the NFT that can be asked the reverse. Not a proxy, so the address in
+# deployments is the one that answers.
+REGISTRARS = {
+    "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
+    or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
+    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", ""),  # not deployed yet
+}
+
+# An address can hold any number of names, and enumeration costs one call per
+# name. Bounded so a single request cannot pin the resolver to one caller's
+# balance; the response says when it truncated rather than lying by omission.
+MAX_OWNED = int(os.environ.get("SNRC_MAX_OWNED", "256"))
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
 COIN_ETH = 60
@@ -141,6 +158,32 @@ def decode_bytes(hex_data: str) -> bytes:
         return b""
     length = int.from_bytes(raw[32:64], "big")
     return raw[64:64 + length]
+
+
+def decode_uint(hex_data: str) -> int:
+    raw = hex_data[2:] if hex_data.startswith("0x") else hex_data
+    return int(raw[-64:], 16) if raw else 0
+
+
+def encode_uint(value: int) -> str:
+    return value.to_bytes(32, "big").hex()
+
+
+def encode_address(addr: str) -> str:
+    return "00" * 12 + addr[2:].lower()
+
+
+def decode_string(hex_data: str) -> str:
+    raw = decode_bytes(hex_data)
+    return raw.decode("utf-8", errors="replace") if raw else ""
+
+
+def is_address(value: str) -> bool:
+    return (
+        len(value) == 42
+        and value.startswith("0x")
+        and all(c in "0123456789abcdefABCDEF" for c in value[2:])
+    )
 
 
 def encode_text_call(node: bytes, key: str) -> str:
@@ -404,10 +447,33 @@ def resolve(name: str):
     node = namehash(name)
     node_hex = node.hex()
 
+    # Registration first, because it is the fact that separates the failures a
+    # caller has to tell apart: a name nobody has taken, one whose registration
+    # lapsed, and one that is held but not pointed anywhere.
+    reg = name_status(name)
+    if reg["status"] == "unregistered":
+        return 404, {
+            "name": name,
+            "status": "unregistered",
+            "error": "this name has never been registered",
+        }
+    if reg["status"] == "expired":
+        return 410, {
+            "name": name,
+            "status": "expired",
+            "expires": reg["expires"],
+            "error": "this registration expired",
+        }
+
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
-        return 404, {"name": name, "error": "no resolver set for this name"}
+        return 404, {
+            "name": name,
+            "status": "noResolver",
+            "expires": reg["expires"],
+            "error": "no resolver set for this name",
+        }
 
     owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
     owner = decode_address(owner_raw)
@@ -443,6 +509,118 @@ def resolve(name: str):
         "dot": addr_multicoin(resolver_addr, node, COIN_DOT),
         "owner": owner,
         "resolver": resolver_addr,
+        "status": reg["status"],
+        "expires": reg["expires"],
+    }
+
+
+def name_status(name: str):
+    """Registration status of the 2LD a name sits under.
+
+    Names expire lazily: the registrar keeps the record and simply stops
+    treating it as live, so "never registered" and "expired last Tuesday" are
+    both readable rather than both being absence. `nameExpires` returns 0 for a
+    label that was never registered, which is what separates the two.
+
+    Subnames are not registered here, so the status of `x.alice.testing` is the
+    status of `alice.testing` - which is the useful answer, since a subname is
+    only as valid as the 2LD above it.
+    """
+    labels = name.split(".")
+    tld = labels[-1]
+    registrar = REGISTRARS.get(tld)
+    if not registrar or len(labels) < 2:
+        # No registrar configured for this TLD: say so rather than guess.
+        return {"status": "unknown", "expires": None}
+
+    token = int.from_bytes(keccak(labels[-2].encode()), "big")
+    expires = decode_uint(
+        eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
+    )
+    if expires == 0:
+        return {"status": "unregistered", "expires": None}
+    if expires <= int(time.time()):
+        return {"status": "expired", "expires": expires}
+    return {"status": "registered", "expires": expires}
+
+
+def owned_by(address: str):
+    """Every live name an address holds, across every configured TLD.
+
+    Read straight off the ERC-721 registrar rather than from logs: the token
+    is the name, so `balanceOf` / `tokenOfOwnerByIndex` is the current answer
+    and it includes names acquired by transfer, which a scan of registration
+    events would miss. `labelOf` returns the plaintext label, recorded
+    write-once at registration, so no off-chain index is needed to turn a
+    token id back into a name.
+
+    Enumeration is deliberately not maintained on expiry - the registrar
+    documents this - so an expired name stays in the list until someone
+    re-registers it. That is reported rather than filtered: a caller scanning
+    for the names a key holds is exactly the caller who needs to be told one of
+    them has lapsed and can be renewed. Every entry carries `status`, using the
+    same vocabulary as /resolve, so "still yours" and "yours until you lose it"
+    are never confused for each other.
+
+    Callers wanting only the live set filter on `status == "registered"`, which
+    is the check the registrar's invariant asks of readers - applied by whoever
+    knows whether expired names matter to them, rather than here.
+    """
+    if not is_address(address):
+        return 400, {"address": address, "error": "expected a 0x-prefixed 20-byte address"}
+
+    configured = {t: r for t, r in REGISTRARS.items() if r}
+    if not configured:
+        return 400, {
+            "address": address,
+            "error": "no registrar is configured on this resolver",
+            "configured_tlds": [],
+        }
+
+    now = int(time.time())
+    names, truncated = [], False
+    for tld, registrar in configured.items():
+        held = decode_uint(
+            eth_call(registrar, selector("balanceOf(address)") + encode_address(address))
+        )
+        if held > MAX_OWNED:
+            truncated = True
+            held = MAX_OWNED
+        for i in range(held):
+            token = decode_uint(
+                eth_call(
+                    registrar,
+                    selector("tokenOfOwnerByIndex(address,uint256)")
+                    + encode_address(address)
+                    + encode_uint(i),
+                )
+            )
+            expires = decode_uint(
+                eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
+            )
+            label = decode_string(
+                eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token))
+            )
+            # A label of "" means the token is real but its name is not
+            # recoverable from chain state - registered before labels were
+            # recorded, or by a path that does not record them. Reported
+            # without a name rather than silently dropped.
+            names.append(
+                {
+                    "name": (label + "." + tld) if label else None,
+                    "tld": tld,
+                    "labelhash": hex(token),
+                    "expires": expires,
+                    "status": "registered" if expires > now else "expired",
+                }
+            )
+
+    names.sort(key=lambda n: (n["tld"], n["name"] or n["labelhash"]))
+    return 200, {
+        "address": address,
+        "names": names,
+        "truncated": truncated,
+        "checkedTlds": sorted(configured),
     }
 
 
@@ -478,9 +656,21 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(status, body)
             return
 
+        if len(parts) == 2 and parts[0] == "owned-by":
+            address = parts[1].strip().lower()
+            try:
+                status, body = owned_by(address)
+            except Exception as e:  # surface upstream errors as 502
+                status, body = 502, {"address": address, "error": f"{type(e).__name__}: {e}"}
+            self._respond(status, body)
+            return
+
         self._respond(
             404,
-            {"error": "not found", "routes": ["/health", "/resolve/<name>"]},
+            {
+                "error": "not found",
+                "routes": ["/health", "/resolve/<name>", "/owned-by/<address>"],
+            },
         )
 
     def _respond(self, status: int, body: dict):

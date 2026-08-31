@@ -6,6 +6,7 @@ Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
 
 import importlib.util
 import os
+import time
 import unittest
 
 # snrc-resolve.py has a hyphen, so import it via importlib instead of `import`.
@@ -15,6 +16,210 @@ _SPEC = importlib.util.spec_from_file_location(
 )
 snrc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(snrc)
+
+
+class AbiCodecTests(unittest.TestCase):
+    """The word-level codec the owner lookup is built from. Wrong padding here
+    is a silently empty answer rather than an error, so each direction is
+    pinned."""
+
+    def test_address_is_left_padded_to_a_word_and_lowercased(self):
+        self.assertEqual(
+            snrc.encode_address("0xEF47eb4384b46C89E4482a677c2cbcbd2a6fd85a"),
+            "00" * 12 + "ef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",
+        )
+
+    def test_uint_round_trips_through_a_word(self):
+        for n in (0, 1, 42, 2**64, 2**255):
+            self.assertEqual(snrc.decode_uint("0x" + snrc.encode_uint(n)), n)
+
+    def test_decode_uint_of_empty_is_zero(self):
+        self.assertEqual(snrc.decode_uint(""), 0)
+        self.assertEqual(snrc.decode_uint("0x"), 0)
+
+    def test_decode_string_reads_the_dynamic_layout(self):
+        label = b"alice"
+        word = (32).to_bytes(32, "big") + len(label).to_bytes(32, "big")
+        padded = label + b"\x00" * (32 - len(label))
+        self.assertEqual(snrc.decode_string("0x" + (word + padded).hex()), "alice")
+
+    def test_decode_string_of_empty_return_is_empty(self):
+        self.assertEqual(snrc.decode_string("0x"), "")
+
+    def test_is_address_accepts_only_20_byte_hex(self):
+        self.assertTrue(snrc.is_address("0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"))
+        self.assertTrue(snrc.is_address("0xEF47EB4384B46C89E4482A677C2CBCBD2A6FD85A"))
+        self.assertFalse(snrc.is_address("ef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"))
+        self.assertFalse(snrc.is_address("0xef47eb"))
+        self.assertFalse(snrc.is_address("0x" + "g" * 40))
+
+
+class OwnedByTests(unittest.TestCase):
+    """owner -> names, read off the ERC-721 registrar.
+
+    The registrar's own invariant is that enumeration is maintained on
+    transfer/mint/burn and NOT on expiry, so an expired name stays enumerable
+    until it is re-registered. These pin the filter that follows from it.
+    """
+
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    OWNER = "0x69a6000000000000000000000000000000002d32"
+
+    def _fake_chain(self, tokens):
+        """tokens :: [(labelhash, label, expires)] held by OWNER."""
+        sel = snrc.selector
+
+        def eth_call(to, data):
+            self.assertEqual(to, self.REGISTRAR)
+            if data.startswith(sel("balanceOf(address)")):
+                return "0x" + snrc.encode_uint(len(tokens))
+            if data.startswith(sel("tokenOfOwnerByIndex(address,uint256)")):
+                i = int(data[-64:], 16)
+                return "0x" + snrc.encode_uint(tokens[i][0])
+            if data.startswith(sel("nameExpires(uint256)")):
+                tid = int(data[-64:], 16)
+                return "0x" + snrc.encode_uint(dict((t[0], t[2]) for t in tokens)[tid])
+            if data.startswith(sel("labelOf(uint256)")):
+                tid = int(data[-64:], 16)
+                label = dict((t[0], t[1]) for t in tokens)[tid].encode()
+                head = (32).to_bytes(32, "big") + len(label).to_bytes(32, "big")
+                pad = b"\x00" * ((-len(label)) % 32)
+                return "0x" + (head + label + pad).hex()
+            raise AssertionError("unexpected call " + data[:10])
+
+        return eth_call
+
+    def setUp(self):
+        self._registrars = snrc.REGISTRARS
+        self._eth_call = snrc.eth_call
+        snrc.REGISTRARS = {"testing": self.REGISTRAR, "simplex": ""}
+
+    def tearDown(self):
+        snrc.REGISTRARS = self._registrars
+        snrc.eth_call = self._eth_call
+
+    def test_lists_names_with_their_labels(self):
+        future = int(time.time()) + 86400
+        snrc.eth_call = self._fake_chain([(11, "alice", future), (22, "bob", future)])
+        status, body = snrc.owned_by(self.OWNER)
+        self.assertEqual(status, 200)
+        self.assertEqual([n["name"] for n in body["names"]], ["alice.testing", "bob.testing"])
+        self.assertFalse(body["truncated"])
+        self.assertEqual(body["checkedTlds"], ["testing"])
+
+    def test_expired_names_are_reported_not_dropped(self):
+        """A scan is how a user finds out a name lapsed, so an expired name has
+        to come back labelled rather than vanish."""
+        now = int(time.time())
+        snrc.eth_call = self._fake_chain(
+            [(11, "live", now + 86400), (22, "lapsed", now - 1)]
+        )
+        _, body = snrc.owned_by(self.OWNER)
+        self.assertEqual([n["name"] for n in body["names"]], ["lapsed.testing", "live.testing"])
+        by_name = {n["name"]: n for n in body["names"]}
+        self.assertEqual(by_name["live.testing"]["status"], "registered")
+        self.assertEqual(by_name["lapsed.testing"]["status"], "expired")
+        self.assertEqual(by_name["lapsed.testing"]["expires"], now - 1)
+
+    def test_status_uses_the_same_vocabulary_as_resolve(self):
+        now = int(time.time())
+        snrc.eth_call = self._fake_chain([(11, "live", now + 86400)])
+        _, body = snrc.owned_by(self.OWNER)
+        self.assertIn(body["names"][0]["status"], ("registered", "expired"))
+
+    def test_a_name_with_no_recorded_label_is_reported_by_labelhash(self):
+        future = int(time.time()) + 86400
+        snrc.eth_call = self._fake_chain([(11, "", future)])
+        _, body = snrc.owned_by(self.OWNER)
+        self.assertEqual(body["names"][0]["name"], None)
+        self.assertEqual(body["names"][0]["labelhash"], hex(11))
+
+    def test_enumeration_is_bounded_and_says_so(self):
+        future = int(time.time()) + 86400
+        snrc.MAX_OWNED, keep = 2, snrc.MAX_OWNED
+        try:
+            snrc.eth_call = self._fake_chain(
+                [(i, "n%d" % i, future) for i in range(1, 6)]
+            )
+            _, body = snrc.owned_by(self.OWNER)
+            self.assertEqual(len(body["names"]), 2)
+            self.assertTrue(body["truncated"])
+        finally:
+            snrc.MAX_OWNED = keep
+
+    def test_a_malformed_address_is_refused_before_any_rpc(self):
+        snrc.eth_call = lambda *a: self.fail("must not reach the chain")
+        status, body = snrc.owned_by("0xnope")
+        self.assertEqual(status, 400)
+        self.assertIn("address", body["error"])
+
+    def test_no_configured_registrar_is_an_error_not_an_empty_list(self):
+        snrc.REGISTRARS = {"testing": "", "simplex": ""}
+        snrc.eth_call = lambda *a: self.fail("must not reach the chain")
+        status, body = snrc.owned_by(self.OWNER)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["configured_tlds"], [])
+
+
+class NameStatusTests(unittest.TestCase):
+    """simplexmq#1821: unresolvable has three causes and a caller has to tell
+    them apart. Names expire lazily, so the chain still holds the answer."""
+
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+
+    def _expiry(self, value):
+        def eth_call(to, data):
+            self.assertTrue(data.startswith(snrc.selector("nameExpires(uint256)")))
+            return "0x" + snrc.encode_uint(value)
+
+        return eth_call
+
+    def setUp(self):
+        self._registrars, self._eth_call = snrc.REGISTRARS, snrc.eth_call
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+
+    def tearDown(self):
+        snrc.REGISTRARS, snrc.eth_call = self._registrars, self._eth_call
+
+    def test_zero_expiry_means_never_registered(self):
+        snrc.eth_call = self._expiry(0)
+        self.assertEqual(
+            snrc.name_status("alice.testing"), {"status": "unregistered", "expires": None}
+        )
+
+    def test_past_expiry_is_expired_and_keeps_the_date(self):
+        past = int(time.time()) - 3600
+        snrc.eth_call = self._expiry(past)
+        self.assertEqual(
+            snrc.name_status("alice.testing"), {"status": "expired", "expires": past}
+        )
+
+    def test_future_expiry_is_registered(self):
+        future = int(time.time()) + 3600
+        snrc.eth_call = self._expiry(future)
+        self.assertEqual(
+            snrc.name_status("alice.testing"), {"status": "registered", "expires": future}
+        )
+
+    def test_a_subname_reports_the_status_of_its_2ld(self):
+        future = int(time.time()) + 3600
+        seen = []
+
+        def eth_call(to, data):
+            seen.append(data)
+            return "0x" + snrc.encode_uint(future)
+
+        snrc.eth_call = eth_call
+        self.assertEqual(snrc.name_status("x.alice.testing")["status"], "registered")
+        # the token asked about is keccak("alice"), not keccak("x")
+        self.assertTrue(seen[0].endswith(snrc.keccak(b"alice").hex()))
+
+    def test_unconfigured_tld_is_unknown_rather_than_unregistered(self):
+        snrc.REGISTRARS = {"testing": ""}
+        snrc.eth_call = lambda *a: self.fail("must not reach the chain")
+        self.assertEqual(
+            snrc.name_status("alice.testing"), {"status": "unknown", "expires": None}
+        )
 
 
 class SplitLinksTests(unittest.TestCase):
