@@ -40,7 +40,7 @@ Environment:
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
                          (default: empty — TLD not yet deployed)
   SNRC_PORT              Listen port (default: 8000)
-  SNRC_BIND              Bind address (default: 0.0.0.0)
+  SNRC_BIND              Bind address (default: 127.0.0.1; compose sets 0.0.0.0)
 
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.
@@ -58,19 +58,21 @@ Addresses are returned in each chain's canonical presentation:
 Unrecognised payloads fall back to `0x`-prefixed raw hex.
 """
 
+import base64
 import hashlib
+import hmac
 import json
 import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from eth_hash.auto import keccak
 
 RPC = os.environ.get("SNRC_RPC", "http://127.0.0.1:8545")
-BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
+BIND = os.environ.get("SNRC_BIND", "127.0.0.1")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
@@ -85,6 +87,15 @@ REGISTRIES = {
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
+
+# Shared secret the caller must present. Unset means no check - correct for a
+# loopback deployment, and the reason the check exists at all is that the
+# Haskell client has always been able to send `Authorization` and nothing here
+# ever read it, so configuring auth protected nothing.
+#   SNRC_AUTH_BEARER=<token>          -> Authorization: Bearer <token>
+#   SNRC_AUTH_BASIC=<user>:<password> -> Authorization: Basic base64(user:pass)
+AUTH_BEARER = os.environ.get("SNRC_AUTH_BEARER", "")
+AUTH_BASIC = os.environ.get("SNRC_AUTH_BASIC", "")
 
 # The BaseRegistrar (ERC-721) per TLD, used for owner -> names. Separate from
 # the registry above: the registry answers "who owns this node", the registrar
@@ -112,6 +123,20 @@ ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 # ---------- RPC + ABI helpers (mirrors ens-lookup.py shape) ----------
 
+# A JSON-RPC body larger than this is refused rather than read. The Haskell
+# client that calls this resolver caps its own reads for the same reason; an
+# upstream that is compromised or simply misconfigured must not be able to
+# decide how much memory this process allocates.
+MAX_RPC_BYTES = int(os.environ.get("SNRC_MAX_RPC_BYTES", str(2 * 1024 * 1024)))
+
+# eth_call answers change at block cadence, not per request, so repeating one
+# within a few seconds asks the node a question it has already answered. One
+# /resolve is 15 calls and one /owned-by can be hundreds, which makes this the
+# difference between a warm resolver and a busy node.
+CACHE_TTL = float(os.environ.get("SNRC_CACHE_TTL", "15"))
+_CALL_CACHE = {}
+
+
 def rpc(method, params):
     body = json.dumps(
         {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
@@ -126,7 +151,11 @@ def rpc(method, params):
             "User-Agent": "snrc-resolve/1.0",
         },
     )
-    res = json.loads(urlopen(req, timeout=15).read())
+    with urlopen(req, timeout=15) as r:
+        raw = r.read(MAX_RPC_BYTES + 1)
+    if len(raw) > MAX_RPC_BYTES:
+        raise RuntimeError(f"RPC response exceeds {MAX_RPC_BYTES} bytes")
+    res = json.loads(raw)
     if "error" in res:
         raise RuntimeError(res["error"])
     return res["result"]
@@ -145,7 +174,28 @@ def selector(signature: str) -> str:
 
 
 def eth_call(to: str, data: str) -> str:
-    return rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    """A read against `latest`, memoised for CACHE_TTL seconds.
+
+    Keyed on the call itself, so the cache is shared across endpoints: a name
+    resolved just after it was listed costs nothing the second time. Set
+    SNRC_CACHE_TTL=0 to disable.
+    """
+    if CACHE_TTL <= 0:
+        return rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    key = (to, data)
+    now = time.monotonic()
+    hit = _CALL_CACHE.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    result = rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    # Evict lazily: this only grows while requests are arriving, and a sweep
+    # on write keeps it proportional to traffic rather than to uptime.
+    if len(_CALL_CACHE) > 4096:
+        for k, v in list(_CALL_CACHE.items()):
+            if v[0] <= now:
+                del _CALL_CACHE[k]
+    _CALL_CACHE[key] = (now + CACHE_TTL, result)
+    return result
 
 
 def decode_address(hex_data: str) -> str:
@@ -176,6 +226,37 @@ def encode_address(addr: str) -> str:
 def decode_string(hex_data: str) -> str:
     raw = decode_bytes(hex_data)
     return raw.decode("utf-8", errors="replace") if raw else ""
+
+
+def expected_auth_header() -> str:
+    """The Authorization value this resolver requires, or "" for none."""
+    if AUTH_BEARER:
+        return "Bearer " + AUTH_BEARER
+    if AUTH_BASIC:
+        return "Basic " + base64.b64encode(AUTH_BASIC.encode()).decode()
+    return ""
+
+
+def auth_ok(header: str) -> bool:
+    """Constant-time compare, so a wrong token cannot be found a byte at a time."""
+    expected = expected_auth_header()
+    if not expected:
+        return True
+    return hmac.compare_digest(header or "", expected)
+
+
+def upstream_error(subject: dict, e: Exception) -> dict:
+    """A 502 body that names the failure without quoting the exception.
+
+    urlopen puts the URL it failed on into its message, and SNRC_RPC may carry
+    a provider key, so the text goes to the log and a type goes to the caller.
+    """
+    print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
+    return {
+        **subject,
+        "error": "upstreamError",
+        "message": f"upstream RPC failed ({type(e).__name__})",
+    }
 
 
 def is_address(value: str) -> bool:
@@ -440,8 +521,9 @@ def resolve(name: str):
         configured = [k for k, v in REGISTRIES.items() if v]
         return 400, {
             "name": name,
-            "error": f"TLD '{tld}' is not configured on this resolver",
-            "configured_tlds": configured,
+            "error": "tldNotConfigured",
+            "message": f"TLD '{tld}' is not configured on this resolver",
+            "configuredTlds": configured,
         }
 
     node = namehash(name)
@@ -458,7 +540,8 @@ def resolve(name: str):
             "status": "unregistered",
             "expires": None,
             "graceEnds": None,
-            "error": "this name has never been registered",
+            "error": "unregistered",
+            "message": "this name has never been registered",
         }
     if reg["status"] in ("grace", "expired"):
         return 410, {
@@ -466,7 +549,8 @@ def resolve(name: str):
             "status": reg["status"],
             "expires": reg["expires"],
             "graceEnds": reg["graceEnds"],
-            "error": (
+            "error": reg["status"],
+            "message": (
                 "this registration expired and can be renewed by its owner"
                 if reg["status"] == "grace"
                 else "this registration expired and is open to anyone"
@@ -481,7 +565,8 @@ def resolve(name: str):
             "status": "noResolver",
             "expires": reg["expires"],
             "graceEnds": reg["graceEnds"],
-            "error": "no resolver set for this name",
+            "error": "noResolver",
+            "message": "no resolver set for this name",
         }
 
     owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
@@ -590,7 +675,7 @@ def name_status(name: str):
     }
 
 
-def owned_by(address: str):
+def owned_by(address: str, offset: int = 0):
     """Every live name an address holds, across every configured TLD.
 
     Read straight off the ERC-721 registrar rather than from logs: the token
@@ -619,14 +704,19 @@ def owned_by(address: str):
     becomes the second.
     """
     if not is_address(address):
-        return 400, {"address": address, "error": "expected a 0x-prefixed 20-byte address"}
+        return 400, {
+            "address": address,
+            "error": "badAddress",
+            "message": "expected a 0x-prefixed 20-byte address",
+        }
 
     configured = {t: r for t, r in REGISTRARS.items() if r}
     if not configured:
         return 400, {
             "address": address,
-            "error": "no registrar is configured on this resolver",
-            "configured_tlds": [],
+            "error": "noRegistrarConfigured",
+            "message": "no registrar is configured on this resolver",
+            "configuredTlds": [],
         }
 
     now = int(time.time())
@@ -636,10 +726,11 @@ def owned_by(address: str):
         held = decode_uint(
             eth_call(registrar, selector("balanceOf(address)") + encode_address(address))
         )
-        if held > MAX_OWNED:
+        first = min(offset, held)
+        last = min(first + MAX_OWNED, held)
+        if last < held:
             truncated = True
-            held = MAX_OWNED
-        for i in range(held):
+        for i in range(first, last):
             token = decode_uint(
                 eth_call(
                     registrar,
@@ -662,7 +753,7 @@ def owned_by(address: str):
                 {
                     "name": (label + "." + tld) if label else None,
                     "tld": tld,
-                    "labelhash": hex(token),
+                    "labelhash": "0x" + format(token, "064x"),
                     "expires": expires,
                     "graceEnds": expires + grace if expires else None,
                     "status": expiry_status(expires, grace, now),
@@ -673,6 +764,11 @@ def owned_by(address: str):
     return 200, {
         "address": address,
         "names": names,
+        "offset": offset,
+        # `nextOffset` is the cursor to resume from, or null when the listing
+        # is complete - so "there is more" and "here is how to get it" are the
+        # same answer rather than a flag with no way to act on it.
+        "nextOffset": offset + MAX_OWNED if truncated else None,
         "truncated": truncated,
         "checkedTlds": sorted(configured),
     }
@@ -680,15 +776,36 @@ def owned_by(address: str):
 
 # ---------- HTTP layer ----------
 
+# Bumped when the response shape changes, so a client can tell "this resolver
+# does not report that" from "that is not knowable for this name".
+API_VERSION = 2
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - http.server contract
-        path = urlparse(self.path).path
-        parts = [unquote(p) for p in path.split("/") if p]
+        parsed = urlparse(self.path)
+        parts = [unquote(p) for p in parsed.path.split("/") if p]
+
+        if not auth_ok(self.headers.get("Authorization")):
+            self._respond(
+                401,
+                {"error": "unauthorized", "message": "missing or invalid Authorization"},
+            )
+            return
 
         if parts == ["health"]:
             self._respond(
                 200,
-                {"ok": True, "rpc": RPC, "registries": REGISTRIES},
+                {
+                    "ok": True,
+                    "version": API_VERSION,
+                    "rpc": RPC,
+                    "registries": REGISTRIES,
+                    # /owned-by and every expiry field are read from these, so
+                    # an operator who configured only the registries can see
+                    # here why status reads "unknown".
+                    "registrars": REGISTRARS,
+                },
             )
             return
 
@@ -698,31 +815,42 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(
                     400,
                     {
-                        "error": "expected fully-qualified name, e.g. /resolve/alice.testing",
-                        "got": name,
+                        "name": name,
+                        "error": "notFullyQualified",
+                        "message": "expected a fully-qualified name, e.g. alice.testing",
                     },
                 )
                 return
             try:
                 status, body = resolve(name)
             except Exception as e:  # surface upstream errors as 502
-                status, body = 502, {"name": name, "error": f"{type(e).__name__}: {e}"}
+                status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
             return
 
         if len(parts) == 2 and parts[0] == "owned-by":
             address = parts[1].strip().lower()
             try:
-                status, body = owned_by(address)
+                offset = int(parse_qs(parsed.query).get("offset", ["0"])[0])
+                if offset < 0:
+                    raise ValueError("offset must not be negative")
+            except ValueError as e:
+                self._respond(
+                    400, {"address": address, "error": "badOffset", "message": str(e)}
+                )
+                return
+            try:
+                status, body = owned_by(address, offset)
             except Exception as e:  # surface upstream errors as 502
-                status, body = 502, {"address": address, "error": f"{type(e).__name__}: {e}"}
+                status, body = 502, upstream_error({"address": address}, e)
             self._respond(status, body)
             return
 
         self._respond(
             404,
             {
-                "error": "not found",
+                "error": "noSuchRoute",
+                "message": "not found",
                 "routes": ["/health", "/resolve/<name>", "/owned-by/<address>"],
             },
         )

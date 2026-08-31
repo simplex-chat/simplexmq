@@ -145,9 +145,10 @@ class OwnedByTests(unittest.TestCase):
         snrc.eth_call = self._fake_chain([(11, "", future)])
         _, body = snrc.owned_by(self.OWNER)
         self.assertEqual(body["names"][0]["name"], None)
-        self.assertEqual(body["names"][0]["labelhash"], hex(11))
+        # a labelhash is bytes32, not the shortest integer literal that fits
+        self.assertEqual(body["names"][0]["labelhash"], "0x" + "0" * 63 + "b")
 
-    def test_enumeration_is_bounded_and_says_so(self):
+    def test_enumeration_is_bounded_and_offers_a_cursor(self):
         future = int(time.time()) + 86400
         snrc.MAX_OWNED, keep = 2, snrc.MAX_OWNED
         try:
@@ -157,21 +158,50 @@ class OwnedByTests(unittest.TestCase):
             _, body = snrc.owned_by(self.OWNER)
             self.assertEqual(len(body["names"]), 2)
             self.assertTrue(body["truncated"])
+            # a flag with no way to act on it is a dead end, so it carries one
+            self.assertEqual(body["nextOffset"], 2)
         finally:
             snrc.MAX_OWNED = keep
+
+    def test_the_cursor_walks_the_whole_list_without_repeats(self):
+        future = int(time.time()) + 86400
+        snrc.MAX_OWNED, keep = 2, snrc.MAX_OWNED
+        try:
+            snrc.eth_call = self._fake_chain(
+                [(i, "n%d" % i, future) for i in range(1, 6)]
+            )
+            seen, offset = [], 0
+            while offset is not None:
+                _, body = snrc.owned_by(self.OWNER, offset)
+                seen += [n["name"] for n in body["names"]]
+                offset = body["nextOffset"]
+            self.assertEqual(sorted(seen), sorted("n%d.testing" % i for i in range(1, 6)))
+            self.assertEqual(len(seen), len(set(seen)))
+        finally:
+            snrc.MAX_OWNED = keep
+
+    def test_an_offset_past_the_end_is_an_empty_page_not_an_error(self):
+        future = int(time.time()) + 86400
+        snrc.eth_call = self._fake_chain([(1, "only", future)])
+        status, body = snrc.owned_by(self.OWNER, 99)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["names"], [])
+        self.assertIsNone(body["nextOffset"])
 
     def test_a_malformed_address_is_refused_before_any_rpc(self):
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
         status, body = snrc.owned_by("0xnope")
         self.assertEqual(status, 400)
-        self.assertIn("address", body["error"])
+        self.assertEqual(body["error"], "badAddress")
+        self.assertIn("address", body["message"])
 
     def test_no_configured_registrar_is_an_error_not_an_empty_list(self):
         snrc.REGISTRARS = {"testing": "", "simplex": ""}
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
         status, body = snrc.owned_by(self.OWNER)
         self.assertEqual(status, 400)
-        self.assertEqual(body["configured_tlds"], [])
+        self.assertEqual(body["error"], "noRegistrarConfigured")
+        self.assertEqual(body["configuredTlds"], [])
 
 
 class NameStatusTests(unittest.TestCase):
@@ -275,6 +305,74 @@ class NameStatusTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": ""}
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
         self.assertEqual(set(snrc.name_status("alice.testing")), keys)
+
+
+class AuthTests(unittest.TestCase):
+    """The Haskell client has always been able to send `Authorization`; until
+    now nothing here read it, so configuring auth protected nothing."""
+
+    def setUp(self):
+        self._saved = (snrc.AUTH_BEARER, snrc.AUTH_BASIC)
+
+    def tearDown(self):
+        snrc.AUTH_BEARER, snrc.AUTH_BASIC = self._saved
+
+    def test_no_secret_configured_accepts_anything(self):
+        snrc.AUTH_BEARER = snrc.AUTH_BASIC = ""
+        self.assertTrue(snrc.auth_ok(""))
+        self.assertTrue(snrc.auth_ok("Bearer whatever"))
+
+    def test_bearer_accepts_only_the_configured_token(self):
+        snrc.AUTH_BEARER, snrc.AUTH_BASIC = "sekrit", ""
+        self.assertTrue(snrc.auth_ok("Bearer sekrit"))
+        self.assertFalse(snrc.auth_ok("Bearer sekri"))
+        self.assertFalse(snrc.auth_ok("Bearer sekrit2"))
+        self.assertFalse(snrc.auth_ok(""))
+        self.assertFalse(snrc.auth_ok(None))
+
+    def test_basic_matches_what_the_haskell_client_builds(self):
+        snrc.AUTH_BEARER, snrc.AUTH_BASIC = "", "user:pass"
+        # HttpResolver.hs: "Basic " <> base64(user <> ":" <> password)
+        self.assertEqual(snrc.expected_auth_header(), "Basic dXNlcjpwYXNz")
+        self.assertTrue(snrc.auth_ok("Basic dXNlcjpwYXNz"))
+        self.assertFalse(snrc.auth_ok("Basic bm9wZQ=="))
+
+
+class CallCacheTests(unittest.TestCase):
+    """One /resolve is 15 upstream calls and one /owned-by can be hundreds, so
+    repeating a call the node just answered is the cost worth removing."""
+
+    def setUp(self):
+        self._saved = (snrc.eth_call, snrc.rpc, snrc.CACHE_TTL, dict(snrc._CALL_CACHE))
+        snrc._CALL_CACHE.clear()
+
+    def tearDown(self):
+        snrc.eth_call, snrc.rpc, snrc.CACHE_TTL, cache = self._saved
+        snrc._CALL_CACHE.clear()
+        snrc._CALL_CACHE.update(cache)
+
+    def test_a_repeated_call_asks_the_node_once(self):
+        calls = []
+        snrc.rpc = lambda method, params: calls.append(params) or "0x2a"
+        snrc.CACHE_TTL = 60
+        self.assertEqual(snrc.eth_call("0xto", "0xdata"), "0x2a")
+        self.assertEqual(snrc.eth_call("0xto", "0xdata"), "0x2a")
+        self.assertEqual(len(calls), 1)
+
+    def test_different_calls_are_not_confused(self):
+        snrc.rpc = lambda method, params: params[0]["data"]
+        snrc.CACHE_TTL = 60
+        self.assertEqual(snrc.eth_call("0xto", "0xaa"), "0xaa")
+        self.assertEqual(snrc.eth_call("0xto", "0xbb"), "0xbb")
+        self.assertEqual(snrc.eth_call("0xother", "0xaa"), "0xaa")
+
+    def test_zero_ttl_disables_it(self):
+        calls = []
+        snrc.rpc = lambda method, params: calls.append(1) or "0x"
+        snrc.CACHE_TTL = 0
+        snrc.eth_call("0xto", "0xdata")
+        snrc.eth_call("0xto", "0xdata")
+        self.assertEqual(len(calls), 2)
 
 
 class SplitLinksTests(unittest.TestCase):

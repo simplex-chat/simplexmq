@@ -144,6 +144,8 @@ services:
         condition: service_started
     environment:
       SNRC_RPC: http://reth:8545
+      # The script defaults to 127.0.0.1; inside a container it has to listen
+      # on the bridge, and the port below is still published to loopback only.
       SNRC_BIND: 0.0.0.0
       # Registry addresses cascade through the script's own defaults
       # (mainnet `.testing`; `.simplex` unconfigured). Set explicitly here
@@ -155,6 +157,12 @@ services:
       # SNRC_REGISTRAR_TESTING: 0x...
       # SNRC_REGISTRAR_SIMPLEX: 0x...
       # SNRC_MAX_OWNED: 256
+      # SNRC_CACHE_TTL: 15          # seconds to memoise eth_call; 0 disables
+      # SNRC_MAX_RPC_BYTES: 2097152 # refuse a larger JSON-RPC response
+      # Shared secret the caller must present. Unset = no check, which is
+      # right while the port is published to loopback only.
+      # SNRC_AUTH_BEARER: <token>
+      # SNRC_AUTH_BASIC: <user>:<password>
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped

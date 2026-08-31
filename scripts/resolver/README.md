@@ -168,6 +168,22 @@ distinguish these: it is also true for a name nobody ever registered, since
 Subnames report the status of the 2LD they sit under, which is the useful
 answer — a subname is only as valid as the name above it.
 
+### Errors
+
+Every non-2xx body carries a stable `error` code to branch on and a human
+`message`, alongside the subject (`name` or `address`):
+
+```jsonc
+{"name": "alice.testing", "error": "unregistered",
+ "message": "this name has never been registered",
+ "status": "unregistered", "expires": null, "graceEnds": null}
+```
+
+Codes: `tldNotConfigured`, `notFullyQualified`, `unregistered`, `grace`,
+`expired`, `noResolver`, `badAddress`, `badOffset`, `noRegistrarConfigured`,
+`unauthorized`, `noSuchRoute`, `upstreamError`. For a name whose registration
+is the problem, the code equals `status`.
+
 ### Status codes
 
 | Status | Meaning |
@@ -176,6 +192,7 @@ answer — a subname is only as valid as the name above it.
 | 400 | TLD not configured, or not a fully-qualified name |
 | 404 | never registered (`unregistered`), or registered with no resolver set (`noResolver`) |
 | 410 | registration has lapsed — `status` says whether it is still renewable |
+| 401 | `Authorization` missing or wrong, when a secret is configured |
 | 502 | upstream RPC error / reth not synced |
 
 ### `GET /owned-by/<address>`
@@ -215,19 +232,45 @@ thing to read.
 Requires `SNRC_REGISTRAR_<TLD>`; with none configured the endpoint answers 400
 rather than an empty list.
 
-### Configuring registries
+### Configuring addresses
 
-Defaults to mainnet `.testing` (`0x03f438…`); `.simplex` is unset until
-deployed. Override per TLD via env on the `resolver` service in
-`docker-compose.yml` (`SNRC_REGISTRY_TESTING` / `SNRC_REGISTRY_SIMPLEX`), or as
-env vars for the standalone script.
+Two maps, both per TLD. The **registry** answers *who owns this node* and is
+what `/resolve` reads; it defaults to mainnet `.testing`, with `.simplex` unset
+until deployed. The **registrar** is the ERC-721 that can be asked the reverse
+and when a name expires — it is what `/owned-by` and every expiry field are
+read from. Without a registrar for a TLD, `/resolve` still works and reports
+`"status": "unknown"`, and `/owned-by` answers 400.
 
-`SNRC_REGISTRAR_<TLD>` is the matching ERC-721 registrar, and is what `/owned-by`
-and the expiry status are read from — the registry answers *who owns this node*,
-the registrar is the NFT that can be asked the reverse and when it expires.
-Without it `/resolve` still works and reports `"status": "unknown"`, and
-`/owned-by` answers 400. `SNRC_MAX_OWNED` bounds one `/owned-by` response
-(default 256).
+| Variable | Purpose |
+|---|---|
+| `SNRC_REGISTRY_<TLD>` | ENS registry; resolution |
+| `SNRC_REGISTRAR_<TLD>` | ERC-721 registrar; `/owned-by`, expiry and status |
+| `SNRC_MAX_OWNED` | names per `/owned-by` page (default 256) |
+
+Set them on the `resolver` service in `docker-compose.yml`, or as env vars for
+the standalone script.
+
+### Hardening
+
+The script binds `127.0.0.1` by default; `docker-compose.yml` sets `0.0.0.0`
+because it must listen on the container bridge, and publishes the port to host
+loopback only. Anything beyond loopback wants `SNRC_AUTH_BEARER` (or
+`SNRC_AUTH_BASIC`, `user:password`) — the header is compared in constant time,
+and it is the header the smp-server's `HttpResolver` already sends. Unset means
+no check.
+
+`SNRC_CACHE_TTL` (default 15s) memoises `eth_call` by target and calldata, which
+matters because one `/resolve` is 15 upstream calls and one `/owned-by` page can
+be hundreds; set it to `0` to disable. `SNRC_MAX_RPC_BYTES` (default 2 MiB)
+refuses an oversized JSON-RPC response rather than reading it.
+
+`/health` reports the RPC URL and both address maps, so **do not expose it** —
+a hosted RPC URL usually carries the provider key in its path. 502 bodies name
+the exception type only, and the detail goes to the log, for the same reason.
+
+`http.server` is a development server. This deployment is loopback-only and
+that is the posture it is written for; anything public wants a real server in
+front of it.
 
 ## Every case, and what comes back
 
@@ -253,10 +296,10 @@ any lookup, and carry none of the three.
 | Lapsed, still in grace | 410 | `grace` | `expires` (when it lapsed), `graceEnds` (last moment its owner can renew) |
 | Lapsed, past grace | 410 | `expired` | same fields; anyone may register it now |
 | Never registered | 404 | `unregistered` | `expires` and `graceEnds` are `null` |
-| TLD has no registry configured | 400 | — | `configured_tlds`, listing the ones that are |
+| TLD has no registry configured | 400 | — | `error: tldNotConfigured`, plus `configuredTlds` |
 | TLD has no *registrar* configured | 200 / 404 | `unknown` | resolves as it otherwise would; expiry cannot be read, so `expires` and `graceEnds` are `null` |
 | Not fully qualified (`alice`) | 400 | — | `error` naming the expected form |
-| RPC unreachable or node unsynced | 502 | — | `error` with the underlying exception type |
+| RPC unreachable or node unsynced | 502 | — | `error: upstreamError`; the detail goes to the log, not the body |
 
 A name in grace still has its records on chain — expiry is lazy — but the
 resolver answers 410 rather than serving them, so a stale name cannot be
@@ -274,11 +317,13 @@ and a registrar is configured; the interesting variation is per entry.
 | Address holds a name past grace | 200 | entry with `status` `expired`; still listed, because the holder is who needs to know |
 | Address holds nothing | 200 | `names: []` — an answer, not an error |
 | Token whose label was never recorded | 200 | entry with `"name": null` and its `labelhash`; the token is real, the name is not recoverable from chain state |
-| Address holds more than `SNRC_MAX_OWNED` in a TLD | 200 | first 256, and `truncated: true` |
+| Address holds more than `SNRC_MAX_OWNED` in a TLD | 200 | one page, `truncated: true` and `nextOffset` to resume from |
 | Several TLDs configured | 200 | all of them merged, sorted by TLD then name; `checkedTlds` says which were asked |
-| Malformed address | 400 | `error`; no RPC call is made |
-| No registrar configured for any TLD | 400 | `error` and `configured_tlds: []` — distinct from "holds nothing" |
-| RPC unreachable or node unsynced | 502 | `error` with the underlying exception type |
+| Malformed address | 400 | `error: badAddress`; no RPC call is made |
+| Negative or non-numeric `?offset=` | 400 | `error: badOffset` |
+| `?offset=` past the end | 200 | `names: []` and `nextOffset: null` |
+| No registrar configured for any TLD | 400 | `error: noRegistrarConfigured`, `configuredTlds: []` — distinct from "holds nothing" |
+| RPC unreachable or node unsynced | 502 | `error: upstreamError`; the detail goes to the log, not the body |
 
 Names are **not** filtered by expiry. Enumeration on the registrar is
 maintained on transfer, mint and burn but deliberately not on expiry, so a
