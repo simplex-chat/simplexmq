@@ -10,7 +10,7 @@
 
 module XFTPAgent where
 
-import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_, sfGet, withAgent)
+import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_, sfGet, withAgent, testServerInformation)
 
 import Control.Logger.Simple
 import Control.Monad
@@ -83,7 +83,7 @@ xftpAgentTests =
       it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
       it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
       describe "XFTP server test via agent API" $ do
-        it "should pass without basic auth" $ \_ -> testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Right Nothing
+        it "should pass without basic auth" $ \_ -> testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Right (Just (Right testServerInformation))
         let srv1 = testXFTPServer2 {keyHash = "1234"}
         it "should fail with incorrect fingerprint" $ \_ -> do
           testXFTPServerTest Nothing (noAuthSrv srv1) `shouldReturn` Left (ProtocolTestFailure TSConnect $ BROKER (B.unpack $ strEncode srv1) $ NETWORK NEUnknownCAError)
@@ -91,13 +91,13 @@ xftpAgentTests =
           let auth = Just "abcd"
               srv = ProtoServerWithAuth testXFTPServer2
               authErr = ProtocolTestFailure TSCreateFile $ XFTP (B.unpack $ strEncode testXFTPServer2) AUTH
-          it "should pass with correct password" $ \_ -> testXFTPServerTest auth (srv auth) `shouldReturn` Right Nothing
+          it "should pass with correct password" $ \_ -> testXFTPServerTest auth (srv auth) `shouldReturn` Right (Just (Right testServerInformation))
           it "should fail without password" $ \_ -> testXFTPServerTest auth (srv Nothing) `shouldReturn` Left authErr
           it "should fail with incorrect password" $ \_ -> testXFTPServerTest auth (srv $ Just "wrong") `shouldReturn` Left authErr
 
 testXFTPServerTest :: HasCallStack => Maybe BasicAuth -> XFTPServerWithAuth -> IO (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 testXFTPServerTest newFileBasicAuth srv =
-  withXFTPServerCfg testXFTPServerConfig {newFileBasicAuth, xftpPort = xftpTestPort2} $ \_ ->
+  withXFTPServerCfg testXFTPServerConfig {newFileBasicAuth, xftpPort = xftpTestPort2, information = Just testServerInformation} $ \_ ->
     -- initially passed server is not running
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
       testProtocolServer a NRMInteractive 1 srv
