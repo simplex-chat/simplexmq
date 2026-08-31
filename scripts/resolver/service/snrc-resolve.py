@@ -449,20 +449,28 @@ def resolve(name: str):
 
     # Registration first, because it is the fact that separates the failures a
     # caller has to tell apart: a name nobody has taken, one whose registration
-    # lapsed, and one that is held but not pointed anywhere.
+    # lapsed and may still be renewed, one that lapsed and is now open to
+    # anyone, and one that is held but not pointed anywhere.
     reg = name_status(name)
     if reg["status"] == "unregistered":
         return 404, {
             "name": name,
             "status": "unregistered",
+            "expires": None,
+            "graceEnds": None,
             "error": "this name has never been registered",
         }
-    if reg["status"] == "expired":
+    if reg["status"] in ("grace", "expired"):
         return 410, {
             "name": name,
-            "status": "expired",
+            "status": reg["status"],
             "expires": reg["expires"],
-            "error": "this registration expired",
+            "graceEnds": reg["graceEnds"],
+            "error": (
+                "this registration expired and can be renewed by its owner"
+                if reg["status"] == "grace"
+                else "this registration expired and is open to anyone"
+            ),
         }
 
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
@@ -472,6 +480,7 @@ def resolve(name: str):
             "name": name,
             "status": "noResolver",
             "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
             "error": "no resolver set for this name",
         }
 
@@ -511,7 +520,41 @@ def resolve(name: str):
         "resolver": resolver_addr,
         "status": reg["status"],
         "expires": reg["expires"],
+        "graceEnds": reg["graceEnds"],
     }
+
+
+def grace_period(registrar: str) -> int:
+    """The registrar's own GRACE_PERIOD, in seconds.
+
+    Read from the chain rather than hardcoded, so a deployment that chooses a
+    different window is reported correctly instead of confidently wrongly. One
+    call per request, not per name.
+    """
+    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
+
+
+def expiry_status(expires: int, grace: int, now: int) -> str:
+    """Registration state from an expiry timestamp.
+
+    Mirrors the registrar's `available(id)`, which is
+    `expiries[id] + GRACE_PERIOD < block.timestamp`. It is computed here rather
+    than called per name because the answer is needed for every token in a
+    listing and the inputs are one constant plus a value already fetched.
+
+    Note that `available` alone cannot be used for this: it is also true for a
+    name nobody ever registered, since `0 + GRACE_PERIOD < now`. The zero
+    expiry is what separates "never taken" from "lapsed and now free".
+    """
+    if expires == 0:
+        return "unregistered"
+    if expires > now:
+        return "registered"
+    if expires + grace >= now:
+        # Expired, but only the previous owner may renew it - nobody else can
+        # take it yet.
+        return "grace"
+    return "expired"
 
 
 def name_status(name: str):
@@ -531,17 +574,20 @@ def name_status(name: str):
     registrar = REGISTRARS.get(tld)
     if not registrar or len(labels) < 2:
         # No registrar configured for this TLD: say so rather than guess.
-        return {"status": "unknown", "expires": None}
+        return {"status": "unknown", "expires": None, "graceEnds": None}
 
     token = int.from_bytes(keccak(labels[-2].encode()), "big")
     expires = decode_uint(
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
     )
     if expires == 0:
-        return {"status": "unregistered", "expires": None}
-    if expires <= int(time.time()):
-        return {"status": "expired", "expires": expires}
-    return {"status": "registered", "expires": expires}
+        return {"status": "unregistered", "expires": None, "graceEnds": None}
+    grace = grace_period(registrar)
+    return {
+        "status": expiry_status(expires, grace, int(time.time())),
+        "expires": expires,
+        "graceEnds": expires + grace,
+    }
 
 
 def owned_by(address: str):
@@ -565,6 +611,12 @@ def owned_by(address: str):
     Callers wanting only the live set filter on `status == "registered"`, which
     is the check the registrar's invariant asks of readers - applied by whoever
     knows whether expired names matter to them, rather than here.
+
+    A lapsed name is reported as `grace` while only its previous owner may
+    renew it, and `expired` once anyone can take it. The difference is the
+    whole content of a renewal reminder: one is "renew this", the other is
+    "this is gone unless you are quick", and `graceEnds` says when the first
+    becomes the second.
     """
     if not is_address(address):
         return 400, {"address": address, "error": "expected a 0x-prefixed 20-byte address"}
@@ -580,6 +632,7 @@ def owned_by(address: str):
     now = int(time.time())
     names, truncated = [], False
     for tld, registrar in configured.items():
+        grace = grace_period(registrar)
         held = decode_uint(
             eth_call(registrar, selector("balanceOf(address)") + encode_address(address))
         )
@@ -611,7 +664,8 @@ def owned_by(address: str):
                     "tld": tld,
                     "labelhash": hex(token),
                     "expires": expires,
-                    "status": "registered" if expires > now else "expired",
+                    "graceEnds": expires + grace if expires else None,
+                    "status": expiry_status(expires, grace, now),
                 }
             )
 

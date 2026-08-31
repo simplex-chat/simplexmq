@@ -64,6 +64,7 @@ class OwnedByTests(unittest.TestCase):
 
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     OWNER = "0x69a6000000000000000000000000000000002d32"
+    GRACE = 90 * 86400
 
     def _fake_chain(self, tokens):
         """tokens :: [(labelhash, label, expires)] held by OWNER."""
@@ -71,6 +72,8 @@ class OwnedByTests(unittest.TestCase):
 
         def eth_call(to, data):
             self.assertEqual(to, self.REGISTRAR)
+            if data.startswith(sel("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(self.GRACE)
             if data.startswith(sel("balanceOf(address)")):
                 return "0x" + snrc.encode_uint(len(tokens))
             if data.startswith(sel("tokenOfOwnerByIndex(address,uint256)")):
@@ -118,14 +121,24 @@ class OwnedByTests(unittest.TestCase):
         self.assertEqual([n["name"] for n in body["names"]], ["lapsed.testing", "live.testing"])
         by_name = {n["name"]: n for n in body["names"]}
         self.assertEqual(by_name["live.testing"]["status"], "registered")
-        self.assertEqual(by_name["lapsed.testing"]["status"], "expired")
+        # lapsed an hour ago, so still renewable by its owner
+        self.assertEqual(by_name["lapsed.testing"]["status"], "grace")
         self.assertEqual(by_name["lapsed.testing"]["expires"], now - 1)
+        self.assertEqual(by_name["lapsed.testing"]["graceEnds"], now - 1 + self.GRACE)
+
+    def test_a_name_past_grace_is_reported_as_claimable(self):
+        now = int(time.time())
+        snrc.eth_call = self._fake_chain([(11, "gone", now - self.GRACE - 3600)])
+        _, body = snrc.owned_by(self.OWNER)
+        self.assertEqual(body["names"][0]["status"], "expired")
 
     def test_status_uses_the_same_vocabulary_as_resolve(self):
         now = int(time.time())
         snrc.eth_call = self._fake_chain([(11, "live", now + 86400)])
         _, body = snrc.owned_by(self.OWNER)
-        self.assertIn(body["names"][0]["status"], ("registered", "expired"))
+        self.assertIn(
+            body["names"][0]["status"], ("registered", "grace", "expired", "unregistered")
+        )
 
     def test_a_name_with_no_recorded_label_is_reported_by_labelhash(self):
         future = int(time.time()) + 86400
@@ -167,8 +180,12 @@ class NameStatusTests(unittest.TestCase):
 
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
 
+    GRACE = 90 * 86400
+
     def _expiry(self, value):
         def eth_call(to, data):
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(self.GRACE)
             self.assertTrue(data.startswith(snrc.selector("nameExpires(uint256)")))
             return "0x" + snrc.encode_uint(value)
 
@@ -184,22 +201,46 @@ class NameStatusTests(unittest.TestCase):
     def test_zero_expiry_means_never_registered(self):
         snrc.eth_call = self._expiry(0)
         self.assertEqual(
-            snrc.name_status("alice.testing"), {"status": "unregistered", "expires": None}
+            snrc.name_status("alice.testing"),
+            {"status": "unregistered", "expires": None, "graceEnds": None},
         )
 
-    def test_past_expiry_is_expired_and_keeps_the_date(self):
+    def test_recently_expired_is_in_grace_and_says_when_it_ends(self):
+        """Only the previous owner may renew during grace - nobody else can
+        take the name yet, so this is a different answer from `expired`."""
         past = int(time.time()) - 3600
         snrc.eth_call = self._expiry(past)
         self.assertEqual(
-            snrc.name_status("alice.testing"), {"status": "expired", "expires": past}
+            snrc.name_status("alice.testing"),
+            {"status": "grace", "expires": past, "graceEnds": past + self.GRACE},
         )
+
+    def test_past_the_grace_window_it_is_expired_and_claimable(self):
+        past = int(time.time()) - self.GRACE - 3600
+        snrc.eth_call = self._expiry(past)
+        self.assertEqual(snrc.name_status("alice.testing")["status"], "expired")
+
+    def test_the_boundary_belongs_to_grace(self):
+        """The registrar frees a name when expires + GRACE < now, so the last
+        second of the window is still the owner's."""
+        now = int(time.time())
+        snrc.eth_call = self._expiry(now - self.GRACE)
+        self.assertEqual(snrc.name_status("alice.testing")["status"], "grace")
 
     def test_future_expiry_is_registered(self):
         future = int(time.time()) + 3600
         snrc.eth_call = self._expiry(future)
         self.assertEqual(
-            snrc.name_status("alice.testing"), {"status": "registered", "expires": future}
+            snrc.name_status("alice.testing"),
+            {"status": "registered", "expires": future, "graceEnds": future + self.GRACE},
         )
+
+    def test_never_registered_is_not_confused_with_claimable(self):
+        """`available(id)` is true for both, since 0 + GRACE < now. The zero
+        expiry is the only thing that separates them."""
+        snrc.eth_call = self._expiry(0)
+        self.assertEqual(snrc.name_status("alice.testing")["status"], "unregistered")
+        self.assertNotEqual(snrc.name_status("alice.testing")["status"], "expired")
 
     def test_a_subname_reports_the_status_of_its_2ld(self):
         future = int(time.time()) + 3600
@@ -218,8 +259,22 @@ class NameStatusTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": ""}
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
         self.assertEqual(
-            snrc.name_status("alice.testing"), {"status": "unknown", "expires": None}
+            snrc.name_status("alice.testing"),
+            {"status": "unknown", "expires": None, "graceEnds": None},
         )
+
+    def test_every_branch_returns_the_same_keys(self):
+        """Callers read status/expires/graceEnds unconditionally, so a branch
+        that omits one is a KeyError in the caller rather than a missing field
+        in the JSON."""
+        keys = {"status", "expires", "graceEnds"}
+        snrc.eth_call = self._expiry(0)
+        self.assertEqual(set(snrc.name_status("alice.testing")), keys)
+        snrc.eth_call = self._expiry(int(time.time()) + 3600)
+        self.assertEqual(set(snrc.name_status("alice.testing")), keys)
+        snrc.REGISTRARS = {"testing": ""}
+        snrc.eth_call = lambda *a: self.fail("must not reach the chain")
+        self.assertEqual(set(snrc.name_status("alice.testing")), keys)
 
 
 class SplitLinksTests(unittest.TestCase):

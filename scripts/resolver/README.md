@@ -71,41 +71,11 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
-**4. resolver distinguishes the three ways a name fails to resolve.** Names
-expire lazily, so the chain still holds the answer and the resolver reports it
-rather than returning a bare 404 for every case:
+**4. resolver answers the reverse lookup:**
 ```sh
-curl -s http://127.0.0.1:8000/resolve/never-taken.testing | jq
-# 404 → {"status":"unregistered", …}          never registered
-curl -s http://127.0.0.1:8000/resolve/lapsed.testing | jq
-# 410 → {"status":"expired","expires":1750…}  registered, then lapsed
-curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
-# 200 → {"status":"registered","expires":1780…, …}
+curl -s http://127.0.0.1:8000/owned-by/0x69a6000000000000000000000000000000002d32 | jq '.names'
+# → [{"name":"foobar.testing","status":"registered","expires":1780…, …}]
 ```
-A held name that points nowhere answers 404 with `"status":"noResolver"`, which
-is a different problem from either of the above. Status needs
-`SNRC_REGISTRAR_<TLD>` configured; without it the field reads `"unknown"` and
-the endpoint behaves as it did before.
-
-**5. resolver lists the names an address holds:**
-```sh
-curl -s http://127.0.0.1:8000/owned-by/0x69a6000000000000000000000000000000002d32 | jq
-# → {"address":"0x69a6…","names":[
-#      {"name":"foobar.testing","tld":"testing","labelhash":"0x…",
-#       "expires":1780…,"status":"registered"},
-#      {"name":"lapsed.testing","tld":"testing","labelhash":"0x…",
-#       "expires":1750…,"status":"expired"}],
-#    "truncated":false,"checkedTlds":["testing"]}
-```
-Read from the ERC-721 registrar (`balanceOf` / `tokenOfOwnerByIndex` /
-`labelOf`), so it reflects names acquired by transfer as well as by
-registration, and needs no log scan.
-
-**Expired names are listed, not filtered**, each carrying the same `status`
-vocabulary `/resolve` uses. A wallet scanning for the names a key holds is
-precisely the caller who needs to be told one has lapsed, so it can offer to
-renew it. Filter on `status == "registered"` for the live set only. Bounded by
-`SNRC_MAX_OWNED` (default 256), and the response says when it truncated.
 
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
@@ -155,7 +125,10 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
   "simplexContact": ["https://smp16.simplex.im/a#…", "https://smp11…"],  // primary first, fallbacks after
   "simplexChannel": [],
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
-  "owner": "0xd83b…", "resolver": "0x80fa…"
+  "owner": "0xd83b…", "resolver": "0x80fa…",
+  "status": "registered",      // registered | grace | expired | unregistered | noResolver | unknown
+  "expires": 1780000000,       // Unix seconds; when the registration ends
+  "graceEnds": 1787776000      // expires + GRACE_PERIOD; last moment the owner can renew
 }
 ```
 
@@ -165,14 +138,82 @@ text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
 
+### Registration status and expiry
+
+`status`, `expires` and `graceEnds` are on every response that got far enough to
+know them, including a successful resolve — so a client that has just resolved a
+name already holds its expiry and needs no second request to warn about it.
+`expires` and `graceEnds` are Unix timestamps in seconds; both are `null` when
+unknown.
+
+| `status` | Meaning |
+|---|---|
+| `registered` | live; `expires` is when that ends |
+| `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
+| `expired` | lapsed and past grace — anyone may register it now |
+| `unregistered` | never registered |
+| `noResolver` | registered, but points nowhere |
+| `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+
+Which HTTP code carries each, and what every other input does, is in
+[Every case](#every-case-and-what-comes-back) at the end.
+
+The split between `grace` and `expired` mirrors the registrar's own
+`available(id)` rule (`expires + GRACE_PERIOD < now`), with `GRACE_PERIOD` read
+from the contract rather than assumed. Note that `available(id)` alone cannot
+distinguish these: it is also true for a name nobody ever registered, since
+`0 + GRACE_PERIOD < now`. A zero expiry is what separates *never taken* from
+*taken and since released*.
+
+Subnames report the status of the 2LD they sit under, which is the useful
+answer — a subname is only as valid as the name above it.
+
 ### Status codes
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved |
+| 200 | resolved; `status` is `registered` |
 | 400 | TLD not configured, or not a fully-qualified name |
-| 404 | name has no resolver set on the registry |
+| 404 | never registered (`unregistered`), or registered with no resolver set (`noResolver`) |
+| 410 | registration has lapsed — `status` says whether it is still renewable |
 | 502 | upstream RPC error / reth not synced |
+
+### `GET /owned-by/<address>`
+
+Every name an Ethereum address holds, across every configured TLD.
+
+```jsonc
+{
+  "address": "0x69a6…",
+  "names": [
+    {"name": "foobar.testing", "tld": "testing", "labelhash": "0x…",
+     "expires": 1780000000, "graceEnds": 1787776000, "status": "registered"},
+    {"name": "lapsed.testing", "tld": "testing", "labelhash": "0x…",
+     "expires": 1750000000, "graceEnds": 1757776000, "status": "grace"}
+  ],
+  "truncated": false,
+  "checkedTlds": ["testing"]
+}
+```
+
+Read from the ERC-721 registrar (`balanceOf` → `tokenOfOwnerByIndex` →
+`nameExpires` → `labelOf`), so it needs no log scan and includes names acquired
+by transfer as well as by registration. `labelOf` is the plaintext label
+recorded write-once at registration, so a token id turns back into a name
+without an off-chain index; a token whose label was never recorded is returned
+with `"name": null` and its `labelhash`, rather than being dropped.
+
+**Lapsed names are listed, not filtered**, with the same `status` vocabulary as
+`/resolve` — a wallet scanning a key is exactly the caller who needs to be told
+a name has lapsed and can still be renewed. Filter on `status == "registered"`
+for the live set only. Enumeration is deliberately not maintained on expiry (the
+registrar documents this), which is why `status` rather than presence is the
+thing to read.
+
+`truncated` is `true` when an address holds more than `SNRC_MAX_OWNED` names
+(default 256) in one TLD, so a caller can tell a short list from a complete one.
+Requires `SNRC_REGISTRAR_<TLD>`; with none configured the endpoint answers 400
+rather than an empty list.
 
 ### Configuring registries
 
@@ -180,3 +221,67 @@ Defaults to mainnet `.testing` (`0x03f438…`); `.simplex` is unset until
 deployed. Override per TLD via env on the `resolver` service in
 `docker-compose.yml` (`SNRC_REGISTRY_TESTING` / `SNRC_REGISTRY_SIMPLEX`), or as
 env vars for the standalone script.
+
+`SNRC_REGISTRAR_<TLD>` is the matching ERC-721 registrar, and is what `/owned-by`
+and the expiry status are read from — the registry answers *who owns this node*,
+the registrar is the NFT that can be asked the reverse and when it expires.
+Without it `/resolve` still works and reports `"status": "unknown"`, and
+`/owned-by` answers 400. `SNRC_MAX_OWNED` bounds one `/owned-by` response
+(default 256).
+
+## Every case, and what comes back
+
+Every input either endpoint can be given, and the exact answer. Written out
+because the interesting cases are the ones that are hard to reach on purpose —
+a name in its grace period, a token whose label predates label recording — and
+a caller has to handle them without having seen one.
+
+Timestamps are Unix seconds. `status`, `expires` and `graceEnds` are present on
+every `/resolve` response that got as far as looking the name up — `null` where
+not knowable — so a client can read them without checking for the key first.
+The two 400s below are the exception: they fail on the request itself, before
+any lookup, and carry none of the three.
+
+### `GET /resolve/<name>`
+
+| Situation | HTTP | `status` | Body |
+|---|---|---|---|
+| Live name with records | 200 | `registered` | full record; `expires` is when it ends, `graceEnds` when it would stop being renewable |
+| Live name, no text records set | 200 | `registered` | full record; text fields `""`, link arrays `[]`, coin fields `null` |
+| Live subname (`bar.foo.testing`) | 200 | `registered` | its own records, with the expiry of the 2LD `foo.testing` above it |
+| Registered, resolver never set | 404 | `noResolver` | `expires`, `graceEnds`, `error` — held, but points nowhere |
+| Lapsed, still in grace | 410 | `grace` | `expires` (when it lapsed), `graceEnds` (last moment its owner can renew) |
+| Lapsed, past grace | 410 | `expired` | same fields; anyone may register it now |
+| Never registered | 404 | `unregistered` | `expires` and `graceEnds` are `null` |
+| TLD has no registry configured | 400 | — | `configured_tlds`, listing the ones that are |
+| TLD has no *registrar* configured | 200 / 404 | `unknown` | resolves as it otherwise would; expiry cannot be read, so `expires` and `graceEnds` are `null` |
+| Not fully qualified (`alice`) | 400 | — | `error` naming the expected form |
+| RPC unreachable or node unsynced | 502 | — | `error` with the underlying exception type |
+
+A name in grace still has its records on chain — expiry is lazy — but the
+resolver answers 410 rather than serving them, so a stale name cannot be
+resolved by accident. Read `expires` from that response to say when it lapsed.
+
+### `GET /owned-by/<address>`
+
+Answers 200 with a `names` array in every case where the address is well formed
+and a registrar is configured; the interesting variation is per entry.
+
+| Situation | HTTP | Result |
+|---|---|---|
+| Address holds live names | 200 | one entry each, `status` `registered` |
+| Address holds a name in grace | 200 | entry with `status` `grace` and `graceEnds` — the renewal reminder case |
+| Address holds a name past grace | 200 | entry with `status` `expired`; still listed, because the holder is who needs to know |
+| Address holds nothing | 200 | `names: []` — an answer, not an error |
+| Token whose label was never recorded | 200 | entry with `"name": null` and its `labelhash`; the token is real, the name is not recoverable from chain state |
+| Address holds more than `SNRC_MAX_OWNED` in a TLD | 200 | first 256, and `truncated: true` |
+| Several TLDs configured | 200 | all of them merged, sorted by TLD then name; `checkedTlds` says which were asked |
+| Malformed address | 400 | `error`; no RPC call is made |
+| No registrar configured for any TLD | 400 | `error` and `configured_tlds: []` — distinct from "holds nothing" |
+| RPC unreachable or node unsynced | 502 | `error` with the underlying exception type |
+
+Names are **not** filtered by expiry. Enumeration on the registrar is
+maintained on transfer, mint and burn but deliberately not on expiry, so a
+lapsed name stays enumerable until someone re-registers it — and that is
+exactly the name its holder needs to be told about. Filter on
+`status == "registered"` for the live set.
