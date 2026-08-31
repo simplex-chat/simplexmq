@@ -25,6 +25,12 @@ bbsProof = largeString       ; BBS proof bytes
 
 The presentation header that the BBS proof is generated over is not transmitted; the server takes it from the session (see [Binding](#binding)), which is what binds the proof.
 
+### Issuer keys
+
+Client apps and servers share one list of issuer public keys, indexed by `issuerKeyIndex`. The secret key for the current index is held by the service that issues entitlements, on conditions that are out of scope here, such as payment.
+
+The list holds eight keys so that the issuing service can rotate its current key without an app or server release: the next index is already known to every app and server. Each rotation consumes one index, so a new key has to be added to client apps and servers eventually, and released before the list is exhausted.
+
 ## Storage time
 
 ```

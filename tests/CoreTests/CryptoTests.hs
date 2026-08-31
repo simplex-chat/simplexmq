@@ -7,6 +7,7 @@
 module CoreTests.CryptoTests (cryptoTests) where
 
 import Control.Concurrent.STM
+import Control.Exception (evaluate)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -125,6 +126,7 @@ cryptoTests = do
     it "should roundtrip JSON and reject wrong-length input" testBBSJSON
   describe "Entitlement" $ do
     it "should sign, prove and verify, bound to the presentation header" testEntitlementRoundtrip
+    it "should decode all issuer keys" testEntitlementIssuerKeys
 
 instance Eq C.APublicKey where
   C.APublicKey a k == C.APublicKey a' k' = case testEquality a a' of
@@ -457,7 +459,7 @@ testEntitlementRoundtrip = do
   let keys = M.singleton 1 pk
       mk = MasterKey (B.replicate 32 '\7')
       ent = Entitlement {entitlementName = "supporter", expiresAt = UTCTime (fromGregorian 2030 1 1) 0, extraInfo = ""}
-      ph = BBSPresHeader "session-id + snd-key + digest"
+      ph = BBSPresHeader "session-id"
   Right cred <- signEntitlement sk 1 mk ent
   verifyCredential pk cred `shouldReturn` True
   Right proof <- generateEntitlementProof keys cred ph
@@ -468,3 +470,8 @@ testEntitlementRoundtrip = do
   verifyEntitlement (M.singleton 2 pk) ph proof `shouldReturn` EVUnknownIssuer
   -- the protocol encoding of the proof roundtrips
   smpDecode (smpEncode proof) `shouldBe` Right proof
+
+testEntitlementIssuerKeys :: IO ()
+testEntitlementIssuerKeys = do
+  mapM_ evaluate entitlementIssuerKeys
+  M.size entitlementIssuerKeys `shouldBe` 8
