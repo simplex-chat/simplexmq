@@ -129,7 +129,7 @@ data XFTPServerHandshake = XFTPServerHandshake
     authPubKey :: CertChainPubKey,
     -- | signed identity challenge from  XFTPClientHello
     webIdentityProof :: Maybe C.ASignature,
-    -- | optional server public information (JSON-encoded ServerPublicInfo), sent when version >= serverInfoXFTPVersion
+    -- | optional server public information (JSON-encoded ServerPublicInfo), sent when version >= fileStorageTimeXFTPVersion
     serverInfoBytes :: Maybe ByteString
   }
 

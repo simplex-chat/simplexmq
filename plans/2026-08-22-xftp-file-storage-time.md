@@ -141,7 +141,8 @@ Testing:
 
 - e2e test in `tests/XFTPAgent.hs`: generate a BBS keypair, sign a supporter credential (issuer key index 1), run the server with `entitlementKeys = {1: testPk}` and a supporter maximum above the default, run the sender agent with the same `entitlementKeys` and the credential for the user, send a file requesting a number of hours above the default and below that maximum, and assert `SFDONE`'s granted expiry rounds up `now + requested` (proof of the entitlement raising the max above the default)
 - the same upload without the credential is capped at the default maximum
-- store log round trip in `tests/CoreTests/StoreLogTests.hs`, in the shape of the SMP store log test: a file record survives a write, a read into the store, and compaction, including a file blocked with a notice, where the record has a field after the blocking info
+- the expiry is written before the status, because `BlockingInfo`'s notice parser is terminal (`A.takeByteString`), so any field after the blocking info makes the record unparseable and the file is dropped on restart. Every field added to `AddFile` must go before the status
+- store log round trip in `tests/CoreTests/StoreLogTests.hs`, in the shape of the SMP store log test: a file record survives a write, a read into the store, and compaction, with and without the expiry, including a file blocked with a notice in both cases
 
 ## simplex-chat
 
