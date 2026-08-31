@@ -460,11 +460,11 @@ testEntitlementRoundtrip = do
       ph = BBSPresHeader "session-id + snd-key + digest"
   Right cred <- signEntitlement sk 1 mk ent
   verifyCredential pk cred `shouldReturn` True
-  Right proof <- generateEntitlementProof pk cred ph
-  verifyEntitlement keys ph proof `shouldReturn` Just True
-  -- a different presentation header does not verify (session/chunk binding)
-  verifyEntitlement keys (BBSPresHeader "other") proof `shouldReturn` Just False
-  -- an unknown issuer key index yields Nothing
-  verifyEntitlement (M.singleton 2 pk) ph proof `shouldReturn` Nothing
+  Right proof <- generateEntitlementProof keys cred ph
+  verifyEntitlement keys ph proof `shouldReturn` EVValid
+  -- a different presentation header does not verify (session binding)
+  verifyEntitlement keys (BBSPresHeader "other") proof `shouldReturn` EVInvalid
+  -- an unknown issuer key index is distinguished from an invalid proof
+  verifyEntitlement (M.singleton 2 pk) ph proof `shouldReturn` EVUnknownIssuer
   -- the protocol encoding of the proof roundtrips
   smpDecode (smpEncode proof) `shouldBe` Right proof

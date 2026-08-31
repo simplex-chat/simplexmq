@@ -13,10 +13,10 @@ An entitlement is a name, an expiration, and an extra string. It is the disclose
 The proof discloses the entitlement and includes the issuer key index and the BBS proof. The holder's secret and the BBS signature remain with the sender and are never transmitted. The origin of the sender's signed entitlement, from the entitlement service, is out of scope here.
 
 ```
-entitlement = entName entExpires entExtra
-entName = shortString        ; e.g. "supporter", "legend"
+entitlement = entExpires entName entExtra
 entExpires = shortString     ; expiration as a UTCTime ISO8601 string
-entExtra = shortString       ; opaque, interpretation out of scope
+entName = shortString        ; e.g. "supporter", "legend"
+entExtra = largeString       ; opaque, interpretation out of scope
 
 entitlementProof = issuerKeyIndex bbsProof entitlement
 issuerKeyIndex = 2*2 OCTET   ; Word16, network byte order
@@ -29,7 +29,7 @@ The presentation header that the BBS proof is generated over is not transmitted;
 
 ```
 fileStorageTime = %s"0" / (%s"1" storageHours)
-storageHours = 8*8 OCTET     ; Int64, network byte order
+storageHours = 4*4 OCTET     ; Word32, network byte order
 ```
 
 The storage time is an optional number of hours. Absent (`%s"0"`) requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present. A value (`%s"1"` with hours) requests a specific number of hours.

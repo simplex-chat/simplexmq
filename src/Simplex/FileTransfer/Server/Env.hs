@@ -46,7 +46,6 @@ import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
-import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
 import Simplex.FileTransfer.Server.Stats
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
@@ -66,6 +65,7 @@ import System.Directory (doesFileExist)
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (EntitlementConfig (..))

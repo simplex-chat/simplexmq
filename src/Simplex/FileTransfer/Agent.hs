@@ -69,7 +69,6 @@ import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store.AgentStore
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -580,7 +579,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
               replicas = [FileChunkReplica {server, replicaId, replicaKey}]
           pure FileChunk {chunkNo, digest = chDigest, chunkSize, replicas}
         sndFileExpiresAt :: [SndFileChunk] -> Maybe GrantedStorageTime
-        sndFileExpiresAt = fmap minimum . mapM chunkExpiresAt
+        sndFileExpiresAt chunks' = fmap minimum $ L.nonEmpty =<< mapM chunkExpiresAt chunks'
           where
             chunkExpiresAt SndFileChunk {replicas} = maximum <$> L.nonEmpty (mapMaybe (\SndFileChunkReplica {expiresAt} -> expiresAt) replicas)
         createRcvFileDescriptions :: FileDescription 'FRecipient -> [SndFileChunk] -> [FileDescription 'FRecipient]

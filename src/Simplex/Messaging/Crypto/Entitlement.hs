@@ -10,6 +10,7 @@ module Simplex.Messaging.Crypto.Entitlement
   ( Entitlement (..),
     EntitlementCredential (..),
     EntitlementProof (..),
+    EntitlementVerification (..),
     MasterKey (..),
     randomMasterKey,
     entitlementBBSHeader,
@@ -22,7 +23,6 @@ module Simplex.Messaging.Crypto.Entitlement
 where
 
 import Control.Concurrent.STM
-import Control.Monad (forM)
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as JQ
@@ -48,8 +48,8 @@ newtype MasterKey = MasterKey ByteString
   deriving (ToJSON, FromJSON) via (StrJSON "MasterKey" MasterKey)
 
 data Entitlement = Entitlement
-  { entitlementName :: Text,
-    expiresAt :: UTCTime,
+  { expiresAt :: UTCTime,
+    entitlementName :: Text,
     extraInfo :: Text
   }
   deriving (Eq, Show)
@@ -69,14 +69,17 @@ data EntitlementProof = EntitlementProof
   }
   deriving (Eq, Show)
 
+data EntitlementVerification = EVValid | EVInvalid | EVUnknownIssuer
+  deriving (Eq, Show)
+
 instance Encoding Entitlement where
-  smpEncode Entitlement {entitlementName, expiresAt, extraInfo} =
-    smpEncode (entitlementName, strEncode expiresAt, Large $ encodeUtf8 extraInfo)
+  smpEncode Entitlement {expiresAt, entitlementName, extraInfo} =
+    smpEncode (strEncode expiresAt, entitlementName, Large $ encodeUtf8 extraInfo)
   smpP = do
-    (entitlementName, expBs, Large extraBs) <- smpP
+    (expBs, entitlementName, Large extraBs) <- smpP
     expiresAt <- either fail pure $ strDecode (expBs :: ByteString)
     extraInfo <- either (fail . show) pure $ decodeUtf8' extraBs
-    pure Entitlement {entitlementName, expiresAt, extraInfo}
+    pure Entitlement {expiresAt, entitlementName, extraInfo}
 
 instance Encoding EntitlementProof where
   smpEncode EntitlementProof {issuerKeyIdx, entProof, entitlement} =
@@ -98,7 +101,7 @@ entitlementMessages :: MasterKey -> Entitlement -> [ByteString]
 entitlementMessages (MasterKey mk) ent = mk : disclosedMessages ent
 
 disclosedMessages :: Entitlement -> [ByteString]
-disclosedMessages Entitlement {entitlementName, expiresAt, extraInfo} =
+disclosedMessages Entitlement {expiresAt, entitlementName, extraInfo} =
   [strEncode expiresAt, encodeUtf8 entitlementName, encodeUtf8 extraInfo]
 
 randomMasterKey :: TVar ChaChaDRG -> STM MasterKey
@@ -112,14 +115,19 @@ verifyCredential :: BBSPublicKey -> EntitlementCredential -> IO Bool
 verifyCredential pk EntitlementCredential {masterKey, issuerSignature, entitlement} =
   bbsVerify pk issuerSignature entitlementBBSHeader (entitlementMessages masterKey entitlement)
 
-generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)
-generateEntitlementProof pk EntitlementCredential {issuerKeyIdx, masterKey, issuerSignature, entitlement} ph =
-  EntitlementProof issuerKeyIdx entitlement <$$> bbsProofGen pk issuerSignature entitlementBBSHeader ph entitlementDisclosedIndexes (entitlementMessages masterKey entitlement)
+generateEntitlementProof :: Map Word16 BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)
+generateEntitlementProof keys EntitlementCredential {issuerKeyIdx, masterKey, issuerSignature, entitlement} ph =
+  case M.lookup issuerKeyIdx keys of
+    Nothing -> pure $ Left $ "no issuer key " <> show issuerKeyIdx
+    Just pk -> EntitlementProof issuerKeyIdx entitlement <$$> bbsProofGen pk issuerSignature entitlementBBSHeader ph entitlementDisclosedIndexes (entitlementMessages masterKey entitlement)
 
-verifyEntitlement :: Map Word16 BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)
+verifyEntitlement :: Map Word16 BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO EntitlementVerification
 verifyEntitlement keys ph EntitlementProof {issuerKeyIdx, entProof, entitlement} =
-  forM (M.lookup issuerKeyIdx keys) $ \pk ->
-    bbsProofVerify pk entProof entitlementBBSHeader ph entitlementDisclosedIndexes entitlementMessageCount (disclosedMessages entitlement)
+  case M.lookup issuerKeyIdx keys of
+    Nothing -> pure EVUnknownIssuer
+    Just pk ->
+      (\valid -> if valid then EVValid else EVInvalid)
+        <$> bbsProofVerify pk entProof entitlementBBSHeader ph entitlementDisclosedIndexes entitlementMessageCount (disclosedMessages entitlement)
 
 entitlementIssuerKeys :: Map Word16 BBSPublicKey
 entitlementIssuerKeys =

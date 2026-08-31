@@ -255,7 +255,7 @@ import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..), BBSPublicKey)
-import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential (..), EntitlementProof, generateEntitlementProof)
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, EntitlementProof, generateEntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
@@ -901,10 +901,8 @@ getXFTPServerClient c@AgentClient {active, xftpClients, userEntitlements, worker
 
     mkEntitlementProof :: Map Word16 BBSPublicKey -> SessionId -> IO (Maybe EntitlementProof)
     mkEntitlementProof keys sessId =
-      TM.lookupIO userId userEntitlements
-        $>>= \cred -> pure (M.lookup (issuerKeyIdx cred) keys)
-        $>>= \pk -> generateEntitlementProof pk cred (BBSPresHeader sessId)
-        >>= \case
+      TM.lookupIO userId userEntitlements $>>= \cred ->
+        generateEntitlementProof keys cred (BBSPresHeader sessId) >>= \case
           Right p -> pure $ Just p
           Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
 

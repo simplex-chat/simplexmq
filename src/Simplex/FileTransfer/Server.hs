@@ -30,8 +30,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
-import qualified Data.Map.Strict as M
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -57,7 +57,7 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..))
-import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof (..), verifyEntitlement)
+import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof (..), EntitlementVerification (..), verifyEntitlement)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -241,7 +241,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               Just cfg | entitlementValid now expiresAt -> do
                 keys <- asks $ entitlementKeys . config
                 liftIO (verifyEntitlement keys (BBSPresHeader sessionId) proof) >>= \case
-                  Just True -> pure $ Just SessionEntitlement {expiresAt, entConfig = cfg}
+                  EVValid -> pure $ Just SessionEntitlement {expiresAt, entConfig = cfg}
                   r -> Nothing <$ logError ("entitlement not verified: " <> tshow r)
               _ -> pure Nothing
         sendError :: XFTPErrorType -> M s (Maybe (THandleParams XFTPVersion 'TServer))

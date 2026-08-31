@@ -12,32 +12,32 @@ Types:
 newtype MasterKey = MasterKey ByteString
 
 data Entitlement = Entitlement
-  { entitlementName :: Text,
-    expiresAt :: UTCTime,
+  { expiresAt :: UTCTime,
+    entitlementName :: Text,
     extraInfo :: Text
   }
 
 data EntitlementCredential = EntitlementCredential
-  { issuerKeyIdx :: Int,
+  { issuerKeyIdx :: Word16,
     masterKey :: MasterKey,
-    issuerSignature :: BBSSignature,
-    entitlement :: Entitlement
+    entitlement :: Entitlement,
+    issuerSignature :: BBSSignature
   }
 
 data EntitlementProof = EntitlementProof
-  { issuerKeyIdx :: Int,
-    proof :: BBSProof,
-    entitlement :: Entitlement
+  { issuerKeyIdx :: Word16,
+    entitlement :: Entitlement,
+    entProof :: BBSProof
   }
 ```
 
 Functions and constants:
 
-- the disclosed-message encoding: the master key is message 0 and stays undisclosed; `expiresAt`, `entitlementName`, and `extraInfo` are messages 1 to 3 and are disclosed
+- the disclosed-message encoding: the master key is message 0 and stays undisclosed; `expiresAt`, `entitlementName`, and `extraInfo` are messages 1 to 3 and are disclosed. The protocol encoding of `Entitlement` and its field order follow the same order
 - the BBS header string `"SimpleX badges v1"` (shared with chat's badges, which sign under it), the message count, and the disclosed indexes
-- `generateEntitlementProof :: BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)`
-- `verifyEntitlement :: Map Int BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO (Maybe Bool)` (the caller supplies the presentation header; the server reconstructs it, the proof never includes it)
-- the issuer public keys constant `Map Int BBSPublicKey`
+- `generateEntitlementProof :: Map Word16 BBSPublicKey -> EntitlementCredential -> BBSPresHeader -> IO (Either String EntitlementProof)` (the issuer key is looked up by the credential's index; an absent index is `Left`)
+- `verifyEntitlement :: Map Word16 BBSPublicKey -> BBSPresHeader -> EntitlementProof -> IO EntitlementVerification`, where `data EntitlementVerification = EVValid | EVInvalid | EVUnknownIssuer` (the caller supplies the presentation header; the server reconstructs it, the proof never includes it)
+- the issuer public keys constant `Map Word16 BBSPublicKey`
 
 ## simplexmq: protocol, new XFTP version
 
@@ -55,7 +55,7 @@ In `Simplex.FileTransfer.Protocol`:
 data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
 ```
 
-- add the storage time (`Maybe Int64`: `Nothing` requests the server maximum, `Just` a number of hours) to `FNEW`
+- add the storage time (`Maybe Word32`: `Nothing` requests the server maximum, `Just` a number of hours) to `FNEW`
 - add the granted storage to `FRSndIds` as `Maybe GrantedStorageTime` (`Nothing` when decoding a response from a server below this version)
 
 ## simplexmq: server configuration
@@ -63,7 +63,7 @@ data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
 In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
 - make `fileExpiration` non-optional (`ExpirationConfig`, no longer `Maybe`); the server always expires files, so the server maximum is always a concrete number of seconds
-- read a maximum storage time (a number of hours) for each entitlement name from the `[STORE_LOG]` INI section, from the keys `expire_files_hours_for_supporter` and `expire_files_hours_for_legend`; an absent key is skipped (that name gets the default), a present but malformed value fails startup
+- read a maximum storage time (a number of hours) for each entitlement name from the `[STORE_LOG]` INI section, from the keys `expire_files_hours_for_supporter` and `expire_files_hours_for_legend`, into `fileStorageEntitlements :: Map Text EntitlementConfig`, where `newtype EntitlementConfig = EntitlementConfig {storageTime :: Int64}` holds seconds; an absent key is skipped (that name gets the default), a present but malformed value fails startup
 - exit at startup if any name's maximum is below the default file expiration
 - add `entitlementKeys :: Map Word16 BBSPublicKey` to the server config (default = the shared constant, set from `Main`); the handshake verifies the proof against it, so the trusted keys never come from the sender
 
@@ -73,8 +73,8 @@ In `Simplex.FileTransfer.Server`:
 
 - `processClientHandshake` verifies the proof from the handshake, once per session, and resolves the maximum storage time for the entitlement name
 - verify only when the answer can change: the name is configured with a maximum above the default, and the entitlement expired less than 24 hours ago. A proof that fails these checks or fails to verify is logged, and the session gets the default maximum
-- `HandshakeAccepted` holds the resolved maximum for the session, and `processXFTPRequest` takes it from there, so no proof is verified while a command is processed
-- `createFile` caps the requested storage time by the session maximum
+- a verified proof becomes `peerEntitlement :: Maybe SessionEntitlement` in `THAuthServer`, where `data SessionEntitlement = SessionEntitlement {expiresAt :: SystemSeconds, entConfig :: EntitlementConfig}`; `processXFTPRequest` takes it from there, so no proof is verified while a command is processed
+- `createFile` caps the requested storage time by the session maximum, which is the entitlement's storage time when the entitlement is still valid and above the default, and the default otherwise
 
 ## simplexmq: server store and expiration
 
@@ -83,8 +83,7 @@ The `files` table gets a nullable `expires_at`. Every new file stores a concrete
 Common to both stores, in `Simplex.FileTransfer.Server.Store`:
 
 - add `expiresAt :: Maybe RoundedFileTime` to `FileRec`
-- in `createFile`, verify the proof against `sessionId <> sndKey <> digest`, cap the requested hours at the entitlement's maximum, round the expiry up to the hour, store it, and return that same value as the granted storage
-- a valid proof raises the maximum to the entitlement's configured value; a proof that fails verification, carries an unknown issuer key, or whose entitlement expired more than 24 hours ago falls back to the default maximum. The entitlement is honoured for 24 hours after its `expiresAt`.
+- in `createFile`, cap the requested hours at the session maximum, round the expiry up to the hour, store it, and return that same value as the granted storage
 - `expiredFiles` receives `now` and `old` (= `now - ttl`). A stored expiry is deleted when `expires_at < now` (no grace — it is already rounded up); a legacy row (no `expires_at`) is deleted when `created_at + fileTimePrecision < old` (the grace covers `created_at` being floored to the hour)
 - retain `created_at` for statistics, export, and the legacy fallback
 
@@ -96,7 +95,7 @@ PostgreSQL store, in `Simplex.FileTransfer.Server.Store.Postgres` and its migrat
 
 - add the nullable column `expires_at BIGINT` (no backfill)
 - add one composite index `idx_files_expiry ON files (expires_at, created_at)`
-- `expiredFiles` query: `WHERE (expires_at < ?) OR (expires_at IS NULL AND created_at < ?) LIMIT ?` with `(now, old - fileTimePrecision)`. The first arm deletes stored (already rounded-up) expiries; the second drains legacy rows, with the grace folded into `old - fileTimePrecision` so the columns stay bare and sargable. Keep the `OR` at the top level so each disjunct is independently indexable (BitmapOr on the composite index): `expires_at` covers arm 1's range and arm 2's `IS NULL` group, and `created_at` orders arm 2 within that group. A `COALESCE(expires_at, created_at + ttl)` predicate is avoided (not sargable, would force a sequential scan). No `ORDER BY` — the batch loop deletes all expired rows regardless of order.
+- `expiredFiles` query: `(SELECT ... WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT ... WHERE expires_at IS NULL AND created_at < ? LIMIT ?)` with `(now, limit, old - fileTimePrecision, limit)`. The first arm deletes stored (already rounded-up) expiries; the second drains legacy rows, with the grace folded into `old - fileTimePrecision` so the columns stay bare and sargable. Each arm is one range over the composite index and stops at its own limit; a single `OR` predicate builds a bitmap of every match before the limit applies. A `COALESCE(expires_at, created_at + ttl)` predicate is avoided (not sargable, would force a sequential scan). No `ORDER BY` — the batch loop deletes all expired rows regardless of order. New files always store an expiry, so the second arm drains permanently once the legacy rows expire, and is then removed.
 
 Store log, in `Simplex.FileTransfer.Server.StoreLog`:
 
@@ -114,7 +113,7 @@ Per-user state in `Simplex.Messaging.Agent.Env.SQLite` and `Simplex.Messaging.Ag
 
 Public API in `Simplex.Messaging.Agent`:
 
-- add storage time (`Maybe Int64` hours) to `xftpSendFile`
+- add storage time (`Maybe Word32` hours) to `xftpSendFile`
 - add `setUserEntitlement :: AgentClient -> UserId -> Maybe EntitlementCredential -> IO ()`, in the shape of `setProtocolServers`: it replaces the entry, and closes that user's XFTP clients, so the next upload presents the new credential
 
 Store, in both the SQLite and PostgreSQL agent stores:
@@ -126,7 +125,7 @@ Store, in both the SQLite and PostgreSQL agent stores:
 Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 
 - `getXFTPClient` takes a proof for the session as a parameter, `SessionId -> IO (Maybe EntitlementProof)`, beside the callback it already takes for a closed client. The client config holds no credential and no keys
-- `getXFTPServerClient` passes a function that reads the user's credential, looks the issuer key up, and generates the proof over the session id. A missing credential or a failure to generate gives `Nothing`, with the failure logged
+- `getXFTPServerClient` passes a function that reads the user's credential and generates the proof over the session id from the configured issuer keys. A missing credential or a failure to generate gives `Nothing`, with the failure logged
 - `xftpClientHandshakeV1` calls it with the session id from the connection, and sends the result in the handshake
 - `agentXFTPNewChunk` reads the storage time from the send record and sends FNEW with it
 - `createXFTPChunk` returns the granted expiry (epoch seconds); `agentXFTPNewChunk` stores it on `NewSndChunkReplica`
@@ -134,7 +133,7 @@ Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 Completion:
 
 - `createXFTPChunk` returns the granted expiry as `Maybe GrantedStorageTime`; `SndFileChunkReplica` and `NewSndChunkReplica` carry `expiresAt :: Maybe GrantedStorageTime`
-- persist it in a nullable `replica_expires_at` column on `snd_file_chunk_replicas` (added to the entitlement migration): `createSndFileReplica` stores `epochSeconds`, `getSndFile` reads it back into `GSTExpires`
+- persist it in a nullable `replica_expires_at` column on `snd_file_chunk_replicas` (added to the entitlement migration): `createSndFileReplica` stores `epochSeconds`, `getSndFile` and `getNextSndChunkToUpload` read it back into `GSTExpires`
 - on `SFDONE`, report the file expiry: a chunk expires when its last replica expires (`max` over replicas, absent replicas ignored, `Nothing` only if none report); the file expires when its first chunk expires (`min` over chunks, `Nothing` if any chunk is unknown). `GrantedStorageTime` derives `Ord`
 - `SFDONE` gains a trailing `Maybe GrantedStorageTime` (not str-encoded); chat consumes it (wired later)
 
