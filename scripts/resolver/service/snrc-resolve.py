@@ -100,6 +100,12 @@ CONTROLLERS = {
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
+# Why a name is reserved. `reservedNames` stores only the fact, so every
+# reserved name gets this same sentence; a per-name lookup (table or REST) is
+# the intended replacement. Callers should render whatever this field holds
+# rather than matching on its text.
+RESERVED_REASON = "reserved for a brand or public interest"
+
 # Shared secret the caller must present. Unset means no check - correct for a
 # loopback deployment, and the reason the check exists at all is that the
 # Haskell client has always been able to send `Authorization` and nothing here
@@ -547,18 +553,23 @@ def resolve(name: str):
     # anyone, and one that is held but not pointed anywhere.
     reg = name_status(name)
     if reg["status"] in ("unregistered", "reserved"):
-        return 404, {
+        body = {
             "name": name,
             "status": reg["status"],
             "expires": reg["expires"],
             "graceEnds": reg["graceEnds"],
             "error": reg["status"],
             "message": (
-                "this name is held for its trademark owner and cannot be registered"
+                "this name is reserved and cannot be registered"
                 if reg["status"] == "reserved"
                 else "this name has never been registered"
             ),
         }
+        # Only reserved names carry a reason, so its presence is the signal
+        # that one is known.
+        if reg["status"] == "reserved":
+            body["reason"] = RESERVED_REASON
+        return 404, body
     if reg["status"] in ("grace", "expired"):
         return 410, {
             "name": name,

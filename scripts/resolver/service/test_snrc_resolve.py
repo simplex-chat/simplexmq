@@ -5,9 +5,14 @@ Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
 """
 
 import importlib.util
+import json
 import os
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 # snrc-resolve.py has a hyphen, so import it via importlib instead of `import`.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -315,6 +320,77 @@ class ReservedTests(unittest.TestCase):
         self.assertEqual(snrc.name_status(h + ".testing")["status"], "reserved")
 
 
+class ReservedReasonTests(unittest.TestCase):
+    """Why a name is reserved travels in its own field, so a client can show it
+    without parsing the message, and so a per-name reason can replace the fixed
+    one without moving anything."""
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+
+    def setUp(self):
+        self._saved = (
+            snrc.REGISTRIES,
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+        )
+        snrc.REGISTRIES = {"testing": self.REGISTRY}
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+
+    def tearDown(self):
+        (
+            snrc.REGISTRIES,
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+        ) = self._saved
+
+    def _chain(self, expires, reserved):
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("reservedNames(bytes32)")):
+                return "0x" + snrc.encode_uint(1 if reserved else 0)
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(90 * 86400)
+            return "0x" + snrc.encode_uint(expires)
+
+        return eth_call
+
+    def test_a_reserved_name_carries_the_reason(self):
+        snrc.eth_call = self._chain(0, True)
+        status, body = snrc.resolve("acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["status"], "reserved")
+        self.assertEqual(body["reason"], "reserved for a brand or public interest")
+
+    def test_the_message_does_not_claim_a_trademark(self):
+        snrc.eth_call = self._chain(0, True)
+        _, body = snrc.resolve("acme.testing")
+        self.assertNotIn("trademark", body["message"])
+
+    def test_an_unregistered_name_has_no_reason(self):
+        snrc.eth_call = self._chain(0, False)
+        status, body = snrc.resolve("acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["status"], "unregistered")
+        self.assertNotIn("reason", body)
+
+    def test_an_expired_name_has_no_reason(self):
+        snrc.eth_call = self._chain(1, False)
+        status, body = snrc.resolve("acme.testing")
+        self.assertEqual(status, 410)
+        self.assertEqual(body["status"], "expired")
+        self.assertNotIn("reason", body)
+
+    def test_a_hashed_query_gets_the_reason_too(self):
+        snrc.eth_call = self._chain(0, True)
+        h = "0x" + snrc.keccak(b"acme").hex()
+        _, body = snrc.resolve(h + ".testing")
+        self.assertEqual(body["reason"], "reserved for a brand or public interest")
+
+
 class NameStatusTests(unittest.TestCase):
     """simplexmq#1821: unresolvable has three causes and a caller has to tell
     them apart. Names expire lazily, so the chain still holds the answer."""
@@ -552,6 +628,245 @@ class SplitLinksTests(unittest.TestCase):
             snrc.split_links("c;a;b"),
             ["c", "a", "b"],
         )
+
+
+class HandlerTests(unittest.TestCase):
+    """The HTTP layer: routing, auth, query parsing, and the mapping from a
+    (status, body) pair to a response.
+
+    These go over a real socket because that is the only way to reach them —
+    every branch here lives in `do_GET`, which no function-level test calls.
+    """
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    RESOLVER = "0x1111111111111111111111111111111111111111"
+    OWNER = "0x69a6000000000000000000000000000000002d32"
+    FUTURE = 4102444800  # 2100-01-01
+
+    def setUp(self):
+        self._saved = {
+            k: getattr(snrc, k)
+            for k in (
+                "REGISTRIES",
+                "REGISTRARS",
+                "CONTROLLERS",
+                "AUTH_BEARER",
+                "AUTH_BASIC",
+                "eth_call",
+                "text",
+                "addr_multicoin",
+            )
+        }
+        snrc.REGISTRIES = {"testing": self.REGISTRY}
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+        snrc.AUTH_BEARER = ""
+        snrc.AUTH_BASIC = ""
+        self.chain(expires=self.FUTURE)
+
+        class Quiet(snrc.Handler):
+            def log_message(self, fmt, *args):
+                pass
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
+        # Default poll_interval is 0.5s and shutdown() waits for it, which
+        # would cost half a second per test in this class alone.
+        threading.Thread(
+            target=self.srv.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        ).start()
+        self.base = "http://127.0.0.1:%d" % self.srv.server_address[1]
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        for k, v in self._saved.items():
+            setattr(snrc, k, v)
+
+    # -- fixtures ---------------------------------------------------------
+
+    def chain(self, expires, reserved=False, resolver=None, raises=None):
+        """Install a fake chain. `raises` makes every call fail, which is how
+        the 502 path is reached."""
+        resolver = self.RESOLVER if resolver is None else resolver
+        sel = snrc.selector
+
+        def eth_call(to, data):
+            if raises is not None:
+                raise raises
+            if data.startswith(sel("reservedNames(bytes32)")):
+                return "0x" + snrc.encode_uint(1 if reserved else 0)
+            if data.startswith(sel("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(90 * 86400)
+            if data.startswith(sel("nameExpires(uint256)")):
+                return "0x" + snrc.encode_uint(expires)
+            if data.startswith(sel("resolver(bytes32)")):
+                return "0x" + snrc.encode_uint(int(resolver, 16))
+            if data.startswith(sel("owner(bytes32)")):
+                return "0x" + snrc.encode_uint(int(self.OWNER, 16))
+            if data.startswith(sel("balanceOf(address)")):
+                return "0x" + snrc.encode_uint(1)
+            if data.startswith(sel("tokenOfOwnerByIndex(address,uint256)")):
+                return "0x" + snrc.encode_uint(int.from_bytes(snrc.keccak(b"acme"), "big"))
+            if data.startswith(sel("labelOf(uint256)")):
+                label = b"acme"
+                head = (32).to_bytes(32, "big") + len(label).to_bytes(32, "big")
+                return "0x" + (head + label + b"\x00" * 28).hex()
+            raise AssertionError("unexpected call " + data[:10])
+
+        snrc.eth_call = eth_call
+        snrc.text = lambda r, node, key: {"name": "Acme", "url": "https://acme.example"}.get(key, "")
+        snrc.addr_multicoin = lambda r, node, coin: (
+            self.OWNER if coin == snrc.COIN_ETH else None
+        )
+
+    def get(self, path, auth=None):
+        req = urllib.request.Request(self.base + path)
+        if auth is not None:
+            req.add_header("Authorization", auth)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    # -- routing ----------------------------------------------------------
+
+    def test_health_reports_the_version_and_the_registrars(self):
+        status, body = self.get("/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["version"], snrc.API_VERSION)
+        # Present so an operator can see why status would read "unknown".
+        self.assertEqual(body["registrars"], {"testing": self.REGISTRAR})
+
+    def test_an_unknown_route_names_the_routes_that_exist(self):
+        status, body = self.get("/nope")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "noSuchRoute")
+        self.assertIn("/resolve/<name>", body["routes"])
+
+    def test_the_root_path_is_not_a_route(self):
+        status, body = self.get("/")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "noSuchRoute")
+
+    # -- auth -------------------------------------------------------------
+
+    def test_no_auth_configured_means_no_header_is_needed(self):
+        self.assertEqual(self.get("/health")[0], 200)
+
+    def test_a_configured_token_is_required(self):
+        snrc.AUTH_BEARER = "s3cret"
+        status, body = self.get("/health")
+        self.assertEqual(status, 401)
+        self.assertEqual(body["error"], "unauthorized")
+
+    def test_the_right_token_is_accepted(self):
+        snrc.AUTH_BEARER = "s3cret"
+        self.assertEqual(self.get("/health", auth="Bearer s3cret")[0], 200)
+
+    def test_a_wrong_token_is_refused(self):
+        snrc.AUTH_BEARER = "s3cret"
+        self.assertEqual(self.get("/health", auth="Bearer nope")[0], 401)
+
+    def test_auth_is_checked_before_the_route_exists(self):
+        # An unauthenticated caller learns nothing about which routes exist.
+        snrc.AUTH_BEARER = "s3cret"
+        status, body = self.get("/nope")
+        self.assertEqual(status, 401)
+        self.assertNotIn("routes", body)
+
+    # -- /resolve ---------------------------------------------------------
+
+    def test_a_live_name_returns_its_record(self):
+        status, body = self.get("/resolve/acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["name"], "acme.testing")
+        self.assertEqual(body["nickname"], "Acme")
+        self.assertEqual(body["website"], "https://acme.example")
+        self.assertEqual(body["owner"], self.OWNER)
+        self.assertEqual(body["status"], "registered")
+        self.assertEqual(body["expires"], self.FUTURE)
+
+    def test_a_bare_label_is_rejected_before_any_rpc(self):
+        self.chain(expires=0, raises=AssertionError("must not reach the chain"))
+        status, body = self.get("/resolve/acme")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "notFullyQualified")
+
+    def test_a_name_is_lowercased(self):
+        status, body = self.get("/resolve/ACME.TESTING")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["name"], "acme.testing")
+
+    def test_a_reserved_name_is_404_with_its_reason(self):
+        self.chain(expires=0, reserved=True)
+        status, body = self.get("/resolve/acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["status"], "reserved")
+        self.assertEqual(body["reason"], "reserved for a brand or public interest")
+
+    def test_an_expired_name_is_410(self):
+        self.chain(expires=1)
+        status, body = self.get("/resolve/acme.testing")
+        self.assertEqual(status, 410)
+        self.assertEqual(body["status"], "expired")
+
+    def test_a_name_with_no_resolver_is_404(self):
+        self.chain(expires=self.FUTURE, resolver=snrc.ZERO_ADDR)
+        status, body = self.get("/resolve/acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "noResolver")
+
+    def test_an_unconfigured_tld_is_400(self):
+        status, body = self.get("/resolve/acme.example")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "tldNotConfigured")
+        self.assertEqual(body["configuredTlds"], ["testing"])
+
+    # -- /owned-by --------------------------------------------------------
+
+    def test_owned_by_lists_the_names_held(self):
+        status, body = self.get("/owned-by/" + self.OWNER)
+        self.assertEqual(status, 200)
+        self.assertEqual([n["name"] for n in body["names"]], ["acme.testing"])
+        self.assertEqual(body["offset"], 0)
+
+    def test_a_negative_offset_is_rejected(self):
+        status, body = self.get("/owned-by/%s?offset=-1" % self.OWNER)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badOffset")
+
+    def test_a_non_numeric_offset_is_rejected(self):
+        status, body = self.get("/owned-by/%s?offset=abc" % self.OWNER)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badOffset")
+
+    def test_a_bad_address_is_rejected(self):
+        status, body = self.get("/owned-by/not-an-address")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badAddress")
+
+    # -- upstream failure -------------------------------------------------
+
+    def test_an_rpc_failure_is_502_and_does_not_leak_the_rpc_url(self):
+        # SNRC_RPC can carry a key, and urlopen puts the URL it failed on into
+        # the exception message, so the body must not quote the exception.
+        self.chain(expires=0, raises=RuntimeError("failed on http://user:key@rpc.internal:8545"))
+        status, body = self.get("/resolve/acme.testing")
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "upstreamError")
+        self.assertNotIn("rpc.internal", json.dumps(body))
+        self.assertNotIn("key", json.dumps(body))
+
+    def test_an_rpc_failure_on_owned_by_is_also_502(self):
+        self.chain(expires=0, raises=RuntimeError("boom"))
+        status, body = self.get("/owned-by/" + self.OWNER)
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "upstreamError")
 
 
 if __name__ == "__main__":

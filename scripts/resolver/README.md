@@ -152,7 +152,7 @@ unknown.
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace — anyone may register it now |
 | `unregistered` | never registered, and free to take |
-| `reserved` | not registered, and held for a brand — registration will be refused |
+| `reserved` | not registered, and held back — registration will be refused; the body carries a `reason` |
 | `noResolver` | registered, but points nowhere |
 | `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
 
@@ -204,6 +204,21 @@ Every non-2xx body carries a stable `error` code to branch on and a human
  "message": "this name has never been registered",
  "status": "unregistered", "expires": null, "graceEnds": null}
 ```
+
+A `reserved` body carries one extra field, `reason`, explaining why the name is
+held back:
+
+```jsonc
+{"name": "support.testing", "error": "reserved",
+ "message": "this name is reserved and cannot be registered",
+ "reason": "reserved for a brand or public interest",
+ "status": "reserved", "expires": null, "graceEnds": null}
+```
+
+The contract records only that a name is reserved, not why, so today every
+reserved name gets that same sentence; a per-name lookup is expected to replace
+it. `reason` appears on no other status, so its presence is the signal that one
+is known — render it rather than matching on its text.
 
 Codes: `tldNotConfigured`, `notFullyQualified`, `unregistered`, `reserved`,
 `grace`, `expired`, `noResolver`, `badAddress`, `badOffset`,
@@ -330,7 +345,7 @@ any lookup, and carry none of the three.
 | Lapsed, still in grace | 410 | `grace` | `expires` (when it lapsed), `graceEnds` (last moment its owner can renew) |
 | Lapsed, past grace | 410 | `expired` | same fields; anyone may register it now |
 | Never registered | 404 | `unregistered` | `expires` and `graceEnds` are `null` |
-| Reserved for a brand | 404 | `reserved` | not registered and not registrable; overrides `unregistered` and `expired` |
+| Reserved | 404 | `reserved` | not registered and not registrable; adds `reason`; overrides `unregistered` and `expired` |
 | Queried by labelhash (`0x…64hex.testing`) | as the label | as the label | identical answer; the label is never sent |
 | TLD has no registry configured | 400 | — | `error: tldNotConfigured`, plus `configuredTlds` |
 | TLD has no *registrar* configured | 200 / 404 | `unknown` | resolves as it otherwise would; expiry cannot be read, so `expires` and `graceEnds` are `null` |
