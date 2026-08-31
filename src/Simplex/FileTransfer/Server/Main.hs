@@ -318,6 +318,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                   },
               httpCredentials = httpCredentials_,
               xftpServerVRange = supportedFileServerVRange,
+              information = serverPublicInfo ini,
               logStatsInterval = logStats $> 86400, -- seconds
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "file-server-stats.daily.log",

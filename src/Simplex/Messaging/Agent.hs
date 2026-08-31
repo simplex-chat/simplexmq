@@ -681,7 +681,7 @@ getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
 testProtocolServer :: forall p. ProtocolTypeI p => AgentClient -> NetworkRequestMode -> UserId -> ProtoServerWithAuth p -> IO (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 testProtocolServer c nm userId srv = withAgentEnv' c $ case protocolTypeI @p of
   SPSMP -> runSMPServerTest c nm userId srv
-  SPXFTP -> maybe (Right Nothing) Left <$> runXFTPServerTest c nm userId srv
+  SPXFTP -> runXFTPServerTest c nm userId srv
   SPNTF -> maybe (Right Nothing) Left <$> runNTFServerTest c nm userId srv
 
 -- | set SOCKS5 proxy on/off and optionally set TCP timeouts for fast network

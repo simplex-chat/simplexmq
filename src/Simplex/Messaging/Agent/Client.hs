@@ -1355,7 +1355,7 @@ runSMPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth sr
     testErr :: ProtocolTestStep -> SMPClientError -> ProtocolTestFailure
     testErr step = ProtocolTestFailure step . protocolClientError SMP addr
 
-runXFTPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> XFTPServerWithAuth -> AM' (Maybe ProtocolTestFailure)
+runXFTPServerTest :: AgentClient -> NetworkRequestMode -> UserId -> XFTPServerWithAuth -> AM' (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
 runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth srv auth) = do
   cfg <- asks $ xftpCfg . config
   g <- asks random
@@ -1381,8 +1381,8 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
           unless (digest == rcvDigest) $ throwE $ ProtocolTestFailure TSCompareFile $ XFTP (B.unpack $ strEncode srv) DIGEST
           liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
         ok <- netTimeoutInt (tcpTimeout xftpNetworkConfig) nm `timeout` X.closeXFTPClient xftp
-        pure $ either Just (const Nothing) r <|> maybe (Just (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const Nothing) ok
-      Left e -> pure (Just $ testErr TSConnect e)
+        pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (X.thParams xftp)) ok
+      Left e -> pure $ Left (testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
     testErr :: ProtocolTestStep -> XFTPClientError -> ProtocolTestFailure

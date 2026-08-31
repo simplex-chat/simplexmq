@@ -68,6 +68,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
+import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
@@ -105,6 +106,8 @@ data XFTPServerConfig s = XFTPServerConfig
     httpCredentials :: Maybe ServerCredentials,
     -- | XFTP client-server protocol version range
     xftpServerVRange :: VersionRangeXFTP,
+    -- | server public information sent in handshake and used to generate static mini-site
+    information :: Maybe ServerPublicInfo,
     -- stats config - see SMP server config
     logStatsInterval :: Maybe Int64,
     logStatsStartTime :: Int64,
