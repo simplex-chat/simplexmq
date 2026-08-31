@@ -125,7 +125,7 @@ Store, in both the SQLite and PostgreSQL agent stores:
 Upload, in `Simplex.Messaging.Agent.Client` and `Simplex.FileTransfer.Client`:
 
 - `getXFTPClient` takes a proof for the session as a parameter, `SessionId -> IO (Maybe EntitlementProof)`, beside the callback it already takes for a closed client. The client config holds no credential and no keys
-- `getXFTPServerClient` passes a function that reads the user's credential and generates the proof over the session id from the configured issuer keys. A missing credential or a failure to generate gives `Nothing`, with the failure logged
+- `getXFTPServerClient` passes a function that generates the proof over the session id from the configured issuer keys, and only for a server of this user, matched by the key hash that TLS pins, so a file description of the sender cannot direct the entitlement to another server. A server that is not the user's, a missing credential, or a failure to generate gives `Nothing`, with the failure logged
 - `xftpClientHandshakeV1` calls it with the session id from the connection, and sends the result in the handshake
 - `agentXFTPNewChunk` reads the storage time from the send record and sends FNEW with it
 - `createXFTPChunk` returns the granted expiry (epoch seconds); `agentXFTPNewChunk` stores it on `NewSndChunkReplica`

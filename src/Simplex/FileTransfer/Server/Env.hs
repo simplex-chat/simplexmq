@@ -184,7 +184,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
       belowDefault = M.filter ((< defaultMax) . storageTime) fileStorageEntitlements
   unless (M.null belowDefault) $ do
     forM_ (M.assocs belowDefault) $ \(name, EntitlementConfig {storageTime}) ->
-      logError $ "STORE: storage time for " <> name <> " is " <> tshow storageTime <> " seconds, below the default file expiration " <> tshow defaultMax <> " seconds"
+      logError $ "expire_files_hours_for_" <> name <> " is " <> tshow (storageTime `div` 3600) <> " hours, below expire_files_hours " <> tshow (defaultMax `div` 3600) <> " hours, server not started"
     exitFailure
   random <- C.newRandom
   (store, storeLog) <- case serverStoreCfg of
