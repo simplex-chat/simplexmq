@@ -369,6 +369,8 @@ In XFTP v2 the handshake is only used for version negotiation, but `routerCert` 
 
 `keyHash` is the CA fingerprint used by client to validate TLS certificate chain and is checked by a router against its own key.
 
+`entitlementProof` is ignored on the web handshake, so a session opened from the browser never gets an entitlement.
+
 `ignoredPart` in handshake allows to add additional parameters in handshake without changing protocol version - the client and routers must ignore any extra bytes within the original block length.
 
 For TLS transport client should assert that `sessionIdentifier` is equal to `tls-unique` channel binding defined in [RFC 5929][14] (TLS Finished message struct); we pass it in `routerHello` block to allow communication over some other transport protocol (possibly, with another channel binding).
