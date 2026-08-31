@@ -204,6 +204,117 @@ class OwnedByTests(unittest.TestCase):
         self.assertEqual(body["configuredTlds"], [])
 
 
+class LabelhashQueryTests(unittest.TestCase):
+    """Asking by labelhash instead of by label.
+
+    A client checking whether a name is free is about to register it, so
+    telling the resolver which name that is hands whoever runs it a
+    front-running opportunity. namehash is keccak(parent || keccak(label)), so
+    a caller who supplies keccak(label) gets an identical answer having said
+    nothing about the name."""
+
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    GRACE = 90 * 86400
+
+    def setUp(self):
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call)
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": ""}
+
+    def tearDown(self):
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call = self._saved
+
+    def test_a_hashed_label_is_recognised_and_a_real_one_is_not(self):
+        self.assertTrue(snrc.is_labelhash("0x" + snrc.keccak(b"alice").hex()))
+        self.assertFalse(snrc.is_labelhash("alice"))
+        self.assertFalse(snrc.is_labelhash("0x" + "z" * 64))
+        # a label cannot be this long, which is what keeps the forms apart
+        self.assertFalse(snrc.is_labelhash("0x" + "a" * 62))
+
+    def test_hash_and_label_give_the_same_token_and_node(self):
+        h = "0x" + snrc.keccak(b"alice").hex()
+        self.assertEqual(snrc.label_token("alice"), snrc.label_token(h))
+        self.assertEqual(snrc.node_of("alice.testing"), snrc.node_of(h + ".testing"))
+
+    def test_status_by_hash_matches_status_by_name(self):
+        future = int(time.time()) + 86400
+        seen = []
+
+        def eth_call(to, data):
+            seen.append(data)
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(self.GRACE)
+            return "0x" + snrc.encode_uint(future)
+
+        snrc.eth_call = eth_call
+        h = "0x" + snrc.keccak(b"alice").hex()
+        by_name = snrc.name_status("alice.testing")
+        by_hash = snrc.name_status(h + ".testing")
+        self.assertEqual(by_name, by_hash)
+        self.assertEqual(by_name["status"], "registered")
+        # nothing in either request carried the label itself
+        self.assertTrue(all("alice".encode().hex() not in d for d in seen))
+
+
+class ReservedTests(unittest.TestCase):
+    """A reserved name is unregistered and still unavailable, which a client
+    intending to register needs to know before it tries."""
+
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+
+    def setUp(self):
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call)
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+
+    def tearDown(self):
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call = self._saved
+
+    def _chain(self, expires, reserved):
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("reservedNames(bytes32)")):
+                self.assertEqual(to, self.CONTROLLER)
+                return "0x" + snrc.encode_uint(1 if reserved else 0)
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(90 * 86400)
+            return "0x" + snrc.encode_uint(expires)
+
+        return eth_call
+
+    def test_unregistered_and_reserved_reads_reserved(self):
+        snrc.eth_call = self._chain(0, True)
+        self.assertEqual(snrc.name_status("acme.testing")["status"], "reserved")
+
+    def test_unregistered_and_not_reserved_reads_unregistered(self):
+        snrc.eth_call = self._chain(0, False)
+        self.assertEqual(snrc.name_status("acme.testing")["status"], "unregistered")
+
+    def test_a_lapsed_reserved_name_is_reserved_not_claimable(self):
+        past = int(time.time()) - 91 * 86400
+        snrc.eth_call = self._chain(past, True)
+        self.assertEqual(snrc.name_status("acme.testing")["status"], "reserved")
+
+    def test_a_live_name_is_registered_even_if_reserved(self):
+        """It was handed to its brand; the reservation is no longer the answer."""
+        snrc.eth_call = self._chain(int(time.time()) + 86400, True)
+        self.assertEqual(snrc.name_status("acme.testing")["status"], "registered")
+
+    def test_a_name_in_grace_belongs_to_its_owner_not_the_reserved_set(self):
+        snrc.eth_call = self._chain(int(time.time()) - 3600, True)
+        self.assertEqual(snrc.name_status("acme.testing")["status"], "grace")
+
+    def test_no_controller_configured_means_reserved_is_never_reported(self):
+        snrc.CONTROLLERS = {"testing": ""}
+        snrc.eth_call = self._chain(0, True)  # would say reserved if asked
+        self.assertEqual(snrc.name_status("acme.testing")["status"], "unregistered")
+
+    def test_reserved_is_asked_by_labelhash_so_a_hashed_query_works(self):
+        h = "0x" + snrc.keccak(b"acme").hex()
+        snrc.eth_call = self._chain(0, True)
+        self.assertEqual(snrc.name_status(h + ".testing")["status"], "reserved")
+
+
 class NameStatusTests(unittest.TestCase):
     """simplexmq#1821: unresolvable has three causes and a caller has to tell
     them apart. Names expire lazily, so the chain still holds the answer."""
@@ -222,11 +333,14 @@ class NameStatusTests(unittest.TestCase):
         return eth_call
 
     def setUp(self):
-        self._registrars, self._eth_call = snrc.REGISTRARS, snrc.eth_call
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call)
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        # These cases are about expiry alone. ReservedTests covers what a
+        # configured controller adds.
+        snrc.CONTROLLERS = {"testing": ""}
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.eth_call = self._registrars, self._eth_call
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call = self._saved
 
     def test_zero_expiry_means_never_registered(self):
         snrc.eth_call = self._expiry(0)

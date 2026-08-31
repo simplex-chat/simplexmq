@@ -88,6 +88,18 @@ REGISTRIES = {
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
 
+# The SimplexController per TLD, which holds `reservedNames`. Without one for a
+# TLD, `reserved` is never reported and a reserved name reads as unregistered.
+CONTROLLERS = {
+    "testing": os.environ.get("SNRC_CONTROLLER_TESTING", "")
+    # The proxy, not SimplexControllerImpl: storage and events live in the
+    # proxy, so the implementation address answers nothing. deployments.json
+    # records this one under the ENS role name ETHRegistrarController;
+    # verification.json names it SimplexControllerProxy. Same address.
+    or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
+    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
+}
+
 # Shared secret the caller must present. Unset means no check - correct for a
 # loopback deployment, and the reason the check exists at all is that the
 # Haskell client has always been able to send `Authorization` and nothing here
@@ -526,7 +538,7 @@ def resolve(name: str):
             "configuredTlds": configured,
         }
 
-    node = namehash(name)
+    node = node_of(name)
     node_hex = node.hex()
 
     # Registration first, because it is the fact that separates the failures a
@@ -534,14 +546,18 @@ def resolve(name: str):
     # lapsed and may still be renewed, one that lapsed and is now open to
     # anyone, and one that is held but not pointed anywhere.
     reg = name_status(name)
-    if reg["status"] == "unregistered":
+    if reg["status"] in ("unregistered", "reserved"):
         return 404, {
             "name": name,
-            "status": "unregistered",
-            "expires": None,
-            "graceEnds": None,
-            "error": "unregistered",
-            "message": "this name has never been registered",
+            "status": reg["status"],
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": reg["status"],
+            "message": (
+                "this name is held for its trademark owner and cannot be registered"
+                if reg["status"] == "reserved"
+                else "this name has never been registered"
+            ),
         }
     if reg["status"] in ("grace", "expired"):
         return 410, {
@@ -619,6 +635,57 @@ def grace_period(registrar: str) -> int:
     return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
 
 
+# A labelhash standing in for a label: "0x" and 32 bytes of hex. A real label
+# cannot collide with this, because the registrar caps labels well below the 66
+# characters this takes - so the two forms are distinguishable without a flag.
+HASHED_LABEL_LEN = 66
+
+
+def is_labelhash(label: str) -> bool:
+    return (
+        len(label) == HASHED_LABEL_LEN
+        and label.startswith("0x")
+        and all(c in "0123456789abcdef" for c in label[2:])
+    )
+
+
+def label_token(label: str) -> int:
+    """The registrar token id for a label, given either the label or its hash.
+
+    Querying by hash is what lets a client ask "is this name free?" without
+    telling the resolver which name it is about to register - the answer is
+    the same, and the intent does not leak to whoever runs the resolver.
+    """
+    return int(label, 16) if is_labelhash(label) else int.from_bytes(keccak(label.encode()), "big")
+
+
+def node_of(name: str) -> bytes:
+    """namehash, accepting a hashed leftmost label.
+
+    namehash is defined recursively as keccak(parent || keccak(label)), so a
+    caller who supplies keccak(label) directly gets the same node without ever
+    sending the label.
+    """
+    labels = name.split(".")
+    if len(labels) == 2 and is_labelhash(labels[0]):
+        return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][2:]))
+    return namehash(name)
+
+
+def is_reserved(tld: str, token: int) -> bool:
+    """Whether the controller holds this label for a brand.
+
+    Keyed by labelhash on chain, so this answers for a hashed query too.
+    """
+    controller = CONTROLLERS.get(tld)
+    if not controller:
+        return False
+    raw = eth_call(
+        controller, selector("reservedNames(bytes32)") + encode_uint(token)
+    )
+    return decode_uint(raw) != 0
+
+
 def expiry_status(expires: int, grace: int, now: int) -> str:
     """Registration state from an expiry timestamp.
 
@@ -661,17 +728,27 @@ def name_status(name: str):
         # No registrar configured for this TLD: say so rather than guess.
         return {"status": "unknown", "expires": None, "graceEnds": None}
 
-    token = int.from_bytes(keccak(labels[-2].encode()), "big")
+    token = label_token(labels[-2])
     expires = decode_uint(
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
     )
     if expires == 0:
-        return {"status": "unregistered", "expires": None, "graceEnds": None}
-    grace = grace_period(registrar)
+        status, grace = "unregistered", 0
+    else:
+        grace = grace_period(registrar)
+        status = expiry_status(expires, grace, int(time.time()))
+
+    # `reserved` only displaces the two states that read as "you could take
+    # this". A registered name is registered, and one in grace belongs to its
+    # owner either way - in both cases the reservation is not the answer to the
+    # question being asked.
+    if status in ("unregistered", "expired") and is_reserved(tld, token):
+        status = "reserved"
+
     return {
-        "status": expiry_status(expires, grace, int(time.time())),
-        "expires": expires,
-        "graceEnds": expires + grace,
+        "status": status,
+        "expires": expires or None,
+        "graceEnds": (expires + grace) if expires else None,
     }
 
 

@@ -151,7 +151,8 @@ unknown.
 | `registered` | live; `expires` is when that ends |
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace — anyone may register it now |
-| `unregistered` | never registered |
+| `unregistered` | never registered, and free to take |
+| `reserved` | not registered, and held for a brand — registration will be refused |
 | `noResolver` | registered, but points nowhere |
 | `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
 
@@ -168,6 +169,31 @@ distinguish these: it is also true for a name nobody ever registered, since
 Subnames report the status of the 2LD they sit under, which is the useful
 answer — a subname is only as valid as the name above it.
 
+### Asking without naming the name
+
+A client checking whether a name is free is usually about to register it, so
+the question itself is worth front-running. Substitute the label's keccak hash
+for the label and the answer is identical:
+
+```sh
+# instead of /resolve/acme.testing
+curl -s http://127.0.0.1:8000/resolve/0x$(printf acme | keccak-256sum | cut -d' ' -f1).testing
+```
+
+namehash is defined as `keccak(parent || keccak(label))`, so supplying
+`keccak(label)` yields the same node — and the registrar keys both
+`nameExpires` and `reservedNames` on the labelhash, so status needs nothing
+else. Whoever runs the resolver sees a hash and learns which name you are
+interested in only if they already guessed it.
+
+The two forms cannot be confused: a hashed label is `0x` and 64 hex characters,
+66 in total, and the registrar caps real labels well below that. Only the
+leftmost label may be hashed, and only for a 2LD.
+
+Registration is still a public act — this hides the *interest*, not the
+eventual registration, and the commit-reveal in the controller is what protects
+the registration itself.
+
 ### Errors
 
 Every non-2xx body carries a stable `error` code to branch on and a human
@@ -179,9 +205,9 @@ Every non-2xx body carries a stable `error` code to branch on and a human
  "status": "unregistered", "expires": null, "graceEnds": null}
 ```
 
-Codes: `tldNotConfigured`, `notFullyQualified`, `unregistered`, `grace`,
-`expired`, `noResolver`, `badAddress`, `badOffset`, `noRegistrarConfigured`,
-`unauthorized`, `noSuchRoute`, `upstreamError`. For a name whose registration
+Codes: `tldNotConfigured`, `notFullyQualified`, `unregistered`, `reserved`,
+`grace`, `expired`, `noResolver`, `badAddress`, `badOffset`,
+`noRegistrarConfigured`, `unauthorized`, `noSuchRoute`, `upstreamError`. For a name whose registration
 is the problem, the code equals `status`.
 
 ### Status codes
@@ -239,12 +265,20 @@ what `/resolve` reads; it defaults to mainnet `.testing`, with `.simplex` unset
 until deployed. The **registrar** is the ERC-721 that can be asked the reverse
 and when a name expires — it is what `/owned-by` and every expiry field are
 read from. Without a registrar for a TLD, `/resolve` still works and reports
-`"status": "unknown"`, and `/owned-by` answers 400.
+`"status": "unknown"`, and `/owned-by` answers 400. The **controller** holds `reservedNames`, and is what the `reserved` status is
+read from; without one for a TLD, a reserved name reads as `unregistered`.
+
+Note that the controller address is the **proxy**, not `SimplexControllerImpl`:
+storage lives in the proxy, so the implementation answers nothing.
+`deployments.mainnet.testing.json` records it under the ENS role name
+`ETHRegistrarController` and `verification.mainnet.testing.json` names it
+`SimplexControllerProxy` — the same address, and the one defaulted to here.
 
 | Variable | Purpose |
 |---|---|
 | `SNRC_REGISTRY_<TLD>` | ENS registry; resolution |
 | `SNRC_REGISTRAR_<TLD>` | ERC-721 registrar; `/owned-by`, expiry and status |
+| `SNRC_CONTROLLER_<TLD>` | SimplexController; the `reserved` status |
 | `SNRC_MAX_OWNED` | names per `/owned-by` page (default 256) |
 
 Set them on the `resolver` service in `docker-compose.yml`, or as env vars for
@@ -296,6 +330,8 @@ any lookup, and carry none of the three.
 | Lapsed, still in grace | 410 | `grace` | `expires` (when it lapsed), `graceEnds` (last moment its owner can renew) |
 | Lapsed, past grace | 410 | `expired` | same fields; anyone may register it now |
 | Never registered | 404 | `unregistered` | `expires` and `graceEnds` are `null` |
+| Reserved for a brand | 404 | `reserved` | not registered and not registrable; overrides `unregistered` and `expired` |
+| Queried by labelhash (`0x…64hex.testing`) | as the label | as the label | identical answer; the label is never sent |
 | TLD has no registry configured | 400 | — | `error: tldNotConfigured`, plus `configuredTlds` |
 | TLD has no *registrar* configured | 200 / 404 | `unknown` | resolves as it otherwise would; expiry cannot be read, so `expires` and `graceEnds` are `null` |
 | Not fully qualified (`alice`) | 400 | — | `error` naming the expected form |
