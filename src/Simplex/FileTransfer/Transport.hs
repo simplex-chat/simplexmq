@@ -12,6 +12,7 @@ module Simplex.FileTransfer.Transport
   ( supportedFileServerVRange,
     authCmdsXFTPVersion,
     blockedFilesXFTPVersion,
+    serverInfoXFTPVersion,
     xftpClientHandshakeStub,
     alpnSupportedXFTPhandshakes,
     xftpALPNv1,
@@ -36,7 +37,6 @@ module Simplex.FileTransfer.Transport
   )
 where
 
-import Control.Applicative (optional)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -62,7 +62,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey, ServiceCredentials, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, tshow, (<$?>))
+import Simplex.Messaging.Util (bshow, tshow, (<$?>), (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO (Handle, IOMode (..), withFile)
@@ -97,8 +97,11 @@ authCmdsXFTPVersion = VersionXFTP 2
 blockedFilesXFTPVersion :: VersionXFTP
 blockedFilesXFTPVersion = VersionXFTP 3
 
+serverInfoXFTPVersion :: VersionXFTP
+serverInfoXFTPVersion = VersionXFTP 4
+
 currentXFTPVersion :: VersionXFTP
-currentXFTPVersion = VersionXFTP 3
+currentXFTPVersion = VersionXFTP 4
 
 supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
@@ -124,7 +127,9 @@ data XFTPServerHandshake = XFTPServerHandshake
     -- | pub key to agree shared secrets for command authorization and entity ID encryption.
     authPubKey :: CertChainPubKey,
     -- | signed identity challenge from  XFTPClientHello
-    webIdentityProof :: Maybe C.ASignature
+    webIdentityProof :: Maybe C.ASignature,
+    -- | optional server public information (JSON-encoded ServerPublicInfo), sent when version >= serverInfoXFTPVersion
+    serverInfoBytes :: Maybe ByteString
   }
 
 data XFTPClientHandshake = XFTPClientHandshake
@@ -151,13 +156,21 @@ instance Encoding XFTPClientHandshake where
     pure XFTPClientHandshake {xftpVersion, keyHash}
 
 instance Encoding XFTPServerHandshake where
-  smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof} =
-    smpEncode (xftpVersionRange, sessionId, authPubKey, C.signatureBytes webIdentityProof)
+  smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof, serverInfoBytes} =
+    smpEncode (xftpVersionRange, sessionId, authPubKey, C.signatureBytes webIdentityProof) <> info
+    where
+      info = ifHasServerInfo (maxVersion xftpVersionRange) (smpEncode (Large <$> serverInfoBytes)) ""
   smpP = do
     (xftpVersionRange, sessionId, authPubKey) <- smpP
-    webIdentityProof <- optional $ C.decodeSignature <$?> smpP
+    -- decode the (length-prefixed) signature bytes deterministically: empty bytes decode to Nothing.
+    -- (Must not use `optional`, which would backtrack and leave the bytes for the parsers that follow.)
+    webIdentityProof <- C.decodeSignature <$?> smpP
+    serverInfoBytes <- ifHasServerInfo (maxVersion xftpVersionRange) (unLarge <$$> smpP) (pure Nothing)
     Tail _compat <- smpP
-    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof}
+    pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof, serverInfoBytes}
+
+ifHasServerInfo :: VersionXFTP -> a -> a -> a
+ifHasServerInfo v a b = if v >= serverInfoXFTPVersion then a else b
 
 sendEncFile :: Handle -> (Builder -> IO ()) -> LC.SbState -> Word32 -> IO ()
 sendEncFile h send = go

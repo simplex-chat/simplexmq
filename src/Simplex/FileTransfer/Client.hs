@@ -38,6 +38,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
+import qualified Data.Aeson as J
 import Data.Bifunctor (first)
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -155,12 +156,13 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
 
 xftpClientHandshakeV1 :: VersionRangeXFTP -> C.KeyHash -> HTTP2Client -> THandleParamsXFTP 'TClient -> ExceptT XFTPClientError IO (THandleParamsXFTP 'TClient)
 xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {sessionId, serverKey} thParams0 = do
-  shs@XFTPServerHandshake {authPubKey = ck} <- getServerHandshake
+  shs@XFTPServerHandshake {authPubKey = ck, serverInfoBytes} <- getServerHandshake
   (vr, sk) <- processServerHandshake shs
   let v = maxVersion vr
   sendClientHandshake XFTPClientHandshake {xftpVersion = v, keyHash}
   let thAuth = Just THAuthClient {peerServerPubKey = sk, peerServerCertKey = ck, clientService = Nothing, sessSecret = Nothing}
-  pure thParams0 {thAuth, thVersion = v, thServerVRange = vr}
+      serverInfo = J.eitherDecodeStrict' <$> serverInfoBytes
+  pure thParams0 {thAuth, thVersion = v, thServerVRange = vr, serverInfo}
   where
     getServerHandshake :: ExceptT XFTPClientError IO XFTPServerHandshake
     getServerHandshake = do
