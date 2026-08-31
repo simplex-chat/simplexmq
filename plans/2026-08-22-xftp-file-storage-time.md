@@ -55,7 +55,7 @@ In `Simplex.FileTransfer.Protocol`:
 data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
 ```
 
-- add the storage time (`Maybe Word32`: `Nothing` requests the server maximum, `Just` a number of hours) to `FNEW`
+- add the storage time (`Maybe Word32`: `Nothing` and `Just 0` request the server maximum, a value above zero requests that number of hours) to `FNEW`
 - add the granted storage to `FRSndIds` as `Maybe GrantedStorageTime` (`Nothing` when decoding a response from a server below this version)
 
 ## simplexmq: server configuration
@@ -71,7 +71,7 @@ In `Simplex.FileTransfer.Server.Env` and `Simplex.FileTransfer.Server.Main`:
 
 In `Simplex.FileTransfer.Server`:
 
-- `processClientHandshake` verifies the proof from the handshake, once per session, and resolves the maximum storage time for the entitlement name. It takes the resolution as a parameter: the first handshake verifies, a repeated handshake with the `xftp-handshake` header keeps the entitlement of the session and verifies nothing
+- `processClientHandshake` verifies the proof from the handshake, once per session, and resolves the maximum storage time for the entitlement name. `HandshakeSent` carries `EntitlementChecked`, so the first handshake verifies and every later one on that connection reuses the result, including after `processHello` returns the session to `HandshakeSent`
 - verify only when the answer can change: the name is configured (startup rejects a maximum below the default), and the entitlement expired less than 24 hours ago. A proof that fails these checks gets no verification; a proof that fails to verify is logged. In both cases the session gets the default maximum
 - a verified proof becomes `peerEntitlement :: Maybe SessionEntitlement` in `THAuthServer`, where `data SessionEntitlement = SessionEntitlement {expiresAt :: SystemSeconds, entConfig :: EntitlementConfig}`; `processXFTPRequest` takes it from there, so no proof is verified while a command is processed
 - `createFile` caps the requested storage time by the session maximum, which is the entitlement's storage time when the entitlement is still valid, and the default otherwise
@@ -114,7 +114,7 @@ Per-user state in `Simplex.Messaging.Agent.Env.SQLite` and `Simplex.Messaging.Ag
 Public API in `Simplex.Messaging.Agent`:
 
 - add storage time (`Maybe Word32` hours) to `xftpSendFile`
-- add `setUserEntitlement :: AgentClient -> UserId -> Maybe EntitlementCredential -> IO ()`, in the shape of `setProtocolServers`: it replaces the entry, and closes that user's XFTP clients, so the next upload presents the new credential
+- add `setUserEntitlement :: AgentClient -> UserId -> Maybe EntitlementCredential -> IO ()`, in the shape of `setProtocolServers`: it replaces the entry, and when the credential changed it closes that user's XFTP clients, so the next upload presents the new credential
 
 Store, in both the SQLite and PostgreSQL agent stores:
 

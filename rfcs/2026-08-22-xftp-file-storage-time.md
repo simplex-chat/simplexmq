@@ -38,7 +38,7 @@ fileStorageTime = %s"0" / (%s"1" storageHours)
 storageHours = 4*4 OCTET     ; Word32, network byte order
 ```
 
-The storage time is an optional number of hours. Absent (`%s"0"`) requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present. A value (`%s"1"` with hours) requests a specific number of hours.
+The storage time is an optional number of hours. Absent (`%s"0"`), or present as zero hours, requests the maximum the server allows for the presented entitlement, or the default maximum when no proof is present. A value above zero requests that number of hours, and the server grants the smaller of it and the maximum.
 
 ## Handshake, new XFTP version
 
@@ -51,7 +51,7 @@ optEntitlementProof = %s"0" / (%s"1" entitlementProof)
 
 `xftpVersion` and `keyHash` are defined by the current XFTP protocol. Version 3 and earlier encode no proof.
 
-The server verifies the proof when it accepts the handshake and keeps the result for the session; a repeated handshake carrying the `xftp-handshake` header keeps that result and verifies nothing. A proof that names an entitlement the server does not configure, or one whose expiration passed 24 hours ago or more, is ignored without verification; a proof that fails to verify is logged. In each case the session gets the default maximum. The response is the same in every case, but only a configured, unlapsed name costs a verification, so the handshake latency tells the client which names the server configures.
+The server verifies the proof when it accepts the handshake and keeps the result for the session; further handshakes on the same connection keep that result and verify nothing, so a session costs one verification however many handshakes it makes. A proof that names an entitlement the server does not configure, or one whose expiration passed 24 hours ago or more, is ignored without verification; a proof that fails to verify is logged. In each case the session gets the default maximum. The response is the same in every case, but only a configured, unlapsed name costs a verification, so the handshake latency tells the client which names the server configures.
 
 ## Commands
 

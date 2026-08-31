@@ -169,7 +169,7 @@ data SndFile = SndFile
     status :: SndFileStatus,
     deleted :: Bool,
     redirect :: Maybe RedirectFileInfo,
-    storageTime :: Maybe Word32
+    storageHours :: Maybe Word32
   }
   deriving (Show)
 

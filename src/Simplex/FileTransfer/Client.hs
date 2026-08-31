@@ -258,8 +258,8 @@ createXFTPChunk ::
   Maybe BasicAuth ->
   Maybe Word32 ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId, Maybe GrantedStorageTime)
-createXFTPChunk c spKey file rcps auth_ storageTime =
-  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageTime) Nothing >>= \case
+createXFTPChunk c spKey file rcps auth_ storageHours =
+  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageHours) Nothing >>= \case
     (FRSndIds sId rIds gs, body) -> noFile body (sId, rIds, gs)
     (r, _) -> throwE $ unexpectedResponse r
 

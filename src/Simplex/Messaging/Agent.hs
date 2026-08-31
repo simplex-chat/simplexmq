@@ -3055,8 +3055,12 @@ setProtocolServers c userId srvs = do
 -- The credential is presented in the handshake, so the user's XFTP clients are closed to present the new one.
 setUserEntitlement :: AgentClient -> UserId -> Maybe EntitlementCredential -> IO ()
 setUserEntitlement c userId cred_ = do
-  atomically $ maybe (TM.delete userId) (TM.insert userId) cred_ $ userEntitlements c
-  closeUserXFTPClients c userId
+  changed <- atomically $ do
+    prev_ <- TM.lookup userId $ userEntitlements c
+    if prev_ == cred_
+      then pure False
+      else True <$ maybe (TM.delete userId) (TM.insert userId) cred_ (userEntitlements c)
+  when changed $ closeUserXFTPClients c userId
 
 checkUserServers :: Text -> NonEmpty (ServerCfg p) -> IO ()
 checkUserServers name srvs =

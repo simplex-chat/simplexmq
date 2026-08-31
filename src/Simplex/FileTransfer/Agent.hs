@@ -352,7 +352,7 @@ notify :: forall m e. (MonadIO m, AEntityI e) => AgentClient -> AEntityId -> AEv
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, AEvt (sAEntity @e) cmd)
 
 xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AM SndFileId
-xftpSendFile' c userId file numRecipients storageTime = do
+xftpSendFile' c userId file numRecipients storageHours = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "snd.xftp"
   createDirectory prefixPath
@@ -360,7 +360,7 @@ xftpSendFile' c userId file numRecipients storageTime = do
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing storageTime
+  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing storageHours
   lift . void $ getXFTPSndWorker True c Nothing
   pure fId
 
@@ -406,7 +406,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
     prepareFile _ SndFile {prefixPath = Nothing} =
       throwE $ INTERNAL "no prefix path"
     prepareFile cfg sndFile@SndFile {sndFileId, sndFileEntityId, userId, prefixPath = Just ppath, status} = do
-      SndFile {numRecipients, chunks, storageTime} <-
+      SndFile {numRecipients, chunks, storageHours} <-
         if status /= SFSEncrypted -- status is SFSNew or SFSEncrypting
           then do
             fsEncPath <- lift . toFSFilePath $ sndFileEncPath ppath
@@ -425,7 +425,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
       let (pendingChunks, preparedSrvs) = partitionEithers $ map srvOrPendingChunk chunks
       -- concurrently?
       -- separate worker to create chunks? record retries and delay on snd_file_chunks?
-      srvs <- forM pendingChunks $ createChunk numRecipients' storageTime
+      srvs <- forM pendingChunks $ createChunk numRecipients' storageHours
       let allSrvs = S.fromList $ preparedSrvs <> srvs
       lift $ forM_ allSrvs $ \srv -> getXFTPSndWorker True c (Just srv)
       withStore' c $ \db -> updateSndFileStatus db sndFileId SFSUploading
@@ -456,7 +456,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
           [] -> Left ch
           SndFileChunkReplica {server} : _ -> Right server
         createChunk :: Int -> Maybe Word32 -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
-        createChunk numRecipients' storageTime ch = do
+        createChunk numRecipients' storageHours ch = do
           liftIO $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
           withStore' c $ \db -> createSndFileReplica db ch replica
@@ -483,7 +483,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               deleted <- withStore' c $ \db -> getSndFileDeleted db sndFileId
               when deleted $ throwE $ FILE NO_FILE
               withNextSrv c userId storageSrvs triedHosts [] $ \srvAuth -> do
-                replica <- agentXFTPNewChunk c ch numRecipients' srvAuth storageTime
+                replica <- agentXFTPNewChunk c ch numRecipients' srvAuth storageHours
                 pure (replica, srvAuth)
 
 sndWorkerInternalError :: AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> AgentErrorType -> AM ()

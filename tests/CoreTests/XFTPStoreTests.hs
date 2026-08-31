@@ -197,7 +197,7 @@ testExpiredFiles = withPgStore $ \st -> do
   void $ setFilePath st (EntityId "old_file________") "/tmp/old"
   addFile st (EntityId "new_file________") fileInfo newTime Nothing EntityActive `shouldReturn` Right ()
   -- Query expired with cutoff that only catches old file
-  expired <- expiredFiles st 500000 500000 100
+  expired <- expiredFiles st (RoundedSystemTime 500000) 500000 100
   length expired `shouldBe` 1
   case expired of
     [(sId, path, sz)] -> do
@@ -215,7 +215,7 @@ testExpiredFilesStoredExpiration = withPgStore $ \st -> do
   -- both files are created before the cutoff, the stored expiration decides
   addFile st (EntityId "expired_file____") fileInfo oldTime (Just (RoundedSystemTime 400000)) EntityActive `shouldReturn` Right ()
   addFile st (EntityId "stored_file_____") fileInfo oldTime (Just (RoundedSystemTime 900000)) EntityActive `shouldReturn` Right ()
-  expired <- expiredFiles st 500000 0 100
+  expired <- expiredFiles st (RoundedSystemTime 500000) 0 100
   map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
 
 testStorageAndCount :: Expectation

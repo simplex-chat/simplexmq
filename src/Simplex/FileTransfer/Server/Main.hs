@@ -160,10 +160,12 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                \# db_pool_size = 10\n\n\
                \# Write database changes to store log file\n\
                \# db_store_log = off\n\n"
-            <> "# Expire files after the specified number of hours.\n"
+            <> "# Expire files after the specified number of hours.\n\
+               \# The change only affects new files.\n"
             <> ("expire_files_hours = " <> tshow defFileExpirationHours <> "\n\n")
             <> "# Expire files after the specified number of hours for the senders that present\n\
                \# a proof of the entitlement. Must not be below expire_files_hours.\n\
+               \# The change only affects new files.\n\
                \# expire_files_hours_for_supporter = 168\n\
                \# expire_files_hours_for_legend = 504\n\n"
             <> "log_stats = off\n\

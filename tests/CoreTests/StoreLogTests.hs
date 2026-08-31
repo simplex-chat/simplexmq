@@ -209,6 +209,25 @@ deriving instance Eq FileStoreLogRecord
 testFileStoreLogFile :: FilePath
 testFileStoreLogFile = "tests/tmp/xftp-server-store.log"
 
+fileExpirationTests :: Spec
+fileExpirationTests =
+  describe "XFTP file expiration" $
+    it "expires by stored expiration and by creation time" testExpiredFiles
+
+testExpiredFiles :: Expectation
+testExpiredFiles = do
+  st <- newFileStore () :: IO STMFileStore
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let file = FileInfo {sndKey, size = 16384, digest = "12345678"}
+      created = RoundedSystemTime 100000
+  addFile st (EntityId "expired_stored__") file created (Just (RoundedSystemTime 400000)) EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "stored_ahead____") file created (Just (RoundedSystemTime 900000)) EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "legacy_expired__") file created Nothing EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "legacy_in_grace_") file (RoundedSystemTime 297000) Nothing EntityActive `shouldReturn` Right ()
+  expired <- expiredFiles st (RoundedSystemTime 500000) 300000 100
+  map (\(sId, _, _) -> sId) expired `shouldMatchList` [EntityId "expired_stored__", EntityId "legacy_expired__"]
+
 fileStoreLogTests :: Spec
 fileStoreLogTests = do
   g <- runIO C.newRandom

@@ -227,14 +227,14 @@ import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
-import Data.Time.Clock.System (getSystemTime)
+import Data.Time.Clock.System (getSystemTime, systemSeconds)
 import Data.Word (Word16, Word32)
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
 import qualified Simplex.FileTransfer.Client as X
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse)
+import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse, GrantedStorageTime (..))
 import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
@@ -901,10 +901,18 @@ getXFTPServerClient c@AgentClient {active, xftpClients, userEntitlements, worker
 
     mkEntitlementProof :: Map Word16 BBSPublicKey -> SessionId -> IO (Maybe EntitlementProof)
     mkEntitlementProof keys sessId =
-      TM.lookupIO userId userEntitlements $>>= \cred ->
-        generateEntitlementProof keys cred (BBSPresHeader sessId) >>= \case
-          Right p -> pure $ Just p
-          Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
+      ifM knownServer proof (pure Nothing)
+      where
+        -- the entitlement is presented only to the servers of this user, matched by key hash that TLS pins,
+        -- so a file description of the sender cannot direct it to another server
+        knownServer = maybe False (any (sameKeyHash . snd) . storageSrvs) <$> TM.lookupIO userId (xftpServers c)
+        sameKeyHash (ProtoServerWithAuth srv' _) = srvKeyHash srv' == srvKeyHash srv
+        srvKeyHash (ProtocolServer _ _ _ kh) = kh
+        proof =
+          TM.lookupIO userId userEntitlements $>>= \cred ->
+            generateEntitlementProof keys cred (BBSPresHeader sessId) >>= \case
+              Right p -> pure $ Just p
+              Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
@@ -2208,15 +2216,20 @@ agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {se
   withXFTPClient c (userId, server, chunkDigest) "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
 
 agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe Word32 -> AM NewSndChunkReplica
-agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) storageTime = do
+agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) storageHours = do
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
   logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
   (sndId, rIds, expiresAt) <- withClient c NRMBackground tSess $ \xftp ->
-    X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageTime
+    X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageHours
   logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
+  liftIO $ forM_ ((,) <$> storageHours <*> expiresAt) $ \(hours, GSTExpires t) -> do
+    now <- systemSeconds <$> getSystemTime
+    let granted = (t - now + 3599) `div` 3600
+    when (granted < fromIntegral hours) $
+      logWarn $ "requested " <> tshow hours <> " hours of storage, granted " <> tshow granted
   pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys, expiresAt}
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()

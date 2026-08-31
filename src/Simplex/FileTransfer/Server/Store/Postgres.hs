@@ -55,6 +55,7 @@ import Simplex.Messaging.Transport (EntityId (..))
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.QueueStore.Postgres ()
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
+import Simplex.Messaging.SystemTime (roundedSeconds)
 import Simplex.Messaging.Util (firstRow, tshow)
 import System.Directory (renameFile)
 import System.Exit (exitFailure)
@@ -157,7 +158,7 @@ instance FileStoreClass PostgresFileStore where
       DB.query
         db
         "(SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)"
-        (now, limit, old - fileTimePrecision, limit)
+        (roundedSeconds now, limit, old - fileTimePrecision, limit)
     where
       toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
       toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))

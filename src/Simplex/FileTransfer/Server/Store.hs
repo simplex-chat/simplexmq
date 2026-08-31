@@ -85,7 +85,7 @@ class FileStoreClass s where
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
   ackFile :: s -> RecipientId -> IO (Either XFTPErrorType ())
-  expiredFiles :: s -> Int64 -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
+  expiredFiles :: s -> SystemSeconds -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
   getUsedStorage :: s -> IO Int64
   getFileCount :: s -> IO Int
 
@@ -171,7 +171,7 @@ instance FileStoreClass STMFileStore where
     fs <- readTVarIO files
     fmap catMaybes . forM (M.toList fs) $ \(sId, FileRec {fileInfo = FileInfo {size}, filePath, createdAt = RoundedSystemTime createdAt, expiresAt}) ->
       let expired = case expiresAt of
-            Just e -> roundedSeconds e < now
+            Just e -> roundedSeconds e < roundedSeconds now
             Nothing -> createdAt + fileTimePrecision < old
        in if expired
             then do

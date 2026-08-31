@@ -3425,12 +3425,12 @@ getRcvFilesExpired db ttl = do
     (Only cutoffTs)
 
 createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> Maybe Word32 -> IO (Either StoreError SndFileId)
-createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ storageTime =
+createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ storageHours =
   createWithRandomId db gVar $ \sndFileEntityId ->
     DB.execute
       db
       "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest, storage_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_, storageTime))
+      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_, storageHours))
   where
     (redirectSize_, redirectDigest_) =
       case redirect_ of
@@ -3477,11 +3477,11 @@ getSndFile db sndFileId = runExceptT $ do
           (Only sndFileId)
       where
         toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest, Maybe Word32) -> SndFile
-        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, BI deleted, redirectSize_, redirectDigest_, storageTime)) =
+        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, BI deleted, redirectSize_, redirectDigest_, storageHours)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs
               redirect = RedirectFileInfo <$> redirectSize_ <*> redirectDigest_
-           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, redirect, storageTime, chunks = []}
+           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, redirect, storageHours, chunks = []}
     getChunks :: SndFileId -> UserId -> Int -> FilePath -> IO [SndFileChunk]
     getChunks sndFileEntityId userId numRecipients filePrefixPath = do
       chunks <-
