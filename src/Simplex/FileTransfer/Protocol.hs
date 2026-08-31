@@ -177,7 +177,7 @@ instance Protocol XFTPVersion XFTPErrorType FileResponse where
   {-# INLINE protocolError #-}
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> Maybe Int64 -> FileCommand FSender
+  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> Maybe Word32 -> FileCommand FSender
   FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
   FPUT :: FileCommand FSender
   FDEL :: FileCommand FSender

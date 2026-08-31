@@ -35,7 +35,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time.Clock (UTCTime (..), addUTCTime, diffTimeToPicoseconds, getCurrentTime, nominalDay)
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (systemSeconds, utcToSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
@@ -498,7 +498,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Int64 -> M s FileResponse
+    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Word32 -> M s FileResponse
     createFile file rks storageTime = do
       st <- asks fileStore
       r <- runExceptT $ do
@@ -507,7 +507,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
         ts <- liftIO getFileTime
         now <- liftIO getSystemSeconds
         maxSeconds <- lift $ storageMaxSeconds now
-        let secs = maybe maxSeconds (min maxSeconds . (* 3600)) storageTime
+        let secs = maybe maxSeconds (\hours -> min maxSeconds (fromIntegral hours * 3600)) storageTime
             fileExpiresAt = RoundedSystemTime $ ((roundedSeconds now + secs + fileTimePrecision - 1) `div` fileTimePrecision) * fileTimePrecision
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry st file 3 ts (Just fileExpiresAt)

@@ -37,7 +37,7 @@ module Simplex.FileTransfer.Transport
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative (optional)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -150,13 +150,16 @@ instance Encoding XFTPClientHello where
     pure XFTPClientHello {webChallenge}
 
 instance Encoding XFTPClientHandshake where
-  smpEncode XFTPClientHandshake {xftpVersion, keyHash, entitlementProof} =
-    smpEncode (xftpVersion, keyHash, entitlementProof)
+  smpEncode XFTPClientHandshake {xftpVersion = v, keyHash, entitlementProof} =
+    smpEncode (v, keyHash) <> ifHasEntitlement v (smpEncode entitlementProof) ""
   smpP = do
-    (xftpVersion, keyHash) <- smpP
-    entitlementProof <- smpP <|> pure Nothing
+    (v, keyHash) <- smpP
+    entitlementProof <- ifHasEntitlement v smpP (pure Nothing)
     Tail _compat <- smpP
-    pure XFTPClientHandshake {xftpVersion, keyHash, entitlementProof}
+    pure XFTPClientHandshake {xftpVersion = v, keyHash, entitlementProof}
+
+ifHasEntitlement :: VersionXFTP -> a -> a -> a
+ifHasEntitlement v a b = if v >= fileStorageTimeXFTPVersion then a else b
 
 instance Encoding XFTPServerHandshake where
   smpEncode XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof} =

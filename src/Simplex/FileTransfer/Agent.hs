@@ -50,6 +50,7 @@ import qualified Data.Set as S
 import Data.Text (Text, pack)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Word (Word32)
 import Simplex.FileTransfer.Chunks (toKB)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), getChunkDigest, prepareChunkSizes, prepareChunkSpecs, singleChunkSize)
 import Simplex.FileTransfer.Crypto
@@ -351,7 +352,7 @@ xftpDeleteRcvFiles' c rcvFileEntityIds = do
 notify :: forall m e. (MonadIO m, AEntityI e) => AgentClient -> AEntityId -> AEvent e -> m ()
 notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, AEvt (sAEntity @e) cmd)
 
-xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Int64 -> AM SndFileId
+xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AM SndFileId
 xftpSendFile' c userId file numRecipients storageTime = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "snd.xftp"
@@ -455,7 +456,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
         srvOrPendingChunk ch@SndFileChunk {replicas} = case replicas of
           [] -> Left ch
           SndFileChunkReplica {server} : _ -> Right server
-        createChunk :: Int -> Maybe Int64 -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
+        createChunk :: Int -> Maybe Word32 -> SndFileChunk -> AM (ProtocolServer 'PXFTP)
         createChunk numRecipients' storageTime ch = do
           liftIO $ assertAgentForeground c
           (replica, ProtoServerWithAuth srv _) <- tryCreate

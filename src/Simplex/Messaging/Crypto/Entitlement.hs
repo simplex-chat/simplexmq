@@ -11,6 +11,7 @@ module Simplex.Messaging.Crypto.Entitlement
     EntitlementCredential (..),
     EntitlementProof (..),
     MasterKey (..),
+    randomMasterKey,
     entitlementBBSHeader,
     entitlementIssuerKeys,
     signEntitlement,
@@ -20,7 +21,9 @@ module Simplex.Messaging.Crypto.Entitlement
   )
 where
 
+import Control.Concurrent.STM
 import Control.Monad (forM)
+import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson.TH as JQ
 import Data.ByteString.Char8 (ByteString)
@@ -29,9 +32,10 @@ import Data.Either (fromRight)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Data.Text.Encoding (encodeUtf8)
+import Data.Text.Encoding (decodeUtf8', encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import Data.Word (Word16)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -39,7 +43,8 @@ import Simplex.Messaging.Parsers (defaultJSON)
 import Simplex.Messaging.Util ((<$$>))
 
 newtype MasterKey = MasterKey ByteString
-  deriving newtype (Eq, Show, StrEncoding)
+  deriving newtype (Eq, Show)
+  deriving (StrEncoding) via (FixedBS "MasterKey" 32)
   deriving (ToJSON, FromJSON) via (StrJSON "MasterKey" MasterKey)
 
 data Entitlement = Entitlement
@@ -66,10 +71,11 @@ data EntitlementProof = EntitlementProof
 
 instance Encoding Entitlement where
   smpEncode Entitlement {entitlementName, expiresAt, extraInfo} =
-    smpEncode (entitlementName, strEncode expiresAt, extraInfo)
+    smpEncode (entitlementName, strEncode expiresAt, Large $ encodeUtf8 extraInfo)
   smpP = do
-    (entitlementName, expBs, extraInfo) <- smpP
+    (entitlementName, expBs, Large extraBs) <- smpP
     expiresAt <- either fail pure $ strDecode (expBs :: ByteString)
+    extraInfo <- either (fail . show) pure $ decodeUtf8' extraBs
     pure Entitlement {entitlementName, expiresAt, extraInfo}
 
 instance Encoding EntitlementProof where
@@ -94,6 +100,9 @@ entitlementMessages (MasterKey mk) ent = mk : disclosedMessages ent
 disclosedMessages :: Entitlement -> [ByteString]
 disclosedMessages Entitlement {entitlementName, expiresAt, extraInfo} =
   [strEncode expiresAt, encodeUtf8 entitlementName, encodeUtf8 extraInfo]
+
+randomMasterKey :: TVar ChaChaDRG -> STM MasterKey
+randomMasterKey g = MasterKey <$> C.randomBytes 32 g
 
 signEntitlement :: BBSSecretKey -> Word16 -> MasterKey -> Entitlement -> IO (Either String EntitlementCredential)
 signEntitlement sk keyIdx mk ent =

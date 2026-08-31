@@ -14,7 +14,7 @@ module Simplex.FileTransfer.Server.Main
     xftpServerCLI_,
   ) where
 
-import Control.Monad (unless, when)
+import Control.Monad (forM_, unless, when)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue, readIniFile)
@@ -162,6 +162,10 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                \# db_store_log = off\n\n"
             <> "# Expire files after the specified number of hours.\n"
             <> ("expire_files_hours = " <> tshow defFileExpirationHours <> "\n\n")
+            <> "# Expire files after the specified number of hours for the senders that present\n\
+               \# a proof of the entitlement. Must not be below expire_files_hours.\n\
+               \# expire_files_hours_for_supporter = 168\n\
+               \# expire_files_hours_for_legend = 504\n\n"
             <> "log_stats = off\n\
                \\n\
                \# Log interval for real-time Prometheus metrics\n\
@@ -240,11 +244,13 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
         enableStoreLog = settingIsOn "STORE_LOG" "enable" ini
         logStats = settingIsOn "STORE_LOG" "log_stats" ini
         c = combine cfgPath . ($ defaultX509Config)
-        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile, fileExpiration, inactiveClientExpiration} = do
+        printXFTPConfig XFTPServerConfig {allowNewFiles, newFileBasicAuth, xftpPort, storeLogFile, fileExpiration, fileStorageEntitlements, inactiveClientExpiration} = do
           putStrLn $ case storeLogFile of
             Just f -> "Store log: " <> f
             _ -> "Store log disabled."
           putStrLn $ "expiring files after " <> showTTL (ttl fileExpiration)
+          forM_ (M.assocs fileStorageEntitlements) $ \(name, EntitlementConfig {storageTime}) ->
+            putStrLn $ "expiring files of " <> T.unpack name <> " after " <> showTTL storageTime
           putStrLn $ case inactiveClientExpiration of
             Just ExpirationConfig {ttl, checkInterval} -> "expiring clients inactive for " <> show ttl <> " seconds every " <> show checkInterval <> " seconds"
             _ -> "not expiring inactive clients"

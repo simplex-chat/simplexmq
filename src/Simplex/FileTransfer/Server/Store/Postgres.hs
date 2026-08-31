@@ -156,8 +156,8 @@ instance FileStoreClass PostgresFileStore where
     fmap toResult $ withTransaction (dbStore st) $ \db ->
       DB.query
         db
-        "SELECT sender_id, file_path, file_size FROM files WHERE (expires_at < ?) OR (expires_at IS NULL AND created_at < ?) LIMIT ?"
-        (now, old - fileTimePrecision, limit)
+        "(SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)"
+        (now, limit, old - fileTimePrecision, limit)
     where
       toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
       toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))

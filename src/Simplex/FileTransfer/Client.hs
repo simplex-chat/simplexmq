@@ -256,7 +256,7 @@ createXFTPChunk ::
   FileInfo ->
   NonEmpty C.APublicAuthKey ->
   Maybe BasicAuth ->
-  Maybe Int64 ->
+  Maybe Word32 ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId, Maybe GrantedStorageTime)
 createXFTPChunk c spKey file rcps auth_ storageTime =
   sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageTime) Nothing >>= \case

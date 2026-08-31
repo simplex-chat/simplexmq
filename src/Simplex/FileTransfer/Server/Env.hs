@@ -47,7 +47,6 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
 import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
-import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.FileTransfer.Server.Stats
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
@@ -182,8 +181,10 @@ defaultFileExpiration =
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
 newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials} = do
   let defaultMax = ttl fileExpiration
-  unless (all ((>= defaultMax) . storageTime) (M.elems fileStorageEntitlements)) $ do
-    logError "STORE: entitlement storage time is below the default file expiration"
+      belowDefault = M.filter ((< defaultMax) . storageTime) fileStorageEntitlements
+  unless (M.null belowDefault) $ do
+    forM_ (M.assocs belowDefault) $ \(name, EntitlementConfig {storageTime}) ->
+      logError $ "STORE: storage time for " <> name <> " is " <> tshow storageTime <> " seconds, below the default file expiration " <> tshow defaultMax <> " seconds"
     exitFailure
   random <- C.newRandom
   (store, storeLog) <- case serverStoreCfg of
@@ -209,7 +210,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
-  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Int64)
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
 
