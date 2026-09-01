@@ -35,6 +35,7 @@ module Simplex.Messaging.Client
     ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
+    pClientSentCommandsCount,
     protocolClientServer,
     protocolClientServer',
     transportHost',
@@ -150,6 +151,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -736,6 +738,12 @@ useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortSer
   SWPAll -> True
   SWPPreset -> isPresetDomain presetDomains h
   SWPOff -> False
+
+-- | Count of in-flight (awaiting-response) commands on a client - for leak diagnostics.
+-- Entries are only removed when a matching response arrives, so this grows on response
+-- timeouts and stays for the lifetime of the session.
+pClientSentCommandsCount :: ProtocolClient v err msg -> IO Int
+pClientSentCommandsCount ProtocolClient {client_ = PClient {sentCommands}} = M.size <$> readTVarIO sentCommands
 
 isPresetDomain :: [HostName] -> TransportHost -> Bool
 isPresetDomain presetDomains = \case
