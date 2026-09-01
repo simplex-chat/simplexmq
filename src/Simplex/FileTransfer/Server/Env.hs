@@ -37,8 +37,11 @@ import Control.Monad
 import Crypto.Random
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
-import Data.Word (Word32)
+import Data.Word (Word16, Word32)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
@@ -62,9 +65,11 @@ import System.Directory (doesFileExist)
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
+import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
@@ -89,7 +94,10 @@ data XFTPServerConfig s = XFTPServerConfig
     controlPortUserAuth :: Maybe BasicAuth,
     controlPortAdminAuth :: Maybe BasicAuth,
     -- | time after which the files can be removed and check interval, seconds
-    fileExpiration :: Maybe ExpirationConfig,
+    fileExpiration :: ExpirationConfig,
+    -- | what each entitlement name grants
+    fileStorageEntitlements :: Map Text EntitlementConfig,
+    entitlementKeys :: Map Word16 BBSPublicKey,
     -- | timeout to receive file
     fileTimeout :: Int,
     -- | time after which inactive clients can be disconnected and check interval, seconds
@@ -174,7 +182,13 @@ defaultFileExpiration =
     }
 
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
-newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCredentials, httpCredentials} = do
+newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials} = do
+  let defaultMax = ttl fileExpiration
+      belowDefault = M.filter ((< defaultMax) . storageTime) fileStorageEntitlements
+  unless (M.null belowDefault) $ do
+    forM_ (M.assocs belowDefault) $ \(name, EntitlementConfig {storageTime}) ->
+      logError $ "expire_files_hours_for_" <> name <> " is " <> tshow (storageTime `div` 3600) <> " hours, below expire_files_hours " <> tshow (defaultMax `div` 3600) <> " hours, server not started"
+    exitFailure
   random <- C.newRandom
   (store, storeLog) <- case serverStoreCfg of
     XSCMemory storeLogPath -> do
@@ -199,7 +213,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, xftpCre
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
-  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth)
+  = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)
   | XFTPReqCmd XFTPFileId FileRec FileCmd
   | XFTPReqPing
 

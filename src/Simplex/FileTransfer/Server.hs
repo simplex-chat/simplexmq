@@ -33,10 +33,12 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock.System (systemSeconds, utcToSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
 import qualified Data.X509 as X
@@ -56,6 +58,8 @@ import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..))
+import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof (..), EntitlementVerification (..), verifyEntitlement)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -68,7 +72,7 @@ import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (CertChainPubKey (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), EntitlementConfig (..), SessionEntitlement (..), SessionId, THandleAuth (..), THandleParams (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
@@ -122,17 +126,20 @@ runXFTPServerBlocking :: FileStoreClass s => TMVar Bool -> XFTPServerConfig s ->
 runXFTPServerBlocking started cfg = newXFTPServerEnv cfg >>= runReaderT (xftpServer cfg started)
 
 data Handshake
-  = HandshakeSent C.PrivateKeyX25519
+  = HandshakeSent C.PrivateKeyX25519 EntitlementChecked
   | HandshakeAccepted (THandleParams XFTPVersion 'TServer)
+
+-- | the entitlement of the session is resolved once, however many handshakes it has
+data EntitlementChecked = EntNotChecked | EntChecked (Maybe SessionEntitlement)
 
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
-  mapM_ (expireServerFiles Nothing) fileExpiration
+  expireServerFiles Nothing fileExpiration
   restoreServerStats
   raceAny_
     ( runServer
-        : expireFilesThread_ cfg
-          <> serverStatsThread_ cfg
+        : expireFiles fileExpiration
+        : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
           <> controlPortThread_ cfg
     )
@@ -176,12 +183,12 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         Nothing
           | sniUsed && not webHello -> throwE SESSION
           | otherwise -> processHello Nothing
-        Just (HandshakeSent pk)
+        Just (HandshakeSent pk ent_)
           | webHello -> processHello (Just pk)
-          | otherwise -> processClientHandshake pk
+          | otherwise -> processClientHandshake pk ent_
         Just (HandshakeAccepted thParams)
           | webHello -> processHello (serverPrivKey <$> thAuth thParams)
-          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth)
+          | webHandshake, Just auth <- thAuth thParams -> processClientHandshake (serverPrivKey auth) (EntChecked $ peerEntitlement auth)
           | otherwise -> pure $ Just thParams
       either sendError pure r
       where
@@ -198,10 +205,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               | otherwise -> throwE HANDSHAKE
           rng <- asks random
           k <- atomically $ TM.lookup sessionId sessions >>= \case
-            Just (HandshakeSent pk') -> pure $ C.publicKey pk'
-            _ -> do
+            Just (HandshakeSent pk' _) -> pure $ C.publicKey pk'
+            s' -> do
               kp <- maybe (C.generateKeyPair rng) (\p -> pure (C.publicKey p, p)) pk_
-              fst kp <$ TM.insert sessionId (HandshakeSent $ snd kp) sessions
+              let ent_ = case s' of
+                    Just (HandshakeAccepted thParams) -> EntChecked $ peerEntitlement =<< thAuth thParams
+                    _ -> EntNotChecked
+              fst kp <$ TM.insert sessionId (HandshakeSent (snd kp) ent_) sessions
           let authPubKey = CertChainPubKey chain (C.signX509 serverSignKey $ C.publicToX509 k)
               webIdentityProof = C.sign serverSignKey . (<> sessionId) <$> challenge_
               serverInfoBytes = LB.toStrict . J.encode <$> information
@@ -212,15 +222,18 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
 #endif
           liftIO . sendResponse $ H.responseBuilder N.ok200 (corsHeaders addCORS) shs
           pure Nothing
-        processClientHandshake pk = do
+        processClientHandshake pk ent_ = do
           unless (B.length bodyHead == xftpBlockSize) $ throwE HANDSHAKE
           body <- liftHS $ C.unPad bodyHead
-          XFTPClientHandshake {xftpVersion = v, keyHash} <- liftHS $ smpDecode body
+          XFTPClientHandshake {xftpVersion = v, keyHash, entitlementProof} <- liftHS $ smpDecode body
           kh <- asks serverIdentity
           unless (keyHash == kh) $ throwE HANDSHAKE
           case compatibleVRange' xftpServerVRange v of
             Just (Compatible vr) -> do
-              let auth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
+              ent <- case ent_ of
+                EntChecked ent -> pure ent
+                EntNotChecked -> lift $ verifiedEntitlement entitlementProof
+              let auth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, peerEntitlement = ent, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
 #ifdef slow_servers
@@ -229,6 +242,19 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS)
               pure Nothing
             Nothing -> throwE HANDSHAKE
+        verifiedEntitlement :: Maybe EntitlementProof -> M s (Maybe SessionEntitlement)
+        verifiedEntitlement ep =
+          pure ep $>>= \proof@EntitlementProof {entitlement = Entitlement {entitlementName, expiresAt = expiresAtTs}} -> do
+            entCfg <- asks $ M.lookup entitlementName . fileStorageEntitlements . config
+            now <- liftIO getSystemSeconds
+            let expiresAt = RoundedSystemTime $ systemSeconds $ utcToSystemTime expiresAtTs
+            case entCfg of
+              Just cfg | entitlementValid now expiresAt -> do
+                keys <- asks $ entitlementKeys . config
+                liftIO (verifyEntitlement keys (BBSPresHeader sessionId) proof) >>= \case
+                  EVValid -> pure $ Just SessionEntitlement {expiresAt, entConfig = cfg}
+                  r -> Nothing <$ logError ("entitlement not verified: " <> tshow r)
+              _ -> pure Nothing
         sendError :: XFTPErrorType -> M s (Maybe (THandleParams XFTPVersion 'TServer))
         sendError err = do
           runExceptT (encodeXftp err) >>= \case
@@ -245,10 +271,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       liftIO $ closeFileStore st
       saveServerStats
       logNote "Server stopped"
-
-    expireFilesThread_ :: XFTPServerConfig s -> [M s ()]
-    expireFilesThread_ XFTPServerConfig {fileExpiration = Just fileExp} = [expireFiles fileExp]
-    expireFilesThread_ _ = []
 
     expireFiles :: ExpirationConfig -> M s ()
     expireFiles expCfg = do
@@ -405,8 +427,9 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
       case xftpDecodeTServer thParams bodyHead of
         Right (Right t@(_, _, (corrId, fId, _))) -> do
           let THandleParams {thAuth} = thParams
+              ent = peerEntitlement =<< thAuth
           verifyXFTPTransmission thAuth t >>= \case
-            VRVerified req -> uncurry send =<< processXFTPRequest body req
+            VRVerified req -> uncurry send =<< processXFTPRequest ent body req
             VRFailed e -> send (FRErr e) Nothing
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
@@ -446,7 +469,7 @@ data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 verifyXFTPTransmission :: forall s. FileStoreClass s => Maybe (THandleAuth 'TServer) -> SignedTransmission FileCmd -> M s VerificationResult
 verifyXFTPTransmission thAuth (tAuth, authorized, (corrId, fId, cmd)) =
   case cmd of
-    FileCmd SFSender (FNEW file rcps auth') -> pure $ XFTPReqNew file rcps auth' `verifyWith` sndKey file
+    FileCmd SFSender (FNEW file rcps auth' st) -> pure $ XFTPReqNew file rcps auth' st `verifyWith` sndKey file
     FileCmd SFRecipient PING -> pure $ VRVerified XFTPReqPing
     FileCmd party _ -> verifyCmd party
   where
@@ -467,9 +490,9 @@ verifyXFTPTransmission thAuth (tAuth, authorized, (corrId, fId, cmd)) =
     -- TODO verify with DH authorization
     req `verifyWith` k = if verifyCmdAuthorization thAuth tAuth authorized corrId k then VRVerified req else VRFailed AUTH
 
-processXFTPRequest :: forall s. FileStoreClass s => HTTP2Body -> XFTPRequest -> M s (FileResponse, Maybe ServerFile)
-processXFTPRequest HTTP2Body {bodyPart} = \case
-  XFTPReqNew file rks auth -> noFile =<< ifM allowNew (createFile file rks) (pure $ FRErr AUTH)
+processXFTPRequest :: forall s. FileStoreClass s => Maybe SessionEntitlement -> HTTP2Body -> XFTPRequest -> M s (FileResponse, Maybe ServerFile)
+processXFTPRequest ent HTTP2Body {bodyPart} = \case
+  XFTPReqNew file rks auth storageHours -> noFile =<< ifM allowNew (createFile file rks storageHours) (pure $ FRErr AUTH)
     where
       allowNew = do
         XFTPServerConfig {allowNewFiles, newFileBasicAuth} <- asks config
@@ -486,29 +509,42 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
-    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> M s FileResponse
-    createFile file rks = do
+    createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Word32 -> M s FileResponse
+    createFile file rks storageHours = do
       st <- asks fileStore
       r <- runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
         unless (size file `elem` sizes) $ throwE SIZE
-        ts <- liftIO getFileTime
+        now <- liftIO getSystemSeconds
+        maxSeconds <- lift $ storageMaxSeconds now
+        let nowSeconds = roundedSeconds now
+            ts = RoundedSystemTime $ (nowSeconds `div` fileTimePrecision) * fileTimePrecision
+            secs = case storageHours of
+              Just hours | hours > 0 -> min maxSeconds (fromIntegral hours * 3600)
+              _ -> maxSeconds
+            fileExpiresAt = RoundedSystemTime $ ((nowSeconds + secs + fileTimePrecision - 1) `div` fileTimePrecision) * fileTimePrecision
         -- TODO validate body empty
-        sId <- ExceptT $ addFileRetry st file 3 ts
+        sId <- ExceptT $ addFileRetry st file 3 ts (Just fileExpiresAt)
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> do
-          logAddFile sl sId file ts EntityActive
+          logAddFile sl sId file ts (Just fileExpiresAt) EntityActive
           logAddRecipients sl sId rcps
         stats <- asks serverStats
         lift $ incFileStat filesCreated
         liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
-        pure $ FRSndIds sId rIds
+        pure $ FRSndIds sId rIds (Just (GSTExpires (roundedSeconds fileExpiresAt)))
       pure $ either FRErr id r
-    addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> M s (Either XFTPErrorType XFTPFileId)
-    addFileRetry st file n ts =
+    storageMaxSeconds :: SystemSeconds -> M s Int64
+    storageMaxSeconds now = do
+      defaultMax <- asks $ ttl . fileExpiration . config
+      pure $ case ent of
+        Just SessionEntitlement {expiresAt, entConfig} | entitlementValid now expiresAt -> max (storageTime entConfig) defaultMax
+        _ -> defaultMax
+    addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> Maybe RoundedFileTime -> M s (Either XFTPErrorType XFTPFileId)
+    addFileRetry st file n ts expiresAt =
       retryAdd n $ \sId -> runExceptT $ do
-        ExceptT $ addFile st sId file ts EntityActive
+        ExceptT $ addFile st sId file ts expiresAt EntityActive
         pure sId
     addRecipientRetry :: s -> Int -> XFTPFileId -> RcvPublicAuthKey -> M s (Either XFTPErrorType FileRecipient)
     addRecipientRetry st n sId rpk =
@@ -643,24 +679,25 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExce
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
       liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
-getFileTime :: IO RoundedFileTime
-getFileTime = getRoundedSystemTime
+entitlementValid :: SystemSeconds -> SystemSeconds -> Bool
+entitlementValid now expiresAt = roundedSeconds expiresAt + 86400 > roundedSeconds now
 
 expireServerFiles :: FileStoreClass s => Maybe Int -> ExpirationConfig -> M s ()
 expireServerFiles itemDelay expCfg = do
   st <- asks fileStore
   us <- asks usedStorage
   usedStart <- readTVarIO us
+  now <- liftIO getSystemSeconds
   old <- liftIO $ expireBeforeEpoch expCfg
   filesCount <- liftIO $ getFileCount st
   logNote $ "Expiration check: " <> tshow filesCount <> " files"
-  expireLoop st us old
+  expireLoop st us now old
   usedEnd <- readTVarIO us
   logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
-    expireLoop st us old = do
-      expired <- liftIO $ expiredFiles st old 10000
+    expireLoop st us now old = do
+      expired <- liftIO $ expiredFiles st now old 10000
       forM_ expired $ \(sId, filePath_, fileSize) -> do
         mapM_ threadDelay itemDelay
         forM_ filePath_ $ \fp ->
@@ -673,7 +710,7 @@ expireServerFiles itemDelay expCfg = do
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
-        expireLoop st us old
+        expireLoop st us now old
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random

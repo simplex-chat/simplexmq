@@ -55,7 +55,7 @@ This document describes XFTP protocol version 4. The version history:
 - v1: initial version
 - v2: authenticated commands - added basic auth support for commands
 - v3: blocked files - added BLOCKED error type for policy violations
-- v4: server public information in handshake
+- v4: server public information and entitlement proof in handshake, file storage time in FNEW and SIDS
 
 The protocol describes the set of commands that senders and recipients can send to XFTP routers to create, upload, download and delete data packets of several pre-defined sizes. XFTP routers SHOULD support packets of 4 sizes: 64KB, 256KB, 1MB and 4MB (1KB = 1024 bytes, 1MB = 1024KB).
 
@@ -330,7 +330,7 @@ Once TLS handshake is complete, client and router will exchange blocks of fixed 
 
 ```abnf
 paddedRouterHello = <padded(routerHello, 16384)>
-routerHello = xftpVersionRange sessionIdentifier routerCerts signedRouterKey ignoredPart
+routerHello = xftpVersionRange sessionIdentifier routerCerts signedRouterKey webIdentityProof serverInfo ignoredPart
 xftpVersionRange = minXftpVersion maxXftpVersion
 minXftpVersion = xftpVersion
 maxXftpVersion = xftpVersion
@@ -339,15 +339,27 @@ sessionIdentifier = shortString
 routerCerts = length 1*routerCert ; NonEmpty list of certificates in chain
 routerCert = originalLength <x509encoded>
 signedRouterKey = originalLength <x509encoded> ; signed by router certificate
+webIdentityProof = shortString ; signature over the web client challenge and sessionIdentifier, empty when the client sent no challenge
+serverInfo = %s"0" / (%s"1" largeString) ; JSON server public information, sent when maxXftpVersion is 4 or above
 
 paddedClientHello = <padded(clientHello, 16384)>
-clientHello = xftpVersion keyHash ignoredPart
+clientHello = xftpVersion keyHash entitlementProof ignoredPart
 ; chosen XFTP protocol version - must be the maximum supported version
 ; within the range offered by the router
+
+entitlementProof = %s"0" / (%s"1" issuerKeyIndex bbsProof entitlement)
+; proof of the user entitlement, encoded from v4, bound to sessionIdentifier
+issuerKeyIndex = 2*2OCTET ; Word16 index of the issuer public key
+bbsProof = largeString
+entitlement = entExpires entName entExtra
+entExpires = shortString ; expiration as an ISO8601 UTC timestamp
+entName = shortString ; e.g. "supporter", "legend"
+entExtra = largeString ; opaque to the router
 
 xftpVersion = 2*2OCTET ; Word16 version number
 keyHash = shortString
 shortString = length length*OCTET
+largeString = originalLength *OCTET
 length = 1*1OCTET
 originalLength = 2*2OCTET
 ignoredPart = *OCTET
@@ -433,7 +445,7 @@ Routers SHOULD support basic auth with this command, to allow only router owners
 The syntax is:
 
 ```abnf
-register = %s"FNEW " fileInfo rcvPublicAuthKeys basicAuth
+register = %s"FNEW " fileInfo rcvPublicAuthKeys basicAuth fileStorageTime
 fileInfo = sndKey size digest
 sndKey = length x509encoded
 size = 4*4 OCTET ; Word32 big-endian
@@ -441,19 +453,27 @@ digest = length *OCTET
 rcvPublicAuthKeys = length 1*rcvPublicAuthKey
 rcvPublicAuthKey = length x509encoded
 basicAuth = "0" / "1" length *OCTET
+fileStorageTime = %s"0" / (%s"1" storageHours)
+; encoded from v4; absent or zero requests the maximum the router allows
+storageHours = 4*4 OCTET ; Word32 big-endian
 
 x509encoded = <binary X509 key encoding>
 
 length = 1*1 OCTET
 ```
 
+`fileStorageTime` requests how long the router stores the data packet. The router grants the smaller of the request and the maximum it allows for the entitlement presented in the handshake, and returns the granted expiration in `sndIds`.
+
 If the data packet is registered successfully, the router must send `sndIds` response with the sender's and recipients' data packet IDs:
 
 ```abnf
-sndIds = %s"SIDS " senderId recipientIds
+sndIds = %s"SIDS " senderId recipientIds grantedStorageTime
 senderId = length *OCTET
 recipientIds = length 1*recipientId
 recipientId = length *OCTET
+grantedStorageTime = %s"0" / (%s"1" grantedExpires) ; encoded from v4
+grantedExpires = %s"T" expiresAt
+expiresAt = 8*8 OCTET ; Int64 big-endian, seconds since epoch
 ```
 
 #### Add data packet recipients

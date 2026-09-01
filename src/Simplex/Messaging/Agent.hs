@@ -108,6 +108,7 @@ module Simplex.Messaging.Agent
     getConnectionServers,
     getConnectionRatchetAdHash,
     setProtocolServers,
+    setUserEntitlement,
     checkUserServers,
     testProtocolServer,
     setNtfServers,
@@ -187,7 +188,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
-import Data.Word (Word16)
+import Data.Word (Word16, Word32)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
@@ -211,6 +212,7 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client (NetworkRequestMode (..), ProtocolClientError (..), SMPClientError, ServerTransmission (..), ServerTransmissionBatch, TransportSessionMode (..), nonBlockingWriteTBQueue, smpErrorClientNotice, temporaryClientError, unexpectedResponse)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential)
 import Simplex.Messaging.Crypto.File (CryptoFile, CryptoFileArgs)
 import Simplex.Messaging.Crypto.Ratchet (PQEncryption, PQSupport (..), pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -773,8 +775,8 @@ xftpDeleteRcvFiles c = withAgentEnv' c . xftpDeleteRcvFiles' c
 {-# INLINE xftpDeleteRcvFiles #-}
 
 -- | Send XFTP file
-xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> AE SndFileId
-xftpSendFile c = withAgentEnv c .:. xftpSendFile' c
+xftpSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AE SndFileId
+xftpSendFile c = withAgentEnv c .:: xftpSendFile' c
 {-# INLINE xftpSendFile #-}
 
 -- | Send XFTP file
@@ -3048,6 +3050,17 @@ setProtocolServers :: forall p. (ProtocolTypeI p, UserProtocol p) => AgentClient
 setProtocolServers c userId srvs = do
   checkUserServers "setProtocolServers" srvs
   atomically $ TM.insert userId (mkUserServers srvs) (userServers c)
+
+-- | Change the entitlement credential presented to XFTP servers for the user.
+-- The credential is presented in the handshake, so the user's XFTP clients are closed to present the new one.
+setUserEntitlement :: AgentClient -> UserId -> Maybe EntitlementCredential -> IO ()
+setUserEntitlement c userId cred_ = do
+  changed <- atomically $ do
+    prev_ <- TM.lookup userId $ userEntitlements c
+    if prev_ == cred_
+      then pure False
+      else True <$ maybe (TM.delete userId) (TM.insert userId) cred_ (userEntitlements c)
+  when changed $ closeUserXFTPClients c userId
 
 checkUserServers :: Text -> NonEmpty (ServerCfg p) -> IO ()
 checkUserServers name srvs =

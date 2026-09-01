@@ -41,6 +41,7 @@ module Simplex.Messaging.Agent.Client
     reconnectServerClients,
     reconnectSMPServer,
     closeXFTPServerClient,
+    closeUserXFTPClients,
     runSMPServerTest,
     runXFTPServerTest,
     runNTFServerTest,
@@ -227,7 +228,7 @@ import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
-import Data.Word (Word16)
+import Data.Word (Word16, Word32)
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName)
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..), XFTPClient, XFTPClientConfig (..), XFTPClientError)
@@ -253,6 +254,8 @@ import Simplex.Messaging.Agent.TSessionSubs (TSessionSubs)
 import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..), BBSPublicKey)
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, EntitlementProof, generateEntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
@@ -354,6 +357,7 @@ data AgentClient = AgentClient
     ntfClients :: TMap NtfTransportSession NtfClientVar,
     xftpServers :: TMap UserId (UserServers 'PXFTP),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
+    userEntitlements :: TMap UserId EntitlementCredential,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     presetDomains :: [HostName],
     presetServers :: [SMPServer],
@@ -511,7 +515,7 @@ data UserNetworkType = UNNone | UNCellular | UNWifi | UNEthernet | UNOther
 
 -- | Creates an SMP agent client instance that receives commands and sends responses via 'TBQueue's.
 newAgentClient :: Int -> InitialAgentServers -> UTCTime -> Map (Maybe SMPServer) (Maybe SystemSeconds) -> Env -> IO AgentClient
-newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
+newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCfg, useServices, presetDomains, presetServers} currentTs notices agentEnv = do
   let cfg = config agentEnv
       qSize = tbqSize cfg
   proxySessTs <- newTVarIO =<< getCurrentTime
@@ -527,6 +531,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
   ntfClients <- TM.emptyIO
   xftpServers <- newTVarIO $ M.map mkUserServers xftp
   xftpClients <- TM.emptyIO
+  userEntitlements <- newTVarIO entitlements
   useNetworkConfig <- newTVarIO (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVarIO $ UserNetworkInfo UNOther True
   userNetworkUpdated <- newTVarIO Nothing
@@ -568,6 +573,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, netCfg, useServices
         ntfClients,
         xftpServers,
         xftpClients,
+        userEntitlements,
         useNetworkConfig,
         presetDomains,
         presetServers,
@@ -878,7 +884,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, pr
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
-getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq, proxySessTs, presetDomains} tSess@(_, srv, _) = do
+getXFTPServerClient c@AgentClient {active, xftpClients, userEntitlements, workerSeq, proxySessTs, presetDomains} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq tSess xftpClients ts (newProtocolClient c tSess xftpClients connectClient) (waitForProtocolClient c NRMBackground tSess xftpClients)
@@ -886,11 +892,27 @@ getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq, proxySessTs, 
     connectClient :: XFTPClientVar -> AM XFTPClient
     connectClient v = do
       cfg <- asks $ xftpCfg . config
+      keys <- asks $ entitlementKeys . config
       xftpNetworkConfig <- getNetworkConfig c
       ts <- readTVarIO proxySessTs
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
-        X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts $
+        X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (mkEntitlementProof keys) $
           clientDisconnected v
+
+    mkEntitlementProof :: Map Word16 BBSPublicKey -> SessionId -> IO (Maybe EntitlementProof)
+    mkEntitlementProof keys sessId =
+      ifM knownServer proof (pure Nothing)
+      where
+        -- the entitlement is presented only to the servers of this user, matched by key hash that TLS pins,
+        -- so a file description of the sender cannot direct it to another server
+        knownServer = maybe False (any (sameKeyHash . snd) . storageSrvs) <$> TM.lookupIO userId (xftpServers c)
+        sameKeyHash (ProtoServerWithAuth srv' _) = srvKeyHash srv' == srvKeyHash srv
+        srvKeyHash (ProtocolServer _ _ _ kh) = kh
+        proof =
+          TM.lookupIO userId userEntitlements $>>= \cred ->
+            generateEntitlementProof keys cred (BBSPresHeader sessId) >>= \case
+              Right p -> pure $ Just p
+              Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
@@ -1036,6 +1058,13 @@ reconnectSMPServer c userId srv = do
     srvClient (userId', srv', _) v
       | userId == userId' && srv == srv' = (v :)
       | otherwise = id
+
+closeUserXFTPClients :: AgentClient -> UserId -> IO ()
+closeUserXFTPClients c userId = do
+  vs <- atomically $ stateTVar (xftpClients c) $ \cs ->
+    let (userCs, cs') = M.partitionWithKey (\(userId', _, _) _ -> userId == userId') cs
+     in (M.elems userCs, cs')
+  mapM_ (forkIO . closeClient_ c) vs
 
 closeClient :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> TransportSession msg -> IO ()
 closeClient c clientSel tSess =
@@ -1337,7 +1366,7 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
   liftIO $ do
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
-    X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (\_ -> pure ()) >>= \case
+    X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (\_ -> pure Nothing) (\_ -> pure ()) >>= \case
       Right xftp -> withTestChunk filePath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1345,7 +1374,7 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
         let file = FileInfo {sndKey, size = chSize, digest}
             chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
         r <- runExceptT $ do
-          (sId, [rId]) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth
+          (sId, [rId], _) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth Nothing
           liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
           liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
           rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
@@ -2186,16 +2215,17 @@ agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {se
   g <- asks random
   withXFTPClient c (userId, server, chunkDigest) "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
 
-agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> AM NewSndChunkReplica
-agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) = do
+agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe Word32 -> AM NewSndChunkReplica
+agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) storageHours = do
   rKeys <- xftpRcvKeys n
   (sndKey, replicaKey) <- atomically . C.generateAuthKeyPair C.SEd25519 =<< asks random
   let fileInfo = FileInfo {sndKey, size = chunkSize, digest = chunkDigest}
   logServer "-->" c srv NoEntity "FNEW"
   tSess <- mkTransportSession c userId srv chunkDigest
-  (sndId, rIds) <- withClient c NRMBackground tSess $ \xftp -> X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth
+  (sndId, rIds, expiresAt) <- withClient c NRMBackground tSess $ \xftp ->
+    X.createXFTPChunk xftp replicaKey fileInfo (L.map fst rKeys) auth storageHours
   logServer "<--" c srv NoEntity $ B.unwords ["SIDS", logSecret sndId]
-  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys}
+  pure NewSndChunkReplica {server = srv, replicaId = ChunkReplicaId sndId, replicaKey, rcvIdsKeys = L.toList $ xftpRcvIdsKeys rIds rKeys, expiresAt}
 
 agentXFTPUploadChunk :: AgentClient -> UserId -> FileDigest -> SndFileChunkReplica -> XFTPChunkSpec -> AM ()
 agentXFTPUploadChunk c userId (FileDigest chunkDigest) SndFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec =

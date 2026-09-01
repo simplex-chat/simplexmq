@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -20,28 +21,37 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
+import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
+import Data.Time.Clock.System (getSystemTime, systemSeconds)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
 import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
-import Simplex.FileTransfer.Protocol (FileParty (..))
-import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..))
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.FileTransfer.Server.Store (STMFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
-import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpStartWorkers)
+import qualified Simplex.Messaging.Agent as XA
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
-import Simplex.Messaging.Agent.Protocol (AEvent (..), AgentErrorType (..), BrokerErrorType (..), noAuthSrv)
+import qualified Simplex.Messaging.Agent.Env.SQLite as AEnv
+import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
+import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Client (pattern NRMInteractive)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (bbsKeyGen)
+import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), MasterKey (..), signEntitlement)
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (BasicAuth, NetworkError (..), ProtoServerWithAuth (..), ProtocolServer (..), XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
+import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Util (tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
@@ -55,6 +65,9 @@ import XFTPClient
 import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
 #endif
+
+pattern SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> AEvent 'AESndFile
+pattern SFDONE sndDescr rcvDescrs <- A.SFDONE sndDescr rcvDescrs _
 
 xftpAgentTests :: SpecWith AFStoreType
 xftpAgentTests =
@@ -71,6 +84,7 @@ xftpAgentTests =
       it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
       it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
       it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
+      it "should extend storage time with an entitlement proof and report the granted expiry" $ \_ -> testXFTPAgentEntitlement
       describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
@@ -325,6 +339,43 @@ testSendCF' sndr file size = do
 testNoRedundancy :: HasCallStack => ValidFileDescription 'FRecipient -> IO ()
 testNoRedundancy (ValidFileDescription FileDescription {chunks}) =
   all (\FileChunk {replicas} -> length replicas == 1) chunks `shouldBe` True
+
+testXFTPAgentEntitlement :: HasCallStack => IO ()
+testXFTPAgentEntitlement = do
+  Right (issuerPk, issuerSk) <- bbsKeyGen
+  now <- getCurrentTime
+  let ent = Entitlement {entitlementName = "supporter", expiresAt = addUTCTime (30 * nominalDay) now, extraInfo = ""}
+      keys = M.fromList [(1, issuerPk)]
+  Right credential <- signEntitlement issuerSk 1 (MasterKey "0123456789abcdef0123456789abcdef") ent
+  let srvCfg = testXFTPServerConfig {entitlementKeys = keys, fileStorageEntitlements = M.fromList [("supporter", EntitlementConfig (168 * 3600))]}
+  withXFTPServerCfg srvCfg $ \_ -> do
+    filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
+    let servers = initAgentServers {AEnv.entitlements = M.fromList [(1, credential)]}
+    withAgent 1 (agentCfg {AEnv.entitlementKeys = keys}) servers testDB $ \sndr -> runRight_ $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      nowSec <- liftIO $ systemSeconds <$> getSystemTime
+      _ <- XA.xftpSendFile sndr 1 (CF.plain filePath) 1 (Just 100)
+      gExpires <- waitSndDone sndr
+      liftIO $ expiresIn gExpires nowSec (100 * 3600)
+    -- the same request without the credential is capped at the default maximum
+    withAgent 2 (agentCfg {AEnv.entitlementKeys = keys}) initAgentServers testDB2 $ \sndr -> runRight_ $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      nowSec <- liftIO $ systemSeconds <$> getSystemTime
+      _ <- XA.xftpSendFile sndr 1 (CF.plain filePath) 1 (Just 100)
+      gExpires <- waitSndDone sndr
+      let ExpirationConfig {ttl} = defaultFileExpiration
+      liftIO $ expiresIn gExpires nowSec ttl
+  where
+    expiresIn gExpires nowSec secs = case gExpires of
+      Just (GSTExpires t) -> do
+        t `shouldSatisfy` (>= nowSec + secs)
+        t `shouldSatisfy` (< nowSec + secs + 7200)
+      Nothing -> expectationFailure "expected granted storage time in SFDONE"
+    waitSndDone sndr =
+      sfGet sndr >>= \case
+        ("", _, A.SFDONE _ _ g) -> pure g
+        ("", _, SFPROG _ _) -> waitSndDone sndr
+        r -> error $ "Expected SFDONE, got " <> show r
 
 testReceive :: HasCallStack => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceive rcp rfd = testReceiveCF rcp rfd Nothing
@@ -619,7 +670,7 @@ testXFTPAgentDeleteOnServer = withGlobalLogging logCfgNoLogs . withXFTPServer te
 
 testXFTPAgentExpiredOnServer :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration = Just fastExpiration}) . const $ do
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration = fastExpiration}) . const $ do
     filePath1 <- createRandomFile' "testfile1"
 
     -- send file 1

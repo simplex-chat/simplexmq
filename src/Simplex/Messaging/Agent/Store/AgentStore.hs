@@ -309,7 +309,7 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Client (XFTPChunkSpec (..))
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..), SFileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..), SFileParty (..))
 import Simplex.FileTransfer.Types
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval (RI2State (..))
@@ -3424,13 +3424,13 @@ getRcvFilesExpired db ttl = do
     |]
     (Only cutoffTs)
 
-createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> IO (Either StoreError SndFileId)
-createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ =
+createSndFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> CryptoFile -> Int -> FilePath -> C.SbKey -> C.CbNonce -> Maybe RedirectFileInfo -> Maybe Word32 -> IO (Either StoreError SndFileId)
+createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath key nonce redirect_ storageHours =
   createWithRandomId db gVar $ \sndFileEntityId ->
     DB.execute
       db
-      "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_))
+      "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest, storage_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_, storageHours))
   where
     (redirectSize_, redirectDigest_) =
       case redirect_ of
@@ -3466,7 +3466,7 @@ getSndFile db sndFileId = runExceptT $ do
         DB.query
           db
           ( [sql|
-              SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, digest, prefix_path, key, nonce, status, deleted, redirect_size, redirect_digest
+              SELECT snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, digest, prefix_path, key, nonce, status, deleted, redirect_size, redirect_digest, storage_time
               FROM snd_files
               WHERE snd_file_id = ?
             |]
@@ -3476,12 +3476,12 @@ getSndFile db sndFileId = runExceptT $ do
           )
           (Only sndFileId)
       where
-        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest) -> SndFile
-        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, BI deleted, redirectSize_, redirectDigest_)) =
+        toFile :: (SndFileId, UserId, FilePath, Maybe C.SbKey, Maybe C.CbNonce, Int, Maybe FileDigest, Maybe FilePath, C.SbKey, C.CbNonce) :. (SndFileStatus, BoolInt, Maybe (FileSize Int64), Maybe FileDigest, Maybe Word32) -> SndFile
+        toFile ((sndFileEntityId, userId, srcPath, srcKey_, srcNonce_, numRecipients, digest, prefixPath, key, nonce) :. (status, BI deleted, redirectSize_, redirectDigest_, storageHours)) =
           let cfArgs = CFArgs <$> srcKey_ <*> srcNonce_
               srcFile = CryptoFile srcPath cfArgs
               redirect = RedirectFileInfo <$> redirectSize_ <*> redirectDigest_
-           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, redirect, chunks = []}
+           in SndFile {sndFileId, sndFileEntityId, userId, srcFile, numRecipients, digest, prefixPath, key, nonce, status, deleted, redirect, storageHours, chunks = []}
     getChunks :: SndFileId -> UserId -> Int -> FilePath -> IO [SndFileChunk]
     getChunks sndFileEntityId userId numRecipients filePrefixPath = do
       chunks <-
@@ -3510,7 +3510,7 @@ getSndFile db sndFileId = runExceptT $ do
             db
             [sql|
               SELECT
-                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries,
+                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries, r.replica_expires_at,
                 s.xftp_host, s.xftp_port, s.xftp_key_hash
               FROM snd_file_chunk_replicas r
               JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -3521,10 +3521,10 @@ getSndFile db sndFileId = runExceptT $ do
         rcvIdsKeys <- getChunkReplicaRecipients_ db sndChunkReplicaId
         pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
       where
-        toReplica :: (Int64, ChunkReplicaId, C.APrivateAuthKey, SndFileReplicaStatus, Maybe Int64, Int, NonEmpty TransportHost, ServiceName, C.KeyHash) -> SndFileChunkReplica
-        toReplica (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries, host, port, keyHash) =
+        toReplica :: (Int64, ChunkReplicaId, C.APrivateAuthKey, SndFileReplicaStatus, Maybe Int64, Int, Maybe Int64, NonEmpty TransportHost, ServiceName, C.KeyHash) -> SndFileChunkReplica
+        toReplica (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries, expiresAtSec, host, port, keyHash) =
           let server = XFTPServer host port keyHash
-           in SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}
+           in SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, expiresAt = GSTExpires <$> expiresAtSec, rcvIdsKeys = []}
 
 getChunkReplicaRecipients_ :: DB.Connection -> Int64 -> IO [(ChunkReplicaId, C.APrivateAuthKey)]
 getChunkReplicaRecipients_ db replicaId =
@@ -3605,16 +3605,16 @@ createSndFileReplica :: DB.Connection -> SndFileChunk -> NewSndChunkReplica -> I
 createSndFileReplica db SndFileChunk {sndChunkId} = createSndFileReplica_ db sndChunkId
 
 createSndFileReplica_ :: DB.Connection -> Int64 -> NewSndChunkReplica -> IO ()
-createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys} = do
+createSndFileReplica_ db sndChunkId NewSndChunkReplica {server, replicaId, replicaKey, rcvIdsKeys, expiresAt} = do
   srvId <- createXFTPServer_ db server
   DB.execute
     db
     [sql|
       INSERT INTO snd_file_chunk_replicas
-        (snd_file_chunk_id, replica_number, xftp_server_id, replica_id, replica_key, replica_status)
-      VALUES (?,?,?,?,?,?)
+        (snd_file_chunk_id, replica_number, xftp_server_id, replica_id, replica_key, replica_status, replica_expires_at)
+      VALUES (?,?,?,?,?,?,?)
     |]
-    (sndChunkId, 1 :: Int, srvId, replicaId, replicaKey, SFRSCreated)
+    (sndChunkId, 1 :: Int, srvId, replicaId, replicaKey, SFRSCreated, epochSeconds <$> expiresAt)
   rId <- insertedRowId db
   forM_ rcvIdsKeys $ \(rcvId, rcvKey) -> do
     DB.execute
@@ -3660,7 +3660,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
               SELECT
                 f.snd_file_id, f.snd_file_entity_id, f.user_id, f.num_recipients, f.prefix_path,
                 c.snd_file_chunk_id, c.chunk_no, c.chunk_offset, c.chunk_size, c.digest,
-                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries
+                r.snd_file_chunk_replica_id, r.replica_id, r.replica_key, r.replica_status, r.delay, r.retries, r.replica_expires_at
               FROM snd_file_chunk_replicas r
               JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
               JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
@@ -3674,8 +3674,8 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
           pure (replica :: SndFileChunkReplica) {rcvIdsKeys}
         pure (chunk {replicas = replicas'} :: SndFileChunk)
       where
-        toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateAuthKey, SndFileReplicaStatus, Maybe Int64, Int)) -> SndFileChunk
-        toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries)) =
+        toChunk :: ((DBSndFileId, SndFileId, UserId, Int, FilePath) :. (Int64, Int, Int64, Word32, FileDigest) :. (Int64, ChunkReplicaId, C.APrivateAuthKey, SndFileReplicaStatus, Maybe Int64, Int, Maybe Int64)) -> SndFileChunk
+        toChunk ((sndFileId, sndFileEntityId, userId, numRecipients, filePrefixPath) :. (sndChunkId, chunkNo, chunkOffset, chunkSize, digest) :. (sndChunkReplicaId, replicaId, replicaKey, replicaStatus, delay, retries, expiresAtSec)) =
           let chunkSpec = XFTPChunkSpec {filePath = sndFileEncPath filePrefixPath, chunkOffset, chunkSize}
            in SndFileChunk
                 { sndFileId,
@@ -3687,7 +3687,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
                   chunkSpec,
                   digest,
                   filePrefixPath,
-                  replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, rcvIdsKeys = []}]
+                  replicas = [SndFileChunkReplica {sndChunkReplicaId, server, replicaId, replicaKey, replicaStatus, delay, retries, expiresAt = GSTExpires <$> expiresAtSec, rcvIdsKeys = []}]
                 }
 
 updateSndChunkReplicaDelay :: DB.Connection -> Int64 -> Int64 -> IO ()

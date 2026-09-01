@@ -17,6 +17,7 @@ module Simplex.Messaging.Crypto.BBS
     BBSProof (..),
     BBSHeader (..),
     BBSPresHeader (..),
+    FixedBS (..),
     bbsKeyGen,
     bbsPublicKey,
     bbsSign,
@@ -33,7 +34,9 @@ import Data.Proxy (Proxy (..))
 import Foreign
 import Foreign.C
 import GHC.TypeLits (KnownNat, KnownSymbol, Nat, Symbol, natVal, symbolVal)
+import Simplex.Messaging.Encoding (Encoding (..), Large (..))
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Util ((<$?>))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- Note: the data constructors below are unchecked escape hatches for trusted,
@@ -71,8 +74,8 @@ newtype BBSPresHeader = BBSPresHeader ByteString
   deriving (ToJSON, FromJSON) via (StrJSON "BBSPresHeader" BBSPresHeader)
 
 -- | A ByteString validated to be exactly @n@ bytes when parsed via StrEncoding
--- (and the JSON derived from it). Local to BBS, where every key/signature is a
--- fixed size; @name@ appears in the decode error only.
+-- (and the JSON derived from it), for keys and signatures of a fixed size;
+-- @name@ appears in the decode error only.
 newtype FixedBS (name :: Symbol) (n :: Nat) = FixedBS ByteString
 
 instance forall name n. (KnownSymbol name, KnownNat n) => StrEncoding (FixedBS name n) where
@@ -97,14 +100,20 @@ bbsProofLen :: Int -> Int
 bbsProofLen numUndisclosed = bbsProofBaseLen + numUndisclosed * bbsProofUdElemLen
 
 -- | A proof is @bbsProofBaseLen + 32 * numUndisclosed@ bytes; reject anything else.
+mkBBSProof :: ByteString -> Either String BBSProof
+mkBBSProof bs
+  | len >= bbsProofBaseLen && (len - bbsProofBaseLen) `mod` bbsProofUdElemLen == 0 = Right $ BBSProof bs
+  | otherwise = Left $ "BBS: invalid proof length " <> show len
+  where
+    len = B.length bs
+
 instance StrEncoding BBSProof where
   strEncode (BBSProof bs) = strEncode bs
-  strP = do
-    bs <- base64urlP
-    let len = B.length bs
-    if len >= bbsProofBaseLen && (len - bbsProofBaseLen) `mod` bbsProofUdElemLen == 0
-      then pure (BBSProof bs)
-      else fail $ "BBS: invalid proof length " <> show len
+  strP = mkBBSProof <$?> base64urlP
+
+instance Encoding BBSProof where
+  smpEncode (BBSProof p) = smpEncode (Large p)
+  smpP = mkBBSProof . unLarge <$?> smpP
 
 -- FFI
 

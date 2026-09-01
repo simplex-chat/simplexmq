@@ -22,6 +22,7 @@ module Simplex.FileTransfer.Protocol
     FileCommand (..),
     FileCmd (..),
     FileInfo (..),
+    GrantedStorageTime (..),
     XFTPFileId,
     FileResponse (..),
     xftpBlockSize,
@@ -38,12 +39,13 @@ import qualified Data.Aeson.TH as J
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (isNothing)
 import Data.Type.Equality
 import Data.Word (Word32)
-import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, blockedFilesXFTPVersion, xftpClientHandshakeStub)
+import Simplex.FileTransfer.Transport (XFTPErrorType (..), XFTPVersion, blockedFilesXFTPVersion, fileStorageTimeXFTPVersion, xftpClientHandshakeStub)
 import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -175,7 +177,7 @@ instance Protocol XFTPVersion XFTPErrorType FileResponse where
   {-# INLINE protocolError #-}
 
 data FileCommand (p :: FileParty) where
-  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> FileCommand FSender
+  FNEW :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe BasicAuth -> Maybe Word32 -> FileCommand FSender
   FADD :: NonEmpty RcvPublicAuthKey -> FileCommand FSender
   FPUT :: FileCommand FSender
   FDEL :: FileCommand FSender
@@ -196,12 +198,27 @@ data FileInfo = FileInfo
   }
   deriving (Show)
 
+data GrantedStorageTime = GSTExpires {epochSeconds :: Int64}
+  deriving (Eq, Ord, Show)
+
+instance Encoding GrantedStorageTime where
+  smpEncode = \case
+    GSTExpires t -> smpEncode ('T', t)
+  smpP =
+    smpP >>= \case
+      'T' -> GSTExpires <$> smpP
+      _ -> fail "bad GrantedStorageTime"
+
 type XFTPFileId = EntityId
 
 instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand p) where
   type Tag (FileCommand p) = FileCommandTag p
-  encodeProtocol _v = \case
-    FNEW file rKeys auth_ -> e (FNEW_, ' ', file, rKeys, auth_)
+  encodeProtocol v = \case
+    FNEW file rKeys auth_ st
+      | v >= fileStorageTimeXFTPVersion -> fnew <> e st
+      | otherwise -> fnew
+      where
+        fnew = e (FNEW_, ' ', file, rKeys, auth_)
     FADD rKeys -> e (FADD_, ' ', rKeys)
     FPUT -> e FPUT_
     FDEL -> e FDEL_
@@ -235,10 +252,14 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
   type Tag FileCmd = FileCmdTag
   encodeProtocol _v (FileCmd _ c) = encodeProtocol _v c
 
-  protocolP _v = \case
+  protocolP v = \case
     FCT SFSender tag ->
       FileCmd SFSender <$> case tag of
-        FNEW_ -> FNEW <$> _smpP <*> smpP <*> smpP
+        FNEW_
+          | v >= fileStorageTimeXFTPVersion -> fnewP smpP
+          | otherwise -> fnewP (pure Nothing)
+          where
+            fnewP stP = FNEW <$> _smpP <*> smpP <*> smpP <*> stP
         FADD_ -> FADD <$> _smpP
         FPUT_ -> pure FPUT
         FDEL_ -> pure FDEL
@@ -292,7 +313,7 @@ instance ProtocolMsgTag FileResponseTag where
     _ -> Nothing
 
 data FileResponse
-  = FRSndIds SenderId (NonEmpty RecipientId)
+  = FRSndIds SenderId (NonEmpty RecipientId) (Maybe GrantedStorageTime)
   | FRRcvIds (NonEmpty RecipientId)
   | FRFile RcvPublicDhKey C.CbNonce
   | FROk
@@ -303,7 +324,9 @@ data FileResponse
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
   type Tag FileResponse = FileResponseTag
   encodeProtocol v = \case
-    FRSndIds fId rIds -> e (FRSndIds_, ' ', fId, rIds)
+    FRSndIds fId rIds gs
+      | v >= fileStorageTimeXFTPVersion -> e (FRSndIds_, ' ', fId, rIds, gs)
+      | otherwise -> e (FRSndIds_, ' ', fId, rIds)
     FRRcvIds rIds -> e (FRRcvIds_, ' ', rIds)
     FRFile rDhKey nonce -> e (FRFile_, ' ', rDhKey, nonce)
     FROk -> e FROk_
@@ -315,8 +338,10 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
       e :: Encoding a => a -> ByteString
       e = smpEncode
 
-  protocolP _v = \case
-    FRSndIds_ -> FRSndIds <$> _smpP <*> smpP
+  protocolP v = \case
+    FRSndIds_
+      | v >= fileStorageTimeXFTPVersion -> FRSndIds <$> _smpP <*> smpP <*> smpP
+      | otherwise -> FRSndIds <$> _smpP <*> smpP <*> pure Nothing
     FRRcvIds_ -> FRRcvIds <$> _smpP
     FRFile_ -> FRFile <$> _smpP <*> smpP
     FROk_ -> pure FROk

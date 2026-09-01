@@ -67,6 +67,8 @@ import Simplex.Messaging.Agent.Store.Interface (DBOpts)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationError (..))
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
+import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, entitlementIssuerKeys)
 import Simplex.Messaging.Crypto.Ratchet (VersionRangeE2E, supportedE2EEncryptVRange)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
@@ -89,6 +91,7 @@ data InitialAgentServers = InitialAgentServers
   { smp :: Map UserId (NonEmpty (ServerCfg 'PSMP)),
     ntf :: [NtfServer],
     xftp :: Map UserId (NonEmpty (ServerCfg 'PXFTP)),
+    entitlements :: Map UserId EntitlementCredential,
     netCfg :: NetworkConfig,
     useServices :: Map UserId Bool,
     presetDomains :: [HostName],
@@ -148,6 +151,7 @@ data AgentConfig = AgentConfig
     smpCfg :: ProtocolClientConfig SMPVersion,
     ntfCfg :: ProtocolClientConfig NTFVersion,
     xftpCfg :: XFTPClientConfig,
+    entitlementKeys :: Map Word16 BBSPublicKey,
     reconnectInterval :: RetryInterval,
     messageRetryInterval :: RetryInterval2,
     userNetworkInterval :: Int,
@@ -226,6 +230,7 @@ defaultAgentConfig =
       smpCfg = defaultSMPClientConfig,
       ntfCfg = defaultNTFClientConfig,
       xftpCfg = defaultXFTPClientConfig,
+      entitlementKeys = entitlementIssuerKeys,
       reconnectInterval = defaultReconnectInterval,
       messageRetryInterval = defaultMessageRetryInterval,
       userNetworkInterval = 1800_000000, -- 30 minutes, should be less than Int32 max value

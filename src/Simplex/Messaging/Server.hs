@@ -2132,7 +2132,7 @@ client
           t' <- case tParse clntTHParams b of
             t :| [] -> pure $ tDecodeServer clntTHParams t
             _ -> throwE BLOCK
-          let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, sessSecret' = Just clientSecret}
+          let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do
                 r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
                   [] -> throwE INTERNAL -- at least 1 item is guaranteed from NonEmpty/Right

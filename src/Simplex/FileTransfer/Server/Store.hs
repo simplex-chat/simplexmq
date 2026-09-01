@@ -55,6 +55,7 @@ data FileRec = FileRec
     filePath :: TVar (Maybe FilePath),
     recipientIds :: TVar (Set RecipientId),
     createdAt :: RoundedFileTime,
+    expiresAt :: Maybe RoundedFileTime,
     fileStatus :: TVar ServerEntityStatus
   }
 
@@ -74,7 +75,7 @@ class FileStoreClass s where
   type FileStoreConfig s
   newFileStore :: FileStoreConfig s -> IO s
   closeFileStore :: s -> IO ()
-  addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
+  addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
@@ -84,7 +85,7 @@ class FileStoreClass s where
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
   ackFile :: s -> RecipientId -> IO (Either XFTPErrorType ())
-  expiredFiles :: s -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
+  expiredFiles :: s -> SystemSeconds -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
   getUsedStorage :: s -> IO Int64
   getFileCount :: s -> IO Int
 
@@ -107,9 +108,9 @@ instance FileStoreClass STMFileStore where
 
   closeFileStore STMFileStore {stmStoreLog} = readTVarIO stmStoreLog >>= mapM_ closeStoreLog
 
-  addFile STMFileStore {files} sId fileInfo createdAt status = atomically $
+  addFile STMFileStore {files} sId fileInfo createdAt expiresAt status = atomically $
     ifM (TM.member sId files) (pure $ Left DUPLICATE_) $ do
-      f <- newFileRec sId fileInfo createdAt status
+      f <- newFileRec sId fileInfo createdAt expiresAt status
       TM.insert sId f files
       pure $ Right ()
 
@@ -166,14 +167,17 @@ instance FileStoreClass STMFileStore where
           pure $ Right ()
       _ -> pure $ Left AUTH
 
-  expiredFiles STMFileStore {files} old _limit = do
+  expiredFiles STMFileStore {files} now old _limit = do
     fs <- readTVarIO files
-    fmap catMaybes . forM (M.toList fs) $ \(sId, FileRec {fileInfo = FileInfo {size}, filePath, createdAt = RoundedSystemTime createdAt}) ->
-      if createdAt + fileTimePrecision < old
-        then do
-          path <- readTVarIO filePath
-          pure $ Just (sId, path, size)
-        else pure Nothing
+    fmap catMaybes . forM (M.toList fs) $ \(sId, FileRec {fileInfo = FileInfo {size}, filePath, createdAt = RoundedSystemTime createdAt, expiresAt}) ->
+      let expired = case expiresAt of
+            Just e -> roundedSeconds e < roundedSeconds now
+            Nothing -> createdAt + fileTimePrecision < old
+       in if expired
+            then do
+              path <- readTVarIO filePath
+              pure $ Just (sId, path, size)
+            else pure Nothing
 
   getUsedStorage STMFileStore {files} = foldM addSize 0 =<< readTVarIO files
     where
@@ -184,12 +188,12 @@ instance FileStoreClass STMFileStore where
 
 -- Internal STM helpers
 
-newFileRec :: SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> STM FileRec
-newFileRec senderId fileInfo createdAt status = do
+newFileRec :: SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> STM FileRec
+newFileRec senderId fileInfo createdAt expiresAt status = do
   recipientIds <- newTVar S.empty
   filePath <- newTVar Nothing
   fileStatus <- newTVar status
-  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, fileStatus}
+  pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, fileStatus}
 
 withFile :: STMFileStore -> SenderId -> (FileRec -> STM (Either XFTPErrorType a)) -> STM (Either XFTPErrorType a)
 withFile STMFileStore {files} sId a =
