@@ -185,7 +185,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           | otherwise -> processHello Nothing
         Just (HandshakeSent pk ent_)
           | webHello -> processHello (Just pk)
-          | webHandshake -> processClientHandshake pk (EntChecked Nothing)
           | otherwise -> processClientHandshake pk ent_
         Just (HandshakeAccepted thParams)
           | webHello -> processHello (serverPrivKey <$> thAuth thParams)
