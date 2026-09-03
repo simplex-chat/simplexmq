@@ -29,6 +29,7 @@ Usage:
   ./snrc-resolve.py                    # serve on :8000
 
   curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
+  curl -s 'http://127.0.0.1:8000/resolve/[<64-hex labelhash>].testing' | jq .
   curl -s http://127.0.0.1:8000/health
 
 Environment:
@@ -121,6 +122,47 @@ def namehash(name: str) -> bytes:
         for label in reversed(name.split(".")):
             node = keccak(node + keccak(label.encode()))
     return node
+
+
+# ENS writes a label whose preimage it does not know as `[<64 hex>]`, and that
+# is the form reused here for a label the caller deliberately withholds. The
+# brackets are what keep the two forms apart: `[` and `]` are outside the
+# normalised character set, so no registrable name can take this shape, and the
+# ecosystem already reads it back as a hash (ensjs `isEncodedLabelhash`; the
+# subgraph refuses any real label containing a bracket). A bare `0x…` label
+# would not be safe this way - that is an ordinary, registrable name, kept from
+# clashing only by a registrar length cap that its owner can raise.
+ENCODED_LABELHASH_LEN = 66  # "[" + 64 hex + "]"
+
+
+def is_encoded_labelhash(label: str) -> bool:
+    return (
+        len(label) == ENCODED_LABELHASH_LEN
+        and label.startswith("[")
+        and label.endswith("]")
+        and all(c in "0123456789abcdef" for c in label[1:-1])
+    )
+
+
+def node_of(name: str) -> bytes:
+    """namehash, accepting an encoded labelhash in place of a 2LD's label.
+
+    A client checking whether a name is free is usually about to register it,
+    so the question itself is worth front-running. namehash is defined as
+    keccak(parent || keccak(label)), so a caller who supplies keccak(label)
+    reaches the same node having never sent the label.
+
+    Only 2LDs may be queried this way: that is the name a registration is
+    bought for, so the only one worth hiding. Subnames of any depth are
+    excluded - a subname is created by the 2LD's owner, nobody can race a
+    caller for one, so there is nothing to front-run. A label in `[<64 hex>]`
+    form there is hashed literally, not decoded; as brackets cannot occur in a
+    real registration, such a query names a node nobody can own.
+    """
+    labels = name.split(".")
+    if len(labels) == 2 and is_encoded_labelhash(labels[0]):
+        return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
+    return namehash(name)
 
 
 def selector(signature: str) -> str:
@@ -401,7 +443,7 @@ def resolve(name: str):
             "configured_tlds": configured,
         }
 
-    node = namehash(name)
+    node = node_of(name)
     node_hex = node.hex()
 
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)

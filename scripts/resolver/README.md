@@ -129,6 +129,36 @@ text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
 
+### Asking without naming the name
+
+A client checking whether a name is free is usually about to register it, so
+the question itself is worth front-running. Substitute the label's keccak hash,
+written in ENS's `[<64 hex>]` form, and the answer is identical:
+
+```sh
+# instead of /resolve/acme.testing
+curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
+```
+
+namehash is defined as `keccak(parent || keccak(label))`, so supplying
+`keccak(label)` reaches the same node: the resolver reads exactly the record it
+would have read, and learns which name you meant only if it already guessed it.
+
+The brackets are what keep the two forms apart — `[` and `]` cannot occur in a
+normalised name, so no registrable label can take this shape, and it is the
+same encoding ENS itself uses for a label whose preimage is unknown. A bare
+`0x…` label would not do: that is an ordinary, registrable name.
+
+Only 2LDs may be queried by hash: that is the name a registration is bought
+for, so the only one worth hiding. Subnames of any depth are excluded — a
+subname is created by the 2LD's owner, nobody can race you for one, so there is
+nothing to front-run. A label in `[<64 hex>]` form there is hashed literally,
+not decoded; as brackets cannot occur in a real registration, such a query
+names a node nobody can own.
+
+Registration itself stays public: this hides the *interest*, and the
+commit-reveal in the controller is what protects the registration.
+
 ### Status codes
 
 | Status | Meaning |
