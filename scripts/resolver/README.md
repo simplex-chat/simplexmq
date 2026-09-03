@@ -119,7 +119,10 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
   "simplexContact": ["https://smp16.simplex.im/a#…", "https://smp11…"],  // primary first, fallbacks after
   "simplexChannel": [],
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
-  "owner": "0xd83b…", "resolver": "0x80fa…"
+  "owner": "0xd83b…", "resolver": "0x80fa…",
+  "status": "registered",      // registered | grace | expired | unregistered | reserved | noResolver | unknown
+  "expires": 1780000000,       // Unix seconds; when the registration ends
+  "graceEnds": 1787776000      // expires + GRACE_PERIOD; last moment the owner can renew
 }
 ```
 
@@ -128,6 +131,34 @@ servers; clients try them in order). On-chain they're a single comma-separated
 text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
+
+### Registration status and expiry
+
+`status`, `expires` and `graceEnds` are on every response that got far enough
+to know them, including a successful resolve — so a client that has just
+resolved a name already holds its expiry and needs no second request to warn
+about it. `expires` and `graceEnds` are Unix timestamps in seconds; both are
+`null` when unknown.
+
+| `status` | Meaning |
+|---|---|
+| `registered` | live; `expires` is when that ends |
+| `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
+| `expired` | lapsed and past grace — anyone may register it now |
+| `unregistered` | never registered, and free to take |
+| `reserved` | not registered, and held back — registration will be refused; the body carries a `reason` |
+| `noResolver` | registered, but points nowhere |
+| `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+
+The split between `grace` and `expired` mirrors the registrar's own
+`available(id)` rule (`expires + GRACE_PERIOD < now`), with `GRACE_PERIOD` read
+from the contract rather than assumed. Note that `available(id)` alone cannot
+distinguish these: it is also true for a name nobody ever registered, since
+`0 + GRACE_PERIOD < now`. A zero expiry is what separates *never taken* from
+*taken and since released*.
+
+Subnames report the status of the 2LD they sit under, which is the useful
+answer — a subname is only as valid as the name above it.
 
 ### Querying by labelhash
 
@@ -142,8 +173,20 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 ```
 
 This works because namehash is `keccak(parent || keccak(label))`. Passing
-`keccak(label)` gives the same node, so the resolver reads the same record. It
-learns which name you meant only if it guesses the label and hashes it.
+`keccak(label)` gives the same node, so the resolver reads the same record —
+and the registrar also keys `nameExpires` and `reservedNames` on the labelhash,
+so availability needs the label no more than the record does. It learns which
+name you meant only if it guesses the label and hashes it.
+
+Read the answer by `status`: a name is free exactly when the body says
+`unregistered` (a 404). Every other answer is a name somebody holds or held
+recently — note that `noResolver` is also a 404, and it is a taken name.
+
+Two practical notes. The hash must be keccak-256: `openssl dgst -sha3-256` and
+`sha3sum` compute SHA3-256, a different function, and produce 64 well-formed
+hex of nothing you meant. And queries are lowercased before matching, so
+uppercase hex works too; strict HTTP stacks that reject raw brackets in a path
+can percent-encode them (`%5B`/`%5D`) — both forms load the same name.
 
 Brackets keep the two forms from colliding. `[` and `]` are not valid in a
 normalised ENS name, and the dApp normalises before it registers, so no name
@@ -157,23 +200,42 @@ Only 2LDs can be queried by hash. A 2LD is what a registration buys, so it is
 the only name worth hiding. Subnames are left out because nobody can race you
 for one: the owner of the 2LD creates them. In a subname the resolver hashes a
 `[<64 hex>]` label as written instead of decoding it, so such a query points at
-a node nobody can own.
+a node nobody can own. (ENS tooling reads the bracketed form at any depth; this
+resolver deliberately does not.)
 
 This hides your interest in a name, and nothing more. The registration itself
-is public, and the controller's commit-reveal protects that step.
+is public, and the controller's commit-reveal protects that step. Guessing
+stays cheap — for a short or brand-like label the hash is a speed bump, not
+secrecy — and once the reveal makes the labelhash public, an operator who
+logged the probe can link the two.
 
 ### Status codes
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved |
+| 200 | resolved (`status` is `registered`, or `unknown` when no registrar is configured) |
 | 400 | TLD not configured, or not a fully-qualified name |
-| 404 | name has no resolver set on the registry |
+| 404 | `unregistered`, `reserved` or `noResolver` — the `status` field says which |
+| 410 | registration lapsed — `status` says whether the owner can still renew (`grace`) or anyone may take it (`expired`) |
 | 502 | upstream RPC error / reth not synced |
 
-### Configuring registries
+### Configuring addresses
 
-Defaults to mainnet `.testing` (`0x03f438…`); `.simplex` is unset until
-deployed. Override per TLD via env on the `resolver` service in
-`docker-compose.yml` (`SNRC_REGISTRY_TESTING` / `SNRC_REGISTRY_SIMPLEX`), or as
-env vars for the standalone script.
+Three maps, all per TLD. The **registry** answers *who owns this node* and is
+what `/resolve` reads records from. The **registrar** (ERC-721) holds
+`nameExpires` / `GRACE_PERIOD`, and is what every expiry field is read from —
+without one for a TLD, `/resolve` still works and reports `"status": "unknown"`.
+The **controller** holds `reservedNames`, and is what the `reserved` status is
+read from; without one a reserved name reads as `unregistered`.
+
+All three default to the mainnet `.testing` deployment; `.simplex` is unset
+until deployed. Note that the controller default is the **proxy**, not
+`SimplexControllerImpl`: storage lives in the proxy, so the implementation
+answers nothing. `deployments.mainnet.testing.json` records it under the ENS
+role name `ETHRegistrarController` and `verification.mainnet.testing.json`
+names it `SimplexControllerProxy` — the same address, and the one defaulted to
+here.
+
+Override per TLD via env on the `resolver` service in `docker-compose.yml`
+(`SNRC_REGISTRY_<TLD>` / `SNRC_REGISTRAR_<TLD>` / `SNRC_CONTROLLER_<TLD>`), or
+as env vars for the standalone script.

@@ -39,6 +39,10 @@ Environment:
                           0x58fc46996d975c57883564648bda5206d1a0102b)
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
                          (default: empty — TLD not yet deployed)
+  SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
+                         (default: mainnet for .testing, empty for .simplex)
+  SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; `reserved` status
+                         (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
 
@@ -62,6 +66,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -84,6 +89,35 @@ REGISTRIES = {
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
+
+# The BaseRegistrar (ERC-721) per TLD, used for expiry and status. Separate
+# from the registry above: the registry answers "who owns this node", the
+# registrar holds nameExpires and GRACE_PERIOD. Not a proxy, so the address in
+# deployments is the one that answers. Without one for a TLD, /resolve still
+# works and reports "status": "unknown".
+REGISTRARS = {
+    "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
+    or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
+    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", ""),  # not deployed yet
+}
+
+# The SimplexController per TLD, which holds `reservedNames`. Without one for a
+# TLD, `reserved` is never reported and a reserved name reads as unregistered.
+CONTROLLERS = {
+    "testing": os.environ.get("SNRC_CONTROLLER_TESTING", "")
+    # The proxy, not SimplexControllerImpl: storage and events live in the
+    # proxy, so the implementation address answers nothing. deployments.json
+    # records this one under the ENS role name ETHRegistrarController;
+    # verification.json names it SimplexControllerProxy. Same address.
+    or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
+    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
+}
+
+# Why a name is reserved. `reservedNames` stores only the fact, so every
+# reserved name gets this same sentence; a per-name lookup (table or REST) is
+# the intended replacement. Callers should render whatever this field holds
+# rather than matching on its text.
+RESERVED_REASON = "reserved for a brand or public interest"
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
 COIN_ETH = 60
@@ -165,6 +199,102 @@ def node_of(name: str) -> bytes:
     return namehash(name)
 
 
+# ---------- Registration status ----------
+
+
+def grace_period(registrar: str) -> int:
+    """The registrar's own GRACE_PERIOD, in seconds.
+
+    Read from the chain rather than hardcoded, so a deployment that chooses a
+    different window is reported correctly instead of confidently wrongly. One
+    call per request, not per name.
+    """
+    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
+
+
+def expiry_status(expires: int, grace: int, now: int) -> str:
+    """Registration state from an expiry timestamp.
+
+    Mirrors the registrar's `available(id)`, which is
+    `expiries[id] + GRACE_PERIOD < block.timestamp`. Note that `available`
+    alone cannot be used for this: it is also true for a name nobody ever
+    registered, since `0 + GRACE_PERIOD < now`. The zero expiry is what
+    separates "never taken" from "lapsed and now free".
+    """
+    if expires == 0:
+        return "unregistered"
+    if expires > now:
+        return "registered"
+    if expires + grace >= now:
+        # Expired, but only the previous owner may renew it - nobody else can
+        # take it yet.
+        return "grace"
+    return "expired"
+
+
+def is_reserved(tld: str, token: int) -> bool:
+    """Whether the controller holds this label for a brand.
+
+    Keyed by labelhash on chain, so this answers for a hashed query too.
+    """
+    controller = CONTROLLERS.get(tld)
+    if not controller:
+        return False
+    raw = eth_call(controller, selector("reservedNames(bytes32)") + encode_uint(token))
+    return decode_uint(raw) != 0
+
+
+def name_status(name: str):
+    """Registration status of the 2LD a name sits under.
+
+    Names expire lazily: the registrar keeps the record and simply stops
+    treating it as live, so "never registered" and "expired last Tuesday" are
+    both readable rather than both being absence. `nameExpires` returns 0 for a
+    label that was never registered, which is what separates the two.
+
+    Subnames are not registered here, so the status of `x.alice.testing` is the
+    status of `alice.testing` - which is the useful answer, since a subname is
+    only as valid as the 2LD above it.
+    """
+    labels = name.split(".")
+    tld = labels[-1]
+    registrar = REGISTRARS.get(tld)
+    if not registrar or len(labels) < 2:
+        # No registrar configured for this TLD: say so rather than guess.
+        return {"status": "unknown", "expires": None, "graceEnds": None}
+
+    # The registration facts (nameExpires, reservedNames) are keyed on
+    # uint256(keccak(label)), so a 2LD queried by its encoded labelhash gets
+    # the same answer without the label. The bracket form decodes only there -
+    # the same rule node_of applies to the node itself.
+    label = labels[-2]
+    if len(labels) == 2 and is_encoded_labelhash(label):
+        token = int(label[1:-1], 16)
+    else:
+        token = int.from_bytes(keccak(label.encode()), "big")
+    expires = decode_uint(
+        eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
+    )
+    if expires == 0:
+        status, grace = "unregistered", 0
+    else:
+        grace = grace_period(registrar)
+        status = expiry_status(expires, grace, int(time.time()))
+
+    # `reserved` only displaces the two states that read as "you could take
+    # this". A registered name is registered, and one in grace belongs to its
+    # owner either way - in both cases the reservation is not the answer to the
+    # question being asked.
+    if status in ("unregistered", "expired") and is_reserved(tld, token):
+        status = "reserved"
+
+    return {
+        "status": status,
+        "expires": expires or None,
+        "graceEnds": (expires + grace) if expires else None,
+    }
+
+
 def selector(signature: str) -> str:
     return "0x" + keccak(signature.encode())[:4].hex()
 
@@ -183,6 +313,15 @@ def decode_bytes(hex_data: str) -> bytes:
         return b""
     length = int.from_bytes(raw[32:64], "big")
     return raw[64:64 + length]
+
+
+def decode_uint(hex_data: str) -> int:
+    raw = hex_data[2:] if hex_data.startswith("0x") else hex_data
+    return int(raw[-64:], 16) if raw else 0
+
+
+def encode_uint(value: int) -> str:
+    return value.to_bytes(32, "big").hex()
 
 
 def encode_text_call(node: bytes, key: str) -> str:
@@ -446,10 +585,51 @@ def resolve(name: str):
     node = node_of(name)
     node_hex = node.hex()
 
+    # Registration first, because it is the fact that separates the failures a
+    # caller has to tell apart: a name nobody has taken, one whose registration
+    # lapsed and may still be renewed, one that lapsed and is now open to
+    # anyone, and one that is held but not pointed anywhere.
+    reg = name_status(name)
+    if reg["status"] in ("unregistered", "reserved"):
+        body = {
+            "name": name,
+            "status": reg["status"],
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": (
+                "this name is reserved and cannot be registered"
+                if reg["status"] == "reserved"
+                else "this name has never been registered"
+            ),
+        }
+        # Only reserved names carry a reason, so its presence is the signal
+        # that one is known.
+        if reg["status"] == "reserved":
+            body["reason"] = RESERVED_REASON
+        return 404, body
+    if reg["status"] in ("grace", "expired"):
+        return 410, {
+            "name": name,
+            "status": reg["status"],
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": (
+                "this registration expired and can be renewed by its owner"
+                if reg["status"] == "grace"
+                else "this registration expired and is open to anyone"
+            ),
+        }
+
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
-        return 404, {"name": name, "error": "no resolver set for this name"}
+        return 404, {
+            "name": name,
+            "status": "noResolver",
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": "no resolver set for this name",
+        }
 
     owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
     owner = decode_address(owner_raw)
@@ -485,6 +665,9 @@ def resolve(name: str):
         "dot": addr_multicoin(resolver_addr, node, COIN_DOT),
         "owner": owner,
         "resolver": resolver_addr,
+        "status": reg["status"],
+        "expires": reg["expires"],
+        "graceEnds": reg["graceEnds"],
     }
 
 
