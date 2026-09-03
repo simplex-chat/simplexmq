@@ -112,6 +112,8 @@ class EncodedLabelhashTests(unittest.TestCase):
         self.assertFalse(snrc.is_encoded_labelhash("[" + "z" * 64 + "]"))
         # uppercase hex is not it either: the handler lowercases the whole name
         self.assertFalse(snrc.is_encoded_labelhash("[" + "A" * 64 + "]"))
+        # explicitly disallowed prefix
+        self.assertFalse(snrc.is_encoded_labelhash("[0x9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"))
 
     def test_the_wrong_length_is_not(self):
         self.assertFalse(snrc.is_encoded_labelhash("[" + "a" * 63 + "]"))
