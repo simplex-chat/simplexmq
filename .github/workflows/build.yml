@@ -301,3 +301,31 @@ jobs:
             echo "All "$attempts" attempts failed."
             exit 1
           fi
+
+# =============================
+#      Resolver test job
+# =============================
+
+# The SNRC resolver is Python and stdlib-only apart from keccak, so it needs
+# none of the Haskell toolchain above and runs independently of it.
+
+  resolver-test:
+    name: "resolver (python)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone project
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        # Matches the runtime stage of scripts/resolver/service/Dockerfile.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install resolver dependencies
+        # The only runtime dependency; declared in
+        # scripts/resolver/service/pyproject.toml.
+        run: python -m pip install "eth-hash[pycryptodome]>=0.7"
+
+      - name: Test
+        run: python -m unittest discover -s scripts/resolver/service -v
