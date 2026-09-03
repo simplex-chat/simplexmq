@@ -66,7 +66,6 @@ import hashlib
 import json
 import os
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -202,6 +201,16 @@ def node_of(name: str) -> bytes:
 # ---------- Registration status ----------
 
 
+def chain_now() -> int:
+    """The latest block's timestamp - the same clock the registrar reads.
+
+    Asked explicitly rather than taken from the host clock, so a skewed clock
+    on this machine cannot misstate a registration.
+    """
+    block = rpc("eth_getBlockByNumber", ["latest", False])
+    return decode_uint(block["timestamp"])
+
+
 def grace_period(registrar: str) -> int:
     """The registrar's own GRACE_PERIOD, in seconds.
 
@@ -279,7 +288,7 @@ def name_status(name: str):
         status, grace = "unregistered", 0
     else:
         grace = grace_period(registrar)
-        status = expiry_status(expires, grace, int(time.time()))
+        status = expiry_status(expires, grace, chain_now())
 
     # `reserved` only displaces the two states that read as "you could take
     # this". A registered name is registered, and one in grace belongs to its

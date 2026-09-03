@@ -152,10 +152,12 @@ about it. `expires` and `graceEnds` are Unix timestamps in seconds; both are
 
 The split between `grace` and `expired` mirrors the registrar's own
 `available(id)` rule (`expires + GRACE_PERIOD < now`), with `GRACE_PERIOD` read
-from the contract rather than assumed. Note that `available(id)` alone cannot
-distinguish these: it is also true for a name nobody ever registered, since
-`0 + GRACE_PERIOD < now`. A zero expiry is what separates *never taken* from
-*taken and since released*.
+from the contract rather than assumed and `now` taken from the latest block's
+timestamp rather than the host clock — the registrar compares against that same
+clock, so a skewed machine cannot misstate a registration. Note that
+`available(id)` alone cannot distinguish these: it is also true for a name
+nobody ever registered, since `0 + GRACE_PERIOD < now`. A zero expiry is what
+separates *never taken* from *taken and since released*.
 
 Subnames report the status of the 2LD they sit under, which is the useful
 answer — a subname is only as valid as the name above it.

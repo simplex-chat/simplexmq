@@ -101,12 +101,13 @@ class EncodedLabelhashTests(unittest.TestCase):
     GRACE = 90 * 86400
 
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call)
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now)
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
+        snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call = self._saved
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
 
     def test_the_encoded_form_is_recognised(self):
         self.assertTrue(
@@ -217,14 +218,44 @@ class NameStatusTests(unittest.TestCase):
         return eth_call
 
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call)
+        self._saved = (
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+            snrc.chain_now,
+            snrc.rpc,
+        )
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         # These cases are about expiry alone. ReservedTests covers what a
         # configured controller adds.
         snrc.CONTROLLERS = {"testing": ""}
+        snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call = self._saved
+        (
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+            snrc.chain_now,
+            snrc.rpc,
+        ) = self._saved
+
+    def test_now_is_the_latest_blocks_timestamp(self):
+        # setUp replaces chain_now with the fixture clock; this is about the
+        # real one, saved as the 4th element of the setUp snapshot
+        real_chain_now = self._saved[3]
+        snrc.rpc = lambda method, params: {"timestamp": "0x65f1a2c0", "number": "0x123"}
+        self.assertEqual(real_chain_now(), 0x65F1A2C0)
+
+    def test_status_reads_the_chain_clock_not_the_host_clock(self):
+        """The registrar compares expiry to block.timestamp, so the resolver
+        must too - a host clock years ahead must not turn a live name into a
+        claimable one."""
+        future = int(time.time()) + 3600
+        snrc.eth_call = self._expiry(future)
+        self.assertEqual(snrc.name_status("alice.testing")["status"], "registered")
+        snrc.chain_now = lambda: future + 3650 * 86400
+        self.assertEqual(snrc.name_status("alice.testing")["status"], "expired")
 
     def test_zero_expiry_means_never_registered(self):
         snrc.eth_call = self._expiry(0)
@@ -313,12 +344,13 @@ class ReservedTests(unittest.TestCase):
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
 
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call)
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now)
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+        snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call = self._saved
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
 
     def _chain(self, expires, reserved):
         def eth_call(to, data):
@@ -380,10 +412,12 @@ class ReservedReasonTests(unittest.TestCase):
             snrc.REGISTRARS,
             snrc.CONTROLLERS,
             snrc.eth_call,
+            snrc.chain_now,
         )
         snrc.REGISTRIES = {"testing": self.REGISTRY}
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+        snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
         (
@@ -391,6 +425,7 @@ class ReservedReasonTests(unittest.TestCase):
             snrc.REGISTRARS,
             snrc.CONTROLLERS,
             snrc.eth_call,
+            snrc.chain_now,
         ) = self._saved
 
     def _chain(self, expires, reserved):
