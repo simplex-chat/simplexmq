@@ -19,15 +19,15 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 
 ## 1. Configure
 
-Edit `.env` — the defaults work as-is; override only if needed:
+Edit `.env`. The defaults work as they are; change them only if you need to:
 
 ```sh
 NETWORK=mainnet                                               # default
 TRUSTED_NODE_URL=https://mainnet-checkpoint-sync.attestant.io # default
 ```
 
-Everything else (NAT) has a working default baked into `docker-compose.yml`;
-uncomment the hints in `.env` only to override.
+Everything else (NAT) already has a working default in `docker-compose.yml`.
+Uncomment the hints in `.env` only if you need to change one.
 
 ## 2. Run
 
@@ -37,7 +37,7 @@ docker compose up -d
 docker compose logs -f reth resolver
 ```
 
-`depends_on` handles ordering automatically (start node → start resolver).
+Compose starts the node before the resolver; `depends_on` takes care of that.
 
 ## 3. Wait for the node to sync
 
@@ -45,12 +45,13 @@ docker compose logs -f reth resolver
 docker compose logs --tail=20 reth
 ```
 
-This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`.
+This is the slow step: about a day on mainnet. Until reth has synced, the
+resolver returns `502`.
 
 ## Verify
 
-Run these once the stack is up (the node-dependent ones pass after sync):
+Run the three checks below once the stack is up. The ones that need chain data
+pass only after the node has synced.
 
 **1. reth is reachable and reporting a block:**
 ```sh
@@ -71,7 +72,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
-**Wire your smp-server:** in its `[NAMES]` section set
+**Point your smp-server at it:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
 
 ## Ports (all loopback unless noted)
@@ -86,9 +87,10 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 
 ## Caveats
 
-- **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
-  `docker compose pull`; re-run the verify checks after pulling.
-- All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
+- **All images track `:latest`** (reth, nimbus). Each `docker compose pull`
+  brings upstream fixes, so re-run the checks above afterwards.
+- All ports bind to loopback. Expose only what you put behind a TLS reverse
+  proxy.
 
 ## Teardown
 
@@ -103,8 +105,9 @@ docker compose down -v    # also wipe volumes → full re-sync
 
 ## Resolver API reference
 
-The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
-standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
+You can also run the resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) on its
+own for local development, without Docker, using
+[`uv`](https://docs.astral.sh/uv/):
 
 ```sh
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
@@ -126,19 +129,20 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
 }
 ```
 
-`simplexContact`/`simplexChannel` are arrays (a name can advertise multiple SMP
-servers; clients try them in order). On-chain they're a single comma-separated
-text record; the resolver splits/trims/drops-empties. Address encodings are
-canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
-identically (`bar.foobar.testing`).
+`simplexContact` and `simplexChannel` are arrays, because a name can advertise
+several SMP servers; clients try them in order. On chain each one is a single
+text record with the entries joined by `;`. The resolver splits that record,
+trims each entry and drops the empty ones. Addresses come back in each chain's
+usual format (EIP-55, bech32, SS58, Monero base58). Subnames work the same way
+(`bar.foobar.testing`).
 
 ### Registration status and expiry
 
-`status`, `expires` and `graceEnds` are on every response that got far enough
-to know them, including a successful resolve — so a client that has just
-resolved a name already holds its expiry and needs no second request to warn
-about it. `expires` and `graceEnds` are Unix timestamps in seconds; both are
-`null` when unknown.
+A response carries `status`, `expires` and `graceEnds` whenever the resolver
+got far enough to read them, a successful resolve included. A client that has
+just resolved a name therefore already has its expiry, and needs no second
+request to warn about it. `expires` and `graceEnds` are Unix timestamps in
+seconds, and both are `null` when the resolver could not read them.
 
 | `status` | Meaning |
 |---|---|
@@ -150,17 +154,19 @@ about it. `expires` and `graceEnds` are Unix timestamps in seconds; both are
 | `noResolver` | registered, but points nowhere |
 | `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
 
-The split between `grace` and `expired` mirrors the registrar's own
-`available(id)` rule (`expires + GRACE_PERIOD < now`), with `GRACE_PERIOD` read
-from the contract rather than assumed and `now` taken from the latest block's
-timestamp rather than the host clock — the registrar compares against that same
-clock, so a skewed machine cannot misstate a registration. Note that
-`available(id)` alone cannot distinguish these: it is also true for a name
-nobody ever registered, since `0 + GRACE_PERIOD < now`. A zero expiry is what
-separates *never taken* from *taken and since released*.
+The resolver tells `grace` and `expired` apart with the registrar's own
+`available(id)` rule, `expires + GRACE_PERIOD < now`. The resolver reads
+`GRACE_PERIOD` from the contract instead of assuming it, and takes `now` from
+the latest block's timestamp instead of the host clock. The registrar compares
+against that same block timestamp, so a machine with a wrong clock cannot
+misreport a registration.
 
-Subnames report the status of the 2LD they sit under, which is the useful
-answer — a subname is only as valid as the name above it.
+`available(id)` on its own cannot tell the two apart, because it is also true
+for a name nobody ever registered: `0 + GRACE_PERIOD < now`. The resolver uses
+a zero expiry to tell *never registered* from *registered and since released*.
+
+A subname reports the status of the 2LD above it. That is the answer a client
+needs, because a subname is only as good as the name it sits under.
 
 ### Querying by labelhash
 
@@ -175,20 +181,23 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 ```
 
 This works because namehash is `keccak(parent || keccak(label))`. Passing
-`keccak(label)` gives the same node, so the resolver reads the same record —
-and the registrar also keys `nameExpires` and `reservedNames` on the labelhash,
-so availability needs the label no more than the record does. It learns which
-name you meant only if it guesses the label and hashes it.
+`keccak(label)` gives the same node, so the resolver reads the same record. The
+registrar keys `nameExpires` and `reservedNames` on the labelhash as well, so
+the status fields do not need the label either. The resolver learns which name
+you meant only if it guesses the label and hashes it.
 
-Read the answer by `status`: a name is free exactly when the body says
-`unregistered` (a 404). Every other answer is a name somebody holds or held
-recently — note that `noResolver` is also a 404, and it is a taken name.
+Read the answer from `status`. A name is free only when the body says
+`unregistered`, which comes with a 404. Every other status means somebody holds
+the name or held it recently. Watch out for `noResolver`: it is also a 404, but
+the name is taken.
 
-Two practical notes. The hash must be keccak-256: `openssl dgst -sha3-256` and
-`sha3sum` compute SHA3-256, a different function, and produce 64 well-formed
-hex of nothing you meant. And queries are lowercased before matching, so
-uppercase hex works too; strict HTTP stacks that reject raw brackets in a path
-can percent-encode them (`%5B`/`%5D`) — both forms load the same name.
+The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
+SHA3-256, which is a different function. They return 64 valid-looking hex
+characters that point at the wrong node.
+
+The resolver lowercases the query before matching, so uppercase hex works too.
+HTTP clients that refuse raw brackets in a path can percent-encode them as
+`%5B` and `%5D`. Both forms reach the same name.
 
 Brackets keep the two forms from colliding. `[` and `]` are not valid in a
 normalised ENS name, and the dApp normalises before it registers, so no name
@@ -202,14 +211,14 @@ Only 2LDs can be queried by hash. A 2LD is what a registration buys, so it is
 the only name worth hiding. Subnames are left out because nobody can race you
 for one: the owner of the 2LD creates them. In a subname the resolver hashes a
 `[<64 hex>]` label as written instead of decoding it, so such a query points at
-a node nobody can own. (ENS tooling reads the bracketed form at any depth; this
-resolver deliberately does not.)
+a node nobody can own. ENS tooling accepts the bracketed form at any depth;
+this resolver does not, on purpose.
 
 This hides your interest in a name, and nothing more. The registration itself
-is public, and the controller's commit-reveal protects that step. Guessing
-stays cheap — for a short or brand-like label the hash is a speed bump, not
-secrecy — and once the reveal makes the labelhash public, an operator who
-logged the probe can link the two.
+is public, and the controller's commit-reveal protects that step. The hash is
+also easy to guess for a short or well-known label, since an operator can hash
+candidate labels and compare. And once you register, the reveal publishes the
+labelhash, so an operator who logged your query can match it to the name.
 
 ### Status codes
 
@@ -223,21 +232,26 @@ logged the probe can link the two.
 
 ### Configuring addresses
 
-Three maps, all per TLD. The **registry** answers *who owns this node* and is
-what `/resolve` reads records from. The **registrar** (ERC-721) holds
-`nameExpires` / `GRACE_PERIOD`, and is what every expiry field is read from —
-without one for a TLD, `/resolve` still works and reports `"status": "unknown"`.
-The **controller** holds `reservedNames`, and is what the `reserved` status is
-read from; without one a reserved name reads as `unregistered`.
+The resolver reads three contracts, each configured per TLD.
 
-All three default to the mainnet `.testing` deployment; `.simplex` is unset
-until deployed. Note that the controller default is the **proxy**, not
-`SimplexControllerImpl`: storage lives in the proxy, so the implementation
-answers nothing. `deployments.mainnet.testing.json` records it under the ENS
-role name `ETHRegistrarController` and `verification.mainnet.testing.json`
-names it `SimplexControllerProxy` — the same address, and the one defaulted to
+The **registry** answers who owns a node, and `/resolve` reads the records from
+it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
+is where every expiry field comes from. With no registrar for a TLD, `/resolve`
+still works and reports `"status": "unknown"`. The **controller** holds
+`reservedNames`, which is where the `reserved` status comes from. With no
+controller, a reserved name reads as `unregistered`.
+
+All three default to the mainnet `.testing` deployment. `.simplex` is unset
+until it is deployed.
+
+The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
+lives in the proxy, so the implementation address answers nothing. The two
+deployment files use different names for that proxy:
+`deployments.mainnet.testing.json` records it under the ENS role name
+`ETHRegistrarController`, and `verification.mainnet.testing.json` calls it
+`SimplexControllerProxy`. Both are the same address, and it is the one used
 here.
 
-Override per TLD via env on the `resolver` service in `docker-compose.yml`
-(`SNRC_REGISTRY_<TLD>` / `SNRC_REGISTRAR_<TLD>` / `SNRC_CONTROLLER_<TLD>`), or
-as env vars for the standalone script.
+To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
+`SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
+as env vars when you run the script directly.
