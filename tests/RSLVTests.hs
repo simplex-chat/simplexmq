@@ -92,10 +92,6 @@ testRslvBackendNotFound =
       corrId `shouldBe` CorrId "rs01"
       resp `shouldBe` Right (ERR (NAME NOT_FOUND))
 
--- The resolver answers 410 for a registration that has lapsed (in grace or
--- past it). That is a correct answer about the name, so it has to arrive as
--- NOT_FOUND; RESOLVER would make the client treat it as a broken resolver and
--- abort domain verification instead of reporting the name as unverified.
 testRslvBackendGone :: IO ()
 testRslvBackendGone =
   withResolverServer (status410, "{}") $

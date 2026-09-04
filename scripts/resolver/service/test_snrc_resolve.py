@@ -86,9 +86,6 @@ class SplitLinksTests(unittest.TestCase):
 
 
 class EncodedLabelhashTests(unittest.TestCase):
-    """`node_of` accepts a 2LD's label as an encoded labelhash `[<64 hex>]`,
-    reaching the same node as the label itself."""
-
     # keccak-256("alice"), written out in full wherever a test needs it.
     # 9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501
 
@@ -165,9 +162,6 @@ class EncodedLabelhashTests(unittest.TestCase):
         self.assertEqual(snrc.node_of(name), snrc.namehash(name))
 
     def test_status_by_hash_matches_status_by_name(self):
-        """The registrar keys registration data on the labelhash too. A hashed
-        query therefore answers "is it free?" as well as "what does it say?",
-        without the label."""
         future = int(time.time()) + 86400
         seen = []
 
@@ -190,9 +184,6 @@ class EncodedLabelhashTests(unittest.TestCase):
 
 
 class NameStatusTests(unittest.TestCase):
-    """unresolvable has three causes and a caller has to tell them apart.
-    Names expire lazily, so the chain still holds the answer."""
-
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
 
     GRACE = 90 * 86400
@@ -215,8 +206,7 @@ class NameStatusTests(unittest.TestCase):
             snrc.rpc,
         )
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
-        # These cases are about expiry alone. ReservedTests covers what a
-        # configured controller adds.
+        # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
 
@@ -230,16 +220,12 @@ class NameStatusTests(unittest.TestCase):
         ) = self._saved
 
     def test_now_is_the_latest_blocks_timestamp(self):
-        # setUp replaces chain_now with the fixture clock; this is about the
-        # real one, saved as the 4th element of the setUp snapshot
+        # setUp replaced chain_now with the fixture clock; test the real one
         real_chain_now = self._saved[3]
         snrc.rpc = lambda method, params: {"timestamp": "0x65f1a2c0", "number": "0x123"}
         self.assertEqual(real_chain_now(), 0x65F1A2C0)
 
     def test_status_reads_the_chain_clock_not_the_host_clock(self):
-        """The registrar compares expiry to block.timestamp, so the resolver
-        must too - a host clock years ahead must not turn a live name into a
-        claimable one."""
         future = int(time.time()) + 3600
         snrc.eth_call = self._expiry(future)
         self.assertEqual(snrc.name_status("alice.testing")["status"], "registered")
@@ -254,8 +240,6 @@ class NameStatusTests(unittest.TestCase):
         )
 
     def test_recently_expired_is_in_grace_and_says_when_it_ends(self):
-        """Only the previous owner may renew during grace - nobody else can
-        take the name yet, so this is a different answer from `expired`."""
         past = int(time.time()) - 3600
         snrc.eth_call = self._expiry(past)
         self.assertEqual(
@@ -269,8 +253,7 @@ class NameStatusTests(unittest.TestCase):
         self.assertEqual(snrc.name_status("alice.testing")["status"], "expired")
 
     def test_the_boundary_belongs_to_grace(self):
-        """The registrar frees a name when expires + GRACE < now, so the last
-        second of the window is still the owner's."""
+        """The registrar frees a name only when expires + GRACE < now."""
         now = int(time.time())
         snrc.eth_call = self._expiry(now - self.GRACE)
         self.assertEqual(snrc.name_status("alice.testing")["status"], "grace")
@@ -284,8 +267,7 @@ class NameStatusTests(unittest.TestCase):
         )
 
     def test_never_registered_is_not_confused_with_claimable(self):
-        """`available(id)` is true for both, since 0 + GRACE < now. The zero
-        expiry is the only thing that separates them."""
+        """`available(id)` is true for both, since 0 + GRACE < now."""
         snrc.eth_call = self._expiry(0)
         self.assertEqual(snrc.name_status("alice.testing")["status"], "unregistered")
         self.assertNotEqual(snrc.name_status("alice.testing")["status"], "expired")
@@ -312,9 +294,6 @@ class NameStatusTests(unittest.TestCase):
         )
 
     def test_every_branch_returns_the_same_keys(self):
-        """Callers read status/expires/graceEnds unconditionally, so a branch
-        that omits one is a KeyError in the caller rather than a missing field
-        in the JSON."""
         keys = {"status", "expires", "graceEnds"}
         snrc.eth_call = self._expiry(0)
         self.assertEqual(set(snrc.name_status("alice.testing")), keys)
@@ -326,9 +305,6 @@ class NameStatusTests(unittest.TestCase):
 
 
 class ReservedTests(unittest.TestCase):
-    """A reserved name is unregistered and still unavailable, which a client
-    intending to register needs to know before it tries."""
-
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
 
@@ -366,7 +342,6 @@ class ReservedTests(unittest.TestCase):
         self.assertEqual(snrc.name_status("acme.testing")["status"], "reserved")
 
     def test_a_live_name_is_registered_even_if_reserved(self):
-        """It was handed to its brand; the reservation is no longer the answer."""
         snrc.eth_call = self._chain(int(time.time()) + 86400, True)
         self.assertEqual(snrc.name_status("acme.testing")["status"], "registered")
 
@@ -376,7 +351,7 @@ class ReservedTests(unittest.TestCase):
 
     def test_no_controller_configured_means_reserved_is_never_reported(self):
         snrc.CONTROLLERS = {"testing": ""}
-        snrc.eth_call = self._chain(0, True)  # would say reserved if asked
+        snrc.eth_call = self._chain(0, True)  # reserved on chain, but unread
         self.assertEqual(snrc.name_status("acme.testing")["status"], "unregistered")
 
     def test_reserved_is_asked_by_labelhash_so_a_hashed_query_works(self):
@@ -387,10 +362,6 @@ class ReservedTests(unittest.TestCase):
 
 
 class ReservedReasonTests(unittest.TestCase):
-    """Why a name is reserved travels in its own field, so a client can show it
-    without parsing the message, and so a per-name reason can replace the fixed
-    one without moving anything."""
-
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
@@ -462,10 +433,6 @@ class ReservedReasonTests(unittest.TestCase):
 
 
 class ErrorCodeTests(unittest.TestCase):
-    """`error` is a fixed code a client can branch on, and `message` is the
-    sentence for a human. Matching on the sentence would break the moment the
-    wording changes, which is why the two are separate fields."""
-
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
 
@@ -509,8 +476,6 @@ class ErrorCodeTests(unittest.TestCase):
         self.assertIn("nosuchtld", body["message"])
 
     def test_a_registration_problem_reports_the_status_as_the_code(self):
-        """For these the status is the error, so a client needs to read only
-        one field."""
         for expires, code in (
             (0, "unregistered"),
             (int(time.time()) - 3600, "grace"),
@@ -539,14 +504,12 @@ class ErrorCodeTests(unittest.TestCase):
                 self.assertNotEqual(body["error"], body["message"])
 
     def test_an_upstream_failure_does_not_echo_the_exception(self):
-        """urlopen puts the failing URL in its message and SNRC_RPC can carry
-        a provider key, so only the exception type reaches the caller."""
         with contextlib.redirect_stderr(io.StringIO()) as log:
             body = snrc.upstream_error(
                 {"name": "alice.testing"},
                 RuntimeError("http://user:secret@rpc.example/kEy8 refused"),
             )
-        # the operator still gets the detail, in the log
+        # the operator still sees the detail in the log
         self.assertIn("secret", log.getvalue())
         self.assertEqual(body["error"], "upstreamError")
         self.assertIn("RuntimeError", body["message"])

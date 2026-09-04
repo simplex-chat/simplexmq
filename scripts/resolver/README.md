@@ -139,10 +139,9 @@ usual format (EIP-55, bech32, SS58, Monero base58). Subnames work the same way
 ### Registration status and expiry
 
 A response carries `status`, `expires` and `graceEnds` whenever the resolver
-got far enough to read them, a successful resolve included. A client that has
-just resolved a name therefore already has its expiry, and needs no second
-request to warn about it. `expires` and `graceEnds` are Unix timestamps in
-seconds, and both are `null` when the resolver could not read them.
+read them, a successful resolve included, so a client that has just resolved a
+name already knows when it expires. Both timestamps are Unix seconds, and
+`null` when they could not be read.
 
 | `status` | Meaning |
 |---|---|
@@ -154,19 +153,17 @@ seconds, and both are `null` when the resolver could not read them.
 | `noResolver` | registered, but points nowhere |
 | `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
 
-The resolver tells `grace` and `expired` apart with the registrar's own
-`available(id)` rule, `expires + GRACE_PERIOD < now`. The resolver reads
-`GRACE_PERIOD` from the contract instead of assuming it, and takes `now` from
-the latest block's timestamp instead of the host clock. The registrar compares
-against that same block timestamp, so a machine with a wrong clock cannot
-misreport a registration.
+`grace` and `expired` are told apart by the registrar's own `available(id)`
+rule, `expires + GRACE_PERIOD < now`. `GRACE_PERIOD` is read from the contract
+rather than assumed, and `now` is the latest block's timestamp rather than the
+host clock, which the registrar compares against too, so a machine with a wrong
+clock cannot misreport a registration. That rule alone is not enough: it also
+holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
+expiry is what separates *never registered* from *registered and since
+released*.
 
-`available(id)` on its own cannot tell the two apart, because it is also true
-for a name nobody ever registered: `0 + GRACE_PERIOD < now`. The resolver uses
-a zero expiry to tell *never registered* from *registered and since released*.
-
-A subname reports the status of the 2LD above it. That is the answer a client
-needs, because a subname is only as good as the name it sits under.
+A subname reports the status of the 2LD above it, which is only as good as the
+name it sits under.
 
 ### Querying by labelhash
 

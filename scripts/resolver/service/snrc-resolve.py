@@ -89,33 +89,21 @@ REGISTRIES = {
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
 
-# The BaseRegistrar (ERC-721) per TLD, used for expiry and status. Separate
-# from the registry above: the registry answers "who owns this node", the
-# registrar holds nameExpires and GRACE_PERIOD. Not a proxy, so the address in
-# deployments is the one that answers. Without one for a TLD, /resolve still
-# works and reports "status": "unknown".
 REGISTRARS = {
     "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
     or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", ""),  # not deployed yet
 }
 
-# The SimplexController per TLD, which holds `reservedNames`. Without one for a
-# TLD, `reserved` is never reported and a reserved name reads as unregistered.
 CONTROLLERS = {
     "testing": os.environ.get("SNRC_CONTROLLER_TESTING", "")
-    # The proxy, not SimplexControllerImpl: storage and events live in the
-    # proxy, so the implementation address answers nothing. deployments.json
-    # records this one under the ENS role name ETHRegistrarController;
-    # verification.json names it SimplexControllerProxy. Same address.
+    # Proxy address, not SimplexControllerImpl: storage is held by the proxy.
+    # Recorded in deployments.json as ETHRegistrarController.
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
-# Why a name is reserved. `reservedNames` stores only the fact, so every
-# reserved name gets this same sentence; a per-name lookup (table or REST) is
-# the intended replacement. Callers should render whatever this field holds
-# rather than matching on its text.
+# `reservedNames` stores the fact only, never a reason.
 RESERVED_REASON = "reserved for a brand or public interest"
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
@@ -172,14 +160,8 @@ def is_encoded_labelhash(label: str) -> bool:
 
 
 def node_of(name: str) -> bytes:
-    """namehash, accepting an encoded labelhash in place of a 2LD's label.
-
-    keccak(parent || keccak(label)) reaches the same node without the label,
-    so a caller can check a 2LD without disclosing which one they are about to
-    register. Subnames are excluded - only the 2LD's owner creates them, so
-    there is nothing to front-run - and a bracket label there is hashed as
-    written.
-    """
+    """namehash, accepting an encoded labelhash in place of a 2LD's label. In a
+    subname a bracket label is hashed as written, not decoded."""
     labels = name.split(".")
     if len(labels) == 2 and is_encoded_labelhash(labels[0]):
         return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
@@ -190,50 +172,29 @@ def node_of(name: str) -> bytes:
 
 
 def chain_now() -> int:
-    """The latest block's timestamp - the same clock the registrar reads.
-
-    Asked explicitly rather than taken from the host clock, so a skewed clock
-    on this machine cannot misstate a registration.
-    """
+    """Expiry is compared against the block timestamp, never the host clock."""
     block = rpc("eth_getBlockByNumber", ["latest", False])
     return decode_uint(block["timestamp"])
 
 
 def grace_period(registrar: str) -> int:
-    """The registrar's own GRACE_PERIOD, in seconds.
-
-    Read from the chain rather than hardcoded, so a deployment that chooses a
-    different window is reported correctly instead of confidently wrongly. One
-    call per request, not per name.
-    """
+    """A deployment can configure a different window, so it is read on chain."""
     return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
 
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
-    """Registration state from an expiry timestamp.
-
-    Mirrors the registrar's `available(id)`, which is
-    `expiries[id] + GRACE_PERIOD < block.timestamp`. Note that `available`
-    alone cannot be used for this: it is also true for a name nobody ever
-    registered, since `0 + GRACE_PERIOD < now`. The zero expiry is what
-    separates "never taken" from "lapsed and now free".
-    """
+    """The registrar's `available(id)` is not enough on its own: it is also
+    true for a name nobody registered, since 0 + GRACE_PERIOD < now."""
     if expires == 0:
         return "unregistered"
     if expires > now:
         return "registered"
     if expires + grace >= now:
-        # Expired, but only the previous owner may renew it - nobody else can
-        # take it yet.
         return "grace"
     return "expired"
 
 
 def is_reserved(tld: str, token: int) -> bool:
-    """Whether the controller holds this label for a brand.
-
-    Keyed by labelhash on chain, so this answers for a hashed query too.
-    """
     controller = CONTROLLERS.get(tld)
     if not controller:
         return False
@@ -242,28 +203,14 @@ def is_reserved(tld: str, token: int) -> bool:
 
 
 def name_status(name: str):
-    """Registration status of the 2LD a name sits under.
-
-    Names expire lazily: the registrar keeps the record and simply stops
-    treating it as live, so "never registered" and "expired last Tuesday" are
-    both readable rather than both being absence. `nameExpires` returns 0 for a
-    label that was never registered, which is what separates the two.
-
-    Subnames are not registered here, so the status of `x.alice.testing` is the
-    status of `alice.testing` - which is the useful answer, since a subname is
-    only as valid as the 2LD above it.
-    """
     labels = name.split(".")
     tld = labels[-1]
     registrar = REGISTRARS.get(tld)
     if not registrar or len(labels) < 2:
-        # No registrar configured for this TLD: say so rather than guess.
         return {"status": "unknown", "expires": None, "graceEnds": None}
 
-    # The registrar keys the registration facts (nameExpires, reservedNames) on
-    # uint256(keccak(label)), so a 2LD queried by its encoded labelhash gets the
-    # same answer without the label. Decode the bracket form for a 2LD only,
-    # which is the rule node_of applies to the node.
+    # nameExpires and reservedNames are keyed on uint256(keccak(label)).
+    # Decoded for a 2LD only, the same rule node_of applies to the node.
     label = labels[-2]
     if len(labels) == 2 and is_encoded_labelhash(label):
         token = int(label[1:-1], 16)
@@ -278,10 +225,6 @@ def name_status(name: str):
         grace = grace_period(registrar)
         status = expiry_status(expires, grace, chain_now())
 
-    # `reserved` only displaces the two states that read as "you could take
-    # this". A registered name is registered, and one in grace belongs to its
-    # owner either way - in both cases the reservation is not the answer to the
-    # question being asked.
     if status in ("unregistered", "expired") and is_reserved(tld, token):
         status = "reserved"
 
@@ -569,12 +512,8 @@ def split_links(value: str) -> list:
 
 
 def upstream_error(subject: dict, e: Exception) -> dict:
-    """A 502 body that names the failure without quoting the exception.
-
-    urlopen puts the URL it failed on into its message, and SNRC_RPC may carry
-    a provider key, so the text goes to the log and only a type goes to the
-    caller.
-    """
+    """urlopen puts the failing URL into its message and SNRC_RPC can carry a
+    provider key, so the text goes to the log and only the type to the caller."""
     print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
     return {
         **subject,
@@ -598,10 +537,7 @@ def resolve(name: str):
     node = node_of(name)
     node_hex = node.hex()
 
-    # Registration first, because it is the fact that separates the failures a
-    # caller has to tell apart: a name nobody has taken, one whose registration
-    # lapsed and may still be renewed, one that lapsed and is now open to
-    # anyone, and one that is held but not pointed anywhere.
+    # Before the resolver lookup, so a lapsed name is not reported as noResolver.
     reg = name_status(name)
     if reg["status"] in ("unregistered", "reserved"):
         body = {
@@ -616,8 +552,6 @@ def resolve(name: str):
                 else "this name has never been registered"
             ),
         }
-        # Only reserved names carry a reason, so its presence is the signal
-        # that one is known.
         if reg["status"] == "reserved":
             body["reason"] = RESERVED_REASON
         return 404, body

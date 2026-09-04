@@ -157,9 +157,6 @@ resolverSpec = do
       resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
 
   it "returns NOT_FOUND on 410 (registration lapsed)" $
-    -- A lapsed name is a correct answer, not a resolver failure: RESOLVER
-    -- would make the client abort domain verification instead of reporting
-    -- the name as unverified.
     withResolverServer (resolveResp status410 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
       resolveName env aliceDomain `shouldReturn` Left NOT_FOUND

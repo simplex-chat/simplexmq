@@ -76,9 +76,8 @@ fetch NamesEnv {resolverEnv} d =
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case
   HttpStatusErr 404 -> NOT_FOUND
-  -- 410 is a lapsed registration (past expiry, in grace or beyond): a correct
-  -- answer about the name, not a resolver failure, so it must not become
-  -- RESOLVER - that is reserved for the backing resolver/RPC breaking.
+  -- 410 is a lapsed registration: an answer about the name, not a resolver
+  -- failure, so it must not become RESOLVER.
   HttpStatusErr 410 -> NOT_FOUND
   HttpStatusErr 400 -> NOT_FOUND
   HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
