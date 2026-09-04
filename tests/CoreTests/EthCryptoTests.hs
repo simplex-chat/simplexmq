@@ -17,6 +17,7 @@ import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
+import Data.Char (toLower)
 import Data.Either (isLeft)
 import Data.Word (Word32)
 import qualified Simplex.Messaging.Crypto as C
@@ -261,8 +262,23 @@ eip55Tests = do
     parseAddress "0xZaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed" `shouldSatisfy` isLeft
   it "rejects raw bytes of the wrong length" $
     mkAddress (B.replicate 19 0) `shouldSatisfy` isLeft
+  -- Between them these cover every byte value 0x00..0xff going out through the
+  -- hex encoder, and every hex digit coming back through the decoder - which
+  -- the four spec vectors above do not.
+  it "round-trips every byte value through the checksummed form" $
+    forM_ everyByteAddresses $ \a ->
+      parseAddress (checksumAddress a) `shouldBe` Right a
+  it "round-trips every byte value through the lowercase form" $
+    forM_ everyByteAddresses $ \a ->
+      parseAddress (BC.map toLower (checksumAddress a)) `shouldBe` Right a
   where
     isRight' = either (const False) (const True)
+    -- 13 x 20 = 260 bytes, so every value 0x00..0xff appears at least once
+    everyByteAddresses =
+      [ right . mkAddress . B.pack $
+          [fromIntegral ((i * 20 + j) `mod` 256) | j <- [0 .. 19 :: Int]]
+        | i <- [0 .. 12 :: Int]
+      ]
     specAddresses =
       [ "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
         "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",

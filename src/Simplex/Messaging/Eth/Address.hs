@@ -19,6 +19,7 @@ where
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
+import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
@@ -95,38 +96,30 @@ checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] lowerHex)
 parseAddress :: ByteString -> Either String Address
 parseAddress s
   | B.length body /= 40 = Left $ "address: expected 40 hex digits, got " <> show (B.length body)
-  | not (BC.all isHexDigit body) = Left "address: not hexadecimal"
-  | mixedCase && checksumAddress addr /= "0x" <> body = Left "address: EIP-55 checksum mismatch"
-  | otherwise = Right addr
+  | otherwise = case fromHex (BC.map toLower body) of
+      Left _ -> Left "address: not hexadecimal"
+      Right bs
+        | mixedCase && checksumAddress (Address bs) /= "0x" <> body ->
+            Left "address: EIP-55 checksum mismatch"
+        | otherwise -> Right (Address bs)
   where
     body = if "0x" `B.isPrefixOf` s || "0X" `B.isPrefixOf` s then B.drop 2 s else s
     bodyC = BC.unpack body
     letters = filter (not . isDigit) bodyC
     mixedCase = any isUpper letters && any isLower letters
-    addr = Address (fromHex (BC.map toLower body))
 
 -- | BIP-44 path for Ethereum account @i@: @m\/44'\/60'\/i'\/0\/0@.
 ethereumPath :: Word32 -> [Word32]
 ethereumPath account = [hardened 44, hardened 60, hardened account, 0, 0]
 
--- Hex helpers, local so that Address does not depend on a base16 package and
--- the case handling stays explicit (EIP-55 is entirely about case).
+-- Hex via memory's Base16, which this package already depends on and which
+-- Crypto.Secp256k1 already uses. Base16 emits lowercase, which is what EIP-55
+-- needs as its starting point - 'checksumAddress' is what introduces case.
 
 toHex :: ByteString -> ByteString
-toHex = B.concatMap (\w -> B.pack [hexDigit (w `shiftR` 4), hexDigit (w .&. 0x0F)])
-  where
-    hexDigit n
-      | n < 10 = 0x30 + n
-      | otherwise = 0x57 + n -- 'a' - 10
+toHex = BAE.convertToBase BAE.Base16
 
--- | Assumes a validated even-length lowercase hex string.
-fromHex :: ByteString -> ByteString
-fromHex bs = B.pack $ go (B.unpack bs)
-  where
-    go (h : l : rest) = (nibble h * 16 + nibble l) : go rest
-    go _ = []
-    nibble w
-      | w >= 0x30 && w <= 0x39 = w - 0x30
-      | w >= 0x61 && w <= 0x66 = w - 0x57
-      | w >= 0x41 && w <= 0x46 = w - 0x37
-      | otherwise = 0
+-- | Decodes and validates: a non-hex or odd-length input is a Left, so callers
+-- do not have to scan for hex digits themselves.
+fromHex :: ByteString -> Either String ByteString
+fromHex = BAE.convertFromBase BAE.Base16
